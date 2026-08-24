@@ -24,7 +24,7 @@ import { useAppState } from '../../tui/state/AppState.js';
 import type { AppState } from '../../tui/state/AppStateStore.js';
 import type { LocalJSXCommandCall } from '../../types/command.js';
 import { clearMemoryFileCaches, getMemoryFiles } from '../../memory/index.js';
-import { getAgenCConfigHomeDir } from '../../utils/envUtils.js';
+import { getAgenCHomeDir } from '../../utils/envUtils.js';
 import { openFileInExternalEditor } from '../../utils/editor.js';
 import { openPath } from '../../utils/browser.js';
 import { getErrnoCode } from '../../utils/errors.js';
@@ -48,7 +48,7 @@ type OpenMemoryFileDeps = {
   writeFile: typeof writeFileAsync;
   openFileInExternalEditor: typeof openFileInExternalEditor;
   openPath: typeof openPath;
-  getAgenCConfigHomeDir: typeof getAgenCConfigHomeDir;
+  getAgenCHomeDir: typeof getAgenCHomeDir;
   getRelativeMemoryPath: typeof getRelativeMemoryPath;
   logError: typeof logError;
   env: NodeJS.ProcessEnv;
@@ -59,7 +59,7 @@ const defaultOpenMemoryFileDeps: OpenMemoryFileDeps = {
   writeFile: writeFileAsync,
   openFileInExternalEditor,
   openPath,
-  getAgenCConfigHomeDir,
+  getAgenCHomeDir,
   getRelativeMemoryPath,
   logError,
   env: process.env,
@@ -90,7 +90,7 @@ export async function openMemoryFile(
 ): Promise<void> {
   const resolvedDeps = { ...defaultOpenMemoryFileDeps, ...deps };
   try {
-    const configHomeDir = resolvedDeps.getAgenCConfigHomeDir();
+    const configHomeDir = resolvedDeps.getAgenCHomeDir();
     if (isPathAtOrInside(configHomeDir, memoryPath)) {
       await resolvedDeps.mkdir(configHomeDir, { recursive: true });
     }
@@ -203,7 +203,7 @@ function MemoryCommand({
     (state: AppState) => state.agentDefinitions.activeAgents,
   );
   const originalCwd = getOriginalCwd();
-  const userMemoryPath = `${getAgenCConfigHomeDir()}/AGENC.md`;
+  const userMemoryPath = `${getAgenCHomeDir()}/AGENC.md`;
   const projectMemoryPath = getProjectMemoryPathForSelector(
     [...existingMemoryFiles] as Parameters<typeof getProjectMemoryPathForSelector>[0],
     originalCwd,

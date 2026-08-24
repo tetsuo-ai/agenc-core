@@ -5,9 +5,9 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   feature: vi.fn(() => false),
-  getGlobalConfig: vi.fn(() => ({ theme: 'dark' })),
+  getRuntimeState: vi.fn(() => ({ theme: 'dark' })),
   getSystemThemeName: vi.fn(() => 'dark'),
-  saveGlobalConfig: vi.fn(),
+  updateRuntimeState: vi.fn(),
 }))
 
 vi.mock('bun:bundle', () => ({
@@ -15,8 +15,8 @@ vi.mock('bun:bundle', () => ({
 }))
 
 vi.mock('../../../src/utils/config.js', () => ({
-  getGlobalConfig: mocks.getGlobalConfig,
-  saveGlobalConfig: mocks.saveGlobalConfig,
+  getRuntimeState: mocks.getRuntimeState,
+  updateRuntimeState: mocks.updateRuntimeState,
 }))
 
 vi.mock('../../../src/utils/systemTheme.js', () => ({

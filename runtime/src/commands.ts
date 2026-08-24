@@ -1,6 +1,5 @@
 import type * as React from "react";
-import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { resolve } from "node:path";
 
 import { buildDefaultRegistry } from "./commands/registry.js";
 import type {
@@ -26,13 +25,14 @@ import { clearPluginRegistrationCaches } from "./plugins/registration/manager.js
 import type { AgenCConfig } from "./config/schema.js";
 import { isRecord } from "./utils/record.js";
 import { logForDebugging } from "./utils/debug.js";
+import { getAgenCHomeDir } from "./utils/envUtils.js";
 
 export type LocalCommandResult =
   | { type: "text"; value: string }
   | { type: "compact"; compactionResult?: unknown; displayText?: string }
   | { type: "skip" };
 
-type PluginConfigSurface = Pick<AgenCConfig, "plugins" | "enabledPlugins">;
+type PluginConfigSurface = Pick<AgenCConfig, "plugins">;
 
 export type CommandResultDisplay = "skip" | "system" | "user";
 
@@ -310,7 +310,7 @@ export function registerCommandProvider(
 }
 
 function localSkillsKey(cwd: string): string {
-  const agencHome = process.env.AGENC_HOME ?? join(homedir(), ".agenc");
+  const agencHome = getAgenCHomeDir();
   return `${resolve(cwd)}\u0000${resolve(agencHome)}`;
 }
 

@@ -560,6 +560,7 @@ describe("plugin source resolution", () => {
       await expect(access(join(installed.destination, ".agenc-plugin", "agenc-install.json"))).resolves.toBeUndefined();
       await expect(
         verifyResolvedPluginSignature(installed.destination, {
+          agencHome,
           publishersPath,
           requireSignature: true,
         }),
@@ -1333,6 +1334,7 @@ describe("plugin source resolution", () => {
 
       await expect(
         verifyResolvedPluginSignature(pluginRoot, {
+          agencHome: root,
           publishersPath,
           requireSignature: true,
         }),
@@ -1344,6 +1346,7 @@ describe("plugin source resolution", () => {
       });
       await expect(
         verifyResolvedPluginSignature(pluginRoot, {
+          agencHome: root,
           publishersPath,
           requireSignature: true,
           maxExtractedFiles: 0,
@@ -1354,6 +1357,7 @@ describe("plugin source resolution", () => {
       await writeJson(emptyPublishersPath, { publishers: {} });
       await expect(
         verifyResolvedPluginSignature(pluginRoot, {
+          agencHome: root,
           publishersPath: emptyPublishersPath,
           requireSignature: true,
         }),
@@ -1363,6 +1367,7 @@ describe("plugin source resolution", () => {
       await writeFile(extraPath, "# Extra\n");
       await expect(
         verifyResolvedPluginSignature(pluginRoot, {
+          agencHome: root,
           publishersPath,
           requireSignature: true,
         }),
@@ -1372,6 +1377,7 @@ describe("plugin source resolution", () => {
       await writeFile(join(pluginRoot, "commands", "hello.md"), "# Tampered\n");
       await expect(
         verifyResolvedPluginSignature(pluginRoot, {
+          agencHome: root,
           publishersPath,
           requireSignature: true,
         }),

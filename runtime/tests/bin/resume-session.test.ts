@@ -19,28 +19,41 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  DEFAULT_SESSION_ROOT_MARKERS,
   getProjectDir,
   isSafeSessionIdSegment,
 } from "../session/session-store.js";
 import { sanitizePath } from "../utils/sessionStoragePortable.js";
 import {
   __setResumeSessionTestHooksForTest,
-  resolveLatestSessionId,
-  resolveResumeSessionId,
+  resolveLatestSessionId as resolveLatestSessionIdWithHome,
+  resolveResumeSessionId as resolveResumeSessionIdWithHome,
 } from "./resume-session.js";
 
 let workHome: string;
+let agencHome: string;
 
 beforeEach(() => {
   workHome = mkdtempSync(join(tmpdir(), "agenc-resume-cli-"));
-  process.env.AGENC_HOME = join(workHome, ".agenc");
+  agencHome = join(workHome, ".agenc");
 });
 
 afterEach(() => {
   __setResumeSessionTestHooksForTest();
-  delete process.env.AGENC_HOME;
   rmSync(workHome, { recursive: true, force: true });
 });
+
+function resolveLatestSessionId(cwd: string) {
+  return resolveLatestSessionIdWithHome(cwd, agencHome);
+}
+
+function resolveResumeSessionId(cwd: string, input: string) {
+  return resolveResumeSessionIdWithHome(cwd, input, agencHome);
+}
+
+function projectDir(cwd: string): string {
+  return getProjectDir(cwd, DEFAULT_SESSION_ROOT_MARKERS, agencHome);
+}
 
 /**
  * Write the JSONL header that `listResumableSessions` requires to surface
@@ -75,7 +88,7 @@ function writeRolloutAtSlug(
   cwd: string,
 ): string {
   const sessionDir = join(
-    process.env.AGENC_HOME!,
+    agencHome,
     "projects",
     slug,
     "sessions",
@@ -95,8 +108,7 @@ function writeRollout(
   iso: string,
   mtimeSec: number,
 ): string {
-  const projectDir = getProjectDir(cwd);
-  const slug = projectDir.split("/").pop()!;
+  const slug = projectDir(cwd).split("/").pop()!;
   return writeRolloutAtSlug(slug, sessionId, iso, mtimeSec, cwd);
 }
 
@@ -259,7 +271,7 @@ describe("resume-session CLI lookup", () => {
     const lexicalHome = join(workHome, "lexical-home");
     mkdirSync(canonicalHome, { recursive: true });
     symlinkSync(canonicalHome, lexicalHome, "dir");
-    process.env.AGENC_HOME = lexicalHome;
+    agencHome = lexicalHome;
     const rolloutPath = writeRollout(
       workHome,
       "conv-homealias1",
@@ -356,7 +368,7 @@ describe("resume-session CLI lookup", () => {
 
   it("fails closed when a session directory exceeds the file budget", () => {
     const sessionId = "conv-overlimit1";
-    const sessionDir = join(getProjectDir(workHome), "sessions", sessionId);
+    const sessionDir = join(projectDir(workHome), "sessions", sessionId);
     mkdirSync(sessionDir, { recursive: true });
     for (let index = 0; index < 257; index += 1) {
       writeFileSync(join(sessionDir, `entry-${index}.tmp`), "");
@@ -375,7 +387,7 @@ describe("resume-session CLI lookup", () => {
     mkdirSync(realCwd, { recursive: true });
     symlinkSync(realCwd, linkedCwd, "dir");
     writeRolloutAtSlug(
-      getProjectDir(workHome).split("/").pop()!,
+      projectDir(workHome).split("/").pop()!,
       "conv-symlinkcwd1",
       "2026-01-01T10-00-00-000Z",
       1,

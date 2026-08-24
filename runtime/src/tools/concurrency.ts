@@ -396,7 +396,7 @@ export function isWriteFilesystemTool(name: string): boolean {
 
 /** Network tools. Raw system HTTP tools are not exposed; product web tools are read-only. */
 function isNetworkTool(name: string): boolean {
-  return name === "WebFetch" || name === "WebSearch";
+  return name === "web_fetch" || name === "WebSearch";
 }
 
 /** The bash tool family. Stays `background_terminal` — each invocation
@@ -406,8 +406,7 @@ export function isBashTool(name: string): boolean {
     name === "exec_command" ||
     name === "write_stdin" ||
     name === "system.bash" ||
-    name === "system.background.bash" ||
-    name === "bash"
+    name === "system.background.bash"
   );
 }
 

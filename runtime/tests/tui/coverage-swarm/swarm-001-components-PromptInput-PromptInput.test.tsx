@@ -3,6 +3,7 @@ import { PassThrough } from 'node:stream'
 import React from 'react'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 import type { PastedContent } from '../../utils/config.js'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../remoteAuthSessionContext.fixture.js'
 
 const harness = vi.hoisted(() => {
   const appState = {
@@ -111,7 +112,7 @@ const harness = vi.hoisted(() => {
     quickOpenProps: undefined as undefined | Record<string, unknown>,
     removeNotification: vi.fn(),
     runningTeammates: [] as Array<{ id: string }>,
-    saveGlobalConfig: vi.fn(),
+    updateRuntimeState: vi.fn(),
     setAutoModeActive: vi.fn(),
     specialChars: {} as Record<string, string>,
     stopOrDismissAgent: vi.fn(),
@@ -209,7 +210,7 @@ const harness = vi.hoisted(() => {
       harness.quickOpenProps = undefined
       harness.removeNotification.mockClear()
       harness.runningTeammates = []
-      harness.saveGlobalConfig.mockClear()
+      harness.updateRuntimeState.mockClear()
       harness.setAppState.mockClear()
       harness.setAutoModeActive.mockClear()
       harness.setPastedContents.mockClear()
@@ -478,8 +479,8 @@ vi.mock('../../utils/array.js', () => ({
 }))
 
 vi.mock('../../utils/config.js', () => ({
-  getGlobalConfig: () => harness.getGlobalConfigResult,
-  saveGlobalConfig: harness.saveGlobalConfig,
+  getRuntimeState: () => harness.getGlobalConfigResult,
+  updateRuntimeState: harness.updateRuntimeState,
 }))
 
 vi.mock('../../utils/cwd.js', () => ({
@@ -525,12 +526,12 @@ vi.mock('../../utils/fastMode.js', () => ({
   FAST_MODE_MODEL_DISPLAY: 'fast-model',
   clearFastModeCooldown: vi.fn(),
   getFastModeModel: () => 'fast-model',
-  getFastModeRuntimeState: () => harness.fastMode.runtimeState,
-  getFastModeUnavailableReason: () => harness.fastMode.unavailableReason,
-  isFastModeAvailable: () => harness.fastMode.available,
-  isFastModeCooldown: () => harness.fastMode.cooldown,
-  isFastModeEnabled: () => harness.fastMode.enabled,
-  isFastModeSupportedByModel: () => harness.fastMode.supportedByModel,
+  getFastModeRuntimeStateForContext: () => harness.fastMode.runtimeState,
+  getFastModeUnavailableReasonForContext: () => harness.fastMode.unavailableReason,
+  isFastModeAvailableForContext: () => harness.fastMode.available,
+  isFastModeCooldownForContext: () => harness.fastMode.cooldown,
+  isFastModeEnabledForContext: () => harness.fastMode.enabled,
+  isFastModeSupportedByModelForContext: () => harness.fastMode.supportedByModel,
 }))
 
 vi.mock('../../utils/fullscreen.js', () => ({
@@ -578,7 +579,8 @@ vi.mock('../../utils/permissions/getNextPermissionMode.js', () => ({
   getNextPermissionMode: () => harness.nextPermissionMode,
 }))
 
-vi.mock('../../utils/permissions/permissionSetup.js', () => ({
+vi.mock('../../permissions/permission-mode.js', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   transitionPermissionMode: harness.transitionPermissionMode,
 }))
 
@@ -876,6 +878,7 @@ function basePromptInputProps(overrides: Record<string, unknown> = {}) {
     onShowMessageSelector: vi.fn(),
     onSubmit: vi.fn(async () => {}),
     pastedContents: {},
+    remoteAuthSessionContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
     setHelpOpen: vi.fn(),
     setIsSearchingHistory: vi.fn(),
     setPastedContents: harness.setPastedContents,

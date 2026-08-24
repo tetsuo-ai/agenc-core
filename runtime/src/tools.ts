@@ -9,7 +9,6 @@ import {
   CanonicalGrepTool,
   CanonicalNotebookEditTool,
 } from './tools/canonicalToolSurface.js'
-import { WebFetchTool } from './tools/WebFetchTool/WebFetchTool.js'
 import { TaskStopTool } from './tools/TaskStopTool/TaskStopTool.js'
 import { BriefTool } from './tools/BriefTool/BriefTool.js'
 import { CronCreateTool } from './tools/ScheduleCronTool/CronCreateTool.js'
@@ -78,7 +77,7 @@ const coordinatorModeModule = feature('COORDINATOR_MODE')
 import type { ToolPermissionContext } from './tools/Tool.js'
 import { getDenyRuleForTool } from './utils/permissions/permissions.js'
 import { hasEmbeddedSearchTools } from './utils/embeddedTools.js'
-import { isEnvTruthy } from './utils/envUtils.js'
+import { isBareMode } from './utils/envUtils.js'
 import { isPowerShellToolEnabled } from './utils/shell/shellToolUtils.js'
 import { isAgentSwarmsEnabled } from './utils/agentSwarmsEnabled.js'
 import { isWorktreeModeEnabled } from './utils/worktreeModeEnabled.js'
@@ -138,7 +137,6 @@ export function getAllBaseTools(): Tools {
     CanonicalFileEditTool,
     CanonicalFileWriteTool,
     CanonicalNotebookEditTool,
-    WebFetchTool,
     TodoWriteTool,
     WebSearchTool,
     TaskStopTool,
@@ -195,8 +193,8 @@ function filterToolsByDenyRules<
 }
 
 const getTools = (permissionContext: ToolPermissionContext): Tools => {
-  // Simple mode: only Bash, Read, and Edit tools
-  if (isEnvTruthy(process.env.AGENC_SIMPLE)) {
+  // Simple mode: only system.bash, FileRead, and Edit tools
+  if (isBareMode()) {
     const simpleTools: Tool[] = [
       CanonicalBashTool,
       CanonicalFileReadTool,
@@ -204,7 +202,7 @@ const getTools = (permissionContext: ToolPermissionContext): Tools => {
     ]
     // When coordinator mode is also active, include task control so the
     // coordinator can stop background work while workers keep the compact
-    // Bash/Read/Edit surface.
+    // system.bash/FileRead/Edit surface.
     if (
       feature('COORDINATOR_MODE') &&
       coordinatorModeModule?.isCoordinatorMode()

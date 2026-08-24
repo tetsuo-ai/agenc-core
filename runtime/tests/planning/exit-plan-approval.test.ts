@@ -15,20 +15,20 @@ describe("exit plan approval helpers", () => {
   test("parses only complete non-empty allowed prompt entries", () => {
     expect(
       parseExitPlanAllowedPrompts([
-        { tool: " Bash ", prompt: " npm test " },
+        { tool: " system.bash ", prompt: " npm test " },
         { tool: "", prompt: "missing tool" },
-        { tool: "Read", prompt: "" },
+        { tool: "FileRead", prompt: "" },
         null,
         "bad",
       ]),
-    ).toEqual([{ tool: "Bash", prompt: "npm test" }]);
-    expect(parseExitPlanAllowedPrompts({ tool: "Bash" })).toEqual([]);
+    ).toEqual([{ tool: "system.bash", prompt: "npm test" }]);
+    expect(parseExitPlanAllowedPrompts({ tool: "system.bash" })).toEqual([]);
   });
 
   test("builds frozen session permission updates from allowed prompts", () => {
     const updates = buildPlanPromptPermissionUpdates([
-      { tool: "Bash", prompt: "npm test" },
-      { tool: "Read", prompt: "inspect files" },
+      { tool: "system.bash", prompt: "npm test" },
+      { tool: "FileRead", prompt: "inspect files" },
     ]);
 
     expect(updates).toEqual([
@@ -37,8 +37,8 @@ describe("exit plan approval helpers", () => {
         destination: "session",
         behavior: "allow",
         rules: [
-          { toolName: "Bash", ruleContent: "npm test" },
-          { toolName: "Read", ruleContent: "inspect files" },
+          { toolName: "system.bash", ruleContent: "npm test" },
+          { toolName: "FileRead", ruleContent: "inspect files" },
         ],
       },
     ]);

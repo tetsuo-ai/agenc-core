@@ -648,7 +648,7 @@ export async function orchestrateToolCall<T>(
   const normalizedSandboxPermissions =
     normalizeSandboxPermissionsRequest(resolvedSandboxPermissions);
   // Extract the session-wide permission mode so the arbiter can short-
-  // circuit under --yolo (mode === bypassPermissions). Without this the
+  // circuit under --dangerously-bypass-approvals-and-sandbox (mode === bypassPermissions). Without this the
   // arbiter ran a separate approvalPolicy gate that ignored mode and
   // surfaced "approve every call" overlays even after the user opted
   // out at the mode level. See GAP-PE-GUARDIAN-YOLO-LEAK.

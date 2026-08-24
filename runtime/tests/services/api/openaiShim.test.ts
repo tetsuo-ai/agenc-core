@@ -1,27 +1,49 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { createOpenAiShimClient } from '../../../src/services/api/openaiShim.ts'
+import { createOpenAiShimClient as createOpenAiShimClientImpl } from '../../../src/services/api/openaiShim.ts'
 
 type FetchType = typeof globalThis.fetch
+
+type ShimOptions = Parameters<typeof createOpenAiShimClientImpl>[0]
+
+function createOpenAiShimClient(options: ShimOptions): unknown {
+  const providerEnvironment = Object.freeze({
+    ...(options.providerEnvironment ?? process.env),
+  })
+  const selectedProvider =
+    options.selectedProvider ??
+    (providerEnvironment.AGENC_PROVIDER === 'github'
+      ? 'github'
+      : providerEnvironment.AGENC_PROVIDER === 'gemini'
+        ? 'gemini'
+        : 'openai')
+  const model =
+    options.model ??
+    providerEnvironment.AGENC_MODEL ??
+    'gpt-4o'
+  return createOpenAiShimClientImpl({
+    ...options,
+    selectedProvider,
+    model,
+    providerEnvironment,
+  })
+}
 
 const originalEnv = {
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-  OPENAI_MODEL: process.env.OPENAI_MODEL,
+  AGENC_MODEL: process.env.AGENC_MODEL,
   OPENAI_API_FORMAT: process.env.OPENAI_API_FORMAT,
   OPENAI_AUTH_HEADER: process.env.OPENAI_AUTH_HEADER,
   OPENAI_AUTH_SCHEME: process.env.OPENAI_AUTH_SCHEME,
   OPENAI_AUTH_HEADER_VALUE: process.env.OPENAI_AUTH_HEADER_VALUE,
-  AGENC_USE_GITHUB: process.env.AGENC_USE_GITHUB,
+  AGENC_PROVIDER: process.env.AGENC_PROVIDER,
   GITHUB_TOKEN: process.env.GITHUB_TOKEN,
   GH_TOKEN: process.env.GH_TOKEN,
-  AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,
-  AGENC_USE_GEMINI: process.env.AGENC_USE_GEMINI,
   GEMINI_API_KEY: process.env.GEMINI_API_KEY,
   GOOGLE_API_KEY: process.env.GOOGLE_API_KEY,
   GEMINI_ACCESS_TOKEN: process.env.GEMINI_ACCESS_TOKEN,
   GEMINI_AUTH_MODE: process.env.GEMINI_AUTH_MODE,
   GEMINI_BASE_URL: process.env.GEMINI_BASE_URL,
-  GEMINI_MODEL: process.env.GEMINI_MODEL,
   GOOGLE_CLOUD_PROJECT: process.env.GOOGLE_CLOUD_PROJECT,
   ANTHROPIC_CUSTOM_HEADERS: process.env.ANTHROPIC_CUSTOM_HEADERS,
 }
@@ -76,24 +98,21 @@ function makeStreamChunks(chunks: unknown[]): string[] {
 }
 
 beforeEach(() => {
+  process.env.AGENC_PROVIDER = 'openai-compatible'
   process.env.OPENAI_BASE_URL = 'http://example.test/v1'
   process.env.OPENAI_API_KEY = 'test-key'
-  delete process.env.OPENAI_MODEL
+  delete process.env.AGENC_MODEL
   delete process.env.OPENAI_API_FORMAT
   delete process.env.OPENAI_AUTH_HEADER
   delete process.env.OPENAI_AUTH_SCHEME
   delete process.env.OPENAI_AUTH_HEADER_VALUE
-  delete process.env.AGENC_USE_GITHUB
   delete process.env.GITHUB_TOKEN
   delete process.env.GH_TOKEN
-  delete process.env.AGENC_USE_OPENAI
-  delete process.env.AGENC_USE_GEMINI
   delete process.env.GEMINI_API_KEY
   delete process.env.GOOGLE_API_KEY
   delete process.env.GEMINI_ACCESS_TOKEN
   delete process.env.GEMINI_AUTH_MODE
   delete process.env.GEMINI_BASE_URL
-  delete process.env.GEMINI_MODEL
   delete process.env.GOOGLE_CLOUD_PROJECT
   delete process.env.ANTHROPIC_CUSTOM_HEADERS
 })
@@ -101,22 +120,19 @@ beforeEach(() => {
 afterEach(() => {
   restoreEnv('OPENAI_BASE_URL', originalEnv.OPENAI_BASE_URL)
   restoreEnv('OPENAI_API_KEY', originalEnv.OPENAI_API_KEY)
-  restoreEnv('OPENAI_MODEL', originalEnv.OPENAI_MODEL)
+  restoreEnv('AGENC_MODEL', originalEnv.AGENC_MODEL)
   restoreEnv('OPENAI_API_FORMAT', originalEnv.OPENAI_API_FORMAT)
   restoreEnv('OPENAI_AUTH_HEADER', originalEnv.OPENAI_AUTH_HEADER)
   restoreEnv('OPENAI_AUTH_SCHEME', originalEnv.OPENAI_AUTH_SCHEME)
   restoreEnv('OPENAI_AUTH_HEADER_VALUE', originalEnv.OPENAI_AUTH_HEADER_VALUE)
-  restoreEnv('AGENC_USE_GITHUB', originalEnv.AGENC_USE_GITHUB)
+  restoreEnv('AGENC_PROVIDER', originalEnv.AGENC_PROVIDER)
   restoreEnv('GITHUB_TOKEN', originalEnv.GITHUB_TOKEN)
   restoreEnv('GH_TOKEN', originalEnv.GH_TOKEN)
-  restoreEnv('AGENC_USE_OPENAI', originalEnv.AGENC_USE_OPENAI)
-  restoreEnv('AGENC_USE_GEMINI', originalEnv.AGENC_USE_GEMINI)
   restoreEnv('GEMINI_API_KEY', originalEnv.GEMINI_API_KEY)
   restoreEnv('GOOGLE_API_KEY', originalEnv.GOOGLE_API_KEY)
   restoreEnv('GEMINI_ACCESS_TOKEN', originalEnv.GEMINI_ACCESS_TOKEN)
   restoreEnv('GEMINI_AUTH_MODE', originalEnv.GEMINI_AUTH_MODE)
   restoreEnv('GEMINI_BASE_URL', originalEnv.GEMINI_BASE_URL)
-  restoreEnv('GEMINI_MODEL', originalEnv.GEMINI_MODEL)
   restoreEnv('GOOGLE_CLOUD_PROJECT', originalEnv.GOOGLE_CLOUD_PROJECT)
   restoreEnv('ANTHROPIC_CUSTOM_HEADERS', originalEnv.ANTHROPIC_CUSTOM_HEADERS)
   globalThis.fetch = originalFetch
@@ -526,11 +542,11 @@ test('strips canonical provider headers from per-request shim headers too', asyn
 test('strips provider-specific headers on GitHub ProviderCode transport requests', async () => {
   let capturedHeaders: Headers | undefined
 
-  process.env.AGENC_USE_GITHUB = '1'
+  process.env.AGENC_PROVIDER = 'github'
   process.env.GITHUB_TOKEN = 'github-test-key'
   delete process.env.OPENAI_API_KEY
   delete process.env.OPENAI_BASE_URL
-  delete process.env.OPENAI_MODEL
+  delete process.env.AGENC_MODEL
 
   globalThis.fetch = (async (_input, init) => {
     capturedHeaders = new Headers(init?.headers)
@@ -574,10 +590,10 @@ test('strips provider-specific headers on GitHub ProviderCode transport requests
 test('strips provider-specific headers on GitHub ProviderCode transport with providerOverride API key', async () => {
   let capturedHeaders: Headers | undefined
 
-  process.env.AGENC_USE_GITHUB = '1'
+  process.env.AGENC_PROVIDER = 'github'
   process.env.OPENAI_API_KEY = 'env-should-not-win'
   delete process.env.OPENAI_BASE_URL
-  delete process.env.OPENAI_MODEL
+  delete process.env.AGENC_MODEL
 
   globalThis.fetch = (async (_input, init) => {
     capturedHeaders = new Headers(init?.headers)
@@ -1193,13 +1209,13 @@ test('uses GEMINI_ACCESS_TOKEN for Gemini provider-compatible requests', async (
   let capturedProject: string | null = null
   let requestUrl: string | undefined
 
-  process.env.AGENC_USE_GEMINI = '1'
+  process.env.AGENC_PROVIDER = 'gemini'
   process.env.GEMINI_AUTH_MODE = 'access-token'
   process.env.GEMINI_ACCESS_TOKEN = 'gemini-access-token'
   process.env.GOOGLE_CLOUD_PROJECT = 'gemini-project'
   process.env.GEMINI_BASE_URL =
     'https://generativelanguage.googleapis.com/v1beta/openai'
-  process.env.GEMINI_MODEL = 'gemini-2.0-flash'
+  process.env.AGENC_MODEL = 'gemini-2.0-flash'
   delete process.env.OPENAI_BASE_URL
   delete process.env.OPENAI_API_KEY
   delete process.env.GEMINI_API_KEY
@@ -4075,7 +4091,7 @@ test('collapses multiple text blocks in tool_result to string for DeepSeek compa
     return new Response(
       JSON.stringify({
         id: 'chatcmpl-1',
-        model: 'deepseek-reasoner',
+        model: 'deepseek-v4-pro',
         choices: [
           {
             message: {
@@ -4102,7 +4118,7 @@ test('collapses multiple text blocks in tool_result to string for DeepSeek compa
   const client = createOpenAiShimClient({}) as OpenAiShimClient
 
   await client.beta.messages.create({
-    model: 'deepseek-reasoner',
+    model: 'deepseek-v4-pro',
     system: 'test system',
     messages: [
       { role: 'user', content: 'Run ls' },
@@ -4152,7 +4168,7 @@ test('collapses multiple text blocks into a single string for DeepSeek compatibi
     return new Response(
       JSON.stringify({
         id: 'chatcmpl-1',
-        model: 'deepseek-reasoner',
+        model: 'deepseek-v4-pro',
         choices: [
           {
             message: {
@@ -4179,7 +4195,7 @@ test('collapses multiple text blocks into a single string for DeepSeek compatibi
   const client = createOpenAiShimClient({}) as OpenAiShimClient
 
   await client.beta.messages.create({
-    model: 'deepseek-reasoner',
+    model: 'deepseek-v4-pro',
     system: 'test system',
     messages: [
       {

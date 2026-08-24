@@ -14,7 +14,7 @@ import { isRecord } from "../utils/record.js";
 /**
  * Hardcoded copies of the live registered tool names that the TUI
  * dispatches structurally. Canonical sources:
- *   - `runtime/src/tools/system/bash.ts`      -> "Bash"
+ *   - `runtime/src/tools/system/bash.ts`      -> "system.bash"
  *   - `runtime/src/tools/system/file-edit.ts`  -> "Edit"
  *   - `runtime/src/tools/system/file-read.ts`  -> "FileRead"
  *   - `runtime/src/tools/system/file-write.ts` -> "Write"
@@ -24,11 +24,15 @@ import { isRecord } from "../utils/record.js";
  * heavy runtime dependencies (e.g. the `diff` package, OS-bound
  * exec); if the live names change, update these in lockstep.
  */
-export const BASH_TOOL_NAME_FOR_DISPATCH = "Bash";
+export const BASH_TOOL_NAME_FOR_DISPATCH = "system.bash";
+// Transcript rendering is a read-only compatibility boundary. Old persisted
+// Bash calls remain renderable, but this spelling is never registered or sent
+// back through live tool dispatch.
+const HISTORICAL_BASH_TOOL_NAME_FOR_RENDERING = "Bash";
 /**
  * The live daemon registers the shell tool as `exec_command` (shown "Run" in
- * the TUI), not "Bash". Its `exec_command_end` result is wrapped in the same
- * `<bash-stdout>` envelope as Bash (see
+ * the TUI), not "system.bash". Its `exec_command_end` result is wrapped in the same
+ * `<bash-stdout>` envelope as system.bash (see
  * `session-transcript.formatStructuredToolResult`), so it dispatches to the
  * same bash-output view.
  */
@@ -165,6 +169,7 @@ export function pickToolResultDispatch(
   // -------------------------------------------------------------------------
   if (
     (toolName === BASH_TOOL_NAME_FOR_DISPATCH ||
+      toolName === HISTORICAL_BASH_TOOL_NAME_FOR_RENDERING ||
       toolName === EXEC_COMMAND_TOOL_NAME_FOR_DISPATCH) &&
     joinedContent.includes("<bash-stdout>")
   ) {
@@ -207,6 +212,7 @@ export function pickToolResultDispatch(
   // -------------------------------------------------------------------------
   if (
     toolName === BASH_TOOL_NAME_FOR_DISPATCH ||
+    toolName === HISTORICAL_BASH_TOOL_NAME_FOR_RENDERING ||
     toolName === EXEC_COMMAND_TOOL_NAME_FOR_DISPATCH
   ) {
     if (EXEC_TRAILER_RE.test(joinedContent)) {

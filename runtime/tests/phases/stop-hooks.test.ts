@@ -27,8 +27,6 @@ function mkCtx(opts: Partial<TurnContext> = {}): TurnContext {
       model: "stub",
       cwd: "/tmp",
       features: {
-        appsEnabledForAuth: () => false,
-        useLegacyLandlock: () => false,
       },
       multiAgentV2: {
         usageHintEnabled: false,

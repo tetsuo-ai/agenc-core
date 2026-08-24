@@ -6,8 +6,8 @@
  * subagent, daemon-side cwd reset, child-shell cd before exec.
  */
 export const meta = {
-  description: "--yolo: model uses Bash pwd, output matches launch cwd.",
-  args: ["--yolo"],
+  description: "--dangerously-bypass-approvals-and-sandbox: model uses Bash pwd, output matches launch cwd.",
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   timeoutMs: 120_000,
 };
 

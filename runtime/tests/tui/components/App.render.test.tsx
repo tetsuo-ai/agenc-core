@@ -23,6 +23,7 @@ import {
   dismissLedgerVerification,
   getLedgerVerificationSnapshot,
 } from "../../services/Ledger/ledgerVerification.js";
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../remoteAuthSessionContext.fixture.js";
 
 if (process.versions.bun !== undefined) {
   test("App render suite requires Vitest module mocks", () => {
@@ -32,6 +33,7 @@ if (process.versions.bun !== undefined) {
 
 let createRoot: any;
 let defaultConfig: any;
+let testConfigStore: import("../../config/store.js").ConfigStore;
 let markFirstRunOnboardingComplete: any;
 let readOnboardingState: any;
 let mockTotalCost = 0;
@@ -49,14 +51,14 @@ const roleDefinitionProbe = vi.hoisted(() =>
       getSystemPrompt: () => "",
     },
     {
-      agentType: "explorer",
+      agentType: "scanner",
       whenToUse: "Explore code.",
       source: "built-in",
       baseDir: "built-in",
       getSystemPrompt: () => "",
     },
     {
-      agentType: "worker",
+      agentType: "runner",
       whenToUse: "Execute work.",
       source: "built-in",
       baseDir: "built-in",
@@ -69,6 +71,7 @@ const fullscreenProbe = vi.hoisted(() => ({
   mouseTracking: false,
 }));
 const apiKeyVerificationProbe = vi.hoisted(() => ({
+  contexts: [] as unknown[],
   reverify: vi.fn(async () => {}),
   status: "valid" as "loading" | "valid" | "invalid" | "missing" | "error",
 }));
@@ -108,6 +111,7 @@ const providerProbe = {
     ) => Promise<void>
   >,
   promptProps: [] as Array<Record<string, unknown>>,
+  defaultStateProviderEnvironments: [] as unknown[],
   processBashCommand:
     typeof vi.fn === "function"
       ? vi.fn(async () => ({
@@ -130,7 +134,7 @@ vi.mock("src/utils/debug.js", () => ({
 }));
 
 vi.mock("src/utils/envUtils.js", () => ({
-  getAgenCConfigHomeDir: () => "/tmp/agenc-app-render-test",
+  getAgenCHomeDir: () => "/tmp/agenc-app-render-test",
   isEnvTruthy: () => false,
   isBareMode: () => false,
 }));
@@ -167,8 +171,8 @@ vi.mock("../../utils/billing.js", () => ({
 }));
 
 vi.mock("../../utils/config.js", () => ({
-  getGlobalConfig: () => mockGlobalConfig,
-  saveGlobalConfig: (
+  getRuntimeState: () => mockGlobalConfig,
+  updateRuntimeState: (
     updater: (current: Record<string, unknown>) => Record<string, unknown>,
   ) => {
     mockGlobalConfig = updater(mockGlobalConfig);
@@ -243,11 +247,14 @@ vi.mock("../hooks/useSettingsChange.js", () => ({
 }));
 
 vi.mock("../hooks/useApiKeyVerification.js", () => ({
-  useApiKeyVerification: () => ({
-    error: null,
-    reverify: apiKeyVerificationProbe.reverify,
-    status: apiKeyVerificationProbe.status,
-  }),
+  useApiKeyVerification: (context: unknown) => {
+    apiKeyVerificationProbe.contexts.push(context);
+    return {
+      error: null,
+      reverify: apiKeyVerificationProbe.reverify,
+      status: apiKeyVerificationProbe.status,
+    };
+  },
 }));
 
 vi.mock("../../services/PromptSuggestion/promptSuggestion.js", () => ({
@@ -288,10 +295,16 @@ vi.mock("../../utils/commitAttribution.js", () => ({
   createEmptyAttributionState: () => ({}),
 }));
 
-vi.mock("../../utils/permissions/permissionSetup.js", () => ({
-  createDisabledBypassPermissionsContext: (context: unknown) => context,
-  isBypassPermissionsModeDisabled: () => false,
-  parseToolListFromCLI: (tools: string[] = []) => tools,
+vi.mock("../../permissions/settings.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  loadPermissionRulesSnapshot: async () => ({
+    rules: [],
+    managedOnly: false,
+    directories: [],
+    bypassPermissionsModeDisabled: false,
+    disableAutoMode: false,
+  }),
+  parseToolRuleStringsFromCLI: (tools: string[] = []) => tools,
 }));
 
 vi.mock("../../utils/settings/applySettingsChange.js", () => ({
@@ -301,7 +314,6 @@ vi.mock("../../utils/settings/applySettingsChange.js", () => ({
 vi.mock("../../utils/settings/settings.js", () => ({
   getInitialSettings: () => ({}),
   getSettingsForSource: () => null,
-  getSettings_DEPRECATED: () => ({}),
 }));
 
 vi.mock("../../utils/teammate.js", () => ({
@@ -314,7 +326,7 @@ vi.mock("../../utils/thinking.js", () => ({
 }));
 
 vi.mock("../../utils/envUtils.js", () => ({
-  getAgenCConfigHomeDir: () => "/tmp/agenc-app-render-test",
+  getAgenCHomeDir: () => "/tmp/agenc-app-render-test",
   isEnvTruthy: () => false,
   isBareMode: () => false,
 }));
@@ -362,6 +374,17 @@ vi.mock("../state/AppState.js", async () => {
       notifications: { current: null, queue: [] },
       elicitation: { queue: [] },
     }),
+    getDefaultAppStateForProviderEnvironment: (environment: unknown) => {
+      providerProbe.defaultStateProviderEnvironments.push(environment);
+      return {
+        mainLoopModel: null,
+        mainLoopModelForSession: null,
+        toolPermissionContext: defaultPermissionContext,
+        activeOverlays: new Set(),
+        notifications: { current: null, queue: [] },
+        elicitation: { queue: [] },
+      };
+    },
     AppStateProvider: ({
       children,
       initialState,
@@ -777,6 +800,7 @@ function createTestStreams(): {
 }
 
 function resetShellSurfaceProbe(): void {
+  apiKeyVerificationProbe.contexts.length = 0;
   providerProbe.costSummaryGetters.length = 0;
   providerProbe.exitFlowProps.length = 0;
   providerProbe.costThresholdDialogProps.length = 0;
@@ -788,6 +812,7 @@ function resetShellSurfaceProbe(): void {
   providerProbe.workbenchLayoutProps.length = 0;
   providerProbe.spinnerProps.length = 0;
   providerProbe.promptProps.length = 0;
+  providerProbe.defaultStateProviderEnvironments.length = 0;
   providerProbe.promptSubmits.length = 0;
   providerProbe.currentAppState = null;
   providerProbe.setAppState = null;
@@ -839,6 +864,14 @@ beforeAll(async () => {
   if (!supportsVitestModuleMocks) return;
   ({ createRoot } = await import("../ink/root.js"));
   ({ defaultConfig } = await import("../../config/schema.js"));
+  const { ConfigStore } = await import("../../config/store.js");
+  testConfigStore = new ConfigStore({
+    base: defaultConfig(),
+    cwd: process.cwd(),
+    env: TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
+    home: TEST_REMOTE_AUTH_SESSION_CONTEXT.home.path,
+    projectTrusted: false,
+  });
   ({ markFirstRunOnboardingComplete, readOnboardingState } =
     await import("../../onboarding/projectOnboardingState.js"));
   const app = await import("./App.js");
@@ -916,6 +949,7 @@ function createSession(
     readonly roleWorkspaceCwd?: string;
     readonly agentDefinitions?: AgenCBridgeSession["agentDefinitions"];
     readonly enqueueIdleInputBatch?: AgenCBridgeSession["enqueueIdleInputBatch"];
+    readonly authBackend?: AgenCBridgeSession["services"]["authBackend"];
   } = {},
 ): AgenCBridgeSession {
   const modeSubscribers: Array<() => void> = [];
@@ -929,6 +963,8 @@ function createSession(
       ? { agentDefinitions: opts.agentDefinitions }
       : {}),
     services: {
+      configStore: testConfigStore,
+      providerEnvironment: TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
       permissionModeRegistry: {
         current: () => permissionContext,
         ...(opts.updatePermissionContext !== undefined
@@ -942,6 +978,9 @@ function createSession(
           };
         },
       },
+      ...(opts.authBackend !== undefined
+        ? { authBackend: opts.authBackend }
+        : {}),
     },
     ...(opts.setDaemonPermissionMode !== undefined
       ? { setDaemonPermissionMode: opts.setDaemonPermissionMode }
@@ -1142,6 +1181,20 @@ async function runConcurrentExitIntentScenario({
 }
 
 describeWithVitestMocks("AgenCTuiApp render smoke", () => {
+  test("derives TUI auth reads from the session-owned home and provider environment", async () => {
+    const { getTuiRemoteAuthSessionReadContext } = await import("./App.js");
+    const session = createSession();
+
+    const context = getTuiRemoteAuthSessionReadContext(session);
+
+    expect(context.home).toBe(testConfigStore.homeContext);
+    expect(context.environment).toBe(
+      TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
+    );
+    expect(context.provider).toBe("test-provider");
+    expect(Object.isFrozen(context)).toBe(true);
+  });
+
   test("applies workspace sync blockers to the owning workspace view", async () => {
     const { workspaceEditorBlockReasonForView, workspaceEditorBlockReasons } =
       await import("./App.js");
@@ -2969,6 +3022,13 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
     expect(output).toContain("messages:0");
     expect(output).toContain("prompt:draft");
+    expect(providerProbe.defaultStateProviderEnvironments.length).toBeGreaterThan(0);
+    expect(
+      providerProbe.defaultStateProviderEnvironments.every(
+        environment =>
+          environment === TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
+      ),
+    ).toBe(true);
     expect(providerProbe.promptProps.at(-1)).toEqual(
       expect.objectContaining({
         input: "draft",
@@ -3097,6 +3157,11 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       expect.objectContaining({
         scrollRef: messageScrollRef,
         modalScrollRef: expect.any(Object),
+        modelDisplayContext: expect.objectContaining({
+          home: testConfigStore.homeContext,
+          environment: TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
+          provider: "test-provider",
+        }),
       }),
     );
     expect(scrollProps).toEqual(
@@ -3290,7 +3355,11 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     const session = createSession({ roleWorkspaceCwd, executionCwd });
 
     await renderApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
     );
 
     const initial = providerProbe.appStateProps.at(-1)?.initialState as {
@@ -3307,10 +3376,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
 
     expect(active).toEqual(
-      expect.arrayContaining(["default", "explorer", "worker"]),
+      expect.arrayContaining(["default", "scanner", "runner"]),
     );
     expect(all).toEqual(
-      expect.arrayContaining(["default", "explorer", "worker"]),
+      expect.arrayContaining(["default", "scanner", "runner"]),
     );
     expect(roleDefinitionProbe.mock.calls).toEqual([[roleWorkspaceCwd]]);
   });
@@ -3341,7 +3410,11 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     });
 
     await renderApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp
+        session={session}
+        configStore={{}}
+        isInteractive={false}
+      />,
     );
 
     const initial = providerProbe.appStateProps.at(-1)?.initialState as {
@@ -5049,7 +5122,15 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     mockHasConsoleBillingAccess = true;
 
     await withRenderedApp(
-      <AgenCTuiApp session={session} configStore={{}} isInteractive={false} />,
+      <AgenCTuiApp
+        session={session}
+        configStore={{
+          stateRepository: {
+            get: () => mockGlobalConfig,
+          } as never,
+        }}
+        isInteractive={false}
+      />,
       async ({ output }) => {
         await new Promise((resolve) => setTimeout(resolve, 25));
 
@@ -7113,9 +7194,15 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
   test("routes BYOK key approval through the real first-run TUI submission path", async () => {
     const { AgenCTuiApp } = await import("./App.js");
-    const { LocalAuthBackend } = await import("../../auth/backends/local.js");
+    const savedKeys = new Map<string, string>();
     const session = {
-      ...createSession(),
+      ...createSession({
+        authBackend: {
+          saveByokKey: async ({ provider, apiKey }: { provider: string; apiKey: string }) => {
+            savedKeys.set(provider, apiKey);
+          },
+        } as never,
+      }),
       setPendingProviderSwitch: vi.fn(),
     };
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-app-"));
@@ -7171,9 +7258,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           expect(output()).not.toContain("xai-app-key");
 
           await submit("yes");
-          await expect(
-            new LocalAuthBackend({ agencHome }).readByokKey("grok"),
-          ).resolves.toBe("xai-app-key");
+          expect(savedKeys.get("grok")).toBe("xai-app-key");
         },
       );
     } finally {
@@ -7189,16 +7274,20 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
   test("persists first-run BYOK provider selection for restarts", async () => {
     const { AgenCTuiApp } = await import("./App.js");
-    const { LocalAuthBackend } = await import("../../auth/backends/local.js");
+    const savedKeys = new Map<string, string>();
     const session = {
-      ...createSession(),
+      ...createSession({
+        authBackend: {
+          saveByokKey: async ({ provider, apiKey }: { provider: string; apiKey: string }) => {
+            savedKeys.set(provider, apiKey);
+          },
+        } as never,
+      }),
       setPendingProviderSwitch: vi.fn(),
     };
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-persist-"));
     const previousAgencHome = process.env.AGENC_HOME;
-    const previousConfigDir = process.env.AGENC_CONFIG_DIR;
     process.env.AGENC_HOME = agencHome;
-    delete process.env.AGENC_CONFIG_DIR;
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(
@@ -7239,21 +7328,18 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
           expect(session.setPendingProviderSwitch).toHaveBeenLastCalledWith({
             provider: "deepseek",
-            model: "deepseek-reasoner",
+            model: "deepseek-v4-flash",
           });
-          await expect(
-            new LocalAuthBackend({ agencHome }).readByokKey("deepseek"),
-          ).resolves.toBe("sk-deepseek-onboarding-test");
-          expect(
-            JSON.parse(readFileSync(join(agencHome, "settings.json"), "utf8")),
-          ).toMatchObject({ model: "deepseek-reasoner" });
+          expect(savedKeys.get("deepseek")).toBe(
+            "sk-deepseek-onboarding-test",
+          );
           const configToml = readFileSync(
             join(agencHome, "config.toml"),
             "utf8",
           );
           expect(configToml).toContain('"model_provider" = "deepseek"');
-          expect(configToml).toContain('"model" = "deepseek-reasoner"');
-          expect(configToml).toContain('"default_model" = "deepseek-reasoner"');
+          expect(configToml).toContain('"model" = "deepseek-v4-flash"');
+          expect(configToml).toContain('"default_model" = "deepseek-v4-flash"');
         },
       );
     } finally {
@@ -7263,11 +7349,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         delete process.env.AGENC_HOME;
       } else {
         process.env.AGENC_HOME = previousAgencHome;
-      }
-      if (previousConfigDir === undefined) {
-        delete process.env.AGENC_CONFIG_DIR;
-      } else {
-        process.env.AGENC_CONFIG_DIR = previousConfigDir;
       }
       rmSync(agencHome, { recursive: true, force: true });
     }

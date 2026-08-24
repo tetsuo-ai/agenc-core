@@ -182,7 +182,7 @@ describe("createTaskTools", () => {
     });
   });
 
-  it("stops running background tasks through task_id or shell_id aliases", async () => {
+  it("stops running background tasks only through task_id", async () => {
     const lifecycle = new BackgroundTaskLifecycle();
     const abortController = new AbortController();
     let stoppedReason: string | undefined;
@@ -197,7 +197,12 @@ describe("createTaskTools", () => {
     });
     const stop = byName(createBackgroundTaskTools(lifecycle)).get("TaskStop")!;
 
-    const stopped = await stop.execute({ shell_id: "bash-1" });
+    const removedAlias = await stop.execute({ shell_id: "bash-1" });
+    expect(removedAlias.isError).toBe(true);
+    expect(removedAlias.content).toContain("unknown field `shell_id`");
+    expect(abortController.signal.aborted).toBe(false);
+
+    const stopped = await stop.execute({ task_id: "bash-1" });
 
     expect(stopped.content).toBe("Successfully stopped task: bash-1 (npm test)");
     expect(abortController.signal.aborted).toBe(true);

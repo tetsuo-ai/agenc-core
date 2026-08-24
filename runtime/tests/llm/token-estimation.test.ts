@@ -52,7 +52,7 @@ describe("token estimation", () => {
     expect(getTokenizerConfigForProvider({ provider: "grok" }).modelFamily).toBe(
       "grok",
     );
-    expect(getTokenizerConfigForProvider({ model: "deepseek-chat" }).modelFamily)
+    expect(getTokenizerConfigForProvider({ model: "deepseek-v4-flash" }).modelFamily)
       .toBe("deepseek");
     expect(getBytesPerTokenForProvider({ provider: "anthropic" })).toBe(3.5);
     expect(

@@ -11,13 +11,16 @@ import {
   dispatchSlashCommand,
   parseSlashCommand,
 } from "../commands/dispatcher.js";
+import { readConfigMenuSnapshot } from "../commands/config-menu.js";
 import { buildDefaultRegistry } from "../commands/registry.js";
 import type { SlashCommandContext } from "../commands/types.js";
+import type { ConfigStore } from "../config/store.js";
 import {
   createAgenCDaemonOnlyTuiContext,
   findAgenCDaemonAgentBySessionId,
   listAgenCDaemonAgents,
 } from "./index.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 
 function createListClient(
   pages: Array<{
@@ -241,6 +244,7 @@ describe("app-server-client daemon helpers", () => {
           model: "grok-4.3",
           provider: "grok",
           permissionMode: "acceptEdits",
+          runtimeOptions: expect.objectContaining({ simpleMode: false }),
         }),
       );
       expect(createAgent.mock.calls[0]?.[0]).not.toHaveProperty("objective");
@@ -288,6 +292,7 @@ describe("app-server-client daemon helpers", () => {
         provider: "grok",
         model: "grok-4.3",
         profile: "fast",
+        configPath: "operator.toml",
         initialContent: [
           { type: "text", text: "describe this" },
           {
@@ -321,6 +326,7 @@ describe("app-server-client daemon helpers", () => {
           provider: "grok",
           model: "grok-4.3",
           profile: "fast",
+          configPath: "/workspace/operator.toml",
           initialContent: [
             { type: "text", text: "describe this" },
             {
@@ -371,7 +377,7 @@ describe("app-server-client daemon helpers", () => {
     }
   });
 
-  it("passes daemon prompt MCP env overrides through agent.create", async () => {
+  it("rejects the removed daemon prompt MCP environment channel", async () => {
     vi.resetModules();
     const createAgent = vi.fn(async (params: unknown) => ({
       agentId: "agent_mcp_env",
@@ -392,50 +398,27 @@ describe("app-server-client daemon helpers", () => {
     });
 
     try {
-      const mcpServers = JSON.stringify([
-        { name: "audit-ping", command: "node", args: [".agenc/mcp/audit.mjs"] },
-      ]);
       const { startAgenCDaemonPromptAgent } = await import("./index.js");
-      await startAgenCDaemonPromptAgent({
-        prompt: "use MCP",
-        cwd: "/workspace",
-        env: {
-          ...process.env,
-          AGENC_MCP_SERVERS: mcpServers,
-          XAI_API_KEY: "rotated-key",
-          PATH: "/custom/bin:/usr/bin",
-          AGENC_WORKSPACE: "/should/not/forward",
-          SHOULD_NOT_FORWARD: "ignored",
-        },
-      });
-
-      expect(createAgent).toHaveBeenCalledWith(
-        expect.objectContaining({
-          envOverrides: expect.objectContaining({
-            AGENC_MCP_SERVERS: mcpServers,
-            XAI_API_KEY: "rotated-key",
-            PATH: "/custom/bin:/usr/bin",
-          }),
+      await expect(
+        startAgenCDaemonPromptAgent({
+          prompt: "use MCP",
+          cwd: "/workspace",
+          env: {
+            AGENC_MCP_SERVERS: "[]",
+          },
+          runtimeOptions: resolveAgentRuntimeOptions({}, { simpleMode: true }),
         }),
-      );
-      const createParams = createAgent.mock.calls[0]?.[0] as {
-        readonly envOverrides?: Record<string, string>;
-      };
-      // Workspace must come from the cwd param, never ambient env; and
-      // non-allowlisted keys must not leak to the daemon.
-      expect(createParams.envOverrides).not.toHaveProperty("AGENC_WORKSPACE");
-      expect(createParams.envOverrides).not.toHaveProperty(
-        "SHOULD_NOT_FORWARD",
-      );
+      ).rejects.toThrow(/obsolete.*AGENC_MCP_SERVERS/u);
+      expect(createAgent).not.toHaveBeenCalled();
     } finally {
       vi.doUnmock("../app-server/agent-cli.js");
       vi.resetModules();
     }
   });
 
-  it("seeds daemon-only TUI context with bypass permissions for yolo launch", async () => {
-    const agencHome = mkdtempSync(join(tmpdir(), "agenc-yolo-tui-context-"));
-    const workspace = mkdtempSync(join(tmpdir(), "agenc-yolo-tui-workspace-"));
+  it("seeds daemon-only TUI context with typed simple mode and bypass permissions", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-bypass-tui-context-"));
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-bypass-tui-workspace-"));
     let context: Awaited<
       ReturnType<typeof createAgenCDaemonOnlyTuiContext>
     > | null = null;
@@ -444,9 +427,11 @@ describe("app-server-client daemon helpers", () => {
         env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
         cwd: workspace,
         conversationId: "agenc-tui-idle-test",
+        runtimeOptions: resolveAgentRuntimeOptions({}, { simpleMode: true }),
         permissionMode: "bypassPermissions",
       });
 
+      expect(context.baseSession.services.runtimeOptions?.simpleMode).toBe(true);
       const permissionContext =
         context.baseSession.services.permissionModeRegistry.current();
       expect(permissionContext.mode).toBe("bypassPermissions");
@@ -532,6 +517,111 @@ describe("app-server-client daemon helpers", () => {
     }
   });
 
+  it("keeps explicit config, profile, and CLI authority identical across the daemon TUI surfaces after reload", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-config-tui-context-"));
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-config-tui-workspace-"));
+    const explicitConfig = join(workspace, "operator.toml");
+    writeFileSync(
+      explicitConfig,
+      [
+        "config_version = 2",
+        'model_provider = "grok"',
+        'model = "grok-4.3"',
+        'approval_policy = "on-request"',
+        'sandbox_mode = "workspace-write"',
+        "[profiles.operator]",
+        'model = "grok-4.5"',
+        'approval_policy = "never"',
+        'sandbox_mode = "read-only"',
+        "[profiles.operator.tools_config]",
+        'enabled_tools = ["FileRead"]',
+        'disabled_tools = ["Write"]',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    let context: Awaited<
+      ReturnType<typeof createAgenCDaemonOnlyTuiContext>
+    > | null = null;
+    try {
+      context = await createAgenCDaemonOnlyTuiContext({
+        env: {
+          ...process.env,
+          AGENC_HOME: agencHome,
+          HOME: agencHome,
+          AGENC_MODEL: "grok-4.4",
+          XAI_API_KEY: "test-key",
+        },
+        cwd: workspace,
+        conversationId: "agenc-tui-canonical-config-test",
+        configPath: "operator.toml",
+        profile: "operator",
+        provider: "grok",
+        model: "grok-4.6",
+      });
+      const store = context.configStore as ConfigStore;
+      const expectedConfig = {
+        model_provider: "grok",
+        model: "grok-4.6",
+        approval_policy: "never",
+        sandbox_mode: "read-only",
+        tools_config: {
+          enabled_tools: ["FileRead"],
+          disabled_tools: ["Write"],
+        },
+      };
+      const observed: unknown[] = [];
+      const unsubscribe = store.subscribe((config) => observed.push(config));
+      const commandContext = {
+        session: context.baseSession,
+        configStore: store,
+        cwd: workspace,
+        home: agencHome,
+        agencHome,
+      } as SlashCommandContext;
+
+      const assertCanonicalSurfaces = (): void => {
+        const current = store.current();
+        expect(current).toMatchObject(expectedConfig);
+        expect(context!.baseSession.services.configStore).toBe(store);
+        expect(context!.baseSession.config).toEqual(current);
+        expect(context!.baseSession.sessionConfiguration).toMatchObject({
+          provider: { slug: "grok" },
+          collaborationMode: { model: "grok-4.6" },
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "read_only" },
+        });
+        const menu = readConfigMenuSnapshot(commandContext);
+        expect(menu.rows).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({ key: "model", value: "grok-4.6" }),
+            expect.objectContaining({ key: "approval", value: "never" }),
+            expect.objectContaining({ key: "sandbox", value: "read-only" }),
+            expect.objectContaining({
+              key: "tools",
+              detail: expect.stringContaining("1 enabled tools; 1 disabled tools"),
+            }),
+          ]),
+        );
+      };
+
+      assertCanonicalSurfaces();
+      await store.reload();
+      assertCanonicalSurfaces();
+      expect(observed).toEqual([expect.objectContaining(expectedConfig)]);
+      expect(store.provenance("model")?.scope).toBe("cli");
+      expect(store.provenance("sandbox_mode")?.scope).toBe("profile");
+      expect(store.sources("flag")).toEqual([
+        expect.objectContaining({ path: explicitConfig }),
+      ]);
+      unsubscribe();
+    } finally {
+      await context?.close();
+      rmSync(agencHome, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("dispatches daemon-only TUI slash commands without local session services", async () => {
     // `/provider grok` must clear the BYOK subscription gate (which reads
     // process.env directly, not the context env) to reach the daemon-mode
@@ -555,16 +645,14 @@ describe("app-server-client daemon helpers", () => {
       "utf8",
     );
     writeFileSync(
-      join(cwd, ".mcp.json"),
-      JSON.stringify({
-        mcpServers: {
-          "audit-ping": {
-            type: "stdio",
-            command: process.execPath,
-            args: [fixture, pidFile],
-          },
-        },
-      }),
+      join(agencHome, "config.toml"),
+      [
+        "config_version = 2",
+        "[mcp_servers.audit-ping]",
+        `command = ${JSON.stringify(process.execPath)}`,
+        `args = [${JSON.stringify(fixture)}, ${JSON.stringify(pidFile)}]`,
+        "",
+      ].join("\n"),
       "utf8",
     );
     let context: Awaited<
@@ -604,7 +692,10 @@ describe("app-server-client daemon helpers", () => {
         result: { kind: "text" },
       });
       await expect(run("/settings")).resolves.toMatchObject({
-        result: { kind: "text" },
+        result: {
+          kind: "error",
+          message: "Unknown command: /settings",
+        },
       });
       await expect(run("/provider grok")).resolves.toMatchObject({
         result: {

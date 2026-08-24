@@ -23,6 +23,7 @@ import type { AgenCRealtimeTuiControls } from "./realtime/controller.js";
 import type { FpsMetrics } from "../utils/fpsTracker.js";
 import type { AgentRoleWorkspace } from "../agents/role-workspace.js";
 import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
+import type { AgentRuntimeOptions } from "../session/runtime-options.js";
 import type {
   WorkspaceEditorAcquireParams,
   WorkspaceEditorCancelPredictionSessionParams,
@@ -91,10 +92,16 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     readonly allowedAgentTypes?: readonly unknown[];
   };
   readonly services: {
+    readonly runtimeOptions?: AgentRuntimeOptions;
     readonly permissionModeRegistry: PermissionModeRegistryLike;
+    /** In-process session provider authority. */
+    readonly providerService?: SessionServices["providerService"];
+    /** Immutable provider environment for daemon-only bridge sessions. */
+    readonly providerEnvironment?: SessionServices["providerEnvironment"];
     readonly sandboxExecutionBroker?: SessionServices["sandboxExecutionBroker"];
     readonly configStore?: ConfigStore;
     readonly authManager?: SessionServices["authManager"];
+    readonly authBackend?: SessionServices["authBackend"];
     readonly mcpManager?: SessionServices["mcpManager"];
     readonly skillsManager?: SessionServices["skillsManager"];
     readonly skillsWatcher?: SessionServices["skillsWatcher"];
@@ -403,11 +410,12 @@ function restoreCompactProgressControl<
 }
 
 export interface ConfigStoreLike {
+  readonly homeContext?: { readonly path: string };
   readonly agencHome?: string;
-  readonly snapshot?: unknown;
+  readonly stateRepository?: ConfigStore["stateRepository"];
   current?(): AgenCConfig;
   reload?(): Promise<AgenCConfig>;
-  subscribe?(listener: (config: unknown) => void): (() => void) | void;
+  subscribe?(listener: (config: AgenCConfig) => void): (() => void) | void;
   warnings?(): readonly string[];
 }
 

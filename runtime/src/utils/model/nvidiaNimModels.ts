@@ -4,20 +4,10 @@
  */
 
 import type { ModelOption } from './modelOptions.js'
-import { getAPIProvider } from './providers.js'
-import { isEnvTruthy } from '../envUtils.js'
+import { getSelectedProviderName } from './providers.js'
 
 export function isNvidiaNimProvider(): boolean {
-  // Check if explicitly set via NVIDIA_NIM or via provider flag
-  if (isEnvTruthy(process.env.NVIDIA_NIM)) {
-    return true
-  }
-  // Also check if using NVIDIA NIM endpoint
-  const baseUrl = process.env.OPENAI_BASE_URL ?? ''
-  if (baseUrl.includes('nvidia') || baseUrl.includes('integrate.api.nvidia')) {
-    return true
-  }
-  return getAPIProvider() === 'nvidia-nim'
+  return getSelectedProviderName() === 'nvidia-nim'
 }
 
 type NvidiaNimModelEntry = readonly [value: string, label: string]

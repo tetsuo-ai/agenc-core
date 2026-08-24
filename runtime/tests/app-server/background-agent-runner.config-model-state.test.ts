@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   AgenCDelegateBackgroundAgentRunner,
@@ -10,10 +10,6 @@ import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
 } from "../../src/permissions/types.js";
-import {
-  getActiveConfigModel,
-  setActiveConfigModel,
-} from "../../src/bootstrap/state.js";
 
 function makeStubConversationThreadManager(threadId: string) {
   let listeners: ((status: AgentStatus) => void)[] = [];
@@ -154,125 +150,6 @@ function makeRunnerHarness(opts: {
 }
 
 describe("daemon config/model state refresh + atomicity", () => {
-  afterEach(() => {
-    // Reset the process-global so cross-test order can't leak a selection.
-    setActiveConfigModel(undefined);
-  });
-
-  // GAP #4: the model-switch path must refresh the process-global
-  // activeConfigModel so the util-layer model helpers stop reading the stale
-  // startup selection for the daemon's life.
-  it("setAgentModel refreshes activeConfigModel on an applied switch", async () => {
-    setActiveConfigModel({ provider: "openai", model: "startup-model" });
-    const { runner } = makeRunnerHarness({
-      configStore: {
-        current: () => ({ model: "base-model", model_provider: "openai" }),
-      },
-    });
-    await runner.startAgent({ objective: "work", cwd: "/workspace" });
-
-    const result = await runner.setAgentModel("parent-session", {
-      sessionId: "session_1",
-      model: "switched-model",
-      provider: "openai",
-    });
-
-    expect(result.applied).toBe(true);
-    // todo-115: daemon no longer writes process-global activeConfigModel
-    expect(getActiveConfigModel()).toEqual({
-      provider: "openai",
-      model: "startup-model",
-    });
-  });
-
-  it("setAgentModel fills the provider from the live session when only a model is supplied", async () => {
-    setActiveConfigModel({ provider: "openai", model: "startup-model" });
-    const { runner } = makeRunnerHarness({
-      configStore: {
-        current: () => ({ model: "base-model", model_provider: "openai" }),
-      },
-      sessionConfiguration: {
-        collaborationMode: { model: "base-model" },
-        provider: { slug: "openai" },
-      },
-    });
-    await runner.startAgent({ objective: "work", cwd: "/workspace" });
-
-    const result = await runner.setAgentModel("parent-session", {
-      sessionId: "session_1",
-      model: "switched-model",
-    });
-
-    expect(result.applied).toBe(true);
-    // Still must not clobber the process-global with the switch (todo-115).
-    expect(getActiveConfigModel()).toEqual({
-      provider: "openai",
-      model: "startup-model",
-    });
-  });
-
-  // Audit finding #10: a provider-only switch is staged for the
-  // NEXT turn, so the live session still reports the pre-switch selection.
-  // Backfilling that model produced mixed pairs like {provider: "grok",
-  // model: "qwen3-coder-next-fp8"} in the process-global, which later daemon
-  // sessions inherited and sent to the wrong API.
-  it("setAgentModel does NOT poison activeConfigModel with the pre-switch model on a provider-only switch", async () => {
-    setActiveConfigModel({ provider: "openai-compatible", model: "qwen-local" });
-    const { runner } = makeRunnerHarness({
-      configStore: {
-        current: () => ({
-          model: "qwen-local",
-          model_provider: "openai-compatible",
-        }),
-      },
-      sessionConfiguration: {
-        collaborationMode: { model: "qwen-local" },
-        provider: { slug: "openai-compatible" },
-      },
-    });
-    await runner.startAgent({ objective: "work", cwd: "/workspace" });
-
-    const result = await runner.setAgentModel("parent-session", {
-      sessionId: "session_1",
-      provider: "grok",
-    });
-
-    expect(result.applied).toBe(true);
-    // The pre-switch qwen model must never be paired with the new provider.
-    expect(getActiveConfigModel()).not.toEqual({
-      provider: "grok",
-      model: "qwen-local",
-    });
-  });
-
-  it("applyAgentConfig refreshes activeConfigModel when a profile stages a switch", async () => {
-    setActiveConfigModel({ provider: "openai", model: "startup-model" });
-    const { runner } = makeRunnerHarness({
-      configStore: {
-        current: () => ({
-          model: "base-model",
-          model_provider: "openai",
-          profiles: {
-            fast: { model: "fast-model", model_provider: "openai" },
-          },
-        }),
-      },
-    });
-    await runner.startAgent({ objective: "work", cwd: "/workspace" });
-
-    const result = await runner.applyAgentConfig("parent-session", {
-      sessionId: "session_1",
-      profile: "fast",
-    });
-
-    expect(result.applied).toBe(true);
-    // Profile switch is session-local; process-global stays at startup (todo-115).
-    expect(getActiveConfigModel()).toEqual({
-      provider: "openai",
-      model: "startup-model",
-    });
-  });
-
   // GAP #12: an unknown profile must be a true no-op — the shared config store
   // must NOT have been reloaded (mutated + subscribers fired) before the
   // unknown-profile error surfaces.

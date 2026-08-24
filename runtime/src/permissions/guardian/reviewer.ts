@@ -151,7 +151,7 @@ function guardianTimeoutMessage(): string {
 
 export function shouldRouteApprovalToGuardian(ctx: ApprovalCtx): boolean {
   const reviewer = ctx.invocation.turn.config?.approvalsReviewer;
-  return reviewer === "auto_review" || reviewer === "guardian_subagent";
+  return reviewer === "auto_review";
 }
 
 export function createDefaultGuardianApprovalReviewer(

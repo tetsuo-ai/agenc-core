@@ -89,26 +89,13 @@ function filterMCPToolCatalog<T extends { name: string }>(
   });
 }
 
-function approvalModeAlias(raw: unknown): PermissionDefaultMode | undefined {
-  switch (raw) {
-    case "approve":
-      return "never";
-    case "prompt":
-      return "untrusted";
-    default:
-      return undefined;
-  }
-}
-
 function perMcpToolApprovalMode(
   config: MCPToolCatalogPolicyConfig | undefined,
   rawToolName: string,
   namespacedToolName: string,
 ): PermissionDefaultMode | undefined {
   const toolConfig = config?.tools?.[rawToolName] ?? config?.tools?.[namespacedToolName];
-  const explicit = toolConfig?.default_permission_mode ??
-    toolConfig?.defaultPermissionMode ??
-    approvalModeAlias(toolConfig?.approval_mode);
+  const explicit = toolConfig?.default_permission_mode;
   if (isValidPermissionDefaultMode(explicit)) return explicit;
   return isValidPermissionDefaultMode(config?.defaultToolsApprovalMode)
     ? config.defaultToolsApprovalMode

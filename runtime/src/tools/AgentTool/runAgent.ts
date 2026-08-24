@@ -36,6 +36,7 @@ import type {
   ScopedMcpServerConfig,
 } from '../../services/mcp/types.js'
 import type { McpSamplingHandlers } from '../../services/mcp/hostCapabilities.js'
+import type { CanonicalSettingsAuthority } from '../../utils/settings/canonicalAuthority.js'
 import type { Tool, Tools, ToolUseContext } from '../Tool.js'
 import { killShellTasksForAgent } from '../../tasks/LocalShellTask/killShellTasks.js'
 import type { AgentId } from '../../types/ids.js'
@@ -43,7 +44,7 @@ import type {
   AdditionalWorkingDirectory,
   InternalPermissionMode,
 } from '../../types/permissions.js'
-import type { HooksSettings } from '../../utils/settings/types.js'
+import type { HooksSettings } from '../../schemas/hooks.js'
 import type {
   AssistantMessage,
   Message,
@@ -73,8 +74,6 @@ import { executeSubagentStartHooks } from '../../utils/hooks.js'
 import { COMMAND_MESSAGE_TAG, COMMAND_NAME_TAG } from '../../constants/xml.js'
 import { createUserMessage } from '../../utils/messages.js'
 import { getAgentModel } from '../../utils/model/agent.js'
-import { resolveAgentProvider } from '../../services/api/agentRouting.js'
-import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
 import type { ModelAlias } from '../../utils/model/aliases.js'
 import {
   clearAgentTranscriptSubdir,
@@ -124,6 +123,8 @@ function formatSkillLoadingMetadata(skillName: string): string {
 async function initializeAgentMcpServers(
   agentDefinition: AgentDefinition,
   parentClients: MCPServerConnection[],
+  authority: CanonicalSettingsAuthority,
+  environment: Readonly<Record<string, string | undefined>>,
   sampling?: {
     readonly handlers: McpSamplingHandlers
     readonly cacheKey: string
@@ -166,6 +167,12 @@ async function initializeAgentMcpServers(
     }
   }
 
+  if (authority === undefined) {
+    throw new Error(
+      `Agent ${JSON.stringify(agentDefinition.agentType)} declares MCP servers but its session has no ConfigStore HomeContext`,
+    )
+  }
+
   const agentClients: MCPServerConnection[] = []
   // Track which clients were newly created (inline definitions) vs. shared from parent
   // Only newly created clients should be cleaned up when the agent finishes
@@ -181,7 +188,7 @@ async function initializeAgentMcpServers(
       // Reference by name - look up in existing MCP configs
       // This uses the memoized connectToServer, so we may get a shared client
       name = spec
-      config = getApprovedMcpConfigByName(spec)
+      config = getApprovedMcpConfigByName(spec, authority, environment)
       if (!config) {
         logForDebugging(
           `[Agent: ${agentDefinition.agentType}] MCP server not found: ${spec}`,
@@ -215,12 +222,16 @@ async function initializeAgentMcpServers(
       name,
       config,
       undefined,
-      isNewlyCreated && sampling !== undefined
-        ? {
-            samplingHandlers: sampling.handlers,
-            samplingCacheKey: `${sampling.cacheKey}:${name}`,
-          }
-        : undefined,
+      {
+        home: authority.homeContext,
+        environment,
+        ...(isNewlyCreated && sampling !== undefined
+          ? {
+              samplingHandlers: sampling.handlers,
+              samplingCacheKey: `${sampling.cacheKey}:${name}`,
+            }
+          : {}),
+      },
     )
     agentClients.push(client)
     if (isNewlyCreated) {
@@ -318,7 +329,6 @@ export async function* runAgent({
   description,
   transcriptSubdir,
   onQueryProgress,
-  agentName,
   agentMetadataAlreadyPersisted,
   spawnAdmission: transferredSpawnAdmission,
 }: {
@@ -380,8 +390,6 @@ export async function* runAgent({
    * during long single-block streams (e.g. thinking) where no assistant
    * message is yielded for >60s. */
   onQueryProgress?: () => void
-  /** Agent name (team member name) for routing resolution */
-  agentName?: string
   /** The launch boundary durably persisted this agent's role sidecar before
    * publishing the task. Direct callers omit this and runAgent persists it
    * before performing any agent work. */
@@ -419,14 +427,6 @@ export async function* runAgent({
     model,
     permissionMode,
   )
-
-  // Resolve per-agent provider routing from settings
-  const providerOverride = resolveAgentProvider(
-    agentName,
-    agentDefinition.agentType,
-    getExecutionAuthoritySettings(),
-  )
-  const effectiveModel = providerOverride ? providerOverride.model : resolvedAgentModel
 
   const agentId = override?.agentId ? override.agentId : createAgentId()
   // Preserve legacy sync/async abort ownership while adding a child-only
@@ -511,7 +511,7 @@ export async function* runAgent({
   const { agencMd: _omittedAgenCMd, ...userContextNoAgenCMd } = baseUserContext // branding-scan: allow upstream user-context field name pending context absorb
   const resolvedUserContext = userContextNoAgenCMd
 
-  // scanner (Explore) / Plan are read-only search agents — the
+  // scanner / Plan are read-only search agents — the
   // parent-session-start gitStatus (up to 40KB, explicitly labeled stale) is
   // dead weight. If they need git info they run `git status` themselves and get
   // fresh data. Saves ~1-3 Gtok/week fleet-wide. Match on canonical role name
@@ -522,7 +522,7 @@ export async function* runAgent({
     agentDefinition.agentType ?? '',
   )
   const resolvedSystemContext =
-    canonicalAgentType === 'explorer' || canonicalAgentType === 'Plan'
+    canonicalAgentType === 'scanner' || canonicalAgentType === 'Plan'
       ? systemContextNoGit
       : baseSystemContext
 
@@ -790,6 +790,16 @@ export async function* runAgent({
   } = await initializeAgentMcpServers(
     agentDefinition,
     toolUseContext.options.mcpClients,
+    (() => {
+      const configStore = parentSession.services.configStore
+      if (configStore === undefined) {
+        throw new Error(
+          'Subagent MCP initialization requires the session ConfigStore authority',
+        )
+      }
+      return configStore
+    })(),
+    parentSession.services.providerEnvironment ?? Object.freeze({}),
     {
       handlers: createSessionMcpSamplingHandlers(parentSession),
       cacheKey: `${parentSession.conversationId}:${agentId}`,
@@ -816,8 +826,7 @@ export async function* runAgent({
     commands: [],
     debug: toolUseContext.options.debug,
     verbose: toolUseContext.options.verbose,
-    mainLoopModel: effectiveModel,
-    providerOverride: providerOverride ?? undefined,
+    mainLoopModel: resolvedAgentModel,
     // For fork children (useExactTools), inherit thinking config to match the
     // parent's API request prefix for prompt cache hits. For regular
     // sub-agents, disable thinking to control output token costs.

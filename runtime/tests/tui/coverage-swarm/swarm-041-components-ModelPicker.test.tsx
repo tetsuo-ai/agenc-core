@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { ModelPicker } from "../../../src/tui/components/ModelPicker.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../remoteAuthSessionContext.fixture.js";
 
 type AppState = {
   effortValue?: string;
@@ -73,13 +74,19 @@ vi.mock("../state/AppState.js", () => ({
 
 vi.mock("../../utils/fastMode.js", () => ({
   FAST_MODE_MODEL_DISPLAY: "fast-model",
-  isFastModeAvailable: () => harness.fastMode.available,
-  isFastModeCooldown: () => harness.fastMode.cooldown,
-  isFastModeEnabled: () => harness.fastMode.enabled,
+  isFastModeAvailableForContext: () => harness.fastMode.available,
+  isFastModeCooldownForContext: () => harness.fastMode.cooldown,
+  isFastModeEnabledForContext: () => harness.fastMode.enabled,
 }));
 
 vi.mock("../../utils/effort.js", () => ({
   convertEffortValueToLevel: (value: string | undefined) => value,
+  effortValueToReasoningEffort: (value: string | undefined) =>
+    harness.persistEfforts
+      ? value === "max" || value === "xhigh"
+        ? "xhigh"
+        : value
+      : undefined,
   getAvailableEffortLevels: (model: string) =>
     harness.unsupportedModels.has(model)
       ? []
@@ -90,6 +97,8 @@ vi.mock("../../utils/effort.js", () => ({
   modelSupportsEffort: (model: string) =>
     !harness.unsupportedModels.has(model),
   modelSupportsMaxEffort: (model: string) => harness.maxModels.has(model),
+  reasoningEffortToEffortLevel: (value: string | undefined) =>
+    value === "xhigh" ? "max" : value,
   resolvePickerEffortPersistence: (
     effort: string | undefined,
     defaultEffort: string,
@@ -111,7 +120,8 @@ vi.mock("../../utils/model/modelOptions.js", () => ({
 }));
 
 vi.mock("../../utils/settings/settings.js", () => ({
-  getSettingsForSource: () => ({ effortLevel: harness.settingsEffort }),
+  getExecutionAuthoritySettings: () => ({}),
+  getSettingsForSource: () => ({ reasoning_effort: harness.settingsEffort }),
   updateSettingsForSource: harness.updateSettingsForSource,
 }));
 
@@ -180,7 +190,7 @@ describe("ModelPicker coverage swarm 041", () => {
 
     const onSelect = vi.fn();
     const output = await renderToString(
-      <ModelPicker initial={null} onSelect={onSelect} />,
+      <ModelPicker initial={null} onSelect={onSelect} remoteAuthSessionContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />,
       { columns: 120 },
     );
 
@@ -212,7 +222,7 @@ describe("ModelPicker coverage swarm 041", () => {
     };
 
     const unavailableOutput = await renderToString(
-      <ModelPicker initial="default-model" isStandaloneCommand onSelect={() => {}} />,
+      <ModelPicker initial="default-model" isStandaloneCommand onSelect={() => {}} remoteAuthSessionContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />,
       { columns: 120 },
     );
 
@@ -231,7 +241,7 @@ describe("ModelPicker coverage swarm 041", () => {
     };
 
     const cooldownOutput = await renderToString(
-      <ModelPicker initial="default-model" onSelect={() => {}} />,
+      <ModelPicker initial="default-model" onSelect={() => {}} remoteAuthSessionContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />,
       { columns: 120 },
     );
 

@@ -1,13 +1,18 @@
 import { APIError } from '@anthropic-ai/sdk'
 import isEqual from 'lodash-es/isEqual.js'
 import { isAgenCAISubscriber } from '../utils/auth.js'
-import { getGlobalConfig, saveGlobalConfig } from '../utils/config.js'
+import { getRuntimeState, updateRuntimeState } from '../utils/config.js'
 import { logError } from '../utils/log.js'
 import {
   processRateLimitHeaders,
   shouldProcessRateLimits,
 } from './rateLimitMocking.js'
 import { updatePromptSuggestionLimits } from 'src/services/PromptSuggestion/limits.js'
+import { resolveSecureStorageHome } from '../utils/secureStorage/home.js'
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 
 // Re-export message functions from centralized location
 export {
@@ -359,9 +364,9 @@ function cacheExtraUsageDisabledReason(headers: globalThis.Headers): void {
   // A null reason means extra usage is enabled (no disabled reason header)
   const reason =
     headers.get('anthropic-ratelimit-unified-overage-disabled-reason') ?? null
-  const cached = getGlobalConfig().cachedExtraUsageDisabledReason
+  const cached = getRuntimeState().cachedExtraUsageDisabledReason
   if (cached !== reason) {
-    saveGlobalConfig(current => ({
+    updateRuntimeState(current => ({
       ...current,
       cachedExtraUsageDisabledReason: reason,
     }))
@@ -372,7 +377,7 @@ export function extractQuotaStatusFromHeaders(
   headers: globalThis.Headers,
 ): void {
   // Check if we need to process rate limits
-  const isSubscriber = isAgenCAISubscriber()
+  const isSubscriber = isAgenCAISubscriber(credentialHome())
 
   if (!shouldProcessRateLimits(isSubscriber)) {
     // If we have any rate limit state, clear it
@@ -403,7 +408,7 @@ export function extractQuotaStatusFromHeaders(
 
 export function extractQuotaStatusFromError(error: APIError): void {
   if (
-    !shouldProcessRateLimits(isAgenCAISubscriber()) ||
+    !shouldProcessRateLimits(isAgenCAISubscriber(credentialHome())) ||
     error.status !== 429
   ) {
     return

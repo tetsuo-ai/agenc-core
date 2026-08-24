@@ -6,7 +6,7 @@ import { renderToString } from '../../utils/staticRender.js'
 import { FastIcon, getFastIconString } from './FastIcon.js'
 
 vi.mock('../../utils/config.js', () => ({
-  getGlobalConfig: () => ({ theme: 'dark' }),
+  getRuntimeState: () => ({ theme: 'dark' }),
 }))
 
 vi.mock('../../utils/systemTheme.js', () => ({

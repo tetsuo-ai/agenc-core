@@ -20,7 +20,6 @@ export interface LinuxSandboxLauncherOptions {
   readonly commandCwd: string;
   readonly inheritedCwd: boolean;
   readonly permissionProfile: PermissionProfile;
-  readonly useLegacyLandlock: boolean;
   readonly applySeccompThenExec: boolean;
   readonly allowNetworkForProxy: boolean;
   readonly proxyRouteSpec: string | null;
@@ -35,7 +34,6 @@ export function parseLinuxSandboxLauncherArgs(
   let commandCwd: string | null = null;
   let inheritedCwd = false;
   let permissionProfile: PermissionProfile | null = null;
-  let useLegacyLandlock = false;
   let applySeccompThenExec = false;
   let allowNetworkForProxy = false;
   let proxyRouteSpec: string | null = null;
@@ -63,9 +61,6 @@ export function parseLinuxSandboxLauncherArgs(
       case "--permission-profile":
         permissionProfile = parsePermissionProfile(readValue(argv, index, arg));
         index += 1;
-        break;
-      case "--use-legacy-landlock":
-        useLegacyLandlock = true;
         break;
       case "--apply-seccomp-then-exec":
         applySeccompThenExec = true;
@@ -107,18 +102,11 @@ export function parseLinuxSandboxLauncherArgs(
   const resolvedCommandCwd = inheritedCwd
     ? INHERITED_CWD_SANDBOX_PATH
     : commandCwd ?? resolvedSandboxCwd;
-  if (applySeccompThenExec && useLegacyLandlock) {
-    throw new LinuxSandboxCliError(
-      "--apply-seccomp-then-exec cannot be combined with --use-legacy-landlock",
-    );
-  }
-
   return {
     sandboxPolicyCwd: resolvedSandboxCwd,
     commandCwd: resolvedCommandCwd,
     inheritedCwd,
     permissionProfile,
-    useLegacyLandlock,
     applySeccompThenExec,
     allowNetworkForProxy,
     proxyRouteSpec,

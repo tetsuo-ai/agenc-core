@@ -115,6 +115,8 @@ export interface ConfiguredHooksRuntimeOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly agencHome: string;
   readonly shellPath: string;
+  /** Explicit session-scoped opt-in; never inferred from daemon process.env. */
+  readonly allowUntrustedHooks?: boolean;
   readonly sandboxExecutionBroker?: import("../sandbox/execution-broker.js").SandboxExecutionBrokerLike;
   readonly executionAdmission?: import("../budget/admission-client.js").ExecutionAdmissionClient;
   readonly admissionRequired?: boolean;
@@ -126,20 +128,6 @@ export interface ConfiguredHooksRuntimeOptions {
    * freshly-cloned untrusted repo must NOT be able to run them (RCE).
    */
   readonly isWorkspaceTrusted?: () => boolean;
-}
-
-/**
- * SECURITY opt-in: when set to a truthy value ("1"/"true"), config/plugin
- * command hooks are allowed to run even in an UNTRUSTED workspace. This exists
- * for headless/SDK automation that has already vetted the workspace out-of-band.
- * Default (unset) = untrusted workspaces never run command hooks.
- */
-const ALLOW_UNTRUSTED_HOOKS_ENV = "AGENC_ALLOW_UNTRUSTED_HOOKS";
-
-function isTruthyEnvFlag(value: string | undefined): boolean {
-  if (value === undefined) return false;
-  const normalized = value.trim().toLowerCase();
-  return normalized === "1" || normalized === "true" || normalized === "yes";
 }
 
 export class ConfiguredHooksRuntime {
@@ -816,7 +804,7 @@ export class ConfiguredHooksRuntime {
     if (this.isWorkspaceTrusted()) {
       return true;
     }
-    if (isTruthyEnvFlag(this.opts.env[ALLOW_UNTRUSTED_HOOKS_ENV])) {
+    if (this.opts.allowUntrustedHooks) {
       return true;
     }
     return false;
@@ -1030,7 +1018,7 @@ function defaultHookInput(
     case "PermissionRequest":
       return {
         hook_event_name: event,
-        tool_name: "Read",
+        tool_name: "FileRead",
         tool_input: {},
         tool_use_id: "test",
       };

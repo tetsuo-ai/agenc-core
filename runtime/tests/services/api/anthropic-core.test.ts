@@ -190,6 +190,7 @@ vi.mock('../../../src/services/vcr.js', () => ({
 
 vi.mock('../../../src/utils/model/providers.js', () => ({
   getAPIProvider: () => 'firstParty',
+  getSelectedProviderEnvironment: () => process.env,
   isFirstPartyproviderBaseUrl: () => true,
   isGithubNativeproviderMode: () => false,
 }))
@@ -384,11 +385,6 @@ vi.mock('../../../src/utils/headlessProfiler.js', () => ({
 vi.mock('../../../src/utils/queryProfiler.js', () => ({
   endQueryProfile: vi.fn(),
   queryCheckpoint: vi.fn(),
-}))
-
-vi.mock('../../../src/utils/sessionActivity.js', () => ({
-  startSessionActivity: vi.fn(),
-  stopSessionActivity: vi.fn(),
 }))
 
 vi.mock('../../../src/utils/diagLogs.js', () => ({

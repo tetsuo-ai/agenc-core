@@ -145,6 +145,7 @@ describe("agenc-sdk subprocess transport", () => {
     const run = promptViaSubprocess("what is the answer?", {
       agencCommand: ["/opt/agenc/bin/agenc"],
       model: "grok-4",
+      configPath: "/workspace/operator.toml",
       spawn,
     });
     const events: AgencPromptEvent[] = [];
@@ -162,6 +163,8 @@ describe("agenc-sdk subprocess transport", () => {
       "stream-json",
       "--model",
       "grok-4",
+      "--config",
+      "/workspace/operator.toml",
     ]);
     expect(capture.stdinEnded).toBe(true);
     expect(capture.stdinChunks.join("")).toBe(

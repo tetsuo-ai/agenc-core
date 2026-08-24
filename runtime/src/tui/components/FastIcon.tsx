@@ -3,7 +3,7 @@ import { c as _c } from "react-compiler-runtime";
 import chalk from 'chalk';
 import { LIGHTNING_BOLT } from '../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Text } from '../ink.js';
-import { getGlobalConfig } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js';
 import { resolveThemeSetting } from '../../utils/systemTheme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { color } from './design-system/color';
 type Props = {
@@ -37,7 +37,9 @@ export function getFastIconString(applyColor = true, cooldown = false): string {
   if (!applyColor) {
     return LIGHTNING_BOLT;
   }
-  const themeName = resolveThemeSetting(getGlobalConfig().theme);
+  const themeName = resolveThemeSetting(
+    getExecutionAuthoritySettings().tui?.theme ?? 'dark'
+  );
   if (cooldown) {
     return chalk.dim(color('promptBorder', themeName)(LIGHTNING_BOLT));
   }

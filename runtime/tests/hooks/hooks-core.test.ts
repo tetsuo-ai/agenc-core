@@ -61,6 +61,8 @@ import {
   clearCurrentRuntimeSession,
   setCurrentRuntimeSession,
 } from "../../src/session/current-session.js";
+import { SessionProviderService } from "../../src/session/provider-service.js";
+import { ConfigStore } from "../../src/config/store.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 import {
   getCommandQueue,
@@ -69,7 +71,6 @@ import {
 
 const tempDirs: string[] = [];
 const sessionId = "00000000-0000-4000-8000-000000000901";
-const originalConfigDir = process.env.AGENC_CONFIG_DIR;
 const originalAgenCHome = process.env.AGENC_HOME;
 const originalSessionEndTimeout = process.env.AGENC_SESSIONEND_HOOKS_TIMEOUT_MS;
 const originalAllowUntrustedHooks = process.env.AGENC_ALLOW_UNTRUSTED_HOOKS;
@@ -83,30 +84,46 @@ function restoreOptionalEnv(name: string, value: string | undefined): void {
   }
 }
 
+function createHookProviderService(): SessionProviderService {
+  return new SessionProviderService({
+    initialProvider: { name: "stub-provider" } as never,
+    initialProviderName: "grok",
+    initialModel: "test-model",
+    environment: {},
+  });
+}
+
 async function configureHookSession(): Promise<{
-  configDir: string;
+  agencHome: string;
   cwd: string;
 }> {
-  const configDir = await mkdtemp(join(tmpdir(), "agenc-hooks-core-"));
-  tempDirs.push(configDir);
-  process.env.AGENC_CONFIG_DIR = configDir;
-  delete process.env.AGENC_HOME;
+  const agencHome = await mkdtemp(join(tmpdir(), "agenc-hooks-core-"));
+  tempDirs.push(agencHome);
+  process.env.AGENC_HOME = agencHome;
   resetStateForTests();
   clearCurrentRuntimeSession();
+  const cwd = join(agencHome, "workspace");
+  await mkdir(cwd, { recursive: true });
+  const configStore = new ConfigStore({
+    home: agencHome,
+    env: { AGENC_HOME: agencHome },
+    cwd,
+  });
   setCurrentRuntimeSession({
     conversationId: sessionId,
+    sessionConfiguration: { cwd },
     services: {
       sandboxExecutionBroker: explicitDangerBroker,
       admissionRequired: false,
+      configStore,
+      providerService: createHookProviderService(),
     },
   } as never);
 
-  const cwd = join(configDir, "workspace");
-  await mkdir(cwd, { recursive: true });
   setOriginalCwd(cwd);
   setCwdState(cwd);
   switchSession(sessionId as never, null);
-  return { configDir, cwd };
+  return { agencHome, cwd };
 }
 
 async function collectAsyncGenerator<T>(
@@ -144,7 +161,6 @@ afterEach(async () => {
   resetCommandQueue();
   clearCurrentRuntimeSession();
   resetStateForTests();
-  restoreOptionalEnv("AGENC_CONFIG_DIR", originalConfigDir);
   restoreOptionalEnv("AGENC_HOME", originalAgenCHome);
   restoreOptionalEnv(
     "AGENC_SESSIONEND_HOOKS_TIMEOUT_MS",
@@ -217,7 +233,7 @@ test("parses session end hook timeout from the environment", () => {
 });
 
 test("creates base hook input from session, cwd, permission, and agent state", async () => {
-  const { configDir, cwd } = await configureHookSession();
+  const { agencHome, cwd } = await configureHookSession();
   setMainThreadAgentType("planner");
 
   const base = createBaseHookInput("acceptEdits");
@@ -227,7 +243,7 @@ test("creates base hook input from session, cwd, permission, and agent state", a
     permission_mode: "acceptEdits",
     agent_type: "planner",
   });
-  expect(base.transcript_path).toContain(configDir);
+  expect(base.transcript_path).toContain(agencHome);
   expect(base.transcript_path.endsWith(`${sessionId}.jsonl`)).toBe(true);
 
   const other = createBaseHookInput(
@@ -235,13 +251,13 @@ test("creates base hook input from session, cwd, permission, and agent state", a
     "00000000-0000-4000-8000-000000000902",
     {
       agentId: "agent-1",
-      agentType: "worker",
+      agentType: "runner",
     },
   );
   expect(other).toMatchObject({
     session_id: "00000000-0000-4000-8000-000000000902",
     agent_id: "agent-1",
-    agent_type: "worker",
+    agent_type: "runner",
   });
 });
 
@@ -516,7 +532,7 @@ test("executes command hooks through the pre-tool generator", async () => {
 });
 
 test("legacy command hooks stop on the admitted lease signal", async () => {
-  const { cwd } = await configureHookSession();
+  const { agencHome, cwd } = await configureHookSession();
   acceptInteractiveWorkspaceTrust();
   const leaseAbort = new AbortController();
   const markDispatched = vi.fn();
@@ -538,9 +554,16 @@ test("legacy command hooks stop on the admitted lease signal", async () => {
   clearCurrentRuntimeSession();
   setCurrentRuntimeSession({
     conversationId: sessionId,
+    sessionConfiguration: { cwd },
     services: {
       sandboxExecutionBroker: explicitDangerBroker,
       admissionRequired: true,
+      configStore: new ConfigStore({
+        home: agencHome,
+        env: { AGENC_HOME: agencHome },
+        cwd,
+      }),
+      providerService: createHookProviderService(),
       executionAdmission: {
         scope: {
           runId: "run-legacy",
@@ -1095,7 +1118,7 @@ test("executes callback hooks across public generator event wrappers", async () 
     ],
     SubagentStart: [
       {
-        matcher: "worker",
+        matcher: "runner",
         hooks: [
           {
             type: "callback",
@@ -1286,7 +1309,7 @@ test("executes callback hooks across public generator event wrappers", async () 
   const subagent = await collectAsyncGenerator(
     executeSubagentStartHooks(
       "agent-1",
-      "worker",
+      "runner",
       undefined,
       hookCommandTimeoutMs,
     ),
@@ -1479,10 +1502,10 @@ test("returns empty results for public no-hook execution paths", async () => {
   await configureHookSession();
 
   await expect(
-    executeConfigChangeHooks("user_settings", "/tmp/settings.json", 1),
+    executeConfigChangeHooks("user_settings", "/tmp/config.toml", 1),
   ).resolves.toEqual([]);
   await expect(
-    executeConfigChangeHooks("policy_settings", "/tmp/policy.json", 1),
+    executeConfigChangeHooks("policy_settings", "/tmp/managed-config.toml", 1),
   ).resolves.toEqual([]);
   await expect(executeCwdChangedHooks("/old", "/new", 1)).resolves.toEqual({
     results: [],

@@ -3,12 +3,23 @@ import { LRUCache } from 'lru-cache'
 import { AbortError } from '../../utils/errors.js'
 import { getWebFetchUserAgent } from '../../utils/http.js'
 import { logError } from '../../utils/log.js'
-import { getAPIProvider } from '../../utils/model/providers.js'
+import {
+  getAPIProvider,
+  getSelectedProviderEnvironment,
+} from '../../utils/model/providers.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
+import {
+  createAxiosInstance,
+  getNoProxy,
+  getProxyFetchOptions,
+  getProxyUrl,
+  shouldBypassProxy,
+} from '../../utils/proxy.js'
 import {
   isBinaryContentType,
   persistBinaryContent,
 } from '../../utils/mcpOutputStorage.js'
-import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
+import { getSettingsForSource } from '../../utils/settings/settings.js'
 import type { LookupFunction } from 'node:net'
 import type * as undici from 'undici'
 import { ssrfGuardedLookup } from '../../utils/hooks/ssrfGuard.js'
@@ -226,6 +237,7 @@ type DomainCheckResult =
 
 export async function checkDomainBlocklist(
   domain: string,
+  environment: ProviderEnvironment,
 ): Promise<DomainCheckResult> {
   // Third-party providers should not consult the first-party domain policy.
   if (getAPIProvider() !== 'firstParty') {
@@ -236,7 +248,7 @@ export async function checkDomainBlocklist(
     return { status: 'allowed' }
   }
   try {
-    const response = await axios.get(
+    const response = await createAxiosInstance(environment).get(
       `https://api.anthropic.com/api/web/domain_info?domain=${encodeURIComponent(domain)}`,
       { timeout: DOMAIN_CHECK_TIMEOUT_MS },
     )
@@ -319,19 +331,23 @@ export async function getWithPermittedRedirects(
   url: string,
   signal: AbortSignal,
   redirectChecker: (originalUrl: string, redirectUrl: string) => boolean,
+  environment: ProviderEnvironment,
   depth = 0,
 ): Promise<AxiosResponse<ArrayBuffer> | RedirectInfo> {
   if (depth > MAX_REDIRECTS) {
     throw new Error(`Too many redirects (exceeded ${MAX_REDIRECTS})`)
   }
 
+  const envProxyActive =
+    getProxyUrl(environment) !== undefined &&
+    !shouldBypassProxy(url, getNoProxy(environment))
   const axiosConfig = {
     signal,
     timeout: FETCH_TIMEOUT_MS,
     maxRedirects: 0,
     responseType: 'arraybuffer' as const,
     maxContentLength: MAX_HTTP_CONTENT_LENGTH,
-    lookup: ssrfGuardedLookup,
+    lookup: envProxyActive ? undefined : ssrfGuardedLookup,
     headers: {
       Accept: 'text/markdown, text/html, */*',
       'User-Agent': getWebFetchUserAgent(),
@@ -339,7 +355,7 @@ export async function getWithPermittedRedirects(
   }
 
   try {
-    return await axios.get(url, axiosConfig)
+    return await createAxiosInstance(environment).get(url, axiosConfig)
   } catch (error) {
     // Try native fetch as a fallback for timeout / network errors
     // (Bun/Node bundled contexts occasionally hang with axios + custom lookup.)
@@ -355,8 +371,11 @@ export async function getWithPermittedRedirects(
           signal,
           redirect: 'manual',
           headers: axiosConfig.headers,
-          // Pin connections to SSRF-validated IPs (see dispatcher comment).
-          dispatcher: getSsrfGuardedFetchDispatcher(),
+          // A proxied request delegates target DNS to the selected proxy.
+          // Direct requests pin connections to SSRF-validated IPs.
+          ...(envProxyActive
+            ? getProxyFetchOptions({ environment })
+            : { dispatcher: getSsrfGuardedFetchDispatcher() }),
         } as RequestInit & { dispatcher: undici.Dispatcher })
         // Handle redirects manually
         if ([301, 302, 307, 308].includes(fetchResponse.status)) {
@@ -370,6 +389,7 @@ export async function getWithPermittedRedirects(
               redirectUrl,
               signal,
               redirectChecker,
+              environment,
               depth + 1,
             )
           } else {
@@ -435,6 +455,7 @@ export async function getWithPermittedRedirects(
           redirectUrl,
           signal,
           redirectChecker,
+          environment,
           depth + 1,
         )
       } else {
@@ -483,6 +504,7 @@ export async function getURLMarkdownContent(
   url: string,
   abortController: AbortController,
 ): Promise<FetchedContent | RedirectInfo> {
+  const environment = getSelectedProviderEnvironment()
   if (!validateURL(url)) {
     throw new Error('Invalid URL')
   }
@@ -518,9 +540,9 @@ export async function getURLMarkdownContent(
     // Check if the user has opted to skip the blocklist check
     // This is for enterprise customers with restrictive security policies
     // that prevent outbound connections to agenc.tech
-    const settings = getExecutionAuthoritySettings()
-    if (!settings.skipWebFetchPreflight) {
-      const checkResult = await checkDomainBlocklist(hostname)
+    const policy = getSettingsForSource('policySettings')
+    if (!policy?.skipWebFetchPreflight) {
+      const checkResult = await checkDomainBlocklist(hostname, environment)
       switch (checkResult.status) {
         case 'allowed':
           // Continue with the fetch
@@ -546,6 +568,7 @@ export async function getURLMarkdownContent(
     upgradedUrl,
     abortController.signal,
     isPermittedRedirect,
+    environment,
   )
 
   // Check if we got a redirect response

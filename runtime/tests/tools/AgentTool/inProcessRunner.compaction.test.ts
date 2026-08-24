@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { ConfigStore } from '../../../src/config/store.js'
+import { SessionProviderService } from '../../../src/session/provider-service.js'
+import { resolveAgentRuntimeOptions } from '../../../src/session/runtime-options.js'
+import type { Session } from '../../../src/session/session.js'
+import { runWithCanonicalSettingsAuthority } from '../../../src/utils/settings/canonicalAuthority.js'
+
 const capture = vi.hoisted(() => ({
   calls: [] as Array<Record<string, unknown>>,
   closeIds: [] as string[],
@@ -149,6 +155,30 @@ function teammateIdentity() {
   }
 }
 
+function installSessionAuthorities(parent: Session, cwd: string): ConfigStore {
+  const home = process.env.AGENC_HOME
+  if (home === undefined) throw new Error('test harness did not install AGENC_HOME')
+  const configStore = new ConfigStore({
+    home,
+    cwd,
+    projectRoot: cwd,
+    projectTrusted: false,
+    env: {},
+    loader: async () => ({ configVersion: 2 }),
+  })
+  const provider = parent.services.provider
+  Object.assign(parent.services, {
+    configStore,
+    runtimeOptions: resolveAgentRuntimeOptions({}),
+    providerService: new SessionProviderService({
+      initialProvider: provider,
+      initialProviderName: 'grok',
+      initialModel: 'grok-4.5',
+    }),
+  })
+  return configStore
+}
+
 describe('in-process teammate canonical rollout ownership', () => {
   it('compacts its isolated rollout, continues, and reopens without parent history leakage', async () => {
     process.env.AGENC_AUTO_COMPACT_WINDOW = '32'
@@ -174,6 +204,7 @@ describe('in-process teammate canonical rollout ownership', () => {
     ])
     const parent = harness.session
     const parentCwd = harness.store.store.cwd
+    const configStore = installSessionAuthorities(parent, parentCwd)
     const rootAdmission = parent.services.executionAdmission
     if (rootAdmission === undefined) {
       throw new Error('missing parent execution admission')
@@ -201,31 +232,33 @@ describe('in-process teammate canonical rollout ownership', () => {
 
     let reopened: InstanceType<typeof RolloutStore> | undefined
     try {
-      const result = await runWithCurrentRuntimeSession(parent, () =>
-        runInProcessTeammate({
-          identity: teammateIdentity(),
-          taskId,
-          prompt: 'Read the large file.',
-          teammateContext: {
-            ...teammateIdentity(),
-            isInProcess: true,
-            abortController,
-          },
-          toolUseContext: {
-            abortController,
-            options: {
-              tools: [],
-              mainLoopModel: 'grok-4.5',
-              mcpClients: [],
+      const result = await runWithCanonicalSettingsAuthority(configStore, () =>
+        runWithCurrentRuntimeSession(parent, () =>
+          runInProcessTeammate({
+            identity: teammateIdentity(),
+            taskId,
+            prompt: 'Read the large file.',
+            teammateContext: {
+              ...teammateIdentity(),
+              isInProcess: true,
+              abortController,
             },
-            getAppState: () => appState,
-            setAppState,
-          } as never,
-          abortController,
-          model: 'grok-4.5',
-          systemPrompt: 'Use tools carefully.',
-          systemPromptMode: 'replace',
-        }),
+            toolUseContext: {
+              abortController,
+              options: {
+                tools: [],
+                mainLoopModel: 'grok-4.5',
+                mcpClients: [],
+              },
+              getAppState: () => appState,
+              setAppState,
+            } as never,
+            abortController,
+            model: 'grok-4.5',
+            systemPrompt: 'Use tools carefully.',
+            systemPromptMode: 'replace',
+          }),
+        ),
       )
 
       expect(result).toEqual(expect.objectContaining({ success: true }))
@@ -311,6 +344,7 @@ describe('in-process teammate canonical rollout ownership', () => {
     const harness = createCompactionTransactionHarness([])
     const parent = harness.session
     const parentCwd = harness.store.store.cwd
+    const configStore = installSessionAuthorities(parent, parentCwd)
     Object.assign(parent, {
       sessionConfiguration: { cwd: parentCwd },
       config: { cwd: parentCwd },
@@ -324,31 +358,33 @@ describe('in-process teammate canonical rollout ownership', () => {
     capture.failNextRun = true
 
     try {
-      const result = await runWithCurrentRuntimeSession(parent, () =>
-        runInProcessTeammate({
-          identity: teammateIdentity(),
-          taskId,
-          prompt: 'Fail this run.',
-          teammateContext: {
-            ...teammateIdentity(),
-            isInProcess: true,
-            abortController,
-          },
-          toolUseContext: {
-            abortController,
-            options: {
-              tools: [],
-              mainLoopModel: 'grok-4.5',
-              mcpClients: [],
+      const result = await runWithCanonicalSettingsAuthority(configStore, () =>
+        runWithCurrentRuntimeSession(parent, () =>
+          runInProcessTeammate({
+            identity: teammateIdentity(),
+            taskId,
+            prompt: 'Fail this run.',
+            teammateContext: {
+              ...teammateIdentity(),
+              isInProcess: true,
+              abortController,
             },
-            getAppState: () => appState,
-            setAppState,
-          } as never,
-          abortController,
-          model: 'grok-4.5',
-          systemPrompt: 'Fail deterministically.',
-          systemPromptMode: 'replace',
-        }),
+            toolUseContext: {
+              abortController,
+              options: {
+                tools: [],
+                mainLoopModel: 'grok-4.5',
+                mcpClients: [],
+              },
+              getAppState: () => appState,
+              setAppState,
+            } as never,
+            abortController,
+            model: 'grok-4.5',
+            systemPrompt: 'Fail deterministically.',
+            systemPromptMode: 'replace',
+          }),
+        ),
       )
 
       expect(result).toMatchObject({

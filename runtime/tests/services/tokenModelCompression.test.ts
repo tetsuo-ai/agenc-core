@@ -32,7 +32,7 @@ describe('Model Tokenizers', () => {
     it('returns bytes per token for model', () => {
       expect(getBytesPerTokenForModel('claude-opus-3-5-20250214')).toBe(3.5)
       expect(getBytesPerTokenForModel('gpt-4o')).toBe(4)
-      expect(getBytesPerTokenForModel('deepseek-chat')).toBe(3.5)
+      expect(getBytesPerTokenForModel('deepseek-v4-flash')).toBe(3.5)
       expect(getBytesPerTokenForModel('minimax-M2.7')).toBe(3.2)
     })
   })

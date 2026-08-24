@@ -5,7 +5,8 @@ import { MailboxProvider } from '../context/mailbox.js';
 import { useEffectEventCompat } from '../hooks/useEffectEventCompat.js';
 import { useSettingsChange } from '../hooks/useSettingsChange.js';
 import { logForDebugging } from '../../utils/debug.js';
-import { createDisabledBypassPermissionsContext, isBypassPermissionsModeDisabled } from '../../utils/permissions/permissionSetup.js';
+import { createDisabledBypassPermissionsContext } from '../../permissions/permission-mode.js';
+import { loadPermissionRulesSnapshot } from '../../permissions/settings.js';
 import { applySettingsChange } from '../../utils/settings/applySettingsChange.js';
 import type { SettingSource } from '../../utils/settings/constants.js';
 import { createStore } from './store.js';
@@ -15,7 +16,7 @@ import { type AppState, type AppStateStore, getDefaultAppState } from './AppStat
 // Follow-up: Remove these re-exports once all callers import directly from the
 // paired AppStateStore module. Kept for back-compat during migration so .ts
 // callers can incrementally move off the .tsx import and stop pulling React.
-export { type AppState, type AppStateStore, type CompletionBoundary, getDefaultAppState, IDLE_SPECULATION_STATE, type SpeculationResult, type SpeculationState } from './AppStateStore.js';
+export { type AppState, type AppStateStore, type CompletionBoundary, getDefaultAppState, getDefaultAppStateForProviderEnvironment, IDLE_SPECULATION_STATE, type SpeculationResult, type SpeculationState } from './AppStateStore.js';
 export const AppStoreContext = React.createContext<AppStateStore | null>(null);
 type Props = {
   children: React.ReactNode;
@@ -50,13 +51,19 @@ export function AppStateProvider(t0: Props) {
   let t2;
   if ($[3] !== store) {
     t2 = () => {
-      const {
-        toolPermissionContext
-      } = store.getState();
-      if (toolPermissionContext.isBypassPermissionsModeAvailable && isBypassPermissionsModeDisabled()) {
-        logForDebugging("Disabling bypass permissions mode on mount (remote settings loaded before mount)");
-        store.setState(_temp);
-      }
+      void loadPermissionRulesSnapshot().then(snapshot => {
+        const {
+          toolPermissionContext
+        } = store.getState();
+        if (toolPermissionContext.isBypassPermissionsModeAvailable && snapshot.bypassPermissionsModeDisabled) {
+          logForDebugging("Disabling bypass permissions mode on mount (managed policy loaded before mount)");
+          store.setState(_temp);
+        }
+      }).catch(error => {
+        logForDebugging(`Failed to load canonical permission policy on mount: ${String(error)}`, {
+          level: 'error'
+        });
+      });
     };
     $[3] = store;
     $[4] = t2;

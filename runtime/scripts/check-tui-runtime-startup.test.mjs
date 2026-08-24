@@ -108,7 +108,6 @@ test("startup PTYs replace poisoned operator roots with private gate state", () 
   const privateHome = path.join(tmpdir(), "private-startup-state");
   const env = tuiGateEnvironment(privateHome, {
     AGENC_AUTH_BACKEND: "remote",
-    AGENC_CONFIG_DIR: path.join(operatorRoot, "config"),
     AGENC_DAEMON_WEBSOCKET_HOST: "0.0.0.0",
     AGENC_DAEMON_WEBSOCKET_PORT: "7766",
     AGENC_HOME: path.join(operatorRoot, ".agenc"),
@@ -125,7 +124,6 @@ test("startup PTYs replace poisoned operator roots with private gate state", () 
 
   assert.equal(env.HOME, path.resolve(privateHome));
   assert.equal(env.AGENC_HOME, path.join(path.resolve(privateHome), ".agenc"));
-  assert.equal(env.AGENC_CONFIG_DIR, env.AGENC_HOME);
   assert.equal(env.TMPDIR, path.join(path.resolve(privateHome), "tmp"));
   assert.equal(env.XDG_CONFIG_HOME, path.join(path.resolve(privateHome), ".config"));
   assert.equal(env.AGENC_AUTH_BACKEND, "local");
@@ -274,7 +272,7 @@ test("private gate default config disables predictions before ordinary TUI start
     assert.equal(
       readFileSync(configPath, "utf8"),
       [
-        "configVersion = 1",
+        "config_version = 2",
         "",
         "[buffer.prediction]",
         'enabled = "off"',
@@ -291,7 +289,7 @@ test("private gate default config disables predictions before ordinary TUI start
     assert.equal(
       readFileSync(configPath, "utf8"),
       [
-        "configVersion = 1",
+        "config_version = 2",
         "",
         "[buffer.prediction]",
         'enabled = "off"',

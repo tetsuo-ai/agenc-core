@@ -17,9 +17,11 @@ const harness = vi.hoisted(() => ({
   },
   columns: 100,
   config: {
-    copyOnSelect: true as boolean | undefined,
-    editorMode: "normal",
-    prStatusFooterEnabled: true as boolean | undefined,
+    tui: {
+      copyOnSelect: true as boolean | undefined,
+      prStatusFooterEnabled: true as boolean | undefined,
+      vimMode: false,
+    },
   },
   features: new Set<string>(),
   fullscreen: false,
@@ -51,9 +53,11 @@ const harness = vi.hoisted(() => ({
     };
     harness.columns = 100;
     harness.config = {
-      copyOnSelect: true,
-      editorMode: "normal",
-      prStatusFooterEnabled: true,
+      tui: {
+        copyOnSelect: true,
+        prStatusFooterEnabled: true,
+        vimMode: false,
+      },
     };
     harness.features = new Set();
     harness.fullscreen = false;
@@ -217,7 +221,17 @@ vi.mock("../../ink/hooks/use-selection.js", () => ({
 }));
 
 vi.mock("../../../utils/config.js", () => ({
-  getGlobalConfig: () => harness.config,
+  getRuntimeState: () => harness.config,
+}));
+
+vi.mock("../../../utils/settings/canonicalAuthority.js", () => ({
+  getCanonicalSettingsAuthority: () => ({
+    current: () => harness.config,
+  }),
+}));
+
+vi.mock("../../../utils/settings/settings.js", () => ({
+  getExecutionAuthoritySettings: () => harness.config,
 }));
 
 vi.mock("../../../utils/platform.js", () => ({
@@ -354,7 +368,7 @@ describe("PromptInputFooterLeftSide render paths", () => {
       await search.dispose();
     }
 
-    harness.config.editorMode = "vim";
+    harness.config.tui.vimMode = true;
     const vim = await renderFooter({ vimMode: "NORMAL" });
     try {
       expect(vim.output()).toContain("-- NORMAL --");
@@ -460,7 +474,7 @@ describe("PromptInputFooterLeftSide render paths", () => {
       await selection.dispose();
     }
 
-    harness.config.copyOnSelect = false;
+    harness.config.tui.copyOnSelect = false;
     harness.isXterm = false;
     harness.platform = "linux";
     const copy = await renderFooter({ suppressHint: true });

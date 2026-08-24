@@ -899,7 +899,7 @@ export async function resolveHookPermissionDecision(
 
 // ─────────────────────────────────────────────────────────────────────
 // Hook + rule merge (AgenC behavior — `resolveHookPermissionDecision`
-// inc-4788 semantics: hook `allow` does NOT bypass settings.json deny/ask).
+// inc-4788 semantics: hook `allow` does NOT bypass config.toml deny/ask).
 // ─────────────────────────────────────────────────────────────────────
 
 export interface MergedHookPermissionDecision {
@@ -925,7 +925,7 @@ export interface MergedHookPermissionDecision {
  *   - no hook                    → defer to caller's normal flow
  *
  * The caller supplies `ruleBasedCheck` — an async function that
- * evaluates settings.json-style rules and returns `null` (no rule
+ * evaluates canonical permission rules and returns `null` (no rule
  * matches) or a concrete {behavior:"deny"|"ask", message}. This keeps
  * the hook+rule seam decoupled from AgenC's permission evaluator
  * internals while still honoring the invariant.

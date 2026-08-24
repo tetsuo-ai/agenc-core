@@ -14,6 +14,7 @@ import {
   PluginManifestError,
   resolveManifestRelativePath,
 } from "./manifest-schema.js";
+import { inspectPluginPackageAuthority } from "./package-authority.js";
 
 export interface ValidationError {
   readonly path: string;
@@ -34,11 +35,27 @@ export interface ValidationResult {
   readonly fileType: "plugin" | "marketplace" | "skill" | "agent" | "command" | "hooks";
 }
 
+function manifestLookupFailure(
+  pluginRoot: string,
+  error: unknown,
+): ValidationResult {
+  const filePath = join(pluginRoot, PLUGIN_MANIFEST_FILE);
+  return {
+    success: false,
+    errors: [{
+      path: filePath,
+      message: error instanceof Error ? error.message : String(error),
+    }],
+    warnings: [],
+    filePath,
+    fileType: "plugin",
+  };
+}
+
 const MARKETPLACE_ONLY_MANIFEST_FIELDS = new Set([
   "category",
   "source",
   "tags",
-  "strict",
   "id",
 ]);
 const MAX_VALIDATION_MARKDOWN_FILES = 512;
@@ -384,7 +401,29 @@ export async function validateManifest(filePath: string): Promise<ValidationResu
     const marketplacePath = join(absolutePath, PLUGIN_MANIFEST_DIR, "marketplace.json");
     const marketplace = await validateMarketplaceManifest(marketplacePath);
     if (marketplace.errors[0]?.code !== "ENOENT") return marketplace;
-    const manifestPath = await findPluginManifestPath(absolutePath);
+    let manifestPath: string | null;
+    try {
+      manifestPath = await findPluginManifestPath(absolutePath);
+    } catch (error) {
+      return manifestLookupFailure(absolutePath, error);
+    }
+    const parsedManifest = await loadPluginManifest(absolutePath).catch(() => null);
+    const packageIssues = await inspectPluginPackageAuthority(
+      absolutePath,
+      parsedManifest?.manifest ?? {},
+    );
+    if (packageIssues.length > 0) {
+      return {
+        success: false,
+        errors: packageIssues.map((issue) => ({
+          path: issue.path,
+          message: issue.message,
+        })),
+        warnings: [],
+        filePath: absolutePath,
+        fileType: "plugin",
+      };
+    }
     return validatePluginManifest(
       manifestPath ?? join(absolutePath, PLUGIN_MANIFEST_DIR, PLUGIN_MANIFEST_FILE),
     );

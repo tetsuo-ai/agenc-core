@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ValidationResult } from "../validation.js";
 import {
@@ -111,20 +111,12 @@ export function parseAgenCPluginCliArgs(
 
 /**
  * Names the plugin components a non-user-scope (repository-controlled)
- * install will silently strip: hooks and MCP servers. Checks both the
- * conventional component files and the manifest declarations.
+ * install will silently strip: hooks and MCP servers declared by the
+ * canonical manifest.
  */
 async function detectProvenanceStrippedComponents(
   pluginRoot: string,
 ): Promise<string[]> {
-  const exists = async (path: string): Promise<boolean> => {
-    try {
-      await stat(path);
-      return true;
-    } catch {
-      return false;
-    }
-  };
   let manifest: Record<string, unknown> = {};
   try {
     const parsed: unknown = JSON.parse(
@@ -134,19 +126,13 @@ async function detectProvenanceStrippedComponents(
       manifest = parsed as Record<string, unknown>;
     }
   } catch {
-    // No readable manifest: fall back to the conventional file checks.
+    // No readable canonical manifest means there is nothing to report here.
   }
   const stripped: string[] = [];
-  if (
-    (await exists(join(pluginRoot, "hooks", "hooks.json"))) ||
-    manifest.hooks !== undefined
-  ) {
+  if (manifest.hooks !== undefined) {
     stripped.push("hooks");
   }
-  if (
-    (await exists(join(pluginRoot, ".mcp.json"))) ||
-    manifest.mcpServers !== undefined
-  ) {
+  if (manifest.mcpServers !== undefined) {
     stripped.push("MCP servers");
   }
   return stripped;
@@ -176,6 +162,7 @@ export async function runAgenCPluginCli(
       case "validate": {
         const result = await validatePluginPath(command.path, {
           marketplace: command.marketplace,
+          workspaceRoot: options.workspaceRoot,
         });
         io.stdout.write(command.json
           ? `${JSON.stringify(result, null, 2)}\n`

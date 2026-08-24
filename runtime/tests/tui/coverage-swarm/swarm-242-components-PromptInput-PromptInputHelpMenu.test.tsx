@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { PromptInputHelpMenu } from "../../../src/tui/components/PromptInput/PromptInputHelpMenu.js";
 import { renderToString } from "../../../src/utils/staticRender.js";
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../remoteAuthSessionContext.fixture.js";
 
 const harness = vi.hoisted(() => ({
   featureEnabled: false,
@@ -24,8 +25,8 @@ vi.mock("../../../src/tui/keybindings/loadUserBindings.js", () => ({
 }));
 
 vi.mock("../../../src/utils/fastMode.js", () => ({
-  isFastModeAvailable: () => false,
-  isFastModeEnabled: () => false,
+  isFastModeAvailableForContext: () => false,
+  isFastModeEnabledForContext: () => false,
 }));
 
 vi.mock("../../../src/utils/platform.js", () => ({
@@ -40,7 +41,7 @@ beforeEach(() => {
 
 async function renderHelpMenu(): Promise<string> {
   return renderToString(
-    <PromptInputHelpMenu dimColor fixedWidth gap={2} paddingX={1} />,
+    <PromptInputHelpMenu dimColor fixedWidth gap={2} paddingX={1} remoteAuthSessionContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />,
     { columns: 140, rows: 30 },
   );
 }

@@ -33,8 +33,12 @@ import {
 import { runWithCwdOverride } from "../utils/cwd.js";
 import {
   clearCurrentRuntimeSession,
+  runWithCurrentRuntimeSession,
   setCurrentRuntimeSession,
 } from "../session/current-session.js";
+import type { Session } from "../session/session.js";
+import { SessionProviderService } from "../session/provider-service.js";
+import { createTestConfigStore } from "../fixtures.js";
 
 vi.mock("bun:bundle", () => ({ feature: () => false }));
 vi.mock("../tools/ScheduleCronTool/CronCreateTool.js", () => ({
@@ -59,12 +63,25 @@ vi.mock("../tools.js", () => ({
   ALL_AGENT_DISALLOWED_TOOLS: [],
 }));
 
-const legacyTestSession = {
-  conversationId: "tool-surface-test-session",
-  services: { admissionRequired: false },
-} as never;
+let legacyTestSession: Session;
 
-beforeEach(() => setCurrentRuntimeSession(legacyTestSession));
+beforeEach(() => {
+  legacyTestSession = {
+    conversationId: "tool-surface-test-session",
+    sessionConfiguration: { cwd: tmpdir() },
+    services: {
+      admissionRequired: false,
+      configStore: createTestConfigStore({ cwd: tmpdir() }),
+      providerService: new SessionProviderService({
+        initialProvider: { name: "stub-provider" } as never,
+        initialProviderName: "grok",
+        initialModel: "test-model",
+        environment: {},
+      }),
+    },
+  } as unknown as Session;
+  setCurrentRuntimeSession(legacyTestSession);
+});
 afterEach(() => clearCurrentRuntimeSession(legacyTestSession));
 
 function permissionContextForWorkspace(workspace?: string) {
@@ -101,12 +118,19 @@ function callCanonicalInWorkspace(
   workspace: string,
   input: Record<string, unknown>,
 ) {
-  return runWithCwdOverride(workspace, () =>
-    tool.call(
-      input,
-      toolContext(workspace),
-      (async () => undefined) as never,
-      {} as never,
+  const workspaceSession = {
+    conversationId: legacyTestSession.conversationId,
+    sessionConfiguration: { cwd: workspace },
+    services: legacyTestSession.services,
+  } as unknown as Session;
+  return runWithCurrentRuntimeSession(workspaceSession, () =>
+    runWithCwdOverride(workspace, () =>
+      tool.call(
+        input,
+        toolContext(workspace),
+        (async () => undefined) as never,
+        {} as never,
+      ),
     ),
   );
 }
@@ -186,13 +210,13 @@ describe("old-stack tool surface consolidation", () => {
       .resolves.toMatchObject({ behavior: "allow" });
   });
 
-  test("system.bash honors legacy Bash permission aliases with precedence", async () => {
+  test("system.bash honors canonical permission rules with precedence", async () => {
     const permissionContext = applyToolApprovalConfigToPermissionContext(
       createEmptyToolPermissionContext(),
       {
-        deny: ["Bash(git:*)"],
-        ask: ["Bash(npm --version)"],
-        allow: ["Bash(echo:*)"],
+        deny: ["system.bash(git:*)"],
+        ask: ["system.bash(npm --version)"],
+        allow: ["system.bash(echo:*)"],
       },
     );
     const context = {
@@ -210,7 +234,7 @@ describe("old-stack tool surface consolidation", () => {
     const denyWinsContext = applyToolApprovalConfigToPermissionContext(
       createEmptyToolPermissionContext(),
       {
-        deny: ["Bash(node:*)"],
+        deny: ["system.bash(node:*)"],
         ask: ["system.bash(node:*)"],
         allow: ["system.bash(node:*)"],
       },
@@ -225,7 +249,7 @@ describe("old-stack tool surface consolidation", () => {
     const askWinsContext = applyToolApprovalConfigToPermissionContext(
       createEmptyToolPermissionContext(),
       {
-        ask: ["Bash(printf:*)"],
+        ask: ["system.bash(printf:*)"],
         allow: ["system.bash(printf:*)"],
       },
     );
@@ -238,7 +262,7 @@ describe("old-stack tool surface consolidation", () => {
 
     const wholeToolDenyContext = applyToolApprovalConfigToPermissionContext(
       createEmptyToolPermissionContext(),
-      { deny: ["Bash"] },
+      { deny: ["system.bash"] },
     );
     await expect(
       tool.checkPermissions?.(
@@ -831,7 +855,7 @@ describe("old-stack tool surface consolidation", () => {
     ]);
   });
 
-  test("legacy tool aliases resolve to canonical agent tools", async () => {
+  test("removed tool aliases do not resolve as agent tools", async () => {
     const { resolveAgentTools } = await import("./AgentTool/agentToolUtils.js");
     const availableTools = [
       CanonicalBashTool,
@@ -850,13 +874,13 @@ describe("old-stack tool surface consolidation", () => {
       true,
     );
 
-    expect(resolved.invalidTools).toEqual([]);
-    expect(resolved.resolvedTools.map((tool) => tool.name)).toEqual([
-      "system.bash",
-      "FileRead",
-      "Edit",
-      "Write",
+    expect(resolved.invalidTools).toEqual([
+      "Bash",
+      "Read",
+      "FileEdit",
+      "FileWrite",
     ]);
+    expect(resolved.resolvedTools).toEqual([]);
 
     const filtered = resolveAgentTools(
       {
@@ -871,6 +895,8 @@ describe("old-stack tool surface consolidation", () => {
 
     expect(filtered.resolvedTools.map((tool) => tool.name)).toEqual([
       "system.bash",
+      "FileRead",
+      "Edit",
       "Write",
     ]);
   });

@@ -62,9 +62,15 @@ vi.mock("../../utils/debug.js", () => ({
 vi.mock("../../utils/log.js", () => ({
   logError: () => {},
 }));
-vi.mock("../../utils/permissions/permissionSetup.js", () => ({
-  createDisabledBypassPermissionsContext: (context: unknown) => context,
-  isBypassPermissionsModeDisabled: () => false,
+vi.mock("../../permissions/settings.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  loadPermissionRulesSnapshot: async () => ({
+    rules: [],
+    managedOnly: false,
+    directories: [],
+    bypassPermissionsModeDisabled: false,
+    disableAutoMode: false,
+  }),
 }));
 vi.mock("../../utils/settings/applySettingsChange.js", () => ({
   applySettingsChange: () => {},

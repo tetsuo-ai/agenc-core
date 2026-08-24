@@ -1,20 +1,18 @@
 /**
- * Ports the donor app-server protocol's JSON-RPC envelope and method-registry
- * shape onto AgenC's daemon control surface.
+ * AgenC daemon JSON-RPC envelope, method registry, and public wire types.
  *
- * Why this lives here:
- *   - AgenC uses dot-separated daemon methods as the stable public protocol,
- *     while the donor app-server protocol uses a broader slash-separated API.
- *
- * Cross-cuts deliberately NOT carried:
- *   - account, plugin, marketplace, app, filesystem, and desktop endpoints
- *     from the donor app-server surface are outside AgenC's daemon protocol.
+ * Public methods use dotted names (`session.create`). Slash names appear only
+ * on the realtime thread surface. Account, plugin, marketplace, app,
+ * filesystem-browser, and desktop endpoints are not part of this protocol.
  */
 
+/** JSON-RPC version required on daemon requests, responses, and notifications. */
 export const JSON_RPC_VERSION = "2.0" as const;
-// 1.2 adds an identity-bearing transcript projection and turn-scoped
-// cancellation. Clients that depend on those race-free semantics must not
-// negotiate with an older daemon that cannot provide them.
+/**
+ * Current daemon protocol version.
+ * 1.2 adds identity-bearing transcript.v2 and turn-scoped cancellation.
+ * Clients that need those semantics must not negotiate an older daemon.
+ */
 export const AGENC_DAEMON_PROTOCOL_VERSION = "1.2.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
@@ -316,8 +314,8 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description:
-      "Tree-scoped cancel: the run plus its queued and running descendants " +
-      "(frozen Wave-B contract). Durable cascade first, live interrupt second.",
+      "Tree-scoped cancel: the run plus its queued and running descendants. " +
+      "Durable cascade first, live interrupt second.",
   },
   "run.start": {
     method: "run.start",
@@ -1013,6 +1011,20 @@ export function isAgenCDaemonNotificationMethod(
   );
 }
 
+export interface AgentRuntimeOptionsParams extends JsonObject {
+  readonly simpleMode: boolean;
+  readonly stdinDataMode: boolean;
+  readonly remoteMode: boolean;
+  readonly remoteMemoryRoot?: string;
+  readonly coworkMemoryPathOverride?: string;
+  readonly coworkMemoryExtraGuidelines?: string;
+  readonly posixShellPath?: string;
+  readonly commandWrapperArgv?: readonly string[];
+  readonly sessionTempRoot?: string;
+  readonly pluginStorageRoot?: string;
+  readonly allowUntrustedHooks: boolean;
+}
+
 export interface AgentCreateParams extends JsonObject {
   readonly objective?: string;
   /**
@@ -1033,6 +1045,8 @@ export interface AgentCreateParams extends JsonObject {
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  /** Absolute explicit config layer selected by the invoking client. */
+  readonly configPath?: string;
   readonly instructions?: string;
   readonly initialContent?: MessageContent;
   /**
@@ -1064,10 +1078,10 @@ export interface AgentCreateParams extends JsonObject {
   /**
    * Session-wide permission mode override for the spawned agent. When
    * set, the daemon-side bootstrap honors this in place of the project-
-   * trust default. Used by `agenc --yolo`, which sends
+   * trust default. Used by `agenc --dangerously-bypass-approvals-and-sandbox`, which sends
    * `permissionMode: "bypassPermissions"` so the spawned agent's session
    * approvalPolicy resolves to `"never"` regardless of project trust.
-   * Without this, --yolo only affected the local CLI bootstrap and was
+   * Without this, --dangerously-bypass-approvals-and-sandbox only affected the local CLI bootstrap and was
    * dropped on the wire to the daemon.
    */
   readonly permissionMode?:
@@ -1077,6 +1091,8 @@ export interface AgentCreateParams extends JsonObject {
     | "bypassPermissions"
     | "dontAsk"
     | "auto";
+  /** Immutable operator policy resolved by the creating client. */
+  readonly runtimeOptions: AgentRuntimeOptionsParams;
   /**
    * Per-invocation environment overrides for the spawned agent. Used by
    * the TUI to propagate `OPENAI_BASE_URL` (and similar provider-config
@@ -1087,7 +1103,9 @@ export interface AgentCreateParams extends JsonObject {
    *
    * Only string values are forwarded. Keys collected from a curated
    * allow-list (provider URLs, API keys, proxy settings) to avoid
-   * leaking unrelated env into agent processes.
+   * leaking unrelated env into agent processes. Empty strings are explicit
+   * clear markers so an unset client value cannot inherit stale daemon-start
+   * provider/config state.
    */
   readonly envOverrides?: { readonly [key: string]: string };
 }
@@ -1358,7 +1376,7 @@ export interface SessionCancelTurnParams extends JsonObject {
 
 export interface SessionMcpServerConfig extends JsonObject {
   readonly name: string;
-  readonly transport?: "stdio" | "sse" | "http" | "websocket" | "ws";
+  readonly transport?: "stdio" | "sse" | "http" | "websocket";
   readonly command?: string;
   readonly args?: readonly string[];
   readonly endpoint?: string;

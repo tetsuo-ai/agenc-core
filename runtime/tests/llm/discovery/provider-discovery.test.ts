@@ -179,26 +179,12 @@ describe("provider discovery", () => {
         GITHUB_TOKEN: "github-key",
       },
     });
-    const agencAliasReport = await collectProviderAvailability({
-      authBackend: authBackend("local", "free"),
-      checkLocal: false,
-      config: defaultConfig(),
-      env: {
-        AGENC_XAI_API_KEY: "agenc-key",
-      },
-    });
     const entries = byProvider(report.entries);
-    const agencAliasEntries = byProvider(agencAliasReport.entries);
 
     expect(entries.get("grok")).toMatchObject({
       usable: true,
       keyStatus: "present",
       keyEnvVar: "GROK_API_KEY",
-    });
-    expect(agencAliasEntries.get("grok")).toMatchObject({
-      usable: true,
-      keyStatus: "present",
-      keyEnvVar: "AGENC_XAI_API_KEY",
     });
     expect(entries.get("lmstudio")).toMatchObject({
       keyStatus: "present",

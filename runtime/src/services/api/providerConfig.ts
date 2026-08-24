@@ -1,23 +1,26 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-import { existsSync, readFileSync } from 'node:fs'
 import { isIP } from 'node:net'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
 
 import {
-  isAgencRefreshFailureCoolingDown as isProviderCodeRefreshFailureCoolingDown,
   readAgencCredentials as readProviderCodeCredentials,
   type AgencCredentialBlob as ProviderCodeCredentialBlob,
 } from '../../utils/agencCredentials.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
 import {
   asTrimmedString,
   parseChatgptAccountId,
 } from './openAiCodeOAuthShared.js'
-import { DEFAULT_GEMINI_BASE_URL } from 'src/utils/providerProfile.js'
+import {
+  getSelectedProviderEnvironment,
+  getSelectedProviderModel,
+  getSelectedProviderName,
+} from '../../utils/model/providers.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
+import { resolveSecureStorageHome } from '../../utils/secureStorage/home.js'
 
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1'
+export const DEFAULT_GEMINI_BASE_URL =
+  'https://generativelanguage.googleapis.com/v1beta/openai'
 export const DEFAULT_PROVIDER_CODE_BASE_URL = 'https://chatgpt.com/backend-api/providerCode'
 const DEFAULT_MISTRAL_BASE_URL = 'https://api.mistral.ai/v1'
 /** Default GitHub Copilot API model when user selects copilot / github:copilot */
@@ -99,8 +102,7 @@ export type ResolvedProviderRequest = {
 export type ResolvedProviderCodeCredentials = {
   apiKey: string
   accountId?: string
-  authPath?: string
-  source: 'env' | 'secure-storage' | 'auth.json' | 'none'
+  source: 'env' | 'secure-storage' | 'none'
 }
 
 type ModelDescriptor = {
@@ -170,27 +172,6 @@ function asNamedEnvUrl(
   }
 
   return trimmed
-}
-
-function readNestedString(
-  value: unknown,
-  paths: string[][],
-): string | undefined {
-  for (const path of paths) {
-    let current = value
-    let valid = true
-    for (const key of path) {
-      if (!current || typeof current !== 'object' || !(key in current)) {
-        valid = false
-        break
-      }
-      current = (current as Record<string, unknown>)[key]
-    }
-    if (!valid) continue
-    const stringValue = asTrimmedString(current)
-    if (stringValue) return stringValue
-  }
-  return undefined
 }
 
 function parseReasoningEffort(value: string | undefined): ReasoningEffort | undefined {
@@ -503,35 +484,39 @@ export function getGithubEndpointType(
 }
 
 export function resolveProviderRequest(options?: {
+  provider?: string
   model?: string
+  environment?: ProviderEnvironment
   baseUrl?: string
   fallbackModel?: string
   reasoningEffortOverride?: ReasoningEffort
   apiFormat?: OpenAiCompatibleApiFormat | string
 }): ResolvedProviderRequest {
-  const isGithubMode = isEnvTruthy(process.env.AGENC_USE_GITHUB)
-  const isMistralMode = isEnvTruthy(process.env.AGENC_USE_MISTRAL)
-  const isGeminiMode = isEnvTruthy(process.env.AGENC_USE_GEMINI)
+  const hasExplicitEnvironment = options?.environment !== undefined
+  const environment = options?.environment ?? getSelectedProviderEnvironment()
+  const selectedProvider =
+    options?.provider?.trim().toLowerCase() ||
+    environment.AGENC_PROVIDER?.trim().toLowerCase() ||
+    (hasExplicitEnvironment ? 'openai' : getSelectedProviderName())
+  const isGithubMode = selectedProvider === 'github'
+  const isMistralMode = selectedProvider === 'mistral'
+  const isGeminiMode = selectedProvider === 'gemini'
   const requestedModel =
     options?.model?.trim() ||
-    (isMistralMode
-      ? process.env.MISTRAL_MODEL?.trim()
-      : process.env.OPENAI_MODEL?.trim()) ||
-    (isGeminiMode
-      ? process.env.GEMINI_MODEL?.trim()
-      : process.env.OPENAI_MODEL?.trim()) ||
+    environment.AGENC_MODEL?.trim() ||
     options?.fallbackModel?.trim() ||
+    (hasExplicitEnvironment ? '' : getSelectedProviderModel().trim()) ||
     (isGithubMode ? 'github:copilot' : 'gpt-4o')
   const descriptor = parseModelDescriptor(requestedModel)
   const explicitBaseUrl = asEnvUrl(options?.baseUrl)
 
   const normalizedMistralEnvBaseUrl = asNamedEnvUrl(
-    process.env.MISTRAL_BASE_URL,
+    environment.MISTRAL_BASE_URL,
     'MISTRAL_BASE_URL',
   )
 
   const normalizedGeminiEnvBaseUrl = asNamedEnvUrl(
-    process.env.GEMINI_BASE_URL,
+    environment.GEMINI_BASE_URL,
     'GEMINI_BASE_URL',
   )
 
@@ -539,21 +524,21 @@ export function resolveProviderRequest(options?: {
     ? normalizedMistralEnvBaseUrl
     : isGeminiMode
     ? normalizedGeminiEnvBaseUrl
-    : asNamedEnvUrl(process.env.OPENAI_BASE_URL, 'OPENAI_BASE_URL')
+    : asNamedEnvUrl(environment.OPENAI_BASE_URL, 'OPENAI_BASE_URL')
 
   // In Mistral mode, a literal "undefined" MISTRAL_BASE_URL is treated as
   // misconfiguration and falls back to OPENAI_API_BASE, then
   // DEFAULT_MISTRAL_BASE_URL for a safe default endpoint.
   const fallbackEnvBaseUrl = isMistralMode
     ? (primaryEnvBaseUrl === undefined
-      ? asNamedEnvUrl(process.env.OPENAI_API_BASE, 'OPENAI_API_BASE') ?? DEFAULT_MISTRAL_BASE_URL
+      ? asNamedEnvUrl(environment.OPENAI_API_BASE, 'OPENAI_API_BASE') ?? DEFAULT_MISTRAL_BASE_URL
       : undefined)
     : isGeminiMode
     ? (primaryEnvBaseUrl === undefined
-      ? asNamedEnvUrl(process.env.OPENAI_API_BASE, 'OPENAI_API_BASE') ?? DEFAULT_GEMINI_BASE_URL
+      ? asNamedEnvUrl(environment.OPENAI_API_BASE, 'OPENAI_API_BASE') ?? DEFAULT_GEMINI_BASE_URL
       : undefined)
     : (primaryEnvBaseUrl === undefined
-      ? asNamedEnvUrl(process.env.OPENAI_API_BASE, 'OPENAI_API_BASE')
+      ? asNamedEnvUrl(environment.OPENAI_API_BASE, 'OPENAI_API_BASE')
       : undefined)
 
   const envBaseUrlRaw =
@@ -569,7 +554,8 @@ export function resolveProviderRequest(options?: {
 
   const rawBaseUrl = explicitBaseUrl ?? envBaseUrl
 
-  const shellModel = process.env.OPENAI_MODEL?.trim() ?? ''
+  const shellModel =
+    environment.AGENC_MODEL?.trim() || requestedModel
   const envIsProviderCodeShortcut = isOpenAiProviderCodeShortcutAlias(shellModel)
   const envResolvedProviderCodeModel = envIsProviderCodeShortcut
     ? parseModelDescriptor(shellModel).baseModel
@@ -599,7 +585,7 @@ export function resolveProviderRequest(options?: {
 
   const requestedApiFormat =
     parseOpenAiCompatibleApiFormat(options?.apiFormat) ??
-    parseOpenAiCompatibleApiFormat(process.env.OPENAI_API_FORMAT)
+    parseOpenAiCompatibleApiFormat(environment.OPENAI_API_FORMAT)
   const transport: ProviderTransport =
     shouldUseProviderCodeTransport(requestedModel, finalBaseUrl) ||
       (isGithubCopilot && shouldUseGithubResponsesApi(githubResolvedModel))
@@ -638,20 +624,31 @@ export function resolveProviderRequest(options?: {
   }
 }
 
-export function getAdditionalModelOptionsCacheScope(): string | null {
-  if (!isEnvTruthy(process.env.AGENC_USE_OPENAI)) {
-    if (!isEnvTruthy(process.env.AGENC_USE_GEMINI) &&
-        !isEnvTruthy(process.env.AGENC_USE_MISTRAL) &&
-        !isEnvTruthy(process.env.AGENC_USE_GITHUB) &&
-        !isEnvTruthy(process.env.AGENC_USE_BEDROCK) &&
-        !isEnvTruthy(process.env.AGENC_USE_VERTEX) &&
-        !isEnvTruthy(process.env.AGENC_USE_FOUNDRY)) {
-      return 'firstParty'
-    }
+export function getAdditionalModelOptionsCacheScope(
+  provider?: string,
+  selection?: {
+    model?: string
+    environment?: ProviderEnvironment
+  },
+): string | null {
+  const selectedProvider = getSelectedProviderName(provider)
+  if (selectedProvider === 'anthropic') return 'firstParty'
+  if (
+    selectedProvider !== 'openai' &&
+    selectedProvider !== 'openai-compatible' &&
+    selectedProvider !== 'lmstudio' &&
+    selectedProvider !== 'ollama'
+  ) {
     return null
   }
 
-  const request = resolveProviderRequest()
+  const request = resolveProviderRequest({
+    provider: selectedProvider,
+    ...(selection?.model !== undefined ? { model: selection.model } : {}),
+    ...(selection?.environment !== undefined
+      ? { environment: selection.environment }
+      : {}),
+  })
   if (request.transport !== 'chat_completions') {
     return null
   }
@@ -661,99 +658,6 @@ export function getAdditionalModelOptionsCacheScope(): string | null {
   }
 
   return `openai:${request.baseUrl.toLowerCase()}`
-}
-
-function resolveProviderCodeAuthPath(
-  env: NodeJS.ProcessEnv = process.env,
-): string {
-  const explicit = asTrimmedString(env.PROVIDER_CODE_AUTH_JSON_PATH)
-  if (explicit) return explicit
-
-  const providerCodeHome = asTrimmedString(env.PROVIDER_CODE_HOME)
-  if (providerCodeHome) return join(providerCodeHome, 'auth.json')
-
-  return join(homedir(), '.providerCode', 'auth.json')
-}
-
-function loadProviderCodeAuthJson(
-  authPath: string,
-): Record<string, unknown> | undefined {
-  if (!existsSync(authPath)) return undefined
-  try {
-    const raw = readFileSync(authPath, 'utf8')
-    const parsed = JSON.parse(raw)
-    return parsed && typeof parsed === 'object'
-      ? (parsed as Record<string, unknown>)
-      : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function resolveProviderCodeAuthJsonCredentials(options: {
-  authJson: Record<string, unknown> | undefined
-  authPath: string
-  envAccountId?: string
-  missingSource?: ResolvedProviderCodeCredentials['source']
-}): ResolvedProviderCodeCredentials {
-  const { authJson, authPath, envAccountId } = options
-
-  if (!authJson) {
-    return {
-      apiKey: '',
-      authPath,
-      source: options.missingSource ?? 'none',
-    }
-  }
-
-  const apiKey = readNestedString(authJson, [
-    ['openai_api_key'],
-    ['openaiApiKey'],
-    ['access_token'],
-    ['accessToken'],
-    ['tokens', 'access_token'],
-    ['tokens', 'accessToken'],
-    ['auth', 'access_token'],
-    ['auth', 'accessToken'],
-    ['token', 'access_token'],
-    ['token', 'accessToken'],
-  ])
-  // OIDC identity tokens can carry the ChatGPT account id, but they are not
-  // valid bearer credentials for ProviderCode API requests.
-  const idToken = readNestedString(authJson, [
-    ['id_token'],
-    ['idToken'],
-    ['tokens', 'id_token'],
-    ['tokens', 'idToken'],
-  ])
-  const accountId =
-    envAccountId ??
-    readNestedString(authJson, [
-      ['account_id'],
-      ['accountId'],
-      ['tokens', 'account_id'],
-      ['tokens', 'accountId'],
-      ['auth', 'account_id'],
-      ['auth', 'accountId'],
-    ]) ??
-    parseChatgptAccountId(apiKey) ??
-    parseChatgptAccountId(idToken)
-
-  if (!apiKey) {
-    return {
-      apiKey: '',
-      accountId,
-      authPath,
-      source: options.missingSource ?? 'none',
-    }
-  }
-
-  return {
-    apiKey,
-    accountId,
-    authPath,
-    source: 'auth.json',
-  }
 }
 
 function resolveStoredProviderCodeCredentials(options: {
@@ -776,11 +680,8 @@ function resolveStoredProviderCodeCredentials(options: {
   }
 }
 
-function resolveEnvOrAuthJsonProviderCodeCredentials(
+function resolveEnvProviderCodeCredentials(
   env: NodeJS.ProcessEnv,
-  options?: {
-    explicitAuthPathOnly?: boolean
-  },
 ): ResolvedProviderCodeCredentials {
   const envApiKey =
     asTrimmedString(env.PROVIDER_CODE_API_KEY) ??
@@ -798,25 +699,11 @@ function resolveEnvOrAuthJsonProviderCodeCredentials(
     }
   }
 
-  const explicitAuthPathConfigured = Boolean(
-    asTrimmedString(env.PROVIDER_CODE_AUTH_JSON_PATH) ?? asTrimmedString(env.PROVIDER_CODE_HOME),
-  )
-
-  if (!explicitAuthPathConfigured && options?.explicitAuthPathOnly) {
-    return {
-      apiKey: '',
-      accountId: envAccountId,
-      source: 'none',
-    }
+  return {
+    apiKey: '',
+    accountId: envAccountId,
+    source: 'none',
   }
-
-  const authPath = resolveProviderCodeAuthPath(env)
-  const authJson = loadProviderCodeAuthJson(authPath)
-  return resolveProviderCodeAuthJsonCredentials({
-    authJson,
-    authPath,
-    envAccountId,
-  })
 }
 
 export function resolveRuntimeOpenAiCodeCredentials(options?: {
@@ -827,26 +714,20 @@ export function resolveRuntimeOpenAiCodeCredentials(options?: {
   >
 }): ResolvedProviderCodeCredentials {
   const env = options?.env ?? process.env
-  const explicitCredentials = resolveEnvOrAuthJsonProviderCodeCredentials(env, {
-    explicitAuthPathOnly: true,
-  })
-  const explicitAuthPathConfigured = Boolean(
-    asTrimmedString(env.PROVIDER_CODE_AUTH_JSON_PATH) ?? asTrimmedString(env.PROVIDER_CODE_HOME),
-  )
+  const explicitCredentials = resolveEnvProviderCodeCredentials(env)
   const hasStoredCredentialsOption = Boolean(
     options &&
       Object.prototype.hasOwnProperty.call(options, 'storedCredentials'),
   )
 
-  if (
-    explicitAuthPathConfigured ||
-    explicitCredentials.source === 'env' ||
-    explicitCredentials.source === 'auth.json'
-  ) {
+  if (explicitCredentials.source === 'env') {
     return explicitCredentials
   }
 
-  if (options?.storedCredentials?.accessToken) {
+  if (
+    options?.storedCredentials?.apiKey ||
+    options?.storedCredentials?.accessToken
+  ) {
     return resolveStoredProviderCodeCredentials({
       storedCredentials: options.storedCredentials,
       envAccountId:
@@ -856,7 +737,7 @@ export function resolveRuntimeOpenAiCodeCredentials(options?: {
   }
 
   if (hasStoredCredentialsOption) {
-    return resolveEnvOrAuthJsonProviderCodeCredentials(env)
+    return explicitCredentials
   }
 
   return resolveProviderCodeApiCredentials(env)
@@ -869,57 +750,23 @@ export function resolveProviderCodeApiCredentials(
     asTrimmedString(env.PROVIDER_CODE_ACCOUNT_ID) ??
     asTrimmedString(env.CHATGPT_ACCOUNT_ID) ??
     asTrimmedString(env.AGENC_ACCOUNT_ID)
-  const envOrExplicitAuthJsonCredentials = resolveEnvOrAuthJsonProviderCodeCredentials(
-    env,
-    {
-      explicitAuthPathOnly: true,
-    },
-  )
+  const envCredentials = resolveEnvProviderCodeCredentials(env)
 
-  if (
-    envOrExplicitAuthJsonCredentials.source === 'env' ||
-    envOrExplicitAuthJsonCredentials.source === 'auth.json' ||
-    envOrExplicitAuthJsonCredentials.authPath
-  ) {
-    return envOrExplicitAuthJsonCredentials
+  if (envCredentials.source === 'env') {
+    return envCredentials
   }
 
-  const storedCredentials = readProviderCodeCredentials()
-  if (storedCredentials?.accessToken) {
-    const resolvedStoredCredentials = resolveStoredProviderCodeCredentials({
+  const storedCredentials = readProviderCodeCredentials(
+    resolveSecureStorageHome(env),
+  )
+  if (storedCredentials?.apiKey || storedCredentials?.accessToken) {
+    return resolveStoredProviderCodeCredentials({
       storedCredentials,
       envAccountId,
     })
-
-    const shouldCheckDefaultAuthJson =
-      !resolvedStoredCredentials.accountId ||
-      isProviderCodeRefreshFailureCoolingDown(storedCredentials)
-
-    if (!shouldCheckDefaultAuthJson) {
-      return resolvedStoredCredentials
-    }
-
-    const authPath = resolveProviderCodeAuthPath(env)
-    const authJson = loadProviderCodeAuthJson(authPath)
-    const resolvedAuthJsonCredentials = resolveProviderCodeAuthJsonCredentials({
-      authJson,
-      authPath,
-      envAccountId,
-    })
-
-    if (resolvedAuthJsonCredentials.apiKey) {
-      return {
-        ...resolvedAuthJsonCredentials,
-        accountId:
-          resolvedAuthJsonCredentials.accountId ??
-          resolvedStoredCredentials.accountId,
-      }
-    }
-
-    return resolvedStoredCredentials
   }
 
-  return resolveEnvOrAuthJsonProviderCodeCredentials(env)
+  return envCredentials
 }
 
 function getReasoningEffortForModel(model: string): ReasoningEffort | undefined {

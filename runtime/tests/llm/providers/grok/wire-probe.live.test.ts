@@ -1,9 +1,7 @@
-import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import type { LLMStreamChunk } from "../../types.js";
+import { readXaiOauthAccessToken } from "../../../utils/xaiOauthCredentials.js";
 import { GrokProvider } from "./adapter.js";
 
 // LIVE wire probe — talks to the real xAI API with the local OAuth grant.
@@ -16,10 +14,7 @@ import { GrokProvider } from "./adapter.js";
 const RUN = process.env.GROK_WIRE_PROBE === "1";
 
 function oauthBearer(): string {
-  const credentials = JSON.parse(
-    readFileSync(join(homedir(), ".agenc", ".credentials.json"), "utf8"),
-  ) as { xaiOauth?: { accessToken?: string } };
-  const token = credentials.xaiOauth?.accessToken;
+  const token = readXaiOauthAccessToken();
   if (!token) throw new Error("no xai oauth access token available");
   return token;
 }

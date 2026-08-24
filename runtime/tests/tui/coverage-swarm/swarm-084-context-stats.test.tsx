@@ -3,7 +3,7 @@ import { PassThrough } from "node:stream";
 import React from "react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { saveCurrentProjectConfig } from "src/utils/config.js";
+import { saveCurrentProjectRuntimeState } from "src/utils/config.js";
 import { createRoot, Text } from "src/tui/ink.js";
 import {
   createStatsStore,
@@ -20,7 +20,7 @@ vi.mock("src/utils/config.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("src/utils/config.js")>();
   return {
     ...actual,
-    saveCurrentProjectConfig: vi.fn(),
+    saveCurrentProjectRuntimeState: vi.fn(),
   };
 });
 
@@ -129,7 +129,7 @@ function HookProbe({
 
 afterEach(() => {
   vi.restoreAllMocks();
-  vi.mocked(saveCurrentProjectConfig).mockClear();
+  vi.mocked(saveCurrentProjectRuntimeState).mockClear();
 });
 
 describe("stats context coverage swarm row 084", () => {
@@ -181,7 +181,7 @@ describe("stats context coverage swarm row 084", () => {
       });
 
       exitListener?.(0);
-      expect(saveCurrentProjectConfig).not.toHaveBeenCalled();
+      expect(saveCurrentProjectRuntimeState).not.toHaveBeenCalled();
 
       root.unmount();
       await waitFor(() => {

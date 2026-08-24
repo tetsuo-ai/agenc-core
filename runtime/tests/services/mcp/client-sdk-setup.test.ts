@@ -8,6 +8,12 @@ import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
 import { afterEach, test, vi } from 'vitest'
 import type { McpSamplingHandlers } from './hostCapabilities.js'
+import { resolveHomeContext } from '../../../src/config/home.js'
+
+const TEST_HOME = resolveHomeContext(
+  { AGENC_HOME: '/tmp/agenc-mcp-client-sdk-test' },
+  { platformHome: '/tmp' },
+)
 
 type FakeTransport = {
   serverName: string
@@ -49,9 +55,6 @@ const nativeFetchLog: Array<{
   dispatcher?: unknown
 }> = []
 const tempDirs: string[] = []
-const originalLargeOutputFiles = process.env.ENABLE_MCP_LARGE_OUTPUT_FILES
-const originalMcpTimeout = process.env.MCP_TIMEOUT
-const originalShellPrefix = process.env.AGENC_SHELL_PREFIX
 const mutableGlobal = globalThis as unknown as {
   Bun?: unknown
   WebSocket?: unknown
@@ -276,21 +279,6 @@ afterEach(async () => {
   requestLog.length = 0
   fetchLog.length = 0
   nativeFetchLog.length = 0
-  if (originalLargeOutputFiles === undefined) {
-    delete process.env.ENABLE_MCP_LARGE_OUTPUT_FILES
-  } else {
-    process.env.ENABLE_MCP_LARGE_OUTPUT_FILES = originalLargeOutputFiles
-  }
-  if (originalMcpTimeout === undefined) {
-    delete process.env.MCP_TIMEOUT
-  } else {
-    process.env.MCP_TIMEOUT = originalMcpTimeout
-  }
-  if (originalShellPrefix === undefined) {
-    delete process.env.AGENC_SHELL_PREFIX
-  } else {
-    process.env.AGENC_SHELL_PREFIX = originalShellPrefix
-  }
   if (originalBun === undefined) {
     delete mutableGlobal.Bun
   } else {
@@ -515,8 +503,8 @@ test('prefetchAllMcpResources includes MCP skill commands when feature enabled',
     scope: 'local',
   } as const
 
-  const first = await prefetchAllMcpResources({ 'stdio-demo': config })
-  const second = await prefetchAllMcpResources({ 'stdio-demo': config })
+  const first = await prefetchAllMcpResources(TEST_HOME, { 'stdio-demo': config })
+  const second = await prefetchAllMcpResources(TEST_HOME, { 'stdio-demo': config })
 
   assert.deepEqual(
     first.commands.map(command => command.name),
@@ -549,7 +537,7 @@ test('prefetchAllMcpResources reports disabled servers before connecting', async
 
   const { prefetchAllMcpResources } = await import('./client.js')
 
-  const result = await prefetchAllMcpResources({
+  const result = await prefetchAllMcpResources(TEST_HOME, {
     'early-disabled': {
       type: 'http',
       url: 'https://example.test/early',
@@ -593,7 +581,7 @@ test('prefetchAllMcpResources reports a failed client when a server disable chec
   }))
 
   const { prefetchAllMcpResources } = await import('./client.js')
-  const result = await prefetchAllMcpResources({
+  const result = await prefetchAllMcpResources(TEST_HOME, {
     'throw-late': {
       type: 'stdio',
       command: 'demo-server',
@@ -621,7 +609,7 @@ test('prefetchAllMcpResources resolves empty results when batch setup throws', a
   }))
 
   const { prefetchAllMcpResources } = await import('./client.js')
-  const result = await prefetchAllMcpResources({
+  const result = await prefetchAllMcpResources(TEST_HOME, {
     'throw-early': {
       type: 'stdio',
       command: 'demo-server',
@@ -665,7 +653,7 @@ test('reconnectMcpServerImpl handles MCP skills being disabled during lazy looku
   } as const
 
   await clearServerCache('stdio-demo', config)
-  const result = await reconnectMcpServerImpl('stdio-demo', config)
+  const result = await reconnectMcpServerImpl(TEST_HOME, 'stdio-demo', config)
 
   assert.equal(result.client.type, 'connected')
   assert.deepEqual(result.commands, [])
@@ -695,7 +683,7 @@ test('prefetchAllMcpResources skips lazy MCP skills when feature disables before
   const { prefetchAllMcpResources } = await import('./client.js')
   ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
     { VERSION: 'test' }
-  const result = await prefetchAllMcpResources({
+  const result = await prefetchAllMcpResources(TEST_HOME, {
     'stdio-demo': {
       type: 'stdio',
       command: 'demo-server',
@@ -754,7 +742,7 @@ test('clearServerCache clears pending lazy MCP skills cache after import resolve
     scope: 'local',
   } as const
 
-  const prefetchPromise = prefetchAllMcpResources({ 'stdio-demo': config })
+  const prefetchPromise = prefetchAllMcpResources(TEST_HOME, { 'stdio-demo': config })
   for (let attempt = 0; attempt < 50 && !resolveSkillsModule; attempt++) {
     await Promise.resolve()
   }
@@ -931,7 +919,7 @@ test('connectToServer routes sampling requests through supplied handlers', async
   await result.cleanup()
 })
 
-test('connectToServer quotes stdio argv when a shell prefix is configured', async () => {
+test('connectToServer quotes stdio argv for the session command wrapper', async () => {
   vi.resetModules()
   vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
     Client: FakeClient,
@@ -940,7 +928,6 @@ test('connectToServer quotes stdio argv when a shell prefix is configured', asyn
     StdioClientTransport: FakeStdioTransport,
   }))
 
-  process.env.AGENC_SHELL_PREFIX = 'bash -lc'
   const { connectToServer, formatMcpShellPrefixCommand } = await import('./client.js')
   ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
     { VERSION: 'test' }
@@ -956,18 +943,27 @@ test('connectToServer quotes stdio argv when a shell prefix is configured', asyn
     scope: 'local',
   } as const
 
-  const result = await connectToServer('stdio-demo', config)
+  const result = await connectToServer('stdio-demo', config, undefined, {
+    runtimeOptions: {
+      simpleMode: false,
+      stdinDataMode: false,
+      remoteMode: false,
+      allowUntrustedHooks: false,
+      commandWrapperArgv: ['bash', '-lc'],
+    },
+  })
 
   assert.equal(result.type, 'connected')
-  assert.equal(fakeStdioTransports[0]?.command, 'bash -lc')
+  assert.equal(fakeStdioTransports[0]?.command, 'bash')
   assert.deepEqual(fakeStdioTransports[0]?.args, [
+    '-lc',
     formatMcpShellPrefixCommand(config.command, config.args),
   ])
   assert.notEqual(
     fakeStdioTransports[0]?.args[0],
     [config.command, ...config.args].join(' '),
   )
-  const shellCommand = fakeStdioTransports[0]?.args[0] ?? ''
+  const shellCommand = fakeStdioTransports[0]?.args[1] ?? ''
   assert.equal(shellCommand.includes("'$(touch /tmp/agenc-mcp-pwned)'"), true)
   assert.equal(shellCommand.includes("'; echo pwned'"), true)
 
@@ -1483,7 +1479,7 @@ test('connectToServer preserves original lifecycle handlers during remote close 
     type: 'sse',
     url: 'https://example.test/lifecycle',
     scope: 'local',
-  })
+  }, undefined, { home: TEST_HOME })
   assert.equal(result.type, 'connected')
   if (result.type !== 'connected') {
     assert.fail(result.error)
@@ -1529,7 +1525,7 @@ test('connectToServer forwards HTTP session expiry to the original error handler
     type: 'http',
     url: 'https://example.test/session-expired',
     scope: 'local',
-  })
+  }, undefined, { home: TEST_HOME })
   assert.equal(result.type, 'connected')
   if (result.type !== 'connected') {
     assert.fail(result.error)
@@ -1669,7 +1665,7 @@ test('reconnectMcpServerImpl rebuilds connected clients with tools and resource 
     StdioClientTransport: FakeStdioTransport,
   }))
 
-  const { reconnectMcpServerImpl } = await import('./client.js')
+  const { connectToServer, reconnectMcpServerImpl } = await import('./client.js')
   ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
     { VERSION: 'test' }
   const config = {
@@ -1679,7 +1675,10 @@ test('reconnectMcpServerImpl rebuilds connected clients with tools and resource 
     scope: 'local',
   } as const
 
-  const result = await reconnectMcpServerImpl('stdio-demo', config)
+  const initial = await connectToServer('stdio-demo', config)
+  assert.equal(initial.type, 'connected')
+
+  const result = await reconnectMcpServerImpl(TEST_HOME, 'stdio-demo', config)
 
   assert.equal(result.client.type, 'connected')
   assert.deepEqual(
@@ -1735,7 +1734,10 @@ test('connectToServer creates in-process Chrome MCP clients without spawning std
     () => chromeToolRenderingMock,
   )
   vi.doMock('../../../src/utils/agencInChrome/mcpServer.js', () => ({
-    createChromeContext: (env?: Record<string, string>) => ({ env }),
+    createChromeContext: (
+      providerEnvironment: Record<string, string | undefined>,
+      env?: Record<string, string>,
+    ) => ({ providerEnvironment, env }),
   }))
   vi.doMock('@ant/agenc-for-chrome-mcp', () => ({
     createAgenCForChromeMcpServer: (context: unknown) => {
@@ -1777,6 +1779,7 @@ test('connectToServer creates in-process Chrome MCP clients without spawning std
   assert.equal(result.type, 'connected')
   assert.equal(fakeStdioTransports.length, 0)
   assert.deepEqual(fakeChromeMcpServers[0]?.context, {
+    providerEnvironment: {},
     env: { PROFILE: 'default' },
   })
   assert.equal(fakeChromeMcpServers[0]?.connectedTransport, linkedServerTransport)
@@ -1849,7 +1852,6 @@ test('connectToServer cleanup logs in-process server and client close failures',
 
 test('connectToServer times out hanging in-process Chrome connections and cleans up', async () => {
   vi.resetModules()
-  process.env.MCP_TIMEOUT = '5'
   vi.useFakeTimers()
   const linkedClientTransport: FakeTransport = {
     serverName: 'hanging',
@@ -1898,7 +1900,7 @@ test('connectToServer times out hanging in-process Chrome connections and cleans
       command: 'should-not-spawn',
       args: [],
       scope: 'local',
-    })
+    }, undefined, { environment: { MCP_TIMEOUT: '5' } })
     await vi.advanceTimersByTimeAsync(5)
     const result = await resultPromise
     assert.equal(result.type, 'failed')
@@ -1947,7 +1949,6 @@ test('connectToServer returns failed stdio clients after connect errors and clos
 test('connectToServer returns failed stdio clients after connection timeout', async () => {
   vi.resetModules()
   vi.useFakeTimers()
-  process.env.MCP_TIMEOUT = '5'
   vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
     Client: FakeClient,
   }))
@@ -1964,7 +1965,7 @@ test('connectToServer returns failed stdio clients after connection timeout', as
     command: 'hanging-server',
     args: [],
     scope: 'local',
-  })
+  }, undefined, { environment: { MCP_TIMEOUT: '5' } })
   await vi.advanceTimersByTimeAsync(5)
   const result = await resultPromise
 
@@ -2016,6 +2017,7 @@ test('connectToServer creates remote SSE, SSE-IDE, and HTTP transports without r
         return new Response('ok')
       },
   }))
+  installNativeFetchRecorder()
 
   const { connectToServer } = await import('./client.js')
   ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
@@ -2026,7 +2028,7 @@ test('connectToServer creates remote SSE, SSE-IDE, and HTTP transports without r
     url: 'https://example.test/sse',
     headers: { 'X-Test': 'yes' },
     scope: 'local',
-  })
+  }, undefined, { home: TEST_HOME })
   assert.equal(sse.type, 'connected')
   assert.equal(fakeSseTransports[0]?.url.href, 'https://example.test/sse')
   assert.equal(
@@ -2045,7 +2047,6 @@ test('connectToServer creates remote SSE, SSE-IDE, and HTTP transports without r
   sseOptions.authProvider!.tokens = async () => ({
     access_token: 'sse-token',
   })
-  installNativeFetchRecorder()
   const eventStreamResponse = await sseOptions.eventSourceInit!.fetch!(
     'https://example.test/events',
     { headers: { 'X-Event': 'yes' } },
@@ -2079,7 +2080,7 @@ test('connectToServer creates remote SSE, SSE-IDE, and HTTP transports without r
     url: 'https://example.test/mcp',
     headers: { 'X-Http': 'yes' },
     scope: 'local',
-  })
+  }, undefined, { home: TEST_HOME })
   assert.equal(http.type, 'connected')
   assert.equal(fakeHttpTransports[0]?.url.href, 'https://example.test/mcp')
   assert.equal(
@@ -2156,7 +2157,7 @@ test('connectToServer creates remote SSE, SSE-IDE, and HTTP transports without r
     type: 'sse',
     url: 'https://example.test/reconnect',
     scope: 'local',
-  })
+  }, undefined, { home: TEST_HOME })
   assert.equal(reconnectingSse.type, 'connected')
   const reconnectingClient = fakeClients[3]!
   reconnectingClient.onerror?.(new Error('ECONNRESET'))
@@ -2169,7 +2170,7 @@ test('connectToServer creates remote SSE, SSE-IDE, and HTTP transports without r
     type: 'sse',
     url: 'https://example.test/exhausted',
     scope: 'local',
-  })
+  }, undefined, { home: TEST_HOME })
   assert.equal(exhaustedSse.type, 'connected')
   const exhaustedClient = fakeClients[4]!
   exhaustedClient.onerror?.(new Error('Maximum reconnection attempts reached'))
@@ -2180,7 +2181,7 @@ test('connectToServer creates remote SSE, SSE-IDE, and HTTP transports without r
     type: 'http',
     url: 'http://localhost:3333/mcp',
     scope: 'local',
-  })
+  }, undefined, { home: TEST_HOME })
   assert.equal(loopbackHttp.type, 'connected')
   if (loopbackHttp.type === 'connected') {
     await loopbackHttp.cleanup()
@@ -2220,7 +2221,7 @@ test('connectToServer HTTP fetch wrapper leaves long POST requests unbounded unt
     type: 'http',
     url: 'https://example.test/timeout',
     scope: 'local',
-  })
+  }, undefined, { home: TEST_HOME })
   assert.equal(result.type, 'connected')
   if (result.type !== 'connected') {
     assert.fail(result.error)
@@ -2288,21 +2289,85 @@ test('connectToServer wires proxy fetch options into SSE IDE event streams', asy
 
   assert.equal(result.type, 'connected')
   const options = fakeSseTransports[0]?.options as {
+    fetch?: typeof fetch
     eventSourceInit?: { fetch?: typeof fetch }
   }
+  assert.equal(typeof options.fetch, 'function')
   assert.equal(typeof options.eventSourceInit?.fetch, 'function')
-  const response = await options.eventSourceInit!.fetch!(
+  const postResponse = await options.fetch!(
+    'https://example.test/proxy-post',
+    { method: 'POST', headers: { 'X-Post': '1' } },
+  )
+  const eventResponse = await options.eventSourceInit!.fetch!(
     'https://example.test/proxy-events',
     { headers: { 'X-Init': '1' } },
   )
-  assert.equal(await response.text(), 'proxied')
+  assert.equal(await postResponse.text(), 'proxied')
+  assert.equal(await eventResponse.text(), 'proxied')
   assert.equal(nativeFetchLog[0]?.dispatcher, fakeDispatcher)
-  assert.equal(nativeFetchLog[0]?.headers['x-init'], '1')
-  assert.ok(nativeFetchLog[0]?.headers['user-agent'])
+  assert.equal(nativeFetchLog[0]?.headers['x-post'], '1')
+  assert.equal(nativeFetchLog[1]?.dispatcher, fakeDispatcher)
+  assert.equal(nativeFetchLog[1]?.headers['x-init'], '1')
+  assert.ok(nativeFetchLog[1]?.headers['user-agent'])
   if (result.type === 'connected') {
     await result.cleanup()
   }
   assert.equal(fakeClients[0]?.closed, true)
+})
+
+test('connectToServer scopes SSE and Streamable HTTP custom fetch hooks', async () => {
+  vi.resetModules()
+  const fakeDispatcher = { name: 'session-dispatcher' }
+  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
+    Client: FakeClient,
+  }))
+  vi.doMock('@modelcontextprotocol/sdk/client/sse.js', () => ({
+    SSEClientTransport: FakeSseTransport,
+  }))
+  vi.doMock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
+    StreamableHTTPClientTransport: FakeHttpTransport,
+  }))
+  vi.doMock('../../../src/utils/proxy.js', async importOriginal => ({
+    ...(await importOriginal<typeof import('../../../src/utils/proxy.js')>()),
+    getProxyFetchOptions: () => ({ dispatcher: fakeDispatcher }),
+  }))
+  installNativeFetchRecorder('scoped')
+
+  const { connectToServer } = await import('./client.js')
+  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
+    { VERSION: 'test' }
+  const environment = Object.freeze({
+    HTTPS_PROXY: 'http://session.proxy.test:8080',
+  })
+
+  const sse = await connectToServer('scoped-sse', {
+    type: 'sse',
+    url: 'https://example.test/scoped-sse',
+    scope: 'local',
+  }, undefined, { home: TEST_HOME, environment })
+  const http = await connectToServer('scoped-http', {
+    type: 'http',
+    url: 'https://example.test/scoped-http',
+    scope: 'local',
+  }, undefined, { home: TEST_HOME, environment })
+  assert.equal(sse.type, 'connected')
+  assert.equal(http.type, 'connected')
+
+  const sseFetch = (fakeSseTransports[0]?.options as {
+    fetch?: typeof fetch
+  })?.fetch
+  const httpFetch = (fakeHttpTransports[0]?.options as {
+    fetch?: typeof fetch
+  })?.fetch
+  assert.equal(typeof sseFetch, 'function')
+  assert.equal(typeof httpFetch, 'function')
+  await sseFetch!('https://example.test/sse-post', { method: 'POST' })
+  await httpFetch!('https://example.test/http-event-stream')
+
+  assert.equal(nativeFetchLog[0]?.dispatcher, fakeDispatcher)
+  assert.equal(nativeFetchLog[1]?.dispatcher, fakeDispatcher)
+  if (sse.type === 'connected') await sse.cleanup()
+  if (http.type === 'connected') await http.cleanup()
 })
 
 test('connectToServer tolerates IDE connected notification failures', async () => {
@@ -2363,7 +2428,7 @@ test('connectToServer returns failed connections for unsupported direct paths', 
     url: 'https://example.test/proxy',
     id: 'server-1',
     scope: 'agencai',
-  } as never)
+  } as never, undefined, { home: TEST_HOME })
   assert.equal(proxy.type, 'failed')
   if (proxy.type === 'failed') {
     assert.equal(proxy.error, 'No agenc.tech OAuth token found')
@@ -2394,7 +2459,7 @@ test('connectToServer returns needs-auth for unauthorized SSE and HTTP connectio
   }))
   vi.doMock('../../../src/utils/envUtils.js', async importOriginal => ({
     ...(await importOriginal<typeof import('../../../src/utils/envUtils.js')>()),
-    getAgenCConfigHomeDir: () => configDir,
+    getAgenCHomeDir: () => configDir,
   }))
 
   const { clearMcpAuthCache, connectToServer } = await import('./client.js')
@@ -2405,18 +2470,18 @@ test('connectToServer returns needs-auth for unauthorized SSE and HTTP connectio
     type: 'sse',
     url: 'https://example.test/auth-sse',
     scope: 'local',
-  })
+  }, undefined, { home: TEST_HOME })
   assert.equal(sse.type, 'needs-auth')
 
   const http = await connectToServer('http-auth', {
     type: 'http',
     url: 'https://example.test/auth-http',
     scope: 'local',
-  })
+  }, undefined, { home: TEST_HOME })
   assert.equal(http.type, 'needs-auth')
 
   await new Promise(resolve => setTimeout(resolve, 0))
-  clearMcpAuthCache()
+  clearMcpAuthCache(TEST_HOME)
 })
 
 test('connectToServer creates WebSocket and WebSocket IDE transports without real sockets', async () => {
@@ -2544,6 +2609,7 @@ test('connectToServer creates Node WebSocket transports without real sockets', a
 
 test('connectToServer creates agenc.tech proxy transports and retries bearer fetch 401s', async () => {
   vi.resetModules()
+  const fakeDispatcher = { name: 'agenc-proxy-session-dispatcher' }
   const configDir = await mkdtemp(join(tmpdir(), 'agenc-mcp-proxy-auth-cache-'))
   tempDirs.push(configDir)
   let oauthTokens: { accessToken: string } | null = {
@@ -2589,7 +2655,11 @@ test('connectToServer creates agenc.tech proxy transports and retries bearer fet
       refreshCalls += 1
     },
     getAgenCAIOAuthTokens: () => oauthTokens,
-    handleOAuth401Error: async (sentToken: string) => {
+    handleOAuth401Error: async (
+      homeContext: typeof TEST_HOME,
+      sentToken: string,
+    ) => {
+      assert.equal(homeContext.path, TEST_HOME.path)
       handledTokens.push(sentToken)
       if (handleMode === 'throw') {
         throw new Error('refresh failed')
@@ -2621,7 +2691,11 @@ test('connectToServer creates agenc.tech proxy transports and retries bearer fet
   }))
   vi.doMock('../../../src/utils/envUtils.js', async importOriginal => ({
     ...(await importOriginal<typeof import('../../../src/utils/envUtils.js')>()),
-    getAgenCConfigHomeDir: () => configDir,
+    getAgenCHomeDir: () => configDir,
+  }))
+  vi.doMock('../../../src/utils/proxy.js', async importOriginal => ({
+    ...(await importOriginal<typeof import('../../../src/utils/proxy.js')>()),
+    getProxyFetchOptions: () => ({ dispatcher: fakeDispatcher }),
   }))
 
   const { connectToServer, prefetchAllMcpResources, reconnectMcpServerImpl } =
@@ -2634,7 +2708,7 @@ test('connectToServer creates agenc.tech proxy transports and retries bearer fet
     id: 'server-42',
     url: 'https://unused.example.test',
     scope: 'agencai',
-  } as never)
+  } as never, undefined, { home: TEST_HOME })
 
   assert.equal(result.type, 'connected')
   assert.equal(
@@ -2661,6 +2735,7 @@ test('connectToServer creates agenc.tech proxy transports and retries bearer fet
   })
   assert.equal(firstResponse.status, 200)
   assert.equal(nativeFetchLog[0]?.headers.authorization, 'Bearer first-token')
+  assert.equal(nativeFetchLog[0]?.dispatcher, fakeDispatcher)
 
   const retryResponse = await proxyFetch!('https://proxy.example.test/rpc', {
     method: 'POST',
@@ -2669,6 +2744,8 @@ test('connectToServer creates agenc.tech proxy transports and retries bearer fet
   assert.deepEqual(handledTokens, ['first-token'])
   assert.equal(nativeFetchLog[1]?.headers.authorization, 'Bearer first-token')
   assert.equal(nativeFetchLog[2]?.headers.authorization, 'Bearer second-token')
+  assert.equal(nativeFetchLog[1]?.dispatcher, fakeDispatcher)
+  assert.equal(nativeFetchLog[2]?.dispatcher, fakeDispatcher)
   assert.equal(refreshCalls, 3)
 
   oauthTokens = null
@@ -2716,11 +2793,11 @@ test('connectToServer creates agenc.tech proxy transports and retries bearer fet
     id: 'connect-401',
     url: 'https://unused.example.test',
     scope: 'agencai',
-  } as never)
+  } as never, undefined, { home: TEST_HOME })
   assert.equal(needsAuth.type, 'needs-auth')
 
   oauthTokens = { accessToken: 'reconnect-token' }
-  const reconnectResult = await reconnectMcpServerImpl('proxy-reconnect', {
+  const reconnectResult = await reconnectMcpServerImpl(TEST_HOME, 'proxy-reconnect', {
     type: 'agencai-proxy',
     id: 'reconnect-42',
     url: 'https://unused.example.test',
@@ -2732,7 +2809,7 @@ test('connectToServer creates agenc.tech proxy transports and retries bearer fet
   }
 
   oauthTokens = { accessToken: 'prefetch-token' }
-  const prefetchResult = await prefetchAllMcpResources({
+  const prefetchResult = await prefetchAllMcpResources(TEST_HOME, {
     'proxy-prefetch': {
       type: 'agencai-proxy',
       id: 'prefetch-42',
@@ -2765,7 +2842,7 @@ test('reconnectMcpServerImpl returns a failed client when cache invalidation thr
   }))
 
   const { reconnectMcpServerImpl } = await import('./client.js')
-  const result = await reconnectMcpServerImpl('keychain-fail', {
+  const result = await reconnectMcpServerImpl(TEST_HOME, 'keychain-fail', {
     type: 'stdio',
     command: 'unused',
     args: [],
@@ -2809,7 +2886,6 @@ test('connectToServer truncates oversized server instructions', async () => {
 
 test('MCP tool calls persist large non-image output and fall back when disabled', async () => {
   vi.resetModules()
-  delete process.env.ENABLE_MCP_LARGE_OUTPUT_FILES
   const persisted: Array<{ content: unknown; id: string }> = []
   const pngBase64 =
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII='
@@ -2835,8 +2911,10 @@ test('MCP tool calls persist large non-image output and fall back when disabled'
     },
   }))
 
-  const { fetchToolsForClient } = await import('./client.js')
-  const client = {
+  const { bindMcpConnectionAuthority, fetchToolsForClient } = await import(
+    './client.js'
+  )
+  const client = bindMcpConnectionAuthority({
     name: 'large-output',
     type: 'connected',
     capabilities: { tools: {} },
@@ -2875,7 +2953,7 @@ test('MCP tool calls persist large non-image output and fall back when disabled'
         }
       },
     },
-  } as never
+  } as never, {}, undefined)
 
   const tools = await fetchToolsForClient(client)
   const toolByName = new Map(tools.map(tool => [tool.mcpInfo?.toolName, tool]))
@@ -2947,7 +3025,11 @@ test('MCP tool calls persist large non-image output and fall back when disabled'
     /^Error: result \(\d+ characters\) exceeds maximum allowed tokens\. Failed to save output to file: disk full\./,
   )
 
-  process.env.ENABLE_MCP_LARGE_OUTPUT_FILES = '0'
+  bindMcpConnectionAuthority(
+    client,
+    { ENABLE_MCP_LARGE_OUTPUT_FILES: '0' },
+    undefined,
+  )
   fetchToolsForClient.cache.clear()
   const fallbackTools = await fetchToolsForClient(client)
   const fallbackTool = fallbackTools.find(tool => tool.mcpInfo?.toolName === 'dump')

@@ -1,4 +1,4 @@
-// T10 Group D — TOML loader for ~/.agenc/config.toml.
+// TOML parser used by the canonical layered configuration repository.
 //
 // Uses an inline minimal TOML-subset parser to avoid a new npm dep.
 // Supported:
@@ -6,7 +6,7 @@
 //   - Tables:             [section]
 //   - Subtables:          [section.sub]
 //   - Array-of-tables:    [[profiles.foo]]
-//   - Basic strings:      "value"         (with escapes \n, \t, \r, \\, \")
+//   - Basic strings:      "value"         (all TOML single-line escapes)
 //   - Literal strings:    'value'         (no escapes)
 //   - Integers:           42, -7, 1_000
 //   - Floats:             3.14, 1.0e6
@@ -21,39 +21,14 @@
 //   - Hex/octal/binary integers
 //
 // branding-scan: allow upstream runtime compatibility reference
-// This is enough for AgenC's config surface (codex runtime + AgenC fields).
-// Unknown TOML values are still parsed and surfaced to the caller via
-// `normalizeRawConfig` (→ `_unknown` side-table).
+// This is enough for AgenC's canonical config surface.
 //
 // Duplicate-key handling (TOML 1.0 §6):
 //   TOML strictly forbids redefining a key or redeclaring a non-array-of-
 //   tables table. AgenC's posture is "don't hard-fail on config", so the
-//   parser intentionally adopts lenient-with-warn semantics: duplicate
-//   assignments and table redefinitions are accepted as last-write-wins,
-//   and the optional `onDuplicateKey` callback fires with the fully-
-//   qualified key path plus the previous/new values. Callers (loadConfig,
-//   ConfigStore) thread an `onWarn` sink down so operator-visible
-//   warnings surface without aborting boot. Default callback is a no-op
-//   so the parser remains usable outside the runtime.
-//
-// I-81: every utf8 file read at a runtime boundary routes through
-// `utils/file-read.ts::readTextFile` so UTF-8 BOM is stripped and line
-// endings are normalized before parsing; loadConfig below uses that
-// helper instead of a raw `fs.readFile` to preserve the invariant.
-
-import { resolve as pathResolve } from "node:path";
-import type { AgenCConfig } from "./schema.js";
-import {
-  defaultConfig,
-  mergeConfigs,
-  normalizeAgenCKeyAliases,
-  normalizeRawConfig,
-  validateAgenCConfigBlocks,
-} from "./schema.js";
-import { resolveAgencHome } from "./env.js";
-import { readTextFile } from "./_deps/file-read.js";
-import { migrateRawAgenCConfig } from "../state/migrations/config-migrations.js";
-import { runConfigFileMigrations } from "./migrate.js";
+//   parser exposes duplicate assignments through `onDuplicateKey`. The
+//   canonical repository treats every duplicate as an error; explicit
+//   migration tooling may inspect the old document before planning a rewrite.
 
 // ─────────────────────────────────────────────────────────────────────
 // Parser
@@ -226,11 +201,17 @@ function parseString(s: ParseState): string {
         throw new TomlParseError("trailing backslash in string", s.line);
       }
       switch (next) {
+        case "b":
+          out += "\b";
+          break;
         case "n":
           out += "\n";
           break;
         case "t":
           out += "\t";
+          break;
+        case "f":
+          out += "\f";
           break;
         case "r":
           out += "\r";
@@ -241,14 +222,49 @@ function parseString(s: ParseState): string {
         case '"':
           out += '"';
           break;
-        case "/":
-          out += "/";
-          break;
+        case "u":
+        case "U": {
+          const digits = next === "u" ? 4 : 8;
+          const raw = s.src.slice(s.pos + 2, s.pos + 2 + digits);
+          if (raw.length !== digits || !/^[0-9A-Fa-f]+$/u.test(raw)) {
+            throw new TomlParseError(
+              `invalid \\${next} Unicode escape`,
+              s.line,
+            );
+          }
+          const codePoint = Number.parseInt(raw, 16);
+          if (
+            codePoint > 0x10ffff ||
+            (codePoint >= 0xd800 && codePoint <= 0xdfff)
+          ) {
+            throw new TomlParseError(
+              `invalid Unicode scalar value \\${next}${raw}`,
+              s.line,
+            );
+          }
+          out += String.fromCodePoint(codePoint);
+          advance(s, 2 + digits);
+          continue;
+        }
         default:
-          out += next;
+          throw new TomlParseError(
+            `unknown basic-string escape \\${next}`,
+            s.line,
+          );
       }
       advance(s, 2);
       continue;
+    }
+    const codePoint = c.codePointAt(0) ?? 0;
+    if (
+      codePoint <= 0x08 ||
+      (codePoint >= 0x0a && codePoint <= 0x1f) ||
+      codePoint === 0x7f
+    ) {
+      throw new TomlParseError(
+        `unescaped control character U+${codePoint.toString(16).toUpperCase().padStart(4, "0")} in string`,
+        s.line,
+      );
     }
     out += c;
     advance(s);
@@ -635,117 +651,4 @@ export function parseToml(
   }
 
   return root;
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// loadConfig
-// ─────────────────────────────────────────────────────────────────────
-
-export interface LoadConfigOptions {
-  readonly home?: string;
-  /** Override onto the default config. Loader merges raw TOML on top. */
-  readonly base?: AgenCConfig;
-  /** Emit warnings for parse errors. Default writes to console.warn. */
-  readonly onWarn?: (msg: string) => void;
-}
-
-export interface LoadedConfig {
-  readonly config: AgenCConfig;
-  readonly path: string;
-  readonly exists: boolean;
-  readonly parseError?: string;
-}
-
-/**
- * Read `<agenc_home>/config.toml` and merge onto `defaultConfig()`.
- *
- * - Missing file → returns defaults + `exists: false`.
- * - Parse/validation error → warns, returns defaults + `parseError` message.
- * - Unknown top-level keys → preserved under `config._unknown`.
- */
-export async function loadConfig(
-  opts: LoadConfigOptions = {},
-): Promise<LoadedConfig> {
-  const home = opts.home ?? resolveAgencHome();
-  const path = pathResolve(home, "config.toml");
-  const base = opts.base ?? defaultConfig();
-  const onWarn = opts.onWarn ?? ((m: string) => console.warn(m));
-
-  await runConfigFileMigrations({
-    home,
-    configTomlPath: path,
-    onWarn,
-    parseToml,
-  });
-
-  let raw: string;
-  try {
-    // I-81 + I-80: route through `readTextFile` so UTF-8 BOM is
-    // stripped and line endings normalize to LF before the TOML
-    // parser sees the bytes. Matches the raw-readFile ENOENT path
-    // exactly — `readTextFile` re-throws the ErrnoException untouched.
-    raw = await readTextFile(path);
-  } catch (error) {
-    const code = (error as NodeJS.ErrnoException).code;
-    if (code === "ENOENT") {
-      return Object.freeze({
-        config: base,
-        path,
-        exists: false,
-      });
-    }
-    onWarn(`[agenc:config] failed to read ${path}: ${String(error)}`);
-    return Object.freeze({
-      config: base,
-      path,
-      exists: false,
-      parseError: String(error),
-    });
-  }
-
-  let parsed: Record<string, unknown>;
-  try {
-    parsed = parseToml(raw, {
-      onDuplicateKey: (warning) => {
-        onWarn(
-          `[agenc:config] duplicate key "${warning.key}" at ${path}:` +
-            `${warning.line} (last-write-wins)`,
-        );
-      },
-    }) as Record<string, unknown>;
-  } catch (error) {
-    const msg =
-      error instanceof Error ? error.message : String(error);
-    onWarn(`[agenc:config] invalid TOML at ${path}: ${msg}`);
-    return Object.freeze({
-      config: base,
-      path,
-      exists: true,
-      parseError: msg,
-    });
-  }
-
-  const aliased = normalizeAgenCKeyAliases(parsed);
-  const migrated = migrateRawAgenCConfig(aliased);
-  const normalized = normalizeRawConfig(migrated);
-  let validated: AgenCConfig;
-  try {
-    validated = validateAgenCConfigBlocks(normalized);
-  } catch (error) {
-    const msg =
-      error instanceof Error ? error.message : String(error);
-    onWarn(`[agenc:config] invalid config at ${path}: ${msg}`);
-    return Object.freeze({
-      config: base,
-      path,
-      exists: true,
-      parseError: msg,
-    });
-  }
-  const merged = mergeConfigs(base, validated);
-  return Object.freeze({
-    config: merged,
-    path,
-    exists: true,
-  });
 }

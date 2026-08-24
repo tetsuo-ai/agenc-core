@@ -1,15 +1,19 @@
 import { DEFAULT_BINDINGS } from './defaultBindings.js'
-import { chordToString, parseKeystroke } from './parser.js'
 import {
-  getReservedShortcuts,
+  bindingCommandError,
+  isBindingCommand,
+  isKeybindingContextName,
+  keybindingChordError,
   normalizeKeyForComparison,
-} from './reservedShortcuts.js'
+} from './grammar.js'
+import { chordToString, parseKeystroke } from './parser.js'
+import { getReservedShortcuts } from './reservedShortcuts.js'
 import type {
   KeybindingBlock,
   KeybindingContextName,
   ParsedBinding,
 } from './types.js'
-import { KEYBINDING_ACTION_NAMES, KEYBINDING_CONTEXT_NAMES } from './types.js'
+import { KEYBINDING_CONTEXT_NAMES } from './types.js'
 
 /**
  * Build a `${context}::${normalizedKey}` → action lookup for the runtime
@@ -17,10 +21,8 @@ import { KEYBINDING_ACTION_NAMES, KEYBINDING_CONTEXT_NAMES } from './types.js'
  * warnings when the user's binding is a verbatim echo of the system
  * default — in which case the user isn't actually attempting to rebind.
  *
- * The shipped scaffold (commands/keybindings.ts:DEFAULT_KEYBINDINGS)
- * historically wrote `ctrl+c` and `ctrl+d` mappings into
- * ~/.agenc/keybindings.json that exactly match these runtime defaults;
- * the validator then flagged 4 "reserved" errors on a stock install.
+ * A canonical scaffold may echo `ctrl+c` and `ctrl+d` mappings that exactly
+ * match these runtime defaults; those echoes are not actual rebind attempts.
  * Treating echoes-of-default as a no-op clears that banner without
  * weakening protection against real rebind attempts.
  */
@@ -88,60 +90,27 @@ function isKeybindingBlockArray(arr: unknown): arr is KeybindingBlock[] {
  */
 const VALID_CONTEXTS: readonly KeybindingContextName[] =
   KEYBINDING_CONTEXT_NAMES
-const VALID_ACTIONS = new Set<string>(KEYBINDING_ACTION_NAMES)
-const COMMAND_BINDING_RE = /^command:[a-zA-Z0-9:\-_]+$/
 
 /**
  * Type guard to check if a string is a valid context name.
  */
 function isValidContext(value: string): value is KeybindingContextName {
-  return (VALID_CONTEXTS as readonly string[]).includes(value)
-}
-
-function isValidAction(value: unknown): value is string | null {
-  if (value === null) return true
-  if (typeof value !== 'string') return false
-  if (value.startsWith('command:')) return COMMAND_BINDING_RE.test(value)
-  return VALID_ACTIONS.has(value)
+  return isKeybindingContextName(value)
 }
 
 /**
  * Validate a single keystroke string and return any parse errors.
  */
 function validateKeystroke(keystroke: string): KeybindingWarning | null {
-  const parts = keystroke.toLowerCase().split('+')
-
-  for (const part of parts) {
-    const trimmed = part.trim()
-    if (!trimmed) {
-      return {
+  const error = keybindingChordError(keystroke)
+  return error === null
+    ? null
+    : {
         type: 'parse_error',
         severity: 'error',
-        message: `Empty key part in "${keystroke}"`,
+        message: `Invalid chord ${JSON.stringify(keystroke)}: ${error}`,
         key: keystroke,
-        suggestion: 'Remove extra "+" characters',
       }
-    }
-  }
-
-  // Try to parse and see if it fails
-  const parsed = parseKeystroke(keystroke)
-  if (
-    !parsed.key &&
-    !parsed.ctrl &&
-    !parsed.alt &&
-    !parsed.shift &&
-    !parsed.meta
-  ) {
-    return {
-      type: 'parse_error',
-      severity: 'error',
-      message: `Could not parse keystroke "${keystroke}"`,
-      key: keystroke,
-    }
-  }
-
-  return null
 }
 
 /**
@@ -214,12 +183,14 @@ function validateBlock(
         context: contextName,
       })
     } else if (typeof action === 'string' && action.startsWith('command:')) {
-      // Validate command binding format
-      if (!COMMAND_BINDING_RE.test(action)) {
+      const commandError = contextName
+        ? bindingCommandError(action, contextName as KeybindingContextName)
+        : null
+      if (!isBindingCommand(action)) {
         warnings.push({
           type: 'invalid_action',
           severity: 'warning',
-          message: `Invalid command binding "${action}" for "${key}": command name may only contain alphanumeric characters, colons, hyphens, and underscores`,
+          message: `Invalid command binding "${action}" for "${key}": ${commandError ?? 'unsupported command binding'}`,
           key,
           context: contextName,
           action,
@@ -237,7 +208,7 @@ function validateBlock(
           suggestion: 'Move this binding to a block with "context": "Chat"',
         })
       }
-    } else if (typeof action === 'string' && !VALID_ACTIONS.has(action)) {
+    } else if (typeof action === 'string' && !isBindingCommand(action)) {
       warnings.push({
         type: 'invalid_action',
         severity: 'error',
@@ -254,66 +225,6 @@ function validateBlock(
 }
 
 /**
- * Detect duplicate keys within the same bindings block in a JSON string.
- * JSON.parse silently uses the last value for duplicate keys,
- * so we need to check the raw string to warn users.
- *
- * Only warns about duplicates within the same context's bindings object.
- * Duplicates across different contexts are allowed (e.g., "enter" in Chat
- * and "enter" in Confirmation).
- */
-export function checkDuplicateKeysInJson(
-  jsonString: string,
-): KeybindingWarning[] {
-  const warnings: KeybindingWarning[] = []
-
-  // Find each "bindings" block and check for duplicates within it
-  // Pattern: "bindings" : { ... }
-  const bindingsBlockPattern =
-    /"bindings"\s*:\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}/g
-
-  let blockMatch
-  while ((blockMatch = bindingsBlockPattern.exec(jsonString)) !== null) {
-    const blockContent = blockMatch[1]
-    if (!blockContent) continue
-
-    // Find the context for this block by looking backwards
-    const textBeforeBlock = jsonString.slice(0, blockMatch.index)
-    const contextMatch = textBeforeBlock.match(
-      /"context"\s*:\s*"([^"]+)"[^{]*$/,
-    )
-    const context = contextMatch?.[1] ?? 'unknown'
-
-    // Find all keys within this bindings block
-    const keyPattern = /"([^"]+)"\s*:/g
-    const keysByName = new Map<string, number>()
-
-    let keyMatch
-    while ((keyMatch = keyPattern.exec(blockContent)) !== null) {
-      const key = keyMatch[1]
-      if (!key) continue
-
-      const count = (keysByName.get(key) ?? 0) + 1
-      keysByName.set(key, count)
-
-      if (count === 2) {
-        // Only warn on the second occurrence
-        warnings.push({
-          type: 'duplicate',
-          severity: 'warning',
-          message: `Duplicate key "${key}" in ${context} bindings`,
-          key,
-          context,
-          suggestion: `This key appears multiple times in the same context. JSON uses the last value, earlier values are ignored.`,
-        })
-      }
-    }
-  }
-
-  return warnings
-}
-
-/**
  * Validate user keybinding config and return all warnings.
  */
 export function validateUserConfig(userBlocks: unknown): KeybindingWarning[] {
@@ -323,8 +234,8 @@ export function validateUserConfig(userBlocks: unknown): KeybindingWarning[] {
     warnings.push({
       type: 'parse_error',
       severity: 'error',
-      message: 'keybindings.json must contain an array',
-      suggestion: 'Wrap your bindings in [ ]',
+      message: 'tui.keybindings must contain an array',
+      suggestion: 'Set tui.keybindings to an array of override blocks',
     })
     return warnings
   }
@@ -334,37 +245,6 @@ export function validateUserConfig(userBlocks: unknown): KeybindingWarning[] {
   }
 
   return warnings
-}
-
-/**
- * Drop structurally valid but runtime-unsafe entries before merging user
- * bindings with defaults. Validation warnings are still reported from the
- * original file, but unknown actions cannot shadow default handlers.
- */
-export function sanitizeBindingsForRuntime(
-  userBlocks: KeybindingBlock[],
-): KeybindingBlock[] {
-  const sanitized: KeybindingBlock[] = []
-
-  for (const block of userBlocks) {
-    if (!isValidContext(block.context)) continue
-
-    const bindings: KeybindingBlock['bindings'] = {}
-    for (const [key, action] of Object.entries(block.bindings)) {
-      if (isValidAction(action)) {
-        bindings[key] = action
-      }
-    }
-
-    if (Object.keys(bindings).length > 0) {
-      sanitized.push({
-        context: block.context,
-        bindings,
-      })
-    }
-  }
-
-  return sanitized
 }
 
 /**
@@ -476,7 +356,7 @@ export function validateBindings(
     // Check for reserved/conflicting shortcuts - only check USER bindings.
     // Filter out echoes-of-default first: when the user's action for a
     // (context, key) is identical to the runtime default, no rebind is
-    // happening even if the user's keybindings.json names a NON_REBINDABLE
+    // happening even if canonical config names a NON_REBINDABLE
     // key. This is the common case for the shipped scaffold.
     const defaultActionByContextKey = buildDefaultActionMap()
     const userBindings = getUserBindingsForValidation(userBlocks).filter(

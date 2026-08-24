@@ -104,9 +104,10 @@ async function installOneShotHookConfig(
   await writeFile(
     join(agencHome, "config.toml"),
     `
+config_version = 2
 sandbox_mode = "danger-full-access"
 
-[[hooks.userPromptSubmit]]
+[[hooks.UserPromptSubmit]]
 hooks = [{ type = "command", command = ${JSON.stringify(command)} }]
 `,
     "utf8",

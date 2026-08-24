@@ -6,7 +6,7 @@ import type { KeybindingBlock } from "./types.js";
 
 /**
  * Default keybindings that match current AgenC behavior.
- * These are loaded first, then user keybindings.json overrides them.
+ * These are loaded first, then canonical `tui.keybindings` overrides them.
  */
 
 // Platform-specific image paste shortcut:

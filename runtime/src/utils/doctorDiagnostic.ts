@@ -1,5 +1,5 @@
 import { execa } from 'execa'
-import { readFile, realpath } from 'fs/promises'
+import { realpath } from 'fs/promises'
 import { homedir } from 'os'
 import { delimiter, dirname, join, normalize, posix, resolve, win32 } from 'path'
 import { checkGlobalInstallPermissions } from './autoUpdater.js'
@@ -7,14 +7,16 @@ import { isInBundledMode } from './bundledMode.js'
 import {
   formatAutoUpdaterDisabledReason,
   getAutoUpdaterDisabledReason,
-  getGlobalConfig,
+  getRuntimeState,
   type InstallMethod,
 } from './config.js'
-import { loadConfig } from '../config/loader.js'
+import {
+  loadCanonicalConfig,
+  type ConfigScope,
+} from '../config/repository.js'
 import type { TransactionGuardConfig } from '../config/schema.js'
 import {
   resolveTransactionGuardPolicy,
-  type TransactionGuardValueSource,
 } from '../transaction-guard/config.js'
 import { selectPinnedRipgrepPath } from '../tools/system/pinned-ripgrep.js'
 import { getCwd } from './cwd.js'
@@ -55,14 +57,11 @@ import {
   type SandboxExecutionStatus,
 } from '../sandbox/execution-broker.js'
 import { probeLandlock } from '../sandbox/landlock-run.js'
-import { getManagedFilePath } from './settings/managedPath.js'
-import { CUSTOMIZATION_SURFACES } from './settings/types.js'
 import {
   findAgenCAlias,
   findValidAgenCAlias,
   getShellConfigPaths,
 } from './shellConfig.js'
-import { jsonParse } from './slowOperations.js'
 import { which } from './which.js'
 
 function getCliBinaryName(): string {
@@ -108,7 +107,7 @@ export type DiagnosticInfo = {
 export type TransactionGuardDoctorStatus = {
   enabled: boolean
   /** Where the enabled/disabled decision came from. */
-  source: TransactionGuardValueSource
+  source: ConfigScope | 'resolved-config'
   model: string
   endpoint: string
   failMode: 'open' | 'closed'
@@ -518,7 +517,7 @@ async function detectMultipleInstallations(
   }
 
   // Also check if config indicates native installation
-  const config = getGlobalConfig()
+  const config = getRuntimeState()
   if (config.installMethod === 'native') {
     const nativeDataPath = join(
       homedir(),
@@ -544,52 +543,7 @@ async function detectConfigurationIssues(
 ): Promise<Array<{ issue: string; fix: string }>> {
   const warnings: Array<{ issue: string; fix: string }> = []
 
-  // Managed-settings forwards-compat: the schema preprocess silently drops
-  // unknown strictPluginOnlyCustomization surface names so one future enum
-  // value doesn't null out the entire policy file (settings.ts:101). But
-  // admins should KNOW — read the raw file and diff. Runs before the
-  // development-mode early return: this is config correctness, not an
-  // install-path check, and it's useful to see during dev testing.
-  try {
-    const raw = await readFile(
-      join(getManagedFilePath(), 'managed-settings.json'),
-      'utf-8',
-    )
-    const parsed: unknown = jsonParse(raw)
-    const field =
-      parsed && typeof parsed === 'object'
-        ? (parsed as Record<string, unknown>).strictPluginOnlyCustomization
-        : undefined
-    if (field !== undefined && typeof field !== 'boolean') {
-      if (!Array.isArray(field)) {
-        // .catch(undefined) in the schema silently drops this, so the rest
-        // of managed settings survive — but the admin typed something
-        // wrong (an object, a string, etc.).
-        warnings.push({
-          issue: `managed-settings.json: strictPluginOnlyCustomization has an invalid value (expected true or an array, got ${typeof field})`,
-          fix: `The field is silently ignored (schema .catch rescues it). Set it to true, or an array of: ${CUSTOMIZATION_SURFACES.join(', ')}.`,
-        })
-      } else {
-        const unknown = field.filter(
-          x =>
-            typeof x === 'string' &&
-            !(CUSTOMIZATION_SURFACES as readonly string[]).includes(x),
-        )
-        if (unknown.length > 0) {
-          warnings.push({
-            issue: `managed-settings.json: strictPluginOnlyCustomization has ${unknown.length} value(s) this client doesn't recognize: ${unknown.map(String).join(', ')}`,
-            fix: `These are silently ignored (forwards-compat). Known surfaces for this version: ${CUSTOMIZATION_SURFACES.join(', ')}. Either remove them, or this client is older than the managed-settings intended.`,
-          })
-        }
-      }
-    }
-  } catch {
-    // ENOENT (no managed settings) / parse error — not this check's concern.
-    // Parse errors are surfaced by the settings loader itself.
-  }
-
-  const config = getGlobalConfig()
-
+  const config = getRuntimeState()
   // Skip most warnings for development mode
   if (type === 'development') {
     return warnings
@@ -859,9 +813,8 @@ export async function probeTransactionGuardEndpoint(
 
 /**
  * Resolve the effective transaction-guard status for `agenc doctor`:
- * the `[transaction_guard]` config block merged with env overrides
- * (env > config > defaults), plus an endpoint reachability probe when
- * the guard is enabled.
+ * the already-layered canonical `[transaction_guard]` snapshot, plus an
+ * endpoint reachability probe when the guard is enabled.
  *
  * `opts.config` short-circuits the disk load for tests (`null` = "no
  * config block on disk"); `opts.probe` injects the reachability check.
@@ -869,20 +822,26 @@ export async function probeTransactionGuardEndpoint(
 export async function getTransactionGuardDoctorStatus(opts?: {
   config?: TransactionGuardConfig | null
   env?: NodeJS.ProcessEnv
+  source?: ConfigScope | 'resolved-config'
   probe?: (endpoint: string) => Promise<boolean>
 }): Promise<TransactionGuardDoctorStatus> {
   const env = opts?.env ?? process.env
   let guardConfig: TransactionGuardConfig | undefined =
     opts?.config === null ? undefined : opts?.config
+  let source: ConfigScope | 'resolved-config' =
+    opts?.source ?? 'resolved-config'
   if (guardConfig === undefined && opts?.config === undefined) {
     try {
-      const loaded = await loadConfig({ onWarn: () => {} })
+      const loaded = await loadCanonicalConfig({ env, onWarn: () => {} })
       guardConfig = loaded.config.transaction_guard
+      source =
+        loaded.provenance['transaction_guard.enabled']?.scope ?? 'default'
     } catch {
-      // No resolvable AGENC home / unreadable config — env-only status.
+      // No resolvable AgenC home / unreadable config — report defaults.
+      source = 'default'
     }
   }
-  const { policy, sources } = resolveTransactionGuardPolicy(guardConfig, env)
+  const policy = resolveTransactionGuardPolicy(guardConfig)
   const probe = opts?.probe ?? probeTransactionGuardEndpoint
   let endpointReachable: boolean | null = null
   if (policy.enabled) {
@@ -895,7 +854,7 @@ export async function getTransactionGuardDoctorStatus(opts?: {
   }
   return {
     enabled: policy.enabled,
-    source: sources.enabled,
+    source,
     model: policy.model,
     endpoint: policy.ollamaUrl,
     failMode: policy.failClosed ? 'closed' : 'open',
@@ -925,7 +884,7 @@ export function buildTransactionGuardWarning(
 }
 
 export async function getSandboxDoctorStatus(opts?: {
-  config?: Pick<Awaited<ReturnType<typeof loadConfig>>['config'], 'sandbox_mode' | 'sandbox'> | null
+  config?: Pick<Awaited<ReturnType<typeof loadCanonicalConfig>>['config'], 'sandbox_mode' | 'sandbox'> | null
   env?: NodeJS.ProcessEnv
   cwd?: string
   probe?: ConstructorParameters<typeof SandboxExecutionBroker>[0]['probe']
@@ -934,7 +893,7 @@ export async function getSandboxDoctorStatus(opts?: {
   let config = opts?.config === null ? undefined : opts?.config
   if (config === undefined && opts?.config === undefined) {
     try {
-      config = (await loadConfig({ onWarn: () => {} })).config
+      config = (await loadCanonicalConfig({ onWarn: () => {} })).config
     } catch {
       // Defaults remain fail-closed when config is unreadable.
     }
@@ -993,6 +952,8 @@ export function buildLandlockFallbackWarning(
 }
 
 export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
+  const operatorConfigLoaded = await loadCanonicalConfig({ onWarn: () => {} })
+  const operatorConfig = operatorConfigLoaded.config
   const activeGeneratedWrapper = await findActiveGeneratedWrapper()
   const installationType = await getCurrentInstallationType({
     activeGeneratedWrapper,
@@ -1058,7 +1019,7 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
     }
   }
 
-  const config = getGlobalConfig()
+  const config = getRuntimeState()
 
   // Get config values for display
   const configInstallMethod = config.installMethod || 'not set'
@@ -1070,7 +1031,10 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
     hasUpdatePermissions = permCheck.hasPermissions
 
     // Add warning if no permissions
-    if (!hasUpdatePermissions && !getAutoUpdaterDisabledReason()) {
+    if (
+      !hasUpdatePermissions &&
+      !getAutoUpdaterDisabledReason(operatorConfig)
+    ) {
       warnings.push({
         issue: 'Insufficient permissions for auto-updates',
         fix: `Do one of: (1) Re-install node without sudo, or (2) Use \`${getCliBinaryName()} install\` for native installation`,
@@ -1100,7 +1064,12 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
 
   // Transaction-guard status (config + env merged) with a short-timeout
   // endpoint probe when enabled. Unreachable-but-enabled gets a warning.
-  const transactionGuard = await getTransactionGuardDoctorStatus()
+  const transactionGuard = await getTransactionGuardDoctorStatus({
+    config: operatorConfig.transaction_guard ?? null,
+    source:
+      operatorConfigLoaded.provenance['transaction_guard.enabled']?.scope ??
+      'default',
+  })
   const transactionGuardWarning = buildTransactionGuardWarning(transactionGuard)
   if (transactionGuardWarning) {
     warnings.push(transactionGuardWarning)
@@ -1128,7 +1097,7 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
     invokedBinary,
     configInstallMethod,
     autoUpdates: (() => {
-      const reason = getAutoUpdaterDisabledReason()
+      const reason = getAutoUpdaterDisabledReason(operatorConfig)
       return reason
         ? `disabled (${formatAutoUpdaterDisabledReason(reason)})`
         : 'enabled'

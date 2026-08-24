@@ -32,7 +32,7 @@ vi.mock("../../state/AppState.js", () => ({
 }));
 
 vi.mock("../../../utils/config.js", () => ({
-  getGlobalConfig: () => mocks.config,
+  getRuntimeState: () => mocks.config,
 }));
 
 vi.mock("../../../utils/exampleCommands.js", () => ({

@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'bun:test'
+import { expect, test } from 'bun:test'
 
 import {
   getAdditionalModelOptionsCacheScope,
@@ -8,27 +8,19 @@ import {
   shouldAttemptLocalToollessRetry,
 } from '../../../src/services/api/providerConfig.ts'
 
-const originalEnv = {
-  AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,
-  OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
-  OPENAI_MODEL: process.env.OPENAI_MODEL,
-  OPENAI_API_FORMAT: process.env.OPENAI_API_FORMAT,
-}
-
-function restoreEnv(key: string, value: string | undefined): void {
-  if (value === undefined) {
-    delete process.env[key]
-  } else {
-    process.env[key] = value
+function providerSelection(
+  model: string,
+  overrides: Readonly<Record<string, string | undefined>>,
+) {
+  return {
+    model,
+    environment: Object.freeze({
+      AGENC_PROVIDER: 'openai-compatible',
+      AGENC_MODEL: model,
+      ...overrides,
+    }),
   }
 }
-
-afterEach(() => {
-  restoreEnv('AGENC_USE_OPENAI', originalEnv.AGENC_USE_OPENAI)
-  restoreEnv('OPENAI_BASE_URL', originalEnv.OPENAI_BASE_URL)
-  restoreEnv('OPENAI_MODEL', originalEnv.OPENAI_MODEL)
-  restoreEnv('OPENAI_API_FORMAT', originalEnv.OPENAI_API_FORMAT)
-})
 
 test('treats localhost endpoints as local', () => {
   expect(isLocalProviderUrl('http://localhost:11434/v1')).toBe(true)
@@ -63,38 +55,38 @@ test('treats public hosts as remote', () => {
 })
 
 test('creates a cache scope for local openai-compatible providers', () => {
-  process.env.AGENC_USE_OPENAI = '1'
-  process.env.OPENAI_BASE_URL = 'http://localhost:1234/v1'
-  process.env.OPENAI_MODEL = 'llama-3.2-3b-instruct'
+  const selection = providerSelection('llama-3.2-3b-instruct', {
+    OPENAI_BASE_URL: 'http://localhost:1234/v1',
+  })
 
-  expect(getAdditionalModelOptionsCacheScope()).toBe(
+  expect(getAdditionalModelOptionsCacheScope('openai-compatible', selection)).toBe(
     'openai:http://localhost:1234/v1',
   )
 })
 
 test('keeps providerCode alias models on chat completions for local openai-compatible providers', () => {
-  process.env.AGENC_USE_OPENAI = '1'
-  process.env.OPENAI_BASE_URL = 'http://127.0.0.1:8080/v1'
-  process.env.OPENAI_MODEL = 'gpt-5.4'
+  const selection = providerSelection('gpt-5.4', {
+    OPENAI_BASE_URL: 'http://127.0.0.1:8080/v1',
+  })
 
-  expect(resolveProviderRequest()).toMatchObject({
+  expect(resolveProviderRequest({ provider: 'openai-compatible', ...selection })).toMatchObject({
     transport: 'chat_completions',
     requestedModel: 'gpt-5.4',
     resolvedModel: 'gpt-5.4',
     baseUrl: 'http://127.0.0.1:8080/v1',
   })
-  expect(getAdditionalModelOptionsCacheScope()).toBe(
+  expect(getAdditionalModelOptionsCacheScope('openai-compatible', selection)).toBe(
     'openai:http://127.0.0.1:8080/v1',
   )
 })
 
 test('uses responses transport when provider-compatible API format requests responses', () => {
-  process.env.AGENC_USE_OPENAI = '1'
-  process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
-  process.env.OPENAI_MODEL = 'gpt-5.4'
-  process.env.OPENAI_API_FORMAT = 'responses'
+  const selection = providerSelection('gpt-5.4', {
+    OPENAI_BASE_URL: 'https://api.openai.com/v1',
+    OPENAI_API_FORMAT: 'responses',
+  })
 
-  expect(resolveProviderRequest()).toMatchObject({
+  expect(resolveProviderRequest({ provider: 'openai-compatible', ...selection })).toMatchObject({
     transport: 'responses',
     requestedModel: 'gpt-5.4',
     resolvedModel: 'gpt-5.4',
@@ -103,12 +95,12 @@ test('uses responses transport when provider-compatible API format requests resp
 })
 
 test('keeps ProviderCode backend on ProviderCode responses transport even when API format is set', () => {
-  process.env.AGENC_USE_OPENAI = '1'
-  process.env.OPENAI_BASE_URL = 'https://chatgpt.com/backend-api/providerCode'
-  process.env.OPENAI_MODEL = 'providerCodeplan'
-  process.env.OPENAI_API_FORMAT = 'chat_completions'
+  const selection = providerSelection('providerCodeplan', {
+    OPENAI_BASE_URL: 'https://chatgpt.com/backend-api/providerCode',
+    OPENAI_API_FORMAT: 'chat_completions',
+  })
 
-  expect(resolveProviderRequest()).toMatchObject({
+  expect(resolveProviderRequest({ provider: 'openai-compatible', ...selection })).toMatchObject({
     transport: 'providerCode_responses',
     requestedModel: 'providerCodeplan',
     resolvedModel: 'gpt-5.5',
@@ -117,11 +109,39 @@ test('keeps ProviderCode backend on ProviderCode responses transport even when A
 })
 
 test('skips local model cache scope for remote openai-compatible providers', () => {
-  process.env.AGENC_USE_OPENAI = '1'
-  process.env.OPENAI_BASE_URL = 'https://api.openai.com/v1'
-  process.env.OPENAI_MODEL = 'gpt-4o'
+  const selection = providerSelection('gpt-4o', {
+    OPENAI_BASE_URL: 'https://api.openai.com/v1',
+  })
 
-  expect(getAdditionalModelOptionsCacheScope()).toBeNull()
+  expect(getAdditionalModelOptionsCacheScope('openai-compatible', selection)).toBeNull()
+})
+
+test('uses the captured provider environment after ambient selection mutates', () => {
+  const captured = providerSelection('captured-model', {
+    OPENAI_BASE_URL: 'http://127.0.0.1:8080/v1',
+  }).environment
+  const originalProvider = process.env.AGENC_PROVIDER
+  const originalModel = process.env.AGENC_MODEL
+  const originalBaseUrl = process.env.OPENAI_BASE_URL
+
+  try {
+    process.env.AGENC_PROVIDER = 'openai'
+    process.env.AGENC_MODEL = 'ambient-model'
+    process.env.OPENAI_BASE_URL = 'https://ambient.example/v1'
+
+    expect(resolveProviderRequest({ environment: captured })).toMatchObject({
+      requestedModel: 'captured-model',
+      resolvedModel: 'captured-model',
+      baseUrl: 'http://127.0.0.1:8080/v1',
+    })
+  } finally {
+    if (originalProvider === undefined) delete process.env.AGENC_PROVIDER
+    else process.env.AGENC_PROVIDER = originalProvider
+    if (originalModel === undefined) delete process.env.AGENC_MODEL
+    else process.env.AGENC_MODEL = originalModel
+    if (originalBaseUrl === undefined) delete process.env.OPENAI_BASE_URL
+    else process.env.OPENAI_BASE_URL = originalBaseUrl
+  }
 })
 
 test('derives local retry base URLs with /v1 and loopback fallback candidates', () => {

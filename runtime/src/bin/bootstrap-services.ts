@@ -98,6 +98,9 @@ import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { isRecord } from "../utils/record.js";
 import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import { bindExecutionAdmissionJournal } from "../session/execution-admission-journal.js";
+import type { AgentRuntimeOptions } from "../session/runtime-options.js";
+import { SessionProviderService } from "../session/provider-service.js";
+import { snapshotProviderEnvironment } from "../llm/provider-options.js";
 
 export { bindExecutionAdmissionJournal } from "../session/execution-admission-journal.js";
 
@@ -129,6 +132,7 @@ export interface BootstrapSessionServicesOptions {
   readonly conversationId: string;
   readonly model: string;
   readonly sessionConfiguration: SessionConfiguration;
+  readonly runtimeOptions: AgentRuntimeOptions;
   readonly codeModeService?: CodeModeService;
   readonly executionAdmission?: ExecutionAdmissionClient;
   readonly admissionRequired?: boolean;
@@ -696,7 +700,8 @@ export function buildBootstrapSessionServices(
     cwd: opts.workspaceRoot,
     env: opts.env,
     agencHome: opts.agencHome,
-    shellPath: opts.env.SHELL ?? "/bin/sh",
+    shellPath: opts.runtimeOptions.posixShellPath ?? opts.env.SHELL ?? "/bin/sh",
+    allowUntrustedHooks: opts.runtimeOptions.allowUntrustedHooks,
     sandboxExecutionBroker: opts.sandboxExecutionBroker,
     ...(opts.executionAdmission !== undefined
       ? { executionAdmission: opts.executionAdmission }
@@ -737,8 +742,16 @@ export function buildBootstrapSessionServices(
     });
   });
   let unsubscribeExecutionAdmission: (() => void) | undefined;
+  const providerEnvironment = snapshotProviderEnvironment(opts.env);
+  const providerService = new SessionProviderService({
+    initialProvider: opts.provider,
+    initialProviderName: opts.providerName,
+    initialModel: opts.model,
+    environment: providerEnvironment,
+  });
 
   const services: SessionServices = {
+    runtimeOptions: opts.runtimeOptions,
     mcpConnectionManager,
     mcpStartupCancellationToken: createMcpStartupCancellationToken(),
     unifiedExecManager: opts.unifiedExecManager,
@@ -748,7 +761,7 @@ export function buildBootstrapSessionServices(
     rollout: rolloutRecorder,
     rolloutTrace,
     userShell: {
-      path: opts.env.SHELL ?? "/bin/sh",
+      path: opts.runtimeOptions.posixShellPath ?? opts.env.SHELL ?? "/bin/sh",
       deriveExecArgs: (input: string) => ["-c", input],
     },
     agentIdentityManager: new BootstrapAgentIdentityManager(
@@ -815,6 +828,8 @@ export function buildBootstrapSessionServices(
     threadStore: threadNameStore,
     modelClient,
     codeModeService,
+    providerService,
+    providerEnvironment,
     provider: opts.provider,
     registry: opts.registry,
     ...(opts.executionAdmission !== undefined

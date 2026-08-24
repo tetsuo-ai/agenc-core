@@ -116,7 +116,6 @@ export type RunRuntimePermissionMode =
   (typeof RUN_RUNTIME_PERMISSION_MODES)[number];
 
 export const RUN_RUNTIME_REASONING_EFFORTS = [
-  "minimal",
   "low",
   "medium",
   "high",
@@ -130,7 +129,7 @@ export const RUN_RUNTIME_MODEL_VERBOSITIES = ["low", "medium", "high"] as const;
 export type RunRuntimeModelVerbosity =
   (typeof RUN_RUNTIME_MODEL_VERBOSITIES)[number];
 
-export const RUN_RUNTIME_SERVICE_TIERS = ["fast", "priority", "flex"] as const;
+export const RUN_RUNTIME_SERVICE_TIERS = ["priority", "flex"] as const;
 export type RunRuntimeServiceTier = (typeof RUN_RUNTIME_SERVICE_TIERS)[number];
 
 /**

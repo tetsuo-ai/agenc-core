@@ -32,7 +32,7 @@ describe("Linux sandbox engine", () => {
       profile,
       "/repo",
       true,
-      true,
+      false,
     );
 
     expect(args.slice(0, 6)).toEqual([
@@ -43,7 +43,6 @@ describe("Linux sandbox engine", () => {
       "--permission-profile",
       JSON.stringify(profile),
     ]);
-    expect(args).toContain("--use-legacy-landlock");
     expect(args).toContain("--allow-network-for-proxy");
     expect(args.slice(args.indexOf("--"))).toEqual(["--", "/bin/echo", "ok"]);
   });
@@ -105,7 +104,6 @@ describe("Linux sandbox engine", () => {
         sandbox: "windows_restricted_token",
         enforceManagedNetwork: false,
         sandboxPolicyCwd: "C:\\repo",
-        useLegacyLandlock: false,
         windowsSandboxLevel: "low",
         windowsSandboxPrivateDesktop: false,
         platform: "win32",
@@ -149,7 +147,6 @@ describe("Linux sandbox engine", () => {
       network: { env: { HTTP_PROXY: "http://127.0.0.1:8080" } },
       sandboxPolicyCwd: "/repo",
       agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
-      useLegacyLandlock: false,
       windowsSandboxLevel: "disabled",
       windowsSandboxPrivateDesktop: false,
       platform: "linux",
@@ -207,7 +204,6 @@ describe("Linux sandbox engine", () => {
       enforceManagedNetwork: false,
       sandboxPolicyCwd: "/repo",
       agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
-      useLegacyLandlock: false,
       windowsSandboxLevel: "disabled",
       windowsSandboxPrivateDesktop: false,
       platform: "linux",
@@ -257,7 +253,6 @@ describe("Linux sandbox engine", () => {
         enforceManagedNetwork: false,
         sandboxPolicyCwd: "/repo",
         agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
-        useLegacyLandlock: false,
         windowsSandboxLevel: "disabled",
         windowsSandboxPrivateDesktop: false,
         platform: "linux",
@@ -285,7 +280,6 @@ describe("Linux sandbox engine", () => {
       enforceManagedNetwork: false,
       sandboxPolicyCwd: "/repo",
       agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
-      useLegacyLandlock: false,
       windowsSandboxLevel: "disabled",
       windowsSandboxPrivateDesktop: false,
       platform: "linux",

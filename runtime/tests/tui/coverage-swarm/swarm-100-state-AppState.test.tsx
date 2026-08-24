@@ -53,10 +53,21 @@ vi.mock("../../../src/utils/debug.js", () => ({
   logForDebugging: mockFns.logForDebugging,
 }));
 
-vi.mock("../../../src/utils/permissions/permissionSetup.js", () => ({
+vi.mock("../../../src/permissions/permission-mode.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   createDisabledBypassPermissionsContext:
     mockFns.createDisabledBypassPermissionsContext,
-  isBypassPermissionsModeDisabled: () => harness.bypassDisabled,
+}));
+
+vi.mock("../../../src/permissions/settings.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  loadPermissionRulesSnapshot: async () => ({
+    rules: [],
+    managedOnly: false,
+    directories: [],
+    bypassPermissionsModeDisabled: harness.bypassDisabled,
+    disableAutoMode: false,
+  }),
 }));
 
 vi.mock("../../../src/utils/settings/applySettingsChange.js", () => ({
@@ -83,6 +94,7 @@ vi.mock("../../../src/utils/commitAttribution.js", () => ({
 }));
 
 vi.mock("../../../src/utils/settings/settings.js", () => ({
+  getExecutionAuthoritySettings: () => ({}),
   getInitialSettings: () => ({}),
 }));
 
@@ -236,7 +248,7 @@ describe("AppState coverage swarm row 100", () => {
       );
 
       expect(mockFns.logForDebugging).toHaveBeenCalledWith(
-        "Disabling bypass permissions mode on mount (remote settings loaded before mount)",
+        "Disabling bypass permissions mode on mount (managed policy loaded before mount)",
       );
       expect(
         mockFns.createDisabledBypassPermissionsContext,

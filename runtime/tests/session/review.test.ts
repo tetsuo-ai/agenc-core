@@ -28,6 +28,7 @@
 import { describe, expect, it } from "vitest";
 
 import { AsyncQueue } from "../utils/async-queue.js";
+import { createTestConfigStore } from "../fixtures.js";
 import {
   Session,
   type Event,
@@ -58,16 +59,14 @@ import {
   spawnReviewTask,
   type ReviewRequest,
 } from "./review.js";
+import { resolveAgentRuntimeOptions } from "./runtime-options.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Fixture (mirrors tasks.test.ts::buildSession)
 // ─────────────────────────────────────────────────────────────────────
 
 function mkFeatures(): ManagedFeatures {
-  return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
-  };
+  return {};
 }
 
 function mkConfig(): Config {
@@ -189,6 +188,8 @@ function mkSession(opts?: {
 }): Session {
   const services = {
     admissionRequired: false,
+    runtimeOptions: resolveAgentRuntimeOptions({}),
+    configStore: createTestConfigStore(),
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},
@@ -199,6 +200,7 @@ function mkSession(opts?: {
       isCancelled: () => false,
     },
     provider: opts?.provider ?? mkProvider(),
+    providerEnvironment: {},
     registry: {
       tools: [],
       toLLMTools: () => [],

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
+import { resolveHomeContext } from '../../src/config/home.js'
 
 /**
  * Factory wiring for Sign in with X / xAI OAuth: with no API key, the grok
@@ -7,6 +8,10 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest'
  */
 
 const credentialsModulePath = '../../src/utils/xaiOauthCredentials.js'
+const CREDENTIAL_HOME = resolveHomeContext(
+  { AGENC_HOME: '/tmp/agenc-grok-oauth-factory' },
+  { platformHome: '/tmp' },
+)
 
 let storedAccessToken: string | undefined
 let requiresRelogin = true
@@ -16,12 +21,27 @@ async function importProviderModule() {
   vi.resetModules()
   vi.doMock(credentialsModulePath, () => ({
     readXaiOauthAccessToken: () => storedAccessToken,
-    isXaiOauthBearer: (key: string | undefined) =>
+    isXaiOauthBearer: (_home: unknown, key: string | undefined) =>
       key !== undefined && key === storedAccessToken,
     forceRefreshXaiOauthCredentials: forceRefreshMock,
     xaiOauthRequiresRelogin: () => requiresRelogin,
   }))
-  return import('../../src/llm/provider.ts')
+  const [providerModule, optionsModule] = await Promise.all([
+    import('../../src/llm/provider.ts'),
+    import('../../src/llm/provider-options.ts'),
+  ])
+  return {
+    ...providerModule,
+    createProvider: (
+      provider: 'grok',
+      requested: Parameters<typeof providerModule.createProvider>[1],
+    ) => providerModule.createProvider(
+      provider,
+      optionsModule.resolveProviderFactoryOptions(provider, requested, {
+        AGENC_HOME: CREDENTIAL_HOME.path,
+      }),
+    ),
+  }
 }
 
 beforeEach(() => {
@@ -40,7 +60,10 @@ test('grok without apiKey falls back to the stored OAuth bearer', async () => {
   storedAccessToken = 'oauth-bearer-1'
   const { createProvider } = await importProviderModule()
 
-  const provider = createProvider('grok', { model: 'grok-4.5' })
+  const provider = createProvider('grok', {
+    model: 'grok-4.5',
+    credentialHome: CREDENTIAL_HOME,
+  })
   expect(provider.name).toBe('grok')
 })
 
@@ -48,7 +71,10 @@ test('grok without apiKey and without stored OAuth still requires a key', async 
   storedAccessToken = undefined
   const { createProvider } = await importProviderModule()
 
-  expect(() => createProvider('grok', { model: 'grok-4.5' })).toThrow(
+  expect(() => createProvider('grok', {
+    model: 'grok-4.5',
+    credentialHome: CREDENTIAL_HOME,
+  })).toThrow(
     /requires apiKey/,
   )
 })
@@ -65,6 +91,7 @@ test('/grok-login OAuth wins over an explicit env-style apiKey', async () => {
     createProvider('grok', {
       apiKey: 'xai-real-key',
       model: 'grok-4.5',
+      credentialHome: CREDENTIAL_HOME,
       baseURL: 'https://attacker.example/v1',
     }),
   ).toThrow(/refusing to send the xAI OAuth bearer/)
@@ -72,6 +99,7 @@ test('/grok-login OAuth wins over an explicit env-style apiKey', async () => {
   const provider = createProvider('grok', {
     apiKey: 'xai-real-key',
     model: 'grok-4.5',
+    credentialHome: CREDENTIAL_HOME,
   })
   expect(provider.name).toBe('grok')
 })
@@ -83,6 +111,7 @@ test('OAuth bearer is refused for non-xAI base URLs', async () => {
   expect(() =>
     createProvider('grok', {
       model: 'grok-4.5',
+      credentialHome: CREDENTIAL_HOME,
       baseURL: 'https://attacker.example/v1',
     }),
   ).toThrow(/refusing to send the xAI OAuth bearer/)
@@ -94,6 +123,7 @@ test('OAuth bearer is allowed for the grok.com CLI proxy base URL', async () => 
 
   const provider = createProvider('grok', {
     model: 'grok-4.5',
+    credentialHome: CREDENTIAL_HOME,
     baseURL: 'https://cli-chat-proxy.grok.com/v1',
   })
   expect(provider.name).toBe('grok')
@@ -106,6 +136,7 @@ test('API-key mode is exempt from the OAuth base URL pin', async () => {
   const provider = createProvider('grok', {
     apiKey: 'xai-real-key',
     model: 'grok-4.5',
+    credentialHome: CREDENTIAL_HOME,
     baseURL: 'https://my-gateway.example/v1',
   })
   expect(provider.name).toBe('grok')
@@ -116,7 +147,10 @@ test('OAuth mode installs a working 401 refresh callback', async () => {
   forceRefreshMock.mockResolvedValue({ accessToken: 'oauth-bearer-2' })
   const { createProvider } = await importProviderModule()
 
-  const provider = createProvider('grok', { model: 'grok-4.5' }) as unknown as {
+  const provider = createProvider('grok', {
+    model: 'grok-4.5',
+    credentialHome: CREDENTIAL_HOME,
+  }) as unknown as {
     authRefreshCallbacks?: {
       refreshBearer: (ctx: unknown) => Promise<{ kind: string; bearer?: string }>
     }
@@ -137,7 +171,10 @@ test('exhausted refresh reports a re-login hint instead of retrying', async () =
   forceRefreshMock.mockResolvedValue(undefined)
   const { createProvider } = await importProviderModule()
 
-  const provider = createProvider('grok', { model: 'grok-4.5' }) as unknown as {
+  const provider = createProvider('grok', {
+    model: 'grok-4.5',
+    credentialHome: CREDENTIAL_HOME,
+  }) as unknown as {
     authRefreshCallbacks?: {
       refreshBearer: (ctx: unknown) => Promise<{ kind: string; reason?: string }>
     }
@@ -162,7 +199,10 @@ test('transient refresh failure does not claim the user is logged out', async ()
   forceRefreshMock.mockResolvedValue(undefined)
   const { createProvider } = await importProviderModule()
 
-  const provider = createProvider('grok', { model: 'grok-4.5' }) as unknown as {
+  const provider = createProvider('grok', {
+    model: 'grok-4.5',
+    credentialHome: CREDENTIAL_HOME,
+  }) as unknown as {
     authRefreshCallbacks?: {
       refreshBearer: (ctx: unknown) => Promise<{ kind: string; reason?: string }>
     }
@@ -184,6 +224,7 @@ test('API-key mode keeps the no-refresh default callback', async () => {
   const provider = createProvider('grok', {
     apiKey: 'xai-real-key',
     model: 'grok-4.5',
+    credentialHome: CREDENTIAL_HOME,
   }) as unknown as {
     authRefreshCallbacks?: {
       refreshBearer: (ctx: unknown) => Promise<{ kind: string }>

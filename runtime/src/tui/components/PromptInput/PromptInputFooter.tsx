@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { memo, type ReactNode, useMemo, useRef } from 'react';
 
+import type { ProviderAuthReadContext } from '../../../utils/auth.js';
 
 import { useIsModalOverlayActive } from '../../context/overlayContext.js';
 import { useSetPromptOverlay } from '../../context/promptOverlayContext.js';
@@ -50,7 +51,7 @@ type Props = {
   teammateFooterIndex?: number;
   ideSelection: IDESelection | undefined;
   mcpClients?: MCPServerConnection[];
-  agencHome?: string;
+  remoteAuthSessionContext: ProviderAuthReadContext;
   isPasting?: boolean;
   isInputWrapped?: boolean;
   // Live transcript accessor (stable identity) + the re-render trigger for
@@ -88,7 +89,7 @@ function PromptInputFooter({
   teammateFooterIndex,
   ideSelection,
   mcpClients,
-  agencHome,
+  remoteAuthSessionContext,
   isPasting = false,
   isInputWrapped = false,
   getMessages,
@@ -145,7 +146,7 @@ function PromptInputFooter({
       </Box>;
   }
   if (helpOpen) {
-    return <PromptInputHelpMenu dimColor={true} fixedWidth={true} paddingX={2} />;
+    return <PromptInputHelpMenu dimColor={true} fixedWidth={true} paddingX={2} remoteAuthSessionContext={remoteAuthSessionContext} />;
   }
   return <>
       <Box flexDirection={isNarrow ? 'column' : 'row'} justifyContent={isNarrow ? 'flex-start' : 'space-between'} paddingX={2} gap={isNarrow ? 0 : 1} backgroundColor="surfaceBackground" opaque>
@@ -154,7 +155,7 @@ function PromptInputFooter({
           <PromptInputFooterLeftSide exitMessage={exitMessage} vimMode={showStatusLine ? undefined : vimMode} mode={mode} toolPermissionContext={toolPermissionContext} suppressHint={suppressHint} isLoading={isLoading} tasksSelected={pillSelected} teamsSelected={teamsSelected} teammateFooterIndex={teammateFooterIndex} isPasting={isPasting} isSearching={isSearching} historyQuery={historyQuery} setHistoryQuery={setHistoryQuery} historyFailedMatch={historyFailedMatch} onOpenTasksDialog={onOpenTasksDialog} />
         </Box>
         <Box flexShrink={1} gap={1}>
-          {isFullscreen ? null : <Notifications apiKeyStatus={apiKeyStatus} autoUpdaterResult={autoUpdaterResult} debug={debug} isAutoUpdating={isAutoUpdating} verbose={verbose} getMessages={getMessages} lastAssistantMessageId={lastAssistantMessageId} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} ideSelection={ideSelection} mcpClients={mcpClients} agencHome={agencHome} isInputWrapped={isInputWrapped} isNarrow={isNarrow} />}
+          {isFullscreen ? null : <Notifications apiKeyStatus={apiKeyStatus} autoUpdaterResult={autoUpdaterResult} debug={debug} isAutoUpdating={isAutoUpdating} verbose={verbose} getMessages={getMessages} lastAssistantMessageId={lastAssistantMessageId} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} ideSelection={ideSelection} mcpClients={mcpClients} remoteAuthSessionContext={remoteAuthSessionContext} isInputWrapped={isInputWrapped} isNarrow={isNarrow} />}
         </Box>
       </Box>
     </>;

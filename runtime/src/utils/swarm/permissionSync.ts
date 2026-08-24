@@ -54,7 +54,7 @@ export const SwarmPermissionRequestSchema = lazySchema(() =>
     workerColor: z.string().optional(),
     /** Team name for routing */
     teamName: z.string(),
-    /** Tool name requiring permission (e.g., "Bash", "Edit") */
+    /** Tool name requiring permission (e.g., "system.bash", "Edit") */
     toolName: z.string(),
     /** Original toolUseID from worker's context */
     toolUseId: z.string(),

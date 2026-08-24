@@ -1,17 +1,19 @@
 import type { VimMode } from '../../../types/textInputTypes.js'
 import type { Key } from '../../ink.js'
 import { stringWidth } from '../../ink/stringWidth.js'
-import { type GlobalConfig, getGlobalConfig } from '../../../utils/config.js'
+import type { AgenCConfig } from '../../../config/schema.js'
+import { getRuntimeState } from '../../../utils/config.js'
 import { env } from '../../../utils/env.js'
+import { getCanonicalSettingsAuthority } from '../../../utils/settings/canonicalAuthority.js'
 /**
  * Helper function to check if vim mode is currently enabled
  * @returns boolean indicating if vim mode is active
  */
-export function isVimModeEnabled(config: GlobalConfig = getGlobalConfig()): boolean {
-  if (typeof config.tui?.vimMode === 'boolean') {
-    return config.tui.vimMode
-  }
-  return config.editorMode === 'vim'
+export function isVimModeEnabled(
+  config: Pick<AgenCConfig, 'tui'> | undefined =
+    getCanonicalSettingsAuthority()?.current(),
+): boolean {
+  return config?.tui?.vimMode === true
 }
 
 export function formatVimModeIndicator(vimMode: VimMode | undefined): string | null {
@@ -25,12 +27,12 @@ export function getNewlineInstructions(): string {
   }
 
   // For iTerm2 and VSCode, show Shift+Enter instructions if installed
-  if (getGlobalConfig().shiftEnterKeyBindingInstalled === true) {
+  if (getRuntimeState().shiftEnterKeyBindingInstalled === true) {
     return 'shift + ⏎ for newline'
   }
 
   // Otherwise show backslash+return instructions
-  return getGlobalConfig().hasUsedBackslashReturn === true
+  return getRuntimeState().hasUsedBackslashReturn === true
     ? '\\⏎ for newline'
     : 'backslash (\\) + return (⏎) for newline'
 }

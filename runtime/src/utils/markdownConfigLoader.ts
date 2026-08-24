@@ -6,7 +6,7 @@ import { homedir } from 'os'
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'path'
 import { getProjectRoot } from '../bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
+import { getAgenCHomeDir, isEnvTruthy } from './envUtils.js'
 import { isFsInaccessible } from './errors.js'
 import { normalizePathForComparison } from './file.js'
 import type { FrontmatterData } from './frontmatterParser.js'
@@ -294,7 +294,7 @@ async function loadMarkdownFilesForSubdirUncached(
   subdir: AgenCConfigDirectory,
   cwd: string,
 ): Promise<MarkdownFile[]> {
-    const userDir = join(getAgenCConfigHomeDir(), subdir)
+    const userDir = join(getAgenCHomeDir(), subdir)
     const managedDir = join(getManagedFilePath(), '.agenc', subdir)
     const projectDirs = getProjectDirsUpToHome(subdir, cwd)
 
@@ -412,8 +412,9 @@ async function loadMarkdownFilesForSubdirUncached(
 
 export const loadMarkdownFilesForSubdir = memoize(
   loadMarkdownFilesForSubdirUncached,
-  // Custom resolver creates cache key from both subdir and cwd parameters
-  (subdir: AgenCConfigDirectory, cwd: string) => `${subdir}:${cwd}`,
+  // A daemon may host the same cwd under distinct canonical homes.
+  (subdir: AgenCConfigDirectory, cwd: string) =>
+    `${getAgenCHomeDir()}\u0000${subdir}\u0000${resolve(cwd)}`,
 )
 
 /** Read through every discovery layer without consulting the UI catalog cache. */

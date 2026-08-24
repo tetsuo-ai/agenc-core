@@ -21,6 +21,17 @@ Autostart is **on by default**. Disable with:
 AGENC_DAEMON_AUTOSTART=0
 ```
 
+If autostart has to replace a running daemon (legacy process with no instance
+identity, or a build-identity skew), it re-enters the start cycle at most
+**3** times (`AGENC_DAEMON_AUTOSTART_MAX_RESTART_CYCLES` in
+`runtime/src/app-server/daemon-autostart.ts`). The first restart is immediate.
+Further restarts wait 250 ms, then 1 s, then 4 s. After the cap it throws
+`AgenCDaemonAutostartError` with the repeating reason. In a TTY the CLI still
+opens the TUI and shows the `daemon-autostart-failed` status notice. Background
+agents and reconnectable sessions stay unavailable until `agenc daemon start`
+succeeds. Inspect with `agenc daemon status`; stop a wedged process with
+`agenc daemon stop`.
+
 Ready-wait timeout for clients that start the daemon
 (`AGENC_DAEMON_READY_TIMEOUT_MS`):
 
@@ -97,7 +108,8 @@ export AGENC_HOME=/var/lib/agenc
   and tunnel docs mean by `ws://127.0.0.1:7766`. Implementation:
   `runtime/src/app-server/daemon-cli.ts` + `transport/`.
 
-- Config block `[daemon]` defaults: `transport = "unix"`, `autostart = true`
+- Config block `[daemon]` has one active setting: `autostart = true` by default.
+  The platform runtime owns the local transport; it is not configurable.
   (`runtime/src/config/schema.ts`).
 
 The embedding SDK (`@tetsuo-ai/agenc-sdk`) attaches the same way:
@@ -140,15 +152,35 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 | `session.resolveToolCall`                                                                                   | Resolve a tool call whose durable outcome requires review                                                          |
 | `session.mcp.addServer`                                                                                     | Attach MCP server to a session                                                                                     |
 | `message.send` / `message.stream`                                                                           | Prompt turns                                                                                                       |
-| `thread/realtime/*`                                                                                         | Realtime voice/thread methods                                                                                      |
+| `thread/realtime/start` / `appendAudio` / `appendText` / `stop` / `listVoices`                              | Realtime voice/thread. `start` is advertised `false` (fail-closed)                                                 |
 | `tool.approve` / `tool.deny` / `tool.cancel`                                                                | Permission settlement                                                                                              |
 | `elicitation.respond`                                                                                       | User-input / MCP elicitation reply                                                                                 |
 | `permission.list`                                                                                           | List pending / granted permissions                                                                                 |
 | `fs.fuzzy_search`                                                                                           | Workspace fuzzy file search                                                                                        |
-| `commandExec.start` / `write` / `resize` / `terminate`                                                      | Reserved PTY/command-exec protocol; direct starts currently fail closed                                            |
+| `commandExec.start` / `commandExec.write` / `commandExec.resize` / `commandExec.terminate`                  | Reserved PTY/command-exec. `start` is advertised `false`                                                           |
 | `health.ping` / `health.ready` / `health.stats`                                                             | Liveness and stats                                                                                                 |
 | `daemon.reload`                                                                                             | Reload configuration                                                                                               |
+| `daemon.shutdown`                                                                                           | Ask the daemon process to exit                                                                                     |
 | `auth.login` / `auth.whoami` / `auth.logout`                                                                | Auth backend                                                                                                       |
+
+### Internal methods (`AGENC_DAEMON_INTERNAL_METHODS`)
+
+Not part of the public 53-method SDK surface. The TUI and workbench use them
+over the same JSON-RPC socket. Embedders should not call these unless they are
+reimplementing the workbench. Source:
+`runtime/src/app-server/protocol/index.ts`.
+
+| Group | Methods |
+| --- | --- |
+| Editor lock / sync | `workspace.editor.acquire`, `sync`, `staleAuthority.refresh`, `heartbeat`, `release` |
+| Topology | `workspace.editor.topology.reserve`, `complete`, `release`, `recovered.list`, `recovered.resolve` |
+| Proposals / changes | `workspace.editor.proposal.get`, `status`, `apply`, `discard`, `changes.list` |
+| Code prediction | `workspace.editor.predict`, `cancelPrediction`, `predictionFeedback` |
+| Compaction / rewind | `session.partialCompactFromMessage`, `rollbackCompaction`, `extendCompactionRollbackRetention`, `rewindConversationToMessage`, `previewFileRewind`, `rewindFilesToMessage` |
+| Session controls | `session.setModel`, `setPermissionMode`, `applyConfig` |
+| Hooks / MCP | `session.hooks.status`, `hooks.setDisabled`, `mcp.reconnectServer`, `mcp.enableServer`, `mcp.disableServer` |
+
+Workbench BUFFER and Neovim behavior: [`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md).
 
 ### Race-safe turns and transcript sync (protocol 1.2)
 
@@ -270,13 +302,6 @@ status, attach, and session lookup RPCs a priority lane. They still wait for
 `initialize`, but do not wait for a full `message.send` / `message.stream` turn
 to finish. Ordinary order-dependent mutations remain FIFO per connection.
 
-### Internal methods (TUI / privileged clients)
-
-Include session rewind/compact, `session.setModel`,
-`session.setPermissionMode`, hooks enable/disable, `session.applyConfig`, and
-MCP reconnect/enable/disable. Full list:
-`AGENC_DAEMON_INTERNAL_METHODS` in the protocol module.
-
 `commandExec.start` is currently fail-closed with
 `EXECUTION_ADMISSION_REQUIRED`. Although the underlying service retains its
 explicit sandbox-policy contract for internal testing and future wiring, the
@@ -294,10 +319,15 @@ sessions.
 
 ### Server → client notifications
 
-Examples: `event.message_chunk`, `event.tool_request`,
-`event.permission_request`, `event.user_input_request`,
-`event.mcp_elicitation_request`, `event.agent_status`,
-`event.session_event`, `commandExec.outputDelta`, realtime deltas.
+All 17 names in `AGENC_DAEMON_NOTIFICATION_METHODS`:
+
+| Group | Methods |
+| --- | --- |
+| Exec | `commandExec.outputDelta` |
+| Turn / tools | `event.message_chunk`, `event.tool_request`, `event.permission_request`, `event.user_input_request`, `event.mcp_elicitation_request` |
+| Status | `event.agent_status`, `event.session_event` |
+| Sync | `event.event_gap` (retention eviction or replay required; do not skip) |
+| Realtime (typed; start is advertised `false`) | `thread/realtime/started`, `itemAdded`, `transcript/delta`, `transcript/done`, `outputAudio/delta`, `sdp`, `error`, `closed` |
 
 `initialize.capabilities` can opt an authenticated connection into delivery
 outside ordinary session attachment:
@@ -340,6 +370,8 @@ current Ledger action is documented in
 - **Command exec / PTY** — `commandExec.*` for interactive shell surfaces.
 - **Health & recovery** — `health.*`, startup recovery of in-flight tool
   calls and agent runs (`runtime/src/state/recovery.ts`), pruning policies.
+  Journal quarantine/deferred (schema v18, live DB through v27) is operator
+  CLI `agenc state recovery …`, not a daemon RPC. See [cli.md](cli.md).
 - **Auth / key vending** — auth handlers + provider-key vending for managed
   backends (`provider-key-vending.ts`).
 - **Realtime** — thread realtime RPC + WebSocket connector.
@@ -365,7 +397,7 @@ spend against daemon-owned sessions.
 agenc doctor           # install + daemon + provider diagnostics
 agenc security audit   # exposure / permission posture
 agenc state …          # project state inspection
-agenc budget status    # cumulative autonomy ledger (not daemon-internal only)
+agenc budget status    # configured policy only; usage is agenc run status <run-id>
 ```
 
 ## Source map

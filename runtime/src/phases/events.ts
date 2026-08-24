@@ -47,6 +47,7 @@ export type PhaseEvent =
       readonly stopReason:
         | "completed"
         | "max_turns"
+        | "max_budget_usd"
         | "cancelled"
         | "error"
         | "empty_response"

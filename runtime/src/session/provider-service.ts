@@ -1,0 +1,179 @@
+/** Session-owned provider authority. */
+
+import {
+  createProvider,
+  resolveBuiltInProviderSlug,
+  readProviderFactoryOptions,
+  readProviderIdentity,
+  type ProviderFactoryOptions,
+  type ProviderName,
+} from "../llm/provider.js";
+import {
+  resolveProviderFactoryOptions,
+  snapshotProviderEnvironment,
+  type ProviderEnvironment,
+} from "../llm/provider-options.js";
+import type { LLMProvider } from "../llm/types.js";
+
+export interface ProviderSelection {
+  readonly provider: string;
+  readonly model: string;
+}
+
+export interface ProviderBinding {
+  readonly provider: string;
+  readonly model: string;
+  readonly instance: LLMProvider;
+  readonly factoryOptions: ProviderFactoryOptions;
+  readonly revision: number;
+}
+
+export interface PreparedProviderBinding {
+  readonly binding: ProviderBinding;
+  readonly expectedRevision: number;
+}
+
+function firstNonEmpty(
+  ...values: Array<string | undefined>
+): string | undefined {
+  for (const value of values) {
+    const normalized = value?.trim();
+    if (normalized) return normalized;
+  }
+  return undefined;
+}
+
+function cloneOptions(options: ProviderFactoryOptions): ProviderFactoryOptions {
+  return Object.freeze({
+    ...(options.credentialHome !== undefined
+      ? { credentialHome: options.credentialHome }
+      : {}),
+    ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}),
+    ...(options.baseURL !== undefined ? { baseURL: options.baseURL } : {}),
+    ...(options.model !== undefined ? { model: options.model } : {}),
+    ...(options.tools !== undefined ? { tools: [...options.tools] } : {}),
+    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.extra !== undefined
+      ? { extra: Object.freeze({ ...options.extra }) }
+      : {}),
+  });
+}
+
+export function bindingFromProvider(params: {
+  readonly provider: LLMProvider;
+  readonly providerName?: string;
+  readonly model?: string;
+  readonly revision?: number;
+}): ProviderBinding {
+  const options = readProviderFactoryOptions(params.provider);
+  const providerName =
+    readProviderIdentity(params.provider, params.providerName) ??
+    firstNonEmpty(params.providerName, params.provider.name) ??
+    "unknown";
+  const model =
+    firstNonEmpty(options.model, params.model) ??
+    firstNonEmpty(
+      (params.provider as { config?: { model?: string } }).config?.model,
+    ) ??
+    "unknown";
+  return Object.freeze({
+    provider: providerName,
+    model,
+    instance: params.provider,
+    factoryOptions: cloneOptions({ ...options, model }),
+    revision: params.revision ?? 0,
+  });
+}
+
+/**
+ * Owns the active provider for exactly one session. Preparing a switch is
+ * side-effect free; commit rejects a stale preparation instead of allowing
+ * two concurrent switch attempts to overwrite one another.
+ */
+export class SessionProviderService {
+  readonly #environment: ProviderEnvironment;
+  readonly #credentialHome: ProviderFactoryOptions["credentialHome"];
+  #binding: ProviderBinding;
+
+  constructor(params: {
+    readonly initialProvider: LLMProvider;
+    readonly initialProviderName?: string;
+    readonly initialModel?: string;
+    readonly environment?: ProviderEnvironment;
+  }) {
+    this.#environment = snapshotProviderEnvironment(params.environment ?? {});
+    this.#binding = bindingFromProvider({
+      provider: params.initialProvider,
+      ...(params.initialProviderName !== undefined
+        ? { providerName: params.initialProviderName }
+        : {}),
+      ...(params.initialModel !== undefined ? { model: params.initialModel } : {}),
+    });
+    this.#credentialHome = this.#binding.factoryOptions.credentialHome;
+  }
+
+  current(): ProviderBinding {
+    return this.#binding;
+  }
+
+  environment(): ProviderEnvironment {
+    return this.#environment;
+  }
+
+  prepare(
+    selection: ProviderSelection,
+    requested: ProviderFactoryOptions,
+  ): PreparedProviderBinding {
+    const provider = resolveBuiltInProviderSlug(selection.provider);
+    if (provider === undefined) {
+      throw new Error(`unknown provider "${selection.provider.trim()}"`);
+    }
+    const model = selection.model.trim();
+    if (model.length === 0) {
+      throw new Error(`${provider} provider switch requires an explicit model`);
+    }
+    const credentialHome = requested.credentialHome ?? this.#credentialHome;
+    const resolved = resolveProviderFactoryOptions(
+      provider,
+      {
+        ...requested,
+        ...(credentialHome !== undefined
+          ? { credentialHome }
+          : {}),
+        model,
+      },
+      this.#environment,
+    );
+    const instance = createProvider(provider, resolved);
+    return Object.freeze({
+      expectedRevision: this.#binding.revision,
+      binding: bindingFromProvider({
+        provider: instance,
+        providerName: provider,
+        model,
+        revision: this.#binding.revision + 1,
+      }),
+    });
+  }
+
+  commit(prepared: PreparedProviderBinding): ProviderBinding {
+    if (prepared.expectedRevision !== this.#binding.revision) {
+      throw new Error(
+        "provider switch rejected because the session provider changed while the switch was being prepared",
+      );
+    }
+    this.#binding = prepared.binding;
+    return this.#binding;
+  }
+
+}
+
+export function assertBuiltInProviderBinding(
+  binding: ProviderBinding,
+): ProviderName {
+  const normalized = resolveBuiltInProviderSlug(binding.provider);
+  if (normalized === undefined) {
+    throw new Error(`unknown bound provider "${binding.provider}"`);
+  }
+  return normalized;
+}

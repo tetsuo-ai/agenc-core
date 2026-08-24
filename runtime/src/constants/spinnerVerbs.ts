@@ -4,10 +4,10 @@ export function getSpinnerVerbs(): string[] {
   const settings = getInitialSettings()
   const config = settings.spinnerVerbs
   if (!config) {
-    return SPINNER_VERBS
+    return [...SPINNER_VERBS]
   }
   if (config.mode === 'replace') {
-    return config.verbs.length > 0 ? config.verbs : SPINNER_VERBS
+    return config.verbs.length > 0 ? [...config.verbs] : [...SPINNER_VERBS]
   }
   return [...SPINNER_VERBS, ...config.verbs]
 }

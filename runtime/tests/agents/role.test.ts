@@ -67,24 +67,23 @@ describe("role registry", () => {
     expect(() => requireAgentRole(DEFAULT_WORKSPACE, "missing-role")).toThrow(
       "unknown agent_type 'missing-role'",
     );
-    expect(requireAgentRole(DEFAULT_WORKSPACE, "runner").name).toBe("worker");
+    expect(requireAgentRole(DEFAULT_WORKSPACE, "runner").name).toBe("runner");
   });
 
   it("lists all built-in roles", () => {
     const names = listAgentRoles(DEFAULT_WORKSPACE).map((role) => role.name);
     expect(names).toContain("default");
-    expect(names).toContain("explorer");
-    expect(names).toContain("worker");
+    expect(names).toContain("scanner");
+    expect(names).toContain("runner");
     // Promoted built-in roles (formerly stranded const agents).
     expect(names).toContain("Plan");
     expect(names).toContain("verification");
     expect(names).not.toContain("awaiter");
   });
 
-  it("resolves promoted built-in agents (scanner/Explore, Plan, verification)", () => {
-    // The Explore agent folds into the explorer/scanner role.
-    for (const name of ["explorer", "scanner", "Explore", "explore"]) {
-      expect(requireAgentRole(DEFAULT_WORKSPACE, name).name).toBe("explorer");
+  it("resolves promoted built-in agents (scanner, Plan, verification)", () => {
+    for (const name of ["scanner", "Explore", "explore"]) {
+      expect(requireAgentRole(DEFAULT_WORKSPACE, name).name).toBe("scanner");
     }
     // Plan's capital registry key is reachable only via the `plan` alias,
     // because spawn lowercases the requested name before lookup.
@@ -96,17 +95,27 @@ describe("role registry", () => {
     expect(getDefaultAgentRole().name).toBe("default");
   });
 
+  it.each(["explorer", "worker"])(
+    "rejects retired built-in role id %s",
+    (roleName) => {
+      expect(getAgentRole(DEFAULT_WORKSPACE, roleName)).toBeUndefined();
+      expect(() => requireAgentRole(DEFAULT_WORKSPACE, roleName)).toThrow(
+        `unknown agent_type '${roleName}'`,
+      );
+    },
+  );
+
   it("carries promoted built-in behavior on role config", () => {
-    const explorer = requireAgentRole(DEFAULT_WORKSPACE, "scanner");
-    expect(explorer.config.systemPrompt).toContain("file search specialist");
-    expect(explorer.config.disallowlist).toContain("spawn_agent");
-    expect(explorer.config.disallowlist).toContain("Edit");
-    expect(explorer.config.disallowlist).toContain("Write");
+    const scanner = requireAgentRole(DEFAULT_WORKSPACE, "scanner");
+    expect(scanner.config.systemPrompt).toContain("file search specialist");
+    expect(scanner.config.disallowlist).toContain("spawn_agent");
+    expect(scanner.config.disallowlist).toContain("Edit");
+    expect(scanner.config.disallowlist).toContain("Write");
     // Navigate-first guidance (revert-sensitive): structural-map-first, read
     // spans not whole files, and skip generated/build dirs.
-    expect(explorer.config.systemPrompt).toContain("structural map FIRST");
-    expect(explorer.config.systemPrompt).toContain("targeted spans");
-    expect(explorer.config.systemPrompt).toMatch(/Skip generated\/build\/vendored/);
+    expect(scanner.config.systemPrompt).toContain("structural map FIRST");
+    expect(scanner.config.systemPrompt).toContain("targeted spans");
+    expect(scanner.config.systemPrompt).toMatch(/Skip generated\/build\/vendored/);
 
     const plan = requireAgentRole(DEFAULT_WORKSPACE, "Plan");
     expect(plan.config.systemPrompt).toContain("software architect");
@@ -126,9 +135,9 @@ describe("role registry", () => {
     expect(def.config.disallowlist).toBeUndefined();
   });
 
-  it("explorer resolves through upstream-compatible config-file metadata", () => {
-    const role = getAgentRole(DEFAULT_WORKSPACE, "explorer")!;
-    expect(role.config.configFile).toBe("explorer.toml");
+  it("scanner resolves through upstream-compatible config-file metadata", () => {
+    const role = getAgentRole(DEFAULT_WORKSPACE, "scanner")!;
+    expect(role.config.configFile).toBe("scanner.toml");
     expect(role.config.reasoningEffort).toBeUndefined();
     expect(role.config.allowlist).toBeUndefined();
     expect(role.config.description).toContain(
@@ -136,14 +145,14 @@ describe("role registry", () => {
     );
   });
 
-  it("accepts cyberpunk role aliases without changing compatibility ids", () => {
-    expect(getAgentRole(DEFAULT_WORKSPACE, "scanner")?.name).toBe("explorer");
-    expect(resolveAgentRole(DEFAULT_WORKSPACE, "runner").name).toBe("worker");
+  it("uses the public role names as canonical registry ids", () => {
+    expect(getAgentRole(DEFAULT_WORKSPACE, "scanner")?.name).toBe("scanner");
+    expect(resolveAgentRole(DEFAULT_WORKSPACE, "runner").name).toBe("runner");
   });
 
-  it("worker has the default description and no built-in config-layer override", () => {
-    const role = resolveAgentRole(DEFAULT_WORKSPACE, "worker");
-    expect(role.name).toBe("worker");
+  it("runner has the default description and no built-in config-layer override", () => {
+    const role = resolveAgentRole(DEFAULT_WORKSPACE, "runner");
+    expect(role.name).toBe("runner");
     expect(role.config.configFile).toBeUndefined();
     expect(role.config.reasoningEffort).toBeUndefined();
     expect(role.config.nicknameCandidates).toBeUndefined();
@@ -172,11 +181,23 @@ describe("role registry", () => {
       name: "deep-review",
       config: {
         description: "review",
-        configToml: 'model_reasoning_effort = "xhigh"',
+        configToml: 'reasoning_effort = "xhigh"',
       },
     });
 
     expect(getAgentRole(DEFAULT_WORKSPACE, "deep-review")?.config.reasoningEffort).toBe("xhigh");
+  });
+
+  it("rejects obsolete config aliases in active role layers", () => {
+    expect(() =>
+      registerAgentRole(DEFAULT_WORKSPACE, {
+        name: "obsolete-role-config",
+        config: {
+          description: "review",
+          configToml: 'model_reasoning_effort = "high"',
+        },
+      })
+    ).toThrow(/unknown schema-v2 keys: model_reasoning_effort/u);
   });
 
   it("derives model and service tier hints from user role layers", () => {
@@ -197,10 +218,10 @@ describe("role registry", () => {
 
   it("registerAgentRole overrides built-ins by name", () => {
     registerAgentRole(DEFAULT_WORKSPACE, {
-      name: "explorer",
+      name: "scanner",
       config: { description: "override" },
     });
-    expect(getAgentRole(DEFAULT_WORKSPACE, "explorer")!.config.description).toBe("override");
+    expect(getAgentRole(DEFAULT_WORKSPACE, "scanner")!.config.description).toBe("override");
   });
 
   it("keeps same-named programmatic roles inside their workspace", () => {
@@ -263,7 +284,6 @@ describe("role registry", () => {
     try {
       for (const name of [
         "scanner",
-        "explorer",
         "runner",
         "general-purpose",
         "plan",
@@ -287,7 +307,7 @@ describe("role registry", () => {
       loadMarkdownAgentRoles(workspace);
 
       const scanner = requireAgentRole(workspace, "scanner");
-      expect(scanner.name).toBe("explorer");
+      expect(scanner.name).toBe("scanner");
       expect(scanner.source).toBe("built-in");
       expect(scanner.config.systemPrompt).toContain("file search specialist");
       expect(scanner.config.systemPrompt).not.toContain(
@@ -359,28 +379,30 @@ describe("role registry", () => {
     }
   });
 
-  it("rejects symlinked user and managed role tier roots", () => {
+  it("rejects symlinked user and managed role tier directories", () => {
     const root = mkdtempSync(join(tmpdir(), "agenc-markdown-role-roots-"));
     const workspaceRoot = join(root, "workspace");
-    const userTarget = join(root, "user-target");
-    const userLink = join(root, "user-link");
+    const userRoot = join(root, "user-root");
+    const userAgentsTarget = join(root, "user-agents-target");
+    const userAgentsLink = join(userRoot, "agents");
     const managedTarget = join(root, "managed-target");
     const managedLink = join(root, "managed-link");
     try {
       mkdirSync(join(workspaceRoot, ".git"), { recursive: true });
-      mkdirSync(join(userTarget, "agents"), { recursive: true });
+      mkdirSync(userRoot, { recursive: true });
+      mkdirSync(userAgentsTarget, { recursive: true });
       mkdirSync(managedTarget, { recursive: true });
       writeFileSync(
-        join(userTarget, "agents", "user.md"),
+        join(userAgentsTarget, "user.md"),
         "---\nname: escaped-user-root\ndescription: Escaped user root\n---\nEscaped.\n",
       );
       writeFileSync(
         join(managedTarget, "managed.md"),
         "---\nname: escaped-managed-root\ndescription: Escaped managed root\n---\nEscaped.\n",
       );
-      symlinkSync(userTarget, userLink, "dir");
+      symlinkSync(userAgentsTarget, userAgentsLink, "dir");
       symlinkSync(managedTarget, managedLink, "dir");
-      vi.stubEnv("AGENC_CONFIG_DIR", userLink);
+      vi.stubEnv("AGENC_HOME", userRoot);
       vi.stubEnv("AGENC_MANAGED_AGENTS_DIR", managedLink);
 
       const workspace = createAgentRoleWorkspace(workspaceRoot);
@@ -578,7 +600,7 @@ describe("nickname allocation", () => {
   });
 
   it("two sibling spawns from roles without candidate lists use distinct shared nicknames", () => {
-    const role = resolveAgentRole(DEFAULT_WORKSPACE, "worker");
+    const role = resolveAgentRole(DEFAULT_WORKSPACE, "runner");
     const first = allocateNickname(role, registry);
     const second = allocateNickname(role, registry);
     expect(first).not.toBe(second);
@@ -588,22 +610,22 @@ describe("nickname allocation", () => {
 });
 
 describe("config-layer stack", () => {
-  it("applyRoleToConfig keeps explorer as a no-op when explorer.toml is empty", () => {
-    const explorer = getAgentRole(DEFAULT_WORKSPACE, "explorer")!;
+  it("applyRoleToConfig keeps scanner as a no-op when scanner.toml is empty", () => {
+    const scanner = getAgentRole(DEFAULT_WORKSPACE, "scanner")!;
     const base = { cwd: "/tmp/project", reasoning_effort: "high" as const };
-    const next = applyRoleToConfig(explorer, base);
+    const next = applyRoleToConfig(scanner, base);
     expect(next).toEqual(base);
     expect(base.reasoning_effort).toBe("high");
   });
 
-  it("applyRoleToConfig parses AgenC TOML aliases into canonical AgenC config keys", () => {
+  it("applyRoleToConfig accepts canonical AgenC config keys", () => {
     registerAgentRole(DEFAULT_WORKSPACE, {
       name: "custom-inline",
       config: {
         description: "inline role",
         configToml: [
           'model = "role-model"',
-          'model_reasoning_effort = "high"',
+          'reasoning_effort = "high"',
           'service_tier = "priority"',
           'name = "ignored-role-metadata"',
           'developer_instructions = "ignored"',
@@ -648,7 +670,7 @@ describe("config-layer stack", () => {
         description: "precedence role",
         configToml: [
           'model = "role-model"',
-          'model_reasoning_effort = "low"',
+          'reasoning_effort = "low"',
         ].join("\n"),
       },
     });
@@ -709,13 +731,13 @@ describe("config-layer stack", () => {
   it("tryResolveRoleConfig returns undefined for unknown; resolveAgentRole falls back to default", () => {
     expect(tryResolveRoleConfig(DEFAULT_WORKSPACE, "unknown")).toBeUndefined();
     expect(tryResolveRoleConfig(DEFAULT_WORKSPACE, undefined)).toBeUndefined();
-    expect(tryResolveRoleConfig(DEFAULT_WORKSPACE, "explorer")).toBeDefined();
+    expect(tryResolveRoleConfig(DEFAULT_WORKSPACE, "scanner")).toBeDefined();
     expect(resolveAgentRole(DEFAULT_WORKSPACE, "unknown").name).toBe("default");
   });
 
   it("loadRoleLayerToml reads built-in TOML and strips user-role metadata from disk-backed TOML", () => {
     expect(
-      loadRoleLayerToml(getAgentRole(DEFAULT_WORKSPACE, "explorer")!),
+      loadRoleLayerToml(getAgentRole(DEFAULT_WORKSPACE, "scanner")!),
     ).toEqual({});
 
     const dir = mkdtempSync(join(tmpdir(), "agenc-role-test-"));
@@ -728,7 +750,7 @@ describe("config-layer stack", () => {
         'nickname_candidates = ["one"]',
         'developer_instructions = "ignored"',
         'model = "file-model"',
-        'model_reasoning_effort = "medium"',
+        'reasoning_effort = "medium"',
       ].join("\n"),
     );
 
@@ -744,7 +766,7 @@ describe("config-layer stack", () => {
       loadRoleLayerToml(getAgentRole(DEFAULT_WORKSPACE, "file-backed-role")!),
     ).toEqual({
       model: "file-model",
-      model_reasoning_effort: "medium",
+      reasoning_effort: "medium",
     });
   });
 
@@ -772,7 +794,7 @@ describe("config-layer stack", () => {
         description: "Locked config role.",
         configToml: [
           'model = "gpt-test"',
-          'model_reasoning_effort = "high"',
+          'reasoning_effort = "high"',
           'service_tier = "priority"',
         ].join("\n"),
       },
@@ -796,9 +818,9 @@ describe("config-layer stack", () => {
   });
 
   it("formatRoleList skips duplicate names", () => {
-    const explorer = getAgentRole(DEFAULT_WORKSPACE, "explorer")!;
-    const text = formatRoleList([explorer, explorer]);
+    const scanner = getAgentRole(DEFAULT_WORKSPACE, "scanner")!;
+    const text = formatRoleList([scanner, scanner]);
     expect(text.match(/scanner:/g)?.length).toBe(1);
-    expect(text).toContain("Legacy alias accepted: `explorer`");
+    expect(text).not.toContain("Legacy alias accepted");
   });
 });

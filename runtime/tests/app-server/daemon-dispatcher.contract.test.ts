@@ -1521,7 +1521,7 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
           sessionId: "session_1",
           config: {
             name: "audit-ping",
-            transport: "ftp",
+            transport: "ws",
           },
         }),
       ),
@@ -1529,7 +1529,7 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
       error: {
         code: -32602,
         message:
-          "session.mcp.addServer.config transport must be stdio, sse, http, websocket, or ws",
+          "session.mcp.addServer.config transport must be stdio, sse, http, or websocket",
       },
     });
   });

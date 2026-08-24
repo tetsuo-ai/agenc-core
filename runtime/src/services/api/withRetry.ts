@@ -10,11 +10,12 @@ import { isAwsCredentialsProviderError } from 'src/utils/aws.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logError } from 'src/utils/log.js'
 import { createSystemAPIErrorMessage } from 'src/utils/messages.js'
-import { getAPIProvider } from 'src/utils/model/providers.js'
 import {
-  clearApiKeyHelperCache,
-  clearAwsCredentialsCache,
-  clearGcpCredentialsCache,
+  getAPIProvider,
+  getSelectedProviderEnvironment,
+  getSelectedProviderName,
+} from 'src/utils/model/providers.js'
+import {
   getAgenCAIOAuthTokens,
   handleOAuth401Error,
   isAgenCAISubscriber,
@@ -40,7 +41,13 @@ import {
 } from '../rateLimitMocking.js'
 import { REPEATED_529_ERROR_MESSAGE } from './errors.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
+import { resolveSecureStorageHome } from '../../utils/secureStorage/home.js'
+import { isSessionRemoteMode } from '../../session/runtime-options.js'
 const abortError = () => new APIUserAbortError()
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 
 const DEFAULT_MAX_RETRIES = 10
 const FLOOR_OUTPUT_TOKENS = 3000
@@ -237,9 +244,18 @@ export async function* withRetry<T>(
           (lastError instanceof APIError && lastError.status === 401) ||
           isOAuthTokenRevokedError(lastError)
         ) {
-          const failedAccessToken = getAgenCAIOAuthTokens()?.accessToken
+          const home = credentialHome()
+          const providerEnvironment = getSelectedProviderEnvironment()
+          const failedAccessToken = getAgenCAIOAuthTokens(
+            home,
+            providerEnvironment,
+          )?.accessToken
           if (failedAccessToken) {
-            await handleOAuth401Error(failedAccessToken)
+            await handleOAuth401Error(
+              home,
+              failedAccessToken,
+              providerEnvironment,
+            )
           }
         }
         client = await getClient()
@@ -329,8 +345,8 @@ export async function* withRetry<T>(
         is529Error(error) &&
         // If FALLBACK_FOR_ALL_PRIMARY_MODELS is not set, fall through only if the primary model is a non-custom Opus model.
         // Follow-up: Revisit if the isNonCustomOpusModel check should still exist, or if isNonCustomOpusModel is a stale artifact of when AgenC was hardcoded on Opus.
-        (process.env.FALLBACK_FOR_ALL_PRIMARY_MODELS ||
-          (!isAgenCAISubscriber() && isNonCustomOpusModel(options.model)))
+        (getSelectedProviderEnvironment().FALLBACK_FOR_ALL_PRIMARY_MODELS ||
+          (!isAgenCAISubscriber(credentialHome()) && isNonCustomOpusModel(options.model)))
       ) {
         consecutive529Errors++
         if (consecutive529Errors >= MAX_529_RETRIES) {
@@ -598,7 +614,7 @@ function isOAuthTokenRevokedError(error: unknown): boolean {
 }
 
 function isBedrockAuthError(error: unknown): boolean {
-  if (isEnvTruthy(process.env.AGENC_USE_BEDROCK)) {
+  if (getSelectedProviderName() === 'amazon-bedrock') {
     // AWS libs reject without an API call if .aws holds a past Expiration value
     // otherwise, API calls that receive expired tokens give generic 403
     // "The security token included in the request is invalid"
@@ -617,11 +633,7 @@ function isBedrockAuthError(error: unknown): boolean {
  * @returns true if action was taken.
  */
 function handleAwsCredentialError(error: unknown): boolean {
-  if (isBedrockAuthError(error)) {
-    clearAwsCredentialsCache()
-    return true
-  }
-  return false
+  return isBedrockAuthError(error)
 }
 
 // google-auth-library throws plain Error (no typed name like AWS's
@@ -637,7 +649,7 @@ function isGoogleAuthLibraryCredentialError(error: unknown): boolean {
 }
 
 function isVertexAuthError(error: unknown): boolean {
-  if (isEnvTruthy(process.env.AGENC_USE_VERTEX)) {
+  if (getSelectedProviderName() === 'vertex') {
     // SDK-level: google-auth-library fails in prepareOptions() before the HTTP call
     if (isGoogleAuthLibraryCredentialError(error)) {
       return true
@@ -655,11 +667,7 @@ function isVertexAuthError(error: unknown): boolean {
  * @returns true if action was taken.
  */
 function handleGcpCredentialError(error: unknown): boolean {
-  if (isVertexAuthError(error)) {
-    clearGcpCredentialsCache()
-    return true
-  }
-  return false
+  return isVertexAuthError(error)
 }
 
 function shouldRetry(error: APIError): boolean {
@@ -679,7 +687,7 @@ function shouldRetry(error: APIError): boolean {
   // credentials. Bypass x-should-retry:false — the server assumes we'd retry
   // the same bad key, but our key is fine.
   if (
-    isEnvTruthy(process.env.AGENC_REMOTE) &&
+    isSessionRemoteMode() &&
     (error.status === 401 || error.status === 403)
   ) {
     return true
@@ -705,7 +713,8 @@ function shouldRetry(error: APIError): boolean {
   // Enterprise users can retry because they typically use PAYG instead of rate limits.
   if (
     shouldRetryHeader === 'true' &&
-    (!isAgenCAISubscriber() || isEnterpriseSubscriber())
+    (!isAgenCAISubscriber(credentialHome()) ||
+      isEnterpriseSubscriber(credentialHome()))
   ) {
     return true
   }
@@ -735,13 +744,12 @@ function shouldRetry(error: APIError): boolean {
   // Enterprise users can retry because they typically use PAYG instead of rate limits
   if (error.status === 429) {
     if (isQuotaExhausted(error)) return false
-    return !isAgenCAISubscriber() || isEnterpriseSubscriber()
+    return !isAgenCAISubscriber(credentialHome()) ||
+      isEnterpriseSubscriber(credentialHome())
   }
 
-  // Clear API key cache on 401 and allow retry.
-  // OAuth token handling is done in the main retry loop via handleOAuth401Error.
+  // OAuth token handling is done in the main retry loop.
   if (error.status === 401) {
-    clearApiKeyHelperCache()
     return true
   }
 

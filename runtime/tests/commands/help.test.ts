@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildDefaultRegistry } from "./registry.js";
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../tui/remoteAuthSessionContext.fixture.js";
 import {
   helpCommand,
   filterHelpCommands,
@@ -18,7 +19,17 @@ import {
 
 function makeCtx(overrides: Partial<SlashCommandContext> = {}): SlashCommandContext {
   return {
-    session: {} as SlashCommandContext["session"],
+    session: {
+      services: {
+        configStore: {
+          homeContext: TEST_REMOTE_AUTH_SESSION_CONTEXT.home,
+        },
+        providerEnvironment: TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
+      },
+      sessionConfiguration: {
+        provider: { slug: TEST_REMOTE_AUTH_SESSION_CONTEXT.provider },
+      },
+    } as SlashCommandContext["session"],
     argsRaw: "",
     cwd: "/tmp",
     home: "/home/test",

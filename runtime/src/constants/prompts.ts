@@ -39,13 +39,13 @@ import { GLOB_TOOL_NAME } from 'src/tools/GlobTool/prompt.js'
 import { GREP_TOOL_NAME } from 'src/tools/GrepTool/prompt.js'
 import { hasEmbeddedSearchTools } from 'src/utils/embeddedTools.js'
 import { ASK_USER_QUESTION_TOOL_NAME } from 'src/tools/AskUserQuestionTool/prompt.js'
-import { EXPLORE_AGENT_MIN_QUERIES } from 'src/agents/built-in-prompts.js'
+import { SCANNER_AGENT_MIN_QUERIES } from 'src/agents/built-in-prompts.js'
 import { areExplorePlanAgentsEnabled } from 'src/tools/AgentTool/builtInAgents.js'
 import {
   isScratchpadEnabled,
   getScratchpadDir,
 } from '../utils/permissions/filesystem.js'
-import { isEnvTruthy } from '../utils/envUtils.js'
+import { isBareMode } from '../utils/envUtils.js'
 import { feature } from 'bun:bundle'
 import { shouldUseGlobalCacheScope } from '../utils/betas.js'
 import { isForkSubagentEnabled } from '../tools/AgentTool/forkSubagent.js'
@@ -394,7 +394,7 @@ function getSessionSpecificGuidanceSection(
     !isForkSubagentEnabled()
       ? [
           `For simple, directed codebase searches (e.g. for a specific file/class/function) use ${searchTools} directly.`,
-          `For broader codebase exploration and deep research, use the ${AGENT_TOOL_NAME} tool with subagent_type=scanner. This is slower than using ${searchTools} directly, so use this only when a simple, directed search proves to be insufficient or when your task will clearly require more than ${EXPLORE_AGENT_MIN_QUERIES} queries.`,
+          `For broader codebase exploration and deep research, use the ${AGENT_TOOL_NAME} tool with subagent_type=scanner. This is slower than using ${searchTools} directly, so use this only when a simple, directed search proves to be insufficient or when your task will clearly require more than ${SCANNER_AGENT_MIN_QUERIES} queries.`,
         ]
       : []),
     hasSkills
@@ -497,7 +497,7 @@ export async function getSystemPrompt(
   additionalWorkingDirectories?: string[],
   mcpClients?: MCPServerConnection[],
 ): Promise<string[]> {
-  if (isEnvTruthy(process.env.AGENC_SIMPLE)) {
+  if (isBareMode()) {
     return [
       `You are AgenC, an open-source coding agent and CLI.\n\nCWD: ${getCwd()}\nDate: ${getSessionStartDate()}`,
     ]

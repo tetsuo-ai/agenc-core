@@ -18,6 +18,7 @@ import type {
   LLMStructuredOutputSchema,
 } from "./types.js";
 import { isRecord } from "../utils/record.js";
+import { normalizeProviderIdentity } from "../provider-identity.js";
 
 export const ANTHROPIC_STRUCTURED_OUTPUT_TOOL_NAME = "agenc_structured_output";
 
@@ -75,8 +76,11 @@ export function resolveProviderStructuredOutputMode(input: {
   readonly model: string | undefined;
   readonly api?: "responses" | "chat_completions" | "messages";
 }): ProviderStructuredOutputMode {
-  const provider = input.provider?.trim().toLowerCase();
-  if (provider === "grok" || provider === "xai") {
+  const provider = normalizeProviderIdentity(
+    input.provider,
+    "structured-output capability",
+  );
+  if (provider === "grok") {
     return supportsXaiStructuredOutputs(input.model)
       ? "native_text_format"
       : "unsupported";

@@ -1,25 +1,21 @@
 import { afterEach, expect, mock, test } from 'bun:test'
 
 const originalFetch = globalThis.fetch
-const originalEnv = {
-  OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
-  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-  OPENAI_MODEL: process.env.OPENAI_MODEL,
-}
 
-function restoreEnv(key: string, value: string | undefined): void {
-  if (value === undefined) {
-    delete process.env[key]
-  } else {
-    process.env[key] = value
-  }
+function providerEnvironment(
+  baseUrl: string,
+  apiKey: string,
+): Readonly<Record<string, string>> {
+  return Object.freeze({
+    AGENC_PROVIDER: 'openai-compatible',
+    AGENC_MODEL: 'qwen2.5-coder:7b',
+    OPENAI_BASE_URL: baseUrl,
+    OPENAI_API_KEY: apiKey,
+  })
 }
 
 afterEach(() => {
   globalThis.fetch = originalFetch
-  restoreEnv('OPENAI_BASE_URL', originalEnv.OPENAI_BASE_URL)
-  restoreEnv('OPENAI_API_KEY', originalEnv.OPENAI_API_KEY)
-  restoreEnv('OPENAI_MODEL', originalEnv.OPENAI_MODEL)
   mock.restore()
 })
 
@@ -32,9 +28,6 @@ test('logs classified transport diagnostics with category and code', async () =>
   const nonce = `${Date.now()}-${Math.random()}`
   const { createOpenAiShimClient } = await import(`../../../src/services/api/openaiShim.ts?ts=${nonce}`)
 
-  process.env.OPENAI_BASE_URL = 'http://localhost:11434/v1'
-  process.env.OPENAI_API_KEY = 'ollama'
-
   const transportError = Object.assign(new TypeError('fetch failed'), {
     code: 'ECONNREFUSED',
   })
@@ -43,7 +36,11 @@ test('logs classified transport diagnostics with category and code', async () =>
     throw transportError
   }) as typeof globalThis.fetch
 
-  const client = createOpenAiShimClient({}) as {
+  const client = createOpenAiShimClient({
+    selectedProvider: 'openai',
+    model: 'qwen2.5-coder:7b',
+    providerEnvironment: providerEnvironment('http://localhost:11434/v1', 'ollama'),
+  }) as {
     beta: {
       messages: {
         create: (params: Record<string, unknown>) => Promise<unknown>
@@ -79,9 +76,6 @@ test('redacts credentials in transport diagnostic URL logs', async () => {
   const nonce = `${Date.now()}-${Math.random()}`
   const { createOpenAiShimClient } = await import(`../../../src/services/api/openaiShim.ts?ts=${nonce}`)
 
-  process.env.OPENAI_BASE_URL = 'http://user:supersecret@localhost:11434/v1'
-  process.env.OPENAI_API_KEY = 'supersecret'
-
   const transportError = Object.assign(new TypeError('fetch failed'), {
     code: 'ECONNREFUSED',
   })
@@ -90,7 +84,14 @@ test('redacts credentials in transport diagnostic URL logs', async () => {
     throw transportError
   }) as typeof globalThis.fetch
 
-  const client = createOpenAiShimClient({}) as {
+  const client = createOpenAiShimClient({
+    selectedProvider: 'openai',
+    model: 'qwen2.5-coder:7b',
+    providerEnvironment: providerEnvironment(
+      'http://user:supersecret@localhost:11434/v1',
+      'supersecret',
+    ),
+  }) as {
     beta: {
       messages: {
         create: (params: Record<string, unknown>) => Promise<unknown>
@@ -125,9 +126,6 @@ test('logs self-heal localhost fallback with redacted from/to URLs', async () =>
 
   const nonce = `${Date.now()}-${Math.random()}`
   const { createOpenAiShimClient } = await import(`../../../src/services/api/openaiShim.ts?ts=${nonce}`)
-
-  process.env.OPENAI_BASE_URL = 'http://user:supersecret@localhost:11434/v1'
-  process.env.OPENAI_API_KEY = 'supersecret'
 
   globalThis.fetch = mock(async (input: string | Request) => {
     const url = typeof input === 'string' ? input : input.url
@@ -165,7 +163,14 @@ test('logs self-heal localhost fallback with redacted from/to URLs', async () =>
     )
   }) as typeof globalThis.fetch
 
-  const client = createOpenAiShimClient({}) as {
+  const client = createOpenAiShimClient({
+    selectedProvider: 'openai',
+    model: 'qwen2.5-coder:7b',
+    providerEnvironment: providerEnvironment(
+      'http://user:supersecret@localhost:11434/v1',
+      'supersecret',
+    ),
+  }) as {
     beta: {
       messages: {
         create: (params: Record<string, unknown>) => Promise<unknown>
@@ -202,9 +207,6 @@ test('logs self-heal toolless retry for local tool-call incompatibility', async 
 
   const nonce = `${Date.now()}-${Math.random()}`
   const { createOpenAiShimClient } = await import(`../../../src/services/api/openaiShim.ts?ts=${nonce}`)
-
-  process.env.OPENAI_BASE_URL = 'http://localhost:11434/v1'
-  process.env.OPENAI_API_KEY = 'ollama'
 
   let callCount = 0
   globalThis.fetch = mock(async () => {
@@ -246,7 +248,11 @@ test('logs self-heal toolless retry for local tool-call incompatibility', async 
     )
   }) as typeof globalThis.fetch
 
-  const client = createOpenAiShimClient({}) as {
+  const client = createOpenAiShimClient({
+    selectedProvider: 'openai',
+    model: 'qwen2.5-coder:7b',
+    providerEnvironment: providerEnvironment('http://localhost:11434/v1', 'ollama'),
+  }) as {
     beta: {
       messages: {
         create: (params: Record<string, unknown>) => Promise<unknown>

@@ -14,10 +14,12 @@ import type {
   PluginAgentDefinition,
 } from "../../tools/AgentTool/loadAgentsDir.js";
 import { isRepositoryControlledPlugin, type LoadedPlugin } from "../loader.js";
+import { isBareMode } from "../../utils/envUtils.js";
+import { getCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
+import { getExecutionAuthoritySettings } from "../../utils/settings/settings.js";
 import {
   collectMarkdownFiles,
   coerceString,
-  cwdOnlyRuntimeIdentityKey,
   hasExplicitPluginDiscoveryInput,
   loadRuntimePlugins,
   markdownStem,
@@ -65,14 +67,12 @@ function setActiveSnapshot(
   const copy = [...agents];
   const snapshot = { agents: copy, discovery: { ...options } };
   activePluginAgentsByCwd.set(runtimeIdentityKey(options), snapshot);
-  activePluginAgentsByCwd.set(cwdOnlyRuntimeIdentityKey(options.cwd), snapshot);
 }
 
 function getActiveSnapshot(
   options: PluginAgentRegistrationOptions,
 ): ActivePluginAgentSnapshot | undefined {
-  const exact = activePluginAgentsByCwd.get(runtimeIdentityKey(options));
-  return exact ?? activePluginAgentsByCwd.get(cwdOnlyRuntimeIdentityKey(options.cwd));
+  return activePluginAgentsByCwd.get(runtimeIdentityKey(options));
 }
 
 export function setActivePluginAgentSnapshot(
@@ -132,9 +132,8 @@ function parseColor(value: unknown): AgentColorName | undefined {
 }
 
 function isAutoMemoryEnabled(): boolean {
-  return process.env.AGENC_DISABLE_AUTO_MEMORY !== "1" &&
-    process.env.AGENC_SIMPLE !== "1" &&
-    process.env.AGENC_SIMPLE !== "true";
+  return !isBareMode() &&
+    getExecutionAuthoritySettings().autoMemoryEnabled !== false;
 }
 
 function agentName(plugin: LoadedPlugin, file: ParsedMarkdownFile): string {
@@ -282,7 +281,14 @@ export async function loadPluginAgents(
       ? { ...active.discovery, fresh: true }
       : options;
   const plugins = await resolvePlugins(discoveryOptions);
-  const roleCwd = options.cwd ?? process.cwd();
+  const roleCwd = options.cwd ??
+    options.workspaceRoot ??
+    getCanonicalSettingsAuthority()?.projectRoot;
+  if (roleCwd === undefined) {
+    throw new Error(
+      "Plugin agent loading requires an explicit role workspace or session ConfigStore authority",
+    );
+  }
   const groups = await Promise.all(
     plugins.map(plugin => loadAgentsForPlugin(plugin, roleCwd)),
   );

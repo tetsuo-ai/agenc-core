@@ -38,7 +38,6 @@ describe("remote subscription gating", () => {
             AGENC_HOME: agencHome,
             AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
             AGENC_WORKSPACE: workspace,
-            AGENC_XAI_API_KEY: "",
             GROK_API_KEY: "",
             HOME: agencHome,
             XAI_API_KEY: "",
@@ -76,7 +75,6 @@ describe("remote subscription gating", () => {
             AGENC_HOME: agencHome,
             AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
             AGENC_WORKSPACE: workspace,
-            AGENC_XAI_API_KEY: "",
             GROK_API_KEY: "",
             HOME: agencHome,
             XAI_API_KEY: "",
@@ -111,7 +109,6 @@ describe("remote subscription gating", () => {
           env: {
             AGENC_HOME: agencHome,
             AGENC_WORKSPACE: workspace,
-            AGENC_XAI_API_KEY: "",
             GROK_API_KEY: "",
             HOME: agencHome,
             XAI_API_KEY: "",

@@ -1546,7 +1546,8 @@ export async function powershellToolHasPermission(
     // gate, `Set-Location ./.agenc; Set-Content ./settings.json '...'` would
     // pass: Set-Content is checked in isolation, matches ACCEPT_EDITS_ALLOWED_CMDLETS,
     // and auto-allows — but PowerShell runs it from the changed cwd, writing to
-    // .agenc/settings.json (a AgenC config file the path validator didn't check).
+    // the retired .agenc/settings.json migration input, which the path validator
+    // did not check.
     // This matches BashTool's compoundCommandHasCd guard.
     if (statement !== null && !hasCdSubCommand && !hasSymlinkCreate) {
       const subModeResult = checkPermissionMode(

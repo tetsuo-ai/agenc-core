@@ -136,10 +136,10 @@ aliases) or `/grok-login` for chat.
 | --- | --- | --- |
 | Chat / coding tools | Yes | Yes (gateway-dependent) |
 | LIVE WebSearch → native `web_search` | Yes | No (client fallback only) |
-| LIVE XSearch → native `x_search` | Yes when `[llm.xai].x_search` | No |
-| Native `code_interpreter` | Yes when `[llm.xai].code_execution` | No |
+| LIVE XSearch → native `x_search` | Yes when `[providers.grok].x_search` | No |
+| Native `code_interpreter` | Yes when `[providers.grok].code_execution` | No |
 | ImagineImage REST | Yes with BYOK | No |
 | Gateway meme / x_search / TTS | Yes with BYOK aliases | N/A |
 
 See the [configuration reference](reference/config.md) for the direct-xAI
-`[llm.xai]` capability profile.
+`[providers.grok]` capability profile.

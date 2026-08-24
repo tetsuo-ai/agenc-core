@@ -1,8 +1,7 @@
 import { watch, type FSWatcher } from "node:fs";
 import { logForDebugging } from "src/utils/debug.js";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { c as _c } from "react-compiler-runtime";
 import React, {
   type ReactNode,
@@ -138,12 +137,13 @@ import { PromptOverlayProvider } from "../context/promptOverlayContext.js";
 import { KeybindingSetup } from "../keybindings/KeybindingProviderSetup.js";
 import { CancelRequestHandler } from "../hooks/useCancelRequest.js";
 import { useApiKeyVerification } from "../hooks/useApiKeyVerification.js";
+import type { ProviderAuthReadContext } from "../../utils/auth.js";
 import { addToHistory } from "../history/history.js";
 import { GlobalKeybindingHandlers } from "../hooks/useGlobalKeybindings.js";
 import {
   type AppState,
   AppStateProvider,
-  getDefaultAppState,
+  getDefaultAppStateForProviderEnvironment,
   useAppState,
   useAppStateStore,
   useSetAppState,
@@ -186,7 +186,6 @@ import { createMcpUrlCompletionResponse } from "../../elicitation/url-completion
 import { EDITOR_PROPOSAL_TOOL_NAME } from "../../tools/system/editor-proposal.js";
 import type { ToolPermissionContext } from "../../permissions/types.js";
 import { defaultConfig, type AgenCConfig } from "../../config/schema.js";
-import { configReadsEnabled } from "../../config/init.js";
 import { createTuiTools } from "../tool-rendering.js";
 import { useSessionTranscript } from "../session-transcript.js";
 import { useToolJSX } from "../tool-jsx-state.js";
@@ -234,6 +233,7 @@ import {
 } from "../../tools/system/editor-proposal.js";
 import {
   installCompactProgressControls,
+  type AgenCBridgeSession,
   type AgenCTuiProps,
 } from "../session-types.js";
 import { useMcpConnectivityStatus } from "../hooks/notifs/useMcpConnectivityStatus.js";
@@ -241,12 +241,10 @@ import { useCostSummary } from "../../cost/hook.js";
 import { getTotalCost } from "../../cost/tracker.js";
 import { useNotifications } from "../context/notifications.js";
 import { hasConsoleBillingAccess } from "../../utils/billing.js";
-import { getGlobalConfig, saveGlobalConfig } from "../../utils/config.js";
+import { updateRuntimeState } from "../../utils/config.js";
 import { registerCleanup } from "../../utils/cleanupRegistry.js";
 import { AgenCConfigEditsBuilder } from "../../config/edit.js";
 import { logError } from "../../utils/log.js";
-import { markInternalWrite } from "../../utils/settings/internalWrites.js";
-import { resetSettingsCache } from "../../utils/settings/settingsCache.js";
 import {
   createFileStateCacheWithSizeLimit,
   READ_FILE_STATE_CACHE_SIZE,
@@ -1715,56 +1713,11 @@ function startupModel(props: AgenCTuiProps): string | null {
     null
   );
 }
-function hasAcknowledgedCostThreshold(): boolean {
-  return (
-    configReadsEnabled() &&
-    getGlobalConfig().hasAcknowledgedCostThreshold === true
-  );
-}
-async function persistOnboardingModelSetting(
-  agencHome: string | undefined,
-  model: string,
-): Promise<void> {
-  if (agencHome === undefined || model.length === 0) {
-    return;
-  }
-  const filePath = join(agencHome, "settings.json");
-  let existing: Record<string, unknown> = {};
-  try {
-    const text = await readFile(filePath, "utf8");
-    const parsed = JSON.parse(text) as unknown;
-    if (
-      parsed !== null &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed)
-    ) {
-      existing = parsed as Record<string, unknown>;
-    }
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
-    }
-  }
-  await mkdir(dirname(filePath), {
-    recursive: true,
-    mode: 0o700,
-  });
-  markInternalWrite(filePath);
-  await writeFile(
-    filePath,
-    `${JSON.stringify(
-      {
-        ...existing,
-        model,
-      },
-      null,
-      2,
-    )}\n`,
-    {
-      mode: 0o600,
-    },
-  );
-  resetSettingsCache();
+function hasAcknowledgedCostThreshold(props: AgenCTuiProps): boolean {
+  const repository =
+    props.session.services.configStore?.stateRepository ??
+    props.configStore.stateRepository;
+  return repository?.get().hasAcknowledgedCostThreshold === true;
 }
 async function persistOnboardingSelection(
   props: AgenCTuiProps,
@@ -1773,7 +1726,6 @@ async function persistOnboardingSelection(
 ): Promise<void> {
   const provider = next.selectedProvider.trim();
   const model = next.selectedModel.trim();
-  await persistOnboardingModelSetting(agencHome, model);
   if (agencHome !== undefined && provider.length > 0 && model.length > 0) {
     await new AgenCConfigEditsBuilder(agencHome)
       .setModelSelection(provider, model)
@@ -1803,7 +1755,9 @@ function initialState(props: AgenCTuiProps, roleWorkspaceCwd: string): any {
         allAgents: fallbackDefinitions,
       };
     })();
-  const defaults = getDefaultAppState();
+  const defaults = getDefaultAppStateForProviderEnvironment(
+    getTuiProviderEnvironment(props.session),
+  );
   return {
     ...defaults,
     workbench:
@@ -2331,6 +2285,49 @@ function completionPipelineStateSignature(
   ]);
 }
 
+export function getTuiRemoteAuthSessionReadContext(
+  session: AgenCBridgeSession,
+): ProviderAuthReadContext {
+  const home = session.services.configStore?.homeContext;
+  if (home === undefined) {
+    throw new Error(
+      "TUI session requires a canonical ConfigStore home for authentication reads",
+    );
+  }
+  return Object.freeze({
+    home,
+    environment: getTuiProviderEnvironment(session),
+    provider: getTuiProviderName(session),
+  });
+}
+
+export function getTuiProviderName(session: AgenCBridgeSession): string {
+  const provider =
+    session.services.providerService?.current().provider ??
+    session.sessionConfiguration?.provider?.slug;
+  const normalized = provider?.trim();
+  if (normalized === undefined || normalized.length === 0) {
+    throw new Error(
+      "TUI session requires an explicit provider identity captured at ingress",
+    );
+  }
+  return normalized;
+}
+
+export function getTuiProviderEnvironment(
+  session: AgenCBridgeSession,
+): NonNullable<AgenCBridgeSession["services"]["providerEnvironment"]> {
+  const environment =
+    session.services.providerService?.environment() ??
+    session.services.providerEnvironment;
+  if (environment === undefined) {
+    throw new Error(
+      "TUI session requires an immutable provider environment captured at ingress",
+    );
+  }
+  return environment;
+}
+
 function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const { exit } = useApp();
   const getFpsMetrics = useFpsMetrics();
@@ -2344,7 +2341,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const backpressureWarning =
     formatTuiBackpressureWarning(backpressureSnapshot);
   const { addNotification } = useNotifications();
-  const { status: apiKeyStatus, reverify } = useApiKeyVerification();
+  const remoteAuthSessionContext = useMemo(
+    () => getTuiRemoteAuthSessionReadContext(props.session),
+    [props.session],
+  );
+  const { status: apiKeyStatus, reverify } = useApiKeyVerification(
+    remoteAuthSessionContext,
+  );
   useEffect(() => {
     void reverify();
   }, [reverify]);
@@ -2760,7 +2763,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const summarizeAbortRef = useRef<AbortController | null>(null);
   const [exitFlow, setExitFlow] = useState<React.ReactNode>(null);
   const [haveShownCostDialog, setHaveShownCostDialog] = useState(
-    hasAcknowledgedCostThreshold,
+    () => hasAcknowledgedCostThreshold(props),
   );
   const [showCostDialog, setShowCostDialog] = useState(false);
   const [compactProgress, setCompactProgress] = useState({
@@ -2958,7 +2961,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     return typeof unsubscribe === "function" ? unsubscribe : undefined;
   }, [props.configStore]);
   const agencHome =
-    props.configStore.agencHome ?? config.agenc_home ?? props.session.home;
+    props.configStore.homeContext?.path ??
+    props.configStore.agencHome ??
+    props.session.home;
   const persistPredictionConsent = useCallback(
     async (enabled: "on" | "off"): Promise<void> => {
       const nextBuffer = {
@@ -4331,16 +4336,22 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       agencHome,
       config,
       cwd: props.session.cwd ?? props.session.sessionConfiguration?.cwd,
-      env: process.env,
+      env: remoteAuthSessionContext.environment,
       permissionMode: String(toolPermissionContext.mode),
-      sandboxMode: config.sandbox_mode ?? config.sandbox?.mode,
-      terminalName: process.env.TERM_PROGRAM ?? process.env.TERM,
+      sandboxMode: config.sandbox_mode,
+      terminalName:
+        remoteAuthSessionContext.environment.TERM_PROGRAM ??
+        remoteAuthSessionContext.environment.TERM,
+      authBackend: props.session.services.authBackend,
+      remoteAuthSessionContext,
     }),
     [
       agencHome,
       config,
       props.session.cwd,
       props.session.sessionConfiguration?.cwd,
+      props.session.services.authBackend,
+      remoteAuthSessionContext,
       toolPermissionContext.mode,
     ],
   );
@@ -6598,11 +6609,19 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const handleCostThresholdDone = useCallback(() => {
     setShowCostDialog(false);
     setHaveShownCostDialog(true);
-    saveGlobalConfig((current) => ({
-      ...current,
-      hasAcknowledgedCostThreshold: true,
-    }));
-  }, []);
+    const repository =
+      props.session.services.configStore?.stateRepository ??
+      props.configStore.stateRepository;
+    if (repository !== undefined) {
+      updateRuntimeState(
+        (current) => ({
+          ...current,
+          hasAcknowledgedCostThreshold: true,
+        }),
+        repository,
+      );
+    }
+  }, [props.configStore.stateRepository, props.session.services.configStore]);
 
   // Spinner gating + mode derivation.
   //
@@ -6691,7 +6710,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           toolPermissionContext={toolPermissionContext as any}
           setToolPermissionContext={setToolPermissionContext as any}
           apiKeyStatus="valid"
-          agencHome={agencHome}
+          remoteAuthSessionContext={remoteAuthSessionContext}
           commands={EMPTY_ONBOARDING_COMMANDS}
           agents={agents as any}
           isLoading={false}
@@ -6782,6 +6801,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       screen={screen as any}
       streamingToolUses={transcript.streamingToolUses}
       showAllInTranscript={showAllInTranscript}
+      providerAuthContext={remoteAuthSessionContext}
       isLoading={isLoading}
       streamingText={transcript.streamingText}
       streamingThinking={transcript.streamingThinking as never}
@@ -6894,7 +6914,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       toolPermissionContext={toolPermissionContext as any}
       setToolPermissionContext={setToolPermissionContext as any}
       apiKeyStatus={apiKeyStatus}
-      agencHome={agencHome}
+      remoteAuthSessionContext={remoteAuthSessionContext}
       commands={commands as unknown as Command[]}
       agents={agents as any}
       isLoading={effectiveInputBusy}
@@ -7069,6 +7089,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           }
           activityMode={showSpinner ? streamMode : null}
           contextPctLabel={contextPctLabel}
+          modelDisplayContext={remoteAuthSessionContext}
           sessionCostUsd={transcript.sessionCostUsd}
           onEditorInteraction={handleEditorInteraction}
           codePrediction={codePrediction}
@@ -7136,7 +7157,7 @@ export function AgenCTuiApp(props: AgenCTuiProps): React.ReactElement {
       getFpsMetrics={props.getFpsMetrics ?? DEFAULT_FPS_METRICS_GETTER}
     >
       <PromptOverlayProvider>
-        <KeybindingSetup>
+        <KeybindingSetup configStore={props.configStore}>
           <AgenCTuiShell {...props} roleWorkspaceCwd={roleWorkspaceCwd} />
         </KeybindingSetup>
       </PromptOverlayProvider>

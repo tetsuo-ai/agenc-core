@@ -20,7 +20,7 @@ import type { SystemMessage, SystemStopHookSummaryMessage, SystemBridgeStatusMes
 import { SystemAPIErrorMessage } from '../components/SystemAPIErrorMessage.js';
 import { formatDuration, formatNumber, formatSecondsShort } from '../../utils/format.js';
 import { HOOK_TIMING_DISPLAY_THRESHOLD_MS } from '../../tools/hooks.js';
-import { getGlobalConfig } from '../../utils/config.js';
+import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js';
 import Link from '../ink/components/Link.js';
 import ThemedText from '../components/design-system/ThemedText';
 import { CtrlOToExpand } from '../components/CtrlOToExpand';
@@ -418,7 +418,8 @@ function TurnDurationMessage({
     const running = (Object.values(tasks ?? {}) as TaskState[]).filter(isBackgroundTask);
     return running.length > 0 ? getPillLabel(running) : null;
   });
-  const showTurnDuration = getGlobalConfig().showTurnDuration ?? true;
+  const showTurnDuration =
+    getExecutionAuthoritySettings().tui?.showTurnDuration ?? true;
   const duration = formatDuration(message.durationMs);
   const hasBudget = message.budgetLimit !== undefined;
   let budgetSuffix = "";

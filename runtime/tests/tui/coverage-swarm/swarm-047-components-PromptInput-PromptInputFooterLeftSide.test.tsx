@@ -31,11 +31,21 @@ vi.mock("../../../src/tui/keybindings/useShortcutDisplay.js", () => ({
 }));
 
 vi.mock("../../../src/utils/config.js", () => ({
-  getGlobalConfig: () => ({
+  getRuntimeState: () => ({
     copyOnSelect: true,
-    editorMode: "normal",
     prStatusFooterEnabled: true,
-    tui: { vimMode: false },
+  }),
+}));
+
+vi.mock("../../../src/utils/settings/canonicalAuthority.js", () => ({
+  getCanonicalSettingsAuthority: () => ({
+    current: () => ({ tui: { vimMode: false } }),
+  }),
+}));
+
+vi.mock("../../../src/utils/settings/settings.js", () => ({
+  getExecutionAuthoritySettings: () => ({
+    tui: { copyOnSelect: true, prStatusFooterEnabled: true, vimMode: false },
   }),
 }));
 

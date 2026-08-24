@@ -316,7 +316,7 @@ describe("bashToolHasPermission", () => {
   test("allow rule by prefix allows matching command", async () => {
     const ctx = makeCtx({
       alwaysAllowRules: {
-        userSettings: ["Bash(git status:*)"],
+        userSettings: ["system.bash(git status:*)"],
       },
     });
     const evalCtx = makeEvaluatorCtx(ctx);
@@ -330,7 +330,7 @@ describe("bashToolHasPermission", () => {
   test("allow rule by prefix sees a shell-wrapped word-only command", async () => {
     const ctx = makeCtx({
       alwaysAllowRules: {
-        userSettings: ["Bash(rg:*)"],
+        userSettings: ["system.bash(rg:*)"],
       },
     });
     const evalCtx = makeEvaluatorCtx(ctx);
@@ -344,7 +344,7 @@ describe("bashToolHasPermission", () => {
   test("deny rule by prefix sees a shell-wrapped word-only command", async () => {
     const ctx = makeCtx({
       alwaysDenyRules: {
-        userSettings: ["Bash(rm:*)"],
+        userSettings: ["system.bash(rm:*)"],
       },
     });
     const evalCtx = makeEvaluatorCtx(ctx);
@@ -358,7 +358,7 @@ describe("bashToolHasPermission", () => {
   test("allow rule with wildcard glob matches variable command suffixes", async () => {
     const ctx = makeCtx({
       alwaysAllowRules: {
-        userSettings: ["Bash(git * status)"],
+        userSettings: ["system.bash(git * status)"],
       },
     });
     const evalCtx = makeEvaluatorCtx(ctx);
@@ -372,7 +372,7 @@ describe("bashToolHasPermission", () => {
   test("wildcard rules honor escaped literal asterisks", async () => {
     const ctx = makeCtx({
       alwaysAllowRules: {
-        userSettings: ["Bash(echo \\*)"],
+        userSettings: ["system.bash(echo \\*)"],
       },
     });
     const evalCtx = makeEvaluatorCtx(ctx);
@@ -391,7 +391,7 @@ describe("bashToolHasPermission", () => {
   test("deny rule by prefix blocks matching command", async () => {
     const ctx = makeCtx({
       alwaysDenyRules: {
-        userSettings: ["Bash(rm:*)"],
+        userSettings: ["system.bash(rm:*)"],
       },
     });
     const evalCtx = makeEvaluatorCtx(ctx);
@@ -405,7 +405,7 @@ describe("bashToolHasPermission", () => {
   test("dangerous command is denied regardless of allow rules", async () => {
     const ctx = makeCtx({
       alwaysAllowRules: {
-        userSettings: ["Bash"],
+        userSettings: ["system.bash"],
       },
     });
     const evalCtx = makeEvaluatorCtx(ctx);
@@ -537,7 +537,7 @@ describe("bashToolHasPermission", () => {
     async (command, label) => {
       const ctx = makeCtx({
         alwaysAllowRules: {
-          userSettings: ["Bash"],
+          userSettings: ["system.bash"],
         },
       });
       const evalCtx = makeEvaluatorCtx(ctx);
@@ -560,7 +560,7 @@ describe("bashToolHasPermission", () => {
     async (command) => {
       const ctx = makeCtx({
         alwaysAllowRules: {
-          userSettings: ["Bash"],
+          userSettings: ["system.bash"],
         },
       });
       const evalCtx = makeEvaluatorCtx(ctx);
@@ -572,7 +572,7 @@ describe("bashToolHasPermission", () => {
   test("wrapped dangerous command is denied at the permission boundary", async () => {
     const ctx = makeCtx({
       alwaysAllowRules: {
-        userSettings: ["Bash"],
+        userSettings: ["system.bash"],
       },
     });
     const evalCtx = makeEvaluatorCtx(ctx);
@@ -590,7 +590,7 @@ describe("bashToolHasPermission", () => {
   test("compound nested dangerous command is denied at the permission boundary", async () => {
     const ctx = makeCtx({
       alwaysAllowRules: {
-        userSettings: ["Bash"],
+        userSettings: ["system.bash"],
       },
     });
     const evalCtx = makeEvaluatorCtx(ctx);
@@ -644,7 +644,7 @@ describe("bashToolHasPermission", () => {
     async (command) => {
       const ctx = makeCtx({
         alwaysAllowRules: {
-          userSettings: ["Bash"],
+          userSettings: ["system.bash"],
         },
       });
       const evalCtx = makeEvaluatorCtx(ctx);
@@ -659,10 +659,10 @@ describe("bashToolHasPermission", () => {
   test("chained allow && deny produces whole-command deny", async () => {
     const ctx = makeCtx({
       alwaysAllowRules: {
-        userSettings: ["Bash(ls:*)"],
+        userSettings: ["system.bash(ls:*)"],
       },
       alwaysDenyRules: {
-        userSettings: ["Bash(rm:*)"],
+        userSettings: ["system.bash(rm:*)"],
       },
     });
     const evalCtx = makeEvaluatorCtx(ctx);
@@ -687,14 +687,14 @@ describe("bashToolHasPermission", () => {
   });
 
   test("explicit ask-rule survives autoAllowBashIfSandboxed (no sandbox auto-allow upgrade)", async () => {
-    // SECURITY REGRESSION: a user-configured ask rule (Bash(cat:*)) must still
+    // SECURITY REGRESSION: a user-configured ask rule (system.bash(cat:*)) must still
     // prompt even when the command is sandbox-safe and auto-allow-when-sandboxed
     // is enabled. Upgrading it to `allow` would silently skip the user's
     // approval prompt and short-circuit evaluator.ts 1f.
     const ctx = makeCtx({
       autoAllowBashIfSandboxed: true,
       alwaysAskRules: {
-        userSettings: ["Bash(cat:*)"],
+        userSettings: ["system.bash(cat:*)"],
       },
     });
     const evalCtx = makeEvaluatorCtx(ctx);
@@ -729,7 +729,7 @@ describe("bashToolHasPermission", () => {
     // tools/system/filesystem.ts.
     const ctx = makeCtx({
       mode: "plan",
-      alwaysAllowRules: { userSettings: ["Bash"] },
+      alwaysAllowRules: { userSettings: ["system.bash"] },
     });
     const evalCtx = makeEvaluatorCtx(ctx);
     const result = await bashToolHasPermission(
@@ -742,10 +742,10 @@ describe("bashToolHasPermission", () => {
   test("three subcommand aggregation (allow/ask/allow) resolves to ask", async () => {
     const ctx = makeCtx({
       alwaysAllowRules: {
-        userSettings: ["Bash(ls:*)", "Bash(pwd:*)"],
+        userSettings: ["system.bash(ls:*)", "system.bash(pwd:*)"],
       },
       alwaysAskRules: {
-        userSettings: ["Bash(whoami:*)"],
+        userSettings: ["system.bash(whoami:*)"],
       },
     });
     const evalCtx = makeEvaluatorCtx(ctx);
@@ -768,7 +768,7 @@ describe("bashToolHasPermission", () => {
   test("bypassPermissions mode allows by default but rule-deny still wins", async () => {
     const ctx = makeCtx({
       mode: "bypassPermissions",
-      alwaysDenyRules: { userSettings: ["Bash(rm:*)"] },
+      alwaysDenyRules: { userSettings: ["system.bash(rm:*)"] },
     });
     const evalCtx = makeEvaluatorCtx(ctx);
     const ok = await bashToolHasPermission(
@@ -784,6 +784,6 @@ describe("bashToolHasPermission", () => {
   });
 
   test("BASH_TOOL_NAME is the canonical string", () => {
-    expect(BASH_TOOL_NAME).toBe("Bash");
+    expect(BASH_TOOL_NAME).toBe("system.bash");
   });
 });

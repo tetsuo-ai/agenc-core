@@ -8,7 +8,7 @@ import type { Tool } from '../Tool.js'
 import { buildTool, type ToolDef } from '../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { applyPermissionUpdate } from '../../utils/permissions/PermissionUpdate.js'
-import { prepareContextForPlanMode } from '../../utils/permissions/permissionSetup.js'
+import { transitionPermissionMode } from '../../permissions/permission-mode.js'
 import { isPlanModeInterviewPhaseEnabled } from '../../utils/planModeV2.js'
 import { ENTER_PLAN_MODE_TOOL_NAME } from './constants.js'
 import { getEnterPlanModeToolPrompt } from './prompt.js'
@@ -82,13 +82,16 @@ export const EnterPlanModeTool: Tool<InputSchema, Output> = buildTool({
     const appState = context.getAppState()
     handlePlanModeTransition(appState.toolPermissionContext.mode, 'plan')
 
-    // Update the permission mode to 'plan'. prepareContextForPlanMode runs
-    // the classifier activation side effects when the user's defaultMode is
-    // 'auto' — see permissionSetup.ts for the full lifecycle.
+    // Update the permission mode to plan through the canonical FSM so every
+    // entry path applies the same classifier and rule-stashing semantics.
     context.setAppState(prev => ({
       ...prev,
       toolPermissionContext: applyPermissionUpdate(
-        prepareContextForPlanMode(prev.toolPermissionContext),
+        transitionPermissionMode(
+          prev.toolPermissionContext.mode,
+          'plan',
+          prev.toolPermissionContext,
+        ),
         { type: 'setMode', mode: 'plan', destination: 'session' },
       ),
     }))

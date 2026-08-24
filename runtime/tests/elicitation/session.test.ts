@@ -120,8 +120,6 @@ import { installElicitationResolvers } from "../tui/components/App.js";
 
 function mkFeatures(): ManagedFeatures {
   return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
   };
 }
 

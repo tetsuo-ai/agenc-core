@@ -11,7 +11,7 @@ import { getDisplayPath } from './file.js';
 import { formatNumber } from './format.js';
 import { getIdeClientName, type IDEExtensionInstallationStatus, isJetBrainsIde, toIDEDisplayName } from './ide.js';
 import { getAgenCAiUserDefaultModelDescription, modelDisplayString } from './model/model.js';
-import { getAPIProvider } from './model/providers.js';
+import { getAPIProvider, getSelectedProviderEnvironment, getSelectedProviderModel } from './model/providers.js';
 import { resolveProviderRequest } from '../services/api/providerConfig.js';
 import { getMTLSConfig } from './mtls.js';
 import { checkInstall } from './nativeInstaller/installer.js';
@@ -21,7 +21,13 @@ import { getSettingsWithAllErrors } from './settings/allErrors.js';
 import { getEnabledSettingSources, getSettingSourceDisplayNameCapitalized } from './settings/constants.js';
 import { getManagedFileSettingsPresence, getPolicySettingsOrigin, getSettingsForSource } from './settings/settings.js';
 import type { ThemeName } from './theme.js';
-import { redactSecretValueForDisplay } from './providerProfile.js';
+import { redactSecretValueForDisplay } from './providerSecrets.js';
+import type { CanonicalSettingsAuthority } from './settings/canonicalAuthority.js';
+import { resolveSecureStorageHome } from './secureStorage/home.js';
+
+function credentialHome() {
+  return resolveSecureStorageHome();
+}
 export type Property = {
   label?: string;
   value: React.ReactNode | Array<string>;
@@ -178,12 +184,14 @@ export async function buildInstallationDiagnostics(): Promise<Diagnostic[]> {
   const installWarnings = await checkInstall();
   return installWarnings.map(warning => warning.message);
 }
-export async function buildInstallationHealthDiagnostics(): Promise<Diagnostic[]> {
+export async function buildInstallationHealthDiagnostics(
+  authority: CanonicalSettingsAuthority,
+): Promise<Diagnostic[]> {
   const diagnostic = await getDoctorDiagnostic();
   const items: Diagnostic[] = [];
   const {
     errors: validationErrors
-  } = getSettingsWithAllErrors();
+  } = getSettingsWithAllErrors(authority);
   if (validationErrors.length > 0) {
     const invalidFiles = Array.from(new Set(validationErrors.map(error => error.file)));
     const fileList = invalidFiles.join(', ');
@@ -200,7 +208,7 @@ export async function buildInstallationHealthDiagnostics(): Promise<Diagnostic[]
   return items;
 }
 export function buildAccountProperties(): Property[] {
-  const accountInfo = getAccountInformation();
+  const accountInfo = getAccountInformation(credentialHome());
   if (!accountInfo) {
     return [];
   }
@@ -241,6 +249,8 @@ export function buildAccountProperties(): Property[] {
 }
 export function buildAPIProviderProperties(): Property[] {
   const apiProvider = getAPIProvider() as string;
+  const providerEnvironment = getSelectedProviderEnvironment();
+  const selectedModel = getSelectedProviderModel();
   const properties: Property[] = [];
   if (apiProvider !== 'firstParty') {
     const providerLabel = ({
@@ -260,7 +270,7 @@ export function buildAPIProviderProperties(): Property[] {
     });
   }
   if (apiProvider === 'firstParty') {
-    const anthropicBaseUrl = process.env.ANTHROPIC_BASE_URL;
+    const anthropicBaseUrl = providerEnvironment.ANTHROPIC_BASE_URL;
     if (anthropicBaseUrl) {
       properties.push({
         label: 'First-party base URL',
@@ -268,7 +278,7 @@ export function buildAPIProviderProperties(): Property[] {
       });
     }
   } else if (apiProvider === 'bedrock') {
-    const bedrockBaseUrl = process.env.BEDROCK_BASE_URL;
+    const bedrockBaseUrl = providerEnvironment.BEDROCK_BASE_URL;
     if (bedrockBaseUrl) {
       properties.push({
         label: 'Bedrock base URL',
@@ -277,22 +287,22 @@ export function buildAPIProviderProperties(): Property[] {
     }
     properties.push({
       label: 'AWS region',
-      value: getAWSRegion()
+      value: getAWSRegion(providerEnvironment)
     });
-    if (isEnvTruthy(process.env.AGENC_SKIP_BEDROCK_AUTH)) {
+    if (isEnvTruthy(providerEnvironment.AGENC_SKIP_BEDROCK_AUTH)) {
       properties.push({
         value: 'AWS auth skipped'
       });
     }
   } else if (apiProvider === 'vertex') {
-    const vertexBaseUrl = process.env.VERTEX_BASE_URL;
+    const vertexBaseUrl = providerEnvironment.VERTEX_BASE_URL;
     if (vertexBaseUrl) {
       properties.push({
         label: 'Vertex base URL',
         value: vertexBaseUrl
       });
     }
-    const gcpProject = process.env.ANTHROPIC_VERTEX_PROJECT_ID;
+    const gcpProject = providerEnvironment.ANTHROPIC_VERTEX_PROJECT_ID;
     if (gcpProject) {
       properties.push({
         label: 'GCP project',
@@ -301,42 +311,42 @@ export function buildAPIProviderProperties(): Property[] {
     }
     properties.push({
       label: 'Default region',
-      value: getDefaultVertexRegion()
+      value: getDefaultVertexRegion(providerEnvironment)
     });
-    if (isEnvTruthy(process.env.AGENC_SKIP_VERTEX_AUTH)) {
+    if (isEnvTruthy(providerEnvironment.AGENC_SKIP_VERTEX_AUTH)) {
       properties.push({
         value: 'GCP auth skipped'
       });
     }
   } else if (apiProvider === 'foundry') {
-    const foundryBaseUrl = process.env.ANTHROPIC_FOUNDRY_BASE_URL;
+    const foundryBaseUrl = providerEnvironment.ANTHROPIC_FOUNDRY_BASE_URL;
     if (foundryBaseUrl) {
       properties.push({
         label: 'Microsoft Foundry base URL',
         value: foundryBaseUrl
       });
     }
-    const foundryResource = process.env.ANTHROPIC_FOUNDRY_RESOURCE;
+    const foundryResource = providerEnvironment.ANTHROPIC_FOUNDRY_RESOURCE;
     if (foundryResource) {
       properties.push({
         label: 'Microsoft Foundry resource',
         value: foundryResource
       });
     }
-    if (isEnvTruthy(process.env.AGENC_SKIP_FOUNDRY_AUTH)) {
+    if (isEnvTruthy(providerEnvironment.AGENC_SKIP_FOUNDRY_AUTH)) {
       properties.push({
         value: 'Microsoft Foundry auth skipped'
       });
     }
   } else if (apiProvider === 'openai') {
-    const openaiBaseUrl = process.env.OPENAI_BASE_URL;
+    const openaiBaseUrl = providerEnvironment.OPENAI_BASE_URL;
     if (openaiBaseUrl) {
       properties.push({
         label: 'Provider base URL',
-        value: redactSecretValueForDisplay(openaiBaseUrl, process.env) ?? openaiBaseUrl
+        value: redactSecretValueForDisplay(openaiBaseUrl, providerEnvironment) ?? openaiBaseUrl
       });
     }
-    const openaiModel = process.env.OPENAI_MODEL;
+    const openaiModel = selectedModel;
     if (openaiModel) {
       // Build display model string with resolved model + reasoning effort
       let modelDisplay = openaiModel;
@@ -352,18 +362,18 @@ export function buildAPIProviderProperties(): Property[] {
       }
       properties.push({
         label: 'Model',
-        value: redactSecretValueForDisplay(modelDisplay, process.env) ?? modelDisplay
+        value: redactSecretValueForDisplay(modelDisplay, providerEnvironment) ?? modelDisplay
       });
     }
   } else if (apiProvider === 'agenc') { // branding-scan: allow real provider id
-    const providerBaseUrl = process.env.OPENAI_BASE_URL;
+    const providerBaseUrl = providerEnvironment.OPENAI_BASE_URL;
     if (providerBaseUrl) {
       properties.push({
         label: 'Provider base URL',
-        value: redactSecretValueForDisplay(providerBaseUrl, process.env) ?? providerBaseUrl
+        value: redactSecretValueForDisplay(providerBaseUrl, providerEnvironment) ?? providerBaseUrl
       });
     }
-    const openaiModel = process.env.OPENAI_MODEL;
+    const openaiModel = selectedModel;
     if (openaiModel) {
       // Build display model string with resolved model + reasoning effort
       let modelDisplay = openaiModel;
@@ -379,48 +389,48 @@ export function buildAPIProviderProperties(): Property[] {
       }
       properties.push({
         label: 'Model',
-        value: redactSecretValueForDisplay(modelDisplay, process.env) ?? modelDisplay
+        value: redactSecretValueForDisplay(modelDisplay, providerEnvironment) ?? modelDisplay
       });
     }
   } else if (apiProvider === 'gemini') {
-    const geminiBaseUrl = process.env.GEMINI_BASE_URL;
+    const geminiBaseUrl = providerEnvironment.GEMINI_BASE_URL;
     if (geminiBaseUrl) {
       properties.push({
         label: 'Gemini base URL',
-        value: redactSecretValueForDisplay(geminiBaseUrl, process.env) ?? geminiBaseUrl
+        value: redactSecretValueForDisplay(geminiBaseUrl, providerEnvironment) ?? geminiBaseUrl
       });
     }
-    const geminiModel = process.env.GEMINI_MODEL;
+    const geminiModel = selectedModel;
     if (geminiModel) {
       properties.push({
         label: 'Model',
-        value: redactSecretValueForDisplay(geminiModel, process.env) ?? geminiModel
+        value: redactSecretValueForDisplay(geminiModel, providerEnvironment) ?? geminiModel
       });
     }
   } else if (apiProvider === 'mistral') {
-    const mistralBaseUrl = process.env.MISTRAL_BASE_URL;
+    const mistralBaseUrl = providerEnvironment.MISTRAL_BASE_URL;
     if (mistralBaseUrl) {
       properties.push({
         label: 'Mistral base URL',
-        value: redactSecretValueForDisplay(mistralBaseUrl, process.env) ?? mistralBaseUrl
+        value: redactSecretValueForDisplay(mistralBaseUrl, providerEnvironment) ?? mistralBaseUrl
       })
     }
-    const mistralModel = process.env.MISTRAL_MODEL;
+    const mistralModel = selectedModel;
     if (mistralModel) {
       properties.push({
         label: 'Model',
-        value: redactSecretValueForDisplay(mistralModel, process.env) ?? mistralModel
+        value: redactSecretValueForDisplay(mistralModel, providerEnvironment) ?? mistralModel
       })
     }
   } else if (apiProvider === 'xai') {
-    const xaiBaseUrl = process.env.OPENAI_BASE_URL;
+    const xaiBaseUrl = providerEnvironment.OPENAI_BASE_URL;
     if (xaiBaseUrl) {
       properties.push({
         label: 'xAI base URL',
-        value: redactSecretValueForDisplay(xaiBaseUrl, process.env) ?? xaiBaseUrl
+        value: redactSecretValueForDisplay(xaiBaseUrl, providerEnvironment) ?? xaiBaseUrl
       })
     }
-    const openaiModel = process.env.OPENAI_MODEL;
+    const openaiModel = selectedModel;
     if (openaiModel) {
       let modelDisplay = openaiModel;
       const resolved = resolveProviderRequest({ model: openaiModel });
@@ -434,35 +444,35 @@ export function buildAPIProviderProperties(): Property[] {
       }
       properties.push({
         label: 'Model',
-        value: redactSecretValueForDisplay(modelDisplay, process.env) ?? modelDisplay
+        value: redactSecretValueForDisplay(modelDisplay, providerEnvironment) ?? modelDisplay
       });
     }
   }
-  const proxyUrl = getProxyUrl();
+  const proxyUrl = getProxyUrl(providerEnvironment);
   if (proxyUrl) {
     properties.push({
       label: 'Proxy',
       value: proxyUrl
     });
   }
-  const mtlsConfig = getMTLSConfig();
-  if (process.env.NODE_EXTRA_CA_CERTS) {
+  const mtlsConfig = getMTLSConfig(providerEnvironment);
+  if (providerEnvironment.NODE_EXTRA_CA_CERTS) {
     properties.push({
       label: 'Additional CA cert(s)',
-      value: process.env.NODE_EXTRA_CA_CERTS
+      value: providerEnvironment.NODE_EXTRA_CA_CERTS
     });
   }
   if (mtlsConfig) {
-    if (mtlsConfig.cert && process.env.AGENC_CLIENT_CERT) {
+    if (mtlsConfig.cert && providerEnvironment.AGENC_CLIENT_CERT) {
       properties.push({
         label: 'mTLS client cert',
-        value: process.env.AGENC_CLIENT_CERT
+        value: providerEnvironment.AGENC_CLIENT_CERT
       });
     }
-    if (mtlsConfig.key && process.env.AGENC_CLIENT_KEY) {
+    if (mtlsConfig.key && providerEnvironment.AGENC_CLIENT_KEY) {
       properties.push({
         label: 'mTLS client key',
-        value: process.env.AGENC_CLIENT_KEY
+        value: providerEnvironment.AGENC_CLIENT_KEY
       });
     }
   }
@@ -470,7 +480,7 @@ export function buildAPIProviderProperties(): Property[] {
 }
 export function getModelDisplayLabel(mainLoopModel: string | null): string {
   let modelLabel = modelDisplayString(mainLoopModel);
-  if (mainLoopModel === null && isAgenCAISubscriber()) {
+  if (mainLoopModel === null && isAgenCAISubscriber(credentialHome())) {
     const description = getAgenCAiUserDefaultModelDescription();
     modelLabel = `${chalk.bold('Default')} ${description}`;
   }

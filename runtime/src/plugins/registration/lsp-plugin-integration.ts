@@ -18,8 +18,6 @@ export interface PluginLspRegistrationOptions extends PluginRuntimeLoadOptions {
   readonly errors?: PluginLoadIssue[];
 }
 
-let pluginLspCache: Promise<Readonly<Record<string, LspServerConfigInput>>> | null = null;
-
 interface ServerResolutionIssues {
   readonly missingUserConfig: Set<string>;
   readonly missingEnv: Set<string>;
@@ -177,13 +175,4 @@ export async function loadPluginLspServers(
 ): Promise<Readonly<Record<string, LspServerConfigInput>>> {
   const plugins = await resolvePlugins(options);
   return extractLspServersFromPlugins(plugins, options);
-}
-
-export async function getPluginLspServers(): Promise<Readonly<Record<string, LspServerConfigInput>>> {
-  pluginLspCache ??= loadPluginLspServers();
-  return pluginLspCache;
-}
-
-export function clearPluginLspServerCache(): void {
-  pluginLspCache = null;
 }

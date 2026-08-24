@@ -26,7 +26,8 @@ import { collapseBackgroundBashNotifications } from '../../utils/collapseBackgro
 import { collapseHookSummaries } from '../../utils/collapseHookSummaries.js';
 import { collapseReadSearchGroups } from '../../utils/collapseReadSearch.js';
 import { collapseTeammateShutdowns } from '../../utils/collapseTeammateShutdowns.js';
-import { getGlobalConfig } from '../../utils/config.js';
+import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js';
+import { getCanonicalSettingsAuthority } from '../../utils/settings/canonicalAuthority.js';
 import { isEnvTruthy } from '../../utils/envUtils.js';
 import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import { applyGrouping } from '../../utils/groupToolUses.js';
@@ -44,6 +45,7 @@ import { isNullRenderingAttachment } from '../message-visibility.js';
 import { OffscreenFreeze } from './OffscreenFreeze.js';
 import type { ToolUseConfirm } from '../permission-types.js';
 import { StatusNotices } from '../startup/StatusNotices.js';
+import type { ProviderAuthReadContext } from '../../utils/auth.js';
 import type { JumpHandle } from './VirtualMessageList.js';
 import {
   getMessagesSendUserFileToolName,
@@ -90,13 +92,19 @@ class WelcomePanelBoundary extends React.Component<
 
 const LogoHeader = React.memo(function LogoHeader(t0: {
   readonly agentDefinitions?: AgentDefinitionsResult;
+  readonly providerAuthContext: ProviderAuthReadContext;
   readonly showWelcome?: boolean;
 }) {
   const {
     agentDefinitions,
+    providerAuthContext,
     showWelcome = false,
   } = t0;
-  return <OffscreenFreeze><Box flexDirection="column" gap={1}><React.Suspense fallback={null}><StatusNotices agentDefinitions={agentDefinitions} /></React.Suspense>{showWelcome ? <WelcomePanelBoundary><WelcomeColdPanelWithModel /></WelcomePanelBoundary> : null}</Box></OffscreenFreeze>;
+  const authority = getCanonicalSettingsAuthority();
+  if (authority === null) {
+    throw new Error('Canonical settings authority is required to render TUI status notices');
+  }
+  return <OffscreenFreeze><Box flexDirection="column" gap={1}><React.Suspense fallback={null}><StatusNotices homeContext={authority.homeContext} providerAuthContext={providerAuthContext} agentDefinitions={agentDefinitions} /></React.Suspense>{showWelcome ? <WelcomePanelBoundary><WelcomeColdPanelWithModel /></WelcomePanelBoundary> : null}</Box></OffscreenFreeze>;
 });
 
 // Dead code elimination: conditional import for brief mode
@@ -152,6 +160,7 @@ type Props = {
   streamingToolUses: readonly StreamingToolUse[];
   showAllInTranscript?: boolean;
   agentDefinitions?: AgentDefinitionsResult;
+  providerAuthContext: ProviderAuthReadContext;
   onOpenRateLimitOptions?: () => void;
   /** Hide the logo/header - used for subagent zoom view */
   hideLogo?: boolean;
@@ -282,6 +291,7 @@ const MessagesImpl = ({
   streamingToolUses,
   showAllInTranscript = false,
   agentDefinitions,
+  providerAuthContext,
   onOpenRateLimitOptions,
   hideLogo = false,
   isLoading,
@@ -538,7 +548,11 @@ const MessagesImpl = ({
     progress
   } = useTerminalNotification();
   const prevProgressState = useRef<string | null>(null);
-  const progressEnabled = getGlobalConfig().terminalProgressBarEnabled && !getIsRemoteMode() && !((feature('PROACTIVE') || feature('KAIROS')) && isMessagesProactiveActive());
+  const progressEnabled =
+    (getExecutionAuthoritySettings().tui?.terminalProgressBarEnabled ?? true) &&
+    !getIsRemoteMode() &&
+    !((feature('PROACTIVE') || feature('KAIROS')) &&
+      isMessagesProactiveActive());
   useEffect(() => {
     const state = progressEnabled ? hasToolsInProgress ? 'indeterminate' : 'completed' : null;
     if (prevProgressState.current === state) return;
@@ -614,7 +628,7 @@ const MessagesImpl = ({
   }, [tools, lookups_0]);
   return <>
       {/* Logo */}
-      {!hideLogo && !(renderRange && renderRange[0] > 0) && <LogoHeader agentDefinitions={agentDefinitions} showWelcome={renderableMessages.length === 0 && !streamingText && !isBriefOnly} />}
+      {!hideLogo && !(renderRange && renderRange[0] > 0) && <LogoHeader agentDefinitions={agentDefinitions} providerAuthContext={providerAuthContext} showWelcome={renderableMessages.length === 0 && !streamingText && !isBriefOnly} />}
 
       {/* Truncation indicator */}
       {hasTruncatedMessages_0 && <Divider title={`${toggleShowAllShortcut} to show ${chalk.bold(hiddenMessageCount_0)} previous messages`} width={contentColumns} />}

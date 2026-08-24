@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -33,6 +33,20 @@ function writeSkill(root: string, rel: string, body?: string): string {
   return file;
 }
 
+function writePluginSkill(pluginRoot: string, rel: string): string {
+  const manifestDir = join(pluginRoot, ".agenc-plugin");
+  mkdirSync(manifestDir, { recursive: true });
+  writeFileSync(
+    join(manifestDir, "plugin.json"),
+    JSON.stringify({
+      name: basename(pluginRoot),
+      description: "Local skills loader test plugin",
+      version: "1.0.0",
+    }),
+  );
+  return writeSkill(join(pluginRoot, "skills"), rel);
+}
+
 function writeCommand(root: string, rel: string, body?: string): string {
   const file = join(root, rel);
   mkdirSync(join(file, ".."), { recursive: true });
@@ -50,9 +64,6 @@ async function flushPromises(): Promise<void> {
   await Promise.resolve();
 }
 
-const legacyUserSkillRootA = ".claude"; // branding-scan: allow legacy user skill root compatibility
-const legacyUserSkillRootB = ".codex"; // branding-scan: allow legacy user skill root compatibility
-
 describe("local skills loader", () => {
   it("discovers AgenC, agent, user, and plugin skill roots", async () => {
     const agencHome = tmpRoot("skills-home");
@@ -64,9 +75,7 @@ describe("local skills loader", () => {
     writeSkill(join(workspaceRoot, ".agenc", "skills"), "agenc-project-skill");
     writeSkill(join(agencHome, "skills"), "home-skill");
     writeSkill(join(defaultAgencHome, "skills"), "default-home-skill");
-    writeSkill(join(home, legacyUserSkillRootA, "skills"), "legacy-compat-one");
-    writeSkill(join(home, legacyUserSkillRootB, "skills"), "legacy-compat-two");
-    writeSkill(join(agencHome, "plugins", "demo", "skills"), "plugin-skill");
+    writePluginSkill(join(agencHome, "plugins", "demo"), "plugin-skill");
 
     const snapshot = await loadLocalSkillsSnapshot({
       agencHome,
@@ -78,9 +87,6 @@ describe("local skills loader", () => {
     expect(snapshot.skills.map((skill) => skill.name)).toEqual(
       expect.arrayContaining([
         "agenc-project-skill",
-        "legacy-compat-one",
-        "legacy-compat-two",
-        "default-home-skill",
         "home-skill",
         "plugin-skill",
         "project-skill",
@@ -92,6 +98,9 @@ describe("local skills loader", () => {
     expect(snapshot.pluginSkillRoots).toEqual([
       join(agencHome, "plugins", "demo", "skills"),
     ]);
+    expect(snapshot.skills.map((skill) => skill.name)).not.toContain(
+      "default-home-skill",
+    );
   });
 
   it("ships Ledger Wallet CLI setup and safety guidance in core", async () => {
@@ -119,7 +128,7 @@ describe("local skills loader", () => {
     });
   });
 
-  it("uses one root policy for compatibility discovery, rendering, watches, and manual cache clears", async () => {
+  it("uses one canonical root policy for discovery, rendering, watches, and manual cache clears", async () => {
     const agencHome = tmpRoot("skills-home");
     const home = tmpRoot("skills-user");
     const workspaceRoot = tmpRoot("skills-workspace");
@@ -127,9 +136,7 @@ describe("local skills loader", () => {
     writeSkill(join(workspaceRoot, ".agents", "skills"), "project-agent");
     writeSkill(join(workspaceRoot, ".agenc", "skills"), "project-agenc");
     writeSkill(join(home, ".agents", "skills"), "user-agent");
-    writeSkill(join(home, ".agenc", "skills"), "user-agenc");
-    writeSkill(join(home, legacyUserSkillRootA, "skills"), "legacy-compat-one");
-    writeSkill(join(home, legacyUserSkillRootB, "skills"), "legacy-compat-two");
+    writeSkill(join(home, ".agenc", "skills"), "noncanonical-home");
 
     const services = createLocalSkillsServices({
       agencHome,
@@ -143,19 +150,14 @@ describe("local skills loader", () => {
         "project-agent",
         "project-agenc",
         "user-agent",
-        "user-agenc",
-        "legacy-compat-one",
-        "legacy-compat-two",
       ]),
     );
+    expect(names).not.toContain("noncanonical-home");
 
     for (const name of [
       "project-agent",
       "project-agenc",
       "user-agent",
-      "user-agenc",
-      "legacy-compat-one",
-      "legacy-compat-two",
     ]) {
       await expect(services.skillsManager.renderSkill?.({ name, args: "ok" }))
         .resolves.toMatchObject({
@@ -170,19 +172,14 @@ describe("local skills loader", () => {
       env: { HOME: home },
     })).resolves.toEqual(expect.arrayContaining([
       join(home, ".agents", "skills"),
-      join(home, ".agenc", "skills"),
-      join(home, legacyUserSkillRootA, "skills"),
-      join(home, legacyUserSkillRootB, "skills"),
     ]));
 
-    await expect(services.skillsManager.resolveSkill?.("late-compat"))
-      .resolves.toBeNull();
-    writeSkill(join(home, legacyUserSkillRootA, "skills"), "late-compat");
-    await expect(services.skillsManager.resolveSkill?.("late-compat"))
+    writeSkill(join(home, ".agents", "skills"), "late-user-skill");
+    await expect(services.skillsManager.resolveSkill?.("late-user-skill"))
       .resolves.toBeNull();
     services.skillsManager.clearSkillCaches?.();
-    await expect(services.skillsManager.resolveSkill?.("late-compat"))
-      .resolves.toMatchObject({ name: "late-compat" });
+    await expect(services.skillsManager.resolveSkill?.("late-user-skill"))
+      .resolves.toMatchObject({ name: "late-user-skill" });
   });
 
   it("uses nested directory names and ignores root-level skills/SKILL.md", async () => {
@@ -244,7 +241,7 @@ model: inherit
 disable-model-invocation: false
 user-invocable: true
 context: fork
-agent: explorer
+agent: scanner
 effort: high
 shell: bash
 paths: ["docs/**"]
@@ -389,7 +386,7 @@ All=$ARGUMENTS
     const agencHome = tmpRoot("skills-home");
     const workspaceRoot = tmpRoot("skills-workspace");
     writeSkill(join(workspaceRoot, ".agenc", "skills"), "repo-docs");
-    writeSkill(join(agencHome, "plugins", "tools", "skills"), "plugin-docs");
+    writePluginSkill(join(agencHome, "plugins", "tools"), "plugin-docs");
 
     const services = createLocalSkillsServices({
       agencHome,
@@ -575,8 +572,9 @@ All=$ARGUMENTS
     vi.useFakeTimers();
     const agencHome = tmpRoot("skills-home");
     const workspaceRoot = tmpRoot("skills-workspace");
-    const pluginRoot = join(workspaceRoot, "vendor", "configured", "skills");
-    writeSkill(pluginRoot, "plugin-initial");
+    const configuredPluginRoot = join(workspaceRoot, "vendor", "configured");
+    const pluginRoot = join(configuredPluginRoot, "skills");
+    writePluginSkill(configuredPluginRoot, "plugin-initial");
     const watcher = FileWatcher.noop();
     const detector = createSkillChangeDetector();
     const services = createLocalSkillsServices({
@@ -631,7 +629,7 @@ All=$ARGUMENTS
     const agencHome = tmpRoot("skills-home");
     const workspaceRoot = tmpRoot("skills-workspace");
     const configuredPlugin = join(workspaceRoot, "vendor", "configured");
-    writeSkill(join(configuredPlugin, "skills"), "configured-skill");
+    writePluginSkill(configuredPlugin, "configured-skill");
 
     const services = createLocalSkillsServices({
       agencHome,

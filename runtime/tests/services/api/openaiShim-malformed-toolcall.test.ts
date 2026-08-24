@@ -13,6 +13,12 @@ afterEach(() => {
 
 type OpenAiShimClient = ReturnType<typeof createOpenAiShimClient>
 
+const PROVIDER_ENVIRONMENT = Object.freeze({
+  AGENC_PROVIDER: 'openai-compatible',
+  AGENC_MODEL: 'some-model',
+  OPENAI_BASE_URL: 'http://example.test/v1',
+})
+
 describe('openai shim — malformed non-streaming tool_call', () => {
   test('skips a tool_call missing function.name instead of throwing', async () => {
     globalThis.fetch = (async () =>
@@ -36,7 +42,11 @@ describe('openai shim — malformed non-streaming tool_call', () => {
         { status: 200, headers: { 'content-type': 'application/json' } },
       )) as typeof fetch
 
-    const client = createOpenAiShimClient({}) as OpenAiShimClient
+    const client = createOpenAiShimClient({
+      selectedProvider: 'openai',
+      model: 'some-model',
+      providerEnvironment: PROVIDER_ENVIRONMENT,
+    }) as OpenAiShimClient
     let result: unknown
     await expect(
       (async () => {

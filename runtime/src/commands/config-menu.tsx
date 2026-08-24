@@ -159,20 +159,20 @@ function createConfigMenuSnapshot(
       "permissions",
       "approval",
       config.approval_policy,
-      `permission default ${scalar(config.permissions?.default_mode ?? config.permissions?.defaultMode, "default")}; reviewer ${scalar(config.approvals_reviewer)}`,
+      `permission default ${scalar(config.permissions?.defaultMode, "default")}; approval ${scalar(config.approval_policy)}; reviewer ${scalar(config.approvals_reviewer)}`,
       "active",
     ),
     row(
       "permissions",
       "sandbox",
-      config.sandbox_mode ?? config.sandbox?.mode,
-      `policy ${scalar(config.sandbox_policy?.mode, "default")}; network ${scalar(config.sandbox_policy?.network_access, "default")}`,
+      config.sandbox_mode,
+      `network ${scalar(config.sandbox?.network_access, "mode default")}; extra write roots ${config.sandbox?.filesystem?.allowWrite?.length ?? 0}`,
     ),
     row(
       "paths",
       "config.toml",
       options.configPath,
-      `workspace ${scalar(config.workspace, "current cwd")}; agenc_home ${scalar(config.agenc_home, "resolved from environment")}`,
+      "workspace follows the current process cwd",
       "active",
     ),
     row(
@@ -211,15 +211,15 @@ function createConfigMenuSnapshot(
     ),
     row(
       "tui",
-      "layout",
-      config.tuiLayout?.mode,
-      `side pane ${scalar(config.tuiLayout?.sidePane, "default")}; min columns ${scalar(config.tuiLayout?.minColumns, "default")}; editor ${scalar(config.editorMode)}`,
+      "theme",
+      config.tui?.theme,
+      `vim input ${scalar(config.tui?.vimMode, "off")}; turn duration ${scalar(config.tui?.showTurnDuration, "on")}; progress bar ${scalar(config.tui?.terminalProgressBarEnabled, "on")}`,
     ),
     row(
       "tui",
       "updates",
       config.autoUpdates,
-      `remote control at startup ${scalar(config.remoteControlAtStartup, "not set")}`,
+      `channel ${scalar(config.autoUpdatesChannel, "latest")}`,
     ),
   ];
 

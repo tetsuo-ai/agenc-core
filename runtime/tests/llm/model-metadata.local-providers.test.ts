@@ -83,6 +83,19 @@ describe("ollamaShowUrlFromBaseUrl", () => {
   });
 });
 
+describe("upstream provider metadata identity", () => {
+  test("accepts xAI metadata labels without reopening xai as a live selector", () => {
+    const resolved = new ModelMetadataResolver({ env: {} }).resolveSync({
+      provider: "xai",
+      model: "grok-4.6",
+      config: EMPTY_CONFIG,
+    });
+
+    expect(resolved.source).toBe("built_in_heuristic");
+    expect(resolved.contextWindow).toBe(500_000);
+  });
+});
+
 describe("local providers resolve the real context window", () => {
   test("ollama reads the architecture-prefixed context length", async () => {
     const { impl, calls } = recordingFetch({

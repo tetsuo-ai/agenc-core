@@ -1,37 +1,22 @@
-import { chmod, open, rename, stat, unlink } from 'fs/promises'
 import mapValues from 'lodash-es/mapValues.js'
-import memoize from 'lodash-es/memoize.js'
-import { dirname, join, parse } from 'path'
 import { getPlatform } from 'src/utils/platform.js'
 import type { PluginError } from '../../types/plugin.js'
-import { getPluginErrorMessage } from '../../types/plugin.js'
 import { isAgenCInChromeMCPServer } from '../../utils/agencInChrome/common.js'
-import {
-  getCurrentProjectConfig,
-  saveCurrentProjectConfig,
-} from '../../utils/config.js'
-import { getCwd } from '../../utils/cwd.js'
+import { applyCanonicalConfigPatchSync } from '../../config/update-sync.js'
+import type { ManagedMcpServerPolicyEntry } from '../../config/schema.js'
+import { mergeConfigLayerSnapshots } from '../../config/repository.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getErrnoCode } from '../../utils/errors.js'
-import { getFsImplementation } from '../../utils/fsOperations.js'
-import { safeParseJSON } from '../../utils/json.js'
 import { logError } from '../../utils/log.js'
-import { getPluginMcpServers } from '../../utils/plugins/mcpPluginIntegration.js'
-import { loadAllPluginsCacheOnly } from '../../utils/plugins/pluginLoader.js'
+import { loadPluginMcpServerRegistrations } from '../../plugins/registration/mcp-plugin-integration.js'
+import type { PluginLoadIssue } from '../../plugins/loader.js'
 import { isSettingSourceEnabled } from '../../utils/settings/constants.js'
-import { getManagedFilePath } from '../../utils/settings/managedPath.js'
 import { isRestrictedToPluginOnly } from '../../utils/settings/pluginOnlyPolicy.js'
+import type { CanonicalSettingsAuthority } from '../../utils/settings/canonicalAuthority.js'
 import {
-  getExecutionAuthoritySettings,
-  getInitialSettings,
+  getSettingsFilePathForSource,
   getSettingsForSource,
+  type RuntimeSettingsSnapshot,
 } from '../../utils/settings/settings.js'
-import {
-  isMcpServerCommandEntry,
-  isMcpServerNameEntry,
-  isMcpServerUrlEntry,
-  type SettingsJson,
-} from '../../utils/settings/types.js'
 import type { ValidationError } from '../../utils/settings/validation.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 import { expandEnvVarsInString } from './envExpansion.js'
@@ -49,17 +34,9 @@ import {
 } from './types.js'
 import { getProjectMcpServerStatus } from './utils.js'
 import {
-  addUserMcpServerToToml,
-  getUserMcpConfigsFromToml,
-  getUserMcpServersFromToml,
-  removeUserMcpServerFromToml,
+  canonicalMcpServerToServiceConfig,
+  serviceMcpServerToCanonicalConfig,
 } from './user-config-toml.js'
-/**
- * Get the path to the managed MCP configuration file
- */
-export function getEnterpriseMcpFilePath(): string {
-  return join(getManagedFilePath(), 'managed-mcp.json')
-}
 
 /**
  * Internal utility: Add scope to server configs
@@ -78,55 +55,6 @@ function addScopeToServers(
   return scopedServers
 }
 
-/**
- * Internal utility: Write MCP config to .mcp.json file.
- * Preserves file permissions and flushes to disk before rename.
- * Uses the original path for rename (does not follow symlinks).
- */
-async function writeMcpjsonFile(config: McpJsonConfig): Promise<void> {
-  const mcpJsonPath = join(getCwd(), '.mcp.json')
-
-  // Read existing file permissions to preserve them
-  let existingMode: number | undefined
-  try {
-    const stats = await stat(mcpJsonPath)
-    existingMode = stats.mode
-  } catch (e: unknown) {
-    const code = getErrnoCode(e)
-    if (code !== 'ENOENT') {
-      throw e
-    }
-    // File doesn't exist yet -- no permissions to preserve
-  }
-
-  // Write to temp file, flush to disk, then atomic rename
-  const tempPath = `${mcpJsonPath}.tmp.${process.pid}.${Date.now()}`
-  const handle = await open(tempPath, 'w', existingMode ?? 0o644)
-  try {
-    await handle.writeFile(jsonStringify(config, null, 2), {
-      encoding: 'utf8',
-    })
-    await handle.datasync()
-  } finally {
-    await handle.close()
-  }
-
-  try {
-    // Restore original file permissions on the temp file before rename
-    if (existingMode !== undefined) {
-      await chmod(tempPath, existingMode)
-    }
-    await rename(tempPath, mcpJsonPath)
-  } catch (e: unknown) {
-    // Clean up temp file on failure
-    try {
-      await unlink(tempPath)
-    } catch {
-      // Best-effort cleanup
-    }
-    throw e
-  }
-}
 
 /**
  * Extract command array from server config (stdio servers only)
@@ -144,11 +72,29 @@ function getServerCommandArray(config: McpServerConfig): string[] | null {
 /**
  * Check if two command arrays match exactly
  */
-function commandArraysMatch(a: string[], b: string[]): boolean {
+function commandArraysMatch(a: readonly string[], b: readonly string[]): boolean {
   if (a.length !== b.length) {
     return false
   }
   return a.every((val, idx) => val === b[idx])
+}
+
+function isMcpServerNameEntry(
+  entry: ManagedMcpServerPolicyEntry,
+): entry is ManagedMcpServerPolicyEntry & { readonly serverName: string } {
+  return entry.serverName !== undefined
+}
+
+function isMcpServerCommandEntry(
+  entry: ManagedMcpServerPolicyEntry,
+): entry is ManagedMcpServerPolicyEntry & { readonly serverCommand: readonly string[] } {
+  return entry.serverCommand !== undefined
+}
+
+function isMcpServerUrlEntry(
+  entry: ManagedMcpServerPolicyEntry,
+): entry is ManagedMcpServerPolicyEntry & { readonly serverUrl: string } {
+  return entry.serverUrl !== undefined
 }
 
 /**
@@ -161,7 +107,7 @@ function getServerUrl(config: McpServerConfig): string | null {
 
 /**
  * CCR proxy URL path markers. In remote sessions, agenc.tech connectors arrive
- * via --mcp-config with URLs rewritten to route through the CCR/session-ingress
+ * through the canonical config authority with URLs rewritten to route through the CCR/session-ingress
  * SHTTP proxy. The original vendor URL is preserved in the mcp_url query param
  * so the proxy knows where to forward. See api-go/ccr/internal/ccrshared/
  * mcp_url_rewriter.go and api-go/ccr/internal/mcpproxy/proxy.go.
@@ -320,8 +266,9 @@ export function pluginMcpDuplicateSuppressionError(
 
 /**
  * Filter agenc.tech connectors, dropping any whose signature matches an enabled
- * manually-configured server. Manual wins: a user who wrote .mcp.json or ran
- * `agenc mcp add` expressed higher intent than a connector toggled in the web UI.
+ * manually-configured server. Manual wins: a user who wrote canonical project
+ * TOML or ran `agenc mcp add` expressed higher intent than a connector toggled
+ * in the web UI.
  *
  * Connector keys are `agenc.tech <DisplayName>` so they never key-collide with
  * manual servers in the merge — this content-based check catches the case where
@@ -340,7 +287,7 @@ export function dedupAgenCAiMcpServers(
 } {
   const manualSigs = new Map<string, string>()
   for (const [name, config] of Object.entries(manualServers)) {
-    if (isMcpServerDisabled(name)) continue
+    if (isMcpServerDisabled(name, config)) continue
     const sig = getMcpServerSignature(config)
     if (sig && !manualSigs.has(sig)) manualSigs.set(sig, name)
   }
@@ -391,11 +338,13 @@ function urlMatchesPattern(url: string, pattern: string): boolean {
  * When allowManagedMcpServersOnly is set in policySettings, only managed settings
  * control which servers are allowed. Otherwise, returns merged settings.
  */
-function getMcpAllowlistSettings(): SettingsJson {
-  if (shouldAllowManagedMcpServersOnly()) {
-    return getSettingsForSource('policySettings') ?? {}
+function getMcpAllowlistSettings(
+  authority: CanonicalSettingsAuthority,
+): RuntimeSettingsSnapshot {
+  if (shouldAllowManagedMcpServersOnly(authority)) {
+    return getSettingsForSource('policySettings', authority) ?? {}
   }
-  return getExecutionAuthoritySettings()
+  return authority.current()
 }
 
 /**
@@ -403,8 +352,10 @@ function getMcpAllowlistSettings(): SettingsJson {
  * Denylists always merge from all sources — users can always deny servers
  * for themselves, even when allowManagedMcpServersOnly is set.
  */
-function getMcpDenylistSettings(): SettingsJson {
-  return getInitialSettings()
+function getMcpDenylistSettings(
+  authority: CanonicalSettingsAuthority,
+): RuntimeSettingsSnapshot {
+  return authority.current()
 }
 
 /**
@@ -415,10 +366,11 @@ function getMcpDenylistSettings(): SettingsJson {
  * @returns true if denied, false if not on denylist
  */
 function isMcpServerDenied(
+  authority: CanonicalSettingsAuthority,
   serverName: string,
   config?: McpServerConfig,
 ): boolean {
-  const settings = getMcpDenylistSettings()
+  const settings = getMcpDenylistSettings(authority)
   if (!settings.deniedMcpServers) {
     return false // No restrictions
   }
@@ -468,15 +420,16 @@ function isMcpServerDenied(
  * @returns true if allowed, false if blocked by policy
  */
 function isMcpServerAllowedByPolicy(
+  authority: CanonicalSettingsAuthority,
   serverName: string,
   config?: McpServerConfig,
 ): boolean {
   // Denylist takes absolute precedence
-  if (isMcpServerDenied(serverName, config)) {
+  if (isMcpServerDenied(authority, serverName, config)) {
     return false
   }
 
-  const settings = getMcpAllowlistSettings()
+  const settings = getMcpAllowlistSettings(authority)
   if (!settings.allowedMcpServers) {
     return true // No allowlist restrictions (undefined)
   }
@@ -566,7 +519,7 @@ function isMcpServerAllowedByPolicy(
  * returned so callers can warn the user.
  *
  * Intended for user-controlled config entry points that bypass the policy filter
- * in getAgenCCodeMcpConfigs(): --mcp-config (main.tsx) and the mcp_set_servers
+ * in getAgenCCodeMcpConfigs(): canonical ConfigStore inputs and the mcp_set_servers
  * control message (print.ts, SDK V2 Query.setMcpServers()).
  *
  * SDK-type servers are exempt — they are SDK-managed transport placeholders,
@@ -586,7 +539,10 @@ function isMcpServerAllowedByPolicy(
  * checks tolerate missing/undefined fields: `config` is optional, and
  * `getServerCommandArray` defaults `args` to `[]` via `?? []`.
  */
-export function filterMcpServersByPolicy<T>(configs: Record<string, T>): {
+export function filterMcpServersByPolicy<T>(
+  authority: CanonicalSettingsAuthority,
+  configs: Record<string, T>,
+): {
   allowed: Record<string, T>
   blocked: string[]
 } {
@@ -594,7 +550,7 @@ export function filterMcpServersByPolicy<T>(configs: Record<string, T>): {
   const blocked: string[] = []
   for (const [name, config] of Object.entries(configs)) {
     const c = config as McpServerConfig
-    if (c.type === 'sdk' || isMcpServerAllowedByPolicy(name, c)) {
+    if (c.type === 'sdk' || isMcpServerAllowedByPolicy(authority, name, c)) {
       allowed[name] = config
     } else {
       blocked.push(name)
@@ -606,14 +562,20 @@ export function filterMcpServersByPolicy<T>(configs: Record<string, T>): {
 /**
  * Internal utility: Expands environment variables in an MCP server config
  */
-function expandEnvVars(config: McpServerConfig): {
+function expandEnvVars(
+  config: McpServerConfig,
+  environment: Readonly<Record<string, string | undefined>>,
+): {
   expanded: McpServerConfig
   missingVars: string[]
 } {
   const missingVars: string[] = []
 
   function expandString(str: string): string {
-    const { expanded, missingVars: vars } = expandEnvVarsInString(str)
+    const { expanded, missingVars: vars } = expandEnvVarsInString(
+      str,
+      environment,
+    )
     missingVars.push(...vars)
     return expanded
   }
@@ -668,6 +630,99 @@ function expandEnvVars(config: McpServerConfig): {
   }
 }
 
+type WritableMcpConfigScope = 'user' | 'project' | 'local'
+type ReadableMcpConfigScope = WritableMcpConfigScope | 'enterprise'
+
+function settingsSourceForMcpScope(
+  scope: WritableMcpConfigScope,
+): 'userSettings' | 'projectSettings' | 'localSettings' {
+  switch (scope) {
+    case 'user':
+      return 'userSettings'
+    case 'project':
+      return 'projectSettings'
+    case 'local':
+      return 'localSettings'
+  }
+}
+
+function repositoryScopeForMcpScope(
+  scope: ReadableMcpConfigScope,
+): 'user' | 'project' | 'local' | 'managed' {
+  return scope === 'enterprise' ? 'managed' : scope
+}
+
+function canonicalMcpConfigsByScope(
+  authority: CanonicalSettingsAuthority,
+  scope: ReadableMcpConfigScope,
+  environment: Readonly<Record<string, string | undefined>> = {},
+): {
+  servers: Record<string, ScopedMcpServerConfig>
+  errors: ValidationError[]
+} {
+  if (
+    scope !== 'enterprise' &&
+    !isSettingSourceEnabled(settingsSourceForMcpScope(scope))
+  ) {
+    return { servers: {}, errors: [] }
+  }
+
+  const layers = authority.sources(repositoryScopeForMcpScope(scope))
+  const settings = mergeConfigLayerSnapshots(layers)
+  if (settings?.mcp_servers === undefined) {
+    return { servers: {}, errors: [] }
+  }
+  const mcpServers = Object.fromEntries(
+    Object.entries(settings.mcp_servers).map(([name, config]) => [
+      name,
+      canonicalMcpServerToServiceConfig(config),
+    ]),
+  )
+  const { config, errors } = parseMcpConfig({
+    configObject: { mcpServers },
+    expandVars: true,
+    environment,
+    scope,
+    ...(layers.at(-1)?.path !== undefined
+      ? { filePath: layers.at(-1)!.path }
+      : {}),
+  })
+  return {
+    servers: addScopeToServers(config?.mcpServers, scope),
+    errors,
+  }
+}
+
+export function hasManagedMcpAuthority(
+  authority: CanonicalSettingsAuthority,
+): boolean {
+  return authority.sources('managed').some(layer =>
+    Object.prototype.hasOwnProperty.call(layer.config, 'mcp_servers')
+  )
+}
+
+async function updateMcpServerInCanonicalConfig(
+  authority: CanonicalSettingsAuthority,
+  scope: WritableMcpConfigScope,
+  name: string,
+  config: McpServerConfig | undefined,
+): Promise<void> {
+  const path = getSettingsFilePathForSource(
+    settingsSourceForMcpScope(scope),
+    authority,
+  )
+  if (!path) throw new Error(`No canonical ${scope} config.toml target`)
+  applyCanonicalConfigPatchSync(path, {
+    mcp_servers: {
+      [name]:
+        config === undefined
+          ? undefined
+          : serviceMcpServerToCanonicalConfig(config),
+    },
+  }, scope)
+  await authority.reload()
+}
+
 /**
  * Add a new MCP server configuration
  * @param name The name of the server
@@ -679,6 +734,7 @@ export async function addMcpConfig(
   name: string,
   config: unknown,
   scope: ConfigScope,
+  authority: CanonicalSettingsAuthority,
 ): Promise<void> {
   if (name.match(/[^a-zA-Z0-9_-]/)) {
     throw new Error(
@@ -691,18 +747,13 @@ export async function addMcpConfig(
     throw new Error(`Cannot add MCP server "${name}": this name is reserved.`)
   }
 
-  // Block adding servers when enterprise MCP config exists (it has exclusive control)
-  if (doesEnterpriseMcpConfigExist()) {
+  // Explicit managed mcp_servers authority is exclusive, including an empty
+  // table that intentionally disables every operator/project definition.
+  if (hasManagedMcpAuthority(authority)) {
     throw new Error(
-      `Cannot add MCP server: enterprise MCP configuration is active and has exclusive control over MCP servers`,
+      `Cannot add MCP server: canonical managed config.toml has exclusive MCP authority`,
     )
   }
-  if (scope === 'local') {
-    throw new Error(
-      'Cannot add MCP server to local config: local MCP config is not loaded by the runtime. Use user config instead.',
-    )
-  }
-
   // Validate config first (needed for command-based policy checks)
   const result = McpServerConfigSchema().safeParse(config)
   if (!result.success) {
@@ -714,32 +765,28 @@ export async function addMcpConfig(
   const validatedConfig = result.data
 
   // Check denylist (with config for command-based checks)
-  if (isMcpServerDenied(name, validatedConfig)) {
+  if (isMcpServerDenied(authority, name, validatedConfig)) {
     throw new Error(
       `Cannot add MCP server "${name}": server is explicitly blocked by enterprise policy`,
     )
   }
 
   // Check allowlist (with config for command-based checks)
-  if (!isMcpServerAllowedByPolicy(name, validatedConfig)) {
+  if (!isMcpServerAllowedByPolicy(authority, name, validatedConfig)) {
     throw new Error(
       `Cannot add MCP server "${name}": not allowed by enterprise policy`,
     )
   }
 
-  // Check if server already exists in the target scope
   switch (scope) {
-    case 'project': {
-      const { servers } = getProjectMcpConfigsFromCwd()
+    case 'project':
+    case 'user':
+    case 'local': {
+      const { servers } = getMcpConfigsByScope(scope, authority)
       if (servers[name]) {
-        throw new Error(`MCP server ${name} already exists in .mcp.json`)
-      }
-      break
-    }
-    case 'user': {
-      const userServers = await getUserMcpServersFromToml()
-      if (userServers[name]) {
-        throw new Error(`MCP server ${name} already exists in user config`)
+        throw new Error(
+          `MCP server ${name} already exists in ${scope} config.toml`,
+        )
       }
       break
     }
@@ -751,32 +798,16 @@ export async function addMcpConfig(
       throw new Error('Cannot add MCP server to scope: agencai')
   }
 
-  // Add based on scope
   switch (scope) {
-    case 'project': {
-      const { servers: existingServers } = getProjectMcpConfigsFromCwd()
-
-      const mcpServers: Record<string, McpServerConfig> = {}
-      for (const [serverName, serverConfig] of Object.entries(
-        existingServers,
-      )) {
-        const { scope: _, ...configWithoutScope } = serverConfig
-        mcpServers[serverName] = configWithoutScope
-      }
-      mcpServers[name] = validatedConfig
-      const mcpConfig = { mcpServers }
-
-      // Write back to .mcp.json
-      try {
-        await writeMcpjsonFile(mcpConfig)
-      } catch (error) {
-        throw new Error(`Failed to write to .mcp.json: ${error}`)
-      }
-      break
-    }
-
-    case 'user': {
-      await addUserMcpServerToToml(name, validatedConfig)
+    case 'project':
+    case 'user':
+    case 'local': {
+      await updateMcpServerInCanonicalConfig(
+        authority,
+        scope,
+        name,
+        validatedConfig,
+      )
       break
     }
 
@@ -794,98 +825,24 @@ export async function addMcpConfig(
 export async function removeMcpConfig(
   name: string,
   scope: ConfigScope,
+  authority: CanonicalSettingsAuthority,
 ): Promise<void> {
-  if (scope === 'local') {
-    throw new Error(
-      'Cannot remove MCP server from local config: local MCP config is not loaded by the runtime. Use user config instead.',
-    )
-  }
-
   switch (scope) {
-    case 'project': {
-      const { servers: existingServers } = getProjectMcpConfigsFromCwd()
-
-      if (!existingServers[name]) {
-        throw new Error(`No MCP server found with name: ${name} in .mcp.json`)
+    case 'project':
+    case 'user':
+    case 'local': {
+      const { servers } = getMcpConfigsByScope(scope, authority)
+      if (!servers[name]) {
+        throw new Error(
+          `No ${scope}-scoped MCP server found with name: ${name}`,
+        )
       }
-
-      // Strip scope information when writing back to .mcp.json
-      const mcpServers: Record<string, McpServerConfig> = {}
-      for (const [serverName, serverConfig] of Object.entries(
-        existingServers,
-      )) {
-        if (serverName !== name) {
-          const { scope: _, ...configWithoutScope } = serverConfig
-          mcpServers[serverName] = configWithoutScope
-        }
-      }
-      const mcpConfig = { mcpServers }
-      try {
-        await writeMcpjsonFile(mcpConfig)
-      } catch (error) {
-        throw new Error(`Failed to remove from .mcp.json: ${error}`)
-      }
-      break
-    }
-
-    case 'user': {
-      const userServers = await getUserMcpServersFromToml()
-      if (!userServers[name]) {
-        throw new Error(`No user-scoped MCP server found with name: ${name}`)
-      }
-      await removeUserMcpServerFromToml(name)
+      await updateMcpServerInCanonicalConfig(authority, scope, name, undefined)
       break
     }
 
     default:
       throw new Error(`Cannot remove MCP server from scope: ${scope}`)
-  }
-}
-
-/**
- * Get MCP configs from current directory only (no parent traversal).
- * Used by addMcpConfig and removeMcpConfig to modify the local .mcp.json file.
- * Exported for testing purposes.
- *
- * @returns Servers with scope information and any validation errors from current directory's .mcp.json
- */
-export function getProjectMcpConfigsFromCwd(): {
-  servers: Record<string, ScopedMcpServerConfig>
-  errors: ValidationError[]
-} {
-  // Check if project source is enabled
-  if (!isSettingSourceEnabled('projectSettings')) {
-    return { servers: {}, errors: [] }
-  }
-
-  const mcpJsonPath = join(getCwd(), '.mcp.json')
-
-  const { config, errors } = parseMcpConfigFromFilePath({
-    filePath: mcpJsonPath,
-    expandVars: true,
-    scope: 'project',
-  })
-
-  // Missing .mcp.json is expected, but malformed files should report errors
-  if (!config) {
-    const nonMissingErrors = errors.filter(
-      e => !e.message.startsWith('MCP config file not found'),
-    )
-    if (nonMissingErrors.length > 0) {
-      logForDebugging(
-        `MCP config errors for ${mcpJsonPath}: ${jsonStringify(nonMissingErrors.map(e => e.message))}`,
-        { level: 'error' },
-      )
-      return { servers: {}, errors: nonMissingErrors }
-    }
-    return { servers: {}, errors: [] }
-  }
-
-  return {
-    servers: config.mcpServers
-      ? addScopeToServers(config.mcpServers, 'project')
-      : {},
-    errors: errors || [],
   }
 }
 
@@ -896,128 +853,13 @@ export function getProjectMcpConfigsFromCwd(): {
  */
 export function getMcpConfigsByScope(
   scope: 'project' | 'user' | 'local' | 'enterprise',
+  authority: CanonicalSettingsAuthority,
+  environment: Readonly<Record<string, string | undefined>> = {},
 ): {
   servers: Record<string, ScopedMcpServerConfig>
   errors: ValidationError[]
 } {
-  // Check if this source is enabled
-  const sourceMap: Record<
-    string,
-    'projectSettings' | 'userSettings' | 'localSettings'
-  > = {
-    project: 'projectSettings',
-    user: 'userSettings',
-    local: 'localSettings',
-  }
-
-  if (scope in sourceMap && !isSettingSourceEnabled(sourceMap[scope]!)) {
-    return { servers: {}, errors: [] }
-  }
-
-  switch (scope) {
-    case 'project': {
-      const allServers: Record<string, ScopedMcpServerConfig> = {}
-      const allErrors: ValidationError[] = []
-
-      // Build list of directories to check
-      const dirs: string[] = []
-      let currentDir = getCwd()
-
-      while (currentDir !== parse(currentDir).root) {
-        dirs.push(currentDir)
-        currentDir = dirname(currentDir)
-      }
-
-      // Process from root downward to CWD (so closer files have higher priority)
-      for (const dir of dirs.reverse()) {
-        const mcpJsonPath = join(dir, '.mcp.json')
-
-        const { config, errors } = parseMcpConfigFromFilePath({
-          filePath: mcpJsonPath,
-          expandVars: true,
-          scope: 'project',
-        })
-
-        // Missing .mcp.json in parent directories is expected, but malformed files should report errors
-        if (!config) {
-          const nonMissingErrors = errors.filter(
-            e => !e.message.startsWith('MCP config file not found'),
-          )
-          if (nonMissingErrors.length > 0) {
-            logForDebugging(
-              `MCP config errors for ${mcpJsonPath}: ${jsonStringify(nonMissingErrors.map(e => e.message))}`,
-              { level: 'error' },
-            )
-            allErrors.push(...nonMissingErrors)
-          }
-          continue
-        }
-
-        if (config.mcpServers) {
-          // Merge servers, with files closer to CWD overriding parent configs
-          Object.assign(allServers, addScopeToServers(config.mcpServers, scope))
-        }
-
-        if (errors.length > 0) {
-          allErrors.push(...errors)
-        }
-      }
-
-      return {
-        servers: allServers,
-        errors: allErrors,
-      }
-    }
-    case 'user': {
-      return getUserMcpConfigsFromToml()
-    }
-    case 'local': {
-      const mcpServers = getCurrentProjectConfig().mcpServers
-      if (!mcpServers) {
-        return { servers: {}, errors: [] }
-      }
-
-      const { config, errors } = parseMcpConfig({
-        configObject: { mcpServers },
-        expandVars: true,
-        scope: 'local',
-      })
-
-      return {
-        servers: addScopeToServers(config?.mcpServers, scope),
-        errors,
-      }
-    }
-    case 'enterprise': {
-      const enterpriseMcpPath = getEnterpriseMcpFilePath()
-
-      const { config, errors } = parseMcpConfigFromFilePath({
-        filePath: enterpriseMcpPath,
-        expandVars: true,
-        scope: 'enterprise',
-      })
-
-      // Missing enterprise config file is expected, but malformed files should report errors
-      if (!config) {
-        const nonMissingErrors = errors.filter(
-          e => !e.message.startsWith('MCP config file not found'),
-        )
-        if (nonMissingErrors.length > 0) {
-          logForDebugging(
-            `Enterprise MCP config errors for ${enterpriseMcpPath}: ${jsonStringify(nonMissingErrors.map(e => e.message))}`,
-            { level: 'error' },
-          )
-          return { servers: {}, errors: nonMissingErrors }
-        }
-        return { servers: {}, errors: [] }
-      }
-
-      return {
-        servers: addScopeToServers(config.mcpServers, scope),
-        errors,
-      }
-    }
-  }
+  return canonicalMcpConfigsByScope(authority, scope, environment)
 }
 
 /**
@@ -1025,18 +867,42 @@ export function getMcpConfigsByScope(
  * @param name The name of the server
  * @returns The server configuration with scope, or undefined if not found
  */
-export function getMcpConfigByName(name: string): ScopedMcpServerConfig | null {
-  const { servers: enterpriseServers } = getMcpConfigsByScope('enterprise')
+export function getMcpConfigByName(
+  name: string,
+  authority: CanonicalSettingsAuthority,
+  environment: Readonly<Record<string, string | undefined>> = {},
+): ScopedMcpServerConfig | null {
+  const { servers: enterpriseServers } = getMcpConfigsByScope(
+    'enterprise',
+    authority,
+    environment,
+  )
 
-  // When MCP is locked to plugin-only, only enterprise servers are reachable
-  // by name. User/project/local servers are blocked — same as getAgenCCodeMcpConfigs().
-  if (isRestrictedToPluginOnly('mcp')) {
+  if (hasManagedMcpAuthority(authority)) {
     return enterpriseServers[name] ?? null
   }
 
-  const { servers: userServers } = getMcpConfigsByScope('user')
-  const { servers: projectServers } = getMcpConfigsByScope('project')
-  const { servers: localServers } = getMcpConfigsByScope('local')
+  // When MCP is locked to plugin-only, only enterprise servers are reachable
+  // by name. User/project/local servers are blocked — same as getAgenCCodeMcpConfigs().
+  if (isRestrictedToPluginOnly('mcp', authority)) {
+    return enterpriseServers[name] ?? null
+  }
+
+  const { servers: userServers } = getMcpConfigsByScope(
+    'user',
+    authority,
+    environment,
+  )
+  const { servers: projectServers } = getMcpConfigsByScope(
+    'project',
+    authority,
+    environment,
+  )
+  const { servers: localServers } = getMcpConfigsByScope(
+    'local',
+    authority,
+    environment,
+  )
 
   if (enterpriseServers[name]) {
     return enterpriseServers[name]
@@ -1055,27 +921,53 @@ export function getMcpConfigByName(name: string): ScopedMcpServerConfig | null {
 }
 
 /**
- * Execution-safe named lookup. Repository `.mcp.json` content is returned only
+ * Execution-safe named lookup. Canonical project TOML content is returned only
  * after exact config-digest approval, and every scope is rechecked against the
  * effective MCP allow/deny policy. An unapproved project entry never shadows a
  * trusted local or user entry with the same name.
  */
 export function getApprovedMcpConfigByName(
   name: string,
+  authority: CanonicalSettingsAuthority,
+  environment: Readonly<Record<string, string | undefined>> = {},
 ): ScopedMcpServerConfig | null {
-  const { servers: enterpriseServers } = getMcpConfigsByScope('enterprise')
+  const { servers: enterpriseServers } = getMcpConfigsByScope(
+    'enterprise',
+    authority,
+    environment,
+  )
   const candidates: ScopedMcpServerConfig[] = []
   if (enterpriseServers[name]) candidates.push(enterpriseServers[name])
 
-  if (!isRestrictedToPluginOnly('mcp')) {
-    const { servers: localServers } = getMcpConfigsByScope('local')
-    const { servers: projectServers } = getMcpConfigsByScope('project')
-    const { servers: userServers } = getMcpConfigsByScope('user')
+  if (hasManagedMcpAuthority(authority)) {
+    const managed = enterpriseServers[name]
+    return managed !== undefined &&
+        filterMcpServersByPolicy(authority, { [name]: managed }).allowed[name]
+      ? managed
+      : null
+  }
+
+  if (!isRestrictedToPluginOnly('mcp', authority)) {
+    const { servers: localServers } = getMcpConfigsByScope(
+      'local',
+      authority,
+      environment,
+    )
+    const { servers: projectServers } = getMcpConfigsByScope(
+      'project',
+      authority,
+      environment,
+    )
+    const { servers: userServers } = getMcpConfigsByScope(
+      'user',
+      authority,
+      environment,
+    )
     if (localServers[name]) candidates.push(localServers[name])
     const project = projectServers[name]
     if (
       project &&
-      getProjectMcpServerStatus(name, project) === 'approved'
+      getProjectMcpServerStatus(authority, name, project) === 'approved'
     ) {
       candidates.push(project)
     }
@@ -1083,7 +975,7 @@ export function getApprovedMcpConfigByName(
   }
 
   for (const candidate of candidates) {
-    if (filterMcpServersByPolicy({ [name]: candidate }).allowed[name]) {
+    if (filterMcpServersByPolicy(authority, { [name]: candidate }).allowed[name]) {
       return candidate
     }
   }
@@ -1095,29 +987,35 @@ export function getApprovedMcpConfigByName(
  * returned set — they're fetched separately and merged by callers).
  * This is fast: only local file reads; no awaited network calls on the
  * critical path. The optional extraDedupTargets promise (e.g. the in-flight
- * agenc.tech connector fetch) is awaited only after loadAllPluginsCacheOnly() completes,
- * so the two overlap rather than serialize.
+ * agenc.tech connector fetch) is awaited only after canonical plugin
+ * registration completes, so the two overlap rather than serialize.
  * @returns AgenC server configurations with appropriate scopes
  */
 export async function getAgenCCodeMcpConfigs(
+  authority: CanonicalSettingsAuthority,
   dynamicServers: Record<string, ScopedMcpServerConfig> = {},
   extraDedupTargets: Promise<
     Record<string, ScopedMcpServerConfig>
   > = Promise.resolve({}),
+  environment: Readonly<Record<string, string | undefined>> = {},
 ): Promise<{
   servers: Record<string, ScopedMcpServerConfig>
   errors: PluginError[]
 }> {
-  const { servers: enterpriseServers } = getMcpConfigsByScope('enterprise')
+  const { servers: enterpriseServers } = getMcpConfigsByScope(
+    'enterprise',
+    authority,
+    environment,
+  )
 
   // If an enterprise mcp config exists, do not use any others; this has exclusive control over all MCP servers
   // (enterprise customers often do not want their users to be able to add their own MCP servers).
-  if (doesEnterpriseMcpConfigExist()) {
+  if (hasManagedMcpAuthority(authority)) {
     // Apply policy filtering to enterprise servers
     const filtered: Record<string, ScopedMcpServerConfig> = {}
 
     for (const [name, serverConfig] of Object.entries(enterpriseServers)) {
-      if (!isMcpServerAllowedByPolicy(name, serverConfig)) {
+      if (!isMcpServerAllowedByPolicy(authority, name, serverConfig)) {
         continue
       }
       filtered[name] = serverConfig
@@ -1128,74 +1026,56 @@ export async function getAgenCCodeMcpConfigs(
 
   // Load other scopes — unless the managed policy locks MCP to plugin-only.
   // Unlike the enterprise-exclusive block above, this keeps plugin servers.
-  const mcpLocked = isRestrictedToPluginOnly('mcp')
+  const mcpLocked = isRestrictedToPluginOnly('mcp', authority)
   const noServers: { servers: Record<string, ScopedMcpServerConfig> } = {
     servers: {},
   }
   const { servers: userServers } = mcpLocked
     ? noServers
-    : getMcpConfigsByScope('user')
+    : getMcpConfigsByScope('user', authority, environment)
   const { servers: projectServers } = mcpLocked
     ? noServers
-    : getMcpConfigsByScope('project')
+    : getMcpConfigsByScope('project', authority, environment)
   const { servers: localServers } = mcpLocked
     ? noServers
-    : getMcpConfigsByScope('local')
+    : getMcpConfigsByScope('local', authority, environment)
 
   // Load plugin MCP servers
   const pluginMcpServers: Record<string, ScopedMcpServerConfig> = {}
 
-  const pluginResult = await loadAllPluginsCacheOnly()
-
-  // Collect MCP-specific errors during server loading
-  const mcpErrors: PluginError[] = []
-
-  // Log any plugin loading errors - NEVER silently fail in production
-  if (pluginResult.errors.length > 0) {
-    for (const error of pluginResult.errors) {
-      // Only log as MCP error if it's actually MCP-related
-      // Otherwise just log as debug since the plugin might not have MCP servers
-      if (
-        error.type === 'mcp-config-invalid' ||
-        error.type === 'mcpb-download-failed' ||
-        error.type === 'mcpb-extract-failed' ||
-        error.type === 'mcpb-invalid-manifest'
-      ) {
-        const errorMessage = `Plugin MCP loading error - ${error.type}: ${getPluginErrorMessage(error)}`
-        logError(new Error(errorMessage))
-      } else {
-        // Plugin doesn't exist or isn't available - this is common and not necessarily an error
-        // The plugin system will handle installing it if possible
-        const errorType = error.type
-        logForDebugging(
-          `Plugin not available for MCP: ${error.source} - error type: ${errorType}`,
-        )
-      }
-    }
+  const registrationIssues: PluginLoadIssue[] = []
+  const registrations = await loadPluginMcpServerRegistrations({
+    agencHome: authority.homeContext.path,
+    workspaceRoot: authority.projectRoot,
+    config: authority.current(),
+    env: { ...environment },
+    errors: registrationIssues,
+  })
+  const mcpErrors: PluginError[] = registrationIssues.map(issue => ({
+    type: 'generic-error',
+    source: issue.source,
+    ...(issue.plugin !== undefined ? { plugin: issue.plugin } : {}),
+    error: issue.message,
+  }))
+  for (const issue of registrationIssues) {
+    logError(new Error(`Plugin MCP server error: ${issue.message}`))
   }
-
-  // Process enabled plugins for MCP servers in parallel
-  const pluginServerResults = await Promise.all(
-    pluginResult.enabled.map(plugin => getPluginMcpServers(plugin, mcpErrors)),
-  )
-  for (const servers of pluginServerResults) {
-    if (servers) {
-      Object.assign(pluginMcpServers, servers)
-    }
-  }
-
-  // Add any MCP-specific errors from server loading to plugin errors
-  if (mcpErrors.length > 0) {
-    for (const error of mcpErrors) {
-      const errorMessage = `Plugin MCP server error - ${error.type}: ${getPluginErrorMessage(error)}`
-      logError(new Error(errorMessage))
+  for (const registration of registrations) {
+    pluginMcpServers[registration.name] = {
+      ...canonicalMcpServerToServiceConfig(registration.server),
+      scope: 'dynamic',
+      pluginSource: registration.pluginSource,
+      pluginServer: {
+        pluginName: registration.pluginName,
+        serverName: registration.serverName,
+      },
     }
   }
 
   // Filter project servers to only include approved ones
   const approvedProjectServers: Record<string, ScopedMcpServerConfig> = {}
   for (const [name, config] of Object.entries(projectServers)) {
-    if (getProjectMcpServerStatus(name, config) === 'approved') {
+    if (getProjectMcpServerStatus(authority, name, config) === 'approved') {
       approvedProjectServers[name] = config
     }
   }
@@ -1217,8 +1097,8 @@ export async function getAgenCCodeMcpConfigs(
     ...extraTargets,
   })) {
     if (
-      !isMcpServerDisabled(name) &&
-      isMcpServerAllowedByPolicy(name, config)
+      !isMcpServerDisabled(name, config) &&
+      isMcpServerAllowedByPolicy(authority, name, config)
     ) {
       enabledManualServers[name] = config
     }
@@ -1231,8 +1111,8 @@ export async function getAgenCCodeMcpConfigs(
   const disabledPluginServers: Record<string, ScopedMcpServerConfig> = {}
   for (const [name, config] of Object.entries(pluginMcpServers)) {
     if (
-      isMcpServerDisabled(name) ||
-      !isMcpServerAllowedByPolicy(name, config)
+      isMcpServerDisabled(name, config) ||
+      !isMcpServerAllowedByPolicy(authority, name, config)
     ) {
       disabledPluginServers[name] = config
     } else {
@@ -1266,6 +1146,7 @@ export async function getAgenCCodeMcpConfigs(
   for (const [name, serverConfig] of Object.entries(configs)) {
     if (
       !isMcpServerAllowedByPolicy(
+        authority,
         name,
         serverConfig as unknown as McpServerConfig,
       )
@@ -1283,13 +1164,16 @@ export async function getAgenCCodeMcpConfigs(
  * This may be slow due to network calls - use getAgenCCodeMcpConfigs() for fast startup.
  * @returns All server configurations with appropriate scopes
  */
-export async function getAllMcpConfigs(): Promise<{
+export async function getAllMcpConfigs(
+  authority: CanonicalSettingsAuthority,
+  environment: Readonly<Record<string, string | undefined>> = {},
+): Promise<{
   servers: Record<string, ScopedMcpServerConfig>
   errors: PluginError[]
 }> {
   // In enterprise mode, don't load agenc.tech servers (enterprise has exclusive control)
-  if (doesEnterpriseMcpConfigExist()) {
-    return getAgenCCodeMcpConfigs()
+  if (hasManagedMcpAuthority(authority)) {
+    return getAgenCCodeMcpConfigs(authority, {}, Promise.resolve({}), environment)
   }
 
   // Donor remote-MCP fetch was removed in the upstream-backend purge.
@@ -1297,7 +1181,7 @@ export async function getAllMcpConfigs(): Promise<{
   // the local-only MCP config path.
   const agencaiPromise: Promise<Record<string, ScopedMcpServerConfig>> =
     Promise.resolve({})
-  return getAgenCCodeMcpConfigs({}, agencaiPromise)
+  return getAgenCCodeMcpConfigs(authority, {}, agencaiPromise, environment)
 }
 
 /**
@@ -1308,13 +1192,20 @@ export async function getAllMcpConfigs(): Promise<{
 export function parseMcpConfig(params: {
   configObject: unknown
   expandVars: boolean
+  environment?: Readonly<Record<string, string | undefined>>
   scope: ConfigScope
   filePath?: string
 }): {
   config: McpJsonConfig | null
   errors: ValidationError[]
 } {
-  const { configObject, expandVars, scope, filePath } = params
+  const {
+    configObject,
+    expandVars,
+    environment = {},
+    scope,
+    filePath,
+  } = params
   const schemaResult = McpJsonConfigSchema().safeParse(configObject)
   if (!schemaResult.success) {
     return {
@@ -1339,7 +1230,7 @@ export function parseMcpConfig(params: {
     let configToCheck = config
 
     if (expandVars) {
-      const { expanded, missingVars } = expandEnvVars(config)
+      const { expanded, missingVars } = expandEnvVars(config, environment)
 
       if (missingVars.length > 0) {
         errors.push({
@@ -1388,114 +1279,17 @@ export function parseMcpConfig(params: {
 }
 
 /**
- * Parse and validate an MCP configuration from a file path
- * @param params Parsing parameters
- * @returns Validated configuration with any errors
- */
-export function parseMcpConfigFromFilePath(params: {
-  filePath: string
-  expandVars: boolean
-  scope: ConfigScope
-}): {
-  config: McpJsonConfig | null
-  errors: ValidationError[]
-} {
-  const { filePath, expandVars, scope } = params
-  const fs = getFsImplementation()
-
-  let configContent: string
-  try {
-    configContent = fs.readFileSync(filePath, { encoding: 'utf8' })
-  } catch (error: unknown) {
-    const code = getErrnoCode(error)
-    if (code === 'ENOENT') {
-      return {
-        config: null,
-        errors: [
-          {
-            file: filePath,
-            path: '',
-            message: `MCP config file not found: ${filePath}`,
-            suggestion: 'Check that the file path is correct',
-            mcpErrorMetadata: {
-              scope,
-              severity: 'fatal',
-            },
-          },
-        ],
-      }
-    }
-    logForDebugging(
-      `MCP config read error for ${filePath} (scope=${scope}): ${error}`,
-      { level: 'error' },
-    )
-    return {
-      config: null,
-      errors: [
-        {
-          file: filePath,
-          path: '',
-          message: `Failed to read file: ${error}`,
-          suggestion: 'Check file permissions and ensure the file exists',
-          mcpErrorMetadata: {
-            scope,
-            severity: 'fatal',
-          },
-        },
-      ],
-    }
-  }
-
-  const parsedJson = safeParseJSON(configContent)
-
-  if (!parsedJson) {
-    logForDebugging(
-      `MCP config is not valid JSON: ${filePath} (scope=${scope}, length=${configContent.length}, first100=${jsonStringify(configContent.slice(0, 100))})`,
-      { level: 'error' },
-    )
-    return {
-      config: null,
-      errors: [
-        {
-          file: filePath,
-          path: '',
-          message: `MCP config is not a valid JSON`,
-          suggestion: 'Fix the JSON syntax errors in the file',
-          mcpErrorMetadata: {
-            scope,
-            severity: 'fatal',
-          },
-        },
-      ],
-    }
-  }
-
-  return parseMcpConfig({
-    configObject: parsedJson,
-    expandVars,
-    scope,
-    filePath,
-  })
-}
-
-export const doesEnterpriseMcpConfigExist = memoize((): boolean => {
-  const { config } = parseMcpConfigFromFilePath({
-    filePath: getEnterpriseMcpFilePath(),
-    expandVars: true,
-    scope: 'enterprise',
-  })
-  return config !== null
-})
-
-/**
  * Check if MCP allowlist policy should only come from managed settings.
  * This is true when policySettings has allowManagedMcpServersOnly: true.
  * When enabled, allowedMcpServers is read exclusively from managed settings.
  * Users can still add their own MCP servers and deny servers via deniedMcpServers.
  */
-export function shouldAllowManagedMcpServersOnly(): boolean {
+export function shouldAllowManagedMcpServersOnly(
+  authority: CanonicalSettingsAuthority,
+): boolean {
   return (
-    getSettingsForSource('policySettings')?.allowManagedMcpServersOnly === true
+    getSettingsForSource('policySettings', authority)
+      ?.allowManagedMcpServersOnly === true
   )
 }
 
@@ -1514,11 +1308,8 @@ export function areMcpConfigsAllowedWithEnterpriseMcpConfig(
   )
 }
 
-/**
- * Built-in MCP server that defaults to disabled. Unlike user-configured servers
- * (opt-out via disabledMcpServers), this requires explicit opt-in via
- * enabledMcpServers. Shows up in /mcp as disabled until the user enables it.
- */
+/** Built-in MCP server that defaults to disabled unless its canonical
+ * `mcp_servers.<name>.enabled` value is true. */
 // Computer-use (Chicago) MCP server removed; no built-in is disabled by default.
 const DEFAULT_DISABLED_BUILTIN: string | null = null
 
@@ -1531,42 +1322,18 @@ function isDefaultDisabledBuiltin(name: string): boolean {
  * @param name The name of the server
  * @returns true if the server is disabled
  */
-export function isMcpServerDisabled(name: string): boolean {
-  const projectConfig = getCurrentProjectConfig()
-  if (isDefaultDisabledBuiltin(name)) {
-    const enabledServers = projectConfig.enabledMcpServers || []
-    return !enabledServers.includes(name)
-  }
-  const disabledServers = projectConfig.disabledMcpServers || []
-  return disabledServers.includes(name)
-}
-
-function toggleMembership(
-  list: string[],
+export function isMcpServerDisabled(
   name: string,
-  shouldContain: boolean,
-): string[] {
-  const contains = list.includes(name)
-  if (contains === shouldContain) return list
-  return shouldContain ? [...list, name] : list.filter(s => s !== name)
-}
-
-/**
- * Enable or disable an MCP server
- * @param name The name of the server
- * @param enabled Whether the server should be enabled
- */
-export function setMcpServerEnabled(name: string, enabled: boolean): void {
-  saveCurrentProjectConfig(current => {
-    if (isDefaultDisabledBuiltin(name)) {
-      const prev = current.enabledMcpServers || []
-      const next = toggleMembership(prev, name, enabled)
-      if (next === prev) return current
-      return { ...current, enabledMcpServers: next }
-    }
-    const prev = current.disabledMcpServers || []
-    const next = toggleMembership(prev, name, !enabled)
-    if (next === prev) return current
-    return { ...current, disabledMcpServers: next }
-  })
+  config?: ScopedMcpServerConfig,
+  authority?: CanonicalSettingsAuthority,
+): boolean {
+  if (config === undefined && authority === undefined) {
+    throw new Error(
+      'Canonical ConfigStore authority is required to resolve MCP server state',
+    )
+  }
+  const resolved = config ?? getMcpConfigByName(name, authority!) ?? undefined
+  const enabled = resolved && 'enabled' in resolved ? resolved.enabled : undefined
+  if (isDefaultDisabledBuiltin(name) && enabled !== true) return true
+  return enabled === false
 }

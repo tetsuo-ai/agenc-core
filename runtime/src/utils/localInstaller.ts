@@ -3,37 +3,26 @@
  */
 
 import { access, chmod, writeFile } from 'fs/promises'
-import { homedir } from 'os'
 import { join } from 'path'
-import { type ReleaseChannel, saveGlobalConfig } from './config.js'
-import { getAgenCConfigHomeDir } from './envUtils.js'
+import { type ReleaseChannel, updateRuntimeState } from './config.js'
+import { getAgenCHomeDir } from './envUtils.js'
 import { getErrnoCode } from './errors.js'
 import { execFileNoThrowWithCwd } from './execFileNoThrow.js'
 import { getFsImplementation } from './fsOperations.js'
 import { logError } from './log.js'
 import { jsonStringify } from './slowOperations.js'
 
-// Lazy getters: getAgenCConfigHomeDir() is memoized and reads process.env.
-// Evaluating at module scope would capture the value before entrypoints like
-// hfi.tsx get a chance to set AGENC_CONFIG_DIR in main(), and would also
-// populate the memoize cache with that stale value for all 150+ other callers.
+// Resolve lazily so each call observes the current session's canonical home;
+// module-scope capture would leak one session's authority into another.
 function getLocalInstallDir(): string {
-  return join(getAgenCConfigHomeDir(), 'local')
-}
-
-function getLegacyLocalInstallDir(homeDir = homedir()): string {
-  return join(homeDir, '.agenc', 'local')
+  return join(getAgenCHomeDir(), 'local')
 }
 
 export function getCandidateLocalInstallDirs(options?: {
   configHomeDir?: string
-  homeDir?: string
 }): string[] {
-  const homeDir = options?.homeDir ?? homedir()
-  const configHomeDir = options?.configHomeDir ?? getAgenCConfigHomeDir()
-  return Array.from(
-    new Set([join(configHomeDir, 'local'), getLegacyLocalInstallDir(homeDir)]),
-  )
+  const configHomeDir = options?.configHomeDir ?? getAgenCHomeDir()
+  return [join(configHomeDir, 'local')]
 }
 
 function getCandidateLocalBinaryPaths(localInstallDir: string): string[] {
@@ -155,7 +144,7 @@ export async function installOrUpdateAgenCPackage(
     }
 
     // Set installMethod to 'local' to prevent npm permission warnings
-    saveGlobalConfig(current => ({
+    updateRuntimeState(current => ({
       ...current,
       installMethod: 'local',
     }))

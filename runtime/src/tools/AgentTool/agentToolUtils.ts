@@ -188,7 +188,7 @@ export function resolveAgentTools(
     // Special case: Agent tool carries allowedAgentTypes metadata in its spec
     if (toolName === AGENT_TOOL_NAME) {
       if (ruleContent) {
-        // Parse comma-separated agent types: "worker, researcher" → ["worker", "researcher"]
+        // Parse comma-separated agent types: "runner, researcher" → ["runner", "researcher"]
         allowedAgentTypes = ruleContent.split(',').map(s => s.trim())
       }
       // For sub-agents, Agent is excluded by filterToolsForAgent — mark the spec

@@ -144,7 +144,7 @@ const resolveCanonicalRoot = memoizeWithLRU(
       // SECURITY: The .git file and commondir are attacker-controlled in a
       // cloned/downloaded repo. Without validation, a malicious repo can point
       // commondir at any path the victim has trusted, bypassing the trust
-      // dialog and executing hooks from .agenc/settings.json on startup.
+      // dialog and executing hooks from .agenc/config.toml on startup.
       //
       // Validate the structure matches what `git worktree add` creates:
       //   1. worktreeGitDir is a direct child of <commonDir>/worktrees/

@@ -25,7 +25,7 @@
  * opens `/cache-stats` or the REPL renders — never in the hot path.
  */
 import { addCacheMetrics, extractCacheMetrics, resolveCacheProvider, type CacheMetrics } from './cacheMetrics.js'
-import { getAPIProvider, isGithubNativeproviderMode } from '../../utils/model/providers.js' // branding-scan: allow provider mode identifier
+import { getAPIProvider, getSelectedProviderEnvironment, isGithubNativeproviderMode } from '../../utils/model/providers.js' // branding-scan: allow provider mode identifier
 import { getSessionId } from '../../bootstrap/state.js'
 
 /** One request's cache footprint — what the tracker remembers per turn. */
@@ -131,9 +131,10 @@ export function recordRequest(
 }
 
 export function recordUsageCacheStats(usage: unknown, model: string): void {
+  const environment = getSelectedProviderEnvironment()
   const provider = resolveCacheProvider(getAPIProvider(), {
     githubNativeprovider: isGithubNativeproviderMode(model),
-    openAiBaseUrl: process.env.OPENAI_BASE_URL ?? process.env.OPENAI_API_BASE,
+    openAiBaseUrl: environment.OPENAI_BASE_URL ?? environment.OPENAI_API_BASE,
   })
   recordRequest(extractCacheMetrics(usage as Record<string, unknown>, provider), model)
 }

@@ -9,7 +9,12 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { afterEach, describe, expect, test, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { ConfigStore } from '../../config/store.js'
+import {
+  resetCanonicalSettingsAuthorityForTesting,
+  runWithCanonicalSettingsAuthority,
+} from '../../utils/settings/canonicalAuthority.js'
 
 import { getAgentColor } from './agentColorManager.js'
 import {
@@ -40,6 +45,10 @@ import {
   createAgentRoleWorkspace,
   registerAgentRole,
 } from '../../agents/role.js'
+import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from '../../session/runtime-options.js'
 
 const allSettingSources = [
   'userSettings',
@@ -52,6 +61,7 @@ const allSettingSources = [
 type SettingSourceForTesting = (typeof allSettingSources)[number]
 
 const temporaryRoots: string[] = []
+let testSettingsAuthority: ConfigStore
 
 function agent(agentType: string, source: AgentDefinition['source']): AgentDefinition {
   return {
@@ -89,7 +99,27 @@ async function setAllowedSettingSourcesForTesting(
   setAllowedSettingSources(sources)
 }
 
+beforeEach(async () => {
+  const projectRoot = tempWorkspaceRoot('canonical-authority')
+  const home = join(projectRoot, 'home')
+  mkdirSync(home, { recursive: true })
+  testSettingsAuthority = new ConfigStore({
+    home,
+    cwd: projectRoot,
+    projectRoot,
+    projectTrusted: false,
+    env: {},
+    loader: async () => ({ configVersion: 2 }),
+  })
+  await testSettingsAuthority.reload()
+})
+
+function withTestSettingsAuthority<T>(operation: () => T): T {
+  return runWithCanonicalSettingsAuthority(testSettingsAuthority, operation)
+}
+
 afterEach(async () => {
+  resetCanonicalSettingsAuthorityForTesting()
   await setAllowedSettingSourcesForTesting([...allSettingSources])
   __setMarkdownAgentDirsForTesting(undefined)
   __setPluginAgentCacheClearerForTesting(undefined)
@@ -103,16 +133,16 @@ afterEach(async () => {
 })
 
 describe('AgentTool loadAgentsDir adapter', () => {
-  test('reserves built-in public aliases against repository definitions', () => {
-    const explorer = agent('explorer', 'built-in')
+  test('reserves canonical built-in names against repository definitions', () => {
+    const builtInScanner = agent('scanner', 'built-in')
     const exactScanner = {
       ...agent('scanner', 'projectSettings'),
       disallowedTools: ['Write'],
       permissionMode: 'plan' as const,
     }
 
-    expect(findAgentDefinitionByType([explorer, exactScanner], 'scanner')).toBe(
-      explorer,
+    expect(findAgentDefinitionByType([builtInScanner, exactScanner], 'scanner')).toBe(
+      builtInScanner,
     )
   })
 
@@ -153,9 +183,9 @@ describe('AgentTool loadAgentsDir adapter', () => {
   test('never imports agent files through cross-workspace file or directory symlinks', async () => {
     const workspaceA = mkdtempSync(join(tmpdir(), 'agenc-agent-authority-a-'))
     const workspaceB = mkdtempSync(join(tmpdir(), 'agenc-agent-authority-b-'))
-    const configDir = mkdtempSync(join(tmpdir(), 'agenc-agent-config-'))
+    const agencHome = mkdtempSync(join(tmpdir(), 'agenc-agent-config-'))
     try {
-      vi.stubEnv('AGENC_CONFIG_DIR', configDir)
+      vi.stubEnv('AGENC_HOME', agencHome)
       __setPluginAgentsLoaderForTesting(async () => [])
       const agentsA = join(workspaceA, '.agenc', 'agents')
       const agentsB = join(workspaceB, '.agenc', 'agents')
@@ -180,7 +210,9 @@ describe('AgentTool loadAgentsDir adapter', () => {
       symlinkSync(agentsB, join(agentsA, 'linked-directory'), 'dir')
 
       const assertCatalog = async (): Promise<void> => {
-        const catalog = await loadFreshAgentDefinitions(workspaceA)
+        const catalog = await withTestSettingsAuthority(() =>
+          loadFreshAgentDefinitions(workspaceA),
+        )
         const types = catalog.activeAgents.map(definition => definition.agentType)
         expect(types).toContain('authority-local')
         expect(types).not.toContain('authority-external-file')
@@ -199,14 +231,14 @@ describe('AgentTool loadAgentsDir adapter', () => {
     } finally {
       rmSync(workspaceA, { recursive: true, force: true })
       rmSync(workspaceB, { recursive: true, force: true })
-      rmSync(configDir, { recursive: true, force: true })
+      rmSync(agencHome, { recursive: true, force: true })
     }
   })
 
   test('never imports a hardlinked markdown agent into a workspace catalog', async () => {
     const workspace = tempWorkspaceRoot('hardlinked-catalog')
     const external = tempWorkspaceRoot('hardlinked-external')
-    const configDir = tempWorkspaceRoot('hardlinked-config')
+    const agencHome = tempWorkspaceRoot('hardlinked-config')
     const agentsDir = join(workspace, '.agenc', 'agents')
     const externalFile = join(external, 'outside.md')
     mkdirSync(agentsDir, { recursive: true })
@@ -215,7 +247,7 @@ describe('AgentTool loadAgentsDir adapter', () => {
       `---\nname: hardlinked-external\ndescription: External role\n---\nExternal prompt.\n`,
     )
     linkSync(externalFile, join(agentsDir, 'hardlinked.md'))
-    vi.stubEnv('AGENC_CONFIG_DIR', configDir)
+    vi.stubEnv('AGENC_HOME', agencHome)
     __setPluginAgentsLoaderForTesting(async () => [])
 
     const catalog = await loadFreshAgentDefinitions(workspace)
@@ -257,7 +289,7 @@ describe('AgentTool loadAgentsDir adapter', () => {
   })
 
   test('parses JSON agent definitions with donor metadata fields', () => {
-    const parsed = parseAgentFromJson('reviewer', {
+    const parsed = withTestSettingsAuthority(() => parseAgentFromJson('reviewer', {
       description: 'Review code',
       prompt: 'Be strict.',
       tools: ['Read', 1, 'Grep'],
@@ -273,7 +305,7 @@ describe('AgentTool loadAgentsDir adapter', () => {
       background: true,
       memory: 'project',
       isolation: 'worktree',
-    })
+    }))
 
     expect(parsed).toMatchObject({
       agentType: 'reviewer',
@@ -297,7 +329,7 @@ describe('AgentTool loadAgentsDir adapter', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'agenc-agent-memory-'))
     process.chdir(cwd)
     try {
-      const prompt = parsed?.getSystemPrompt()
+      const prompt = withTestSettingsAuthority(() => parsed?.getSystemPrompt())
       expect(prompt).toContain('Be strict.')
       expect(prompt).toContain('Persistent Agent Memory')
     } finally {
@@ -432,7 +464,9 @@ Loaded through shared discovery.
     )
     __setPluginAgentsLoaderForTesting(async () => [])
 
-    const definitions = await getAgentDefinitionsWithOverrides(root)
+    const definitions = await withTestSettingsAuthority(() =>
+      getAgentDefinitionsWithOverrides(root),
+    )
     expect(definitions.allAgents).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -488,22 +522,24 @@ Only load once.
     )
     symlinkSync(projectFile, join(userDir, 'dupe.md'))
 
-    const previousConfigDir = process.env.AGENC_CONFIG_DIR
-    process.env.AGENC_CONFIG_DIR = config
+    const previousAgencHome = process.env.AGENC_HOME
+    process.env.AGENC_HOME = config
     clearAgentDefinitionsCache()
     __setPluginAgentsLoaderForTesting(async () => [])
     try {
-      const definitions = await getAgentDefinitionsWithOverrides(root)
+      const definitions = await withTestSettingsAuthority(() =>
+        getAgentDefinitionsWithOverrides(root),
+      )
       const deduped = definitions.allAgents.filter(
         agent => agent.agentType === 'deduped-agent',
       )
       expect(deduped).toHaveLength(1)
       expect(deduped[0]?.source).toBe('projectSettings')
     } finally {
-      if (previousConfigDir === undefined) {
-        delete process.env.AGENC_CONFIG_DIR
+      if (previousAgencHome === undefined) {
+        delete process.env.AGENC_HOME
       } else {
-        process.env.AGENC_CONFIG_DIR = previousConfigDir
+        process.env.AGENC_HOME = previousAgencHome
       }
     }
   })
@@ -535,7 +571,9 @@ Review local changes.
     __setMarkdownAgentDirsForTesting([{ dir, source: 'projectSettings' }])
     __setPluginAgentsLoaderForTesting(async () => [pluginAgent])
 
-    const definitions = await getAgentDefinitionsWithOverrides(process.cwd())
+    const definitions = await withTestSettingsAuthority(() =>
+      getAgentDefinitionsWithOverrides(process.cwd()),
+    )
     expect(definitions.allAgents.map(agent => agent.agentType)).toContain(
       'local-reviewer',
     )
@@ -579,19 +617,21 @@ Review local changes.
 
   test('keeps a same-named plugin definition distinct from the built-in role', async () => {
     const pluginAgent: PluginAgentDefinition = {
-      agentType: 'worker',
-      whenToUse: 'Plugin worker',
+      agentType: 'runner',
+      whenToUse: 'Plugin runner',
       source: 'plugin',
       plugin: 'same-name',
       disallowedTools: ['Write'],
       permissionMode: 'plan',
-      getSystemPrompt: () => 'plugin worker prompt',
+      getSystemPrompt: () => 'plugin runner prompt',
     }
     __setMarkdownAgentDirsForTesting([])
     __setPluginAgentsLoaderForTesting(async () => [pluginAgent])
 
-    const catalog = await loadFreshAgentDefinitions('/tmp')
-    const selected = catalog.activeAgents.find(a => a.agentType === 'worker')
+    const catalog = await withTestSettingsAuthority(() =>
+      loadFreshAgentDefinitions('/tmp'),
+    )
+    const selected = catalog.activeAgents.find(a => a.agentType === 'runner')
     expect(selected).toMatchObject({
       source: 'plugin',
       plugin: 'same-name',
@@ -617,7 +657,9 @@ Broken prompt.
     __setMarkdownAgentDirsForTesting([{ dir, source: 'projectSettings' }])
     __setPluginAgentsLoaderForTesting(async () => [])
 
-    const definitions = await getAgentDefinitionsWithOverrides(process.cwd())
+    const definitions = await withTestSettingsAuthority(() =>
+      getAgentDefinitionsWithOverrides(process.cwd()),
+    )
     expect(definitions.activeAgents.length).toBeGreaterThan(0)
     expect(definitions.activeAgents.every(agent => agent.source === 'built-in')).toBe(
       true,
@@ -720,9 +762,10 @@ Broken prompt.
         disallowlist: ['Write'],
       },
     })
-    vi.stubEnv('AGENC_SIMPLE', '1')
-
-    const catalog = await loadFreshAgentDefinitions(workspace)
+    const catalog = await runWithAgentRuntimeOptions(
+      resolveAgentRuntimeOptions({}, { simpleMode: true }),
+      () => loadFreshAgentDefinitions(workspace),
+    )
     const selected = findAgentDefinitionByType(
       catalog.activeAgents,
       'programmatic-simple-reviewer',

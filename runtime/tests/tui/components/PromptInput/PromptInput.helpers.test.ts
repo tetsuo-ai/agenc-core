@@ -5,8 +5,8 @@ vi.mock('bun:bundle', () => ({
 }))
 
 vi.mock('../../../utils/config.js', () => ({
-  getGlobalConfig: () => ({}),
-  saveGlobalConfig: () => {},
+  getRuntimeState: () => ({}),
+  updateRuntimeState: () => {},
 }))
 
 vi.mock('../../../utils/env.js', () => ({

@@ -150,7 +150,7 @@ function StatusLineInner({
     addNotification
   } = useNotifications();
   // AppState-sourced model — same source as API requests. getMainLoopModel()
-  // re-reads settings.json on every call, so another session's /model write
+  // reads the session ConfigStore snapshot, so another session's /model write
   // would leak into this session's statusline (tracked in upstream issue #37596).
   const mainLoopModel = useMainLoopModel();
 

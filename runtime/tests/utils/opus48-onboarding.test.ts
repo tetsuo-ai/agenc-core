@@ -32,22 +32,14 @@ import {
 } from '../../src/utils/model/configs.js'
 import { firstPartyNameToCanonical } from '../../src/utils/model/model.js'
 import { BUILT_IN_PROVIDER_MODEL_CATALOG } from '../../src/llm/registry/provider-info.js'
+import { runWithStartupProviderSelection } from '../../src/utils/model/providers.js'
 
 const OPUS_48 = 'claude-opus-4-8'
 
 beforeEach(() => {
   vi.stubEnv('AGENC_DISABLE_1M_CONTEXT', '')
   vi.stubEnv('USER_TYPE', '')
-  // Pin the provider to firstParty regardless of the host machine's env
-  // (an ambient XAI_API_KEY/AGENC_USE_* would flip getAPIProvider()).
-  vi.stubEnv('XAI_API_KEY', '')
-  vi.stubEnv('MINIMAX_API_KEY', '')
-  vi.stubEnv('AGENC_USE_OPENAI', '')
-  vi.stubEnv('AGENC_USE_GEMINI', '')
-  vi.stubEnv('AGENC_USE_GITHUB', '')
-  vi.stubEnv('AGENC_USE_MISTRAL', '')
-  vi.stubEnv('AGENC_USE_MINIMAX', '')
-  vi.stubEnv('NVIDIA_NIM', '')
+  vi.stubEnv('AGENC_PROVIDER', 'anthropic')
 })
 
 afterEach(() => {
@@ -87,11 +79,17 @@ describe('Opus 4.8 onboarding', () => {
   })
 
   it('supports structured outputs, effort (incl. max), and advisor', () => {
-    expect(modelSupportsStructuredOutputs(OPUS_48)).toBe(true)
-    expect(modelSupportsEffort(OPUS_48)).toBe(true)
-    expect(modelSupportsMaxEffort(OPUS_48)).toBe(true)
-    expect(modelSupportsAdvisor(OPUS_48)).toBe(true)
-    expect(isValidAdvisorModel(OPUS_48)).toBe(true)
+    runWithStartupProviderSelection({
+      provider: 'anthropic',
+      model: OPUS_48,
+      environment: { ...process.env },
+    }, () => {
+      expect(modelSupportsStructuredOutputs(OPUS_48)).toBe(true)
+      expect(modelSupportsEffort(OPUS_48)).toBe(true)
+      expect(modelSupportsMaxEffort(OPUS_48)).toBe(true)
+      expect(modelSupportsAdvisor(OPUS_48)).toBe(true)
+      expect(isValidAdvisorModel(OPUS_48)).toBe(true)
+    })
   })
 
   it('sanitizes commit attribution to the public 4.8 name', () => {

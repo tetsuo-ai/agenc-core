@@ -60,7 +60,7 @@ test('fetchWithProxyRetry retries once with keepalive disabled after socket clos
 
   const response = await fetchWithProxyRetry('https://example.com/search', {
     method: 'POST',
-  })
+  }, { environment: { HTTP_PROXY: 'http://127.0.0.1:15236' } })
 
   expect(await response.text()).toBe('ok')
   expect(calls).toHaveLength(2)
@@ -79,7 +79,9 @@ test('fetchWithProxyRetry does not retry non-network errors', async () => {
     throw new Error('400 bad request')
   }) as FetchType
 
-  await expect(fetchWithProxyRetry('https://example.com')).rejects.toThrow(
+  await expect(fetchWithProxyRetry('https://example.com', undefined, {
+    environment: {},
+  })).rejects.toThrow(
     '400 bad request',
   )
   expect(attempts).toBe(1)

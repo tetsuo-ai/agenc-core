@@ -53,8 +53,6 @@ import type { Tool } from "../tools/types.js";
 
 function mkFeatures(): ManagedFeatures {
   return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
   };
 }
 

@@ -1,21 +1,17 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import {
-  checkIsAgenCNativeProvider,
-  getAgentModel,
+  checkIsAgenCNativeProvider as checkIsAgenCNativeProviderUnbound,
+  getAgentModel as getAgentModelUnbound,
 } from '../../../src/utils/model/agent.ts'
+import { runWithStartupProviderSelection } from '../../../src/utils/model/providers.ts'
 
 const providerEnvKeys = [
-  'AGENC_USE_GEMINI',
-  'AGENC_USE_MISTRAL',
-  'AGENC_USE_GITHUB',
-  'AGENC_USE_MINIMAX',
-  'AGENC_USE_OPENAI',
+  'AGENC_PROVIDER',
+  'AGENC_MODEL',
   'ANTHROPIC_BASE_URL',
   'MINIMAX_API_KEY',
-  'NVIDIA_NIM',
   'OPENAI_API_BASE',
   'OPENAI_BASE_URL',
-  'OPENAI_MODEL',
   'XAI_API_KEY',
 ] as const
 
@@ -54,35 +50,50 @@ function useProvider(
 
   switch (provider) {
     case 'agenc':
-      process.env.AGENC_USE_OPENAI = '1'
-      process.env.OPENAI_MODEL = 'agencspark'
+      process.env.AGENC_PROVIDER = 'agenc'
+      process.env.AGENC_MODEL = 'agencspark'
       break
     case 'custom-first-party':
+      process.env.AGENC_PROVIDER = 'anthropic'
       process.env.ANTHROPIC_BASE_URL = 'https://proxy.example.com'
       break
     case 'first-party':
+      process.env.AGENC_PROVIDER = 'anthropic'
       break
     case 'gemini':
-      process.env.AGENC_USE_GEMINI = '1'
+      process.env.AGENC_PROVIDER = 'gemini'
       break
     case 'github':
-      process.env.AGENC_USE_GITHUB = '1'
+      process.env.AGENC_PROVIDER = 'github'
       break
     case 'minimax':
-      process.env.MINIMAX_API_KEY = 'minimax-test-key'
+      process.env.AGENC_PROVIDER = 'minimax'
       break
     case 'mistral':
-      process.env.AGENC_USE_MISTRAL = '1'
+      process.env.AGENC_PROVIDER = 'mistral'
       break
     case 'nvidia-nim':
-      process.env.NVIDIA_NIM = '1'
+      process.env.AGENC_PROVIDER = 'nvidia-nim'
       break
     case 'openai':
-      process.env.AGENC_USE_OPENAI = '1'
-      process.env.OPENAI_MODEL = 'gpt-4o-mini'
+      process.env.AGENC_PROVIDER = 'openai'
+      process.env.AGENC_MODEL = 'gpt-4o-mini'
       break
   }
 }
+
+function withSelectedProvider<T>(operation: () => T): T {
+  const provider = process.env.AGENC_PROVIDER
+  if (!provider) throw new Error('test provider must be selected')
+  const model = process.env.AGENC_MODEL ?? 'test-model'
+  return runWithStartupProviderSelection({ provider, model, environment: { ...process.env } }, operation)
+}
+
+const getAgentModel = (...args: Parameters<typeof getAgentModelUnbound>) =>
+  withSelectedProvider(() => getAgentModelUnbound(...args))
+
+const checkIsAgenCNativeProvider = () =>
+  withSelectedProvider(checkIsAgenCNativeProviderUnbound)
 
 describe('getAgentModel provider-aware fallback', () => {
   afterEach(() => {

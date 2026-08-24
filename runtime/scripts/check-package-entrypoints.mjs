@@ -5,7 +5,9 @@ import path from "node:path";
 import process from "node:process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-const packageJsonPath = fileURLToPath(new URL("../package.json", import.meta.url));
+const packageJsonPath = fileURLToPath(
+  new URL("../package.json", import.meta.url),
+);
 const packageDir = path.dirname(packageJsonPath);
 const runtimeInternalEntrypoints = [];
 const requiredRootExports = [
@@ -29,6 +31,8 @@ const requiredRuntimeAssetPaths = [
   "dist/yolo-classifier-prompts/auto_mode_system_prompt.txt",
   "dist/yolo-classifier-prompts/permissions_anthropic.txt",
   "dist/yolo-classifier-prompts/permissions_external.txt",
+  ...(process.platform === "linux" ? ["dist/agenc-secret-service-helper"] : []),
+  ...(process.platform === "darwin" ? ["dist/agenc-keychain-helper"] : []),
   ...(process.platform === "win32"
     ? ["dist/agenc-process-job-broker.exe"]
     : []),
@@ -132,13 +136,16 @@ async function checkRequiredRootExports(packageManifest) {
   const importTarget =
     typeof rootExport === "string"
       ? rootExport
-      : rootExport?.import ?? rootExport?.default;
+      : (rootExport?.import ?? rootExport?.default);
   if (typeof importTarget !== "string") {
-    throw new Error("runtime package root export does not expose an import target");
+    throw new Error(
+      "runtime package root export does not expose an import target",
+    );
   }
 
   const rootModule = await import(
-    pathToFileURL(path.join(packageDir, normalizePackagePath(importTarget))).href
+    pathToFileURL(path.join(packageDir, normalizePackagePath(importTarget)))
+      .href
   );
   const missingExports = requiredRootExports.filter(
     (name) => !(name in rootModule),
@@ -149,14 +156,24 @@ async function checkRequiredRootExports(packageManifest) {
     );
   }
   if (rootModule.EVAL_CONTRACT_VERSION !== "1.0.0") {
-    throw new Error("runtime package root export has the wrong evaluation contract version");
+    throw new Error(
+      "runtime package root export has the wrong evaluation contract version",
+    );
   }
   if (rootModule.EVAL_SUITE_PROTOCOL_VERSION !== "1.0.0") {
-    throw new Error("runtime package root export has the wrong evaluation suite protocol version");
+    throw new Error(
+      "runtime package root export has the wrong evaluation suite protocol version",
+    );
   }
-  const requiredFunctions = requiredRootExports.filter((name) =>
-    name.startsWith("compile") || name.startsWith("load") || name.startsWith("validate"));
-  const nonFunctions = requiredFunctions.filter((name) => typeof rootModule[name] !== "function");
+  const requiredFunctions = requiredRootExports.filter(
+    (name) =>
+      name.startsWith("compile") ||
+      name.startsWith("load") ||
+      name.startsWith("validate"),
+  );
+  const nonFunctions = requiredFunctions.filter(
+    (name) => typeof rootModule[name] !== "function",
+  );
   if (nonFunctions.length > 0) {
     throw new Error(
       `runtime package root evaluation exports are not callable:\n- ${nonFunctions.join("\n- ")}`,

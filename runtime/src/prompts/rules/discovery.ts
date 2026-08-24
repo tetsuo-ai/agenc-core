@@ -27,6 +27,7 @@ import {
   resolve,
   sep,
 } from "node:path";
+import { resolveHomeContext } from "../../config/home.js";
 
 import { normalizeExternalText } from "../_deps/file-read.js";
 import {
@@ -625,7 +626,10 @@ export function projectRulesDir(dir: string): string {
 }
 
 export function userRulesDir(homeDir: string = homedir()): string {
-  return join(homeDir, ".agenc", RULES_SUBDIR);
+  return join(
+    resolveHomeContext({}, { platformHome: homeDir }).path,
+    RULES_SUBDIR,
+  );
 }
 
 export function formatRulesBlock(rules: readonly InstructionRule[]): string {

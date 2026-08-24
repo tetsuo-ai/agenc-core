@@ -20,7 +20,9 @@ import type {
   CsvJobReviewShowResult,
 } from "./csv-jobs.js";
 
+/** JSON-RPC 2.0 envelope version sent on every request. */
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
+/** Protocol the SDK advertises on `initialize`. Handshake rules are in docs/sdk.md. */
 export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.2.0" as const;
 
 export type JsonPrimitive = string | number | boolean | null;
@@ -166,6 +168,20 @@ export type MessageContentBlock =
 
 export type MessageContent = string | readonly MessageContentBlock[];
 
+export interface AgentRuntimeOptionsParams extends JsonObject {
+  readonly simpleMode: boolean;
+  readonly stdinDataMode: boolean;
+  readonly remoteMode: boolean;
+  readonly remoteMemoryRoot?: string;
+  readonly coworkMemoryPathOverride?: string;
+  readonly coworkMemoryExtraGuidelines?: string;
+  readonly posixShellPath?: string;
+  readonly commandWrapperArgv?: readonly string[];
+  readonly sessionTempRoot?: string;
+  readonly pluginStorageRoot?: string;
+  readonly allowUntrustedHooks: boolean;
+}
+
 export interface AgentCreateParams extends JsonObject {
   readonly objective?: string;
   /**
@@ -177,12 +193,16 @@ export interface AgentCreateParams extends JsonObject {
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  /** Absolute explicit config layer selected by the invoking client. */
+  readonly configPath?: string;
   readonly instructions?: string;
   readonly initialContent?: MessageContent;
   readonly unattendedAllow?: readonly string[];
   readonly unattendedDeny?: readonly string[];
   readonly metadata?: JsonObject;
   readonly permissionMode?: PermissionMode;
+  /** Immutable operator policy resolved by the embedding client. */
+  readonly runtimeOptions: AgentRuntimeOptionsParams;
   readonly envOverrides?: { readonly [key: string]: string };
 }
 
@@ -334,7 +354,7 @@ export type SessionResolveToolCallParams =
 
 export interface SessionMcpServerConfig extends JsonObject {
   readonly name: string;
-  readonly transport?: "stdio" | "sse" | "http" | "websocket" | "ws";
+  readonly transport?: "stdio" | "sse" | "http" | "websocket";
   readonly command?: string;
   readonly args?: readonly string[];
   readonly endpoint?: string;
@@ -1000,12 +1020,14 @@ export interface RunAdmissionReplayResult extends RunReplayPage {
 /** Discriminated by `source.kind`; M3 and M4 event contracts stay precise. */
 export type RunReplayResult = RunJournalReplayResult | RunAdmissionReplayResult;
 
+/** True when `run.replay` used the pre-generalized admission journal. */
 export function isRunAdmissionReplayResult(
   result: RunReplayResult,
 ): result is RunAdmissionReplayResult {
   return result.source.kind === "execution_admission_journal";
 }
 
+/** True when `run.replay` used the canonical run journal. */
 export function isRunJournalReplayResult(
   result: RunReplayResult,
 ): result is RunJournalReplayResult {

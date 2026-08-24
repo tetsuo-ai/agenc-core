@@ -19,10 +19,10 @@ import {
 import { CACHE_PATHS } from './cachePaths.js'
 import { logForDebugging } from './debug.js'
 import { stripDisplayTags, stripDisplayTagsAllowEmpty } from './displayTags.js'
-import { isEnvTruthy } from './envUtils.js'
 import { toError } from './errors.js'
 import { isEssentialTrafficOnly } from './privacyLevel.js'
 import { jsonParse } from './slowOperations.js'
+import { getSelectedProviderName } from './model/providers.js'
 
 /**
  * Gets the display title for a log/session with fallback logic.
@@ -170,11 +170,12 @@ export function logError(error: unknown): void {
   }
   try {
     // Check if error reporting should be disabled
+    const selectedProvider = getSelectedProviderName()
     if (
-      // Cloud providers (Bedrock/Vertex/Foundry) always disable features
-      isEnvTruthy(process.env.AGENC_USE_BEDROCK) ||
-      isEnvTruthy(process.env.AGENC_USE_VERTEX) ||
-      isEnvTruthy(process.env.AGENC_USE_FOUNDRY) ||
+      // Cloud providers always disable error reporting.
+      selectedProvider === 'amazon-bedrock' ||
+      selectedProvider === 'vertex' ||
+      selectedProvider === 'foundry' ||
       process.env.DISABLE_ERROR_REPORTING ||
       isEssentialTrafficOnly()
     ) {

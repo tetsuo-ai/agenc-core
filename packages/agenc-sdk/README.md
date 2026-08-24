@@ -13,6 +13,16 @@ Node **>=26.5 <27** · ESM only · plain `tsc` build · no runtime dependencies.
 | `client.runStatus` / `runResult` / `replayRun` / `runEvidence` / `cancelRun` | Read durable run/admission state, replay or hash canonical journal evidence, or cancel a run tree.                                                                                                                     |
 | `client.reattachRun({ runId, afterSequence })`                               | Catch up from a durable cursor, suppress and report duplicate delivery, stop on any explicit replay gap, and fetch the durable terminal result after reconnect.                                                        |
 | `client.request(method, params)`                                             | Raw typed JSON-RPC for all **53** public daemon methods (mirrored in `./protocol`).                                                                                                                                    |
+| `client.listCsvJobReviews` / `showCsvJobReview` / `resolveCsvJobReview`      | Typed CSV unknown-outcome review helpers (`csvJob.review.*`).                                                                                                                                                          |
+
+Errors: `AgencRpcError`, `AgencMalformedResponseError`,
+`AgencPromptRunInProgressError`, `AgencDuplicateSubmissionIncompleteError`,
+`AgencCapabilityUnavailableError` (1.2 fail-closed), `AgencRunReplayGapError`,
+`AgencRunReplayProtocolError`. Full table: [`docs/sdk.md`](../../docs/sdk.md).
+
+Prompt events on protocol 1.2 also include `message_committed`,
+`history_reset`, `elicitation_request`, `gap`, and `session_event`. The sample
+loop below only prints `text`.
 
 The protocol mirror preserves trusted `event.user_input_request.clientAction`
 objects, typed `elicitation.respond.clientResult` receipts,
@@ -55,6 +65,7 @@ await client.close();
 ## Docs & example
 
 - Full documentation: [`docs/sdk.md`](../../docs/sdk.md)
+- Doc map: [`docs/INDEX.md`](../../docs/INDEX.md)
 - Durable run/effect/replay contract:
   [`docs/design/durable-runs-effects-events.md`](../../docs/design/durable-runs-effects-events.md)
 - Runnable example: [`examples/one-shot.mjs`](./examples/one-shot.mjs)

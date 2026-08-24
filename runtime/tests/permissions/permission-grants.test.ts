@@ -10,7 +10,7 @@ describe("permissionGrantsFromToolPermissionContext", () => {
       createEmptyToolPermissionContext(),
       {
         allowlist: ["FileRead"],
-        denylist: ["Bash"],
+        denylist: ["system.bash"],
       },
     );
 
@@ -43,7 +43,7 @@ describe("permissionGrantsFromToolPermissionContext", () => {
       mode: "default",
       unattendedPolicy: {
         allowlist: ["FileRead"],
-        denylist: ["Bash"],
+        denylist: ["system.bash"],
       },
     });
 

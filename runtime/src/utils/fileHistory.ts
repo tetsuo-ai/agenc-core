@@ -12,20 +12,19 @@ import {
 } from "fs/promises";
 import { dirname, isAbsolute, join, relative } from "path";
 import {
-  getIsNonInteractiveSession,
   getOriginalCwd,
   getSessionId,
 } from "src/bootstrap/state.js";
 import { notifyVscodeFileUpdated } from "src/services/mcp/vscodeSdkMcp.js";
 import type { LogOption } from "src/types/logs.js";
 import { inspect } from "util";
-import { getGlobalConfig } from "./config.js";
 import { logForDebugging } from "src/utils/debug.js";
-import { getAgenCConfigHomeDir, isEnvTruthy } from "./envUtils.js";
+import { getAgenCHomeDir } from "./envUtils.js";
 import { getErrnoCode, isENOENT } from "./errors.js";
 import { pathExists } from "./file.js";
 import { logError } from "./log.js";
 import { recordFileHistorySnapshot } from "./sessionStorage.js";
+import { getExecutionAuthoritySettings } from "./settings/settings.js";
 import {
   completeWorkspaceTopologyMutation,
   reserveWorkspaceTopologyMutation,
@@ -66,20 +65,7 @@ export type DiffStats =
   | undefined;
 
 export function fileHistoryEnabled(): boolean {
-  if (getIsNonInteractiveSession()) {
-    return fileHistoryEnabledSdk();
-  }
-  return (
-    getGlobalConfig().fileCheckpointingEnabled !== false &&
-    !isEnvTruthy(process.env.AGENC_DISABLE_FILE_CHECKPOINTING)
-  );
-}
-
-function fileHistoryEnabledSdk(): boolean {
-  return (
-    isEnvTruthy(process.env.AGENC_ENABLE_SDK_FILE_CHECKPOINTING) &&
-    !isEnvTruthy(process.env.AGENC_DISABLE_FILE_CHECKPOINTING)
-  );
+  return getExecutionAuthoritySettings().fileCheckpointingEnabled !== false;
 }
 
 /**
@@ -728,7 +714,7 @@ function getBackupFileName(filePath: string, version: number): string {
 }
 
 function resolveBackupPath(backupFileName: string, sessionId?: string): string {
-  const configDir = getAgenCConfigHomeDir();
+  const configDir = getAgenCHomeDir();
   return join(
     configDir,
     "file-history",
@@ -942,7 +928,7 @@ export async function copyFileHistoryForResume(log: LogOption): Promise<void> {
     // All backups share the same directory: {configDir}/file-history/{sessionId}/
     // Create it once upfront instead of once per backup file
     const newBackupDir = join(
-      getAgenCConfigHomeDir(),
+      getAgenCHomeDir(),
       "file-history",
       sessionId,
     );

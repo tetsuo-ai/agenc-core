@@ -20,6 +20,8 @@ import {
 } from "../permissions/types.js";
 import type { Session } from "../session/session.js";
 import type { SlashCommandContext } from "./types.js";
+import { parseToml } from "../config/loader.js";
+import { ConfigStore } from "../config/store.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Stubs
@@ -261,24 +263,26 @@ describe("permissionsCommand — add", () => {
     expect(registry.current()).toBe(initial);
   });
 
-  it("'add allow Read --persist user' writes to disk settings.json", async () => {
+  it("'add allow FileRead --persist user' writes canonical user config.toml", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-perms-"));
     try {
+      const configStore = await configStoreFor(tmp);
       const registry = new PermissionModeRegistry(createEmptyToolPermissionContext());
       const ctx = stubCtx({
         registry,
-        argsRaw: "add allow Read --persist user",
+        argsRaw: "add allow FileRead --persist user",
         home: tmp,
+        configStore,
       });
       const r = await permissionsCommand.execute(ctx);
       if (r.kind !== "text") throw new Error(`expected text, got ${r.kind}`);
       expect(r.text).toMatch(/persisted to userSettings/);
-      const file = join(tmp, ".agenc", "settings.json");
+      const file = join(tmp, "config.toml");
       expect(existsSync(file)).toBe(true);
-      const on_disk = JSON.parse(readFileSync(file, "utf8")) as {
+      const on_disk = parseToml(readFileSync(file, "utf8")) as {
         permissions: { allow: string[] };
       };
-      expect(on_disk.permissions.allow).toContain("Read");
+      expect(on_disk.permissions.allow).toContain("FileRead");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -304,7 +308,7 @@ describe("permissionsCommand — add", () => {
         "repository files cannot store permission approvals",
       );
       expect(registry.current().alwaysAllowRules.session).toContain("Read");
-      expect(existsSync(join(tmp, ".agenc", "settings.json"))).toBe(false);
+      expect(existsSync(join(tmp, ".agenc", "config.toml"))).toBe(false);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -330,35 +334,49 @@ describe("permissionsCommand — remove", () => {
     expect(cur.alwaysAllowRules.session).toContain("Read");
   });
 
-  it("--persist user removes from userSettings JSON on disk", async () => {
+  it("--persist user removes from canonical user config.toml", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-perms-"));
     try {
       // Seed the settings file first.
-      const file = join(tmp, ".agenc", "settings.json");
-      mkdirSync(join(tmp, ".agenc"), { recursive: true });
+      const file = join(tmp, "config.toml");
+      mkdirSync(tmp, { recursive: true });
       writeFileSync(
         file,
-        JSON.stringify({ permissions: { allow: ["Read", "Bash(ls)"] } }, null, 2),
+        'config_version = 2\n[permissions]\nallow = ["FileRead", "system.bash(ls)"]\n',
       );
       const registry = new PermissionModeRegistry(createEmptyToolPermissionContext());
+      const configStore = await configStoreFor(tmp);
       const r = await permissionsCommand.execute(
         stubCtx({
           registry,
-          argsRaw: "remove allow Read --persist user",
+          argsRaw: "remove allow FileRead --persist user",
           home: tmp,
+          configStore,
         }),
       );
       if (r.kind !== "text") throw new Error("expected text");
-      const on_disk = JSON.parse(readFileSync(file, "utf8")) as {
+      const on_disk = parseToml(readFileSync(file, "utf8")) as {
         permissions: { allow: string[] };
       };
-      expect(on_disk.permissions.allow).not.toContain("Read");
-      expect(on_disk.permissions.allow).toContain("Bash(ls)");
+      expect(on_disk.permissions.allow).not.toContain("FileRead");
+      expect(on_disk.permissions.allow).toContain("system.bash(ls)");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
 });
+
+async function configStoreFor(home: string): Promise<ConfigStore> {
+  const store = new ConfigStore({
+    home,
+    env: { AGENC_HOME: home },
+    cwd: home,
+    projectRoot: home,
+    projectTrusted: true,
+  });
+  await store.reload();
+  return store;
+}
 
 describe("permissionsCommand — export", () => {
   it("returns a JSON string round-trippable through JSON.parse", async () => {
@@ -592,11 +610,17 @@ describe("permissionsCommand — bypassPermissions consent gate", () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-bypass-"));
     try {
       const registry = new PermissionModeRegistry(createEmptyToolPermissionContext());
+      const configStore = new ConfigStore({
+        home: tmp,
+        env: { AGENC_HOME: tmp },
+        cwd: "/workspace/trusted",
+      });
       const ctx = stubCtx({
         registry,
         argsRaw: "accept-bypass",
         home: tmp,
         cwd: "/workspace/trusted",
+        configStore,
       });
       const r = await permissionsCommand.execute(ctx);
       if (r.kind !== "text") {
@@ -611,13 +635,13 @@ describe("permissionsCommand — bypassPermissions consent gate", () => {
       expect(registry.current().bypassPermissionsAcceptedIn).toContain(
         "/workspace/trusted",
       );
-      // Persisted to user settings file.
-      const file = join(tmp, ".agenc", "settings.json");
-      expect(existsSync(file)).toBe(true);
-      const on_disk = JSON.parse(readFileSync(file, "utf8")) as {
-        bypassPermissionsModeAcceptedIn?: string[];
+      // Persisted to the canonical acknowledgement state namespace.
+      const stateSettings = configStore.stateRepository.getNamespace(
+        "settings",
+      ) as {
+        readonly bypassPermissionsModeAcceptedIn?: readonly string[];
       };
-      expect(on_disk.bypassPermissionsModeAcceptedIn).toContain(
+      expect(stateSettings.bypassPermissionsModeAcceptedIn).toContain(
         "/workspace/trusted",
       );
     } finally {

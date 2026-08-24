@@ -328,7 +328,7 @@ describe("ToolRouter", () => {
     expect(router.findSpec("unknown")).toBeUndefined();
   });
 
-  test("dispatchModelToolCall routes legacy Read calls to FileRead", async () => {
+  test("dispatchModelToolCall rejects removed Read alias", async () => {
     const execute = vi.fn(async (args: Record<string, unknown>) => ({
       content: `read ${String(args.file_path)}`,
     }));
@@ -361,11 +361,11 @@ describe("ToolRouter", () => {
       },
     );
 
-    expect(result.isError).toBeFalsy();
-    expect(result.content).toBe("read main.c");
-    expect(execute).toHaveBeenCalledWith(
-      expect.objectContaining({ file_path: "main.c" }),
-    );
+    expect(result).toEqual({
+      content: JSON.stringify({ error: "unknown tool: Read" }),
+      isError: true,
+    });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   test("dispatchModelToolCall strips model-supplied __agenc* keys before tool.execute", async () => {

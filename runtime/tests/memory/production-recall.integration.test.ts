@@ -22,15 +22,11 @@ import { relevantMemoriesProducer } from "../../src/prompts/attachments/relevant
 
 let temporaryRoot = "";
 let previousAgenCHome: string | undefined;
-let previousDisableMemory: string | undefined;
 
 afterEach(async () => {
   closeFullCorpusMemoryIndexes();
   if (previousAgenCHome === undefined) delete process.env.AGENC_HOME;
   else process.env.AGENC_HOME = previousAgenCHome;
-  if (previousDisableMemory === undefined)
-    delete process.env.AGENC_DISABLE_AUTO_MEMORY;
-  else process.env.AGENC_DISABLE_AUTO_MEMORY = previousDisableMemory;
   if (temporaryRoot !== "") {
     await rm(temporaryRoot, { recursive: true, force: true });
     temporaryRoot = "";
@@ -40,7 +36,6 @@ afterEach(async () => {
 describe("C3b production memory recall wiring", () => {
   it("runs full-corpus recall older than 200 through admission and a provider", async () => {
     previousAgenCHome = process.env.AGENC_HOME;
-    previousDisableMemory = process.env.AGENC_DISABLE_AUTO_MEMORY;
     temporaryRoot = await mkdtemp(join(tmpdir(), "agenc-c3a-production-"));
     const agencHome = join(temporaryRoot, "home");
     const cwd = join(temporaryRoot, "workspace");
@@ -60,7 +55,6 @@ describe("C3b production memory recall wiring", () => {
       ),
     );
     process.env.AGENC_HOME = agencHome;
-    delete process.env.AGENC_DISABLE_AUTO_MEMORY;
 
     const acquire = vi.fn(
       async (input: AdmissionAcquireInput): Promise<AdmissionLease> => ({

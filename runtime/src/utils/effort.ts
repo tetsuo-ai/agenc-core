@@ -10,8 +10,12 @@ import {
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
 import { supportsProviderCodeReasoningEffort } from '../services/api/providerConfig.js'
 import { resolveRegisteredModelCatalogEntry } from '../llm/registry/model-catalog.js'
-import { isEnvTruthy } from './envUtils.js'
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
+import { resolveSecureStorageHome } from './secureStorage/home.js'
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 
 export type { EffortLevel }
 
@@ -47,9 +51,6 @@ function getRegisteredGrokEffortLevels(
 // @[MODEL LAUNCH]: Add the new model to the allowlist if it supports the effort parameter.
 export function modelSupportsEffort(model: string): boolean {
   const m = model.toLowerCase()
-  if (isEnvTruthy(process.env.AGENC_ALWAYS_ENABLE_EFFORT)) {
-    return true
-  }
   const supported3P = get3PModelCapabilityOverride(model, 'effort')
   if (supported3P !== undefined) {
     return supported3P
@@ -215,10 +216,25 @@ export function toPersistableEffort(
   return undefined
 }
 
+export function reasoningEffortToEffortLevel(
+  value: string | undefined,
+): EffortLevel | undefined {
+  if (value === "none") return undefined
+  if (value === "xhigh") return "max"
+  return toPersistableEffort(value as EffortValue | undefined)
+}
+
+export function effortValueToReasoningEffort(
+  value: EffortValue | undefined,
+): "low" | "medium" | "high" | "xhigh" | undefined {
+  const persistable = toPersistableEffort(value)
+  return persistable === "max" ? "xhigh" : persistable
+}
+
 export function getInitialEffortSetting(): EffortLevel | undefined {
-  // toPersistableEffort validates 'max' on read, so a manually
-  // edited settings.json with an invalid level doesn't leak into a fresh session.
-  return toPersistableEffort(getExecutionAuthoritySettings().effortLevel)
+  return reasoningEffortToEffortLevel(
+    getExecutionAuthoritySettings().reasoning_effort,
+  )
 }
 
 /**
@@ -229,10 +245,10 @@ export function getInitialEffortSetting(): EffortLevel | undefined {
  * to undefined so it follows future model-default changes.
  *
  * priorPersisted must come from userSettings on disk
- * (getSettingsForSource('userSettings')?.effortLevel), NOT merged settings
- * (project/policy layers would leak into the user's global settings.json)
+ * (getSettingsForSource('userSettings')?.reasoning_effort), NOT merged settings
+ * (project/policy layers would leak into the user's global config.toml)
  * and NOT AppState.effortValue (includes session-scoped sources that
- * deliberately do not write to settings.json).
+ * deliberately do not write to config.toml).
  */
 export function resolvePickerEffortPersistence(
   picked: AvailableEffortLevel | undefined,
@@ -244,32 +260,18 @@ export function resolvePickerEffortPersistence(
   return hadExplicit || picked !== modelDefault ? picked : undefined
 }
 
-export function getEffortEnvOverride(): EffortValue | null | undefined {
-  const envOverride = process.env.AGENC_EFFORT_LEVEL
-  return envOverride?.toLowerCase() === 'unset' ||
-    envOverride?.toLowerCase() === 'auto'
-    ? null
-    : parseEffortValue(envOverride)
-}
-
 /**
  * Resolve the effort value that will actually be sent to the API for a given
- * model, following the full precedence chain:
- *   env AGENC_EFFORT_LEVEL → appState.effortValue → model default
+ * model from the session-captured value, falling back to the model default.
  *
- * Returns undefined when no effort parameter should be sent (env set to
- * 'unset', or no default exists for the model).
+ * Environment overrides are folded into canonical config at startup; this
+ * runtime path never reads mutable process-global environment state.
  */
 export function resolveAppliedEffort(
   model: string,
   appStateEffortValue: EffortValue | undefined,
 ): EffortValue | undefined {
-  const envOverride = getEffortEnvOverride()
-  if (envOverride === null) {
-    return undefined
-  }
-  const resolved =
-    envOverride ?? appStateEffortValue ?? getDefaultEffortForModel(model)
+  const resolved = appStateEffortValue ?? getDefaultEffortForModel(model)
   if (resolved === 'max') {
     // The persisted cross-provider vocabulary calls its top tier `max`, while
     // xAI calls Grok 4.6's catalogued top tier `xhigh`.
@@ -430,12 +432,12 @@ export function getDefaultEffortForModel(
     model.toLowerCase().includes('opus-4-7') ||
     model.toLowerCase().includes('opus-4-8')
   ) {
-    if (isProSubscriber()) {
+    if (isProSubscriber(credentialHome())) {
       return 'medium'
     }
     if (
       getOpusDefaultEffortConfig().enabled &&
-      (isMaxSubscriber() || isTeamSubscriber())
+      (isMaxSubscriber(credentialHome()) || isTeamSubscriber(credentialHome()))
     ) {
       return 'medium'
     }

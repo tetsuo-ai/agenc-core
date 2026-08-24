@@ -1,28 +1,36 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
 import { resetModelStringsForTestingOnly } from '../../../src/bootstrap/state.ts'
-import { saveGlobalConfig } from '../../../src/utils/config.ts'
-
-const providersModulePath = '../../../src/utils/model/providers.js'
 
 async function importFreshModelOptionsModule() {
   vi.resetModules()
-  vi.doMock(providersModulePath, () => ({
-    getAPIProvider: () => 'github',
-  }))
-  return import('../../../src/utils/model/modelOptions.ts')
+  const [
+    modelOptions,
+    providers,
+    { ConfigStore },
+    { runWithCanonicalSettingsAuthority },
+  ] = await Promise.all([
+    import('../../../src/utils/model/modelOptions.ts'),
+    import('../../../src/utils/model/providers.ts'),
+    import('../../../src/config/store.ts'),
+    import('../../../src/utils/settings/canonicalAuthority.ts'),
+  ])
+  const store = new ConfigStore({
+    home: '/tmp/agenc-model-options-github',
+    env: {},
+    base: {},
+  })
+  return {
+    ...modelOptions,
+    ...providers,
+    withAuthority: <T>(fn: () => T): T =>
+      runWithCanonicalSettingsAuthority(store, fn),
+  }
 }
 
 const originalEnv = {
-  AGENC_USE_GITHUB: process.env.AGENC_USE_GITHUB,
-  AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,
-  AGENC_USE_GEMINI: process.env.AGENC_USE_GEMINI,
-  AGENC_USE_BEDROCK: process.env.AGENC_USE_BEDROCK,
-  AGENC_USE_VERTEX: process.env.AGENC_USE_VERTEX,
-  AGENC_USE_FOUNDRY: process.env.AGENC_USE_FOUNDRY,
-  OPENAI_MODEL: process.env.OPENAI_MODEL,
+  AGENC_PROVIDER: process.env.AGENC_PROVIDER,
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
-  ANTHROPIC_CUSTOM_MODEL_OPTION: process.env.ANTHROPIC_CUSTOM_MODEL_OPTION,
 }
 
 function restoreEnv(key: keyof typeof originalEnv): void {
@@ -34,53 +42,30 @@ function restoreEnv(key: keyof typeof originalEnv): void {
 }
 
 beforeEach(() => {
-  vi.doUnmock(providersModulePath)
   vi.clearAllMocks()
   vi.resetModules()
-  delete process.env.AGENC_USE_GITHUB
-  delete process.env.AGENC_USE_OPENAI
-  delete process.env.AGENC_USE_GEMINI
-  delete process.env.AGENC_USE_BEDROCK
-  delete process.env.AGENC_USE_VERTEX
-  delete process.env.AGENC_USE_FOUNDRY
-  delete process.env.OPENAI_MODEL
+  delete process.env.AGENC_PROVIDER
   delete process.env.OPENAI_BASE_URL
-  delete process.env.ANTHROPIC_CUSTOM_MODEL_OPTION
   resetModelStringsForTestingOnly()
 })
 
 afterEach(() => {
-  vi.doUnmock(providersModulePath)
   vi.clearAllMocks()
   vi.resetModules()
   for (const key of Object.keys(originalEnv) as Array<keyof typeof originalEnv>) {
     restoreEnv(key)
   }
-  saveGlobalConfig(current => ({
-    ...current,
-    additionalModelOptionsCache: [],
-    additionalModelOptionsCacheScope: undefined,
-    openaiAdditionalModelOptionsCache: [],
-    openaiAdditionalModelOptionsCacheByProfile: {},
-    providerProfiles: [],
-    activeProviderProfileId: undefined,
-  }))
   resetModelStringsForTestingOnly()
 })
 
 test('GitHub provider exposes default + all Copilot models in /model options', async () => {
-  process.env.AGENC_USE_GITHUB = '1'
-  delete process.env.AGENC_USE_OPENAI
-  delete process.env.AGENC_USE_GEMINI
-  delete process.env.AGENC_USE_BEDROCK
-  delete process.env.AGENC_USE_VERTEX
-  delete process.env.AGENC_USE_FOUNDRY
+  process.env.AGENC_PROVIDER = 'github'
 
-  process.env.OPENAI_MODEL = 'gpt-4o'
-  delete process.env.ANTHROPIC_CUSTOM_MODEL_OPTION
-
-  const { getModelOptions } = await importFreshModelOptionsModule()
-  const options = getModelOptions(false)
+  const { getModelOptions, runWithStartupProviderSelection, withAuthority } =
+    await importFreshModelOptionsModule()
+  const options = withAuthority(() =>
+    runWithStartupProviderSelection({ provider: 'github', model: 'gpt-4o', environment: { ...process.env } }, () => getModelOptions(false)),
+  )
   const nonDefault = options.filter(
     (option: { value: unknown }) => option.value !== null,
   )

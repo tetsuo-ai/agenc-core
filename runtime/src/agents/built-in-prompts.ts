@@ -2,7 +2,7 @@
  * System prompts + tool restrictions for the built-in agent roles.
  *
  * These are the prompt bodies for the promoted built-in roles
- * (`general-purpose`/`default`, `Explore`/`scanner`, `Plan`, `verification`).
+ * (`general-purpose`/`default`, `scanner`, `Plan`, `verification`).
  * They were previously stranded as `BuiltInAgentDefinition` consts under
  * `tools/AgentTool/built-in/*` on a dead dispatch path; promotion folds them
  * into the live role registry (`role.ts`), so the prompt text and the
@@ -32,7 +32,7 @@ import { APPLY_PATCH_TOOL_NAME } from "../tools/apply-patch/tool.js";
 import { hasEmbeddedSearchTools } from "../utils/embeddedTools.js";
 
 /**
- * Read-only tool denylist shared by the scanner (Explore), Plan, and
+ * Read-only tool denylist shared by the scanner, Plan, and
  * verification roles: no sub-spawning, no plan-mode exit, no file mutation.
  * These roles set NO allowlist, so this denylist is the sole gate — it must
  * cover EVERY first-class mutating file tool (Edit, MultiEdit, Write,
@@ -48,8 +48,8 @@ export const BUILTIN_READONLY_DISALLOWLIST: ReadonlyArray<string> = Object.freez
   APPLY_PATCH_TOOL_NAME,
 ]);
 
-/** Minimum query count below which the Explore/scanner agent is overkill. */
-export const EXPLORE_AGENT_MIN_QUERIES = 3;
+/** Minimum query count below which the scanner agent is overkill. */
+export const SCANNER_AGENT_MIN_QUERIES = 3;
 
 // NOTE: `general-purpose` folds into the `default` role purely as a resolution
 // alias (role-presentation.ts). It deliberately carries NO system prompt: the
@@ -59,7 +59,7 @@ export const EXPLORE_AGENT_MIN_QUERIES = 3;
 // const's former general-purpose prompt was dead on HEAD (never dispatched), so
 // not reintroducing it preserves existing default-role behavior exactly.
 
-function buildExploreSystemPrompt(): string {
+function buildScannerSystemPrompt(): string {
   // Ant-native builds alias find/grep to embedded bfs/ugrep and remove the
   // dedicated Glob/Grep tools, so point at find/grep via Bash instead.
   const embedded = hasEmbeddedSearchTools();
@@ -289,7 +289,7 @@ Use the literal string \`VERDICT: \` followed by exactly one of \`PASS\`, \`FAIL
 - **PARTIAL**: what was verified, what could not be and why (missing tool/env), what the implementer should know.`;
 
 /** Snapshotted at module load — see file header for why this is stable. */
-export const EXPLORE_SYSTEM_PROMPT = buildExploreSystemPrompt();
+export const SCANNER_SYSTEM_PROMPT = buildScannerSystemPrompt();
 export const PLAN_SYSTEM_PROMPT = buildPlanSystemPrompt();
 export const VERIFICATION_SYSTEM_PROMPT = VERIFICATION_SYSTEM_PROMPT_TEXT;
 

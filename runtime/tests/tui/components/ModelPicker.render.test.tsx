@@ -2,6 +2,7 @@ import React from "react";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { renderToString } from "../../utils/staticRender.js";
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../remoteAuthSessionContext.fixture.js";
 import { ModelPicker } from "./ModelPicker.js";
 
 const appStateMock = vi.hoisted(() => ({
@@ -56,13 +57,15 @@ vi.mock("../state/AppState.js", () => ({
 
 vi.mock("../../utils/fastMode.js", () => ({
   FAST_MODE_MODEL_DISPLAY: "fast-model",
-  isFastModeAvailable: () => fastModeMock.available,
-  isFastModeCooldown: () => fastModeMock.cooldown,
-  isFastModeEnabled: () => fastModeMock.enabled,
+  isFastModeAvailableForContext: () => fastModeMock.available,
+  isFastModeCooldownForContext: () => fastModeMock.cooldown,
+  isFastModeEnabledForContext: () => fastModeMock.enabled,
 }));
 
 vi.mock("../../utils/effort.js", () => ({
   convertEffortValueToLevel: (value: string | undefined) => value,
+  effortValueToReasoningEffort: (value: string | undefined) =>
+    value === "max" || value === "xhigh" ? "xhigh" : value,
   getAvailableEffortLevels: (model: string) =>
     model.includes("basic")
       ? []
@@ -73,6 +76,8 @@ vi.mock("../../utils/effort.js", () => ({
     model.includes("mini") ? undefined : "medium",
   modelSupportsEffort: (model: string) => !model.includes("basic"),
   modelSupportsMaxEffort: (model: string) => model.includes("max"),
+  reasoningEffortToEffortLevel: (value: string | undefined) =>
+    value === "xhigh" ? "max" : value,
   resolvePickerEffortPersistence: (
     effort: string | undefined,
     defaultEffort: string,
@@ -101,7 +106,8 @@ vi.mock("../../utils/model/modelOptions.js", () => ({
 }));
 
 vi.mock("../../utils/settings/settings.js", () => ({
-  getSettingsForSource: () => ({ effortLevel: "low" }),
+  getExecutionAuthoritySettings: () => ({}),
+  getSettingsForSource: () => ({ reasoning_effort: "low" }),
   updateSettingsForSource: settingsMock.updateSettingsForSource,
 }));
 
@@ -143,6 +149,7 @@ describe("ModelPicker rendering", () => {
         initial="legacy-model"
         sessionModel="plan-model"
         onSelect={() => {}}
+        remoteAuthSessionContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
         isStandaloneCommand
         showFastModeNotice
         headerText="Choose carefully"
@@ -165,7 +172,7 @@ describe("ModelPicker rendering", () => {
     const onSelect = vi.fn();
 
     await renderToString(
-      <ModelPicker initial={null} onSelect={onSelect} />,
+      <ModelPicker initial={null} onSelect={onSelect} remoteAuthSessionContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />,
       { columns: 120 },
     );
 
@@ -175,7 +182,7 @@ describe("ModelPicker rendering", () => {
     expect(onSelect).toHaveBeenCalledWith(null, undefined);
     expect(settingsMock.updateSettingsForSource).toHaveBeenCalledWith(
       "userSettings",
-      { effortLevel: "medium" },
+      { reasoning_effort: "medium" },
     );
     expect(appStateMock.setAppState).toHaveBeenCalledTimes(1);
 
@@ -188,7 +195,7 @@ describe("ModelPicker rendering", () => {
     const onSelect = vi.fn();
 
     await renderToString(
-      <ModelPicker initial="gpt-5.4" onSelect={onSelect} skipSettingsWrite />,
+      <ModelPicker initial="gpt-5.4" onSelect={onSelect} skipSettingsWrite remoteAuthSessionContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />,
       { columns: 120 },
     );
 

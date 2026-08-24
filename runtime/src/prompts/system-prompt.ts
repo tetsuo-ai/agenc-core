@@ -24,7 +24,7 @@
  * approval-policy and sandbox-mode prose.
  *
  * Depends on:
- *   - `config/env.resolveSimpleMode()` — drives the AGENC_SIMPLE short-path
+ *   - session `runtimeOptions.simpleMode` — drives the reduced prompt path
  *   - `prompts/project-instructions` (optional, passed in by the caller)
  *   - `prompts/memory/loader` (optional, passed in as `memoryPrompt`)
  *   - `mcp-client/manager.MCPManager` (optional, used only if session
@@ -40,7 +40,6 @@
 import { spawnSync } from "node:child_process";
 import { platform as osPlatform, type as osType, release as osRelease } from "node:os";
 
-import { resolveSimpleMode } from "../config/env.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import { gitChildEnvironment } from "../sandbox/git-environment.js";
@@ -197,16 +196,12 @@ export function getUsingYourToolsSection(enabledTools: ReadonlySet<string>): str
   const hasTool = (...names: readonly string[]): boolean =>
     names.some((name) => enabledTools.has(name));
 
-  const hasShell = hasTool("exec_command", "bash", "Bash", "system.bash", "shell");
+  const hasShell = hasTool("exec_command", "system.bash", "PowerShell");
   const shellName = enabledTools.has("exec_command")
     ? "exec_command"
-    : enabledTools.has("bash")
-      ? "bash"
-      : enabledTools.has("Bash")
-        ? "Bash"
-        : enabledTools.has("system.bash")
-          ? "system.bash"
-          : "shell";
+    : enabledTools.has("system.bash")
+      ? "system.bash"
+      : "PowerShell";
   const hasFileRead = hasTool("FileRead");
   const hasFileEdit = hasTool("Edit");
   const hasFileWrite = hasTool("Write");
@@ -594,8 +589,8 @@ export interface AssembleSystemPromptOpts {
    */
   readonly permissionContext?: ToolPermissionContext | null;
   readonly autonomousMode?: boolean;
-  /** Override process.env for simple-mode resolution (testing only). */
-  readonly envForSimpleMode?: NodeJS.ProcessEnv;
+  /** Explicit test/embedder override; production reads the session option. */
+  readonly simpleMode?: boolean;
 }
 
 export interface AssembledSystemPrompt {
@@ -723,7 +718,8 @@ export function buildEffectiveSystemPrompt(
  * Assemble the system prompt. Concatenates the static head, the boundary
  * marker, and the dynamic tail.
  *
- * When `AGENC_SIMPLE` resolves truthy, returns an ultra-minimal prompt:
+ * When the session's immutable simple-mode option is true, returns an
+ * ultra-minimal prompt:
  * `simple_intro + boundary + env_info_simple`.
  */
 export async function assembleSystemPrompt(
@@ -748,8 +744,11 @@ export async function assembleSystemPrompt(
       : {}),
   };
 
-  // AGENC_SIMPLE short-path.
-  if (resolveSimpleMode(opts.envForSimpleMode ?? (process.env as NodeJS.ProcessEnv))) {
+  // Session-scoped reduced-prompt path. Never re-read process.env here: a
+  // daemon can host concurrent sessions with different startup options.
+  const simpleMode = opts.simpleMode ??
+    session.services?.runtimeOptions?.simpleMode === true;
+  if (simpleMode) {
     const intro = getSimpleIntroSection(opts.outputStyle != null);
     const env = buildEnvInfoSection(envInfoInputs);
     const sections = [intro, SYSTEM_PROMPT_DYNAMIC_BOUNDARY, env];

@@ -25,6 +25,7 @@ import { monotonicMs } from "./_deps/utils.js";
 import type { BudgetTracker } from "../conversation/token-budget.js";
 import type { Event } from "./event-log.js";
 import type { Sidecar } from "./sidecar.js";
+import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Cost registry — USD per 1K tokens.
@@ -145,6 +146,30 @@ const COST_TIER_O1_PRO = openAiUncachedInputTier(150, 600);
 const COST_TIER_O3 = openAiCachedInputTier(2, 8, 0.5);
 const COST_TIER_O3_MINI = openAiCachedInputTier(1.1, 4.4, 0.55);
 const COST_TIER_O4_MINI = openAiCachedInputTier(1.1, 4.4, 0.275);
+
+// Official DeepSeek API prices retrieved 2026-08-24:
+// https://api-docs.deepseek.com/quick_start/pricing/
+const COST_TIER_DEEPSEEK_V4_FLASH: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.00014,
+  outputUsdPer1K: 0.00028,
+  cachedInputUsdPer1K: 0.0000028,
+  cachedInputIncludedInInputTokens: true,
+});
+const COST_TIER_DEEPSEEK_V4_PRO: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.000435,
+  outputUsdPer1K: 0.00087,
+  cachedInputUsdPer1K: 0.000003625,
+  cachedInputIncludedInInputTokens: true,
+});
+
+// Official Mistral API prices retrieved 2026-08-24:
+// https://docs.mistral.ai/inference/pricing
+const COST_TIER_MISTRAL_MEDIUM_3_5: Readonly<ModelCostEntry> = Object.freeze({
+  inputUsdPer1K: 0.0015,
+  outputUsdPer1K: 0.0075,
+  cachedInputUsdPer1K: 0.00015,
+  cachedInputIncludedInInputTokens: true,
+});
 
 const COST_TIER_SONNET: Readonly<ModelCostEntry> = Object.freeze({
   inputUsdPer1K: 0.003,
@@ -353,16 +378,14 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       inputUsdPer1K: 0.00059,
       outputUsdPer1K: 0.00079,
     },
-    "deepseek:deepseek-reasoner": {
-      inputUsdPer1K: 0.00055,
-      outputUsdPer1K: 0.00219,
-      cachedInputUsdPer1K: 0.00014,
-    },
-    "deepseek-reasoner": {
-      inputUsdPer1K: 0.00055,
-      outputUsdPer1K: 0.00219,
-      cachedInputUsdPer1K: 0.00014,
-    },
+    "deepseek:deepseek-v4-flash": COST_TIER_DEEPSEEK_V4_FLASH,
+    "deepseek-v4-flash": COST_TIER_DEEPSEEK_V4_FLASH,
+    "deepseek/deepseek-v4-flash": COST_TIER_DEEPSEEK_V4_FLASH,
+    "openrouter:deepseek/deepseek-v4-flash": COST_TIER_DEEPSEEK_V4_FLASH,
+    "deepseek:deepseek-v4-pro": COST_TIER_DEEPSEEK_V4_PRO,
+    "deepseek-v4-pro": COST_TIER_DEEPSEEK_V4_PRO,
+    "deepseek/deepseek-v4-pro": COST_TIER_DEEPSEEK_V4_PRO,
+    "openrouter:deepseek/deepseek-v4-pro": COST_TIER_DEEPSEEK_V4_PRO,
     "gemini:gemini-2.5-pro": {
       inputUsdPer1K: 0.00125,
       outputUsdPer1K: 0.01,
@@ -371,14 +394,8 @@ export const DEFAULT_MODEL_COSTS: Readonly<Record<string, ModelCostEntry>> =
       inputUsdPer1K: 0.00125,
       outputUsdPer1K: 0.01,
     },
-    "mistral:devstral-latest": {
-      inputUsdPer1K: 0.0001,
-      outputUsdPer1K: 0.0003,
-    },
-    "devstral-latest": {
-      inputUsdPer1K: 0.0001,
-      outputUsdPer1K: 0.0003,
-    },
+    "mistral:mistral-medium-latest": COST_TIER_MISTRAL_MEDIUM_3_5,
+    "mistral-medium-latest": COST_TIER_MISTRAL_MEDIUM_3_5,
     "nvidia-nim:nvidia/llama-3.1-nemotron-70b-instruct": DEFAULT_UNKNOWN_MODEL_COST,
     "nvidia/llama-3.1-nemotron-70b-instruct": DEFAULT_UNKNOWN_MODEL_COST,
     "minimax:MiniMax-M2.5": DEFAULT_UNKNOWN_MODEL_COST,
@@ -622,13 +639,8 @@ function canonicalModel(model: string): string {
   return normalized;
 }
 
-function normalizeProvider(provider: string | undefined): string | undefined {
-  const trimmed = provider?.trim().toLowerCase();
-  return trimmed && trimmed.length > 0 ? trimmed : undefined;
-}
-
 function usageKey(model: string, provider: string | undefined): string {
-  const normalizedProvider = normalizeProvider(provider);
+  const normalizedProvider = normalizeProviderMetadataIdentity(provider);
   return normalizedProvider ? `${normalizedProvider}:${model}` : model;
 }
 
@@ -636,7 +648,7 @@ function costLookupKeys(
   model: string,
   provider: string | undefined,
 ): string[] {
-  const normalizedProvider = normalizeProvider(provider);
+  const normalizedProvider = normalizeProviderMetadataIdentity(provider);
   const canonical = canonicalModel(model);
   const keys: string[] = [];
   if (normalizedProvider) {
@@ -1129,7 +1141,7 @@ export class CostSidecar implements Sidecar {
     this.registry = opts.registry ?? DEFAULT_MODEL_COSTS;
     this.budgetTracker = opts.budgetTracker ?? null;
     this.currentModel = opts.defaultModel ?? null;
-    this.currentProvider = normalizeProvider(opts.defaultProvider) ?? null;
+    this.currentProvider = normalizeProviderMetadataIdentity(opts.defaultProvider) ?? null;
     this.exitSummaryOpts = opts.exitSummary ?? false;
     this.projectDir = opts.projectDir ?? null;
     this.sessionId = opts.sessionId ?? null;
@@ -1149,26 +1161,26 @@ export class CostSidecar implements Sidecar {
       case "turn_context": {
         this.currentModel = msg.payload.model;
         if (msg.payload.modelProviderId) {
-          this.currentProvider = normalizeProvider(msg.payload.modelProviderId) ?? null;
+          this.currentProvider = normalizeProviderMetadataIdentity(msg.payload.modelProviderId) ?? null;
         }
         break;
       }
       case "session_configured": {
         this.currentModel = msg.payload.model;
-        this.currentProvider = normalizeProvider(msg.payload.modelProviderId) ?? null;
+        this.currentProvider = normalizeProviderMetadataIdentity(msg.payload.modelProviderId) ?? null;
         break;
       }
       case "session_meta": {
         if (msg.payload.model) this.currentModel = msg.payload.model;
         if (msg.payload.modelProvider) {
-          this.currentProvider = normalizeProvider(msg.payload.modelProvider) ?? null;
+          this.currentProvider = normalizeProviderMetadataIdentity(msg.payload.modelProvider) ?? null;
         }
         break;
       }
       case "token_count": {
         const model = msg.payload.model ?? this.currentModel ?? "unknown";
         const provider =
-          normalizeProvider(msg.payload.provider) ?? this.currentProvider ?? undefined;
+          normalizeProviderMetadataIdentity(msg.payload.provider) ?? this.currentProvider ?? undefined;
         const key = usageKey(model, provider);
         const usage = this.perModel.get(key) ?? emptyModelUsage(model, provider);
         usage.inputTokens += msg.payload.promptTokens ?? 0;
@@ -1381,7 +1393,7 @@ export class CostSidecar implements Sidecar {
 
   addTokenUsage(delta: TokenUsageDelta): void {
     const provider =
-      normalizeProvider(delta.provider) ?? this.currentProvider ?? undefined;
+      normalizeProviderMetadataIdentity(delta.provider) ?? this.currentProvider ?? undefined;
     const key = usageKey(delta.model, provider);
     const usage = this.perModel.get(key) ?? emptyModelUsage(delta.model, provider);
     const promptTokens = normalizeCounter(delta.promptTokens);

@@ -27,20 +27,17 @@ import {
   BackgroundTaskLifecycle,
   registerAgentThreadTask,
 } from "../../tasks/index.js";
-import { HOOK_EVENT_NAMES, normalizeHookEventName } from "../../config/schema.js";
+import { HOOK_EVENT_NAMES } from "../../config/schema.js";
 
 afterEach(() => {
   resetLifecycleHookRegistry();
 });
 
 describe("schema surface", () => {
-  it("registers the three new events with aliases", () => {
+  it("registers the three canonical event names", () => {
     expect(HOOK_EVENT_NAMES).toContain("SubagentStop");
     expect(HOOK_EVENT_NAMES).toContain("SessionEnd");
     expect(HOOK_EVENT_NAMES).toContain("Notification");
-    expect(normalizeHookEventName("subagentStop")).toBe("SubagentStop");
-    expect(normalizeHookEventName("sessionEnd")).toBe("SessionEnd");
-    expect(normalizeHookEventName("notification")).toBe("Notification");
   });
 });
 

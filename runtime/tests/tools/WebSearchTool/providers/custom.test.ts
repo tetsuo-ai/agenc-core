@@ -5,6 +5,17 @@ import {
   extractHits,
   isPrivateHostname,
 } from '../../../../src/tools/WebSearchTool/providers/custom.ts'
+import { runWithStartupProviderSelection } from '../../../../src/utils/model/providers.ts'
+
+function withEnvironment<T>(
+  environment: Readonly<Record<string, string | undefined>>,
+  operation: () => T,
+): T {
+  return runWithStartupProviderSelection(
+    { provider: 'openai', model: 'gpt-5', environment },
+    operation,
+  )
+}
 
 // ---------------------------------------------------------------------------
 // extractHits — flexible response parsing
@@ -140,16 +151,19 @@ describe('buildAuthHeadersForPreset auth header behavior', () => {
   // We test isConfigured() which depends on WEB_SEARCH_API/WEB_PROVIDER/WEB_URL_TEMPLATE
   // and the auth behavior through the public search() interface
   test('custom provider is configured when WEB_URL_TEMPLATE is set', () => {
-    process.env.WEB_URL_TEMPLATE = 'https://example.com/search?q={query}'
-    expect(customProvider.isConfigured()).toBe(true)
-    delete process.env.WEB_URL_TEMPLATE
+    expect(
+      withEnvironment(
+        { WEB_URL_TEMPLATE: 'https://example.com/search?q={query}' },
+        () => customProvider.isConfigured(),
+      ),
+    ).toBe(true)
   })
 
   test('custom provider is NOT configured when no env vars are set', () => {
     delete process.env.WEB_URL_TEMPLATE
     delete process.env.WEB_SEARCH_API
     delete process.env.WEB_PROVIDER
-    expect(customProvider.isConfigured()).toBe(false)
+    expect(withEnvironment({}, () => customProvider.isConfigured())).toBe(false)
   })
 })
 
@@ -176,14 +190,22 @@ describe('buildAuthHeadersForPreset direct assertions', () => {
   test('WEB_AUTH_HEADER="" is an explicit opt-out — returns empty headers even with WEB_KEY set', () => {
     process.env.WEB_KEY = 'sk-test-123'
     process.env.WEB_AUTH_HEADER = ''
-    expect(buildAuthHeadersForPreset({ urlTemplate: '', queryParam: 'q', authHeader: 'Authorization' })).toEqual({})
+    expect(
+      withEnvironment(
+        { WEB_KEY: 'sk-test-123', WEB_AUTH_HEADER: '' },
+        () => buildAuthHeadersForPreset({ urlTemplate: '', queryParam: 'q', authHeader: 'Authorization' }),
+      ),
+    ).toEqual({})
   })
 
   test('WEB_AUTH_SCHEME="" strips the scheme prefix (bare key only)', () => {
     process.env.WEB_KEY = 'sk-test-123'
     process.env.WEB_AUTH_SCHEME = ''
     delete process.env.WEB_AUTH_HEADER
-    const result = buildAuthHeadersForPreset({ urlTemplate: '', queryParam: 'q', authHeader: 'X-Api-Key' })
+    const result = withEnvironment(
+      { WEB_KEY: 'sk-test-123', WEB_AUTH_SCHEME: '' },
+      () => buildAuthHeadersForPreset({ urlTemplate: '', queryParam: 'q', authHeader: 'X-Api-Key' }),
+    )
     // scheme is '' so the header value should be just the key (trimmed)
     expect(result).toEqual({ 'X-Api-Key': 'sk-test-123' })
   })
@@ -192,7 +214,10 @@ describe('buildAuthHeadersForPreset direct assertions', () => {
     process.env.WEB_KEY = 'tok-abc'
     delete process.env.WEB_AUTH_HEADER
     delete process.env.WEB_AUTH_SCHEME
-    const result = buildAuthHeadersForPreset({ urlTemplate: '', queryParam: 'q', authHeader: 'Authorization', authScheme: 'Bearer' })
+    const result = withEnvironment(
+      { WEB_KEY: 'tok-abc' },
+      () => buildAuthHeadersForPreset({ urlTemplate: '', queryParam: 'q', authHeader: 'Authorization', authScheme: 'Bearer' }),
+    )
     expect(result).toEqual({ 'Authorization': 'Bearer tok-abc' })
   })
 
@@ -200,7 +225,11 @@ describe('buildAuthHeadersForPreset direct assertions', () => {
     delete process.env.WEB_KEY
     delete process.env.WEB_AUTH_HEADER
     delete process.env.WEB_AUTH_SCHEME
-    expect(buildAuthHeadersForPreset({ urlTemplate: '', queryParam: 'q', authHeader: 'Authorization' })).toEqual({})
+    expect(
+      withEnvironment({}, () =>
+        buildAuthHeadersForPreset({ urlTemplate: '', queryParam: 'q', authHeader: 'Authorization' }),
+      ),
+    ).toEqual({})
   })
 })
 
@@ -243,9 +272,12 @@ describe('customProvider search response parsing', () => {
       })
     }) as typeof fetch
 
-    await expect(customProvider.search({ query: 'agent security' })).rejects.toThrow(
-      'Custom search API returned malformed JSON response',
-    )
+    await expect(
+      withEnvironment(
+        { WEB_SEARCH_API: 'https://search.example/api' },
+        () => customProvider.search({ query: 'agent security' }),
+      ),
+    ).rejects.toThrow('Custom search API returned malformed JSON response')
     expect(calls).toBe(1)
   })
 })

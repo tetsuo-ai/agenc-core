@@ -2,23 +2,24 @@ import { describe, expect, it } from "vitest";
 import {
   markCapabilityDrift,
   markCapabilityVerified,
-  normalizeProviderSlug,
   resolveProviderCapabilityEntry,
   resolveProviderModelCapabilities,
   shouldProbeCapabilityEntry,
 } from "./capabilities.js";
 
-describe("normalizeProviderSlug", () => {
-  it("normalizes xai to grok", () => {
-    expect(normalizeProviderSlug("xai")).toBe("grok");
-    expect(normalizeProviderSlug(" XAI ")).toBe("grok");
-  });
-});
-
 describe("resolveProviderModelCapabilities", () => {
+  it("rejects retired selector spellings at capability selection", () => {
+    expect(() =>
+      resolveProviderModelCapabilities({
+        provider: "xai",
+        model: "grok-4.20-multi-agent-latest",
+      })
+    ).toThrow('use "grok" instead');
+  });
+
   it("uses documented xAI model metadata and enables reasoning effort on supported variants", () => {
     const caps = resolveProviderModelCapabilities({
-      provider: "xai",
+      provider: "grok",
       model: "grok-4.20-multi-agent-latest",
     });
 
@@ -173,13 +174,13 @@ describe("resolveProviderModelCapabilities", () => {
     expect(
       resolveProviderModelCapabilities({
         provider: "deepseek",
-        model: "deepseek-chat",
+        model: "deepseek-v4-flash",
       }),
     ).toMatchObject({
       provider: "deepseek",
       acceptsImageHistory: false,
       acceptsAudioHistory: false,
-      acceptsThinkingHistory: false,
+      acceptsThinkingHistory: true,
       acceptsReasoningEffort: false,
     });
 
@@ -251,7 +252,7 @@ describe("resolveProviderModelCapabilities", () => {
     expect(
       resolveProviderModelCapabilities({
         provider: "deepseek",
-        model: "deepseek-reasoner",
+        model: "deepseek-v4-pro",
       }),
     ).toMatchObject({
       provider: "deepseek",
@@ -412,12 +413,12 @@ describe("capability registry drift state (I-53)", () => {
   it("clears stale drift state after verification", () => {
     markCapabilityDrift({
       provider: "deepseek",
-      model: "deepseek-reasoner",
+      model: "deepseek-v4-pro",
       detectedAt: Date.UTC(2026, 2, 1),
     });
     const verified = markCapabilityVerified({
       provider: "deepseek",
-      model: "deepseek-reasoner",
+      model: "deepseek-v4-pro",
       verifiedAt: Date.UTC(2026, 3, 22),
     });
 

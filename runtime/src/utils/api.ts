@@ -21,7 +21,6 @@ import type { Tool, ToolPermissionContext, Tools } from '../tools/Tool.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../tools/ExitPlanModeTool/constants.js'
-import { TASK_OUTPUT_TOOL_NAME } from '../tools/TaskOutputTool/constants.js'
 import type { Message } from '../types/message.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
 import {
@@ -614,23 +613,6 @@ export function normalizeToolInput<T extends Tool>(
         content: isMarkdown
           ? parsedInput.content
           : stripTrailingWhitespace(parsedInput.content),
-      } as z.infer<T['inputSchema']>
-    }
-    case TASK_OUTPUT_TOOL_NAME: {
-      // Normalize compatibility parameter names from AgentOutputTool/BashOutputTool
-      const legacyInput = input as Record<string, unknown>
-      const taskId =
-        legacyInput.task_id ?? legacyInput.agentId ?? legacyInput.bash_id
-      const timeout =
-        legacyInput.timeout ??
-        (typeof legacyInput.wait_up_to === 'number'
-          ? legacyInput.wait_up_to * 1000
-          : undefined)
-      // SAFETY: See comment in BashTool case above
-      return {
-        task_id: taskId ?? '',
-        block: legacyInput.block ?? true,
-        timeout: timeout ?? 30000,
       } as z.infer<T['inputSchema']>
     }
     default:

@@ -35,7 +35,7 @@ vi.mock("../../utils/autoUpdater.js", () => ({
 }));
 
 vi.mock("../../utils/config.js", () => ({
-  getGlobalConfig: () => ({}),
+  getRuntimeState: () => ({}),
   isAutoUpdaterDisabled: () => true,
 }));
 

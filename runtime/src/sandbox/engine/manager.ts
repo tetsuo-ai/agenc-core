@@ -49,6 +49,7 @@ import {
   type SandboxPolicy as CompatibilitySandboxPolicy,
 } from "../../permissions/sandbox.js";
 import { sanitizeSandboxLauncherEnvironment } from "../launcher-environment.js";
+import { resolveSessionTempRoot } from "../../session/runtime-options.js";
 
 export class SandboxManager {
   selectInitial(options: {
@@ -162,7 +163,6 @@ export class SandboxManager {
         appliedFileSystemPolicy = linuxPermissionProfile.fileSystem;
         ensureLinuxBubblewrapIsSupported({
           fileSystemPolicy: fileSystem,
-          useLegacyLandlock: request.useLegacyLandlock,
           allowProxyNetwork,
           isWsl1:
             platform === "linux" ? request.isWsl1 ?? isWsl1() : false,
@@ -200,7 +200,6 @@ export class SandboxManager {
             request.command.cwd,
             linuxPermissionProfile,
             request.sandboxPolicyCwd,
-            request.useLegacyLandlock,
             allowProxyNetwork,
             inheritedReadOnlyCwd,
           ),
@@ -362,10 +361,8 @@ function compatibilityWorkspaceWritePolicy(
   cwd: string,
 ): CompatibilitySandboxPolicy {
   const writableRoots = getWritableRootsWithCwd(fileSystemPolicy, cwd);
-  const tmpdir = process.env["TMPDIR"];
+  const tmpdir = resolveSessionTempRoot();
   const tmpdirWritable =
-    typeof tmpdir === "string" &&
-    tmpdir.length > 0 &&
     path.isAbsolute(tmpdir) &&
     canWritePathWithCwd(fileSystemPolicy, tmpdir, cwd);
   const slashTmpWritable =
@@ -386,14 +383,12 @@ function compatibilityWorkspaceWritePolicy(
 
 function ensureLinuxBubblewrapIsSupported(options: {
   readonly fileSystemPolicy: FileSystemSandboxPolicy;
-  readonly useLegacyLandlock: boolean;
   readonly allowProxyNetwork: boolean;
   readonly isWsl1: boolean;
 }): void {
   const requiresBubblewrap =
-    !options.useLegacyLandlock &&
-    (!hasFullDiskWriteAccess(options.fileSystemPolicy) ||
-      options.allowProxyNetwork);
+    !hasFullDiskWriteAccess(options.fileSystemPolicy) ||
+    options.allowProxyNetwork;
   if (options.isWsl1 && requiresBubblewrap) {
     throw new SandboxTransformError(
       "wsl1_unsupported_for_bubblewrap",

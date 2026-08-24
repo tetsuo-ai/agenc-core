@@ -15,16 +15,12 @@ type TestGlobalConfig = {
 
 const harness = vi.hoisted(() => ({
   applyConfigEnvironmentVariables: vi.fn(),
-  clearApiKeyHelperCache: vi.fn(),
-  clearAwsCredentialsCache: vi.fn(),
-  clearGcpCredentialsCache: vi.fn(),
   globalConfig: {} as TestGlobalConfig,
   isAntEmployee: vi.fn(() => true),
   logError: vi.fn(),
   notifyPermissionModeChanged: vi.fn(),
   notifySessionMetadataChanged: vi.fn(),
-  persistActiveProviderProfileModel: vi.fn(),
-  saveGlobalConfig: vi.fn(),
+  updateRuntimeState: vi.fn(),
   setMainLoopModelOverride: vi.fn(),
   updateSettingsForSource: vi.fn(),
 }));
@@ -33,20 +29,14 @@ vi.mock("../../../src/bootstrap/state.js", () => ({
   setMainLoopModelOverride: harness.setMainLoopModelOverride,
 }));
 
-vi.mock("../../../src/utils/auth.js", () => ({
-  clearApiKeyHelperCache: harness.clearApiKeyHelperCache,
-  clearAwsCredentialsCache: harness.clearAwsCredentialsCache,
-  clearGcpCredentialsCache: harness.clearGcpCredentialsCache,
-}));
-
 vi.mock("../../../src/utils/buildConfig.js", () => ({
   isAntEmployee: harness.isAntEmployee,
 }));
 
 vi.mock("../../../src/utils/config.js", () => ({
-  getGlobalConfig: () => harness.globalConfig,
-  saveGlobalConfig: (updater: (current: TestGlobalConfig) => TestGlobalConfig) => {
-    harness.saveGlobalConfig(updater);
+  getRuntimeState: () => harness.globalConfig,
+  updateRuntimeState: (updater: (current: TestGlobalConfig) => TestGlobalConfig) => {
+    harness.updateRuntimeState(updater);
     harness.globalConfig = updater(harness.globalConfig);
   },
 }));
@@ -69,10 +59,6 @@ vi.mock("../../../src/utils/permissions/PermissionMode.js", () => ({
     mode === "acceptEdits" || mode === "plan" ? mode : "default",
   toExternalPermissionMode: (mode: string) =>
     mode === "auto" || mode === "bubble" ? "default" : mode,
-}));
-
-vi.mock("../../../src/utils/providerProfiles.js", () => ({
-  persistActiveProviderProfileModel: harness.persistActiveProviderProfileModel,
 }));
 
 vi.mock("../../../src/utils/sessionState.js", () => ({
@@ -98,11 +84,7 @@ function makeState(overrides: Partial<AppState> = {}): AppState {
 
 describe("onChangeAppState coverage swarm", () => {
   beforeEach(() => {
-    delete process.env.AGENC_PROVIDER_PROFILE_ENV_APPLIED;
     harness.applyConfigEnvironmentVariables.mockReset();
-    harness.clearApiKeyHelperCache.mockReset();
-    harness.clearAwsCredentialsCache.mockReset();
-    harness.clearGcpCredentialsCache.mockReset();
     harness.globalConfig = {
       showExpandedTodos: false,
       showSpinnerTree: false,
@@ -114,8 +96,7 @@ describe("onChangeAppState coverage swarm", () => {
     harness.logError.mockReset();
     harness.notifyPermissionModeChanged.mockReset();
     harness.notifySessionMetadataChanged.mockReset();
-    harness.persistActiveProviderProfileModel.mockReset();
-    harness.saveGlobalConfig.mockReset();
+    harness.updateRuntimeState.mockReset();
     harness.setMainLoopModelOverride.mockReset();
     harness.updateSettingsForSource.mockReset();
   });
@@ -150,7 +131,7 @@ describe("onChangeAppState coverage swarm", () => {
     expect(harness.notifyPermissionModeChanged).toHaveBeenCalledWith("bubble");
   });
 
-  test("writes selected models and persists provider profile only after profile env is applied", () => {
+  test("writes selected models to canonical settings", () => {
     onChangeAppState({
       oldState: makeState({ mainLoopModel: null }),
       newState: makeState({ mainLoopModel: "gpt-5.4" }),
@@ -161,20 +142,18 @@ describe("onChangeAppState coverage swarm", () => {
       { model: "gpt-5.4" },
     );
     expect(harness.setMainLoopModelOverride).toHaveBeenCalledWith("gpt-5.4");
-    expect(harness.persistActiveProviderProfileModel).not.toHaveBeenCalled();
 
-    process.env.AGENC_PROVIDER_PROFILE_ENV_APPLIED = "1";
     onChangeAppState({
       oldState: makeState({ mainLoopModel: "gpt-5.4" }),
       newState: makeState({ mainLoopModel: "gpt-5.4-mini" }),
     });
-
-    expect(harness.persistActiveProviderProfileModel).toHaveBeenCalledWith(
-      "gpt-5.4-mini",
+    expect(harness.updateSettingsForSource).toHaveBeenLastCalledWith(
+      "userSettings",
+      { model: "gpt-5.4-mini" },
     );
   });
 
-  test("clears selected model settings without provider profile writes", () => {
+  test("clears selected model settings", () => {
     onChangeAppState({
       oldState: makeState({ mainLoopModel: "gpt-5.4" }),
       newState: makeState({ mainLoopModel: null }),
@@ -185,7 +164,6 @@ describe("onChangeAppState coverage swarm", () => {
       { model: undefined },
     );
     expect(harness.setMainLoopModelOverride).toHaveBeenCalledWith(null);
-    expect(harness.persistActiveProviderProfileModel).not.toHaveBeenCalled();
   });
 
   test("persists expanded view only when the stored config differs", () => {
@@ -198,9 +176,9 @@ describe("onChangeAppState coverage swarm", () => {
       showExpandedTodos: false,
       showSpinnerTree: true,
     });
-    expect(harness.saveGlobalConfig).toHaveBeenCalledTimes(1);
+    expect(harness.updateRuntimeState).toHaveBeenCalledTimes(1);
 
-    harness.saveGlobalConfig.mockReset();
+    harness.updateRuntimeState.mockReset();
     harness.globalConfig = {
       showExpandedTodos: false,
       showSpinnerTree: true,
@@ -211,7 +189,7 @@ describe("onChangeAppState coverage swarm", () => {
       newState: makeState({ expandedView: "teammates" }),
     });
 
-    expect(harness.saveGlobalConfig).not.toHaveBeenCalled();
+    expect(harness.updateRuntimeState).not.toHaveBeenCalled();
   });
 
   test("persists verbose and tungsten toggles only for changed mismatched config", () => {
@@ -224,9 +202,9 @@ describe("onChangeAppState coverage swarm", () => {
       tungstenPanelVisible: true,
       verbose: true,
     });
-    expect(harness.saveGlobalConfig).toHaveBeenCalledTimes(2);
+    expect(harness.updateRuntimeState).toHaveBeenCalledTimes(2);
 
-    harness.saveGlobalConfig.mockReset();
+    harness.updateRuntimeState.mockReset();
     harness.globalConfig = {
       tungstenPanelVisible: true,
       verbose: true,
@@ -237,7 +215,7 @@ describe("onChangeAppState coverage swarm", () => {
       newState: makeState({ verbose: true, tungstenPanelVisible: true }),
     });
 
-    expect(harness.saveGlobalConfig).not.toHaveBeenCalled();
+    expect(harness.updateRuntimeState).not.toHaveBeenCalled();
 
     harness.isAntEmployee.mockReturnValue(false);
     onChangeAppState({
@@ -245,40 +223,42 @@ describe("onChangeAppState coverage swarm", () => {
       newState: makeState({ tungstenPanelVisible: true }),
     });
 
-    expect(harness.saveGlobalConfig).not.toHaveBeenCalled();
+    expect(harness.updateRuntimeState).not.toHaveBeenCalled();
   });
 
-  test("clears auth caches without reapplying env when settings env is unchanged", () => {
-    const sharedEnv = { SHARED: "1" };
+  test("does not reapply the shell environment when its canonical policy is unchanged", () => {
+    const sharedPolicy = { set: { SHARED: "1" } };
 
     onChangeAppState({
-      oldState: makeState({ settings: { env: sharedEnv } }),
+      oldState: makeState({
+        settings: { shell_environment_policy: sharedPolicy },
+      }),
       newState: makeState({
-        settings: { env: sharedEnv, apiKeyHelper: "/bin/helper" },
+        settings: { model: "gpt-5.4", shell_environment_policy: sharedPolicy },
       }),
     });
 
-    expect(harness.clearApiKeyHelperCache).toHaveBeenCalledTimes(1);
-    expect(harness.clearAwsCredentialsCache).toHaveBeenCalledTimes(1);
-    expect(harness.clearGcpCredentialsCache).toHaveBeenCalledTimes(1);
     expect(harness.applyConfigEnvironmentVariables).not.toHaveBeenCalled();
   });
 
-  test("logs auth cache errors without throwing", () => {
-    const error = new Error("cache clear failed");
-    harness.clearApiKeyHelperCache.mockImplementationOnce(() => {
+  test("logs shell environment application errors without throwing", () => {
+    const error = new Error("environment apply failed");
+    harness.applyConfigEnvironmentVariables.mockImplementationOnce(() => {
       throw error;
     });
 
     expect(() =>
       onChangeAppState({
         oldState: makeState(),
-        newState: makeState({ settings: { env: { UPDATED: "1" } } }),
+        newState: makeState({
+          settings: {
+            shell_environment_policy: { set: { UPDATED: "1" } },
+          },
+        }),
       }),
     ).not.toThrow();
 
     expect(harness.logError).toHaveBeenCalledWith(error);
-    expect(harness.clearAwsCredentialsCache).not.toHaveBeenCalled();
-    expect(harness.applyConfigEnvironmentVariables).not.toHaveBeenCalled();
+    expect(harness.applyConfigEnvironmentVariables).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,24 +1,36 @@
 import { describe, expect, test } from 'bun:test'
 import { join } from 'path'
 
-import { isAgenCSettingsPath } from '../../src/utils/permissions/filesystem.ts'
+import { isAgenCConfigPath } from '../../src/utils/permissions/filesystem.ts'
 import { getValidationTip } from '../../src/utils/settings/validationTips.ts'
 
-describe('AgenC settings path surfaces', () => {
-  test('isAgenCSettingsPath recognizes project .agenc settings files', () => {
+describe('AgenC config path surfaces', () => {
+  test('isAgenCConfigPath recognizes canonical config files in any project', () => {
     expect(
-      isAgenCSettingsPath(
-        join(process.cwd(), '.agenc', 'settings.json'),
+      isAgenCConfigPath(
+        join(process.cwd(), '.agenc', 'config.toml'),
       ),
     ).toBe(true)
 
     expect(
-      isAgenCSettingsPath(
-        join(process.cwd(), '.agenc', 'settings.local.json'),
+      isAgenCConfigPath(
+        join(process.cwd(), '..', 'other-project', '.agenc', 'config.local.toml'),
       ),
     ).toBe(true)
   })
 
+  test('legacy JSON migration inputs are protected but unrelated files are not', () => {
+    expect(
+      isAgenCConfigPath(
+        join(process.cwd(), '..', 'other-project', '.agenc', 'settings.json'),
+      ),
+    ).toBe(true)
+    expect(
+      isAgenCConfigPath(
+        join(process.cwd(), '..', 'other-project', '.agenc', 'unrelated.json'),
+      ),
+    ).toBe(false)
+  })
 })
 
 describe('AgenC validation tips', () => {

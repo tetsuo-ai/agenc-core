@@ -56,7 +56,6 @@ vi.mock("../utils/forkedAgent.js", async () => {
   };
 });
 
-const originalPromptSuggestionEnv = process.env.AGENC_ENABLE_PROMPT_SUGGESTION;
 const ROLE_WORKSPACE = createAgentRoleWorkspace("/tmp");
 
 function mkCtx(): TurnContext {
@@ -138,6 +137,7 @@ function mkSession(): Session {
     rolloutStore: undefined,
     eventLog: new EventLog(),
     conversationId: "conv-1",
+    config: {},
     services: {
       querySource: "repl_main_thread",
       registry: {
@@ -169,11 +169,6 @@ describe("commit", () => {
     terminalHookMocks.order = [];
     terminalHookMocks.promptReject = false;
     terminalHookMocks.autoReject = false;
-    if (originalPromptSuggestionEnv === undefined) {
-      delete process.env.AGENC_ENABLE_PROMPT_SUGGESTION;
-    } else {
-      process.env.AGENC_ENABLE_PROMPT_SUGGESTION = originalPromptSuggestionEnv;
-    }
   });
 
   test("keeps resolved tool-use summaries out of model-visible history", async () => {
@@ -477,22 +472,6 @@ describe("commit", () => {
     await commit(state, mkCtx(), mkSession(), undefined, {
       querySource: "sdk",
     });
-
-    expect(terminalHookMocks.cacheParams).toHaveLength(1);
-    expect(terminalHookMocks.promptCalls).toHaveLength(0);
-    expect(terminalHookMocks.autoCalls).toHaveLength(1);
-  });
-
-  test("defined-falsy prompt suggestion env still saves cache but skips prompt", async () => {
-    process.env.AGENC_ENABLE_PROMPT_SUGGESTION = "0";
-    const state = mkState({
-      needsFollowUp: false,
-      toolUseBlocks: [],
-      messagesForQuery: [{ role: "user", content: "hello" }],
-      assistantMessages: [terminalAssistant("done")],
-    });
-
-    await commit(state, mkCtx(), mkSession());
 
     expect(terminalHookMocks.cacheParams).toHaveLength(1);
     expect(terminalHookMocks.promptCalls).toHaveLength(0);

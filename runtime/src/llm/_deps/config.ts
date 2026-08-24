@@ -2,7 +2,7 @@
  * Local _deps slice for the LLM/config boundary.
  * Provides the minimal surface the LLM models-manager consumes:
  *   - AgenCConfig type (loose pass-through shape)
- *   - normalizeProviderSlug
+ *   - resolveProviderSlug
  *   - readProviderConfig
  *   - buildProviderModelCatalog
  *   - resolveDisambiguatedModelSelection
@@ -15,6 +15,7 @@
 import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   BUILT_IN_PROVIDER_MODEL_CATALOG,
+  resolveBuiltInProviderSlug,
 } from "../registry/provider-info.js";
 
 export type ProviderSlug = keyof typeof BUILT_IN_PROVIDER_DEFAULT_MODELS;
@@ -35,7 +36,6 @@ export interface ProviderCapabilityOverrides {
 }
 
 export interface ProviderConfig {
-  readonly api_key_env?: string;
   readonly base_url?: string;
   readonly default_model?: string;
   readonly context_window_tokens?: number;
@@ -86,26 +86,13 @@ class UnknownModelError extends Error {
   }
 }
 
-export function normalizeProviderSlug(
-  provider: string | undefined,
-): ProviderSlug | undefined {
-  const normalized = provider?.trim().toLowerCase();
-  if (!normalized) return undefined;
-  const slug = normalized === "xai"
-    ? "grok"
-    : normalized === "custom" || normalized === "openai_compatible"
-      ? "openai-compatible"
-      : normalized;
-  return slug in BUILT_IN_PROVIDER_DEFAULT_MODELS
-    ? (slug as ProviderSlug)
-    : undefined;
-}
+export { resolveBuiltInProviderSlug as resolveProviderSlug };
 
 export function readProviderConfig(
   config: AgenCConfig,
   provider: string | undefined,
 ): ProviderConfig | undefined {
-  const slug = normalizeProviderSlug(provider);
+  const slug = resolveBuiltInProviderSlug(provider);
   if (!slug) return undefined;
   return config.providers?.[slug];
 }
@@ -121,7 +108,7 @@ export function buildProviderModelCatalog(
 
   if (config?.providers) {
     for (const [provider, providerConfig] of Object.entries(config.providers)) {
-      const slug = normalizeProviderSlug(provider);
+      const slug = resolveBuiltInProviderSlug(provider);
       const model = providerConfig.default_model?.trim();
       if (!slug || !model) continue;
       const entries = catalog[slug] ?? [];
@@ -133,7 +120,7 @@ export function buildProviderModelCatalog(
   }
 
   if (config?.model_provider && config.model?.trim()) {
-    const slug = normalizeProviderSlug(config.model_provider);
+    const slug = resolveBuiltInProviderSlug(config.model_provider);
     const model = config.model.trim();
     if (slug) {
       const entries = catalog[slug] ?? [];

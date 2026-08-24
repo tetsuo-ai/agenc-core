@@ -6,7 +6,7 @@ import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   buildProviderModelCatalog,
   isAgencModelShortcut,
-  normalizeProviderSlug,
+  resolveProviderSlug,
   readProviderConfig,
   type ProviderSlug,
 } from "./resolve-provider.js";
@@ -53,7 +53,7 @@ export function configuredModelForProvider(
 ): string | undefined {
   const providerDefault = readProviderConfig(config, provider)?.default_model?.trim();
   const configuredModel = config.model?.trim();
-  const configuredProvider = normalizeProviderSlug(config.model_provider);
+  const configuredProvider = resolveProviderSlug(config.model_provider);
 
   // An explicit top-level `model` that is unambiguously selected for THIS
   // provider (i.e. `model_provider` is set and resolves to it) is the user's

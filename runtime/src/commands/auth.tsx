@@ -2,12 +2,16 @@ import { spawn } from "node:child_process";
 
 import type { AuthBackend, AuthIdentity, AuthLlmUsage } from "../auth/backend.js";
 import { createAuthBackend } from "../auth/selection.js";
-import { resolveAgencHome } from "../config/env.js";
-import { normalizeProviderSlug } from "../config/resolve-provider.js";
+import { resolveProviderSlug } from "../config/resolve-provider.js";
 import { defaultConfig } from "../config/schema.js";
 import { Box, Text } from "../tui/ink.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { applyProviderSwitch } from "./provider.js";
+import {
+  providerEnvironmentFromCommandContext,
+  remoteAuthContextFromCommandContext,
+  requireCommandConfigStore,
+} from "./config-context.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -179,18 +183,20 @@ async function maybeSelectHostedSubscriptionRoute(
   tier: string | undefined,
 ): Promise<string | undefined> {
   if (!managedSubscriptionTier(tier)) return undefined;
-  const config = ctx.configStore?.current() ?? defaultConfig();
-  if (!hasHostedManagedAccess(config, process.env)) return undefined;
+  const config = requireCommandConfigStore(ctx).current();
+  if (!hasHostedManagedAccess(config, remoteAuthContextFromCommandContext(ctx))) {
+    return undefined;
+  }
 
   const currentProvider =
-    normalizeProviderSlug(readSessionProvider(ctx)) ??
-    normalizeProviderSlug(config.model_provider) ??
+    resolveProviderSlug(readSessionProvider(ctx)) ??
+    resolveProviderSlug(config.model_provider) ??
     "grok";
   if (currentProvider === SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER) {
     return undefined;
   }
 
-  const configuredProvider = normalizeProviderSlug(config.model_provider);
+  const configuredProvider = resolveProviderSlug(config.model_provider);
   if (
     configuredProvider !== undefined &&
     configuredProvider !== "grok" &&
@@ -248,11 +254,12 @@ function updateHostedRouteChrome(
 }
 
 function createSlashAuthBackend(ctx: SlashCommandContext): AuthBackend {
-  const agencHome = ctx.agencHome ?? resolveAgencHome(process.env);
-  const config = ctx.configStore?.current() ?? defaultConfig();
+  const configStore = requireCommandConfigStore(ctx);
+  const agencHome = configStore.homeContext.path;
+  const config = configStore.current() ?? defaultConfig();
   return createAuthBackend(config, {
     agencHome,
-    env: process.env,
+    env: providerEnvironmentFromCommandContext(ctx),
     remote: {
       onDeviceCode: async ({ verificationUri, userCode }) => {
         if (verificationUri === undefined) return;

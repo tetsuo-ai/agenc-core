@@ -173,8 +173,8 @@ describe('message action text helpers', () => {
   })
 
   test('extracts primary tool-call inputs from assistant and grouped messages', () => {
-    expect(toolCallOf(assistantTool('Bash', { command: 'npm test' }) as never)).toEqual({
-      name: 'Bash',
+    expect(toolCallOf(assistantTool('system.bash', { command: 'npm test' }) as never)).toEqual({
+      name: 'system.bash',
       input: { command: 'npm test' },
     })
 
@@ -201,7 +201,7 @@ describe('message action text helpers', () => {
     expect(copyTextOf(assistantTool('NotebookEdit', { notebook_path: 'nb.ipynb' }) as never)).toBe('nb.ipynb')
     expect(copyTextOf(assistantTool('Grep', { pattern: 'TODO' }) as never)).toBe('TODO')
     expect(copyTextOf(assistantTool('Glob', { pattern: '*.ts' }) as never)).toBe('*.ts')
-    expect(copyTextOf(assistantTool('WebFetch', { url: 'https://example.invalid' }) as never)).toBe('https://example.invalid')
+    expect(copyTextOf(assistantTool('web_fetch', { url: 'https://example.invalid' }) as never)).toBe('https://example.invalid')
     expect(copyTextOf(assistantTool('WebSearch', { query: 'coverage' }) as never)).toBe('coverage')
     expect(copyTextOf(assistantTool('Agent', { prompt: 'inspect' }) as never)).toBe('inspect')
     expect(copyTextOf(assistantTool('Tmux', { args: ['new', '-s', 'dev'] }) as never)).toBe('tmux new -s dev')
@@ -220,7 +220,7 @@ describe('message action text helpers', () => {
       'assistant answer',
     )
     expect(
-      copyTextOf(assistantTool('Read', { file_path: '/tmp/file.ts' }) as never),
+      copyTextOf(assistantTool('FileRead', { file_path: '/tmp/file.ts' }) as never),
     ).toBe('/tmp/file.ts')
     expect(copyTextOf(assistantTool('Unknown', { value: 'ignored' }) as never)).toBe('')
 
@@ -286,7 +286,7 @@ describe('isNavigableMessage', () => {
     expect(isNavigableMessage(assistantText('answer') as never)).toBe(true)
     expect(isNavigableMessage(assistantText('') as never)).toBe(false)
     expect(isNavigableMessage({ type: 'assistant', message: { content: [] } } as never)).toBe(false)
-    expect(isNavigableMessage(assistantTool('Bash', { command: 'pwd' }) as never)).toBe(true)
+    expect(isNavigableMessage(assistantTool('system.bash', { command: 'pwd' }) as never)).toBe(true)
     expect(isNavigableMessage(assistantTool('Unknown', {}) as never)).toBe(false)
 
     expect(isNavigableMessage(userText('real prompt') as never)).toBe(true)
@@ -335,7 +335,7 @@ describe('message action UI and hooks', () => {
           uuid: 'assistant-tool',
           msgType: 'assistant',
           expanded: false,
-          toolName: 'Bash',
+          toolName: 'system.bash',
         }}
       />,
       100,
@@ -419,7 +419,7 @@ describe('message action UI and hooks', () => {
       navigateNextUser: vi.fn(),
       navigateTop: vi.fn(),
       navigateBottom: vi.fn(),
-      getSelected: () => assistantTool('Bash', { command: 'npm test' }) as never,
+      getSelected: () => assistantTool('system.bash', { command: 'npm test' }) as never,
     }
 
     await renderActionHarness(
@@ -430,7 +430,7 @@ describe('message action UI and hooks', () => {
           uuid: 'assistant-tool',
           msgType: 'assistant',
           expanded: false,
-          toolName: 'Bash',
+          toolName: 'system.bash',
         }}
         nav={nav}
       />,

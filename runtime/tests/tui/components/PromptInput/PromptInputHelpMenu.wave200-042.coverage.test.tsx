@@ -5,6 +5,7 @@ import stripAnsi from 'strip-ansi'
 import { describe, expect, test, vi } from 'vitest'
 
 import { createRoot } from '../../ink/root.js'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../../remoteAuthSessionContext.fixture.js'
 
 vi.mock('bun:bundle', () => ({
   feature: () => false,
@@ -26,8 +27,8 @@ vi.mock('../../keybindings/loadUserBindings.js', () => ({
 }))
 
 vi.mock('../../../utils/fastMode.js', () => ({
-  isFastModeAvailable: () => true,
-  isFastModeEnabled: () => true,
+  isFastModeAvailableForContext: () => true,
+  isFastModeEnabledForContext: () => true,
 }))
 
 vi.mock('../../../utils/platform.js', () => ({
@@ -82,7 +83,7 @@ describe('PromptInputHelpMenu optional shortcuts coverage', () => {
       stdout: stdout as unknown as NodeJS.WriteStream,
     })
     const renderNode = () => (
-      <PromptInputHelpMenu dimColor fixedWidth gap={1} paddingX={1} />
+      <PromptInputHelpMenu dimColor fixedWidth gap={1} paddingX={1} remoteAuthSessionContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />
     )
 
     try {

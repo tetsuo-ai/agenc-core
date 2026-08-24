@@ -1,11 +1,10 @@
 import { useCallback, useEffect } from 'react'
 import { settingsChangeDetector } from '../../utils/settings/changeDetector.js' // upstream-import: keep target is owned by another Z-PURGE item
 import type { SettingSource } from '../../utils/settings/constants.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { getInitialSettings } from '../../utils/settings/settings.js' // upstream-import: keep target is owned by another Z-PURGE item
-import type { SettingsJson } from '../../utils/settings/types.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getInitialSettings, type RuntimeSettingsSnapshot } from '../../utils/settings/settings.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 export function useSettingsChange(
-  onChange: (source: SettingSource, settings: SettingsJson) => void,
+  onChange: (source: SettingSource, settings: RuntimeSettingsSnapshot) => void,
 ): void {
   const handleChange = useCallback(
     (source: SettingSource) => {

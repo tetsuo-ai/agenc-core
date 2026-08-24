@@ -15,16 +15,12 @@ type TestGlobalConfig = {
 
 const harness = vi.hoisted(() => ({
   applyConfigEnvironmentVariables: vi.fn(),
-  clearApiKeyHelperCache: vi.fn(),
-  clearAwsCredentialsCache: vi.fn(),
-  clearGcpCredentialsCache: vi.fn(),
   globalConfig: {} as TestGlobalConfig,
   isAntEmployee: vi.fn(() => true),
   logError: vi.fn(),
   notifyPermissionModeChanged: vi.fn(),
   notifySessionMetadataChanged: vi.fn(),
-  persistActiveProviderProfileModel: vi.fn(),
-  saveGlobalConfig: vi.fn(),
+  updateRuntimeState: vi.fn(),
   setMainLoopModelOverride: vi.fn(),
   updateSettingsForSource: vi.fn(),
 }));
@@ -33,20 +29,14 @@ vi.mock("../../bootstrap/state.js", () => ({
   setMainLoopModelOverride: harness.setMainLoopModelOverride,
 }));
 
-vi.mock("../../utils/auth.js", () => ({
-  clearApiKeyHelperCache: harness.clearApiKeyHelperCache,
-  clearAwsCredentialsCache: harness.clearAwsCredentialsCache,
-  clearGcpCredentialsCache: harness.clearGcpCredentialsCache,
-}));
-
 vi.mock("../../utils/buildConfig.js", () => ({
   isAntEmployee: harness.isAntEmployee,
 }));
 
 vi.mock("../../utils/config.js", () => ({
-  getGlobalConfig: () => harness.globalConfig,
-  saveGlobalConfig: (updater: (current: TestGlobalConfig) => TestGlobalConfig) => {
-    harness.saveGlobalConfig(updater);
+  getRuntimeState: () => harness.globalConfig,
+  updateRuntimeState: (updater: (current: TestGlobalConfig) => TestGlobalConfig) => {
+    harness.updateRuntimeState(updater);
     harness.globalConfig = updater(harness.globalConfig);
   },
 }));
@@ -69,10 +59,6 @@ vi.mock("../../utils/permissions/PermissionMode.js", () => ({
     mode === "plan" || mode === "acceptEdits" ? mode : "default",
   toExternalPermissionMode: (mode: string) =>
     mode === "bubble" || mode === "auto" ? "default" : mode,
-}));
-
-vi.mock("../../utils/providerProfiles.js", () => ({
-  persistActiveProviderProfileModel: harness.persistActiveProviderProfileModel,
 }));
 
 vi.mock("../../utils/sessionState.js", () => ({
@@ -98,11 +84,7 @@ function makeState(overrides: Partial<AppState> = {}): AppState {
 
 describe("onChangeAppState coverage", () => {
   beforeEach(() => {
-    delete process.env.AGENC_PROVIDER_PROFILE_ENV_APPLIED;
     harness.applyConfigEnvironmentVariables.mockReset();
-    harness.clearApiKeyHelperCache.mockReset();
-    harness.clearAwsCredentialsCache.mockReset();
-    harness.clearGcpCredentialsCache.mockReset();
     harness.globalConfig = {
       showExpandedTodos: false,
       showSpinnerTree: true,
@@ -114,8 +96,7 @@ describe("onChangeAppState coverage", () => {
     harness.logError.mockReset();
     harness.notifyPermissionModeChanged.mockReset();
     harness.notifySessionMetadataChanged.mockReset();
-    harness.persistActiveProviderProfileModel.mockReset();
-    harness.saveGlobalConfig.mockReset();
+    harness.updateRuntimeState.mockReset();
     harness.setMainLoopModelOverride.mockReset();
     harness.updateSettingsForSource.mockReset();
   });
@@ -142,13 +123,12 @@ describe("onChangeAppState coverage", () => {
     expect(unchanged.toolPermissionContext).toBe(previous.toolPermissionContext);
   });
 
-  test("syncs changed app state to session listeners, settings, config, and auth caches", () => {
-    process.env.AGENC_PROVIDER_PROFILE_ENV_APPLIED = "1";
+  test("syncs changed app state to session listeners, settings, config, and shell environment", () => {
     const oldState = makeState();
     const newState = makeState({
       expandedView: "tasks",
       mainLoopModel: "gpt-5.4",
-      settings: { env: { NEW_VALUE: "1" } },
+      settings: { shell_environment_policy: { set: { NEW_VALUE: "1" } } },
       toolPermissionContext: { mode: "plan" },
       tungstenPanelVisible: true,
       verbose: true,
@@ -165,19 +145,13 @@ describe("onChangeAppState coverage", () => {
       { model: "gpt-5.4" },
     );
     expect(harness.setMainLoopModelOverride).toHaveBeenCalledWith("gpt-5.4");
-    expect(harness.persistActiveProviderProfileModel).toHaveBeenCalledWith(
-      "gpt-5.4",
-    );
     expect(harness.globalConfig).toMatchObject({
       showExpandedTodos: true,
       showSpinnerTree: false,
       tungstenPanelVisible: true,
       verbose: true,
     });
-    expect(harness.saveGlobalConfig).toHaveBeenCalledTimes(3);
-    expect(harness.clearApiKeyHelperCache).toHaveBeenCalledTimes(1);
-    expect(harness.clearAwsCredentialsCache).toHaveBeenCalledTimes(1);
-    expect(harness.clearGcpCredentialsCache).toHaveBeenCalledTimes(1);
+    expect(harness.updateRuntimeState).toHaveBeenCalledTimes(3);
     expect(harness.applyConfigEnvironmentVariables).toHaveBeenCalledTimes(1);
   });
 
@@ -200,23 +174,26 @@ describe("onChangeAppState coverage", () => {
       { model: undefined },
     );
     expect(harness.setMainLoopModelOverride).toHaveBeenCalledWith(null);
-    expect(harness.persistActiveProviderProfileModel).not.toHaveBeenCalled();
   });
 
-  test("logs auth cache clearing failures without throwing", () => {
-    const error = new Error("cache unavailable");
-    harness.clearAwsCredentialsCache.mockImplementationOnce(() => {
+  test("logs shell environment application failures without throwing", () => {
+    const error = new Error("environment unavailable");
+    harness.applyConfigEnvironmentVariables.mockImplementationOnce(() => {
       throw error;
     });
 
     expect(() =>
       onChangeAppState({
         oldState: makeState(),
-        newState: makeState({ settings: { env: { NEW_VALUE: "1" } } }),
+        newState: makeState({
+          settings: {
+            shell_environment_policy: { set: { NEW_VALUE: "1" } },
+          },
+        }),
       }),
     ).not.toThrow();
 
     expect(harness.logError).toHaveBeenCalledWith(error);
-    expect(harness.applyConfigEnvironmentVariables).not.toHaveBeenCalled();
+    expect(harness.applyConfigEnvironmentVariables).toHaveBeenCalledTimes(1);
   });
 });

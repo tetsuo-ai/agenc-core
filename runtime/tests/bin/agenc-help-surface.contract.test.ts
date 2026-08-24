@@ -24,7 +24,7 @@ describe("agenc top-level help surface", () => {
       '"  -p, --print                             Run in headless one-shot print mode",',
     );
     expect(source).toContain(
-      '"  --autonomous, --proactive                Enable autonomous tick mode",',
+      '"  --autonomous                             Enable autonomous tick mode",',
     );
   });
 });

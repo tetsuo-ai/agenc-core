@@ -13,9 +13,9 @@ import {
   COST_HAIKU_45,
   formatModelPricing,
 } from '../modelCost.js'
-import { getExecutionAuthoritySettings } from '../settings/settings.js'
+import { getSettingsForSource } from '../settings/settings.js'
 import { checkOpus1mAccess, checkSonnet1mAccess } from './check1mAccess.js'
-import { getAPIProvider } from './providers.js'
+import { getAPIProvider, getSelectedProviderEnvironment } from './providers.js'
 import { isModelAllowed } from './modelAllowlist.js'
 import {
   getCanonicalName,
@@ -31,18 +31,17 @@ import {
   renderDefaultModelSetting,
   type ModelSetting,
 } from './model.js'
-import { has1mContext } from '../context.js'
-import { getGlobalConfig } from '../config.js'
-import {
-  getActiveOpenAIModelOptionsCache,
-  getActiveProviderProfile,
-  getProfileModelOptions,
-} from '../providerProfiles.js'
+import { getRuntimeState } from '../config.js'
 import { getCachedOllamaModelOptions, isOllamaProvider } from './ollamaModels.js'
 import { getCachedNvidiaNimModelOptions, isNvidiaNimProvider } from './nvidiaNimModels.js'
 import { getCachedMiniMaxModelOptions, isMiniMaxProvider } from './minimaxModels.js'
 import { getAntModels } from './antModels.js'
 import { listRegisteredModelCatalogEntries } from '../../llm/registry/model-catalog.js'
+import { resolveSecureStorageHome } from '../secureStorage/home.js'
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 
 // @[MODEL LAUNCH]: Update all the available and default model option strings below.
 
@@ -54,7 +53,7 @@ export type ModelOption = {
 }
 
 function getScopedAdditionalModelOptions(): ModelOption[] {
-  const config = getGlobalConfig()
+  const config = getRuntimeState()
   const activeScope = getAdditionalModelOptionsCacheScope()
 
   if (!activeScope) {
@@ -86,7 +85,7 @@ export function getDefaultOptionForUser(fastMode = false): ModelOption {
   }
 
   // Subscribers
-  if (isAgenCAISubscriber()) {
+  if (isAgenCAISubscriber(credentialHome())) {
     return {
       value: null,
       label: 'Default (recommended)',
@@ -103,25 +102,6 @@ export function getDefaultOptionForUser(fastMode = false): ModelOption {
   }
 }
 
-function getCustomSonnetOption(): ModelOption | undefined {
-  const is3P = getAPIProvider() !== 'firstParty'
-  const customSonnetModel = process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
-  // When a 3P user has a custom sonnet model string, show it directly
-  if (is3P && customSonnetModel) {
-    const is1m = has1mContext(customSonnetModel)
-    return {
-      value: 'sonnet',
-      label:
-        process.env.ANTHROPIC_DEFAULT_SONNET_MODEL_NAME ?? customSonnetModel,
-      description:
-        process.env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION ??
-        `Custom Sonnet model${is1m ? ' (1M context)' : ''}`,
-      descriptionForModel: `${process.env.ANTHROPIC_DEFAULT_SONNET_MODEL_DESCRIPTION ?? `Custom Sonnet model${is1m ? ' with 1M context' : ''}`} (${customSonnetModel})`,
-    }
-  }
-  return undefined
-}
-
 // @[MODEL LAUNCH]: Update or add model option functions (getSonnetXXOption, getOpusXXOption, etc.)
 // with the new model's label and description. These appear in the /model picker.
 function getSonnet46Option(): ModelOption {
@@ -132,33 +112,6 @@ function getSonnet46Option(): ModelOption {
     description: `Sonnet 4.6 · Best for everyday tasks${is3P ? '' : ` · ${formatModelPricing(COST_TIER_3_15)}`}`,
     descriptionForModel:
       'Sonnet 4.6 - best for everyday tasks. Generally recommended for most coding tasks',
-  }
-}
-
-function getCustomOpusOption(): ModelOption | undefined {
-  const is3P = getAPIProvider() !== 'firstParty'
-  const customOpusModel = process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
-  // When a 3P user has a custom opus model string, show it directly
-  if (is3P && customOpusModel) {
-    const is1m = has1mContext(customOpusModel)
-    return {
-      value: 'opus',
-      label: process.env.ANTHROPIC_DEFAULT_OPUS_MODEL_NAME ?? customOpusModel,
-      description:
-        process.env.ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION ??
-        `Custom Opus model${is1m ? ' (1M context)' : ''}`,
-      descriptionForModel: `${process.env.ANTHROPIC_DEFAULT_OPUS_MODEL_DESCRIPTION ?? `Custom Opus model${is1m ? ' with 1M context' : ''}`} (${customOpusModel})`,
-    }
-  }
-  return undefined
-}
-
-function getOpus41Option(): ModelOption {
-  return {
-    value: getModelStrings().opus41,
-    label: 'Opus 4.1',
-    description: `Opus 4.1 · Legacy`,
-    descriptionForModel: 'Opus 4.1 - legacy version',
   }
 }
 
@@ -204,23 +157,6 @@ export function getOpus46_1MOption(fastMode = false): ModelOption {
   }
 }
 
-function getCustomHaikuOption(): ModelOption | undefined {
-  const is3P = getAPIProvider() !== 'firstParty'
-  const customHaikuModel = process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL
-  // When a 3P user has a custom haiku model string, show it directly
-  if (is3P && customHaikuModel) {
-    return {
-      value: 'haiku',
-      label: process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_NAME ?? customHaikuModel,
-      description:
-        process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION ??
-        'Custom Haiku model',
-      descriptionForModel: `${process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL_DESCRIPTION ?? 'Custom Haiku model'} (${customHaikuModel})`,
-    }
-  }
-  return undefined
-}
-
 function getHaiku45Option(): ModelOption {
   const is3P = getAPIProvider() !== 'firstParty'
   return {
@@ -261,7 +197,9 @@ function getMaxOpusOption(fastMode = false): ModelOption {
 
 export function getMaxSonnet46_1MOption(): ModelOption {
   const is3P = getAPIProvider() !== 'firstParty'
-  const billingInfo = isAgenCAISubscriber() ? ' · Billed as extra usage' : ''
+  const billingInfo = isAgenCAISubscriber(credentialHome())
+    ? ' · Billed as extra usage'
+    : ''
   return {
     value: 'sonnet[1m]',
     label: 'Sonnet (1M context)',
@@ -270,7 +208,9 @@ export function getMaxSonnet46_1MOption(): ModelOption {
 }
 
 export function getMaxOpus46_1MOption(fastMode = false): ModelOption {
-  const billingInfo = isAgenCAISubscriber() ? ' · Billed as extra usage' : ''
+  const billingInfo = isAgenCAISubscriber(credentialHome())
+    ? ' · Billed as extra usage'
+    : ''
   return {
     value: 'opus[1m]',
     label: 'Opus (1M context)',
@@ -479,8 +419,11 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
     ]
   }
 
-  if (isAgenCAISubscriber()) {
-    if (isMaxSubscriber() || isTeamPremiumSubscriber()) {
+  if (isAgenCAISubscriber(credentialHome())) {
+    if (
+      isMaxSubscriber(credentialHome()) ||
+      isTeamPremiumSubscriber(credentialHome())
+    ) {
       // Max and Team Premium users: Opus is default, show Sonnet as alternative
       const premiumOptions = [getDefaultOptionForUser(fastMode)]
       if (!isOpus1mMergeEnabled() && checkOpus1mAccess()) {
@@ -516,34 +459,16 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
   }
 
   if (getAdditionalModelOptionsCacheScope()?.startsWith('openai:')) {
-    const activeOpenAIOptions = getActiveOpenAIModelOptionsCache()
     return [
       getDefaultOptionForUser(fastMode),
-      ...(activeOpenAIOptions.length > 0
-        ? activeOpenAIOptions
-        : getScopedAdditionalModelOptions()),
+      ...getScopedAdditionalModelOptions(),
     ]
-  }
-
-  // When a provider profile's env is applied, collect its models so they
-  // can be appended to the standard picker options below.
-  // We check PROFILE_ENV_APPLIED to avoid the ?? profiles[0] fallback in
-  // getActiveProviderProfile which would affect users with inactive profiles.
-  const profileEnvApplied = process.env.AGENC_PROVIDER_PROFILE_ENV_APPLIED === '1'
-  const profileModelOptions: ModelOption[] = []
-  if (profileEnvApplied) {
-    const activeProfile = getActiveProviderProfile()
-    if (activeProfile) {
-      const models = getProfileModelOptions(activeProfile)
-      profileModelOptions.push(...models)
-    }
   }
 
   if (getAPIProvider() === 'xai') {
     return [
       getDefaultOptionForUser(fastMode),
       ...getXaiModelOptions(),
-      ...profileModelOptions,
     ]
   }
 
@@ -563,11 +488,10 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
       }
     }
     payg1POptions.push(getHaiku45Option())
-    payg1POptions.push(...profileModelOptions)
     return payg1POptions
   }
 
-  // PAYG 3P: Default (Sonnet 4.5) + Sonnet (3P custom) or Sonnet 4.6/1M + Opus (3P custom) or Opus 4.1/Opus 4.6/Opus1M + Haiku + Opus 4.1
+  // PAYG 3P: Default + current Sonnet/Opus/Haiku choices.
   const payg3pOptions = [getDefaultOptionForUser(fastMode)]
 
   // Add Agenc models for openai and agenc providers
@@ -575,36 +499,19 @@ function getModelOptionsBase(fastMode = false): ModelOption[] {
     payg3pOptions.push(...getCodexModelOptions())
   }
 
-  const customSonnet = getCustomSonnetOption()
-  if (customSonnet !== undefined) {
-    payg3pOptions.push(customSonnet)
-  } else {
-    // Add Sonnet 4.6 since Sonnet 4.5 is the default
-    payg3pOptions.push(getSonnet46Option())
-    if (checkSonnet1mAccess()) {
-      payg3pOptions.push(getSonnet46_1MOption())
-    }
+  payg3pOptions.push(getSonnet46Option())
+  if (checkSonnet1mAccess()) {
+    payg3pOptions.push(getSonnet46_1MOption())
   }
 
-  const customOpus = getCustomOpusOption()
-  if (customOpus !== undefined) {
-    payg3pOptions.push(customOpus)
-  } else {
-    // Add Opus 4.1, Opus 4.7, Opus 4.6 and Opus 4.6 1M
-    payg3pOptions.push(getOpus41Option()) // Legacy Opus 4.1
-    payg3pOptions.push(getOpus47Option(fastMode))
-    payg3pOptions.push(getOpus46Option(fastMode))
-    if (checkOpus1mAccess()) {
-      payg3pOptions.push(getOpus46_1MOption(fastMode))
-    }
+  // Add current Opus choices only; retired models remain readable for
+  // historical sessions but are never offered for new selection.
+  payg3pOptions.push(getOpus47Option(fastMode))
+  payg3pOptions.push(getOpus46Option(fastMode))
+  if (checkOpus1mAccess()) {
+    payg3pOptions.push(getOpus46_1MOption(fastMode))
   }
-  const customHaiku = getCustomHaikuOption()
-  if (customHaiku !== undefined) {
-    payg3pOptions.push(customHaiku)
-  } else {
-    payg3pOptions.push(getHaikuOption())
-  }
-  payg3pOptions.push(...profileModelOptions)
+  payg3pOptions.push(getHaikuOption())
   return payg3pOptions
 }
 
@@ -698,21 +605,6 @@ export function getModelOptions(fastMode = false): ModelOption[] {
 
   const options = getModelOptionsBase(fastMode)
 
-  // Add the custom model from the ANTHROPIC_CUSTOM_MODEL_OPTION env var
-  const envCustomModel = process.env.ANTHROPIC_CUSTOM_MODEL_OPTION
-  if (
-    envCustomModel &&
-    !options.some(existing => existing.value === envCustomModel)
-  ) {
-    options.push({
-      value: envCustomModel,
-      label: process.env.ANTHROPIC_CUSTOM_MODEL_OPTION_NAME ?? envCustomModel,
-      description:
-        process.env.ANTHROPIC_CUSTOM_MODEL_OPTION_DESCRIPTION ??
-        `Custom model (${envCustomModel})`,
-    })
-  }
-
   // Append additional model options fetched during bootstrap
   for (const opt of getScopedAdditionalModelOptions()) {
     if (!options.some(existing => existing.value === opt.value)) {
@@ -770,8 +662,8 @@ export function getModelOptions(fastMode = false): ModelOption[] {
  * Always preserves the "Default" option (value: null).
  */
 function filterModelOptionsByAllowlist(options: ModelOption[]): ModelOption[] {
-  const settings = getExecutionAuthoritySettings()
-  const filtered = !settings.availableModels
+  const availableModels = getSettingsForSource('policySettings')?.availableModels
+  const filtered = !availableModels
     ? options // No restrictions
     : options.filter(
     opt =>

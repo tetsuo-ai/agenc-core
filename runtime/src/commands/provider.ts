@@ -25,10 +25,14 @@ import {
   configuredModelForProvider,
   defaultModelForProvider,
 } from "../config/resolve-model.js";
-import { normalizeProviderName } from "../llm/provider.js";
+import { resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
 import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
 import { checkModelHistoryCompat, type HistoryCompatResult } from "./model.js";
-import { readCommandConfig } from "./config-context.js";
+import {
+  providerEnvironmentFromCommandContext,
+  readCommandConfig,
+  remoteAuthContextFromCommandContext,
+} from "./config-context.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -70,8 +74,8 @@ export async function applyProviderSwitch(
     }) => Promise<void> | void;
   } = {},
 ): Promise<string> {
-  const normalizedProvider = normalizeProviderName(targetProvider);
-  if (normalizedProvider === null) {
+  const normalizedProvider = resolveBuiltInProviderSlug(targetProvider);
+  if (normalizedProvider === undefined) {
     return `Provider switch to "${targetProvider}" blocked: unknown provider`;
   }
 
@@ -187,8 +191,8 @@ function resolveCommandModelForProvider(
   targetProvider: string,
   targetModel?: string,
 ): string | undefined {
-  const normalizedProvider = normalizeProviderName(targetProvider);
-  if (normalizedProvider === null) return undefined;
+  const normalizedProvider = resolveBuiltInProviderSlug(targetProvider);
+  if (normalizedProvider === undefined) return undefined;
   const config = session.services.configStore?.current();
   return (
     targetModel?.trim() ||
@@ -205,14 +209,14 @@ function managedDefaultForCommand(
   targetModel: string | undefined,
 ): string | undefined {
   if (targetModel !== undefined) return targetModel;
-  const normalizedProvider = normalizeProviderName(targetProvider);
-  if (normalizedProvider === null) return undefined;
+  const normalizedProvider = resolveBuiltInProviderSlug(targetProvider);
+  if (normalizedProvider === undefined) return undefined;
   const config = readCommandConfig(ctx);
   if (config?.auth?.managedKeys?.enabled !== true) return undefined;
   const settings = resolveProviderSettings(
     normalizedProvider,
     config,
-    process.env,
+    providerEnvironmentFromCommandContext(ctx),
   );
   if (!providerHasLiveSubscriptionRoute(normalizedProvider)) return undefined;
   if (settings?.apiKey !== undefined && settings.apiKey.trim().length > 0) {
@@ -220,7 +224,9 @@ function managedDefaultForCommand(
   }
   return subscriptionManagedDefaultModelForTier(
     normalizedProvider,
-    remoteAuthSessionSubscriptionTierSync(process.env),
+    remoteAuthSessionSubscriptionTierSync(
+      remoteAuthContextFromCommandContext(ctx),
+    ),
   );
 }
 
@@ -230,14 +236,14 @@ function subscriptionManagedModelError(
   targetModel: string | undefined,
 ): string | undefined {
   if (targetModel === undefined) return undefined;
-  const normalizedProvider = normalizeProviderName(targetProvider);
-  if (normalizedProvider === null) return undefined;
+  const normalizedProvider = resolveBuiltInProviderSlug(targetProvider);
+  if (normalizedProvider === undefined) return undefined;
   const config = readCommandConfig(ctx);
   if (config?.auth?.managedKeys?.enabled !== true) return undefined;
   const settings = resolveProviderSettings(
     normalizedProvider,
     config,
-    process.env,
+    providerEnvironmentFromCommandContext(ctx),
   );
   if (settings?.apiKey !== undefined && settings.apiKey.trim().length > 0) {
     return undefined;
@@ -247,7 +253,9 @@ function subscriptionManagedModelError(
     return undefined;
   const liveModels = visibleSubscriptionManagedModelsForTier(
     normalizedProvider,
-    remoteAuthSessionSubscriptionTierSync(process.env),
+    remoteAuthSessionSubscriptionTierSync(
+      remoteAuthContextFromCommandContext(ctx),
+    ),
   )
     .map((model) => `/model ${normalizedProvider}:${model}`)
     .join(" or ");
@@ -277,8 +285,8 @@ function providerSwitchAuthError(
   targetProvider: string,
   targetModel: string | undefined,
 ): string | undefined {
-  const normalizedProvider = normalizeProviderName(targetProvider);
-  if (normalizedProvider === null) return undefined;
+  const normalizedProvider = resolveBuiltInProviderSlug(targetProvider);
+  if (normalizedProvider === undefined) return undefined;
   const config = readCommandConfig(ctx);
   if (config?.auth?.managedKeys?.enabled !== true) return undefined;
   const info = resolveBuiltInProviderInfo(normalizedProvider);
@@ -286,21 +294,22 @@ function providerSwitchAuthError(
   const settings = resolveProviderSettings(
     normalizedProvider,
     config,
-    process.env,
+    providerEnvironmentFromCommandContext(ctx),
   );
+  const authContext = remoteAuthContextFromCommandContext(ctx);
   if (isLocalProviderEndpoint(settings?.baseURL ?? info.baseURL))
     return undefined;
   const apiKey = settings?.apiKey;
   if (apiKey !== undefined && apiKey.trim().length > 0) return undefined;
   if (
     providerHasLiveSubscriptionRoute(normalizedProvider) &&
-    hasEntitledRemoteAuthSessionSync(process.env)
+    hasEntitledRemoteAuthSessionSync(authContext)
   ) {
     return undefined;
   }
   if (
     providerHasLiveSubscriptionRoute(normalizedProvider) &&
-    hasRemoteAuthSessionSync(process.env) &&
+    hasRemoteAuthSessionSync(authContext) &&
     targetModel !== undefined &&
     isFreeSubscriptionManagedModel(normalizedProvider, targetModel)
   ) {

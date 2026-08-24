@@ -4,10 +4,6 @@ import { sourceUrl } from '../../../helpers/source-path.ts'
 
 import { formatVimModeIndicator } from './utils.js'
 
-vi.mock('../../../utils/config.js', () => ({
-  getGlobalConfig: () => ({ editorMode: 'normal' }),
-}))
-
 describe('PromptInputFooterLeftSide vim mode indicator', () => {
   test('formats all active vim modes', () => {
     expect(formatVimModeIndicator('INSERT')).toBe('-- INSERT --')

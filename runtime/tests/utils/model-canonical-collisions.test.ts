@@ -33,6 +33,12 @@ describe("model canonicalization + capability minors", () => {
     expect(withTag.endsWith("[1m]")).toBe(true);
   });
 
+  it("does not silently rewrite an explicitly selected model ID", () => {
+    expect(
+      parseUserSpecifiedModel("claude-opus-4-1-20250805" as never),
+    ).toBe("claude-opus-4-1-20250805");
+  });
+
   it("enables adaptive thinking for opus-4-8", () => {
     expect(modelSupportsAdaptiveThinking("claude-opus-4-8")).toBe(true);
     // regression guard: 4-7/4-6 still supported.

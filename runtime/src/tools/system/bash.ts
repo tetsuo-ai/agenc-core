@@ -1022,6 +1022,9 @@ export function createBashTool(config?: BashToolConfig): Tool {
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const input = rawArgs as unknown as BashToolInput &
         ToolExecutionInjectedArgs;
+      if (Object.prototype.hasOwnProperty.call(input, "timeout")) {
+        return errorResult("unknown field `timeout`");
+      }
       const abortSignal = input.__abortSignal;
       const onProgress = input.__onProgress;
       const containDescendants = hasCurrentWorkspaceOperationLifetime();

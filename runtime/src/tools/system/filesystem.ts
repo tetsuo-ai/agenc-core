@@ -32,11 +32,14 @@ import {
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve, dirname, basename, join } from "node:path";
 import { tmpdir } from "node:os";
+import { resolveHomeContext } from "../../config/home.js";
+import { getCurrentRuntimeSession } from "../../session/current-session.js";
+import { getCwd } from "../../utils/cwd.js";
 import { nonEmptyString } from "../../utils/stringUtils.js";
 // Inline lean replacement (gateway/host-workspace.js was deleted).
 function resolveSessionWorkspaceRoot(entry?: string): string {
   if (typeof entry === "string" && entry.length > 0) return entry;
-  return process.env.AGENC_WORKSPACE ?? process.cwd();
+  return getCurrentRuntimeSession()?.sessionConfiguration.cwd ?? getCwd();
 }
 import {
   isSessionPlanFile,
@@ -206,7 +209,7 @@ const LOCAL_FILE_HISTORY_MAX_ENTRIES = 8;
 
 // OOM fix: `sessionReadState` / `workspaceReadState` retain the full file
 // `content` + `rawContent` (KB–MB each) for every unique path read in a
-// session. In a long-lived `agenc --yolo` run touching thousands of files this
+// session. In a long-lived `agenc --dangerously-bypass-approvals-and-sandbox` run touching thousands of files this
 // grew without bound. The read-before-write GATE only needs the tiny presence +
 // view-kind metadata, and the per-turn changed-files producer only needs
 // `rawContent` for recently-read files — so cap the retained large-field bytes
@@ -267,10 +270,9 @@ function boundSessionReadContent(
 
 /**
  * Resolve the workspace root used to key {@link workspaceReadState}. This
- * is the process-global session workspace root (env `AGENC_WORKSPACE`,
- * falling back to `process.cwd()`), which is shared by the canonical tool
- * surface and all subagents running inside the same daemon process — the
- * correct scope for the cross-agent fallback.
+ * is the current session's canonical workspace root. It is shared by the
+ * canonical tool surface and all subagents inside that session, while staying
+ * isolated from other sessions hosted by the same daemon.
  */
 function resolveWorkspaceReadScopeRoot(): string {
   try {
@@ -968,12 +970,11 @@ function normalizeFilesystemUnicodeIdentity(path: string): string {
 
 /** Validate and resolve a path argument from tool input. */
 /**
- * Build the optional plan-file context from injected tool args. Returns
- * null when the dispatcher didn't plumb `__agencSessionId` (e.g.,
- * headless tests, embedded contexts), in which case the plan-file
- * carve-out below is a no-op.
+ * Build a plan-file context only from the dispatcher's signed session id and
+ * injected canonical home. Missing or forged authority returns `null`, so the
+ * out-of-workspace plan-file carve-out remains disabled.
  */
-function planFileContextFromArgs(
+export function verifiedPlanFileContextFromArgs(
   args: Record<string, unknown> | undefined,
 ): PlanFileContext | null {
   if (!args) return null;
@@ -994,18 +995,13 @@ function planFileContextFromArgs(
   const ctx: PlanFileContext = { sessionId };
   const injectedAgencHome = args[SESSION_AGENC_HOME_ARG];
   if (
-    typeof injectedAgencHome === "string" &&
-    injectedAgencHome.trim().length > 0
-  ) {
-    return { ...ctx, agencHome: injectedAgencHome };
-  }
-  if (
-    typeof process.env.AGENC_HOME === "string" &&
-    process.env.AGENC_HOME.length > 0
-  ) {
-    return { ...ctx, agencHome: process.env.AGENC_HOME };
-  }
-  return ctx;
+    typeof injectedAgencHome !== "string" ||
+    injectedAgencHome.trim().length === 0
+  ) return null;
+  return {
+    ...ctx,
+    agencHome: resolveHomeContext({ AGENC_HOME: injectedAgencHome }).path,
+  };
 }
 
 export async function safePathAllowingSessionPlanFile(
@@ -1019,7 +1015,7 @@ export async function safePathAllowingSessionPlanFile(
   );
   if (result.safe) return result;
 
-  const planCtx = planFileContextFromArgs(args);
+  const planCtx = verifiedPlanFileContextFromArgs(args);
   if (planCtx !== null && !hasUnsafeShape(targetPath)) {
     try {
       const canonical = await canonicalize(targetPath);
@@ -1054,7 +1050,7 @@ async function validatePath(
   // shape as AgenC's `checkEditableInternalPath`: mode-agnostic,
   // bypasses workspace allowlist, retains all other safety checks
   // (null bytes, traversal, length — those rejected upstream of here).
-  const planCtx = planFileContextFromArgs(args);
+  const planCtx = verifiedPlanFileContextFromArgs(args);
   if (planCtx !== null && !hasUnsafeShape(input)) {
     try {
       const canonical = await canonicalize(input);

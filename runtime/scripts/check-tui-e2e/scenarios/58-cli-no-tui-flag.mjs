@@ -13,7 +13,7 @@ export const meta = {
 
 export default async function (session) {
   const result = await session.runAgenc(
-    ["--yolo", "--no-tui", "reply with the single word NOTUI"],
+    ["--dangerously-bypass-approvals-and-sandbox", "--no-tui", "reply with the single word NOTUI"],
     {
       cwd: session.cwd,
       timeoutMs: 110_000,

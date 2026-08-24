@@ -15,7 +15,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 export const meta = {
   description: "Multi-line bracketed paste is accepted without crash.",
   timeoutMs: 90_000,
-  args: ["--yolo"],
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   slimCwd: true,
 };
 

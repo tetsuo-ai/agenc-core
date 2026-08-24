@@ -124,14 +124,8 @@ export interface GetAttachmentsOptions {
   readonly subagentDepth: number;
   /** Cancellation signal threaded from the turn loop. */
   readonly signal: AbortSignal;
-  /**
-   * AgenC home directory used to derive `<agencHome>/memory` for the
-   * relevant-memory producer. Optional — when omitted (e.g. unit tests
-   * that do not exercise memory), the producer skips the scan and emits
-   * nothing. Sourced at the call site from
-   * `session.services.configStore?.agencHome`.
-   */
-  readonly agencHome?: string;
+  /** Canonical home captured from this session's ConfigStore. */
+  readonly agencHome: string;
   /** Runtime skill manager used to announce Skill-tool candidates. */
   readonly skillsManager?: {
     skillsForConfig(

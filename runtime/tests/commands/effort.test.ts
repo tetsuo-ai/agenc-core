@@ -42,7 +42,7 @@ describe("/effort Grok catalog levels", () => {
     settings.update.mockReset();
   });
 
-  test("sets grok-4.6 xhigh and persists it through the stable max setting", async () => {
+  test("sets grok-4.6 xhigh through the canonical reasoning_effort setting", async () => {
     const { context, getAppState } = commandContext("grok-4.6", "xhigh");
 
     const result = await effortCommand.execute(context);
@@ -52,7 +52,7 @@ describe("/effort Grok catalog levels", () => {
       expect(result.text).toContain("xhigh effort set for grok-4.6");
     }
     expect(settings.update).toHaveBeenCalledWith("userSettings", {
-      effortLevel: "max",
+      reasoning_effort: "xhigh",
     });
     expect(getAppState()).toMatchObject({ effortValue: "xhigh" });
   });

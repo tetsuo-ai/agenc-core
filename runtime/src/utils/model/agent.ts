@@ -34,10 +34,6 @@ export function getAgentModel(
   toolSpecifiedModel?: ModelAlias,
   permissionMode?: PermissionMode,
 ): string {
-  if (process.env.AGENC_SUBAGENT_MODEL) {
-    return parseUserSpecifiedModel(process.env.AGENC_SUBAGENT_MODEL)
-  }
-
   // Prioritize tool-specified model if provided
   if (toolSpecifiedModel) {
     if (aliasMatchesParentTier(toolSpecifiedModel, parentModel)) {

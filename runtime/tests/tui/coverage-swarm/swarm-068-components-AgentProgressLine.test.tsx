@@ -20,7 +20,7 @@ function props(
   overrides: Partial<AgentProgressLineProps> = {},
 ): AgentProgressLineProps {
   return {
-    agentType: "worker",
+    agentType: "runner",
     isError: false,
     isLast: false,
     isResolved: false,
@@ -108,7 +108,7 @@ describe("AgentProgressLine coverage swarm 068", () => {
       toolUseCount: 3,
     });
 
-    expect(output).toContain("`- worker");
+    expect(output).toContain("`- runner · Runner");
     expect(output).not.toContain("Running in the background");
     expect(output).not.toContain("3 tool uses");
     expect(output).not.toContain("9.0k tokens");

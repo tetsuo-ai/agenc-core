@@ -95,7 +95,7 @@ import {
 
 export const GREP_TOOL_NAME = "Grep";
 
-const BASH_TOOL_NAME = "Bash";
+const BASH_TOOL_NAME = "system.bash";
 const AGENT_TOOL_NAME = "spawn_agent";
 
 const VCS_DIRECTORIES_TO_EXCLUDE = [
@@ -189,7 +189,6 @@ interface GrepInput extends ToolExecutionInjectedArgs {
   readonly "-B"?: unknown;
   readonly "-A"?: unknown;
   readonly "-C"?: unknown;
-  readonly context?: unknown;
   readonly "-n"?: unknown;
   readonly "-i"?: unknown;
   readonly head_limit?: unknown;
@@ -394,13 +393,6 @@ function normalizeGrepInput(
     MAX_GREP_CONTEXT_LINES,
   );
   if (typeof explicitContext === "object") return explicitContext;
-  const aliasContext = boundedInteger(
-    args.context,
-    "context",
-    MAX_GREP_CONTEXT_LINES,
-  );
-  if (typeof aliasContext === "object") return aliasContext;
-
   const headLimit = boundedInteger(
     args.head_limit,
     "head_limit",
@@ -435,9 +427,7 @@ function normalizeGrepInput(
     includeIgnored,
     ...(contextBefore !== undefined ? { contextBefore } : {}),
     ...(contextAfter !== undefined ? { contextAfter } : {}),
-    ...((explicitContext ?? aliasContext) !== undefined
-      ? { contextBoth: explicitContext ?? aliasContext }
-      : {}),
+    ...(explicitContext !== undefined ? { contextBoth: explicitContext } : {}),
     ...(type !== undefined ? { type } : {}),
     ...(rawGlob !== undefined ? { rawGlob } : {}),
     globs,
@@ -3946,13 +3936,6 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
           description:
             'Number of lines to show before and after each match (rg -C). Requires output_mode: "content", ignored otherwise.',
         },
-        context: {
-          type: "integer",
-          minimum: 0,
-          maximum: MAX_GREP_CONTEXT_LINES,
-          description:
-            'Alias for "-C": number of lines to show before and after each match. Requires output_mode: "content", ignored otherwise.',
-        },
         "-n": {
           type: "boolean",
           description:
@@ -3999,6 +3982,9 @@ export function createGrepTool(config?: GrepToolConfig): Tool {
     },
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as GrepInput;
+      if (Object.prototype.hasOwnProperty.call(args, "context")) {
+        return errorResult("unknown field `context`");
+      }
       const normalized = normalizeGrepInput(args);
       if ("error" in normalized) return errorResult(normalized.error);
       const ripgrepPath = selectPinnedRipgrepPath();

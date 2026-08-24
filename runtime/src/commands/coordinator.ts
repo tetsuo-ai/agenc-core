@@ -8,8 +8,8 @@
  * send_message, wait_agent, task tools — no file edits, no shell).
  * Both apply at session construction, so toggling takes effect on the
  * NEXT session; the command persists the `coordinator_mode` config
- * flag and reports how to apply it. `AGENC_COORDINATOR_MODE` env
- * remains an override in both directions.
+ * flag and reports how to apply it. Environment overrides are folded
+ * into the ConfigStore snapshot once at session ingress.
  */
 import { AgenCConfigEditsBuilder } from "../config/edit.js";
 import {
@@ -25,13 +25,8 @@ import {
 
 function statusText(configFlag: boolean | undefined): string {
   const effective = isCoordinatorModeEnabled(configFlag);
-  const envRaw = process.env.AGENC_COORDINATOR_MODE;
-  const envNote =
-    envRaw !== undefined && envRaw !== ""
-      ? ` (AGENC_COORDINATOR_MODE=${envRaw} overrides the config flag)`
-      : "";
   return [
-    `Coordinator mode: ${effective ? "ON" : "off"}${envNote}`,
+    `Coordinator mode: ${effective ? "ON" : "off"}`,
     `Config flag (coordinator_mode): ${configFlag === true ? "true" : configFlag === false ? "false" : "<unset>"}`,
     effective
       ? `Active surface: ${LIVE_COORDINATOR_ALLOWED_TOOLS.join(", ")}`

@@ -15,6 +15,12 @@ afterEach(() => {
 
 type OpenAiShimClient = ReturnType<typeof createOpenAiShimClient>
 
+const PROVIDER_ENVIRONMENT = Object.freeze({
+  AGENC_PROVIDER: 'openai-compatible',
+  AGENC_MODEL: 'vllm-model',
+  OPENAI_BASE_URL: 'http://example.test/v1',
+})
+
 function frame(delta: unknown, finish_reason?: string): string {
   return `data: ${JSON.stringify({
     id: 'c',
@@ -39,7 +45,11 @@ function sse(frames: string[]): Response {
 
 async function collectToolUse(frames: string[]) {
   globalThis.fetch = (async () => sse(frames)) as typeof fetch
-  const client = createOpenAiShimClient({}) as OpenAiShimClient
+  const client = createOpenAiShimClient({
+    selectedProvider: 'openai',
+    model: 'vllm-model',
+    providerEnvironment: PROVIDER_ENVIRONMENT,
+  }) as OpenAiShimClient
   const result = await client.beta.messages
     .create({
       model: 'vllm-model',

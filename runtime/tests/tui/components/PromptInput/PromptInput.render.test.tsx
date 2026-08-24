@@ -7,6 +7,7 @@ import {
   enqueue,
   resetCommandQueue,
 } from "../../../utils/messageQueueManager.js";
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../../remoteAuthSessionContext.fixture.js";
 
 const harness = vi.hoisted(() => {
   const appState = {
@@ -124,7 +125,7 @@ const harness = vi.hoisted(() => {
     platform: "linux",
     quickOpenProps: undefined as undefined | Record<string, unknown>,
     runningTeammates: [] as unknown[],
-    saveGlobalConfig: vi.fn(),
+    updateRuntimeState: vi.fn(),
     specialChars: {} as Record<string, string>,
     swarmBanner: null as null | { bgColor: string; text?: string },
     teammateColor: undefined as undefined | string,
@@ -148,6 +149,7 @@ const harness = vi.hoisted(() => {
           permissionMode: string;
         },
     fastMode: {
+      authorityContexts: [] as unknown[],
       available: false,
       cooldown: false,
       enabled: false,
@@ -170,6 +172,7 @@ const harness = vi.hoisted(() => {
       harness.editPromptResult = { content: null, error: null };
       harness.keybindings = {};
       harness.inputHandlers = [];
+      harness.fastMode.authorityContexts = [];
       appState.coordinatorTaskIndex = -1;
       appState.footerSelection = null;
       appState.promptSuggestion = {
@@ -232,7 +235,7 @@ const harness = vi.hoisted(() => {
       harness.platform = "linux";
       harness.quickOpenProps = undefined;
       harness.runningTeammates = [];
-      harness.saveGlobalConfig.mockClear();
+      harness.updateRuntimeState.mockClear();
       harness.specialChars = {};
       harness.swarmBanner = null;
       harness.teammateColor = undefined;
@@ -250,6 +253,7 @@ const harness = vi.hoisted(() => {
       harness.visibleAgentTasks = [];
       harness.viewedTeammate = undefined;
       harness.fastMode = {
+        authorityContexts: [],
         available: false,
         cooldown: false,
         enabled: false,
@@ -499,8 +503,8 @@ vi.mock("../../../utils/array.js", () => ({
 }));
 
 vi.mock("../../../utils/config.js", () => ({
-  getGlobalConfig: () => harness.getGlobalConfigResult,
-  saveGlobalConfig: harness.saveGlobalConfig,
+  getRuntimeState: () => harness.getGlobalConfigResult,
+  updateRuntimeState: harness.updateRuntimeState,
 }));
 
 vi.mock("../../../utils/cwd.js", () => ({
@@ -547,12 +551,33 @@ vi.mock("../../../utils/fastMode.js", () => ({
   FAST_MODE_MODEL_DISPLAY: "fast-model",
   clearFastModeCooldown: vi.fn(),
   getFastModeModel: () => "fast-model",
-  getFastModeRuntimeState: () => harness.fastMode.runtimeState,
-  getFastModeUnavailableReason: () => harness.fastMode.unavailableReason,
-  isFastModeAvailable: () => harness.fastMode.available,
-  isFastModeCooldown: () => harness.fastMode.cooldown,
-  isFastModeEnabled: () => harness.fastMode.enabled,
-  isFastModeSupportedByModel: () => harness.fastMode.supportedByModel,
+  getFastModeRuntimeStateForContext: (context: unknown) => {
+    harness.fastMode.authorityContexts.push(context);
+    return harness.fastMode.runtimeState;
+  },
+  getFastModeUnavailableReasonForContext: (context: unknown) => {
+    harness.fastMode.authorityContexts.push(context);
+    return harness.fastMode.unavailableReason;
+  },
+  isFastModeAvailableForContext: (context: unknown) => {
+    harness.fastMode.authorityContexts.push(context);
+    return harness.fastMode.available;
+  },
+  isFastModeCooldownForContext: (context: unknown) => {
+    harness.fastMode.authorityContexts.push(context);
+    return harness.fastMode.cooldown;
+  },
+  isFastModeEnabledForContext: (context: unknown) => {
+    harness.fastMode.authorityContexts.push(context);
+    return harness.fastMode.enabled;
+  },
+  isFastModeSupportedByModelForContext: (
+    _model: unknown,
+    context: unknown,
+  ) => {
+    harness.fastMode.authorityContexts.push(context);
+    return harness.fastMode.supportedByModel;
+  },
 }));
 
 vi.mock("../../../utils/fullscreen.js", () => ({
@@ -600,7 +625,8 @@ vi.mock("../../../utils/permissions/getNextPermissionMode.js", () => ({
   getNextPermissionMode: () => harness.nextPermissionMode,
 }));
 
-vi.mock("../../../utils/permissions/permissionSetup.js", () => ({
+vi.mock("../../../permissions/permission-mode.js", async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
   transitionPermissionMode: (_from: unknown, _to: unknown, context: unknown) =>
     context,
   isAutoModeGateEnabled: () => harness.autoModeGateEnabled,
@@ -926,6 +952,7 @@ function basePromptInputProps(overrides: Record<string, unknown> = {}) {
     onShowMessageSelector: vi.fn(),
     onSubmit: vi.fn(async () => {}),
     pastedContents: {},
+    remoteAuthSessionContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
     setHelpOpen: vi.fn(),
     setIsSearchingHistory: vi.fn(),
     setPastedContents: harness.setPastedContents,
@@ -1002,6 +1029,19 @@ describe("PromptInput render surface", () => {
     vi.mocked(sendDirectMemberMessage).mockClear();
     vi.mocked(logError).mockClear();
     vi.mocked(editPromptInEditor).mockClear();
+  });
+
+  test("uses the captured session provider authority for every fast-mode read", async () => {
+    const rendered = await renderPromptInput();
+
+    try {
+      expect(harness.fastMode.authorityContexts.length).toBeGreaterThan(0);
+      expect(new Set(harness.fastMode.authorityContexts)).toEqual(
+        new Set([TEST_REMOTE_AUTH_SESSION_CONTEXT]),
+      );
+    } finally {
+      await rendered.dispose();
+    }
   });
 
   test("wires base text input props for the idle prompt surface", async () => {
@@ -1379,7 +1419,7 @@ describe("PromptInput render surface", () => {
         expect.objectContaining({ mode: "default" }),
       );
       expect(harness.appState.toolPermissionContext.mode).toBe("default");
-      expect(harness.saveGlobalConfig).not.toHaveBeenCalled();
+      expect(harness.updateRuntimeState).not.toHaveBeenCalled();
     } finally {
       await rendered.dispose();
     }

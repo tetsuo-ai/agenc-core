@@ -12,7 +12,8 @@ import { basename, isAbsolute, join, relative, sep } from 'path'
 import { z } from 'zod/v4'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from '../../utils/debug.js'
-import { getAgenCConfigHomeDir } from '../../utils/envUtils.js'
+import { getAgenCHomeDir } from '../../utils/envUtils.js'
+import { getSessionRemoteMemoryRoot } from '../../session/runtime-options.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
 import {
@@ -260,9 +261,9 @@ function getMemoryTrustAnchor(
   scope: AgentMemoryScope,
   cwd: string,
 ): string {
-  const remoteMemoryDirectory = process.env.AGENC_REMOTE_MEMORY_DIR
+  const remoteMemoryDirectory = getSessionRemoteMemoryRoot()
   if (scope === 'user') {
-    return remoteMemoryDirectory ?? getAgenCConfigHomeDir()
+    return remoteMemoryDirectory ?? getAgenCHomeDir()
   }
   if (scope === 'local' && remoteMemoryDirectory) {
     return remoteMemoryDirectory

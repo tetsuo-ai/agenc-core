@@ -5,12 +5,13 @@
 
 import { afterEach, describe, expect, test } from "vitest";
 
+import { getUpgradeMessage } from "./context-window-upgrade.js";
 import {
-  getUpgradeMessage,
-  setContextWindowUpgradeContext,
-} from "./context-window-upgrade.js";
+  clearCurrentRuntimeSession,
+  runWithCurrentRuntimeSession,
+} from "../../src/session/current-session.js";
 import type { ModelInfo } from "../session/turn-context.js";
-import type { ModelsManager } from "../session/session.js";
+import type { ModelsManager, Session } from "../session/session.js";
 
 function buildModel(slug: string, contextWindow: number | undefined): ModelInfo {
   return {
@@ -38,8 +39,29 @@ function buildManager(models: ReadonlyArray<ModelInfo>): ModelsManager {
   };
 }
 
+function buildSession(
+  currentModel: string,
+  models: ReadonlyArray<ModelInfo>,
+): Session {
+  return {
+    config: { model: currentModel },
+    services: { modelsManager: buildManager(models) },
+  } as unknown as Session;
+}
+
+function withSession<T>(
+  currentModel: string,
+  models: ReadonlyArray<ModelInfo>,
+  callback: () => T,
+): T {
+  return runWithCurrentRuntimeSession(
+    buildSession(currentModel, models),
+    callback,
+  );
+}
+
 afterEach(() => {
-  setContextWindowUpgradeContext(null);
+  clearCurrentRuntimeSession();
 });
 
 describe("getUpgradeMessage", () => {
@@ -49,70 +71,107 @@ describe("getUpgradeMessage", () => {
   });
 
   test("returns null when current model has no context window", () => {
-    setContextWindowUpgradeContext({
-      currentModel: "weird-model",
-      modelsManager: buildManager([buildModel("weird-model", undefined)]),
-    });
-    expect(getUpgradeMessage("tip")).toBeNull();
+    expect(
+      withSession(
+        "weird-model",
+        [buildModel("weird-model", undefined)],
+        () => getUpgradeMessage("tip"),
+      ),
+    ).toBeNull();
   });
 
   test("returns null when no same-family larger sibling exists", () => {
-    setContextWindowUpgradeContext({
-      currentModel: "grok-4",
-      modelsManager: buildManager([
+    expect(
+      withSession(
+        "grok-4",
+        [
         buildModel("grok-4", 256_000),
         buildModel("gpt-5", 1_000_000),
-      ]),
-    });
-    expect(getUpgradeMessage("tip")).toBeNull();
+        ],
+        () => getUpgradeMessage("tip"),
+      ),
+    ).toBeNull();
   });
 
   test("emits a warning string with the upgrade slug", () => {
-    setContextWindowUpgradeContext({
-      currentModel: "claude-opus-4-7",
-      modelsManager: buildManager([
+    expect(
+      withSession(
+        "claude-opus-4-7",
+        [
         buildModel("claude-opus-4-7", 200_000),
         buildModel("claude-opus-4-7-1m", 1_000_000),
-      ]),
-    });
-    expect(getUpgradeMessage("warning")).toBe("/model claude-opus-4-7-1m");
+        ],
+        () => getUpgradeMessage("warning"),
+      ),
+    ).toBe("/model claude-opus-4-7-1m");
   });
 
   test("emits a multiplier-aware tip when upgrade is at least 2x larger", () => {
-    setContextWindowUpgradeContext({
-      currentModel: "claude-opus-4-7",
-      modelsManager: buildManager([
+    expect(
+      withSession(
+        "claude-opus-4-7",
+        [
         buildModel("claude-opus-4-7", 200_000),
         buildModel("claude-opus-4-7-1m", 1_000_000),
-      ]),
-    });
-    expect(getUpgradeMessage("tip")).toBe(
+        ],
+        () => getUpgradeMessage("tip"),
+      ),
+    ).toBe(
       "Tip: You have access to claude-opus-4-7-1m with 5x more context",
     );
   });
 
   test("emits a generic larger-window tip when upgrade is less than 2x", () => {
-    setContextWindowUpgradeContext({
-      currentModel: "gpt-5",
-      modelsManager: buildManager([
+    expect(
+      withSession(
+        "gpt-5",
+        [
         buildModel("gpt-5", 1_000_000),
         buildModel("gpt-5-pro", 1_500_000),
-      ]),
-    });
-    expect(getUpgradeMessage("tip")).toBe(
+        ],
+        () => getUpgradeMessage("tip"),
+      ),
+    ).toBe(
       "Tip: You have access to gpt-5-pro with a larger context window",
     );
   });
 
   test("prefers the smallest qualifying upgrade", () => {
-    setContextWindowUpgradeContext({
-      currentModel: "grok-4",
-      modelsManager: buildManager([
+    expect(
+      withSession(
+        "grok-4",
+        [
         buildModel("grok-4", 256_000),
         buildModel("grok-4-large", 512_000),
         buildModel("grok-4-huge", 2_000_000),
-      ]),
-    });
-    expect(getUpgradeMessage("warning")).toBe("/model grok-4-large");
+        ],
+        () => getUpgradeMessage("warning"),
+      ),
+    ).toBe("/model grok-4-large");
+  });
+
+  test("keeps concurrent session model catalogs isolated", async () => {
+    const sessionA = buildSession("grok-4", [
+      buildModel("grok-4", 256_000),
+      buildModel("grok-4-large", 512_000),
+    ]);
+    const sessionB = buildSession("gpt-5", [
+      buildModel("gpt-5", 1_000_000),
+      buildModel("gpt-5-pro", 1_500_000),
+    ]);
+
+    const [messageA, messageB] = await Promise.all([
+      runWithCurrentRuntimeSession(sessionA, async () => {
+        await Promise.resolve();
+        return getUpgradeMessage("warning");
+      }),
+      runWithCurrentRuntimeSession(sessionB, async () => {
+        await Promise.resolve();
+        return getUpgradeMessage("warning");
+      }),
+    ]);
+
+    expect(messageA).toBe("/model grok-4-large");
+    expect(messageB).toBe("/model gpt-5-pro");
   });
 });

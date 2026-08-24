@@ -1,7 +1,5 @@
 import type { BetaUsage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import { shouldIncludeFirstPartyOnlyBetas } from './betas.js'
-import { isEnvTruthy } from './envUtils.js'
-import { getExecutionAuthoritySettings } from './settings/settings.js'
 
 // The SDK does not yet have types for advisor blocks.
 // Follow-up(hackyon): Migrate to the real anthropic SDK types when this feature ships publicly
@@ -54,9 +52,6 @@ function getAdvisorConfig(): AdvisorConfig {
 }
 
 export function isAdvisorEnabled(): boolean {
-  if (isEnvTruthy(process.env.AGENC_DISABLE_ADVISOR_TOOL)) {
-    return false
-  }
   // The advisor beta header is first-party only (Bedrock/Vertex 400 on it).
   if (!shouldIncludeFirstPartyOnlyBetas()) {
     return false
@@ -106,10 +101,7 @@ export function isValidAdvisorModel(model: string): boolean {
 }
 
 export function getInitialAdvisorSetting(): string | undefined {
-  if (!isAdvisorEnabled()) {
-    return undefined
-  }
-  return getExecutionAuthoritySettings().advisorModel
+  return undefined
 }
 
 export function getAdvisorUsage(

@@ -40,8 +40,8 @@ export function memoizeWithTTLAsync<Args extends unknown[], Result>(
   // one f() invocation. This async variant awaits before cache.set, so
   // concurrent cold-miss callers would
   // each invoke f() independently without this map. For
-  // refreshAndGetAwsCredentials that means N concurrent `aws sso login`
-  // spawns. Same pattern as pending401Handlers in auth.ts:1171.
+  // For a credential or discovery refresh that would mean N concurrent
+  // subprocesses. Same pattern as pending401Handlers in auth.ts.
   const inFlight = new Map<string, Promise<Result>>()
 
   const memoized = async (...args: Args): Promise<Result> => {

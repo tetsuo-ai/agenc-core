@@ -233,8 +233,6 @@ function runtimeSandboxesCompatible(
       stableStringify(requested.network ?? null) &&
     active.networkPolicyDecider === requested.networkPolicyDecider &&
     active.blockedRequestObserver === requested.blockedRequestObserver &&
-    (active.useLegacyLandlock ?? false) ===
-      (requested.useLegacyLandlock ?? false) &&
     (active.windowsSandboxLevel ?? "disabled") ===
       (requested.windowsSandboxLevel ?? "disabled") &&
     (active.windowsSandboxPrivateDesktop ?? false) ===
@@ -957,7 +955,6 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         ...(params.runtimeSandbox.agencLinuxSandboxExe !== undefined
           ? { agencLinuxSandboxExe: params.runtimeSandbox.agencLinuxSandboxExe }
           : {}),
-        useLegacyLandlock: params.runtimeSandbox.useLegacyLandlock ?? false,
         windowsSandboxLevel,
         windowsSandboxPrivateDesktop:
           params.runtimeSandbox.windowsSandboxPrivateDesktop ?? false,

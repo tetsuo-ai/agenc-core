@@ -1,47 +1,43 @@
 import { afterEach, beforeEach, expect, test, vi } from 'vitest'
 
-import { saveGlobalConfig } from '../../../src/utils/config.ts'
-
-const providersModulePath = '../../../src/utils/model/providers.js'
-
 async function importFreshModelModule() {
   vi.resetModules()
-  vi.doMock(providersModulePath, () => ({
-    getAPIProvider: () => {
-      if (process.env.NVIDIA_NIM) return 'nvidia-nim'
-      if (process.env.AGENC_USE_MINIMAX || process.env.MINIMAX_API_KEY) return 'minimax'
-      if (process.env.AGENC_USE_GEMINI) return 'gemini'
-      if (process.env.AGENC_USE_MISTRAL) return 'mistral'
-      if (process.env.AGENC_USE_GITHUB) return 'github'
-      if (process.env.AGENC_USE_OPENAI) {
-        const baseUrl = process.env.OPENAI_BASE_URL ?? ''
-        const model = process.env.OPENAI_MODEL ?? ''
-        return baseUrl.includes('/backend-api/agenc') || model.startsWith('agenc')
-          ? 'agenc'
-          : 'openai'
-      }
-      return 'firstParty'
+  const [
+    module,
+    { runWithStartupProviderSelection },
+    { ConfigStore },
+    { runWithCanonicalSettingsAuthority },
+  ] = await Promise.all([
+    import('../../../src/utils/model/model.ts'),
+    import('../../../src/utils/model/providers.ts'),
+    import('../../../src/config/store.ts'),
+    import('../../../src/utils/settings/canonicalAuthority.ts'),
+  ])
+  const provider = process.env.AGENC_PROVIDER
+  if (!provider) throw new Error('test provider must be selected before import')
+  const selectedModel = process.env.AGENC_MODEL ?? 'test-model'
+  const store = new ConfigStore({
+    home: '/tmp/agenc-model-openai-shim',
+    env: {},
+    base: {},
+  })
+  return new Proxy(module, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver)
+      return typeof value === 'function'
+        ? (...args: unknown[]) =>
+            runWithCanonicalSettingsAuthority(store, () =>
+              runWithStartupProviderSelection({ provider, model: selectedModel, environment: { ...process.env } }, () => value(...args)),
+            )
+        : value
     },
-  }))
-  return import('../../../src/utils/model/model.ts')
+  })
 }
 
 const SAVED_ENV = {
-  AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,
-  AGENC_USE_GEMINI: process.env.AGENC_USE_GEMINI,
-  AGENC_USE_GITHUB: process.env.AGENC_USE_GITHUB,
-  AGENC_USE_MISTRAL: process.env.AGENC_USE_MISTRAL,
-  AGENC_USE_MINIMAX: process.env.AGENC_USE_MINIMAX,
-  AGENC_USE_BEDROCK: process.env.AGENC_USE_BEDROCK,
-  AGENC_USE_VERTEX: process.env.AGENC_USE_VERTEX,
-  AGENC_USE_FOUNDRY: process.env.AGENC_USE_FOUNDRY,
-  NVIDIA_NIM: process.env.NVIDIA_NIM,
-  MISTRAL_MODEL: process.env.MISTRAL_MODEL,
-  NVIDIA_MODEL: process.env.NVIDIA_MODEL,
+  AGENC_PROVIDER: process.env.AGENC_PROVIDER,
+  AGENC_MODEL: process.env.AGENC_MODEL,
   MINIMAX_API_KEY: process.env.MINIMAX_API_KEY,
-  MINIMAX_MODEL: process.env.MINIMAX_MODEL,
-  GITHUB_MODEL: process.env.GITHUB_MODEL,
-  OPENAI_MODEL: process.env.OPENAI_MODEL,
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   XAI_API_KEY: process.env.XAI_API_KEY,
   AGENC_API_KEY: process.env.AGENC_API_KEY,
@@ -57,58 +53,29 @@ function restoreEnv(key: keyof typeof SAVED_ENV): void {
 }
 
 beforeEach(() => {
-  vi.doUnmock(providersModulePath)
   vi.clearAllMocks()
   vi.resetModules()
-  delete process.env.AGENC_USE_OPENAI
-  delete process.env.AGENC_USE_GEMINI
-  delete process.env.AGENC_USE_GITHUB
-  delete process.env.AGENC_USE_MISTRAL
-  delete process.env.AGENC_USE_MINIMAX
-  delete process.env.AGENC_USE_BEDROCK
-  delete process.env.AGENC_USE_VERTEX
-  delete process.env.AGENC_USE_FOUNDRY
-  delete process.env.NVIDIA_NIM
-  delete process.env.MISTRAL_MODEL
-  delete process.env.NVIDIA_MODEL
+  delete process.env.AGENC_PROVIDER
+  delete process.env.AGENC_MODEL
   delete process.env.MINIMAX_API_KEY
-  delete process.env.MINIMAX_MODEL
-  delete process.env.GITHUB_MODEL
-  delete process.env.OPENAI_MODEL
   delete process.env.OPENAI_BASE_URL
   delete process.env.XAI_API_KEY
   delete process.env.AGENC_API_KEY
   delete process.env.CHATGPT_ACCOUNT_ID
-  saveGlobalConfig(current => ({
-    ...current,
-    model: undefined,
-  }))
 })
 
 afterEach(() => {
-  vi.doUnmock(providersModulePath)
   vi.clearAllMocks()
   vi.resetModules()
   for (const key of Object.keys(SAVED_ENV) as Array<keyof typeof SAVED_ENV>) {
     restoreEnv(key)
   }
-  saveGlobalConfig(current => ({
-    ...current,
-    model: undefined,
-  }))
 })
 
-test('agenc provider reads OPENAI_MODEL, not stale settings.model', async () => {
-  // Regression: switching from Moonshot (settings.model='kimi-k2.6' persisted
-  // from that session) to the Agenc profile. Agenc profile correctly sets
-  // OPENAI_MODEL=agencplan + base URL to chatgpt.com/backend-api/agenc.
-  // getUserSpecifiedModelSetting previously ignored env for 'agenc' provider
-  // and returned settings.model='kimi-k2.6', causing Agenc's API to reject
-  // the request: "The 'kimi-k2.6' model is not supported when using Agenc".
-  saveGlobalConfig(current => ({ ...current, model: 'kimi-k2.6' }))
-  process.env.AGENC_USE_OPENAI = '1'
+test('agenc provider reads the canonical startup model', async () => {
+  process.env.AGENC_PROVIDER = 'agenc'
   process.env.OPENAI_BASE_URL = 'https://chatgpt.com/backend-api/agenc'
-  process.env.OPENAI_MODEL = 'agencplan'
+  process.env.AGENC_MODEL = 'agencplan'
   process.env.AGENC_API_KEY = 'agenc-test'
   process.env.CHATGPT_ACCOUNT_ID = 'acct_test'
 
@@ -117,56 +84,46 @@ test('agenc provider reads OPENAI_MODEL, not stale settings.model', async () => 
   expect(model).toBe('agencplan')
 })
 
-test('nvidia-nim provider reads NVIDIA_MODEL, not stale OPENAI_MODEL or settings.model', async () => {
-  saveGlobalConfig(current => ({ ...current, model: 'kimi-k2.6' }))
-  process.env.NVIDIA_NIM = '1'
-  process.env.NVIDIA_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
-  process.env.OPENAI_MODEL = 'wrong-openai-model'
+test('nvidia-nim provider reads the canonical startup model', async () => {
+  process.env.AGENC_PROVIDER = 'nvidia-nim'
+  process.env.AGENC_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
 
   const { getUserSpecifiedModelSetting } = await importFreshModelModule()
   const model = getUserSpecifiedModelSetting()
   expect(model).toBe('nvidia/llama-3.1-nemotron-70b-instruct')
 })
 
-test('minimax provider reads MINIMAX_MODEL, not stale OPENAI_MODEL or settings.model', async () => {
-  saveGlobalConfig(current => ({ ...current, model: 'kimi-k2.6' }))
-  process.env.AGENC_USE_MINIMAX = '1'
+test('minimax provider reads the canonical startup model', async () => {
+  process.env.AGENC_PROVIDER = 'minimax'
   process.env.MINIMAX_API_KEY = 'minimax-test'
-  process.env.AGENC_USE_OPENAI = '1'
-  process.env.MINIMAX_MODEL = 'MiniMax-M2.5'
-  process.env.OPENAI_MODEL = 'wrong-openai-model'
+  process.env.AGENC_MODEL = 'MiniMax-M2.5'
 
   const { getUserSpecifiedModelSetting } = await importFreshModelModule()
   const model = getUserSpecifiedModelSetting()
   expect(model).toBe('MiniMax-M2.5')
 })
 
-test('mistral provider reads MISTRAL_MODEL, not stale OPENAI_MODEL or settings.model', async () => {
-  saveGlobalConfig(current => ({ ...current, model: 'kimi-k2.6' }))
-  process.env.AGENC_USE_MISTRAL = '1'
-  process.env.MISTRAL_MODEL = 'devstral-latest'
-  process.env.OPENAI_MODEL = 'wrong-openai-model'
+test('mistral provider reads the canonical startup model', async () => {
+  process.env.AGENC_PROVIDER = 'mistral'
+  process.env.AGENC_MODEL = 'mistral-medium-latest'
 
   const { getUserSpecifiedModelSetting } = await importFreshModelModule()
   const model = getUserSpecifiedModelSetting()
-  expect(model).toBe('devstral-latest')
+  expect(model).toBe('mistral-medium-latest')
 })
 
-test('openai provider still reads OPENAI_MODEL (regression guard)', async () => {
-  saveGlobalConfig(current => ({ ...current, model: 'stale-default' }))
-  process.env.AGENC_USE_OPENAI = '1'
-  process.env.OPENAI_MODEL = 'gpt-4o'
+test('openai provider reads the canonical startup model', async () => {
+  process.env.AGENC_PROVIDER = 'openai'
+  process.env.AGENC_MODEL = 'gpt-4o'
 
   const { getUserSpecifiedModelSetting } = await importFreshModelModule()
   const model = getUserSpecifiedModelSetting()
   expect(model).toBe('gpt-4o')
 })
 
-test('github provider reads GITHUB_MODEL, not stale OPENAI_MODEL', async () => {
-  saveGlobalConfig(current => ({ ...current, model: 'stale-default' }))
-  process.env.AGENC_USE_GITHUB = '1'
-  process.env.GITHUB_MODEL = 'github:copilot'
-  process.env.OPENAI_MODEL = 'wrong-openai-model'
+test('github provider reads the canonical startup model', async () => {
+  process.env.AGENC_PROVIDER = 'github'
+  process.env.AGENC_MODEL = 'github:copilot'
 
   const { getUserSpecifiedModelSetting } = await importFreshModelModule()
   const model = getUserSpecifiedModelSetting()
@@ -180,20 +137,19 @@ test('github provider reads GITHUB_MODEL, not stale OPENAI_MODEL', async () => {
 // because queryHaiku() shipped an unknown model id to the shim endpoint.
 // ---------------------------------------------------------------------------
 
-test('getSmallFastModel returns MINIMAX_MODEL for MiniMax (regression: WebFetch hang)', async () => {
-  process.env.AGENC_USE_MINIMAX = '1'
+test('getSmallFastModel returns the canonical MiniMax model (regression: WebFetch hang)', async () => {
+  process.env.AGENC_PROVIDER = 'minimax'
   process.env.MINIMAX_API_KEY = 'minimax-test'
-  process.env.MINIMAX_MODEL = 'MiniMax-M2.5-highspeed'
-  process.env.OPENAI_MODEL = 'wrong-openai-model'
+  process.env.AGENC_MODEL = 'MiniMax-M2.5-highspeed'
 
   const { getSmallFastModel } = await importFreshModelModule()
   expect(getSmallFastModel()).toBe('MiniMax-M2.5-highspeed')
 })
 
-test('getSmallFastModel returns OPENAI_MODEL for Agenc (regression)', async () => {
-  process.env.AGENC_USE_OPENAI = '1'
+test('getSmallFastModel returns the canonical AgenC model (regression)', async () => {
+  process.env.AGENC_PROVIDER = 'agenc'
   process.env.OPENAI_BASE_URL = 'https://chatgpt.com/backend-api/agenc'
-  process.env.OPENAI_MODEL = 'agencspark'
+  process.env.AGENC_MODEL = 'agencspark'
   process.env.AGENC_API_KEY = 'agenc-test'
   process.env.CHATGPT_ACCOUNT_ID = 'acct_test'
 
@@ -201,39 +157,35 @@ test('getSmallFastModel returns OPENAI_MODEL for Agenc (regression)', async () =
   expect(getSmallFastModel()).toBe('agencspark')
 })
 
-test('getSmallFastModel returns NVIDIA_MODEL for NVIDIA NIM (regression)', async () => {
-  process.env.NVIDIA_NIM = '1'
-  process.env.NVIDIA_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
-  process.env.OPENAI_MODEL = 'wrong-openai-model'
+test('getSmallFastModel returns the canonical NVIDIA NIM model (regression)', async () => {
+  process.env.AGENC_PROVIDER = 'nvidia-nim'
+  process.env.AGENC_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
 
   const { getSmallFastModel } = await importFreshModelModule()
   expect(getSmallFastModel()).toBe('nvidia/llama-3.1-nemotron-70b-instruct')
 })
 
-test('getDefaultOpusModel returns MINIMAX_MODEL for MiniMax', async () => {
-  process.env.AGENC_USE_MINIMAX = '1'
+test('getDefaultOpusModel returns the canonical MiniMax model', async () => {
+  process.env.AGENC_PROVIDER = 'minimax'
   process.env.MINIMAX_API_KEY = 'minimax-test'
-  process.env.MINIMAX_MODEL = 'MiniMax-M2.7'
-  process.env.OPENAI_MODEL = 'wrong-openai-model'
+  process.env.AGENC_MODEL = 'MiniMax-M2.7'
 
   const { getDefaultOpusModel } = await importFreshModelModule()
   expect(getDefaultOpusModel()).toBe('MiniMax-M2.7')
 })
 
-test('getDefaultSonnetModel returns NVIDIA_MODEL for NVIDIA NIM', async () => {
-  process.env.NVIDIA_NIM = '1'
-  process.env.NVIDIA_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
-  process.env.OPENAI_MODEL = 'wrong-openai-model'
+test('getDefaultSonnetModel returns the canonical NVIDIA NIM model', async () => {
+  process.env.AGENC_PROVIDER = 'nvidia-nim'
+  process.env.AGENC_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
 
   const { getDefaultSonnetModel } = await importFreshModelModule()
   expect(getDefaultSonnetModel()).toBe('nvidia/llama-3.1-nemotron-70b-instruct')
 })
 
-test('getDefaultHaikuModel returns MINIMAX_MODEL for MiniMax', async () => {
-  process.env.AGENC_USE_MINIMAX = '1'
+test('getDefaultHaikuModel returns the canonical MiniMax model', async () => {
+  process.env.AGENC_PROVIDER = 'minimax'
   process.env.MINIMAX_API_KEY = 'minimax-test'
-  process.env.MINIMAX_MODEL = 'MiniMax-M2.5-highspeed'
-  process.env.OPENAI_MODEL = 'wrong-openai-model'
+  process.env.AGENC_MODEL = 'MiniMax-M2.5-highspeed'
 
   const { getDefaultHaikuModel } = await importFreshModelModule()
   expect(getDefaultHaikuModel()).toBe('MiniMax-M2.5-highspeed')
@@ -244,10 +196,9 @@ test('default helpers do not leak agenc-* names to shim providers', async () => 
   // helpers may return an provider-branded model name. That was the source
   // of the WebFetch 60s hang — MiniMax received "claude-haiku-4-5" and sat
   // on the connection.
-  process.env.AGENC_USE_MINIMAX = '1'
+  process.env.AGENC_PROVIDER = 'minimax'
   process.env.MINIMAX_API_KEY = 'minimax-test'
-  process.env.MINIMAX_MODEL = 'MiniMax-M2.7'
-  process.env.OPENAI_MODEL = 'agencplan'
+  process.env.AGENC_MODEL = 'MiniMax-M2.7'
 
   const {
     getSmallFastModel,

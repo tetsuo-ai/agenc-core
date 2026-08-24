@@ -1,8 +1,17 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
-import { compressToolHistory, getTiers } from '../../../src/services/api/compressToolHistory.ts'
+import {
+  compressToolHistory as compressToolHistoryImpl,
+  getTiers,
+} from '../../../src/services/api/compressToolHistory.ts'
+
+function compressToolHistory<
+  T extends Parameters<typeof compressToolHistoryImpl>[0],
+>(messages: T, model: string): T {
+  const environment = Object.freeze({ ...process.env })
+  return compressToolHistoryImpl(messages, model, environment) as T
+}
 
 const originalEnv = {
-  DISABLE_TOOL_HISTORY_COMPRESSION: process.env.DISABLE_TOOL_HISTORY_COMPRESSION,
   AGENC_DISABLE_TOOL_HISTORY_COMPRESSION:
     process.env.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION,
   AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW:
@@ -19,17 +28,12 @@ function restoreEnv(key: string, value: string | undefined): void {
 }
 
 beforeEach(() => {
-  delete process.env.DISABLE_TOOL_HISTORY_COMPRESSION
   delete process.env.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION
   delete process.env.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
 })
 
 afterEach(() => {
-  restoreEnv(
-    'DISABLE_TOOL_HISTORY_COMPRESSION',
-    originalEnv.DISABLE_TOOL_HISTORY_COMPRESSION,
-  )
   restoreEnv(
     'AGENC_DISABLE_TOOL_HISTORY_COMPRESSION',
     originalEnv.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION,

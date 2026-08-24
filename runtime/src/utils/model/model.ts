@@ -5,10 +5,7 @@
  * literals with process.env.USER_TYPE === 'ant' for Bun to remove the codenames
  * during dead code elimination
  */
-import {
-  getActiveConfigModel,
-  getMainLoopModelOverride,
-} from '../../bootstrap/state.js'
+import { getMainLoopModelOverride } from '../../bootstrap/state.js'
 import {
   getSubscriptionType,
   isAgenCAISubscriber,
@@ -21,13 +18,23 @@ import {
   is1mContextDisabled,
   modelSupports1M,
 } from '../context.js'
-import { isEnvTruthy } from '../envUtils.js'
 import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
 import { formatModelPricing, getOpus46CostTier } from '../modelCost.js'
 import { getExecutionAuthoritySettings } from '../settings/settings.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
-import { getAPIProvider } from './providers.js'
+import {
+  getAPIProvider,
+  getSelectedProviderEnvironment,
+  getSelectedProviderModel,
+  getSelectedProviderName,
+} from './providers.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
 import { LIGHTNING_BOLT } from '../../constants/figures.js'
+import { resolveSecureStorageHome } from '../secureStorage/home.js'
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 import { isModelAllowed } from './modelAllowlist.js'
 import { type ModelAlias, isModelAlias } from './aliases.js'
 import {
@@ -48,98 +55,41 @@ function normalizeModelSetting(value: unknown): ModelName | ModelAlias | undefin
   return trimmed.length > 0 ? trimmed : undefined
 }
 
-// Maps the env-driven model.ts API provider identity onto the AgenC config
-// provider slug so we can match the active `config.model` selection. Only the
-// providers whose session model is driven by `config.model` (rather than a
-// dedicated provider env var) participate.
-function configProviderSlugForApiProvider(
-  provider: string,
-): string | undefined {
-  switch (provider) {
-    case 'xai':
-      return 'grok'
-    case 'openai':
-      return 'openai'
-    case 'agenc':
-      return 'agenc'
-    default:
-      return undefined
-  }
-}
-
-// Returns the AgenC config-resolved model (`config.model`) when it was
-// resolved for the active provider. This is the same value that seeds the
-// daemon session's collaborationMode.model, so the env-driven helpers stay in
-// sync with `agenc config set model` instead of falling back to a hardcoded
-// provider default.
-function getConfigModelForApiProvider(
-  provider = getAPIProvider(),
-): ModelName | undefined {
-  const slug = configProviderSlugForApiProvider(provider)
-  if (slug === undefined) return undefined
-  const active = getActiveConfigModel()
-  if (active === undefined || active.provider !== slug) return undefined
-  return normalizeModelSetting(active.model)
-}
-
-function getActiveProviderModelEnv(provider = getAPIProvider()): ModelName | undefined {
-  switch (provider) {
-    case 'gemini':
-      return process.env.GEMINI_MODEL
-    case 'mistral':
-      return process.env.MISTRAL_MODEL
-    case 'github':
-      return process.env.GITHUB_MODEL
-    case 'nvidia-nim':
-      return process.env.NVIDIA_MODEL
-    case 'minimax':
-      return process.env.MINIMAX_MODEL
-    case 'openai':
-    case 'agenc':
-    case 'xai':
-      // Env var (set by provider profiles) wins when present; otherwise fall
-      // back to the AgenC config model so `config set model` is honored.
-      return process.env.OPENAI_MODEL || getConfigModelForApiProvider(provider)
-    case 'firstParty':
-      return process.env.ANTHROPIC_MODEL
-    default:
-      return undefined
-  }
+function getActiveProviderModel(): ModelName | undefined {
+  return normalizeModelSetting(getSelectedProviderModel())
 }
 
 export function getSmallFastModel(): ModelName {
-  if (process.env.ANTHROPIC_SMALL_FAST_MODEL) return process.env.ANTHROPIC_SMALL_FAST_MODEL
   // For Gemini provider, use a fast model
   if (getAPIProvider() === 'gemini') {
-    return process.env.GEMINI_MODEL || 'gemini-2.0-flash-lite'
+    return getActiveProviderModel() || 'gemini-2.0-flash-lite'
   }
   if (getAPIProvider() === 'mistral') {
-    return process.env.MISTRAL_MODEL || 'ministral-3b-latest'
+    return getActiveProviderModel() || 'ministral-3b-latest'
   }
-  // For openai provider, use OPENAI_MODEL or a sensible default
+  // OpenAI uses the session-owned canonical model.
   if (getAPIProvider() === 'openai') {
-    return process.env.OPENAI_MODEL || 'gpt-4o-mini'
+    return getActiveProviderModel() || 'gpt-4o-mini'
   }
-  // Agenc provider — OPENAI_MODEL is always set for Agenc profiles; only fall
-  // back to a agenc-spark alias when an override env strips it.
+  // AgenC uses the session-owned canonical model.
   if (getAPIProvider() === 'agenc') {
-    return process.env.OPENAI_MODEL || 'agencspark'
+    return getActiveProviderModel() || 'agencspark'
   }
   // For GitHub Copilot provider
   if (getAPIProvider() === 'github') {
-    return process.env.GITHUB_MODEL || 'github:copilot'
+    return getActiveProviderModel() || 'github:copilot'
   }
-  // NVIDIA NIM — use the provider-specific model env from --provider.
+  // NVIDIA NIM uses the session-owned canonical model.
   if (getAPIProvider() === 'nvidia-nim') {
-    return process.env.NVIDIA_MODEL || 'meta/llama-3.1-8b-instruct'
+    return getActiveProviderModel() || 'meta/llama-3.1-8b-instruct'
   }
   // MiniMax — fall back to the fastest tier (M2.5-highspeed) when missing.
   if (getAPIProvider() === 'minimax') {
-    return process.env.MINIMAX_MODEL || 'MiniMax-M2.5-highspeed'
+    return getActiveProviderModel() || 'MiniMax-M2.5-highspeed'
   }
-  // xAI — OPENAI_MODEL carries the active Grok model.
+  // xAI uses the session-owned canonical model.
   if (getAPIProvider() === 'xai') {
-    return process.env.OPENAI_MODEL || DEFAULT_XAI_MODEL
+    return getActiveProviderModel() || DEFAULT_XAI_MODEL
   }
   return getDefaultHaikuModel()
 }
@@ -156,16 +106,15 @@ export function isNonCustomOpusModel(model: ModelName): boolean {
 }
 
 /**
- * Helper to get the model from /model (including via /config), the --model flag, environment variable,
- * or the saved settings. The returned value can be a model alias if that's what the user specified.
+ * Helper to get the model from the session override or immutable canonical
+ * startup/session selection. The returned value can be a model alias.
  * Undefined if the user didn't configure anything, in which case we fall back to
  * the default (null).
  *
  * Priority order within this function:
  * 1. Model override during session (from /model command) - highest priority
- * 2. Model override at startup (from --model flag)
- * 3. ANTHROPIC_MODEL environment variable
- * 4. Settings (from user's saved settings)
+ * 2. Session/startup canonical selection (`--model`, `AGENC_MODEL`, or config)
+ * 3. Canonical settings snapshot
  */
 export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
   let specifiedModel: ModelSetting | undefined
@@ -176,12 +125,8 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
   } else {
     const settings = getExecutionAuthoritySettings()
     const setting = normalizeModelSetting(settings.model)
-    // Read the model env var that matches the active provider to prevent
-    // cross-provider leaks (e.g. ANTHROPIC_MODEL sent to the openai API).
-    //
-    const provider = getAPIProvider()
     specifiedModel =
-      getActiveProviderModelEnv(provider) ||
+      getActiveProviderModel() ||
       setting ||
       undefined
   }
@@ -199,10 +144,9 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
  *
  * Model Selection Priority Order:
  * 1. Model override during session (from /model command) - highest priority
- * 2. Model override at startup (from --model flag)
- * 3. ANTHROPIC_MODEL environment variable
- * 4. Settings (from user's saved settings)
- * 5. Built-in default
+ * 2. Session/startup canonical selection (`--model`, `AGENC_MODEL`, or config)
+ * 3. Canonical settings snapshot
+ * 4. Built-in default
  *
  * @returns The resolved model name to use
  */
@@ -220,40 +164,37 @@ export function getBestModel(): ModelName {
 
 // @[MODEL LAUNCH]: Update the default Opus model (3P providers may lag so keep defaults unchanged).
 export function getDefaultOpusModel(): ModelName {
-  if (process.env.ANTHROPIC_DEFAULT_OPUS_MODEL) {
-    return process.env.ANTHROPIC_DEFAULT_OPUS_MODEL
-  }
   // Gemini provider
   if (getAPIProvider() === 'gemini') {
-    return process.env.GEMINI_MODEL || 'gemini-2.5-pro'
+    return getActiveProviderModel() || 'gemini-2.5-pro'
   }
   // Mistral provider
   if (getAPIProvider() === 'mistral') {
-    return process.env.MISTRAL_MODEL || 'mistral-medium-latest'
+    return getActiveProviderModel() || 'mistral-medium-latest'
   }
   // openai provider: use user-specified model or default
   if (getAPIProvider() === 'openai') {
-    return process.env.OPENAI_MODEL || 'gpt-4o'
+    return getActiveProviderModel() || 'gpt-4o'
   }
   // Agenc provider: use user-specified model or default to gpt-5.5
   if (getAPIProvider() === 'agenc') {
-    return process.env.OPENAI_MODEL || 'gpt-5.5'
+    return getActiveProviderModel() || 'gpt-5.5'
   }
   // GitHub Copilot provider
   if (getAPIProvider() === 'github') {
-    return process.env.GITHUB_MODEL || 'github:copilot'
+    return getActiveProviderModel() || 'github:copilot'
   }
   // NVIDIA NIM
   if (getAPIProvider() === 'nvidia-nim') {
-    return process.env.NVIDIA_MODEL || 'nvidia/llama-3.1-nemotron-70b-instruct'
+    return getActiveProviderModel() || 'nvidia/llama-3.1-nemotron-70b-instruct'
   }
   // MiniMax — flagship tier for "opus"-equivalent.
   if (getAPIProvider() === 'minimax') {
-    return process.env.MINIMAX_MODEL || 'MiniMax-M2.7'
+    return getActiveProviderModel() || 'MiniMax-M2.7'
   }
   // xAI — flagship Grok model for "opus"-equivalent.
   if (getAPIProvider() === 'xai') {
-    return process.env.OPENAI_MODEL || DEFAULT_XAI_MODEL
+    return getActiveProviderModel() || DEFAULT_XAI_MODEL
   }
   // Other third-party provider API modes may lag firstParty model launches, so
   // keep their generic fallback on Opus 4.6 until they roll out 4.7.
@@ -265,40 +206,37 @@ export function getDefaultOpusModel(): ModelName {
 
 // @[MODEL LAUNCH]: Update the default Sonnet model (3P providers may lag so keep defaults unchanged).
 export function getDefaultSonnetModel(): ModelName {
-  if (process.env.ANTHROPIC_DEFAULT_SONNET_MODEL) {
-    return process.env.ANTHROPIC_DEFAULT_SONNET_MODEL
-  }
   // Gemini provider
   if (getAPIProvider() === 'gemini') {
-    return process.env.GEMINI_MODEL || 'gemini-2.0-flash'
+    return getActiveProviderModel() || 'gemini-2.0-flash'
   }
   // Mistral provider
   if (getAPIProvider() === 'mistral') {
-    return process.env.MISTRAL_MODEL || 'mistral-medium-latest'
+    return getActiveProviderModel() || 'mistral-medium-latest'
   }
   // openai provider
   if (getAPIProvider() === 'openai') {
-    return process.env.OPENAI_MODEL || 'gpt-4o'
+    return getActiveProviderModel() || 'gpt-4o'
   }
   // Agenc provider
   if (getAPIProvider() === 'agenc') {
-    return process.env.OPENAI_MODEL || 'gpt-5.5'
+    return getActiveProviderModel() || 'gpt-5.5'
   }
   // GitHub Copilot provider
   if (getAPIProvider() === 'github') {
-    return process.env.GITHUB_MODEL || 'github:copilot'
+    return getActiveProviderModel() || 'github:copilot'
   }
   // NVIDIA NIM
   if (getAPIProvider() === 'nvidia-nim') {
-    return process.env.NVIDIA_MODEL || 'nvidia/llama-3.1-nemotron-70b-instruct'
+    return getActiveProviderModel() || 'nvidia/llama-3.1-nemotron-70b-instruct'
   }
   // MiniMax — mid tier for "sonnet"-equivalent.
   if (getAPIProvider() === 'minimax') {
-    return process.env.MINIMAX_MODEL || 'MiniMax-M2.5'
+    return getActiveProviderModel() || 'MiniMax-M2.5'
   }
   // xAI — flagship Grok model for "sonnet"-equivalent.
   if (getAPIProvider() === 'xai') {
-    return process.env.OPENAI_MODEL || DEFAULT_XAI_MODEL
+    return getActiveProviderModel() || DEFAULT_XAI_MODEL
   }
   // Default to Sonnet 4.5 for 3P since they may not have 4.6 yet
   if (getAPIProvider() !== 'firstParty') {
@@ -309,41 +247,38 @@ export function getDefaultSonnetModel(): ModelName {
 
 // @[MODEL LAUNCH]: Update the default Haiku model (3P providers may lag so keep defaults unchanged).
 export function getDefaultHaikuModel(): ModelName {
-  if (process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL) {
-    return process.env.ANTHROPIC_DEFAULT_HAIKU_MODEL
-  }
   // Mistral provider
   if (getAPIProvider() === 'mistral') {
-    return process.env.MISTRAL_MODEL || 'ministral-3b-latest'
+    return getActiveProviderModel() || 'ministral-3b-latest'
   }
   // openai provider
   if (getAPIProvider() === 'openai') {
-    return process.env.OPENAI_MODEL || 'gpt-4o-mini'
+    return getActiveProviderModel() || 'gpt-4o-mini'
   }
   // Agenc provider
   if (getAPIProvider() === 'agenc') {
-    return process.env.OPENAI_MODEL || 'gpt-5.5'
+    return getActiveProviderModel() || 'gpt-5.5'
   }
   // GitHub Copilot provider
   if (getAPIProvider() === 'github') {
-    return process.env.GITHUB_MODEL || 'github:copilot'
+    return getActiveProviderModel() || 'github:copilot'
   }
   // Gemini provider
   if (getAPIProvider() === 'gemini') {
-    return process.env.GEMINI_MODEL || 'gemini-2.0-flash-lite'
+    return getActiveProviderModel() || 'gemini-2.0-flash-lite'
   }
   // NVIDIA NIM
   if (getAPIProvider() === 'nvidia-nim') {
-    return process.env.NVIDIA_MODEL || 'meta/llama-3.1-8b-instruct'
+    return getActiveProviderModel() || 'meta/llama-3.1-8b-instruct'
   }
   // MiniMax — fastest tier for "haiku"-equivalent.
   if (getAPIProvider() === 'minimax') {
-    return process.env.MINIMAX_MODEL || 'MiniMax-M2.5-highspeed'
+    return getActiveProviderModel() || 'MiniMax-M2.5-highspeed'
   }
   // xAI — use the current Grok model for "haiku"-equivalent. Older fast
   // Grok aliases retired, so do not fall back to stale model IDs here.
   if (getAPIProvider() === 'xai') {
-    return process.env.OPENAI_MODEL || DEFAULT_XAI_MODEL
+    return getActiveProviderModel() || DEFAULT_XAI_MODEL
   }
 
   // Haiku 4.5 is available on all platforms (first-party, Foundry, Bedrock, Vertex)
@@ -389,55 +324,43 @@ export function getRuntimeMainLoopModel(params: {
  * @returns The default model setting to use
  */
 export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
-  // GitHub Copilot provider: check settings.model first, then env, then default
+  // GitHub Copilot provider: canonical selection, then settings, then default.
   if (getAPIProvider() === 'github') {
     const settings = getExecutionAuthoritySettings()
     return (
-      normalizeModelSetting(process.env.GITHUB_MODEL) ||
+      getActiveProviderModel() ||
       normalizeModelSetting(settings.model) ||
       'github:copilot'
     )
   }
   // Gemini provider: always use the configured Gemini model
   if (getAPIProvider() === 'gemini') {
-    return process.env.GEMINI_MODEL || 'gemini-2.0-flash'
+    return getActiveProviderModel() || 'gemini-2.0-flash'
   }
   if (getAPIProvider() === 'mistral') {
-    return process.env.MISTRAL_MODEL || 'mistral-medium-latest'
+    return getActiveProviderModel() || 'mistral-medium-latest'
   }
-  // openai provider: env model, then AgenC config.model, then default
+  // OpenAI provider: canonical selection, then default.
   if (getAPIProvider() === 'openai') {
-    return (
-      process.env.OPENAI_MODEL ||
-      getConfigModelForApiProvider('openai') ||
-      'gpt-4o'
-    )
+    return getActiveProviderModel() || 'gpt-4o'
   }
-  // Agenc provider: env model, then AgenC config.model, then default (gpt-5.5)
+  // AgenC provider: canonical selection, then default (gpt-5.5).
   if (getAPIProvider() === 'agenc') {
-    return (
-      process.env.OPENAI_MODEL ||
-      getConfigModelForApiProvider('agenc') ||
-      'gpt-5.5'
-    )
+    return getActiveProviderModel() || 'gpt-5.5'
   }
-  // xAI provider: env model, then AgenC config.model, then current default.
+  // xAI provider: canonical selection, then current default.
   if (getAPIProvider() === 'xai') {
-    return (
-      process.env.OPENAI_MODEL ||
-      getConfigModelForApiProvider('xai') ||
-      DEFAULT_XAI_MODEL
-    )
+    return getActiveProviderModel() || DEFAULT_XAI_MODEL
   }
   if (getAPIProvider() === 'nvidia-nim') {
-    return process.env.NVIDIA_MODEL || 'nvidia/llama-3.1-nemotron-70b-instruct'
+    return getActiveProviderModel() || 'nvidia/llama-3.1-nemotron-70b-instruct'
   }
   if (getAPIProvider() === 'minimax') {
-    return process.env.MINIMAX_MODEL || 'MiniMax-M2.5'
+    return getActiveProviderModel() || 'MiniMax-M2.5'
   }
 
   // Ants default to defaultModel from flag config, or Opus 1M if not configured
-  if (process.env.USER_TYPE === 'ant') {
+  if (getSelectedProviderEnvironment().USER_TYPE === 'ant') {
     return (
       getAntModelOverrideConfig()?.defaultModel ??
       getDefaultOpusModel() + '[1m]'
@@ -445,12 +368,12 @@ export function getDefaultMainLoopModelSetting(): ModelName | ModelAlias {
   }
 
   // Max users get Opus as default
-  if (isMaxSubscriber()) {
+  if (isMaxSubscriber(credentialHome())) {
     return getDefaultOpusModel() + (isOpus1mMergeEnabled() ? '[1m]' : '')
   }
 
   // Team Premium gets Opus (same as Max)
-  if (isTeamPremiumSubscriber()) {
+  if (isTeamPremiumSubscriber(credentialHome())) {
     return getDefaultOpusModel() + (isOpus1mMergeEnabled() ? '[1m]' : '')
   }
 
@@ -561,7 +484,10 @@ export function getCanonicalName(fullModelName: ModelName): ModelShortName {
 export function getAgenCAiUserDefaultModelDescription(
   fastMode = false,
 ): string {
-  if (isMaxSubscriber() || isTeamPremiumSubscriber()) {
+  if (
+    isMaxSubscriber(credentialHome()) ||
+    isTeamPremiumSubscriber(credentialHome())
+  ) {
     if (isOpus1mMergeEnabled()) {
       return `Opus 4.7 with 1M context · Most capable for complex work${fastMode ? getOpus46PricingSuffix(true) : ''}`
     }
@@ -589,7 +515,7 @@ export function getOpus46PricingSuffix(fastMode: boolean): string {
 export function isOpus1mMergeEnabled(): boolean {
   if (
     is1mContextDisabled() ||
-    isProSubscriber() ||
+    isProSubscriber(credentialHome()) ||
     getAPIProvider() !== 'firstParty'
   ) {
     return false
@@ -600,7 +526,10 @@ export function isOpus1mMergeEnabled(): boolean {
   // isProSubscriber() returns false for such users and the merge leaks
   // opus[1m] into the model dropdown — the API then rejects it with a
   // misleading "rate limit reached" error.
-  if (isAgenCAISubscriber() && getSubscriptionType() === null) {
+  if (
+    isAgenCAISubscriber(credentialHome()) &&
+    getSubscriptionType(credentialHome()) === null
+  ) {
     return false
   }
   return true
@@ -629,8 +558,15 @@ export function renderModelSetting(setting: ModelName | ModelAlias): string {
  * if the model is not recognized as a public model.
  */
 export function getPublicModelDisplayName(model: ModelName): string | null {
+  return getPublicModelDisplayNameForProvider(model, getSelectedProviderName())
+}
+
+export function getPublicModelDisplayNameForProvider(
+  model: ModelName,
+  provider: string,
+): string | null {
   // For openai/Gemini/Agenc/GitHub providers, show the actual model name not a AgenC alias
-  if (getAPIProvider() === 'openai' || getAPIProvider() === 'gemini' || getAPIProvider() === 'agenc' || getAPIProvider() === 'github' || getAPIProvider() === 'xai') {
+  if (getAPIProvider(provider) === 'openai' || getAPIProvider(provider) === 'gemini' || getAPIProvider(provider) === 'agenc' || getAPIProvider(provider) === 'github' || getAPIProvider(provider) === 'xai') {
     // Return display names for known GitHub Copilot models
     const copilotModelNames: Record<string, string> = {
       'gpt-5.5': 'GPT-5.5',
@@ -731,7 +667,34 @@ function maskModelCodename(baseName: string): string {
 }
 
 export function renderModelName(model: ModelName): string {
-  const publicName = getPublicModelDisplayName(model)
+  return renderModelNameWithAuthority(
+    model,
+    getPublicModelDisplayName(model),
+    process.env.USER_TYPE,
+  )
+}
+
+export interface ModelDisplayReadContext {
+  readonly provider: string
+  readonly environment: ProviderEnvironment
+}
+
+export function renderModelNameForContext(
+  model: ModelName,
+  context: ModelDisplayReadContext,
+): string {
+  return renderModelNameWithAuthority(
+    model,
+    getPublicModelDisplayNameForProvider(model, context.provider),
+    context.environment.USER_TYPE,
+  )
+}
+
+function renderModelNameWithAuthority(
+  model: ModelName,
+  publicName: string | null,
+  userType: string | undefined,
+): string {
   if (publicName) {
     return publicName
   }
@@ -739,7 +702,7 @@ export function renderModelName(model: ModelName): string {
   if (model === 'github:copilot') {
     return 'GPT-4o'
   }
-  if (process.env.USER_TYPE === 'ant') {
+  if (userType === 'ant') {
     const resolved = parseUserSpecifiedModel(model)
     const antModel = resolveAntModel(model)
     if (antModel) {
@@ -822,19 +785,6 @@ export function parseUserSpecifiedModel(
     return 'gpt-5.3-codex-spark'
   }
 
-  // Opus 4/4.1 are no longer available on the first-party API (same as
-  // AgenC.ai) — silently remap to the current Opus default. The 'opus'
-  // alias already resolves to 4.6, so the only users on these explicit
-  // strings pinned them in settings/env/--model/SDK before 4.5 launched.
-  // 3P providers may not yet have 4.6 capacity, so pass through unchanged.
-  if (
-    getAPIProvider() === 'firstParty' &&
-    isLegacyOpusFirstParty(modelString) &&
-    isLegacyModelRemapEnabled()
-  ) {
-    return getDefaultOpusModel() + (has1mTag ? '[1m]' : '')
-  }
-
   if (process.env.USER_TYPE === 'ant') {
     const has1mAntTag = has1mContext(normalizedModel)
     const baseAntModel = normalizedModel.replace(/\[1m]$/i, '').trim()
@@ -888,29 +838,11 @@ export function resolveSkillModelOverride(
   return skillModel
 }
 
-const LEGACY_OPUS_FIRSTPARTY = [
-  'claude-opus-4-20250514',
-  'claude-opus-4-1-20250805',
-  'claude-opus-4-0',
-  'claude-opus-4-1',
-]
-
-function isLegacyOpusFirstParty(model: string): boolean {
-  return LEGACY_OPUS_FIRSTPARTY.includes(model)
-}
-
-/**
- * Opt-out for the compatibility Opus 4.0/4.1 → current Opus remap.
- */
-export function isLegacyModelRemapEnabled(): boolean {
-  return !isEnvTruthy(process.env.AGENC_DISABLE_LEGACY_MODEL_REMAP)
-}
-
 export function modelDisplayString(model: ModelSetting): string {
   if (model === null) {
     if (process.env.USER_TYPE === 'ant') {
       return `Default for Ants (${renderDefaultModelSetting(getDefaultMainLoopModelSetting())})`
-    } else if (isAgenCAISubscriber()) {
+    } else if (isAgenCAISubscriber(credentialHome())) {
       return `Default (${getAgenCAiUserDefaultModelDescription()})`
     }
     return `Default (${getDefaultMainLoopModel()})`

@@ -5,7 +5,7 @@ import type { ToolUseContext } from '../../tools/Tool.js'
 import type { Message } from '../../types/message.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import type { HookResult } from '../hooks.js'
-import type { PromptHook } from '../settings/types.js'
+import type { PromptHook } from '../../schemas/hooks.js'
 
 const PROMPT_HOOK_ADMISSION_REASON = 'legacy_prompt_hook_model_path_disabled'
 

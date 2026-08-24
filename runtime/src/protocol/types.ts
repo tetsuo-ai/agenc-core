@@ -13,7 +13,7 @@
  *   - MUTATING verbs (`claimTask`, `delegateStep`, `submitProof`,
  *     `settleTask`, `adjustStake`) are typed on the interface so the
  *     command surface is stable, but every current implementation MUST
- *     return a typed `VERB_NOT_ENABLED` / `TRANSPORT_NOT_CONFIGURED`
+ *     return a typed `VERB_NOT_ENABLED`
  *     error. Wiring them is owner-gated future work: it requires an
  *     explicit human-approved signer flow that does not exist in this
  *     runtime by design.
@@ -31,10 +31,8 @@
 // ─────────────────────────────────────────────────────────────────────
 
 export type ProtocolErrorCode =
-  /** No transport configured — `[protocol]` is disabled or adapter is "null". */
-  | "TRANSPORT_NOT_CONFIGURED"
   /** Mutating verb invoked — owner-gated, never enabled in current impls. */
-  | "VERB_NOT_ENABLED"
+  "VERB_NOT_ENABLED"
   /** Caller-supplied argument failed validation (e.g. malformed task PDA). */
   | "INVALID_ARGUMENT"
   /** The marketplace CLI binary could not be resolved. */
@@ -110,8 +108,8 @@ export interface TaskDetail {
 // ─────────────────────────────────────────────────────────────────────
 
 export interface ProtocolTransport {
-  /** Adapter kind, for status text ("null" | "marketplace-cli"). */
-  readonly kind: string;
+  /** The sole active protocol adapter kind. */
+  readonly kind: "marketplace-cli";
 
   // ── Read-only verbs (implementable today) ──────────────────────────
   listClaimable(

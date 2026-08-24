@@ -85,7 +85,10 @@ Minimal manifest:
 
 Task-level `agentCommand` overrides the manifest or CLI `--agent-command`.
 Commands run locally with placeholders `{prompt}`, `{promptJson}`, `{taskId}`,
-and `{cwd}` shell-quoted into the command string. The runner records command
+`{cwd}`, and `{taskDir}` shell-quoted into the command string. Extra runner
+flags: `--keep-workspaces`, `--timeout-ms` (default 600000), `--repo`,
+`--agent-name`, `--agent-version`, `--benchmark`, `-h`. Regression extra
+flags: `--baseline`, `--reports-dir`, `--json`. The runner records command
 exit codes, verifier status, token usage when structured agent stdout exposes
 `tokenUsage` or `usage`, and validates the generated report against the schema.
 
@@ -231,7 +234,7 @@ prove the checker passes after the intended change (and fails without it —
       "commit": "abc123",
       "branch": "main",
       "runner": "local",
-      "sandbox": "workspace",
+      "sandbox": "local",
       "localOnly": true
     }
   },

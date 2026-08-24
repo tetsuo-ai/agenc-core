@@ -5,24 +5,32 @@ import {
   getContextWindowForModel,
   getModelMaxOutputTokens,
 } from '../../src/utils/context.ts'
+import { runWithStartupProviderSelection } from '../../src/utils/model/providers.ts'
+
+function providerTest(
+  name: string,
+  body: () => void | Promise<void>,
+): void {
+  test(name, () => runWithStartupProviderSelection({ provider: 'openai', model: process.env.OPENAI_MODEL ?? 'gpt-4o', environment: { ...process.env } }, body))
+}
 
 const originalEnv = {
-  AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,
+  AGENC_PROVIDER: process.env.AGENC_PROVIDER,
   AGENC_MAX_OUTPUT_TOKENS: process.env.AGENC_MAX_OUTPUT_TOKENS,
   OPENAI_MODEL: process.env.OPENAI_MODEL,
 }
 
 beforeEach(() => {
-  delete process.env.AGENC_USE_OPENAI
+  delete process.env.AGENC_PROVIDER
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
   delete process.env.OPENAI_MODEL
 })
 
 afterEach(() => {
-  if (originalEnv.AGENC_USE_OPENAI === undefined) {
-    delete process.env.AGENC_USE_OPENAI
+  if (originalEnv.AGENC_PROVIDER === undefined) {
+    delete process.env.AGENC_PROVIDER
   } else {
-    process.env.AGENC_USE_OPENAI = originalEnv.AGENC_USE_OPENAI
+    process.env.AGENC_PROVIDER = originalEnv.AGENC_PROVIDER
   }
   if (originalEnv.AGENC_MAX_OUTPUT_TOKENS === undefined) {
     delete process.env.AGENC_MAX_OUTPUT_TOKENS
@@ -37,8 +45,8 @@ afterEach(() => {
   }
 })
 
-test('deepseek-v4-flash uses provider-specific context and output caps', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('deepseek-v4-flash uses provider-specific context and output caps', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
   delete process.env.OPENAI_MODEL
 
@@ -50,27 +58,16 @@ test('deepseek-v4-flash uses provider-specific context and output caps', () => {
   expect(getMaxOutputTokensForModel('deepseek-v4-flash')).toBe(262_144)
 })
 
-test('deepseek legacy aliases keep their documented provider caps', () => {
-  process.env.AGENC_USE_OPENAI = '1'
-  delete process.env.AGENC_MAX_OUTPUT_TOKENS
-  delete process.env.OPENAI_MODEL
-
-  expect(getContextWindowForModel('deepseek-chat')).toBe(128_000)
-  expect(getContextWindowForModel('deepseek-reasoner')).toBe(128_000)
-  expect(getMaxOutputTokensForModel('deepseek-chat')).toBe(8_192)
-  expect(getMaxOutputTokensForModel('deepseek-reasoner')).toBe(65_536)
-})
-
-test('deepseek-v4-flash clamps oversized max output overrides to the provider limit', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('deepseek-v4-flash clamps oversized max output overrides to the provider limit', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   process.env.AGENC_MAX_OUTPUT_TOKENS = '500000'
   delete process.env.OPENAI_MODEL
 
   expect(getMaxOutputTokensForModel('deepseek-v4-flash')).toBe(262_144)
 })
 
-test('gpt-4o uses provider-specific context and output caps', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('gpt-4o uses provider-specific context and output caps', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
   delete process.env.OPENAI_MODEL
 
@@ -82,16 +79,16 @@ test('gpt-4o uses provider-specific context and output caps', () => {
   expect(getMaxOutputTokensForModel('gpt-4o')).toBe(16_384)
 })
 
-test('gpt-4o clamps oversized max output overrides to the provider limit', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('gpt-4o clamps oversized max output overrides to the provider limit', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   process.env.AGENC_MAX_OUTPUT_TOKENS = '32000'
   delete process.env.OPENAI_MODEL
 
   expect(getMaxOutputTokensForModel('gpt-4o')).toBe(16_384)
 })
 
-test('gpt-5.4 family uses provider-specific context and output caps', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('gpt-5.4 family uses provider-specific context and output caps', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
   delete process.env.OPENAI_MODEL
 
@@ -114,8 +111,8 @@ test('gpt-5.4 family uses provider-specific context and output caps', () => {
   })
 })
 
-test('gpt-5.4 family keeps large max output overrides within provider limits', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('gpt-5.4 family keeps large max output overrides within provider limits', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   process.env.AGENC_MAX_OUTPUT_TOKENS = '200000'
 
   expect(getMaxOutputTokensForModel('gpt-5.4')).toBe(128_000)
@@ -123,8 +120,8 @@ test('gpt-5.4 family keeps large max output overrides within provider limits', (
   expect(getMaxOutputTokensForModel('gpt-5.4-nano')).toBe(128_000)
 })
 
-test('MiniMax-M2.7 uses explicit provider-specific context and output caps', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('MiniMax-M2.7 uses explicit provider-specific context and output caps', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
   delete process.env.OPENAI_MODEL
 
@@ -136,16 +133,16 @@ test('MiniMax-M2.7 uses explicit provider-specific context and output caps', () 
   expect(getMaxOutputTokensForModel('MiniMax-M2.7')).toBe(131_072)
 })
 
-test('unknown openai-compatible models use the 128k fallback window (not 8k, see #635)', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('unknown openai-compatible models use the 128k fallback window (not 8k, see #635)', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
   delete process.env.OPENAI_MODEL
 
   expect(getContextWindowForModel('some-unknown-3p-model')).toBe(128_000)
 })
 
-test('MiniMax-M2.5 and M2.1 use explicit provider-specific context and output caps', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('MiniMax-M2.5 and M2.1 use explicit provider-specific context and output caps', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
   delete process.env.OPENAI_MODEL
 
@@ -159,8 +156,8 @@ test('MiniMax-M2.5 and M2.1 use explicit provider-specific context and output ca
   })
 })
 
-test('DashScope qwen3.6-plus uses provider-specific context and output caps', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('DashScope qwen3.6-plus uses provider-specific context and output caps', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
 
   expect(getContextWindowForModel('qwen3.6-plus')).toBe(1_000_000)
@@ -171,8 +168,8 @@ test('DashScope qwen3.6-plus uses provider-specific context and output caps', ()
   expect(getMaxOutputTokensForModel('qwen3.6-plus')).toBe(65_536)
 })
 
-test('DashScope qwen3.5-plus uses provider-specific context and output caps', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('DashScope qwen3.5-plus uses provider-specific context and output caps', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
 
   expect(getContextWindowForModel('qwen3.5-plus')).toBe(1_000_000)
@@ -183,8 +180,8 @@ test('DashScope qwen3.5-plus uses provider-specific context and output caps', ()
   expect(getMaxOutputTokensForModel('qwen3.5-plus')).toBe(65_536)
 })
 
-test('DashScope qwen3-coder-plus uses provider-specific context and output caps', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('DashScope qwen3-coder-plus uses provider-specific context and output caps', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
 
   expect(getContextWindowForModel('qwen3-coder-plus')).toBe(1_000_000)
@@ -194,8 +191,8 @@ test('DashScope qwen3-coder-plus uses provider-specific context and output caps'
   })
 })
 
-test('DashScope qwen3-coder-next uses provider-specific context and output caps', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('DashScope qwen3-coder-next uses provider-specific context and output caps', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
 
   expect(getContextWindowForModel('qwen3-coder-next')).toBe(262_144)
@@ -205,8 +202,8 @@ test('DashScope qwen3-coder-next uses provider-specific context and output caps'
   })
 })
 
-test('DashScope qwen3-max uses provider-specific context and output caps', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('DashScope qwen3-max uses provider-specific context and output caps', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
 
   expect(getContextWindowForModel('qwen3-max')).toBe(262_144)
@@ -216,8 +213,8 @@ test('DashScope qwen3-max uses provider-specific context and output caps', () =>
   })
 })
 
-test('DashScope qwen3-max dated variant resolves to base entry via prefix match', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('DashScope qwen3-max dated variant resolves to base entry via prefix match', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
 
   expect(getContextWindowForModel('qwen3-max-2026-01-23')).toBe(262_144)
@@ -227,8 +224,8 @@ test('DashScope qwen3-max dated variant resolves to base entry via prefix match'
   })
 })
 
-test('DashScope kimi-k2.5 uses provider-specific context and output caps', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('DashScope kimi-k2.5 uses provider-specific context and output caps', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
 
   expect(getContextWindowForModel('kimi-k2.5')).toBe(262_144)
@@ -238,8 +235,8 @@ test('DashScope kimi-k2.5 uses provider-specific context and output caps', () =>
   })
 })
 
-test('Kimi Code kimi-for-coding uses provider-specific context and output caps', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('Kimi Code kimi-for-coding uses provider-specific context and output caps', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
 
   expect(getContextWindowForModel('kimi-for-coding')).toBe(262_144)
@@ -249,8 +246,8 @@ test('Kimi Code kimi-for-coding uses provider-specific context and output caps',
   })
 })
 
-test('DashScope glm-5 uses provider-specific context and output caps', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('DashScope glm-5 uses provider-specific context and output caps', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
 
   expect(getContextWindowForModel('glm-5')).toBe(202_752)
@@ -260,8 +257,8 @@ test('DashScope glm-5 uses provider-specific context and output caps', () => {
   })
 })
 
-test('DashScope glm-4.7 uses provider-specific context and output caps', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('DashScope glm-4.7 uses provider-specific context and output caps', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
 
   expect(getContextWindowForModel('glm-4.7')).toBe(202_752)
@@ -271,8 +268,8 @@ test('DashScope glm-4.7 uses provider-specific context and output caps', () => {
   })
 })
 
-test('Z.AI uppercase GLM models use Coding Plan output caps', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('Z.AI uppercase GLM models use Coding Plan output caps', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
 
   expect(getContextWindowForModel('GLM-5.1')).toBe(202_752)
@@ -290,8 +287,8 @@ test('Z.AI uppercase GLM models use Coding Plan output caps', () => {
   })
 })
 
-test('lowercase GLM aliases keep conservative output caps', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('lowercase GLM aliases keep conservative output caps', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
 
   expect(getModelMaxOutputTokens('glm-5.1')).toEqual({
@@ -308,8 +305,8 @@ test('lowercase GLM aliases keep conservative output caps', () => {
   })
 })
 
-test('DashScope models clamp oversized max output overrides to the provider limit', () => {
-  process.env.AGENC_USE_OPENAI = '1'
+providerTest('DashScope models clamp oversized max output overrides to the provider limit', () => {
+  process.env.AGENC_PROVIDER = 'openai'
   process.env.AGENC_MAX_OUTPUT_TOKENS = '100000'
 
   expect(getMaxOutputTokensForModel('qwen3.6-plus')).toBe(65_536)

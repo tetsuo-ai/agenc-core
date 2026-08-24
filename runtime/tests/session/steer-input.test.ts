@@ -48,8 +48,6 @@ import type { LLMProvider, LLMMessage } from "../llm/types.js";
 
 function mkFeatures(): ManagedFeatures {
   return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
   };
 }
 

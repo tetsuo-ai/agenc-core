@@ -67,7 +67,7 @@ describe("AgenC auth CLI", () => {
     try {
       await writeFile(
         join(agencHome, "config.toml"),
-        "[auth]\nbackend = \"local\"\n",
+        "config_version = 2\n\n[auth]\nbackend = \"local\"\n",
       );
       const whoamiBefore = createIo();
       await expect(
@@ -202,7 +202,7 @@ describe("AgenC auth CLI", () => {
 
     await writeFile(
       join(agencHome, "config.toml"),
-      "[auth]\nbackend = \"remote\"\n",
+      "config_version = 2\n\n[auth]\nbackend = \"remote\"\n",
     );
     try {
       const io = createIo();
@@ -275,7 +275,7 @@ describe("AgenC auth CLI", () => {
 
     await writeFile(
       join(agencHome, "config.toml"),
-      "[auth]\nbackend = \"remote\"\n",
+      "config_version = 2\n\n[auth]\nbackend = \"remote\"\n",
     );
     try {
       const io = { ...createIo(), stdin, openUrl };

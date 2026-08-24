@@ -42,22 +42,14 @@ import {
   getMarketingNameForModel,
 } from '../../src/utils/model/model.js'
 import { BUILT_IN_PROVIDER_MODEL_CATALOG } from '../../src/llm/registry/provider-info.js'
+import { runWithStartupProviderSelection } from '../../src/utils/model/providers.js'
 
 const FABLE_5 = 'claude-fable-5'
 
 beforeEach(() => {
   vi.stubEnv('AGENC_DISABLE_1M_CONTEXT', '')
   vi.stubEnv('USER_TYPE', '')
-  // Pin the provider to firstParty regardless of the host machine's env
-  // (an ambient XAI_API_KEY/AGENC_USE_* would flip getAPIProvider()).
-  vi.stubEnv('XAI_API_KEY', '')
-  vi.stubEnv('MINIMAX_API_KEY', '')
-  vi.stubEnv('AGENC_USE_OPENAI', '')
-  vi.stubEnv('AGENC_USE_GEMINI', '')
-  vi.stubEnv('AGENC_USE_GITHUB', '')
-  vi.stubEnv('AGENC_USE_MISTRAL', '')
-  vi.stubEnv('AGENC_USE_MINIMAX', '')
-  vi.stubEnv('NVIDIA_NIM', '')
+  vi.stubEnv('AGENC_PROVIDER', 'anthropic')
 })
 
 afterEach(() => {
@@ -113,9 +105,15 @@ describe('Fable 5 onboarding', () => {
   })
 
   it('supports structured outputs and effort (incl. max)', () => {
-    expect(modelSupportsStructuredOutputs(FABLE_5)).toBe(true)
-    expect(modelSupportsEffort(FABLE_5)).toBe(true)
-    expect(modelSupportsMaxEffort(FABLE_5)).toBe(true)
+    runWithStartupProviderSelection({
+      provider: 'anthropic',
+      model: FABLE_5,
+      environment: { ...process.env },
+    }, () => {
+      expect(modelSupportsStructuredOutputs(FABLE_5)).toBe(true)
+      expect(modelSupportsEffort(FABLE_5)).toBe(true)
+      expect(modelSupportsMaxEffort(FABLE_5)).toBe(true)
+    })
   })
 
   it('has NO fast mode', () => {

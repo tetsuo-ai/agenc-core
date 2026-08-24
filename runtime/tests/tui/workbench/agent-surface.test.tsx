@@ -598,7 +598,7 @@ describe("AgentSurface", () => {
               outputOffset: 0,
               notified: false,
               agentId: "agent-1",
-              agentType: "worker",
+              agentType: "runner",
               prompt: "review",
               cwd: "/repo",
               retrieved: false,

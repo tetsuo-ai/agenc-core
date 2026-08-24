@@ -24,9 +24,11 @@ import {
 } from "../../llm/xai-capability-config.js";
 import type { Tool, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
+import type { HomeContext } from "../../config/home.js";
 
 export interface ImagineImageToolOptions {
   readonly workspaceRoot: string;
+  readonly home: HomeContext;
   readonly getSession: () => {
     services?: { provider?: unknown };
   } | null;
@@ -136,12 +138,16 @@ export function createImagineImageTool(opts: ImagineImageToolOptions): Tool {
       // a metered XAI_API_KEY for Imagine.
       const sessionKey =
         typeof factory.apiKey === "string" ? factory.apiKey : undefined;
-      const bearer = resolveXaiBearerToken(opts.env ?? process.env, sessionKey);
+      const bearer = resolveXaiBearerToken(
+        opts.home,
+        opts.env ?? process.env,
+        sessionKey,
+      );
       if (!bearer) {
         return json(
           {
             error:
-              "ImagineImage needs xAI credentials: set XAI_API_KEY (or GROK_API_KEY / AGENC_XAI_API_KEY), or run /grok-login for subscription access.",
+              "ImagineImage needs xAI credentials: set XAI_API_KEY (or GROK_API_KEY), or run /grok-login for subscription access.",
           },
           true,
         );

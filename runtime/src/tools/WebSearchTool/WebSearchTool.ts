@@ -1,4 +1,7 @@
-import { getAPIProvider } from 'src/utils/model/providers.js'
+import {
+  getAPIProvider,
+  getSelectedProviderEnvironment,
+} from 'src/utils/model/providers.js'
 import type { PermissionResult } from 'src/utils/permissions/PermissionResult.js'
 import { z } from 'zod/v4'
 import { resolveProviderRequest } from '../../services/api/providerConfig.js'
@@ -110,7 +113,7 @@ function isProviderCodeResponsesWebSearchEnabled(): boolean {
 
   const request = resolveProviderRequest({
     model: getMainLoopModel(),
-    baseUrl: process.env.OPENAI_BASE_URL,
+    baseUrl: getSelectedProviderEnvironment().OPENAI_BASE_URL,
   })
   return request.transport === 'providerCode_responses'
 }

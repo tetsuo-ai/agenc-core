@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   resolveSessionStreamIdleTimeoutMs,
@@ -13,17 +13,6 @@ import { GrokProvider } from "../../src/llm/providers/grok/adapter.js";
 // explicitly configured window safer.
 
 describe("resolveSessionStreamIdleTimeoutMs", () => {
-  const originalEnv = process.env.AGENC_STREAM_IDLE_TIMEOUT_MS;
-
-  beforeEach(() => {
-    delete process.env.AGENC_STREAM_IDLE_TIMEOUT_MS;
-  });
-
-  afterEach(() => {
-    if (originalEnv === undefined) delete process.env.AGENC_STREAM_IDLE_TIMEOUT_MS;
-    else process.env.AGENC_STREAM_IDLE_TIMEOUT_MS = originalEnv;
-  });
-
   it("is unbounded with no inputs", () => {
     expect(resolveSessionStreamIdleTimeoutMs({})).toBe(0);
   });
@@ -56,26 +45,6 @@ describe("resolveSessionStreamIdleTimeoutMs", () => {
     expect(resolveSessionStreamIdleTimeoutMs({ configuredMs: 45_000 })).toBe(
       45_000,
     );
-  });
-
-  it("env var beats both, in either direction", () => {
-    process.env.AGENC_STREAM_IDLE_TIMEOUT_MS = "15000";
-    expect(
-      resolveSessionStreamIdleTimeoutMs({
-        configuredMs: 600_000,
-        providerSuggestedMs: 300_000,
-      }),
-    ).toBe(15_000);
-  });
-
-  it("an explicit zero env value disables an explicit config value", () => {
-    process.env.AGENC_STREAM_IDLE_TIMEOUT_MS = "0";
-    expect(
-      resolveSessionStreamIdleTimeoutMs({
-        configuredMs: 600_000,
-        providerSuggestedMs: 900_000,
-      }),
-    ).toBe(0);
   });
 
   it("resolveStreamIdleTimeoutMs still honors a direct preferred value", () => {

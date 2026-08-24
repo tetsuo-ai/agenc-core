@@ -38,6 +38,7 @@ import type {
   AgenCBackgroundAgentSessionEventBinding,
   AgenCBackgroundAgentStartParams,
 } from "./background-agent-runner.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 
 const workspaces = createTempWorkspaceFixture("agenc-agent-cli-workspace-");
 
@@ -255,16 +256,24 @@ describe("agenc agent start CLI", () => {
 
     expect(io.stdoutText()).toBe("agent_1\n");
     expect(io.stderrText()).toBe("");
-    expect(requests).toEqual([
-      {
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject({
         objective: "audit the repo",
         instructions: "audit the repo",
         cwd,
+        runtimeOptions: {
+          simpleMode: false,
+          allowUntrustedHooks: false,
+        },
         metadata: { source: "agenc agent start" },
         unattendedAllow: ["FileRead"],
         unattendedDeny: ["exec_command"],
-      },
-    ]);
+    });
+    expect(requests[0]?.envOverrides).toMatchObject({
+      AGENC_PROVIDER: "",
+      AGENC_MODEL: "",
+      OPENAI_BASE_URL: "",
+    });
   });
 
   it("forwards allowlisted client env overrides with agent start", async () => {
@@ -284,10 +293,12 @@ describe("agenc agent start CLI", () => {
           cwd,
           env: {
             XAI_API_KEY: "rotated-key",
+            AGENC_CREDENTIAL_DOCS_MCP: "Bearer per-client",
             PATH: "/project/.venv/bin:/usr/bin",
             AGENC_WORKSPACE: "/should/not/forward",
             SHOULD_NOT_FORWARD: "ignored",
           },
+          runtimeOptions: resolveAgentRuntimeOptions({}, { simpleMode: true }),
           ensureDaemonReady: async () => {},
           io,
           client: {
@@ -313,10 +324,14 @@ describe("agenc agent start CLI", () => {
     ).resolves.toBe(0);
 
     expect(requests).toHaveLength(1);
-    expect(requests[0]?.envOverrides).toEqual({
+    expect(requests[0]?.envOverrides).toMatchObject({
       XAI_API_KEY: "rotated-key",
+      AGENC_CREDENTIAL_DOCS_MCP: "Bearer per-client",
       PATH: "/project/.venv/bin:/usr/bin",
+      AGENC_PROVIDER: "",
+      OPENAI_BASE_URL: "",
     });
+    expect(requests[0]?.runtimeOptions).toMatchObject({ simpleMode: true });
   });
 
   it("prints active agent list rows with the required columns", async () => {
@@ -737,6 +752,8 @@ describe("agenc agent start CLI", () => {
     await writeFile(
       join(agencHome, "config.toml"),
       `
+config_version = 2
+
 [daemon]
 autostart = false
       `,
@@ -2209,46 +2226,76 @@ describe("collectDaemonClientEnvOverrides", () => {
       AGENC_MODEL: "qwen3-coder-next-fp8",
       AGENC_PROVIDER: "openai-compatible",
       AGENC_PROFILE: "fast",
-      AGENC_MCP_SERVERS: '[{"name":"audit"}]',
       HTTP_PROXY: "http://proxy:3128",
       no_proxy: "localhost",
       PATH: "/project/.venv/bin:/usr/bin",
     });
 
-    expect(overrides).toEqual({
+    expect(overrides).toMatchObject({
       XAI_API_KEY: "rotated-xai-key",
       OPENAI_API_KEY: "rotated-openai-key",
       OPENAI_BASE_URL: "http://localhost:8000/v1",
       AGENC_MODEL: "qwen3-coder-next-fp8",
       AGENC_PROVIDER: "openai-compatible",
       AGENC_PROFILE: "fast",
-      AGENC_MCP_SERVERS: '[{"name":"audit"}]',
       HTTP_PROXY: "http://proxy:3128",
       no_proxy: "localhost",
       PATH: "/project/.venv/bin:/usr/bin",
     });
+    expect(overrides.GEMINI_API_KEY).toBe("");
   });
 
-  it("does not emit entries for keys unset in the client env", () => {
-    // Unset client keys must be absent from the overrides entirely: the
-    // daemon merges {...daemonEnv, ...overrides}, so an absent key lets
-    // the daemon's own value win instead of being force-deleted.
+  it("emits clear markers for keys unset in the client env", () => {
     const overrides = collectDaemonClientEnvOverrides({
       XAI_API_KEY: "only-this-one",
     });
 
-    expect(overrides).toEqual({ XAI_API_KEY: "only-this-one" });
-    expect(Object.keys(overrides)).not.toContain("OPENAI_API_KEY");
-    expect(Object.keys(overrides)).not.toContain("PATH");
+    expect(overrides).toMatchObject({
+      XAI_API_KEY: "only-this-one",
+      AGENC_PROVIDER: "",
+      AGENC_MODEL: "",
+      AGENC_PROFILE: "",
+      OPENAI_API_KEY: "",
+      OPENAI_BASE_URL: "",
+      PATH: "",
+    });
   });
 
-  it("treats empty and whitespace-only values as unset", () => {
-    expect(
-      collectDaemonClientEnvOverrides({
-        XAI_API_KEY: "",
-        OPENAI_API_KEY: "   ",
-      }),
-    ).toEqual({});
+  it("keeps consecutive client provider snapshots isolated from daemon state", () => {
+    const daemonEnv = {
+      AGENC_PROVIDER: "openai",
+      OPENAI_MODEL: "stale-daemon-model",
+      OPENAI_BASE_URL: "https://stale-daemon.example/v1",
+      GEMINI_MODEL: "stale-gemini-model",
+    };
+    const geminiClient = collectDaemonClientEnvOverrides({
+      AGENC_PROVIDER: "gemini",
+      AGENC_MODEL: "gemini-2.5-pro",
+    });
+    const configDrivenClient = collectDaemonClientEnvOverrides({});
+
+    expect({ ...daemonEnv, ...geminiClient }).toMatchObject({
+      AGENC_PROVIDER: "gemini",
+      AGENC_MODEL: "gemini-2.5-pro",
+      OPENAI_BASE_URL: "",
+    });
+    expect({ ...daemonEnv, ...configDrivenClient }).toMatchObject({
+      AGENC_PROVIDER: "",
+      AGENC_MODEL: "",
+      OPENAI_BASE_URL: "",
+    });
+    expect(geminiClient).not.toHaveProperty("GEMINI_MODEL");
+    expect(geminiClient).not.toHaveProperty("OPENAI_MODEL");
+  });
+
+  it("treats empty and whitespace-only values as explicit clears", () => {
+    const overrides = collectDaemonClientEnvOverrides({
+      XAI_API_KEY: "",
+      OPENAI_API_KEY: "   ",
+    });
+    expect(overrides.XAI_API_KEY).toBe("");
+    expect(overrides.OPENAI_API_KEY).toBe("");
+    expect(overrides.AGENC_PROVIDER).toBe("");
   });
 
   it("excludes AGENC_WORKSPACE and non-allowlisted keys", () => {
@@ -2259,6 +2306,10 @@ describe("collectDaemonClientEnvOverrides", () => {
       PATH: "/usr/bin",
     });
 
-    expect(overrides).toEqual({ PATH: "/usr/bin" });
+    expect(overrides.PATH).toBe("/usr/bin");
+    expect(overrides.AGENC_PROVIDER).toBe("");
+    expect(overrides.AGENC_WORKSPACE).toBeUndefined();
+    expect(overrides.AGENC_HOME).toBeUndefined();
+    expect(overrides.SOME_RANDOM_SECRET).toBeUndefined();
   });
 });

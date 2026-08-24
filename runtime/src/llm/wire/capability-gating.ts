@@ -17,12 +17,12 @@
  *
  * This module centralizes the per-provider capability matrix so each
  * adapter doesn't have to spell out its own set of overrides. The
- * matrix keys on `normalizeProviderSlug(this.name)` from the base
+ * matrix keys on the canonical provider identity from the base
  * adapter; subclasses don't need to override anything as long as they
  * pass a recognizable slug.
  */
 
-import { normalizeProviderSlug } from "../capabilities.js";
+import { normalizeProviderIdentity } from "../../provider-identity.js";
 import { supportsXaiReasoningEffortParam } from "../structured-output.js";
 
 export interface ChatCompletionsCapabilityHints {
@@ -168,7 +168,7 @@ export function chatCompletionsCapabilityHintsForProvider(
   providerName: string | undefined,
   model: string | undefined,
 ): ChatCompletionsCapabilityHints {
-  const slug = normalizeProviderSlug(providerName);
+  const slug = normalizeProviderIdentity(providerName, "capability gate") ?? "";
 
   // reasoning_effort: documented for the upstream-provider reasoning
   // model family and for documented xAI Grok reasoning variants. Every

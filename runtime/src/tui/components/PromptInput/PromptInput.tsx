@@ -2,6 +2,7 @@ import { feature } from "bun:bundle";
 import chalk from "chalk";
 import * as path from "path";
 import * as React from "react";
+import type { ProviderAuthReadContext } from "../../../utils/auth.js";
 import {
   useCallback,
   useEffect,
@@ -117,9 +118,9 @@ import type { AutoUpdaterResult } from "../../../utils/autoUpdater.js";
 // branding-scan: allow TextCursor is the text-caret utility name.
 import { TextCursor } from "../../../utils/TextCursor.js";
 import {
-  getGlobalConfig,
+  getRuntimeState,
   type PastedContent,
-  saveGlobalConfig,
+  updateRuntimeState,
 } from "../../../utils/config.js";
 import { logForDebugging } from "../../../utils/debug.js";
 import {
@@ -134,12 +135,12 @@ import {
   clearFastModeCooldown,
   FAST_MODE_MODEL_DISPLAY,
   getFastModeModel,
-  getFastModeRuntimeState,
-  getFastModeUnavailableReason,
-  isFastModeAvailable,
-  isFastModeCooldown,
-  isFastModeEnabled,
-  isFastModeSupportedByModel,
+  getFastModeRuntimeStateForContext,
+  getFastModeUnavailableReasonForContext,
+  isFastModeAvailableForContext,
+  isFastModeCooldownForContext,
+  isFastModeEnabledForContext,
+  isFastModeSupportedByModelForContext,
 } from "../../../utils/fastMode.js";
 import { isFullscreenEnvEnabled } from "../../../utils/fullscreen.js";
 import type { PromptInputHelpers } from "../../../utils/handlePromptSubmit.js";
@@ -167,7 +168,7 @@ import {
 import {
   isAutoModeGateEnabled,
   transitionPermissionMode,
-} from "../../../utils/permissions/permissionSetup.js";
+} from "../../../permissions/permission-mode.js";
 import { getPlatform } from "../../../utils/platform.js";
 import type { PromptInputContext } from "../../input/inputContext.js";
 import { editPromptInEditor } from "../../../utils/promptEditor.js";
@@ -268,6 +269,7 @@ type FastModePickerProps = {
     options?: { display?: "system" | "user" | "skip" },
   ) => void;
   unavailableReason: string | null;
+  remoteAuthSessionContext: ProviderAuthReadContext;
 };
 
 const NATIVE_CSIU_TERMINALS: Record<string, string> = {
@@ -288,16 +290,20 @@ function getNativeCSIuTerminalDisplayName(): string | null {
 function applyFastMode(
   enable: boolean,
   setAppState: (updater: (prev: AppState) => AppState) => void,
+  remoteAuthSessionContext: ProviderAuthReadContext,
 ): void {
   clearFastModeCooldown();
-  updateSettingsForSource("userSettings", {
+  void updateSettingsForSource("userSettings", {
     fastMode: enable ? true : undefined,
   });
   setAppState((prev) => {
     if (!enable) {
       return { ...prev, fastMode: false };
     }
-    const needsModelSwitch = !isFastModeSupportedByModel(prev.mainLoopModel);
+    const needsModelSwitch = !isFastModeSupportedByModelForContext(
+      prev.mainLoopModel,
+      remoteAuthSessionContext,
+    );
     return {
       ...prev,
       ...(needsModelSwitch
@@ -314,37 +320,56 @@ function applyFastMode(
 function FastModePicker({
   onDone,
   unavailableReason,
+  remoteAuthSessionContext,
 }: FastModePickerProps): React.ReactNode {
   const model = useAppState((state) => state.mainLoopModel);
   const initialFastMode = useAppState((state) => state.fastMode);
   const setAppState = useSetAppState();
   const [enabled, setEnabled] = React.useState(initialFastMode ?? false);
   const isUnavailable = unavailableReason !== null;
-  const runtimeState = getFastModeRuntimeState();
+  const runtimeState = getFastModeRuntimeStateForContext(
+    remoteAuthSessionContext,
+  );
 
   const confirm = React.useCallback(() => {
     if (isUnavailable) return;
-    applyFastMode(enabled, setAppState);
+    applyFastMode(enabled, setAppState, remoteAuthSessionContext);
     if (enabled) {
-      const modelUpdated = !isFastModeSupportedByModel(model)
+      const modelUpdated = !isFastModeSupportedByModelForContext(
+        model,
+        remoteAuthSessionContext,
+      )
         ? `; model set to ${FAST_MODE_MODEL_DISPLAY}`
         : "";
       onDone(`Fast mode ON${modelUpdated}`);
     } else {
       onDone("Fast mode OFF");
     }
-  }, [enabled, isUnavailable, model, onDone, setAppState]);
+  }, [
+    enabled,
+    isUnavailable,
+    model,
+    onDone,
+    remoteAuthSessionContext,
+    setAppState,
+  ]);
 
   const cancel = React.useCallback(() => {
     if (isUnavailable && initialFastMode) {
-      applyFastMode(false, setAppState);
+      applyFastMode(false, setAppState, remoteAuthSessionContext);
       onDone("Fast mode OFF", { display: "system" });
       return;
     }
     onDone(initialFastMode ? "Kept Fast mode ON" : "Kept Fast mode OFF", {
       display: "system",
     });
-  }, [initialFastMode, isUnavailable, onDone, setAppState]);
+  }, [
+    initialFastMode,
+    isUnavailable,
+    onDone,
+    remoteAuthSessionContext,
+    setAppState,
+  ]);
 
   useInput((input, key) => {
     if (key.escape) {
@@ -500,7 +525,7 @@ type Props = {
   toolPermissionContext: ToolPermissionContext;
   setToolPermissionContext: (ctx: ToolPermissionContext) => void;
   apiKeyStatus: VerificationStatus;
-  agencHome?: string;
+  remoteAuthSessionContext: ProviderAuthReadContext;
   commands: Command[];
   agents: AgentDefinition[];
   isLoading: boolean;
@@ -730,7 +755,7 @@ function PromptInput({
   toolPermissionContext,
   setToolPermissionContext,
   apiKeyStatus,
-  agencHome,
+  remoteAuthSessionContext,
   commands,
   agents,
   isLoading,
@@ -775,6 +800,12 @@ function PromptInput({
   onSubmissionBlocked,
   onboardingInput,
 }: Props): React.ReactNode {
+  const fastModeEnabled = isFastModeEnabledForContext(
+    remoteAuthSessionContext,
+  );
+  const fastModeAvailable =
+    fastModeEnabled &&
+    isFastModeAvailableForContext(remoteAuthSessionContext);
   const mainLoopModel = useMainLoopModel();
   // A local-jsx command (e.g., /mcp while agent is running) renders a full-
   // screen dialog on top of PromptInput via the immediate-command path with
@@ -941,7 +972,7 @@ function PromptInput({
   const mainLoopModelForSession = useAppState((s) => s.mainLoopModelForSession);
   const thinkingEnabled = useAppState((s) => s.thinkingEnabled);
   const isFastMode = useAppState((s) =>
-    isFastModeEnabled() ? s.fastMode : false,
+    fastModeEnabled ? s.fastMode : false,
   );
   const effortValue = useAppState((s) => s.effortValue);
   const viewedTeammate = getViewedTeammateTask(store.getState());
@@ -1531,7 +1562,7 @@ function PromptInput({
     const clearedSubstantialInput = peakLength >= 20 && currentLength <= 5;
     const wasRapidClear = prevLength >= 20 && currentLength <= 5;
     if (clearedSubstantialInput && !wasRapidClear) {
-      const config = getGlobalConfig();
+      const config = getRuntimeState();
       if (!config.hasUsedStash) {
         addNotification({
           key: "stash-hint",
@@ -1718,8 +1749,8 @@ function PromptInput({
     if (onHistoryDown() && footerItems.length > 0) {
       const first = footerItems[0]!;
       selectFooterItem(first);
-      if (first === "tasks" && !getGlobalConfig().hasSeenTasksHint) {
-        saveGlobalConfig((c) =>
+      if (first === "tasks" && !getRuntimeState().hasSeenTasksHint) {
+        updateRuntimeState((c) =>
           c.hasSeenTasksHint
             ? c
             : {
@@ -2604,7 +2635,7 @@ function PromptInput({
       setPastedContentsAndRef({});
       pendingSpaceAfterPillRef.current = false;
       // Track usage for /discover and stop showing hint
-      saveGlobalConfig((c) => {
+      updateRuntimeState((c) => {
         if (c.hasUsedStash) return c;
         return {
           ...c,
@@ -2814,7 +2845,7 @@ function PromptInput({
 
     // Track when user enters plan mode
     if (targetMode === "plan") {
-      saveGlobalConfig((current) => ({
+      updateRuntimeState((current) => ({
         ...current,
         lastPlanModeUse: Date.now(),
       }));
@@ -3084,8 +3115,7 @@ function PromptInput({
   // Fast mode keybinding is only active when fast mode is enabled and available
   useKeybinding("chat:fastMode", handleFastModePicker, {
     context: "Chat",
-    isActive:
-      promptKeyboardActive && isFastModeEnabled() && isFastModeAvailable(),
+    isActive: promptKeyboardActive && fastModeEnabled && fastModeAvailable,
   });
 
   // Handle help:dismiss keybinding (ESC closes help menu)
@@ -3430,9 +3460,11 @@ function PromptInput({
     }
   });
   const swarmBanner = useSwarmBanner();
-  const fastModeCooldown = isFastModeEnabled() ? isFastModeCooldown() : false;
-  const showFastIcon = isFastModeEnabled()
-    ? isFastMode && (isFastModeAvailable() || fastModeCooldown)
+  const fastModeCooldown = fastModeEnabled
+    ? isFastModeCooldownForContext(remoteAuthSessionContext)
+    : false;
+  const showFastIcon = fastModeEnabled
+    ? isFastMode && (fastModeAvailable || fastModeCooldown)
     : false;
   const showFastIconHint = useShowFastIconHint(showFastIcon ?? false);
 
@@ -3548,8 +3580,11 @@ function PromptInput({
       let wasFastModeDisabled = false;
       setAppState((prev) => {
         wasFastModeDisabled =
-          isFastModeEnabled() &&
-          !isFastModeSupportedByModel(model) &&
+          fastModeEnabled &&
+          !isFastModeSupportedByModelForContext(
+            model,
+            remoteAuthSessionContext,
+          ) &&
           !!prev.fastMode;
         return {
           ...prev,
@@ -3579,7 +3614,13 @@ function PromptInput({
         timeoutMs: 3000,
       });
     },
-    [setAppState, addNotification, isFastMode],
+    [
+      addNotification,
+      fastModeEnabled,
+      isFastMode,
+      remoteAuthSessionContext,
+      setAppState,
+    ],
   );
   const handleModelCancel = useCallback(() => {
     setShowModelPicker(false);
@@ -3597,11 +3638,15 @@ function PromptInput({
           onSelect={handleModelSelect}
           onCancel={handleModelCancel}
           isStandaloneCommand
+          remoteAuthSessionContext={remoteAuthSessionContext}
           showFastModeNotice={
-            isFastModeEnabled() &&
+            fastModeEnabled &&
             isFastMode &&
-            isFastModeSupportedByModel(mainLoopModel_) &&
-            isFastModeAvailable()
+            isFastModeSupportedByModelForContext(
+              mainLoopModel_,
+              remoteAuthSessionContext,
+            ) &&
+            fastModeAvailable
           }
         />
       </Box>
@@ -3610,8 +3655,12 @@ function PromptInput({
     showModelPicker,
     mainLoopModel_,
     mainLoopModelForSession,
+    fastModeAvailable,
+    fastModeEnabled,
     handleModelSelect,
     handleModelCancel,
+    isFastMode,
+    remoteAuthSessionContext,
   ]);
   const handleFastModeSelect = useCallback(
     (result?: string) => {
@@ -3635,11 +3684,18 @@ function PromptInput({
       <Box flexDirection="column" marginTop={1}>
         <FastModePicker
           onDone={handleFastModeSelect}
-          unavailableReason={getFastModeUnavailableReason()}
+          unavailableReason={getFastModeUnavailableReasonForContext(
+            remoteAuthSessionContext,
+          )}
+          remoteAuthSessionContext={remoteAuthSessionContext}
         />
       </Box>
     );
-  }, [showFastModePicker, handleFastModeSelect]);
+  }, [
+    handleFastModeSelect,
+    remoteAuthSessionContext,
+    showFastModePicker,
+  ]);
 
   // Memoized callbacks for thinking toggle
   const handleThinkingSelect = useCallback(
@@ -4050,7 +4106,7 @@ function PromptInput({
         !exitMessage.show ? null : (
         <PromptInputFooter
           apiKeyStatus={apiKeyStatus}
-          agencHome={agencHome}
+          remoteAuthSessionContext={remoteAuthSessionContext}
           debug={debug}
           exitMessage={exitMessage}
           vimMode={isVimModeEnabled() ? vimMode : undefined}
@@ -4121,6 +4177,7 @@ function PromptInput({
         >
           <Notifications
             apiKeyStatus={apiKeyStatus}
+            remoteAuthSessionContext={remoteAuthSessionContext}
             autoUpdaterResult={autoUpdaterResult}
             debug={debug}
             isAutoUpdating={isAutoUpdating}

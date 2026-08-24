@@ -2,7 +2,7 @@ import { feature } from 'bun:bundle'
 import { prependBullets } from '../../constants/prompts.js'
 import { getAttributionTexts } from '../../utils/attribution.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
+import { isBareMode, isEnvTruthy } from '../../utils/envUtils.js'
 import { shouldIncludeGitInstructions } from '../../utils/gitSettings.js'
 import { getAgenCTempDir } from '../../utils/permissions/filesystem.js'
 import { SandboxManager } from '../../utils/sandbox/sandbox-runtime.js'
@@ -54,7 +54,7 @@ function getCommitAndPRInstructions(): string {
 
   // For ant users, use the short version pointing to skills
   if (process.env.USER_TYPE === 'ant') {
-    const skillsSection = !isEnvTruthy(process.env.AGENC_SIMPLE)
+    const skillsSection = !isBareMode()
       ? `For git commits and pull requests, use the \`/commit\` and \`/commit-push-pr\` skills:
 - \`/commit\` - Create a git commit with staged changes
 - \`/commit-push-pr\` - Commit, push, and create a pull request

@@ -284,10 +284,10 @@ import {
 import { SEND_MESSAGE_TOOL_NAME } from '../tools/SendMessageTool/constants.js'
 import { TASK_CREATE_TOOL_NAME } from '../tools/TaskCreateTool/constants.js'
 import { TASK_OUTPUT_TOOL_NAME } from '../tools/TaskOutputTool/constants.js'
+import { TASK_STOP_TOOL_NAME } from '../tools/TaskStopTool/prompt.js'
 import { TASK_UPDATE_TOOL_NAME } from '../tools/TaskUpdateTool/constants.js'
 import type { PermissionMode } from '../types/permissions.js'
 import { normalizeToolInput, normalizeToolInputForAPI } from './api.js'
-import { getCurrentProjectConfig } from './config.js'
 import { logAntError, logForDebugging } from 'src/utils/debug.js'
 import { stripIdeContextTags } from './displayTags.js'
 import { hasEmbeddedSearchTools } from './embeddedTools.js'
@@ -295,7 +295,6 @@ import { formatFileSize } from './format.js'
 import { validateImagesForAPI } from './imageValidation.js'
 import { safeParseJSON } from './json.js'
 import { logError } from './log.js'
-import { normalizeLegacyToolName } from './permissions/permissionRuleParser.js'
 import {
   getPlanModeV2AgentCount,
   getPlanModeV2ExploreAgentCount,
@@ -1706,6 +1705,31 @@ export function isSystemLocalCommandMessage(
 }
 
 /**
+ * One-way reader compatibility for tool references already stored in old
+ * transcripts. This must not be used by live tool lookup, hooks, or permission
+ * rules.
+ */
+function canonicalHistoricalToolReferenceName(name: string): string {
+  switch (name) {
+    case 'Task':
+      return AGENT_TOOL_NAME
+    case 'KillShell':
+      return TASK_STOP_TOOL_NAME
+    case 'AgentOutputTool':
+    case 'BashOutputTool':
+      return TASK_OUTPUT_TOOL_NAME
+    case 'Brief':
+      if (feature('KAIROS') || feature('KAIROS_BRIEF')) {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        return (require('../tools/BriefTool/prompt.js') as typeof import('../tools/BriefTool/prompt.js')).BRIEF_TOOL_NAME
+      }
+      return name
+    default:
+      return name
+  }
+}
+
+/**
  * Strips tool_reference blocks for tools that no longer exist from tool_result content.
  * This handles the case where a session was saved with MCP tools that are no longer
  * available (e.g., MCP server was disconnected, renamed, or removed).
@@ -1729,7 +1753,8 @@ function stripUnavailableToolReferencesFromUserMessage(
         if (!isToolReferenceBlock(c)) return false
         const toolName = (c as { tool_name?: string }).tool_name
         return (
-          toolName && !availableToolNames.has(normalizeLegacyToolName(toolName))
+          toolName &&
+          !availableToolNames.has(canonicalHistoricalToolReferenceName(toolName))
         )
       }),
   )
@@ -1752,7 +1777,7 @@ function stripUnavailableToolReferencesFromUserMessage(
           if (!isToolReferenceBlock(c)) return true
           const rawToolName = (c as { tool_name?: string }).tool_name
           if (!rawToolName) return true
-          const toolName = normalizeLegacyToolName(rawToolName)
+          const toolName = canonicalHistoricalToolReferenceName(rawToolName)
           const isAvailable = availableToolNames.has(toolName)
           if (!isAvailable) {
             logForDebugging(
@@ -3873,14 +3898,7 @@ function getReadOnlyToolNames(): string {
   const tools = hasEmbeddedSearchTools()
     ? [FILE_READ_TOOL_NAME, '`find`', '`grep`']
     : [FILE_READ_TOOL_NAME, GLOB_TOOL_NAME, GREP_TOOL_NAME]
-  const { allowedTools } = getCurrentProjectConfig()
-  // allowedTools is a tool-name allowlist. find/grep are shell commands, not
-  // tool names, so the filter is only meaningful for the non-embedded branch.
-  const filtered =
-    allowedTools && allowedTools.length > 0 && !hasEmbeddedSearchTools()
-      ? tools.filter(t => allowedTools.includes(t))
-      : tools
-  return filtered.join(', ')
+  return tools.join(', ')
 }
 
 /**

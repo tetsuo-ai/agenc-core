@@ -5,7 +5,7 @@
  *   - `"stdio"` (default): delegate to `./transports/stdio.ts`.
  *   - `"sse"`: delegate to `./transports/sse.ts`.
  *   - `"http"`: delegate to `./transports/http.ts` (Streamable HTTP).
- *   - `"websocket"` / `"ws"`: delegate to `./transports/websocket.ts`.
+ *   - `"websocket"`: delegate to `./transports/websocket.ts`.
  *
  * @module
  */
@@ -19,6 +19,8 @@ import { createHttpMCPConnection } from "./transports/http.js";
 import { createWebSocketMCPConnection } from "./transports/websocket.js";
 import type { McpSamplingHandlers } from "../services/mcp/hostCapabilities.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
+import { EMPTY_MCP_REQUEST_ENVIRONMENT } from "./environment.js";
 
 /**
  * Create an MCP client connection to an external server.
@@ -34,6 +36,7 @@ export async function createMCPConnection(
   elicitationHandlers?: MCPElicitationHandlers,
   samplingHandlers?: McpSamplingHandlers,
   sandboxExecutionBroker?: SandboxExecutionBrokerLike,
+  environment: ProviderEnvironment = EMPTY_MCP_REQUEST_ENVIRONMENT,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const transportKind = config.transport ?? "stdio";
@@ -61,14 +64,14 @@ export async function createMCPConnection(
       elicitationHandlers,
       samplingHandlers,
       sandboxExecutionBroker,
+      environment,
     );
   }
 
   if (
     transportKind === "sse" ||
     transportKind === "http" ||
-    transportKind === "websocket" ||
-    transportKind === "ws"
+    transportKind === "websocket"
   ) {
     if (!config.endpoint || config.endpoint.length === 0) {
       throw new Error(
@@ -87,6 +90,7 @@ export async function createMCPConnection(
         logger,
         elicitationHandlers,
         samplingHandlers,
+        environment,
       );
     }
     if (transportKind === "http") {
@@ -95,6 +99,7 @@ export async function createMCPConnection(
         logger,
         elicitationHandlers,
         samplingHandlers,
+        environment,
       );
     }
     return createWebSocketMCPConnection(
@@ -102,6 +107,7 @@ export async function createMCPConnection(
       logger,
       elicitationHandlers,
       samplingHandlers,
+      environment,
     );
   }
 

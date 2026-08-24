@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { mkdtempSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +14,7 @@ import {
   createAgentRoleWorkspace,
   type AgentRoleWorkspace,
 } from "../agents/role.js";
+import { ConfigStore } from "../config/store.js";
 import type {
   LLMContentPart,
   LLMMessage,
@@ -26,6 +28,7 @@ import {
   setCurrentRuntimeSession,
 } from "../session/current-session.js";
 import { Session, type SessionServices } from "../session/session.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { runTurnCompat } from "../session/turn-compat.js";
 import { startBackgroundSession } from "../tasks/LocalMainSessionTask.js";
@@ -1857,9 +1860,20 @@ function createParentSession(
   const permissionModeRegistry = new PermissionModeRegistry(
     createEmptyToolPermissionContext({ mode: "dontAsk" }),
   );
+  const agencHome = mkdtempSync(
+    join(tmpdir(), "agenc-hook-session-authority-"),
+  );
+  testCleanup.push(() => rm(agencHome, { recursive: true, force: true }));
+  const configStore = new ConfigStore({
+    home: agencHome,
+    env: { AGENC_HOME: agencHome },
+    cwd,
+  });
   const services = {
     admissionRequired: false,
+    runtimeOptions: resolveAgentRuntimeOptions({}),
     provider,
+    configStore,
     registry: {
       tools: [],
       toLLMTools: () => [],
@@ -1945,18 +1959,12 @@ function createParentSession(
       } as never,
       history: [],
     },
-    features: {
-      appsEnabledForAuth: () => false,
-      useLegacyLandlock: () => false,
-    },
+    features: {},
     jsRepl: { id: "test" },
     config: {
       model: "test-model",
       cwd,
-      features: {
-        appsEnabledForAuth: () => false,
-        useLegacyLandlock: () => false,
-      },
+      features: {},
       multiAgentV2: {
         usageHintEnabled: false,
         usageHintText: "",

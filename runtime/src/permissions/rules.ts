@@ -27,6 +27,7 @@ import {
   type ToolPermissionRulesBySource,
   deepFreeze,
 } from "./types.js";
+import { isRemovedLiveToolName } from "./tool-names.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Escape helpers (parens + backslash)
@@ -91,9 +92,9 @@ function findLastUnescapedChar(str: string, char: string): number {
  *   content   := any char; `\(` and `\)` are escaped parens
  *
  * Shapes treated as whole-tool rules (no content):
- *   "Bash"     → { toolName: "Bash" }
- *   "Bash()"   → { toolName: "Bash" }
- *   "Bash(*)"  → { toolName: "Bash" }
+ *   "system.bash"     → { toolName: "system.bash" }
+ *   "system.bash()"   → { toolName: "system.bash" }
+ *   "system.bash(*)"  → { toolName: "system.bash" }
  */
 export function parseRuleString(raw: string): PermissionRuleValue | null {
   if (typeof raw !== "string" || raw.length === 0) return null;
@@ -147,18 +148,10 @@ export interface ToolLike {
   };
 }
 
-/**
- * Shell-exec family: LIVE default shell is `exec_command`; legacy / TUI /
- * unattended names must collapse for deny/ask/allow rules (parity with
- * unattended-policy.ts TOOL_ALIASES).
- */
+/** Canonical shell-exec tools share one deny/ask/allow risk family. */
 export const SHELL_TOOL_FAMILY: readonly string[] = Object.freeze([
   "system.bash",
-  "Bash",
-  "bash",
   "exec_command",
-  "desktop.bash",
-  "shell",
   // TOOL-02: interactive continuation + kill are shell channels.
   "write_stdin",
   "kill_process",
@@ -169,29 +162,30 @@ export const SHELL_TOOL_FAMILY: readonly string[] = Object.freeze([
 /** TOOL-05: file-mutation family for deny/ask/allow collapse. */
 export const FILE_MUTATION_TOOL_FAMILY: readonly string[] = Object.freeze([
   "Edit",
-  "FileEdit",
   "MultiEdit",
   "Write",
-  "FileWrite",
   "apply_patch",
 ]);
 
-const TOOL_PERMISSION_ALIASES: ReadonlyMap<string, readonly string[]> =
+const TOOL_PERMISSION_RISK_FAMILIES: ReadonlyMap<string, readonly string[]> =
   new Map<string, readonly string[]>([
     ["system.bash", SHELL_TOOL_FAMILY],
-    ["FileRead", Object.freeze(["FileRead", "Read"] as const)],
+    ["exec_command", SHELL_TOOL_FAMILY],
+    ["write_stdin", SHELL_TOOL_FAMILY],
+    ["kill_process", SHELL_TOOL_FAMILY],
+    ["PowerShell", SHELL_TOOL_FAMILY],
+    ["Monitor", SHELL_TOOL_FAMILY],
     ["Edit", FILE_MUTATION_TOOL_FAMILY],
     ["Write", FILE_MUTATION_TOOL_FAMILY],
     ["MultiEdit", FILE_MUTATION_TOOL_FAMILY],
     ["apply_patch", FILE_MUTATION_TOOL_FAMILY],
-    ["Grep", Object.freeze(["Grep", "system.grep"] as const)],
-    ["Glob", Object.freeze(["Glob", "system.glob"] as const)],
   ]);
 
-export function toolNameAliases(toolName: string): readonly string[] {
-  const aliases = TOOL_PERMISSION_ALIASES.get(toolName);
-  if (aliases !== undefined) return aliases;
-  for (const values of TOOL_PERMISSION_ALIASES.values()) {
+export function toolNamesInPermissionRiskFamily(toolName: string): readonly string[] {
+  if (isRemovedLiveToolName(toolName)) return Object.freeze([] as string[]);
+  const family = TOOL_PERMISSION_RISK_FAMILIES.get(toolName);
+  if (family !== undefined) return family;
+  for (const values of TOOL_PERMISSION_RISK_FAMILIES.values()) {
     if (values.includes(toolName)) return values;
   }
   return Object.freeze([toolName] as const);
@@ -240,7 +234,7 @@ export function matchRule(
       : `mcp__${tool.mcpInfo.serverName}`
     : tool.name;
 
-  if (toolNameAliases(toolNameForMatch).includes(rule.ruleValue.toolName)) {
+  if (toolNamesInPermissionRiskFamily(toolNameForMatch).includes(rule.ruleValue.toolName)) {
     return true;
   }
 
@@ -348,7 +342,7 @@ export function getRuleByContentsForTool(
   }
   for (const rule of rules) {
     if (
-      toolNameAliases(toolName).includes(rule.ruleValue.toolName) &&
+      toolNamesInPermissionRiskFamily(toolName).includes(rule.ruleValue.toolName) &&
       rule.ruleValue.ruleContent !== undefined &&
       rule.ruleBehavior === behavior
     ) {
@@ -684,7 +678,7 @@ export function setRulesForSource(
 /**
  * Additive rule application — typical startup path. Existing rules
  * are preserved; new rules are appended. Use
- * {@link syncPermissionRulesFromDisk} (in settings.ts) for the
+ * {@link syncPermissionRulesFromConfig} (in settings.ts) for the
  * replacement-on-reload path.
  *
  * Rules with a source that is not a `PermissionUpdateDestination`

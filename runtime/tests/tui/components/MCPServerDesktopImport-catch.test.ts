@@ -10,11 +10,13 @@ import { importSelectedMcpServers } from "../../../src/tui/components/MCPServerD
 
 const cfg = (id: string): McpServerConfig =>
   ({ type: "stdio", command: id }) as unknown as McpServerConfig;
+const authority = {} as never;
 
 describe("importSelectedMcpServers", () => {
   it("imports each selected server and returns the count", async () => {
     const added: string[] = [];
     const count = await importSelectedMcpServers(
+      authority,
       ["a", "b"],
       { a: cfg("a"), b: cfg("b") },
       {},
@@ -30,6 +32,7 @@ describe("importSelectedMcpServers", () => {
   it("renames on a name collision with existing config", async () => {
     const added: string[] = [];
     const count = await importSelectedMcpServers(
+      authority,
       ["a"],
       { a: cfg("a") },
       { a: {} as never }, // 'a' already exists
@@ -46,6 +49,7 @@ describe("importSelectedMcpServers", () => {
     const added: string[] = [];
     await expect(
       importSelectedMcpServers(
+        authority,
         ["a", "b", "c"],
         { a: cfg("a"), b: cfg("b"), c: cfg("c") },
         {},
@@ -65,6 +69,7 @@ describe("importSelectedMcpServers", () => {
   it("skips servers not present in the servers map", async () => {
     const added: string[] = [];
     const count = await importSelectedMcpServers(
+      authority,
       ["a", "missing"],
       { a: cfg("a") },
       {},

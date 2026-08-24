@@ -8,6 +8,7 @@ import {
 } from "./autoCompact.js";
 import type { RuntimeMessage } from "./types.js";
 import { createCompactionTransactionHarness } from "../../helpers/compaction-transaction-harness.js";
+import { runWithStartupProviderSelection } from "../../utils/model/providers.js";
 
 describe("auto compact", () => {
   const savedEnv = { ...process.env };
@@ -22,13 +23,14 @@ describe("auto compact", () => {
 
   test("uses context-window data and percentage overrides for thresholds", () => {
     process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = "50";
-
-    expect(getEffectiveContextWindowSize({
-      options: { contextWindowTokens: 1_000 },
-    })).toBe(1_000);
-    expect(getAutoCompactThreshold({
-      options: { contextWindowTokens: 1_000 },
-    })).toBe(500);
+    runWithCapturedEnvironment(() => {
+      expect(getEffectiveContextWindowSize({
+        options: { contextWindowTokens: 1_000 },
+      })).toBe(1_000);
+      expect(getAutoCompactThreshold({
+        options: { contextWindowTokens: 1_000 },
+      })).toBe(500);
+    });
   });
 
   test("unknown models fall back to the 128k openai-compat window, not the legacy 32k haiku-era default", () => {
@@ -88,7 +90,9 @@ describe("auto compact", () => {
     const harness = createCompactionTransactionHarness(messages, {
       compactionMode: "automatic",
     });
-    const result = await autoCompactIfNeeded(messages, harness.context);
+    const result = await runWithCapturedEnvironment(() =>
+      autoCompactIfNeeded(messages, harness.context)
+    );
 
     expect(result.wasCompacted).toBe(true);
     expect(result.compactionResult?.transaction).toBeDefined();
@@ -135,15 +139,17 @@ describe("auto compact", () => {
       compactionMode: "automatic",
     });
     process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = "1";
-    const result = await autoCompactIfNeeded(messages, {
-      ...harness.context,
-      deps: {
+    const result = await runWithCapturedEnvironment(() =>
+      autoCompactIfNeeded(messages, {
+        ...harness.context,
+        deps: {
           cleanup,
           sessionMemory: {
             getContent: async () => "remembered decisions",
           },
-      },
-    });
+        },
+      })
+    );
 
     expect(result.wasCompacted).toBe(true);
     expect(result.compactionResult?.transaction).toBeDefined();
@@ -162,14 +168,23 @@ describe("auto compact", () => {
 
   test("respects AgenC disable switches", async () => {
     process.env.AGENC_DISABLE_AUTO_COMPACT = "1";
-
-    expect(isAutoCompactEnabled()).toBe(false);
-    await expect(autoCompactIfNeeded(
-      [message("x".repeat(10_000))],
-      { options: { contextWindowTokens: 100 } },
-    )).resolves.toEqual({ wasCompacted: false });
+    await runWithCapturedEnvironment(async () => {
+      expect(isAutoCompactEnabled()).toBe(false);
+      await expect(autoCompactIfNeeded(
+        [message("x".repeat(10_000))],
+        { options: { contextWindowTokens: 100 } },
+      )).resolves.toEqual({ wasCompacted: false });
+    });
   });
 });
+
+function runWithCapturedEnvironment<T>(operation: () => T): T {
+  return runWithStartupProviderSelection({
+    provider: "grok",
+    model: "grok-4.6",
+    environment: { ...process.env },
+  }, operation);
+}
 
 function message(content: string): RuntimeMessage {
   return {

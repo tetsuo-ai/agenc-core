@@ -20,7 +20,8 @@ import {
 import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { createConnection, isIP } from "node:net";
 import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
+import { resolveHomeContext } from "../config/home.js";
 import {
   AgenCDaemonAgentManager,
   type AgenCDaemonAgentRunSnapshot,
@@ -128,8 +129,12 @@ import {
   type AgenCDaemonStartupGuardReceiver,
 } from "./daemon-startup-guard.js";
 import { createPermissionAuditFileLogger } from "../permissions/permission-audit-log.js";
-import { loadConfig } from "../config/loader.js";
+import { loadCanonicalConfig } from "../config/repository.js";
 import { resolveProviderBaseURL } from "../config/env.js";
+import {
+  validateAgentRuntimeOptions,
+  type AgentRuntimeOptions,
+} from "../session/runtime-options.js";
 import type { AgenCConfig, AgentRunRetentionConfig } from "../config/schema.js";
 import { CodePredictionService } from "../services/code-prediction/service.js";
 import { BUILT_IN_PROVIDER_BASE_URLS } from "../llm/registry/provider-info.js";
@@ -186,7 +191,6 @@ import {
   createSizeCappedFileLogSink,
   type SizeCappedFileLogSink,
 } from "../utils/logger.js";
-import { configureGlobalAgents } from "../utils/proxy.js";
 import { isRecord } from "../utils/record.js";
 import { startHeapWatchdog } from "../services/heapWatchdog/heapWatchdog.js";
 
@@ -492,17 +496,17 @@ export class AgenCDaemonRpcShutdownCoordinator {
 }
 
 export function defaultAgenCDaemonPidPath(userHome = homedir()): string {
-  return join(userHome, ".agenc", AGENC_DAEMON_PID_FILENAME);
+  return join(
+    resolveHomeContext({}, { platformHome: userHome }).path,
+    AGENC_DAEMON_PID_FILENAME,
+  );
 }
 
 export function resolveAgenCDaemonHome(
   env: NodeJS.ProcessEnv = process.env,
   userHome = homedir(),
 ): string {
-  const configured = env.AGENC_HOME?.trim();
-  return configured && configured.length > 0
-    ? configured
-    : join(userHome, ".agenc");
+  return resolveHomeContext(env, { platformHome: userHome }).path;
 }
 
 export function resolveAgenCDaemonWebSocketListenOptions(
@@ -534,7 +538,7 @@ export function resolveAgenCDaemonWebSocketListenOptions(
   }
   // The fixed portal endpoint is only safe for the default daemon home. Test
   // and isolated homes must not collide with the user's long-lived daemon.
-  if ((env.AGENC_HOME?.trim() ?? "").length > 0) {
+  if (!resolveHomeContext(env).isDefault) {
     return { host, port: 0, path, fallbackToEphemeralPortOnAddrInUse: false };
   }
   return {
@@ -814,8 +818,7 @@ export function parseAgenCDaemonCliArgs(
     action === "stop" ||
     action === "status" ||
     action === "reload" ||
-    action === "restart" ||
-    action === "run"
+    action === "restart"
   ) {
     if (action === "start" && extra[0] === "--foreground") {
       if (extra.length === 1) {
@@ -833,6 +836,13 @@ export function parseAgenCDaemonCliArgs(
       };
     }
     return { kind: "command", action };
+  }
+  if (action === "run") {
+    return {
+      kind: "error",
+      message:
+        "unknown daemon command: run. Use 'agenc daemon start --foreground' instead.",
+    };
   }
   return {
     kind: "error",
@@ -2777,12 +2787,6 @@ async function runAgenCDaemonForegroundLocked(
     );
     return 1;
   }
-  // Install the process-wide proxy/mTLS dispatcher before any daemon service
-  // (including a possibly-remote-HTTP auth backend) issues a request. The TUI
-  // does this via applyConfigEnvironmentVariables; the headless daemon never
-  // runs that path, so a bare fetch()/global-axios call would otherwise ignore
-  // HTTPS_PROXY. No-op when no proxy/mTLS/CA env is present.
-  configureGlobalAgents();
   const authStartup = await tryResolveAgenCDaemonAuthStartup(host, io);
   if (authStartup === null) {
     return 1;
@@ -3004,6 +3008,7 @@ async function runAgenCDaemonForegroundLocked(
       snapshotPolicies.close();
     });
     const agentManager = new AgenCDaemonAgentManager({
+      agencHome: authStartup.daemonHome,
       runner,
       sessionManager,
       threadStore,
@@ -4645,8 +4650,13 @@ async function restoreRecoveredAgentRuntime(
   readonly restoreAttemptId?: string;
 }> {
   const resumeSource = run.resumeSource;
+  const runtimeOptions = runtimeOptionsForRecoveredRun(run);
   if (!isRecoveredRunRuntimeRestorable(run) || resumeSource === undefined) {
     resumeSource?.close();
+    return { available: false };
+  }
+  if (runtimeOptions === null) {
+    resumeSource.close();
     return { available: false };
   }
   if (runner.restoreAgent === undefined) {
@@ -4667,6 +4677,7 @@ async function restoreRecoveredAgentRuntime(
       resumeCwdFd: resumeSource.cwdFd,
       explicitColdResume: true,
       restoreAttemptId,
+      runtimeOptions,
       ...(resumeSource.activeStartupActivationResumeEventId !== undefined
         ? { resumeStartupActivationPending: true }
         : {}),
@@ -4698,6 +4709,7 @@ async function restoreRecoveredAgentRuntime(
             ...optionalMetadataString(run.metadata, "provider"),
             ...optionalMetadataString(run.metadata, "profile"),
           }),
+      ...optionalAbsoluteMetadataPath(run.metadata, "configPath"),
       ...(initialMessages !== undefined ? { initialMessages } : {}),
       ...(replayToolCalls.length > 0 ? { replayToolCalls } : {}),
       ...(options.recordReplayToolResult !== undefined
@@ -4725,6 +4737,24 @@ async function restoreRecoveredAgentRuntime(
     return { available: false };
   } finally {
     resumeSource.close();
+  }
+}
+
+/**
+ * Recover the immutable operator inputs recorded with the run. Runs created
+ * before this required protocol field cannot be restored safely: substituting
+ * the daemon's current environment would silently change shell, hook, temp, or
+ * plugin authority after a restart.
+ */
+function runtimeOptionsForRecoveredRun(
+  run: RecoveredAgentRun,
+): AgentRuntimeOptions | null {
+  const value = run.metadata?.runtimeOptions;
+  if (value === undefined) return null;
+  try {
+    return validateAgentRuntimeOptions(value);
+  } catch {
+    return null;
   }
 }
 
@@ -4756,7 +4786,11 @@ function isRecoveredRunRuntimeRestorable(run: RecoveredAgentRun): boolean {
     (run.status === "suspended") ===
       (run.resumeSource.lifecycleState === "suspended") &&
     typeof run.metadata?.agentPath === "string" &&
-    run.metadata.agentPath.trim().length > 0
+    run.metadata.agentPath.trim().length > 0 &&
+    (run.metadata.configPath === undefined ||
+      (typeof run.metadata.configPath === "string" &&
+        run.metadata.configPath.trim().length > 0 &&
+        isAbsolute(run.metadata.configPath.trim())))
   );
 }
 
@@ -4768,6 +4802,16 @@ function optionalMetadataString(
   return typeof value === "string" && value.trim().length > 0
     ? { [key]: value.trim() }
     : {};
+}
+
+function optionalAbsoluteMetadataPath(
+  metadata: JsonObject | undefined,
+  key: string,
+): Record<string, string> {
+  const value = metadata?.[key];
+  if (typeof value !== "string") return {};
+  const trimmed = value.trim();
+  return trimmed.length > 0 && isAbsolute(trimmed) ? { [key]: trimmed } : {};
 }
 
 function recoverySnapshotMetadata(
@@ -5259,7 +5303,8 @@ async function resolveAgenCDaemonAuthStartup(
   io: AgenCDaemonCliIo,
 ): Promise<AgenCDaemonAuthStartup> {
   const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
-  const loadedConfig = await loadConfig({
+  const loadedConfig = await loadCanonicalConfig({
+    env: host.env,
     home: daemonHome,
     onWarn: (message) => io.stderr.write(`${message}\n`),
   });

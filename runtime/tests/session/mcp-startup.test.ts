@@ -6,7 +6,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { MCPManager } from "../mcp-client/manager.js";
@@ -24,12 +24,10 @@ import {
   attachMcpManagerToSession,
   createSessionMcpManager,
   createSessionMcpManagerFromConfig,
-  createSessionMcpManagerFromEnv,
   createSessionMcpManagerFromSources,
   createSessionMcpSamplingHandlers,
   createSessionMcpService,
   getMcpConfigFromConfig,
-  getMcpConfigFromEnv,
   refreshMcpManagerFromConfig,
   requiredMcpServerNames,
   resolveSessionMcpConfig,
@@ -37,6 +35,7 @@ import {
   startMcpManagerForSession,
 } from "./mcp-startup.js";
 import type { Session } from "./session.js";
+import { ConfigStore } from "../config/store.js";
 
 vi.mock("../mcp-client/connection.js", () => ({
   createMCPConnection: vi.fn(),
@@ -569,19 +568,6 @@ describe("mcp-startup session-owned manager helpers", () => {
     ]);
   });
 
-  it("constructs the real manager from AGENC_MCP_SERVERS", () => {
-    const manager = createSessionMcpManagerFromEnv({
-      AGENC_MCP_SERVERS: JSON.stringify([
-        { name: "github", command: "github-mcp" },
-      ]),
-    } as NodeJS.ProcessEnv);
-
-    expect(manager).toBeInstanceOf(MCPManager);
-    expect(manager.getConfiguredServers()).toEqual([
-      expect.objectContaining({ name: "github", command: "github-mcp" }),
-    ]);
-  });
-
   it("constructs the real manager from loaded config mcp_servers", () => {
     const manager = createSessionMcpManagerFromConfig(
       {
@@ -595,7 +581,6 @@ describe("mcp-startup session-owned manager helpers", () => {
           },
         },
       },
-      {} as NodeJS.ProcessEnv,
     );
 
     expect(manager).toBeInstanceOf(MCPManager);
@@ -611,71 +596,55 @@ describe("mcp-startup session-owned manager helpers", () => {
     ]);
   });
 
-  it("loads project .mcp.json servers when bypass-mode startup opts in", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-project-mcp-"));
-    const serverCwd = join(cwd, "mcp-server");
+  it("consumes MCP servers from the explicit canonical ConfigStore snapshot", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-canonical-mcp-"));
+    const home = join(root, "home");
+    const cwd = join(root, "project");
     try {
+      mkdirSync(home, { recursive: true });
+      mkdirSync(cwd, { recursive: true });
       writeFileSync(
-        join(cwd, ".mcp.json"),
-        JSON.stringify({
-          mcpServers: {
-            audit: {
-              type: "stdio",
-              command: "node",
-              args: ["server.js"],
-              env: { AUDIT_TOKEN: "test-token" },
-              env_vars: ["PATH", "HOME"],
-              cwd: serverCwd,
-              timeout: 1_234,
-              required: true,
-              enabled: true,
-              default_tools_approval_mode: "on-request",
-              enabled_tools: ["read"],
-              disabled_tools: ["write"],
-              tools: {
-                read: { default_permission_mode: "never" },
-              },
-              pinnedCatalogSha256: "a".repeat(64),
-              supplyChain: { catalogSha256: "b".repeat(64) },
-            },
-          },
-        }),
+        join(home, "config.toml"),
+        [
+          "config_version = 2",
+          "[mcp_servers.audit]",
+          'command = "node"',
+          'args = ["server.js"]',
+          "required = true",
+          "",
+        ].join("\n"),
         "utf8",
       );
+      const store = new ConfigStore({
+        home,
+        cwd,
+        projectRoot: cwd,
+        projectTrusted: false,
+        env: { AGENC_HOME: home, HOME: root },
+        managedConfigPath: join(root, "missing-managed.toml"),
+        managedDropInDir: join(root, "missing-managed.d"),
+      });
+      await store.reload();
 
       await expect(
         resolveSessionMcpConfigFromSources(
-          undefined,
+          store.current(),
           {} as NodeJS.ProcessEnv,
           {
             cwd,
-            includeProjectMcpServers: true,
+            includePluginMcpServers: false,
           },
         ),
       ).resolves.toEqual([
         expect.objectContaining({
           name: "audit",
-          transport: "stdio",
           command: "node",
           args: ["server.js"],
-          env: { AUDIT_TOKEN: "test-token" },
-          env_vars: ["PATH", "HOME"],
-          cwd: serverCwd,
-          timeout: 1_234,
           required: true,
-          enabled: true,
-          default_tools_approval_mode: "on-request",
-          enabled_tools: ["read"],
-          disabled_tools: ["write"],
-          tools: {
-            read: { default_permission_mode: "never" },
-          },
-          pinnedCatalogSha256: "a".repeat(64),
-          supplyChain: { catalogSha256: "b".repeat(64) },
         }),
       ]);
     } finally {
-      rmSync(cwd, { recursive: true, force: true });
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -752,15 +721,11 @@ describe("mcp-startup session-owned manager helpers", () => {
     ).resolves.toEqual([]);
   });
 
-  it("keeps AGENC_MCP_SERVERS as a complete override over plugin servers", async () => {
+  it("always merges canonical and plugin MCP sources", async () => {
     await expect(
       resolveSessionMcpConfigFromSources(
-        undefined,
-        {
-          AGENC_MCP_SERVERS: JSON.stringify([
-            { name: "envOnly", command: "env-mcp" },
-          ]),
-        } as NodeJS.ProcessEnv,
+        { mcp_servers: { canonical: { command: "canonical-mcp" } } },
+        {} as NodeJS.ProcessEnv,
         {
           pluginMcpServerSource: async () => ({
             "plugin:sample:goal": { command: "plugin-declared" },
@@ -768,7 +733,11 @@ describe("mcp-startup session-owned manager helpers", () => {
         },
       ),
     ).resolves.toEqual([
-      expect.objectContaining({ name: "envOnly", command: "env-mcp" }),
+      expect.objectContaining({ name: "canonical", command: "canonical-mcp" }),
+      expect.objectContaining({
+        name: "plugin:sample:goal",
+        command: "plugin-declared",
+      }),
     ]);
   });
 
@@ -788,41 +757,13 @@ describe("mcp-startup session-owned manager helpers", () => {
     ]);
   });
 
-  it("keeps AGENC_MCP_SERVERS as a complete override over project .mcp.json", async () => {
-    const cwd = mkdtempSync(join(tmpdir(), "agenc-project-mcp-"));
-    try {
-      writeFileSync(
-        join(cwd, ".mcp.json"),
-        JSON.stringify({
-          mcpServers: {
-            project: {
-              type: "stdio",
-              command: "project-mcp",
-            },
-          },
-        }),
-        "utf8",
-      );
-
-      const manager = await createSessionMcpManagerFromSources(
-        undefined,
-        {
-          AGENC_MCP_SERVERS: JSON.stringify([
-            { name: "env", command: "env-mcp" },
-          ]),
-        } as NodeJS.ProcessEnv,
-        {
-          cwd,
-          includeProjectMcpServers: true,
-        },
-      );
-
-      expect(manager.getConfiguredServers()).toEqual([
-        expect.objectContaining({ name: "env", command: "env-mcp" }),
-      ]);
-    } finally {
-      rmSync(cwd, { recursive: true, force: true });
-    }
+  it("has no independent project JSON startup authority", () => {
+    const source = readFileSync(
+      join(import.meta.dirname, "..", "..", "src", "session", "mcp-startup.ts"),
+      "utf8",
+    );
+    expect(source).not.toContain(".mcp.json");
+    expect(source).not.toContain("includeProjectMcpServers");
   });
 
   it("exposes runtime readiness and routing off the real manager", () => {
@@ -1066,70 +1007,29 @@ describe("mcp-startup session-owned manager helpers", () => {
     ]);
   });
 
-  it("service refreshFromConfig preserves env override semantics", async () => {
+  it("service refreshFromConfig uses the canonical config snapshot", async () => {
     const refreshServers = vi.fn().mockResolvedValue(undefined);
     const manager = {
       refreshServers,
     } as unknown as MCPManager;
     const service = createSessionMcpService(manager, {
-      env: {
-        AGENC_MCP_SERVERS: JSON.stringify([
-          { name: "envOnly", command: "env-mcp", required: true },
-        ]),
-      } as NodeJS.ProcessEnv,
+      env: {} as NodeJS.ProcessEnv,
     });
 
     const result = await service.refreshFromConfig?.({
       mcp_servers: {
-        configOnly: { command: "config-mcp" },
+        configOnly: { command: "config-mcp", required: true },
       },
     });
 
     expect(refreshServers).toHaveBeenCalledWith(
-      [expect.objectContaining({ name: "envOnly", command: "env-mcp" })],
-      { requiredServers: ["envOnly"] },
+      [expect.objectContaining({ name: "configOnly", command: "config-mcp" })],
+      { requiredServers: ["configOnly"] },
     );
     expect(result).toEqual({
-      configuredServers: ["envOnly"],
-      requiredServers: ["envOnly"],
+      configuredServers: ["configOnly"],
+      requiredServers: ["configOnly"],
     });
-  });
-});
-
-describe("mcp-startup.getMcpConfigFromEnv", () => {
-  it("returns [] for unset env", () => {
-    expect(getMcpConfigFromEnv({} as NodeJS.ProcessEnv)).toEqual([]);
-  });
-
-  it("returns [] for malformed JSON", () => {
-    expect(
-      getMcpConfigFromEnv({ AGENC_MCP_SERVERS: "not-json" } as NodeJS.ProcessEnv),
-    ).toEqual([]);
-  });
-
-  it("returns [] when JSON is not an array", () => {
-    expect(
-      getMcpConfigFromEnv({
-        AGENC_MCP_SERVERS: '{"name":"foo"}',
-      } as NodeJS.ProcessEnv),
-    ).toEqual([]);
-  });
-
-  it("parses a valid JSON array of MCP configs", () => {
-    const env = {
-      AGENC_MCP_SERVERS: JSON.stringify([
-        { name: "alpha", command: "alpha-cmd" },
-        { name: "beta", transport: "sse", endpoint: "http://example/beta" },
-        // Invalid entries get filtered out.
-        { missingName: true },
-        null,
-        "string",
-      ]),
-    } as NodeJS.ProcessEnv;
-    const parsed = getMcpConfigFromEnv(env);
-    expect(parsed).toHaveLength(2);
-    expect(parsed[0]!.name).toBe("alpha");
-    expect(parsed[1]!.name).toBe("beta");
   });
 });
 
@@ -1172,22 +1072,17 @@ describe("mcp-startup config-backed MCP resolution", () => {
     ]);
   });
 
-  it("lets AGENC_MCP_SERVERS completely override config mcp_servers", () => {
+  it("resolves only canonical config mcp_servers", () => {
     const resolved = resolveSessionMcpConfig(
       {
         mcp_servers: {
           configOnly: { command: "config-cmd" },
         },
       },
-      {
-        AGENC_MCP_SERVERS: JSON.stringify([
-          { name: "envOnly", command: "env-cmd" },
-        ]),
-      } as NodeJS.ProcessEnv,
     );
 
     expect(resolved).toEqual([
-      expect.objectContaining({ name: "envOnly", command: "env-cmd" }),
+      expect.objectContaining({ name: "configOnly", command: "config-cmd" }),
     ]);
   });
 });

@@ -1,4 +1,4 @@
-import { getGlobalConfig, saveGlobalConfig } from '../config.js'
+import { getRuntimeState, updateRuntimeState } from '../config.js'
 
 const SKILL_USAGE_DEBOUNCE_MS = 60_000
 
@@ -14,12 +14,12 @@ export function recordSkillUsage(skillName: string): void {
   const now = Date.now()
   const lastWrite = lastWriteBySkill.get(skillName)
   // The ranking algorithm uses a 7-day half-life, so sub-minute granularity
-  // is irrelevant. Bail out before saveGlobalConfig to avoid lock + file I/O.
+  // is irrelevant. Bail out before updateRuntimeState to avoid lock + file I/O.
   if (lastWrite !== undefined && now - lastWrite < SKILL_USAGE_DEBOUNCE_MS) {
     return
   }
   lastWriteBySkill.set(skillName, now)
-  saveGlobalConfig(current => {
+  updateRuntimeState(current => {
     const existing = current.skillUsage?.[skillName]
     return {
       ...current,
@@ -42,7 +42,7 @@ export function recordSkillUsage(skillName: string): void {
  * meaning usage from 7 days ago is worth half as much as usage today.
  */
 export function getSkillUsageScore(skillName: string): number {
-  const config = getGlobalConfig()
+  const config = getRuntimeState()
   const usage = config.skillUsage?.[skillName]
   if (!usage) return 0
 

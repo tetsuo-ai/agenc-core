@@ -1,4 +1,4 @@
-import axios, { type AxiosError } from 'axios'
+import type { AxiosError } from 'axios'
 import type { UUID } from 'crypto'
 import type { Entry, TranscriptMessage } from '../../types/logs.js'
 import { logForDebugging } from '../../utils/debug.js'
@@ -9,6 +9,10 @@ import { sequential } from '../../utils/sequential.js'
 import { getSessionIngressAuthToken } from '../../utils/sessionIngressAuth.js'
 import { sleep } from '../../utils/sleep.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
+import { getSelectedProviderEnvironment } from '../../utils/model/providers.js'
+import { resolveSecureStorageHome } from '../../utils/secureStorage/home.js'
+import { createAxiosInstance } from '../../utils/proxy.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
 
 interface SessionIngressError {
   error?: {
@@ -24,6 +28,7 @@ const sequentialAppendBySession = new Map<
     entry: TranscriptMessage,
     url: string,
     headers: Record<string, string>,
+    environment: ProviderEnvironment,
   ) => Promise<boolean>
 >()
 
@@ -38,7 +43,8 @@ function getOrCreateSequentialAppend(sessionId: string) {
         entry: TranscriptMessage,
         url: string,
         headers: Record<string, string>,
-      ) => appendSessionLogImpl(sessionId, entry, url, headers),
+        environment: ProviderEnvironment,
+      ) => appendSessionLogImpl(sessionId, entry, url, headers, environment),
     )
     sequentialAppendBySession.set(sessionId, sequentialAppend)
   }
@@ -50,7 +56,9 @@ async function appendSessionLogImpl(
   entry: TranscriptMessage,
   url: string,
   headers: Record<string, string>,
+  environment: ProviderEnvironment,
 ): Promise<boolean> {
+  const httpClient = createAxiosInstance(environment)
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
       const lastUuid = lastUuidMap.get(sessionId)
@@ -59,9 +67,9 @@ async function appendSessionLogImpl(
         requestHeaders['Last-Uuid'] = lastUuid
       }
 
-      const response = await axios.put(url, entry, {
+      const response = await httpClient.put(url, entry, {
         headers: requestHeaders,
-        validateStatus: status => status < 500,
+        validateStatus: (status) => status < 500,
       })
 
       if (response.status === 200 || response.status === 201) {
@@ -83,7 +91,7 @@ async function appendSessionLogImpl(
           continue
         }
 
-        const logs = await fetchSessionLogsFromUrl(url, headers)
+        const logs = await fetchSessionLogsFromUrl(url, headers, environment)
         const adoptedUuid = findLastUuid(logs)
         if (adoptedUuid) {
           lastUuidMap.set(sessionId, adoptedUuid)
@@ -92,17 +100,13 @@ async function appendSessionLogImpl(
         }
 
         const errorData = response.data as SessionIngressError
-        const errorMessage =
-          errorData.error?.message || 'Concurrent modification detected'
+        const errorMessage = errorData.error?.message || 'Concurrent modification detected'
         logError(
           new Error(
             `Session persistence conflict: UUID mismatch for session ${sessionId}, entry ${entry.uuid}. ${errorMessage}`,
           ),
         )
-        logForDiagnosticsNoPII(
-          'error',
-          'session_persist_fail_concurrent_modification',
-        )
+        logForDiagnosticsNoPII('error', 'session_persist_fail_concurrent_modification')
         return false
       }
 
@@ -127,11 +131,7 @@ async function appendSessionLogImpl(
 
     if (attempt === MAX_RETRIES) {
       logForDebugging(`Remote persistence failed after ${MAX_RETRIES} attempts`)
-      logForDiagnosticsNoPII(
-        'error',
-        'session_persist_error_retries_exhausted',
-        { attempt },
-      )
+      logForDiagnosticsNoPII('error', 'session_persist_error_retries_exhausted', { attempt })
       return false
     }
 
@@ -147,7 +147,8 @@ export async function appendSessionLog(
   entry: TranscriptMessage,
   url: string,
 ): Promise<boolean> {
-  const sessionToken = getSessionIngressAuthToken()
+  const environment = getSelectedProviderEnvironment()
+  const sessionToken = getSessionIngressAuthToken(resolveSecureStorageHome(), environment)
   if (!sessionToken) {
     logForDebugging('No session token available for session persistence')
     logForDiagnosticsNoPII('error', 'session_persist_fail_jwt_no_token')
@@ -160,23 +161,23 @@ export async function appendSessionLog(
   }
 
   const sequentialAppend = getOrCreateSequentialAppend(sessionId)
-  return sequentialAppend(entry, url, headers)
+  return sequentialAppend(entry, url, headers, environment)
 }
 
-export async function getSessionLogs(
-  sessionId: string,
-  url: string,
-): Promise<Entry[] | null> {
-  const sessionToken = getSessionIngressAuthToken()
+export async function getSessionLogs(sessionId: string, url: string): Promise<Entry[] | null> {
+  const environment = getSelectedProviderEnvironment()
+  const sessionToken = getSessionIngressAuthToken(resolveSecureStorageHome(), environment)
   if (!sessionToken) {
     logForDebugging('No session token available for fetching session logs')
     logForDiagnosticsNoPII('error', 'session_get_fail_no_token')
     return null
   }
 
-  const logs = await fetchSessionLogsFromUrl(url, {
-    Authorization: `Bearer ${sessionToken}`,
-  })
+  const logs = await fetchSessionLogsFromUrl(
+    url,
+    { Authorization: `Bearer ${sessionToken}` },
+    environment,
+  )
 
   const lastUuid = findLastUuid(logs)
   if (lastUuid) {
@@ -189,13 +190,14 @@ export async function getSessionLogs(
 async function fetchSessionLogsFromUrl(
   url: string,
   headers: Record<string, string>,
+  environment: ProviderEnvironment,
 ): Promise<Entry[] | null> {
   try {
-    const response = await axios.get(url, {
+    const response = await createAxiosInstance(environment).get(url, {
       headers,
       timeout: 20000,
-      validateStatus: status => status < 500,
-      params: isEnvTruthy(process.env.AGENC_AFTER_LAST_COMPACT)
+      validateStatus: (status) => status < 500,
+      params: isEnvTruthy(environment.AGENC_AFTER_LAST_COMPACT)
         ? { after_last_compact: true }
         : undefined,
     })
@@ -203,11 +205,7 @@ async function fetchSessionLogsFromUrl(
     if (response.status === 200) {
       const data = response.data
       if (!data || typeof data !== 'object' || !Array.isArray(data.loglines)) {
-        logError(
-          new Error(
-            `Invalid session logs response format: ${jsonStringify(data)}`,
-          ),
-        )
+        logError(new Error(`Invalid session logs response format: ${jsonStringify(data)}`))
         logForDiagnosticsNoPII('error', 'session_get_fail_invalid_response')
         return null
       }
@@ -221,9 +219,7 @@ async function fetchSessionLogsFromUrl(
     if (response.status === 401) {
       logForDebugging('Auth token expired or invalid')
       logForDiagnosticsNoPII('error', 'session_get_fail_bad_token')
-      throw new Error(
-        'Your session has expired. Please run /login to sign in again.',
-      )
+      throw new Error('Your session has expired. Please run /login to sign in again.')
     }
 
     logForDiagnosticsNoPII('error', 'session_get_fail_status', {
@@ -242,7 +238,7 @@ async function fetchSessionLogsFromUrl(
 
 function findLastUuid(logs: Entry[] | null): UUID | undefined {
   if (!logs) return undefined
-  const entry = logs.findLast(e => 'uuid' in e && e.uuid)
+  const entry = logs.findLast((e) => 'uuid' in e && e.uuid)
   return entry && 'uuid' in entry ? (entry.uuid as UUID) : undefined
 }
 

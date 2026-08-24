@@ -1365,18 +1365,9 @@ type AutoModeConfig = {
 
 /**
  * Get the model for the classifier.
- * Ant-only env var takes precedence, then GrowthBook JSON config override,
- * then the main loop model.
+ * The classifier inherits the session-owned canonical model.
  */
 function getClassifierModel(): string {
-  if (process.env.USER_TYPE === 'ant') {
-    const envModel = process.env.AGENC_AUTO_MODE_MODEL
-    if (envModel) return envModel
-  }
-  const config = {} as AutoModeConfig
-  if (config?.model) {
-    return config.model
-  }
   return getMainLoopModel()
 }
 

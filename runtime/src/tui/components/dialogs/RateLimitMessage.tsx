@@ -13,6 +13,12 @@ import { isEnvTruthy } from '../../../utils/envUtils.js'
 import { Box, Text } from '../../ink.js'
 import { useAgenCAiLimits } from '../../rate-limits/agenc-ai-limits.js'
 import { MessageResponse } from '../MessageResponse.js'
+import { resolveSecureStorageHome } from '../../../utils/secureStorage/home.js'
+import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 
 type UpsellParams = {
   shouldShowUpsell: boolean
@@ -69,19 +75,21 @@ function isExtraUsageCommandEnabled(): boolean {
     return false
   }
 
-  return isOverageProvisioningAllowed() && !getIsNonInteractiveSession()
+  return isOverageProvisioningAllowed(credentialHome()) &&
+    !getIsNonInteractiveSession()
 }
 
 export function RateLimitMessage({
   text,
   onOpenRateLimitOptions,
 }: RateLimitMessageProps): React.ReactNode {
-  const subscriptionType = getSubscriptionType()
-  const rateLimitTier = getRateLimitTier()
+  const home = credentialHome()
+  const subscriptionType = getSubscriptionType(home)
+  const rateLimitTier = getRateLimitTier(home)
   const isTeamOrEnterprise =
     subscriptionType === 'team' || subscriptionType === 'enterprise'
   const isMax20x = rateLimitTier === 'default_claude_max_20x'
-  const shouldShowUpsell = shouldProcessMockLimits() || isAgenCAISubscriber()
+  const shouldShowUpsell = shouldProcessMockLimits() || isAgenCAISubscriber(home)
   const canSeeRateLimitOptionsUpsell = shouldShowUpsell && !isMax20x
   const [hasOpenedInteractiveMenu, setHasOpenedInteractiveMenu] =
     useState(false)

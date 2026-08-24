@@ -9,7 +9,7 @@ import {
   getSettingsFilePathForSource,
   getSettingsForSource,
 } from '../settings/settings.js'
-import type { HookCommand, HookMatcher } from '../settings/types.js'
+import type { HookCommand, HookMatcher } from '../../schemas/hooks.js'
 import { DEFAULT_HOOK_SHELL } from '../shell/shellProvider.js'
 import { getSessionHooks } from './sessionHooks.js'
 
@@ -109,7 +109,7 @@ export function getAllHooks(appState: AppState): IndividualHookConfig[] {
 
     // Track which settings files we've already processed to avoid duplicates
     // (e.g., when running from home directory, userSettings and projectSettings
-    // both resolve to ~/.agenc/settings.json)
+    // both resolve to the canonical user config.toml)
     const seenFiles = new Set<string>()
 
     for (const source of sources) {
@@ -171,11 +171,11 @@ export function getHooksForEvent(
 export function hookSourceDescriptionDisplayString(source: HookSource): string {
   switch (source) {
     case 'userSettings':
-      return 'User settings (~/.agenc/settings.json)'
+      return 'User config ($AGENC_HOME/config.toml)'
     case 'projectSettings':
-      return 'Project settings (.agenc/settings.json)'
+      return 'Project config (.agenc/config.toml)'
     case 'localSettings':
-      return 'Local settings (.agenc/settings.local.json)'
+      return 'Local config (.agenc/config.local.toml)'
     case 'pluginHook':
       // Follow-up: Get the actual plugin hook file paths instead of using glob pattern
       // We should capture the specific plugin paths during hook registration and display them here

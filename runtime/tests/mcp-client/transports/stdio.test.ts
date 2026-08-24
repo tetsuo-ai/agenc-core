@@ -77,6 +77,16 @@ describe("createStdioMCPEnvironment", () => {
     expect(env.SECRET_TOKEN).toBeUndefined();
     expect(env.SHELL_FUNC).toBeUndefined();
   });
+
+  it("does not reintroduce a secret merely because env_vars requests it", () => {
+    const env = createStdioMCPEnvironment(
+      undefined,
+      ["CUSTOM_PASSWORD"],
+      { CUSTOM_PASSWORD: "must-not-cross-the-child-boundary" },
+    );
+
+    expect(env.CUSTOM_PASSWORD).toBeUndefined();
+  });
 });
 
 describe("AgenCStdioClientTransport", () => {

@@ -25,13 +25,14 @@ import {
   hasEntitledRemoteAuthSessionSync,
   hasRemoteAuthSessionSync,
   remoteAuthSessionSubscriptionTierSync,
+  type RemoteAuthSessionReadContext,
 } from "../auth/session-state.js";
 import {
   BUILT_IN_PROVIDER_API_KEY_ENVS,
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   listBuiltInProviderInfo,
-  normalizeBuiltInProviderSlug,
+  resolveBuiltInProviderSlug,
   type BuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
@@ -57,7 +58,7 @@ import ThemedBox from "../tui/components/design-system/ThemedBox.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { useTheme } from "../tui/components/design-system/ThemeProvider.js";
 import { getSystemThemeName, isSystemThemeDetected } from "../utils/systemTheme.js";
-import type { ThemeSetting } from "../utils/theme.js";
+import { THEME_SETTINGS, type ThemeSetting } from "../utils/theme.js";
 import { TerminalSizeContext } from "../tui/ink/components/TerminalSizeContext.js";
 import { WelcomeV2 } from "./WelcomeV2.js";
 import {
@@ -73,6 +74,7 @@ import {
   subscriptionManagedDefaultModel,
   subscriptionManagedDefaultModelForTier,
 } from "../commands/subscription-managed-models.js";
+import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 
 export type FirstRunOnboardingStepId =
   | "preflight"
@@ -123,7 +125,7 @@ export interface PendingApiKeyApproval {
 export interface FirstRunOnboardingState {
   readonly currentStepId: FirstRunOnboardingStepId;
   readonly completedStepIds: readonly FirstRunOnboardingStepId[];
-  readonly selectedTheme: string;
+  readonly selectedTheme: ThemeSetting;
   readonly selectedProvider: BuiltInProviderSlug;
   readonly selectedModel: string;
   readonly connection: ProviderConnectionCheck | null;
@@ -169,6 +171,8 @@ export interface FirstRunOnboardingContext {
   readonly config: AgenCConfig;
   readonly cwd?: string;
   readonly env?: OnboardingEnv;
+  /** Captured home/environment pair used for synchronous remote-auth reads. */
+  readonly remoteAuthSessionContext?: RemoteAuthSessionReadContext;
   readonly permissionMode?: string;
   readonly sandboxMode?: string;
   readonly terminalName?: string;
@@ -198,6 +202,10 @@ async function defaultRunGrokOauthLogin(
   context: FirstRunOnboardingContext,
 ): Promise<GrokOauthLoginResult> {
   try {
+    const ingress = captureSecureStorageIngress(
+      context.env ?? process.env,
+      context.agencHome,
+    );
     const [oauth, { openUrlInBrowser }, creds] =
       await Promise.all([
         import("../services/xai/oauth.js"),
@@ -249,7 +257,7 @@ async function defaultRunGrokOauthLogin(
     const blob = creds.xaiOauthTokensToBlob(login.tokens, {
       tokenEndpoint: login.tokenEndpoint,
     });
-    const saved = creds.saveXaiOauthCredentials(blob);
+    const saved = creds.saveXaiOauthCredentials(ingress.home, blob);
     if (!saved.success) {
       return {
         ok: false,
@@ -298,12 +306,14 @@ async function defaultRunAgenCAccountLogin(
   context: FirstRunOnboardingContext,
 ): Promise<AgenCAccountLoginResult> {
   try {
+    const ingress = captureSecureStorageIngress(
+      context.env ?? process.env,
+      context.agencHome,
+    );
     const { openUrlInBrowser } = await import("../commands/auth.js");
     const backend = createAuthBackend(context.config, {
-      ...(context.agencHome !== undefined
-        ? { agencHome: context.agencHome }
-        : {}),
-      env: context.env ?? process.env,
+      agencHome: ingress.home.path,
+      env: ingress.environment,
       remote: {
         onDeviceCode: async (prompt) => {
           reportAgenCDeviceCode(context, prompt);
@@ -375,20 +385,16 @@ const STEP_TITLES: Readonly<Record<FirstRunOnboardingStepId, string>> =
     "terminal-setup": "Terminal setup",
   });
 
-const THEME_CHOICES = Object.freeze(["dark", "light", "system"] as const);
+const THEME_CHOICES: readonly ThemeSetting[] = THEME_SETTINGS;
 
 /**
- * Map a wizard theme choice to the config `ThemeSetting` the ThemeProvider
- * consumes. The wizard says "system"; the theme engine calls that "auto".
- * Returns undefined for anything unknown so callers can no-op safely.
+ * Accept exactly the canonical `ThemeSetting` vocabulary. Returns undefined
+ * for anything unknown so stale onboarding state cannot corrupt config.
  */
 export function wizardThemeToSetting(
   choice: string,
 ): ThemeSetting | undefined {
-  if (choice === "dark") return "dark";
-  if (choice === "light") return "light";
-  if (choice === "system") return "auto";
-  return undefined;
+  return THEME_CHOICES.find((theme) => theme === choice);
 }
 const LOCAL_PROVIDERS = new Set<BuiltInProviderSlug>([
   "ollama",
@@ -421,38 +427,53 @@ function buildFirstRunOnboardingSteps(
 
 function providerDefaultModel(
   provider: BuiltInProviderSlug,
-  config: AgenCConfig,
-  env: OnboardingEnv | undefined,
+  context: Pick<
+    FirstRunOnboardingContext,
+    "config" | "env" | "remoteAuthSessionContext"
+  >,
 ): string {
   if (
     MANAGED_KEY_PROVIDERS.has(provider) &&
-    resolveAuthManagedKeysEnabled(config) &&
-    hasRemoteAuthSessionSync(env)
+    resolveAuthManagedKeysEnabled(context.config) &&
+    context.remoteAuthSessionContext !== undefined &&
+    hasRemoteAuthSessionSync(context.remoteAuthSessionContext)
   ) {
     return (
       subscriptionManagedDefaultModelForTier(
         provider,
-        remoteAuthSessionSubscriptionTierSync(env),
+        remoteAuthSessionSubscriptionTierSync(
+          context.remoteAuthSessionContext,
+        ),
       ) ??
       subscriptionManagedDefaultModel(provider) ??
       BUILT_IN_PROVIDER_DEFAULT_MODELS[provider]
     );
   }
-  const settings = resolveProviderSettings(provider, config, env);
+  const settings = resolveProviderSettings(
+    provider,
+    context.config,
+    context.env,
+  );
   return settings?.defaultModel ?? BUILT_IN_PROVIDER_DEFAULT_MODELS[provider];
 }
 
 function initialProvider(
-  config: AgenCConfig,
-  env: OnboardingEnv | undefined,
+  context: Pick<
+    FirstRunOnboardingContext,
+    "config" | "env" | "remoteAuthSessionContext"
+  >,
 ): BuiltInProviderSlug {
   const envOrShortcut = resolveProviderSelection({
-    config: { ...config, model_provider: undefined },
-    env,
+    config: { ...context.config, model_provider: undefined },
+    env: context.env,
   });
   if (envOrShortcut !== undefined) return envOrShortcut;
-  const configured = normalizeBuiltInProviderSlug(config.model_provider);
-  if (resolveAuthManagedKeysEnabled(config) && hasRemoteAuthSessionSync(env)) {
+  const configured = resolveBuiltInProviderSlug(context.config.model_provider);
+  if (
+    resolveAuthManagedKeysEnabled(context.config) &&
+    context.remoteAuthSessionContext !== undefined &&
+    hasRemoteAuthSessionSync(context.remoteAuthSessionContext)
+  ) {
     return configured === undefined || configured === "grok"
       ? "openrouter"
       : configured;
@@ -461,19 +482,24 @@ function initialProvider(
 }
 
 export function createInitialFirstRunOnboardingState(
-  context: Pick<FirstRunOnboardingContext, "config" | "env">,
+  context: Pick<
+    FirstRunOnboardingContext,
+    "config" | "env" | "remoteAuthSessionContext"
+  >,
 ): FirstRunOnboardingState {
-  const provider = initialProvider(context.config, context.env);
+  const provider = initialProvider(context);
   const configuredProvider =
-    normalizeBuiltInProviderSlug(context.config.model_provider) ?? provider;
+    resolveBuiltInProviderSlug(context.config.model_provider) ?? provider;
   const model =
     configuredProvider === provider && context.config.model !== undefined
       ? context.config.model
-      : providerDefaultModel(provider, context.config, context.env);
+      : providerDefaultModel(provider, context);
   return {
     currentStepId: "preflight",
     completedStepIds: [],
-    selectedTheme: context.config.outputStyle?.theme?.trim() || "dark",
+    selectedTheme:
+      wizardThemeToSetting(context.config.tui?.theme ?? "dark") ??
+      "dark",
     selectedProvider: provider,
     selectedModel: model,
     connection: null,
@@ -516,12 +542,16 @@ export async function detectRunningLocalProviders(
 }
 
 function providerChoices(
-  context?: Pick<FirstRunOnboardingContext, "config" | "env">,
+  context?: Pick<
+    FirstRunOnboardingContext,
+    "config" | "env" | "remoteAuthSessionContext"
+  >,
 ): readonly BuiltInProviderSlug[] {
   const hostedReady =
     context !== undefined &&
     resolveAuthManagedKeysEnabled(context.config) &&
-    hasRemoteAuthSessionSync(context.env);
+    context.remoteAuthSessionContext !== undefined &&
+    hasRemoteAuthSessionSync(context.remoteAuthSessionContext);
   const preferredOrder: readonly BuiltInProviderSlug[] = Object.freeze(
     hostedReady
       ? [
@@ -585,7 +615,7 @@ function withCompletedSteps(
   };
 }
 
-function parseTheme(raw: string, current: string): string | null {
+function parseTheme(raw: string, current: ThemeSetting): ThemeSetting | null {
   const input = raw.trim().toLowerCase();
   if (input === "" || input === "next") return current;
   const index = Number(input);
@@ -611,7 +641,7 @@ function parseProvider(
   if (Number.isInteger(index) && index >= 1 && index <= choices.length) {
     return choices[index - 1] ?? current;
   }
-  const bySlug = normalizeBuiltInProviderSlug(input);
+  const bySlug = resolveBuiltInProviderSlug(input);
   if (bySlug !== undefined) return bySlug;
   const byName = listBuiltInProviderInfo().find(
     (info) => info.name.toLowerCase() === input,
@@ -817,10 +847,14 @@ async function saveOnboardingByokKey(
   if (context.agencHome === undefined) {
     throw new Error("AgenC home is required to save a BYOK API key");
   }
-  await new LocalAuthBackend({ agencHome: context.agencHome }).saveByokKey({
-    provider,
-    apiKey,
-  });
+  const ingress = captureSecureStorageIngress(
+    context.env ?? process.env,
+    context.agencHome,
+  );
+  await new LocalAuthBackend({
+    agencHome: ingress.home.path,
+    env: ingress.environment,
+  }).saveByokKey({ provider, apiKey });
 }
 
 async function saveApprovedApiKeyPaste(
@@ -1023,7 +1057,7 @@ export async function checkOnboardingProviderConnection(
   const baseURL =
     settings?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS[provider];
   const keyEnvVar =
-    settings?.apiKeyEnvVar ?? BUILT_IN_PROVIDER_API_KEY_ENVS[provider];
+    BUILT_IN_PROVIDER_API_KEY_ENVS[provider];
 
   if (provider === "agenc") {
     return {
@@ -1108,10 +1142,13 @@ export async function checkOnboardingProviderConnection(
   if (
     MANAGED_KEY_PROVIDERS.has(provider) &&
     resolveAuthManagedKeysEnabled(context.config) &&
-    hasRemoteAuthSessionSync(context.env)
+    context.remoteAuthSessionContext !== undefined &&
+    hasRemoteAuthSessionSync(context.remoteAuthSessionContext)
   ) {
     const tier =
-      remoteAuthSessionSubscriptionTierSync(context.env) ?? "unknown";
+      remoteAuthSessionSubscriptionTierSync(
+        context.remoteAuthSessionContext,
+      ) ?? "unknown";
     if (
       tier === "free" &&
       isFreeSubscriptionManagedModel(provider, model)
@@ -1125,7 +1162,7 @@ export async function checkOnboardingProviderConnection(
         baseURL,
       };
     }
-    if (!hasEntitledRemoteAuthSessionSync(context.env)) {
+    if (!hasEntitledRemoteAuthSessionSync(context.remoteAuthSessionContext)) {
       const keyLabel = keyEnvVar ?? "a BYOK API key";
       return {
         provider,
@@ -1233,7 +1270,10 @@ export async function submitFirstRunOnboardingInput(
       const theme = parseTheme(raw, state.selectedTheme);
       if (theme === null) {
         return {
-          state: { ...state, error: "Choose 1, 2, 3, dark, light, or system." },
+          state: {
+            ...state,
+            error: `Choose a theme number or one of: ${THEME_CHOICES.join(", ")}.`,
+          },
           completed: false,
         };
       }
@@ -1256,7 +1296,7 @@ export async function submitFirstRunOnboardingInput(
       }
       const selectedModel = provider === state.selectedProvider
         ? state.selectedModel
-        : providerDefaultModel(provider, context.config, context.env);
+        : providerDefaultModel(provider, context);
       return {
         state: withCompletedStep(
           {
@@ -1401,7 +1441,7 @@ export async function submitFirstRunOnboardingInput(
               completed: false,
             };
           }
-          const hostedProvider = normalizeBuiltInProviderSlug(
+          const hostedProvider = resolveBuiltInProviderSlug(
             SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
           );
           const hostedModel =
@@ -1464,11 +1504,7 @@ export async function submitFirstRunOnboardingInput(
             };
           }
           const provider: BuiltInProviderSlug = "grok";
-          const model = providerDefaultModel(
-            provider,
-            context.config,
-            context.env,
-          );
+          const model = providerDefaultModel(provider, context);
           return {
             state: withCompletedSteps(
               {
@@ -1806,9 +1842,9 @@ function securityLinesForContext(
 ): readonly string[] {
   if (context.permissionMode === "bypassPermissions") {
     return [
-      "Permission mode: bypassPermissions (--yolo skips tool approval prompts).",
-      "Sandbox: danger-full-access (--yolo disables workspace sandboxing for this session).",
-      "Press Enter to continue with --yolo, or restart without --yolo for prompts and sandboxing.",
+      "Permission mode: bypassPermissions (--dangerously-bypass-approvals-and-sandbox skips tool approval prompts).",
+      "Sandbox: danger-full-access (--dangerously-bypass-approvals-and-sandbox disables workspace sandboxing for this session).",
+      "Press Enter to continue with --dangerously-bypass-approvals-and-sandbox, or restart without --dangerously-bypass-approvals-and-sandbox for prompts and sandboxing.",
     ];
   }
   return [
@@ -1838,7 +1874,7 @@ export function firstRunOnboardingInputPresentation(
       };
     case "theme":
       return {
-        placeholder: `Press Enter to keep ${state.selectedTheme}, or type 1–3`,
+        placeholder: `Press Enter to keep ${state.selectedTheme}, or type 1–${THEME_CHOICES.length}`,
         footerHint: standardFooter,
         allowEmptySubmit: true,
       };
@@ -1904,7 +1940,7 @@ export function detailLinesForStep(
         `Workspace: ${context.cwd ?? process.cwd()}`,
         `AgenC home: ${context.agencHome ?? "not configured"}`,
         ...(context.permissionMode === "bypassPermissions"
-          ? ["--yolo is active: tool approvals and workspace sandboxing are bypassed for this session."]
+          ? ["--dangerously-bypass-approvals-and-sandbox is active: tool approvals and workspace sandboxing are bypassed for this session."]
           : []),
         "Onboarding input only. Use /exit, Ctrl-C twice, or Ctrl-D twice to leave.",
         "Press Enter to continue (or type next).",
@@ -1922,9 +1958,9 @@ export function detailLinesForStep(
       // exact inverted advice this tip was added to prevent (M-ONB-2).
       const themeTip = isSystemThemeDetected()
         ? `Tip: your terminal background looks ${terminalBackground} — ${
-            terminalBackground === "light" ? '"light" or "system"' : '"dark" or "system"'
+            terminalBackground === "light" ? '"light" or "auto"' : '"dark" or "auto"'
           } will read best here.`
-        : `Tip: couldn't detect your terminal background — if it's light, pick "light" or "system"; if dark, "dark" or "system".`;
+        : `Tip: couldn't detect your terminal background — if it's light, pick "light" or "auto"; if dark, "dark" or "auto".`;
       return [
         ...THEME_CHOICES.map((theme, index) =>
           `${index + 1}. ${theme}${theme === state.selectedTheme ? " (current)" : ""}`

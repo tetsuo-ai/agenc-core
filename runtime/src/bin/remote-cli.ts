@@ -15,16 +15,21 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { homedir, hostname } from "node:os";
+import { hostname } from "node:os";
 import { join } from "node:path";
 import QRCode from "qrcode";
 import WebSocket from "ws";
 
-import { remoteAuthSessionTokenSync } from "../auth/session-state.js";
+import {
+  remoteAuthSessionTokenSync,
+  type RemoteAuthSessionReadContext,
+} from "../auth/session-state.js";
 import {
   readDaemonRuntimeInfo,
   resolveAgenCDaemonRuntimeInfoPath,
 } from "../app-server/daemon-runtime-info.js";
+import type { EnvSnapshot } from "../config/env.js";
+import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 
 const DEFAULT_BACKEND = "https://id.agenc.ag";
 const REMOTE_LOGIN_REQUIRED_MESSAGE =
@@ -69,41 +74,48 @@ interface PairFile {
   createdAt: string;
 }
 
-function resolveAgencHome(): string {
-  const env = process.env.AGENC_HOME?.trim();
-  if (env && env.length > 0) return env;
-  return join(homedir(), ".agenc");
+export type RemoteCliRuntimeContext = RemoteAuthSessionReadContext;
+
+/** Capture one-shot CLI environment/home authority before asynchronous work. */
+export function captureRemoteCliRuntimeContext(
+  environment: EnvSnapshot,
+): RemoteCliRuntimeContext {
+  const ingress = captureSecureStorageIngress(environment);
+  return Object.freeze({
+    home: ingress.home,
+    environment: ingress.environment,
+  });
 }
-function remoteDir(): string {
-  return join(resolveAgencHome(), "remote");
+function remoteDir(context: RemoteCliRuntimeContext): string {
+  return join(context.home.path, "remote");
 }
-function pairPath(): string {
-  return join(remoteDir(), "pair.json");
+function pairPath(context: RemoteCliRuntimeContext): string {
+  return join(remoteDir(context), "pair.json");
 }
-function cookiePath(): string {
-  return join(resolveAgencHome(), "daemon.cookie");
+function cookiePath(context: RemoteCliRuntimeContext): string {
+  return join(context.home.path, "daemon.cookie");
 }
-function backendUrl(): string {
-  const env = process.env.AGENC_BACKEND_URL;
+function backendUrl(context: RemoteCliRuntimeContext): string {
+  const env = context.environment.AGENC_BACKEND_URL;
   return env && env.trim() ? env.trim().replace(/\/$/, "") : DEFAULT_BACKEND;
 }
-function daemonUrl(): string {
-  const env = process.env.AGENC_DAEMON_URL;
+function daemonUrl(context: RemoteCliRuntimeContext): string {
+  const env = context.environment.AGENC_DAEMON_URL;
   if (env && env.trim()) return env.trim();
   // The running daemon records the port it actually bound, which is not the
   // default when that port was already taken and the listener fell back.
   // Falling back to the fixed default keeps older daemons reachable.
   const recorded = readDaemonRuntimeInfo(
-    resolveAgenCDaemonRuntimeInfoPath(resolveAgencHome()),
+    resolveAgenCDaemonRuntimeInfoPath(context.home.path),
   )?.webSocketUrl;
   return recorded !== undefined && recorded.length > 0
     ? recorded
     : "ws://127.0.0.1:7766";
 }
 
-function readPairFile(): PairFile | null {
+function readPairFile(context: RemoteCliRuntimeContext): PairFile | null {
   try {
-    const raw = readFileSync(pairPath(), "utf8");
+    const raw = readFileSync(pairPath(context), "utf8");
     const obj = JSON.parse(raw) as Partial<PairFile>;
     if (obj.pairingId && obj.hostSecret && obj.relayUrl) return obj as PairFile;
   } catch {
@@ -111,18 +123,18 @@ function readPairFile(): PairFile | null {
   }
   return null;
 }
-function writePairFile(p: PairFile): void {
-  mkdirSync(remoteDir(), { recursive: true, mode: 0o700 });
-  writeFileSync(pairPath(), JSON.stringify(p, null, 2), { mode: 0o600 });
+function writePairFile(context: RemoteCliRuntimeContext, p: PairFile): void {
+  mkdirSync(remoteDir(context), { recursive: true, mode: 0o700 });
+  writeFileSync(pairPath(context), JSON.stringify(p, null, 2), { mode: 0o600 });
   try {
-    chmodSync(pairPath(), 0o600);
+    chmodSync(pairPath(context), 0o600);
   } catch {
     /* best effort */
   }
 }
-function readCookie(): string {
+function readCookie(context: RemoteCliRuntimeContext): string {
   try {
-    return readFileSync(cookiePath(), "utf8").trim();
+    return readFileSync(cookiePath(context), "utf8").trim();
   } catch {
     return "";
   }
@@ -214,8 +226,11 @@ function pairingDeepLink(code: string): string {
   return `agenc://pair?c=${encodeURIComponent(code.replace(/-/g, ""))}`;
 }
 
-export async function runAgenCRemoteCli(command: RemoteCliCommand): Promise<number> {
-  const backend = backendUrl();
+export async function runAgenCRemoteCli(
+  command: RemoteCliCommand,
+  context: RemoteCliRuntimeContext,
+): Promise<number> {
+  const backend = backendUrl(context);
 
   if (command.kind === "help") {
     process.stdout.write(formatAgenCRemoteCliHelpText() + "\n");
@@ -223,7 +238,7 @@ export async function runAgenCRemoteCli(command: RemoteCliCommand): Promise<numb
   }
 
   if (command.kind === "status") {
-    const pair = readPairFile();
+    const pair = readPairFile(context);
     if (!pair) {
       process.stdout.write("Not linked. Run `agenc remote on` to link a phone.\n");
       return 0;
@@ -235,8 +250,8 @@ export async function runAgenCRemoteCli(command: RemoteCliCommand): Promise<numb
   }
 
   if (command.kind === "off") {
-    if (existsSync(pairPath())) {
-      rmSync(pairPath(), { force: true });
+    if (existsSync(pairPath(context))) {
+      rmSync(pairPath(context), { force: true });
       process.stdout.write("Forgot this Mac's pairing. Stop a running `agenc remote on` with Ctrl-C.\n");
     } else {
       process.stdout.write("This Mac is not linked.\n");
@@ -245,13 +260,13 @@ export async function runAgenCRemoteCli(command: RemoteCliCommand): Promise<numb
   }
 
   // command.kind === "on"
-  const authToken = remoteAuthSessionTokenSync();
+  const authToken = remoteAuthSessionTokenSync(context);
   if (authToken === undefined) {
     process.stderr.write(`${REMOTE_LOGIN_REQUIRED_MESSAGE}\n`);
     return 1;
   }
 
-  let pair = readPairFile();
+  let pair = readPairFile(context);
   let pairingId: string;
   let hostSecret: string;
   let relayUrl: string;
@@ -265,7 +280,7 @@ export async function runAgenCRemoteCli(command: RemoteCliCommand): Promise<numb
       hostSecret: pair.hostSecret,
     }, authToken);
     if (status === 410) {
-      rmSync(pairPath(), { force: true });
+      rmSync(pairPath(context), { force: true });
       process.stdout.write("This Mac was unlinked from the phone — re-pairing.\n");
       pair = null;
     } else if (status === 200 && typeof json.hostTicket === "string") {
@@ -293,7 +308,7 @@ export async function runAgenCRemoteCli(command: RemoteCliCommand): Promise<numb
     relayUrl = json.relayUrl as string;
     hostTicket = json.hostTicket as string;
     machineName = name;
-    writePairFile({
+    writePairFile(context, {
       pairingId,
       hostSecret,
       machineName: name,
@@ -327,6 +342,7 @@ export async function runAgenCRemoteCli(command: RemoteCliCommand): Promise<numb
   }
 
   return runConnector({
+    context,
     relayUrl: relayUrl!,
     pairingId: pairingId!,
     hostSecret: hostSecret!,
@@ -338,6 +354,7 @@ export async function runAgenCRemoteCli(command: RemoteCliCommand): Promise<numb
 }
 
 interface ConnectorArgs {
+  context: RemoteCliRuntimeContext;
   relayUrl: string;
   pairingId: string;
   hostSecret: string;
@@ -356,10 +373,10 @@ interface ConnectorArgs {
  *  Fire-and-forget: starts the relay connection + reconnect loop and returns immediately. */
 function startBridge(args: ConnectorArgs): void {
   const { relayUrl, pairingId, hostSecret, backend, machineName, authToken } = args;
-  const DAEMON = daemonUrl();
+  const DAEMON = daemonUrl(args.context);
   const out = (msg: string) => { if (!args.quiet) process.stdout.write(msg); };
-  const dbg = (msg: string) => { if (!args.quiet && process.env.AGENC_REMOTE_DEBUG) process.stderr.write(msg); };
-  const cookie = readCookie();
+  const dbg = (msg: string) => { if (!args.quiet && args.context.environment.AGENC_REMOTE_DEBUG) process.stderr.write(msg); };
+  const cookie = readCookie(args.context);
   if (!cookie) {
     out("Warning: no daemon cookie found — is the daemon running? Start it with `agenc daemon`.\n");
   }
@@ -517,25 +534,28 @@ function runConnector(args: ConnectorArgs): Promise<number> {
  * `on` it links + starts the bridge in the background (fire-and-forget) and returns the code + QR;
  * the bridge lives for as long as the agent session does.
  */
-export async function runRemoteSlash(argsRaw: string): Promise<string> {
+export async function runRemoteSlash(
+  argsRaw: string,
+  context: RemoteCliRuntimeContext,
+): Promise<string> {
   const sub = (argsRaw || "").trim() || "on";
 
   if (sub === "status") {
-    const pair = readPairFile();
+    const pair = readPairFile(context);
     return pair
       ? `Linked to “${pair.machineName}” (pairing ${pair.pairingId}).\nBackend ${pair.backendUrl} · relay ${pair.relayUrl}`
       : "Not linked. Run `/remote on` to link a phone.";
   }
   if (sub === "off") {
-    if (existsSync(pairPath())) {
-      rmSync(pairPath(), { force: true });
+    if (existsSync(pairPath(context))) {
+      rmSync(pairPath(context), { force: true });
       return "Forgot this Mac's pairing. (A bridge started this session keeps running until the session ends.)";
     }
     return "This Mac is not linked.";
   }
 
   // "on" — delegate to the shared starter.
-  const started = await startRemoteOn();
+  const started = await startRemoteOn(context);
   if ("message" in started) return started.message;
   return `${started.box}\n  This Mac is now reachable for this session — pair, then talk to this agent from your phone.`;
 }
@@ -552,14 +572,16 @@ export interface RemoteOnStarted {
  * Always brings up the bridge. Returns the code/QR box + a `waitForConnect` poller, or a `message`
  * for the reuse/error cases. Shared by the `/remote` TUI surface and `runRemoteSlash`.
  */
-export async function startRemoteOn(): Promise<RemoteOnStarted | { message: string }> {
-  const backend = backendUrl();
-  const authToken = remoteAuthSessionTokenSync();
+export async function startRemoteOn(
+  context: RemoteCliRuntimeContext,
+): Promise<RemoteOnStarted | { message: string }> {
+  const backend = backendUrl(context);
+  const authToken = remoteAuthSessionTokenSync(context);
   if (authToken === undefined) {
     return { message: REMOTE_LOGIN_REQUIRED_MESSAGE };
   }
 
-  const existing = readPairFile();
+  const existing = readPairFile(context);
   if (existing) {
     const { status, json } = await postJson(`${backend}/v1/pair/host-poll`, {
       pairingId: existing.pairingId,
@@ -567,6 +589,7 @@ export async function startRemoteOn(): Promise<RemoteOnStarted | { message: stri
     }, authToken);
     if (status === 200 && typeof json.hostTicket === "string") {
       startBridge({
+        context,
         relayUrl: (json.relayUrl as string) ?? existing.relayUrl,
         pairingId: existing.pairingId,
         hostSecret: existing.hostSecret,
@@ -578,7 +601,7 @@ export async function startRemoteOn(): Promise<RemoteOnStarted | { message: stri
       });
       return { message: `● Remote access ON — already linked to “${existing.machineName}”. Drive this Mac from your phone.` };
     }
-    if (status === 410) rmSync(pairPath(), { force: true }); // revoked — fall through to re-pair
+    if (status === 410) rmSync(pairPath(context), { force: true }); // revoked — fall through to re-pair
   }
 
   const name = hostname() || "A Mac";
@@ -590,7 +613,7 @@ export async function startRemoteOn(): Promise<RemoteOnStarted | { message: stri
   const hostSecret = json.hostSecret as string;
   const relayUrl = json.relayUrl as string;
   const hostTicket = json.hostTicket as string;
-  writePairFile({
+  writePairFile(context, {
     pairingId,
     hostSecret,
     machineName: name,
@@ -598,7 +621,7 @@ export async function startRemoteOn(): Promise<RemoteOnStarted | { message: stri
     backendUrl: backend,
     createdAt: new Date().toISOString(),
   });
-  startBridge({ relayUrl, pairingId, hostSecret, backend, initialHostTicket: hostTicket, machineName: name, authToken, quiet: true });
+  startBridge({ context, relayUrl, pairingId, hostSecret, backend, initialHostTicket: hostTicket, machineName: name, authToken, quiet: true });
 
   const code = String(json.code ?? "");
   const box = await renderCodeBox(code, pairingDeepLink(code), json.expiresAt as string | undefined, {

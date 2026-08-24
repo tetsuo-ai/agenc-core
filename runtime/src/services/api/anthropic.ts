@@ -25,6 +25,7 @@ import { randomUUID } from 'crypto'
 import { AdmissionDeniedError } from '../../budget/admission-client.js'
 import {
   getAPIProvider,
+  getSelectedProviderEnvironment,
   isFirstPartyproviderBaseUrl,
   isGithubNativeproviderMode,
 } from 'src/utils/model/providers.js'
@@ -66,13 +67,18 @@ import {
   COMPACT_MAX_OUTPUT_TOKENS,
   getContextWindowForModel,
   getModelMaxOutputTokens,
-  getSonnet1mExpTreatmentEnabled,
 } from '../../utils/context.js'
 import { resolveAppliedEffort } from '../../utils/effort.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
+import { resolveSecureStorageHome } from '../../utils/secureStorage/home.js'
 import { computeFingerprintFromMessages } from '../../utils/fingerprint.js'
 import { captureAPIRequest, logError } from '../../utils/log.js'
+import { isSessionRemoteMode } from '../../session/runtime-options.js'
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 import {
   createAssistantAPIErrorMessage,
   createUserMessage,
@@ -136,7 +142,6 @@ import {
 } from 'src/bootstrap/state.js'
 import {
   AFK_MODE_BETA_HEADER,
-  CONTEXT_1M_BETA_HEADER,
   CONTEXT_MANAGEMENT_BETA_HEADER,
   EFFORT_BETA_HEADER,
   FAST_MODE_BETA_HEADER,
@@ -210,10 +215,6 @@ import {
   normalizeModelStringForAPI,
   parseUserSpecifiedModel,
 } from '../../utils/model/model.js'
-import {
-  startSessionActivity,
-  stopSessionActivity,
-} from '../../utils/sessionActivity.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import {
@@ -224,6 +225,7 @@ import {
 } from '../compact/microCompact.js'
 import { getInitializationStatus } from '../lsp/manager.js'
 import { peekAmbientRuntimeSession } from '../../session/current-session.js'
+import { installStreamWatchdog } from '../../llm/stream-watchdog.js'
 import { isToolFromMcpServer } from '../mcp/utils.js'
 import { withStreamingVCR, withVCR } from '../vcr.js'
 import { CLIENT_REQUEST_ID_HEADER, getproviderClient } from './client.js'
@@ -404,7 +406,7 @@ function should1hCacheTTL(querySource?: QuerySource): boolean {
   if (userEligible === null) {
     userEligible =
       process.env.USER_TYPE === 'ant' ||
-      (isAgenCAISubscriber() && !currentLimits.isUsingOverage)
+      (isAgenCAISubscriber(credentialHome()) && !currentLimits.isUsingOverage)
     setPromptCache1hEligible(userEligible)
   }
   if (!userEligible) return false
@@ -703,7 +705,7 @@ export function getAPIMetadata() {
       ...extra,
       device_id: getOrCreateUserID(),
       // Only include OAuth account UUID when actively using OAuth authentication
-      account_uuid: getOauthAccountInfo()?.accountUuid ?? '',
+      account_uuid: getOauthAccountInfo(credentialHome())?.accountUuid ?? '',
       session_id: getSessionId(),
     }),
   }
@@ -998,7 +1000,7 @@ function shouldDeferLspTool(tool: Tool): boolean {
 function getNonstreamingFallbackTimeoutMs(): number {
   const override = parseInt(process.env.API_TIMEOUT_MS || '', 10)
   if (override) return override
-  return isEnvTruthy(process.env.AGENC_REMOTE) ? 120_000 : 300_000
+  return isSessionRemoteMode() ? 120_000 : 300_000
 }
 
 /**
@@ -1210,7 +1212,7 @@ async function* queryModel(
   // init (~10ms). For non-Opus models (haiku, sonnet) this skips the await
   // entirely. Subscribers don't hit this path at all.
   if (
-    !isAgenCAISubscriber() &&
+    !isAgenCAISubscriber(credentialHome()) &&
     isNonCustomOpusModel(options.model) &&
     // Open-build: the GrowthBook 'tengu-off-switch' config resolved to its
     // default (inactive); inlined with the growthbook removal.
@@ -1632,10 +1634,6 @@ async function* queryModel(
     }
   }
 
-  // Latch Sonnet 1M experiment at query start so mid-retry GB refreshes
-  // don't flip the beta header and bust the cache key.
-  const sonnet1mExpLatched = getSonnet1mExpTreatmentEnabled(options.model)
-
   const effort = resolveAppliedEffort(options.model, options.effortValue)
 
   if (feature('PROMPT_CACHE_BREAK_DETECTION')) {
@@ -1709,12 +1707,6 @@ async function* queryModel(
 
   const paramsFromContext = (retryContext: RetryContext) => {
     const betasParams = [...betas]
-
-    // Append 1M beta from the latched experiment state (computed once before
-    // the closure to avoid mid-retry GB flips changing the cache key).
-    if (!betasParams.includes(CONTEXT_1M_BETA_HEADER) && sonnet1mExpLatched) {
-      betasParams.push(CONTEXT_1M_BETA_HEADER)
-    }
 
     const extraBodyParams = getExtraBodyParams()
     const outputConfig = buildRequestOutputConfig({
@@ -1933,63 +1925,46 @@ async function* queryModel(
     usage = EMPTY_USAGE
     stopReason = null
 
-    // Streaming idle timeout watchdog: abort the stream if no chunks arrive
-    // for STREAM_IDLE_TIMEOUT_MS. Unlike the stall detection below (which only
-    // fires when the *next* chunk arrives), this uses setTimeout to actively
-    // kill hung streams. Without this, a silently dropped connection can hang
-    // the session indefinitely since the SDK's request timeout only covers the
-    // initial fetch(), not the streaming body.
-    const streamWatchdogEnabled = isEnvTruthy(
-      process.env.AGENC_ENABLE_STREAM_WATCHDOG,
-    )
-    const STREAM_IDLE_TIMEOUT_MS =
-      parseInt(process.env.AGENC_STREAM_IDLE_TIMEOUT_MS || '', 10) || 90_000
-    const STREAM_IDLE_WARNING_MS = STREAM_IDLE_TIMEOUT_MS / 2
+    // Use the shared watchdog implementation and the ambient session's
+    // canonical config snapshot. This compatibility API no longer owns a
+    // second enable flag, timeout default, or process-environment lookup.
+    const configuredStreamIdleTimeoutMs = (() => {
+      try {
+        const value =
+          peekAmbientRuntimeSession()?.services.configStore?.current()
+            .stream_watchdog_timeout_ms
+        return typeof value === 'number' && Number.isFinite(value) && value > 0
+          ? value
+          : 0
+      } catch {
+        return 0
+      }
+    })()
     let streamIdleAborted = false
     // performance.now() snapshot when watchdog fires, for measuring abort propagation delay
     let streamWatchdogFiredAt: number | null = null
-    let streamIdleWarningTimer: ReturnType<typeof setTimeout> | null = null
-    let streamIdleTimer: ReturnType<typeof setTimeout> | null = null
-    function clearStreamIdleTimers(): void {
-      if (streamIdleWarningTimer !== null) {
-        clearTimeout(streamIdleWarningTimer)
-        streamIdleWarningTimer = null
-      }
-      if (streamIdleTimer !== null) {
-        clearTimeout(streamIdleTimer)
-        streamIdleTimer = null
-      }
-    }
-    function resetStreamIdleTimer(): void {
-      clearStreamIdleTimers()
-      if (!streamWatchdogEnabled) {
-        return
-      }
-      streamIdleWarningTimer = setTimeout(
-        warnMs => {
-          logForDebugging(
-            `Streaming idle warning: no chunks received for ${warnMs / 1000}s`,
-            { level: 'warn' },
-          )
-          logForDiagnosticsNoPII('warn', 'cli_streaming_idle_warning')
-        },
-        STREAM_IDLE_WARNING_MS,
-        STREAM_IDLE_WARNING_MS,
-      )
-      streamIdleTimer = setTimeout(() => {
+    const streamWatchdog = installStreamWatchdog({
+      abortController: new AbortController(),
+      timeoutMs: configuredStreamIdleTimeoutMs,
+      onWarning: ({ elapsedMs }) => {
+        logForDebugging(
+          `Streaming idle warning: no chunks received for ${elapsedMs / 1000}s`,
+          { level: 'warn' },
+        )
+        logForDiagnosticsNoPII('warn', 'cli_streaming_idle_warning')
+      },
+      onFired: () => {
         streamIdleAborted = true
         streamWatchdogFiredAt = performance.now()
         logForDebugging(
-          `Streaming idle timeout: no chunks received for ${STREAM_IDLE_TIMEOUT_MS / 1000}s, aborting stream`,
+          `Streaming idle timeout: no chunks received for ${configuredStreamIdleTimeoutMs / 1000}s, aborting stream`,
           { level: 'error' },
         )
         logForDiagnosticsNoPII('error', 'cli_streaming_idle_timeout')
         releaseStreamResources()
-      }, STREAM_IDLE_TIMEOUT_MS)
-    }
-    resetStreamIdleTimer()
+      },
+    })
 
-    startSessionActivity('api_call')
     try {
       // stream in and accumulate state
       let isFirstChunk = true
@@ -1999,7 +1974,7 @@ async function* queryModel(
       let stallCount = 0
 
       for await (const part of stream) {
-        resetStreamIdleTimer()
+        streamWatchdog.kick()
         const now = Date.now()
 
         // Detect and log streaming stalls (only after first event to avoid counting TTFB)
@@ -2272,7 +2247,7 @@ async function* queryModel(
         }
       }
       // Clear the idle timeout watchdog now that the stream loop has exited
-      clearStreamIdleTimers()
+      streamWatchdog.stop()
 
       // If the stream was aborted by our idle timeout watchdog, fall back to
       // non-streaming retry rather than treating it as a completed stream.
@@ -2345,7 +2320,7 @@ async function* queryModel(
       }
     } catch (streamingError) {
       // Clear the idle timeout watchdog on error path too
-      clearStreamIdleTimers()
+      streamWatchdog.stop()
 
       // Instrumentation: if the watchdog had already fired and the for-await
       // threw (rather than exiting cleanly), record that the loop DID exit and
@@ -2458,7 +2433,7 @@ async function* queryModel(
       fallbackMessage = m
       yield m
     } finally {
-      clearStreamIdleTimers()
+      streamWatchdog.stop()
     }
   } catch (errorFromRetry) {
     // FallbackTriggeredError must propagate to query.ts, which performs the
@@ -2654,7 +2629,6 @@ async function* queryModel(
       return
     }
   } finally {
-    stopSessionActivity('api_call')
     // Must be in the finally block: if the generator is terminated early
     // via .return() (e.g. consumer breaks out of for-await-of, or query.ts
     // encounters an abort), code after the try/finally never executes.
@@ -3311,7 +3285,7 @@ export function getMaxOutputTokensForModel(model: string): number {
     : maxOutputTokens.default
   const result = validateBoundedIntEnvVar(
     'AGENC_MAX_OUTPUT_TOKENS',
-    process.env.AGENC_MAX_OUTPUT_TOKENS,
+    getSelectedProviderEnvironment().AGENC_MAX_OUTPUT_TOKENS,
     defaultTokens,
     maxOutputTokens.upperLimit,
   )

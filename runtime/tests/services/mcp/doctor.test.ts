@@ -2,6 +2,8 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import type { ValidationError } from '../../../../utils/settings/validation.js'
+import { resolveHomeContext } from '../../config/home.js'
+import { ConfigStore } from '../../config/store.js'
 
 import {
   buildEmptyDoctorReport,
@@ -10,6 +12,17 @@ import {
   findingsFromValidationErrors,
   type McpDoctorDependencies,
 } from './doctor.js'
+
+const TEST_HOME_CONTEXT = resolveHomeContext(
+  { AGENC_HOME: '/tmp/agenc-mcp-doctor-test' },
+  { platformHome: '/tmp' },
+)
+const TEST_HOME = new ConfigStore({
+  home: TEST_HOME_CONTEXT.path,
+  cwd: '/tmp',
+  projectRoot: '/tmp',
+  env: { AGENC_HOME: TEST_HOME_CONTEXT.path, HOME: '/tmp' },
+})
 
 function stdioConfig(scope: 'local' | 'project' | 'user' | 'enterprise', command: string) {
   return {
@@ -165,7 +178,7 @@ test('doctorAllServers reports global validation findings once without duplicati
           : { servers: {}, errors: [] },
   })
 
-  const report = await doctorAllServers({ configOnly: true }, deps)
+  const report = await doctorAllServers(TEST_HOME, { configOnly: true }, deps)
 
   assert.equal(report.summary.totalReports, 1)
   assert.equal(report.summary.blocking, 1)
@@ -196,7 +209,7 @@ test('doctorServer explains same-name shadowing across scopes', async () => {
     },
   })
 
-  const report = await doctorServer('filesystem', { configOnly: true }, deps)
+  const report = await doctorServer(TEST_HOME, 'filesystem', { configOnly: true }, deps)
   assert.equal(report.servers.length, 1)
   assert.equal(report.servers[0]?.definitions.length, 2)
   assert.equal(report.servers[0]?.definitions.find(def => def.sourceType === 'local')?.runtimeActive, true)
@@ -214,10 +227,11 @@ test('doctorServer reports project servers pending approval', async () => {
       scope === 'project'
         ? { servers: { sentry: projectConfig }, errors: [] }
         : { servers: {}, errors: [] },
-    getProjectMcpServerStatus: name => (name === 'sentry' ? 'pending' : 'approved'),
+    getProjectMcpServerStatus: (_authority, name) =>
+      name === 'sentry' ? 'pending' : 'approved',
   })
 
-  const report = await doctorServer('sentry', { configOnly: true }, deps)
+  const report = await doctorServer(TEST_HOME, 'sentry', { configOnly: true }, deps)
   assert.equal(report.servers.length, 1)
   assert.equal(report.servers[0]?.definitions[0]?.pendingApproval, true)
   assert.equal(report.servers[0]?.definitions[0]?.runtimeActive, false)
@@ -252,7 +266,7 @@ test('doctorServer does not treat disabled servers as runtime-active or live-che
     },
   })
 
-  const report = await doctorServer('github', { configOnly: false }, deps)
+  const report = await doctorServer(TEST_HOME, 'github', { configOnly: false }, deps)
 
   assert.equal(connectCalls, 0)
   assert.equal(report.summary.blocking, 0)
@@ -291,7 +305,7 @@ test('doctorAllServers skips live checks in config-only mode', async () => {
     },
   })
 
-  const report = await doctorAllServers({ configOnly: true }, deps)
+  const report = await doctorAllServers(TEST_HOME, { configOnly: true }, deps)
   assert.equal(connectCalls, 0)
   assert.equal(report.servers[0]?.liveCheck.attempted, false)
   assert.equal(report.servers[0]?.liveCheck.result, 'skipped')
@@ -311,7 +325,7 @@ test('doctorAllServers honors scopeFilter when collecting names', async () => {
     }),
   })
 
-  const report = await doctorAllServers({ configOnly: true, scopeFilter: 'user' }, deps)
+  const report = await doctorAllServers(TEST_HOME, { configOnly: true, scopeFilter: 'user' }, deps)
 
   assert.equal(report.summary.totalReports, 0)
   assert.deepEqual(report.servers, [])
@@ -350,7 +364,7 @@ test('doctorAllServers honors scopeFilter when collecting validation errors', as
     },
   })
 
-  const report = await doctorAllServers({ configOnly: true, scopeFilter: 'user' }, deps)
+  const report = await doctorAllServers(TEST_HOME, { configOnly: true, scopeFilter: 'user' }, deps)
 
   assert.equal(report.summary.totalReports, 1)
   assert.equal(report.summary.blocking, 0)
@@ -372,7 +386,7 @@ test('doctorAllServers includes observed runtime definitions for plugin-only ser
     }),
   })
 
-  const report = await doctorAllServers({ configOnly: true }, deps)
+  const report = await doctorAllServers(TEST_HOME, { configOnly: true }, deps)
 
   assert.equal(report.summary.totalReports, 1)
   assert.equal(report.servers[0]?.definitions.length, 1)
@@ -395,7 +409,7 @@ test('doctorAllServers reports disabled plugin servers as disabled, not not-foun
     isMcpServerDisabled: name => name === 'plugin:github:github',
   })
 
-  const report = await doctorAllServers({ configOnly: true }, deps)
+  const report = await doctorAllServers(TEST_HOME, { configOnly: true }, deps)
 
   assert.equal(report.summary.totalReports, 1)
   assert.equal(report.summary.warnings, 1)
@@ -433,7 +447,7 @@ test('doctorServer converts failed live checks into blocking findings', async ()
     }),
   })
 
-  const report = await doctorServer('github', { configOnly: false }, deps)
+  const report = await doctorServer(TEST_HOME, 'github', { configOnly: false }, deps)
 
   assert.equal(report.summary.blocking, 1)
   assert.equal(report.servers[0]?.liveCheck.result, 'failed')
@@ -463,7 +477,7 @@ test('doctorServer converts needs-auth live checks into warning findings', async
     }),
   })
 
-  const report = await doctorServer('sentry', { configOnly: false }, deps)
+  const report = await doctorServer(TEST_HOME, 'sentry', { configOnly: false }, deps)
 
   assert.equal(report.summary.warnings, 1)
   assert.equal(report.summary.blocking, 0)
@@ -487,7 +501,7 @@ test('doctorServer includes observed runtime definition for plugin-only targets'
     }),
   })
 
-  const report = await doctorServer('plugin:github:github', { configOnly: true }, deps)
+  const report = await doctorServer(TEST_HOME, 'plugin:github:github', { configOnly: true }, deps)
 
   assert.equal(report.summary.totalReports, 1)
   assert.equal(report.servers[0]?.definitions.length, 1)
@@ -519,7 +533,7 @@ test('doctorServer with scopeFilter does not leak runtime definition from anothe
     },
   })
 
-  const report = await doctorServer('github', { configOnly: false, scopeFilter: 'user' }, deps)
+  const report = await doctorServer(TEST_HOME, 'github', { configOnly: false, scopeFilter: 'user' }, deps)
 
   assert.equal(connectCalls, 0)
   assert.equal(report.summary.totalReports, 1)
@@ -533,7 +547,7 @@ test('doctorServer with scopeFilter does not leak runtime definition from anothe
 })
 
 test('doctorServer reports blocking not-found state when no definition exists', async () => {
-  const report = await doctorServer('missing-server', { configOnly: true }, makeDependencies())
+  const report = await doctorServer(TEST_HOME, 'missing-server', { configOnly: true }, makeDependencies())
 
   assert.equal(report.summary.blocking, 1)
   assert.equal(report.servers[0]?.findings.some(finding => finding.code === 'state.not_found' && finding.blocking), true)

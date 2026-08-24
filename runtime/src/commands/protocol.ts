@@ -20,7 +20,6 @@
  * rendering and never influences command construction.
  */
 
-import type { ProtocolConfig } from "../config/schema.js";
 import type {
   ClaimableTaskList,
   ProtocolResult,
@@ -81,12 +80,10 @@ function commandText(verb: ProtocolVerb, argsRaw: string): string {
 // Transport-attached rendering (A2)
 // ─────────────────────────────────────────────────────────────────────
 
-function isTransportAttached(config: ProtocolConfig | undefined): boolean {
-  return config?.enabled === true && config.adapter === "marketplace-cli";
-}
-
-function transportFor(ctx: SlashCommandContext): ProtocolTransport {
-  return createProtocolTransport(ctx.configStore?.current().protocol, {
+function transportFor(ctx: SlashCommandContext): ProtocolTransport | undefined {
+  const config = ctx.configStore?.current().protocol;
+  if (config?.enabled !== true) return undefined;
+  return createProtocolTransport(config, {
     cwd: ctx.cwd,
   });
 }
@@ -162,9 +159,9 @@ function renderTaskDetail(detail: TaskDetail): SlashCommandResult {
 
 async function executeClaim(
   ctx: SlashCommandContext,
+  transport: ProtocolTransport,
 ): Promise<SlashCommandResult> {
   const args = (ctx.argsRaw ?? "").trim();
-  const transport = transportFor(ctx);
   if (args.length === 0) {
     const result = await transport.listClaimable({ limit: 10 });
     if (!result.ok) return renderTransportError("claim", result.error);
@@ -189,8 +186,8 @@ async function executeClaim(
 async function executeOwnerGatedVerb(
   verb: Exclude<ProtocolVerb, "claim">,
   ctx: SlashCommandContext,
+  transport: ProtocolTransport,
 ): Promise<SlashCommandResult> {
-  const transport = transportFor(ctx);
   const argsRaw = ctx.argsRaw ?? "";
   const args = argsRaw.trim();
   let result: ProtocolResult<never>;
@@ -247,16 +244,17 @@ function protocolCommand(verb: ProtocolVerb): SlashCommand {
         // Revert-safe default: without an explicit enabled
         // marketplace-cli transport, behavior is EXACTLY the historical
         // stub text for every verb.
-        if (!isTransportAttached(ctx.configStore?.current().protocol)) {
+        const transport = transportFor(ctx);
+        if (transport === undefined) {
           return {
             kind: "text",
             text: commandText(verb, ctx.argsRaw),
           };
         }
         if (verb === "claim") {
-          return executeClaim(ctx);
+          return executeClaim(ctx, transport);
         }
-        return executeOwnerGatedVerb(verb, ctx);
+        return executeOwnerGatedVerb(verb, ctx, transport);
       }),
   };
 }

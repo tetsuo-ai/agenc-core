@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,8 +9,39 @@ import {
   checkModelHistoryCompat,
 } from "./model.js";
 import { modelMenuFallback, readModelMenuSnapshot } from "./model-menu.js";
+import type { EnvSnapshot } from "../config/env.js";
+import { resolveHomeContext, type HomeContext } from "../config/home.js";
+import type { ConfigStore } from "../config/store.js";
 import type { Session } from "../session/session.js";
-import type { SlashCommandAppStateBridge, SlashCommandContext } from "./types.js";
+import { getSecureStorage } from "../utils/secureStorage/index.js";
+import type {
+  SlashCommandAppStateBridge,
+  SlashCommandContext,
+} from "./types.js";
+
+const TEST_ENVIRONMENT: EnvSnapshot = Object.freeze({
+  AGENC_HOME: "/tmp/agenc-model-command-test",
+});
+const TEST_HOME = resolveHomeContext(TEST_ENVIRONMENT, {
+  platformHome: "/tmp",
+});
+
+type CommandConfigStore = Pick<ConfigStore, "current" | "homeContext">;
+
+interface CommandAuthority {
+  readonly configStore: CommandConfigStore;
+  readonly environment: EnvSnapshot;
+}
+
+function commandConfigStore(
+  homeContext: HomeContext = TEST_HOME,
+  config: unknown = {},
+): CommandConfigStore {
+  return {
+    homeContext,
+    current: () => config as ReturnType<ConfigStore["current"]>,
+  };
+}
 
 interface StubSessionOpts {
   provider?: string;
@@ -20,12 +51,13 @@ interface StubSessionOpts {
   pendingProviderSwitch?: unknown;
   history?: unknown[];
   reasoningEffort?: string;
-  configStore?: { current: () => unknown };
+  configStore?: CommandConfigStore;
+  environment?: EnvSnapshot;
 }
 
 function stubSession(opts: StubSessionOpts = {}): Session {
   const sessionConfiguration = {
-    provider: { slug: opts.provider ?? "xai" },
+    provider: { slug: opts.provider ?? "grok" },
     collaborationMode: {
       model: opts.model ?? "grok-4",
       ...(opts.reasoningEffort !== undefined
@@ -39,7 +71,10 @@ function stubSession(opts: StubSessionOpts = {}): Session {
     activeTurn: { unsafePeek: () => unknown };
     abortTerminal: ReturnType<typeof vi.fn>;
     pendingProviderSwitch: unknown;
-    services: { configStore?: { current: () => unknown } };
+    services: {
+      configStore: CommandConfigStore;
+      providerEnvironment: EnvSnapshot;
+    };
     setPendingProviderSwitch(next: unknown): void;
   } = {
     state: {
@@ -52,7 +87,8 @@ function stubSession(opts: StubSessionOpts = {}): Session {
     abortTerminal,
     pendingProviderSwitch: opts.pendingProviderSwitch ?? null,
     services: {
-      ...(opts.configStore !== undefined ? { configStore: opts.configStore } : {}),
+      configStore: opts.configStore ?? commandConfigStore(),
+      providerEnvironment: opts.environment ?? TEST_ENVIRONMENT,
     },
     setPendingProviderSwitch(next) {
       this.pendingProviderSwitch = next;
@@ -75,90 +111,49 @@ function mkctx(
   };
 }
 
-// Ambient BYOK credentials (e.g. a developer's real XAI_API_KEY) would add
-// legitimate BYOK provider rows to the managed model menu and break the
-// hermetic managed-only expectations, so they are stripped for the duration
-// of each pro-session test.
-const PROVIDER_KEY_ENV_VARS = [
-  "XAI_API_KEY",
-  "GROK_API_KEY",
-  "OPENAI_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "LMSTUDIO_API_KEY",
-  "OPENAI_COMPATIBLE_API_KEY",
-  "OPENROUTER_API_KEY",
-  "GROQ_API_KEY",
-  "DEEPSEEK_API_KEY",
-  "GEMINI_API_KEY",
-  "MISTRAL_API_KEY",
-  "NVIDIA_API_KEY",
-  "MINIMAX_API_KEY",
-] as const;
-
-function withProAuthSession<T>(fn: () => T): T {
+async function withProAuthSession<T>(
+  fn: (authority: CommandAuthority) => T | Promise<T>,
+): Promise<T> {
   const agencHome = mkdtempSync(join(tmpdir(), "agenc-model-pro-"));
+  const environment: EnvSnapshot = Object.freeze({ AGENC_HOME: agencHome });
+  const homeContext = resolveHomeContext(environment, {
+    platformHome: tmpdir(),
+  });
+  const createdAt = "2026-08-24T00:00:00.000Z";
+  const storage = getSecureStorage(homeContext);
+  const update = storage.update({
+    remoteAuth: { bearerToken: "test-token", createdAt },
+  });
+  if (!update.success) {
+    throw new Error(update.warning ?? "failed to create native auth fixture");
+  }
   writeFileSync(
     join(agencHome, "auth.json"),
     JSON.stringify({
+      version: 1,
       provider: "remote",
-      token: "test-token",
+      createdAt,
       expiresAt: "2099-01-01T00:00:00.000Z",
       subscriptionTier: "pro",
     }),
   );
-  const previousHome = process.env.AGENC_HOME;
-  process.env.AGENC_HOME = agencHome;
-  const previousKeys = new Map<string, string | undefined>();
-  for (const envVar of PROVIDER_KEY_ENV_VARS) {
-    previousKeys.set(envVar, process.env[envVar]);
-    delete process.env[envVar];
-  }
   try {
-    return fn();
+    return await fn({
+      environment,
+      configStore: commandConfigStore(homeContext, {
+        auth: { managedKeys: { enabled: true } },
+      }),
+    });
   } finally {
-    if (previousHome === undefined) {
-      delete process.env.AGENC_HOME;
-    } else {
-      process.env.AGENC_HOME = previousHome;
-    }
-    for (const [envVar, value] of previousKeys) {
-      if (value === undefined) {
-        delete process.env[envVar];
-      } else {
-        process.env[envVar] = value;
-      }
-    }
-  }
-}
-
-async function withProAuthSessionAsync<T>(fn: () => Promise<T>): Promise<T> {
-  const agencHome = mkdtempSync(join(tmpdir(), "agenc-model-pro-"));
-  writeFileSync(
-    join(agencHome, "auth.json"),
-    JSON.stringify({
-      provider: "remote",
-      token: "test-token",
-      expiresAt: "2099-01-01T00:00:00.000Z",
-      subscriptionTier: "pro",
-    }),
-  );
-  const previousHome = process.env.AGENC_HOME;
-  process.env.AGENC_HOME = agencHome;
-  try {
-    return await fn();
-  } finally {
-    if (previousHome === undefined) {
-      delete process.env.AGENC_HOME;
-    } else {
-      process.env.AGENC_HOME = previousHome;
-    }
+    storage.delete();
+    rmSync(agencHome, { recursive: true, force: true });
   }
 }
 
 describe("checkModelHistoryCompat", () => {
   it("allows switching when the target model can satisfy current history requirements", () => {
     const session = stubSession({
-      provider: "xai",
+      provider: "grok",
       history: [
         {
           role: "user",
@@ -199,17 +194,15 @@ describe("checkModelHistoryCompat", () => {
       provider: "grok",
       model: "grok-4-fast",
       reasoningEffort: "high",
-      configStore: {
-        current: () => ({
-          providers: {
-            grok: {
-              capability_overrides: {
-                "grok-4-fast": { acceptsReasoningEffort: false },
-              },
+      configStore: commandConfigStore(TEST_HOME, {
+        providers: {
+          grok: {
+            capability_overrides: {
+              "grok-4-fast": { acceptsReasoningEffort: false },
             },
           },
-        }),
-      },
+        },
+      }),
     });
 
     const result = checkModelHistoryCompat(session, "grok-4-fast");
@@ -255,49 +248,49 @@ describe("modelCommand", () => {
 
   it("applies the switch immediately when no turn is active", async () => {
     const session = stubSession({
-      provider: "xai",
+      provider: "grok",
       model: "grok-4",
       activeTurn: null,
     });
-    const res = await modelCommand.execute(
-      mkctx(session, "grok-4-fast"),
-    );
+    const res = await modelCommand.execute(mkctx(session, "grok-4-fast"));
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
       expect(res.text).toMatch(/grok-4-fast/);
-      expect(res.text).toMatch(/was "xai\/grok-4"/);
+      expect(res.text).toMatch(/was "grok\/grok-4"/);
     }
-    const pending = (session as unknown as {
-      pendingProviderSwitch: { provider: string; model: string } | null;
-    }).pendingProviderSwitch;
-    expect(pending).toEqual({ provider: "xai", model: "grok-4-fast" });
+    const pending = (
+      session as unknown as {
+        pendingProviderSwitch: { provider: string; model: string } | null;
+      }
+    ).pendingProviderSwitch;
+    expect(pending).toEqual({ provider: "grok", model: "grok-4-fast" });
   });
 
   it("can switch provider and model from provider-qualified input", async () => {
     const session = stubSession({
-      provider: "xai",
+      provider: "grok",
       model: "grok-4",
       activeTurn: null,
     });
 
-    const res = await modelCommand.execute(
-      mkctx(session, "openai:gpt-5"),
-    );
+    const res = await modelCommand.execute(mkctx(session, "openai:gpt-5"));
 
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
       expect(res.text).toMatch(/openai/);
       expect(res.text).toMatch(/gpt-5/);
     }
-    const pending = (session as unknown as {
-      pendingProviderSwitch: { provider: string; model: string } | null;
-    }).pendingProviderSwitch;
+    const pending = (
+      session as unknown as {
+        pendingProviderSwitch: { provider: string; model: string } | null;
+      }
+    ).pendingProviderSwitch;
     expect(pending).toEqual({ provider: "openai", model: "gpt-5" });
   });
 
   it("does not let provider-qualified model chrome overwrite pending provider", async () => {
     const session = stubSession({
-      provider: "xai",
+      provider: "grok",
       model: "grok-4",
       activeTurn: null,
     });
@@ -320,33 +313,35 @@ describe("modelCommand", () => {
       mainLoopModel: "gpt-5",
       mainLoopModelForSession: "gpt-5",
     });
-    const pending = (session as unknown as {
-      pendingProviderSwitch: { provider: string; model: string } | null;
-    }).pendingProviderSwitch;
+    const pending = (
+      session as unknown as {
+        pendingProviderSwitch: { provider: string; model: string } | null;
+      }
+    ).pendingProviderSwitch;
     expect(pending).toEqual({ provider: "openai", model: "gpt-5" });
   });
 
   it("stages pending switch + aborts current turn when I-13 applies", async () => {
     const abortTerminal = vi.fn();
     const session = stubSession({
-      provider: "xai",
+      provider: "grok",
       model: "grok-4",
       activeTurn: { turnId: "t1" },
       abortTerminal,
     });
-    const res = await modelCommand.execute(
-      mkctx(session, "grok-4-fast"),
-    );
+    const res = await modelCommand.execute(mkctx(session, "grok-4-fast"));
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
       expect(res.text).toMatch(/staged/);
       expect(res.text).toMatch(/aborted/);
     }
     expect(abortTerminal).toHaveBeenCalledWith("provider_switched");
-    const pending = (session as unknown as {
-      pendingProviderSwitch: { provider: string; model: string } | null;
-    }).pendingProviderSwitch;
-    expect(pending).toEqual({ provider: "xai", model: "grok-4-fast" });
+    const pending = (
+      session as unknown as {
+        pendingProviderSwitch: { provider: string; model: string } | null;
+      }
+    ).pendingProviderSwitch;
+    expect(pending).toEqual({ provider: "grok", model: "grok-4-fast" });
   });
 
   it("blocks the switch when the target model is incompatible with current history", async () => {
@@ -370,9 +365,11 @@ describe("modelCommand", () => {
       expect(res.text).toMatch(/blocked/);
       expect(res.text).toMatch(/image history/);
     }
-    const pending = (session as unknown as {
-      pendingProviderSwitch: { provider: string; model: string } | null;
-    }).pendingProviderSwitch;
+    const pending = (
+      session as unknown as {
+        pendingProviderSwitch: { provider: string; model: string } | null;
+      }
+    ).pendingProviderSwitch;
     expect(pending).toBeNull();
   });
 
@@ -426,203 +423,177 @@ describe("modelCommand", () => {
   it("model menu snapshot is grouped across providers", () => {
     const snapshot = readModelMenuSnapshot(mkctx(stubSession(), ""));
 
-    expect(snapshot.rows.some(row => row.provider === "grok")).toBe(true);
-    expect(snapshot.rows.some(row => row.provider === "openai")).toBe(true);
+    expect(snapshot.rows.some((row) => row.provider === "grok")).toBe(true);
+    expect(snapshot.rows.some((row) => row.provider === "openai")).toBe(true);
     expect(snapshot.rows[snapshot.activeIndex]?.status).toBe("current");
     expect(snapshot.providerCounts.openai).toBeGreaterThan(0);
   });
 
   it("model menu snapshot reports managed key mode from config", () => {
-    const snapshot = readModelMenuSnapshot({
-      ...mkctx(stubSession(), ""),
-      configStore: {
-        current: () => ({
-          auth: { managedKeys: { enabled: true } },
-        }),
-      } as SlashCommandContext["configStore"],
+    const configStore = commandConfigStore(TEST_HOME, {
+      auth: { managedKeys: { enabled: true } },
     });
+    const snapshot = readModelMenuSnapshot(
+      mkctx(stubSession({ configStore }), ""),
+    );
 
     expect(snapshot.managedKeysEnabled).toBe(true);
     expect(modelMenuFallback(snapshot)).toContain("Managed keys: on");
   });
 
-  it("model menu limits subscription-managed OpenRouter to live models", () => {
-    withProAuthSession(() => {
-    const snapshot = readModelMenuSnapshot({
-      ...mkctx(stubSession({ provider: "openrouter", model: "x-ai/grok-4.3" }), ""),
-      configStore: {
-        current: () => ({
-          auth: { managedKeys: { enabled: true } },
-        }),
-      } as SlashCommandContext["configStore"],
-    });
-    const openrouterModels = snapshot.rows
-      .filter(row => row.provider === "openrouter")
-      .map(row => row.model);
+  it("model menu limits subscription-managed OpenRouter to live models", async () => {
+    await withProAuthSession(({ configStore, environment }) => {
+      const snapshot = readModelMenuSnapshot(
+        mkctx(
+          stubSession({
+            provider: "openrouter",
+            model: "x-ai/grok-4.3",
+            configStore,
+            environment,
+          }),
+          "",
+        ),
+      );
+      const openrouterModels = snapshot.rows
+        .filter((row) => row.provider === "openrouter")
+        .map((row) => row.model);
 
-    // The session's active model (grok-4.3) is hoisted above the default
-    // ordering, which now leads with grok-4.5.
-    expect(openrouterModels.slice(0, 20)).toEqual([
-      "x-ai/grok-4.3",
-      "x-ai/grok-4.5",
-      "x-ai/grok-build-0.1",
-      "openai/gpt-4o-mini",
-      "openai/gpt-5-nano",
-      "openai/gpt-4.1-nano",
-      "openai/gpt-oss-120b",
-      "anthropic/claude-haiku-4.5",
-      "google/gemini-2.5-flash",
-      "google/gemini-2.5-flash-lite",
-      "deepseek/deepseek-chat",
-      "deepseek/deepseek-v4-flash",
-      "deepseek/deepseek-v3.2",
-      "qwen/qwen3-coder-30b-a3b-instruct",
-      "qwen/qwen3-235b-a22b-2507",
-      "mistralai/mistral-small-3.2-24b-instruct",
-      "meta-llama/llama-3.3-70b-instruct",
-      "meta-llama/llama-4-scout",
-      "minimax/minimax-m2.5",
-      "z-ai/glm-4.7-flash",
-    ]);
-    expect(openrouterModels).not.toContain("openrouter/free");
-    expect(openrouterModels).toContain("openai/gpt-oss-20b:free");
-    expect(openrouterModels.length).toBeGreaterThan(20);
-    expect(snapshot.rows.every(row => row.provider === "openrouter")).toBe(true);
+      // The session's active model (grok-4.3) is hoisted above the default
+      // ordering, which now leads with grok-4.5.
+      expect(openrouterModels.slice(0, 20)).toEqual([
+        "x-ai/grok-4.3",
+        "x-ai/grok-4.5",
+        "x-ai/grok-build-0.1",
+        "openai/gpt-4o-mini",
+        "openai/gpt-5-nano",
+        "openai/gpt-4.1-nano",
+        "openai/gpt-oss-120b",
+        "anthropic/claude-haiku-4.5",
+        "google/gemini-2.5-flash",
+        "google/gemini-2.5-flash-lite",
+        "deepseek/deepseek-v4-flash",
+        "deepseek/deepseek-v3.2",
+        "qwen/qwen3-coder-30b-a3b-instruct",
+        "qwen/qwen3-235b-a22b-2507",
+        "mistralai/mistral-small-3.2-24b-instruct",
+        "meta-llama/llama-3.3-70b-instruct",
+        "meta-llama/llama-4-scout",
+        "minimax/minimax-m2.5",
+        "z-ai/glm-4.7-flash",
+        "cohere/north-mini-code:free",
+      ]);
+      expect(openrouterModels).not.toContain("openrouter/free");
+      expect(openrouterModels).toContain("openai/gpt-oss-20b:free");
+      expect(openrouterModels.length).toBeGreaterThan(20);
+      expect(snapshot.rows.every((row) => row.provider === "openrouter")).toBe(
+        true,
+      );
     });
   });
 
-  it("opens paid managed sessions on hosted OpenRouter models first", () => {
-    withProAuthSession(() => {
-      const previous = process.env.OPENROUTER_API_KEY;
-      delete process.env.OPENROUTER_API_KEY;
-      try {
-        const snapshot = readModelMenuSnapshot({
-          ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), ""),
-          configStore: {
-            current: () => ({
-              auth: { managedKeys: { enabled: true } },
-            }),
-          } as SlashCommandContext["configStore"],
-        });
+  it("opens paid managed sessions on hosted OpenRouter models first", async () => {
+    await withProAuthSession(({ configStore, environment }) => {
+      const snapshot = readModelMenuSnapshot(
+        mkctx(
+          stubSession({
+            provider: "grok",
+            model: "grok-4.3",
+            configStore,
+            environment,
+          }),
+          "",
+        ),
+      );
 
-        expect(snapshot.rows[0]).toMatchObject({
-          provider: "openrouter",
-          model: "x-ai/grok-4.5",
-          detail: "default hosted subscription model",
-        });
-        expect(snapshot.rows[snapshot.activeIndex]).toMatchObject({
-          provider: "openrouter",
-          model: "x-ai/grok-4.5",
-        });
-        expect(snapshot.rows.some(row => row.provider === "grok")).toBe(true);
-      } finally {
-        if (previous === undefined) {
-          delete process.env.OPENROUTER_API_KEY;
-        } else {
-          process.env.OPENROUTER_API_KEY = previous;
-        }
-      }
+      expect(snapshot.rows[0]).toMatchObject({
+        provider: "openrouter",
+        model: "x-ai/grok-4.5",
+        detail: "default hosted subscription model",
+      });
+      expect(snapshot.rows[snapshot.activeIndex]).toMatchObject({
+        provider: "openrouter",
+        model: "x-ai/grok-4.5",
+      });
+      expect(snapshot.rows.some((row) => row.provider === "grok")).toBe(true);
     });
   });
 
   it("blocks direct model switches to unavailable subscription-managed OpenRouter models", async () => {
-    await withProAuthSessionAsync(async () => {
-    const previous = process.env.OPENROUTER_API_KEY;
-    delete process.env.OPENROUTER_API_KEY;
-    try {
-      const res = await modelCommand.execute({
-        ...mkctx(
-          stubSession({ provider: "openrouter", model: "x-ai/grok-4.3" }),
+    await withProAuthSession(async ({ configStore, environment }) => {
+      const res = await modelCommand.execute(
+        mkctx(
+          stubSession({
+            provider: "openrouter",
+            model: "x-ai/grok-4.3",
+            configStore,
+            environment,
+          }),
           "openrouter:x-ai/grok-4.20",
         ),
-        configStore: {
-          current: () => ({
-            auth: { managedKeys: { enabled: true } },
-          }),
-        } as SlashCommandContext["configStore"],
-      });
-
-      expect(res).toEqual({
-        kind: "text",
-        text: expect.stringContaining("not enabled for subscription-managed openrouter"),
-      });
-      if (res.kind === "text") {
-        expect(res.text).toContain("Try /model openrouter:x-ai/grok-4.5");
-        expect(res.text).toContain("open /model to pick a hosted route");
-        expect(res.text).not.toContain(" or /model openrouter:openai/gpt-4o-mini");
-      }
-    } finally {
-      if (previous === undefined) {
-        delete process.env.OPENROUTER_API_KEY;
-      } else {
-        process.env.OPENROUTER_API_KEY = previous;
-      }
-    }
-    });
-  });
-
-  it("allows direct switches to subscription-managed OpenRouter models outside the base catalog", async () => {
-    await withProAuthSessionAsync(async () => {
-    const previous = process.env.OPENROUTER_API_KEY;
-    delete process.env.OPENROUTER_API_KEY;
-    try {
-      const session = stubSession({
-        provider: "openrouter",
-        model: "x-ai/grok-4.3",
-        activeTurn: null,
-      });
-      const res = await modelCommand.execute({
-        ...mkctx(session, "openrouter:deepseek/deepseek-chat"),
-        configStore: {
-          current: () => ({
-            auth: { managedKeys: { enabled: true } },
-          }),
-        } as SlashCommandContext["configStore"],
-      });
-
-      expect(res.kind).toBe("text");
-      const pending = (session as unknown as {
-        pendingProviderSwitch: { provider: string; model: string } | null;
-      }).pendingProviderSwitch;
-      expect(pending).toEqual({
-        provider: "openrouter",
-        model: "deepseek/deepseek-chat",
-      });
-    } finally {
-      if (previous === undefined) {
-        delete process.env.OPENROUTER_API_KEY;
-      } else {
-        process.env.OPENROUTER_API_KEY = previous;
-      }
-    }
-    });
-  });
-
-  it("blocks direct model switches to unavailable managed routes without BYOK", async () => {
-    const previous = process.env.OPENAI_API_KEY;
-    delete process.env.OPENAI_API_KEY;
-    try {
-      const res = await modelCommand.execute({
-        ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), "openai:gpt-5"),
-        configStore: {
-          current: () => ({
-            auth: { managedKeys: { enabled: true } },
-          }),
-        } as SlashCommandContext["configStore"],
-      });
+      );
 
       expect(res).toEqual({
         kind: "text",
         text: expect.stringContaining(
-          "hosted subscription access is available through OpenRouter",
+          "not enabled for subscription-managed openrouter",
         ),
       });
-    } finally {
-      if (previous === undefined) {
-        delete process.env.OPENAI_API_KEY;
-      } else {
-        process.env.OPENAI_API_KEY = previous;
+      if (res.kind === "text") {
+        expect(res.text).toContain("Try /model openrouter:x-ai/grok-4.5");
+        expect(res.text).toContain("open /model to pick a hosted route");
+        expect(res.text).not.toContain(
+          " or /model openrouter:openai/gpt-4o-mini",
+        );
       }
-    }
+    });
+  });
+
+  it("allows direct switches to subscription-managed OpenRouter models outside the base catalog", async () => {
+    await withProAuthSession(async ({ configStore, environment }) => {
+      const session = stubSession({
+        provider: "openrouter",
+        model: "x-ai/grok-4.3",
+        activeTurn: null,
+        configStore,
+        environment,
+      });
+      const res = await modelCommand.execute(
+        mkctx(session, "openrouter:deepseek/deepseek-v4-flash"),
+      );
+
+      expect(res.kind).toBe("text");
+      const pending = (
+        session as unknown as {
+          pendingProviderSwitch: { provider: string; model: string } | null;
+        }
+      ).pendingProviderSwitch;
+      expect(pending).toEqual({
+        provider: "openrouter",
+        model: "deepseek/deepseek-v4-flash",
+      });
+    });
+  });
+
+  it("blocks direct model switches to unavailable managed routes without BYOK", async () => {
+    const configStore = commandConfigStore(TEST_HOME, {
+      auth: { managedKeys: { enabled: true } },
+    });
+    const res = await modelCommand.execute(
+      mkctx(
+        stubSession({
+          provider: "grok",
+          model: "grok-4.3",
+          configStore,
+        }),
+        "openai:gpt-5",
+      ),
+    );
+
+    expect(res).toEqual({
+      kind: "text",
+      text: expect.stringContaining(
+        "hosted subscription access is available through OpenRouter",
+      ),
+    });
   });
 });

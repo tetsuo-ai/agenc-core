@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { afterEach, expect, test, vi } from 'vitest'
+import { resolveHomeContext } from '../../config/home.js'
 
 const mcpAuthMocks = vi.hoisted(() => ({
   logMCPDebug: vi.fn(),
@@ -15,10 +16,20 @@ import {
   validateOAuthCallbackParams,
 } from './auth.js'
 import type { McpSSEServerConfig } from './types.js'
+import { clearProxyCache } from '../../utils/proxy.js'
+
+const TEST_HOME = resolveHomeContext(
+  { AGENC_HOME: '/tmp/agenc-mcp-auth-metadata-test' },
+  { platformHome: '/tmp' },
+)
+const originalHttpsProxy = process.env.HTTPS_PROXY
 
 afterEach(() => {
   vi.clearAllMocks()
   vi.unstubAllGlobals()
+  clearProxyCache()
+  if (originalHttpsProxy === undefined) delete process.env.HTTPS_PROXY
+  else process.env.HTTPS_PROXY = originalHttpsProxy
 })
 
 const validOAuthMetadata = {
@@ -28,6 +39,68 @@ const validOAuthMetadata = {
   response_types_supported: ['code'],
   code_challenge_methods_supported: ['S256'],
 }
+
+test('MCP OAuth discovery keeps A/B session transports isolated', async () => {
+  const calls: RequestInit[] = []
+  vi.stubGlobal('fetch', vi.fn(async (_input, init) => {
+    calls.push(init ?? {})
+    return new Response(JSON.stringify(validOAuthMetadata), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    })
+  }))
+
+  const mutableEnvironmentA: Record<string, string | undefined> = {
+    HTTPS_PROXY: 'http://session-a.proxy.test:8080',
+  }
+  const providerA = new AgenCAuthProvider(
+    TEST_HOME,
+    'configured-auth-a',
+    {
+      type: 'sse',
+      url: 'https://mcp-a.example.test/sse',
+      oauth: {
+        authServerMetadataUrl:
+          'https://auth-a.example.test/.well-known/oauth-authorization-server',
+      },
+    },
+    undefined,
+    false,
+    undefined,
+    undefined,
+    mutableEnvironmentA,
+  )
+  const providerB = new AgenCAuthProvider(
+    TEST_HOME,
+    'configured-auth-b',
+    {
+      type: 'sse',
+      url: 'https://mcp-b.example.test/sse',
+      oauth: {
+        authServerMetadataUrl:
+          'https://auth-b.example.test/.well-known/oauth-authorization-server',
+      },
+    },
+    undefined,
+    false,
+    undefined,
+    undefined,
+    Object.freeze({}),
+  )
+  delete mutableEnvironmentA.HTTPS_PROXY
+  process.env.HTTPS_PROXY = 'http://ambient.proxy.test:8080'
+
+  await providerA.discoveryState()
+  await providerB.discoveryState()
+
+  const dispatcherA = (calls[0] as RequestInit & { dispatcher?: object })
+    .dispatcher
+  const dispatcherB = (calls[1] as RequestInit & { dispatcher?: object })
+    .dispatcher
+  expect(dispatcherA?.constructor.name).toBe('EnvHttpProxyAgent')
+  expect(dispatcherB?.constructor.name).toBe('Agent')
+  expect(dispatcherA).not.toBe(dispatcherB)
+})
 
 test('OAuth callback rejects error parameters before state validation can be bypassed', () => {
   const result = validateOAuthCallbackParams(
@@ -104,7 +177,7 @@ test('configured auth metadata invalid JSON is logged as a controlled discovery 
       authServerMetadataUrl: metadataUrl,
     },
   }
-  const provider = new AgenCAuthProvider('configured-auth', serverConfig)
+  const provider = new AgenCAuthProvider(TEST_HOME, 'configured-auth', serverConfig)
 
   await expect(provider.discoveryState()).resolves.toBeUndefined()
 
@@ -144,6 +217,7 @@ test('MCP OAuth metadata rejects plaintext authorization server endpoints', () =
 
 test('MCP OAuth metadata requires S256 PKCE before authorization redirect', async () => {
   const provider = new AgenCAuthProvider(
+    TEST_HOME,
     'pkce-auth',
     {
       type: 'sse',
@@ -185,7 +259,7 @@ test('configured auth metadata with plaintext endpoints is logged as a controlle
       authServerMetadataUrl: metadataUrl,
     },
   }
-  const provider = new AgenCAuthProvider('plaintext-auth', serverConfig)
+  const provider = new AgenCAuthProvider(TEST_HOME, 'plaintext-auth', serverConfig)
 
   await expect(provider.discoveryState()).resolves.toBeUndefined()
 

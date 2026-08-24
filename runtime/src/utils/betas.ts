@@ -23,8 +23,13 @@ import { has1mContext } from './context.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
-import { getAPIProvider } from './model/providers.js'
+import { getAPIProvider, getSelectedProviderEnvironment } from './model/providers.js'
 import { getExecutionAuthoritySettings } from './settings/settings.js'
+import { resolveSecureStorageHome } from './secureStorage/home.js'
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 
 /**
  * SDK-provided betas that are allowed for API key users.
@@ -64,7 +69,7 @@ export function filterAllowedSdkBetas(
     return undefined
   }
 
-  if (isAgenCAISubscriber()) {
+  if (isAgenCAISubscriber(credentialHome())) {
     // biome-ignore lint/suspicious/noConsole: intentional warning
     console.warn(
       'Warning: Custom betas are only available for API key users. Ignoring provided betas.',
@@ -245,7 +250,7 @@ export const getAllModelBetas = memoize((model: string): string[] => {
       }
     }
   }
-  if (isAgenCAISubscriber()) {
+  if (isAgenCAISubscriber(credentialHome())) {
     betaHeaders.push(OAUTH_BETA_HEADER)
   }
   if (has1mContext(model)) {
@@ -262,7 +267,7 @@ export const getAllModelBetas = memoize((model: string): string[] => {
   // for ctrl+o display, which interactive users rarely open. The API returns
   // redacted_thinking blocks instead; AssistantRedactedThinkingMessage already
   // renders those as a stub. SDK / print-mode keep summaries because callers
-  // may iterate over thinking content. Users can opt back in via settings.json
+  // may iterate over thinking content. Users can opt back in via config.toml
   // showThinkingSummaries.
   if (
     includeFirstPartyOnlyBetas &&
@@ -351,9 +356,10 @@ export const getAllModelBetas = memoize((model: string): string[] => {
 
   // If ANTHROPIC_BETAS is set, split it by commas and add to betaHeaders.
   // This is an explicit user opt-in, so honor it regardless of model.
-  if (process.env.ANTHROPIC_BETAS) {
+  const configuredBetas = getSelectedProviderEnvironment().ANTHROPIC_BETAS
+  if (configuredBetas) {
     betaHeaders.push(
-      ...process.env.ANTHROPIC_BETAS.split(',')
+      ...configuredBetas.split(',')
         .map(_ => _.trim())
         .filter(Boolean),
     )

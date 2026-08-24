@@ -8,7 +8,6 @@
  */
 
 import type { Message } from '../../types/message.js'
-import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
 import {
   type CacheSafeParams,
   type PromptSuggestionAppState,
@@ -18,8 +17,6 @@ import {
   count,
   createCacheSafeParams,
   createUserMessage,
-  getFeatureValue_CACHED_MAY_BE_STALE,
-  getInitialPromptSuggestionSettings,
   getLastAssistantMessage,
   isAgentSwarmsEnabled,
   logForDebugging,
@@ -41,22 +38,9 @@ export function getPromptVariant(): PromptVariant {
 export function shouldEnablePromptSuggestion(
   settings?: PromptSuggestionSettings | null,
 ): boolean {
-  // Env var overrides everything (for testing)
-  const envOverride = process.env.AGENC_ENABLE_PROMPT_SUGGESTION
-  if (isEnvDefinedFalsy(envOverride)) {
-    return false
-  }
-  if (isEnvTruthy(envOverride)) {
-    return true
-  }
-
-  // Keep default in sync with Config.tsx (settings toggle visibility)
-  const promptSuggestionFeatureEnabled =
-    settings?.promptSuggestionFeatureEnabled ??
-    getFeatureValue_CACHED_MAY_BE_STALE('tengu_chomp_inflection', false)
-  if (!promptSuggestionFeatureEnabled) {
-    return false
-  }
+  // This typed preference is the sole enablement authority. Keep the
+  // default disabled so an absent preference preserves existing behavior.
+  if (settings?.promptSuggestionEnabled !== true) return false
 
   // Disable in non-interactive mode (print mode, piped input, SDK)
   if (settings?.isNonInteractiveSession) {
@@ -70,10 +54,7 @@ export function shouldEnablePromptSuggestion(
     return false
   }
 
-  return (
-    getInitialPromptSuggestionSettings(settings).promptSuggestionEnabled !==
-    false
-  )
+  return true
 }
 
 export function abortPromptSuggestion(): void {

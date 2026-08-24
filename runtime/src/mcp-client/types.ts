@@ -10,9 +10,18 @@
 import type {
   PermissionDefaultMode,
   PerToolConfig,
-  PluginMcpSandboxMetadata,
 } from "../config/schema.js";
 import type { Tool } from "./_deps/tools-types.js";
+
+/** Runtime-only metadata injected after canonical config validation. */
+export interface PluginMcpSandboxMetadata {
+  readonly mode: "stdio-child-process";
+  readonly pluginName: string;
+  readonly pluginRoot: string;
+  readonly pluginDataDir: string;
+  readonly serverName: string;
+  readonly scopedServerName: string;
+}
 
 /**
  * Configuration for an external MCP server.
@@ -21,13 +30,13 @@ import type { Tool } from "./_deps/tools-types.js";
  *   - `"stdio"` (default): spawn a child process via `command` + `args`.
  *   - `"sse"`: connect to a remote server over compatibility SSE at `endpoint`.
  *   - `"http"`: connect over the Streamable HTTP transport at `endpoint`.
- *   - `"websocket"` / `"ws"`: connect to a remote WebSocket endpoint.
+ *   - `"websocket"`: connect to a remote WebSocket endpoint.
  */
 export interface MCPServerConfig {
   /** Human-readable server name (used for tool namespacing) */
   name: string;
   /** Transport kind. Default: "stdio". */
-  transport?: "stdio" | "sse" | "http" | "websocket" | "ws";
+  transport?: "stdio" | "sse" | "http" | "websocket";
   /** Executable command (e.g. "npx", "node"). Required for stdio transport. */
   command?: string;
   /** Command arguments (e.g. ["-y", "@nicholasareed/peekaboo-mcp@latest"]).

@@ -1,12 +1,18 @@
 import { isAgenCAISubscriber } from './auth.js'
 import { has1mContext } from './context.js'
+import { resolveSecureStorageHome } from './secureStorage/home.js'
+import { getSelectedProviderEnvironment } from './model/providers.js'
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 
 export function isBilledAsExtraUsage(
   model: string | null,
   isFastMode: boolean,
   isOpus1mMerged: boolean,
 ): boolean {
-  if (!isAgenCAISubscriber()) return false
+  if (!isAgenCAISubscriber(credentialHome())) return false
   if (isFastMode) return true
   if (model === null || !has1mContext(model)) return false
 

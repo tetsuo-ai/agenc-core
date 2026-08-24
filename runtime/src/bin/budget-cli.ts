@@ -10,7 +10,7 @@
  */
 
 import { resolveAgencHome } from "../config/env.js";
-import { loadConfig } from "../config/loader.js";
+import { loadCanonicalConfig } from "../config/repository.js";
 import { resolveBudgetPolicy } from "../budget/config.js";
 import type { BudgetPolicy } from "../budget/types.js";
 
@@ -125,8 +125,12 @@ export async function runAgenCBudgetCli(
     return 1;
   }
   const agencHome = resolveAgencHome(env);
-  const loaded = await loadConfig({ home: agencHome, onWarn: () => {} });
-  const { policy } = resolveBudgetPolicy(loaded.config.budget, env);
+  const loaded = await loadCanonicalConfig({
+    home: agencHome,
+    env,
+    onWarn: () => {},
+  });
+  const policy = resolveBudgetPolicy(loaded.config.budget);
   const report: BudgetStatusReport = {
     authority: "execution_admission_kernel",
     enabled: policy.enabled,

@@ -56,7 +56,7 @@ vi.mock('../../utils/settings/settings.js', () => ({
 
 vi.mock('../../utils/config.js', () => ({
   checkHasTrustDialogAccepted: () => true,
-  getGlobalConfig: () => harness.globalConfig,
+  getRuntimeState: () => harness.globalConfig,
 }))
 
 vi.mock('../../utils/hooks.js', () => ({

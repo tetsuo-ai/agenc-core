@@ -1,5 +1,13 @@
 import { isBareMode } from './envUtils.js'
-import { getSecureStorage } from './secureStorage/index.js'
+import type { HomeContext } from '../config/home.js'
+import type { SecureStorageData } from './secureStorage/index.js'
+import {
+  NativeSecureStorageError,
+  readNativeSecureStorage,
+  readNativeSecureStorageAsync,
+  updateNativeSecureStorage,
+} from './secureStorage/native.js'
+import { nativeVaultIdentityKey } from './secureStorage/home.js'
 import {
   asTrimmedString,
   PROVIDER_CODE_REFRESH_URL as AGENC_REFRESH_URL,
@@ -10,6 +18,8 @@ import {
   decodeJwtPayload,
   readOAuthTokenJsonResponse,
 } from '../services/api/openAiCodeOAuthShared.js'
+import type { ProviderEnvironment } from '../llm/provider-options.js'
+import { getProxyFetchOptions } from './proxy.js'
 
 export const AGENC_STORAGE_KEY = 'agenc' as const
 const AGENC_TOKEN_REFRESH_SKEW_MS = 60_000
@@ -26,16 +36,28 @@ export type AgencCredentialBlob = {
   lastRefreshFailureAt?: number
 }
 
-let inFlightAgencRefresh:
-  | Promise<{
-      refreshed: boolean
-      credentials?: AgencCredentialBlob
-    }>
-  | null = null
-let inMemoryLastRefreshFailureAt: number | null = null
+interface AgencRefreshState {
+  inFlightByEnvironment: WeakMap<object, Promise<AgencRefreshResult>>
+  lastRefreshFailureAt: number | null
+}
 
-function getAgencSecureStorage() {
-  return getSecureStorage({ allowPlainTextFallback: false })
+interface AgencRefreshResult {
+  refreshed: boolean
+  credentials?: AgencCredentialBlob
+}
+
+const refreshStateByHome = new Map<string, AgencRefreshState>()
+
+function refreshState(home: HomeContext): AgencRefreshState {
+  const vaultIdentity = nativeVaultIdentityKey(home)
+  const existing = refreshStateByHome.get(vaultIdentity)
+  if (existing) return existing
+  const created: AgencRefreshState = {
+    inFlightByEnvironment: new WeakMap(),
+    lastRefreshFailureAt: null,
+  }
+  refreshStateByHome.set(vaultIdentity, created)
+  return created
 }
 
 function parseJwtExpiryMs(token: string | undefined): number | undefined {
@@ -89,6 +111,72 @@ function normalizeAgencCredentialBlob(
   }
 }
 
+export class AgencCredentialConflictError extends Error {
+  readonly name = 'AgencCredentialConflictError'
+
+  constructor() {
+    super(
+      'AgenC credentials changed while an OAuth refresh was in flight; the newer native-vault value was preserved.',
+    )
+  }
+}
+
+function sameCredentials(
+  left: AgencCredentialBlob,
+  right: AgencCredentialBlob,
+): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
+function writeAgencCredentials(
+  home: HomeContext,
+  credentials: AgencCredentialBlob,
+  expected?: AgencCredentialBlob,
+): AgencCredentialBlob {
+  let stored: AgencCredentialBlob | undefined
+  updateNativeSecureStorage(
+    home,
+    current => {
+      const previous = normalizeAgencCredentialBlob(current[AGENC_STORAGE_KEY])
+      if (
+        expected !== undefined &&
+        (previous === undefined || !sameCredentials(previous, expected))
+      ) {
+        throw new AgencCredentialConflictError()
+      }
+      stored = {
+        ...credentials,
+        profileId: credentials.profileId ?? previous?.profileId,
+        lastRefreshAt: credentials.lastRefreshAt ?? Date.now(),
+      }
+      return {
+        ...current,
+        [AGENC_STORAGE_KEY]: stored,
+      }
+    },
+    'Native secure storage is unavailable; AgenC credentials were not saved.',
+  )
+  if (stored === undefined) {
+    throw new NativeSecureStorageError(
+      'Native secure storage did not accept AgenC credentials.',
+    )
+  }
+  return stored
+}
+
+function secureStorageFailure(error: unknown): {
+  success: false
+  warning: string
+} {
+  return {
+    success: false,
+    warning:
+      error instanceof Error
+        ? error.message
+        : 'Native secure storage operation failed.',
+  }
+}
+
 function shouldRefreshAgencToken(blob: AgencCredentialBlob): boolean {
   const expiresAt =
     parseJwtExpiryMs(blob.accessToken) ?? parseJwtExpiryMs(blob.idToken)
@@ -100,6 +188,7 @@ function shouldRefreshAgencToken(blob: AgencCredentialBlob): boolean {
 
 function isWithinRefreshFailureCooldown(
   blob: AgencCredentialBlob,
+  inMemoryLastRefreshFailureAt: number | null,
   now = Date.now(),
 ): boolean {
   const lastRefreshFailureAt = Math.max(
@@ -142,24 +231,28 @@ function getRefreshErrorMessage(
   }
 }
 
-export function readAgencCredentials(): AgencCredentialBlob | undefined {
+export function readAgencCredentials(
+  home: HomeContext,
+): AgencCredentialBlob | undefined {
   if (isBareMode()) return undefined
 
   try {
-    const data = getAgencSecureStorage().read()
+    const data = readNativeSecureStorage(home)
     return normalizeAgencCredentialBlob(data?.agenc)
   } catch {
     return undefined
   }
 }
 
-export async function readAgencCredentialsAsync(): Promise<
+export async function readAgencCredentialsAsync(
+  home: HomeContext,
+): Promise<
   AgencCredentialBlob | undefined
 > {
   if (isBareMode()) return undefined
 
   try {
-    const data = await getAgencSecureStorage().readAsync()
+    const data = await readNativeSecureStorageAsync(home)
     return normalizeAgencCredentialBlob(data?.agenc)
   } catch {
     return undefined
@@ -172,11 +265,13 @@ export function isAgencRefreshFailureCoolingDown(
 ): boolean {
   return isWithinRefreshFailureCooldown(
     blob as AgencCredentialBlob,
+    null,
     now,
   )
 }
 
 export function saveAgencCredentials(
+  home: HomeContext,
   credentials: AgencCredentialBlob,
 ): { success: boolean; warning?: string } {
   if (isBareMode()) {
@@ -188,26 +283,20 @@ export function saveAgencCredentials(
     return { success: false, warning: 'Agenc credentials are incomplete.' }
   }
 
-  const secureStorage = getAgencSecureStorage()
-  const previous = secureStorage.read() || {}
-  const previousAgenc = normalizeAgencCredentialBlob(previous[AGENC_STORAGE_KEY])
-  const next = {
-    ...(previous as Record<string, unknown>),
-    [AGENC_STORAGE_KEY]: {
-      ...normalized,
-      profileId: normalized.profileId ?? previousAgenc?.profileId,
-      lastRefreshAt: normalized.lastRefreshAt ?? Date.now(),
-    },
+  try {
+    const stored = writeAgencCredentials(home, normalized)
+    refreshState(home).lastRefreshFailureAt =
+      stored.lastRefreshFailureAt ?? null
+    return { success: true }
+  } catch (error) {
+    return secureStorageFailure(error)
   }
-  const result = secureStorage.update(next as typeof previous)
-  if (result.success) {
-    const storedAgenc = normalizeAgencCredentialBlob(next[AGENC_STORAGE_KEY])
-    inMemoryLastRefreshFailureAt = storedAgenc?.lastRefreshFailureAt ?? null
-  }
-  return result
 }
 
-export function attachAgencProfileIdToStoredCredentials(profileId: string): {
+export function attachAgencProfileIdToStoredCredentials(
+  home: HomeContext,
+  profileId: string,
+): {
   success: boolean
   warning?: string
 } {
@@ -215,34 +304,60 @@ export function attachAgencProfileIdToStoredCredentials(profileId: string): {
     return { success: false, warning: 'Bare mode: secure storage is disabled.' }
   }
 
-  const current = readAgencCredentials()
-  if (!current) {
-    return {
-      success: false,
-      warning: 'Agenc credentials are not stored securely yet.',
-    }
+  try {
+    let found = false
+    updateNativeSecureStorage(
+      home,
+      current => {
+        const credentials = normalizeAgencCredentialBlob(current.agenc)
+        if (!credentials) return structuredClone(current) as SecureStorageData
+        found = true
+        return {
+          ...current,
+          agenc: { ...credentials, profileId },
+        }
+      },
+      'Native secure storage is unavailable; AgenC profile linkage was not saved.',
+    )
+    return found
+      ? { success: true }
+      : {
+          success: false,
+          warning: 'Agenc credentials are not stored securely yet.',
+        }
+  } catch (error) {
+    return secureStorageFailure(error)
   }
-
-  return saveAgencCredentials({
-    ...current,
-    profileId,
-  })
 }
 
 function persistAgencRefreshFailure(
+  home: HomeContext,
   credentials: AgencCredentialBlob,
   occurredAt: number,
 ): void {
-  const result = saveAgencCredentials({
-    ...credentials,
-    lastRefreshFailureAt: occurredAt,
-  })
-  if (!result.success) {
-    inMemoryLastRefreshFailureAt = occurredAt
+  const state = refreshState(home)
+  try {
+    updateNativeSecureStorage(
+      home,
+      current => {
+        const stored = normalizeAgencCredentialBlob(current.agenc)
+        if (!stored || !sameCredentials(stored, credentials)) {
+          return structuredClone(current) as SecureStorageData
+        }
+        return {
+          ...current,
+          agenc: { ...stored, lastRefreshFailureAt: occurredAt },
+        }
+      },
+      'Native secure storage is unavailable; AgenC refresh cooldown was not saved.',
+    )
+  } catch {
+    // The in-memory cooldown still prevents a hot retry loop in this process.
   }
+  state.lastRefreshFailureAt = occurredAt
 }
 
-export function clearAgencCredentials(): {
+export function clearAgencCredentials(home: HomeContext): {
   success: boolean
   warning?: string
 } {
@@ -250,32 +365,42 @@ export function clearAgencCredentials(): {
     return { success: true }
   }
 
-  const secureStorage = getAgencSecureStorage()
-  const previous = secureStorage.read() || {}
-  const next = { ...(previous as Record<string, unknown>) }
-  delete next[AGENC_STORAGE_KEY]
-  const result = secureStorage.update(next as typeof previous)
-  if (result.success) {
-    inMemoryLastRefreshFailureAt = null
+  try {
+    updateNativeSecureStorage(
+      home,
+      current => {
+        const next = { ...current }
+        delete next[AGENC_STORAGE_KEY]
+        return next
+      },
+      'Native secure storage is unavailable; AgenC credentials were not cleared.',
+    )
+    refreshState(home).lastRefreshFailureAt = null
+    return { success: true }
+  } catch (error) {
+    return secureStorageFailure(error)
   }
-  return result
 }
 
-export async function refreshAgencAccessTokenIfNeeded(options?: {
-  force?: boolean
-}): Promise<{
-  refreshed: boolean
-  credentials?: AgencCredentialBlob
-}> {
+export async function refreshAgencAccessTokenIfNeeded(
+  home: HomeContext,
+  environment: ProviderEnvironment,
+  options?: {
+    force?: boolean
+  },
+): Promise<AgencRefreshResult> {
   if (isBareMode()) {
     return { refreshed: false }
   }
 
-  if (process.env.AGENC_API_KEY?.trim()) {
+  if (
+    environment.PROVIDER_CODE_API_KEY?.trim() ||
+    environment.AGENC_API_KEY?.trim()
+  ) {
     return { refreshed: false }
   }
 
-  const current = await readAgencCredentialsAsync()
+  const current = await readAgencCredentialsAsync(home)
   if (!current) {
     return { refreshed: false }
   }
@@ -289,20 +414,25 @@ export async function refreshAgencAccessTokenIfNeeded(options?: {
     return { refreshed: false, credentials: current }
   }
 
-  if (!options?.force && isWithinRefreshFailureCooldown(current)) {
+  const state = refreshState(home)
+  if (
+    !options?.force &&
+    isWithinRefreshFailureCooldown(current, state.lastRefreshFailureAt)
+  ) {
     return { refreshed: false, credentials: current }
   }
 
-  if (inFlightAgencRefresh) {
-    return inFlightAgencRefresh
+  const existingRefresh = state.inFlightByEnvironment.get(environment)
+  if (existingRefresh) {
+    return existingRefresh
   }
 
-  inFlightAgencRefresh = (async () => {
+  const inFlight = Promise.resolve().then(async () => {
     const refreshAttemptedAt = Date.now()
 
     try {
       const body = new URLSearchParams({
-        client_id: getAgencOAuthClientId(),
+        client_id: getAgencOAuthClientId(environment),
         grant_type: 'refresh_token',
         refresh_token: refreshToken,
       })
@@ -314,6 +444,7 @@ export async function refreshAgencAccessTokenIfNeeded(options?: {
         },
         body,
         signal: AbortSignal.timeout(15_000),
+        ...getProxyFetchOptions({ environment }),
       })
 
       if (!response.ok) {
@@ -347,15 +478,20 @@ export async function refreshAgencAccessTokenIfNeeded(options?: {
       if (idTokenForExchange) {
         next.apiKey = await exchangeAgencIdTokenForApiKey(
           idTokenForExchange,
+          environment,
         ).catch(() => undefined)
       }
 
-      const saveResult = saveAgencCredentials(next)
-      if (!saveResult.success) {
-        throw new Error(
-          saveResult.warning ??
-            'Agenc token refresh succeeded but credentials could not be saved.',
-        )
+      try {
+        writeAgencCredentials(home, next, current)
+      } catch (error) {
+        if (error instanceof AgencCredentialConflictError) {
+          return {
+            refreshed: false,
+            credentials: await readAgencCredentialsAsync(home),
+          }
+        }
+        throw error
       }
 
       return {
@@ -363,12 +499,13 @@ export async function refreshAgencAccessTokenIfNeeded(options?: {
         credentials: next,
       }
     } catch (error) {
-      persistAgencRefreshFailure(current, refreshAttemptedAt)
+      persistAgencRefreshFailure(home, current, refreshAttemptedAt)
       throw error
     } finally {
-      inFlightAgencRefresh = null
+      state.inFlightByEnvironment.delete(environment)
     }
-  })()
+  })
 
-  return inFlightAgencRefresh
+  state.inFlightByEnvironment.set(environment, inFlight)
+  return inFlight
 }

@@ -15,8 +15,12 @@ export function isRetryableFetchError(error: unknown): boolean {
 
 export async function fetchWithProxyRetry(
   input: string | URL | Request,
-  init?: RequestInit,
-  options?: { forproviderAPI?: boolean; maxAttempts?: number },
+  init: RequestInit | undefined,
+  options: {
+    environment: Readonly<Record<string, string | undefined>>
+    forproviderAPI?: boolean
+    maxAttempts?: number
+  },
 ): Promise<Response> {
   const maxAttempts = Math.max(1, options?.maxAttempts ?? 2)
   let lastError: unknown
@@ -26,7 +30,8 @@ export async function fetchWithProxyRetry(
       return await fetch(input, {
         ...init,
         ...getProxyFetchOptions({
-          forAnthropicAPI: options?.forproviderAPI,
+          environment: options.environment,
+          forAnthropicAPI: options.forproviderAPI,
         }),
       })
     } catch (error) {

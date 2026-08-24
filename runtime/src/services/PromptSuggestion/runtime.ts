@@ -183,7 +183,6 @@ export type PromptSuggestionSettings = {
   readonly promptSuggestionEnabled?: boolean
   readonly isNonInteractiveSession?: boolean
   readonly isTeammateSession?: boolean
-  readonly promptSuggestionFeatureEnabled?: boolean
   readonly agentSwarmsEnabled?: boolean
 }
 
@@ -216,14 +215,6 @@ export function getFeatureValue_CACHED_MAY_BE_STALE<T>(
   return defaultValue
 }
 
-export function getInitialPromptSuggestionSettings(
-  settings?: PromptSuggestionSettings | null,
-): PromptSuggestionSettings {
-  const raw = process.env.AGENC_PROMPT_SUGGESTION_ENABLED
-  if (raw === undefined) return settings ?? {}
-  return { promptSuggestionEnabled: !['0', 'false', 'no', 'off'].includes(raw) }
-}
-
 export function isAgentSwarmsEnabled(): boolean {
   if (process.env.USER_TYPE === 'ant') return true
   const { optionArgs } = tokenizeCliOptionRegion(process.argv.slice(2))
@@ -237,10 +228,6 @@ export function isAgentSwarmsEnabled(): boolean {
 }
 
 export function isSpeculationConfigEnabled(speculationEnabled?: boolean): boolean {
-  const envOverride = process.env.AGENC_SPECULATION_ENABLED
-  if (envOverride !== undefined) {
-    return !['0', 'false', 'no', 'off'].includes(envOverride.toLowerCase())
-  }
   return speculationEnabled !== false
 }
 
@@ -372,9 +359,11 @@ export function extractReadFilesFromMessages(
     for (const block of content) {
       if (!block || typeof block !== 'object') continue
       const candidate = block as Record<string, unknown>
+      // Current turns use FileRead. The old spelling remains here only while
+      // reconstructing file state from persisted transcripts.
       if (
         candidate.type === 'tool_use' &&
-        candidate.name === 'Read' &&
+        (candidate.name === 'FileRead' || candidate.name === 'Read') &&
         typeof candidate.id === 'string'
       ) {
         const input = candidate.input

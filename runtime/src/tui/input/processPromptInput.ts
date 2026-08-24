@@ -64,7 +64,7 @@ import { escapeXml } from '../../utils/xml.js'
 import { queryCheckpoint } from '../../utils/queryProfiler.js'
 import { parseSlashCommand } from '../slash/slash-command-parsing.js'
 import { addInvokedSkill, getSessionId } from '../../bootstrap/state.js'
-import { parseToolListFromCLI } from '../../utils/permissions/permissionSetup.js'
+import { parseToolRuleStringsFromCLI } from '../../permissions/settings.js'
 import { registerSkillHooks } from '../../utils/hooks/registerSkillHooks.js'
 import { AdmissionDeniedError } from '../../budget/admission-client.js'
 import { runWithCurrentRuntimeSession } from '../../session/current-session.js'
@@ -419,7 +419,7 @@ export async function loadDollarSkillCommandForTurn(
     skillContent,
     allowedTools: isRepositoryControlledSkillSource(command.source)
       ? []
-      : parseToolListFromCLI(command.allowedTools ?? []),
+      : parseToolRuleStringsFromCLI(command.allowedTools ?? []),
     model: isRepositoryControlledSkillSource(command.source)
       ? undefined
       : command.model,

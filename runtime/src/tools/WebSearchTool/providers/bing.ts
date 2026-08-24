@@ -5,6 +5,8 @@
  */
 
 import type { SearchInput, SearchProvider } from './types.js'
+import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
+import { getProxyFetchOptions } from '../../../utils/proxy.js'
 import {
   applyDomainFilters,
   arrayField,
@@ -19,19 +21,24 @@ export const bingProvider: SearchProvider = {
   name: 'bing',
 
   isConfigured() {
-    return Boolean(process.env.BING_API_KEY)
+    return Boolean(getSelectedProviderEnvironment().BING_API_KEY)
   },
 
   async search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput> {
     const start = performance.now()
+    const environment = getSelectedProviderEnvironment()
 
     const url = new URL('https://api.bing.microsoft.com/v7.0/search')
     url.searchParams.set('q', input.query)
     url.searchParams.set('count', '15')
 
     const res = await fetch(url.toString(), {
-      headers: { 'Ocp-Apim-Subscription-Key': process.env.BING_API_KEY! },
+      headers: {
+        'Ocp-Apim-Subscription-Key':
+          environment.BING_API_KEY!,
+      },
       signal,
+      ...getProxyFetchOptions({ environment }),
     })
 
     if (!res.ok) {

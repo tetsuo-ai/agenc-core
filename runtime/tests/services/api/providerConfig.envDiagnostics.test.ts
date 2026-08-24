@@ -1,31 +1,22 @@
 import { afterEach, expect, mock, test } from 'bun:test'
 
-const originalEnv = {
-  AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,
-  AGENC_USE_MISTRAL: process.env.AGENC_USE_MISTRAL,
-  OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
-  OPENAI_MODEL: process.env.OPENAI_MODEL,
-  OPENAI_API_BASE: process.env.OPENAI_API_BASE,
-  MISTRAL_BASE_URL: process.env.MISTRAL_BASE_URL,
-  MISTRAL_MODEL: process.env.MISTRAL_MODEL,
-}
-
-function restoreEnv(key: string, value: string | undefined): void {
-  if (value === undefined) {
-    delete process.env[key]
-  } else {
-    process.env[key] = value
+function providerSelection(
+  provider: string,
+  model: string,
+  overrides: Readonly<Record<string, string | undefined>>,
+) {
+  return {
+    provider,
+    model,
+    environment: Object.freeze({
+      AGENC_PROVIDER: provider,
+      AGENC_MODEL: model,
+      ...overrides,
+    }),
   }
 }
 
 afterEach(() => {
-  restoreEnv('AGENC_USE_OPENAI', originalEnv.AGENC_USE_OPENAI)
-  restoreEnv('AGENC_USE_MISTRAL', originalEnv.AGENC_USE_MISTRAL)
-  restoreEnv('OPENAI_BASE_URL', originalEnv.OPENAI_BASE_URL)
-  restoreEnv('OPENAI_MODEL', originalEnv.OPENAI_MODEL)
-  restoreEnv('OPENAI_API_BASE', originalEnv.OPENAI_API_BASE)
-  restoreEnv('MISTRAL_BASE_URL', originalEnv.MISTRAL_BASE_URL)
-  restoreEnv('MISTRAL_MODEL', originalEnv.MISTRAL_MODEL)
   mock.restore()
 })
 
@@ -35,15 +26,14 @@ test('logs a warning when OPENAI_BASE_URL is literal undefined', async () => {
     logForDebugging: debugSpy,
   }))
 
-  process.env.AGENC_USE_OPENAI = '1'
-  process.env.OPENAI_BASE_URL = 'undefined'
-  process.env.OPENAI_MODEL = 'gpt-4o'
-  delete process.env.OPENAI_API_BASE
-
   const nonce = `${Date.now()}-${Math.random()}`
   const { resolveProviderRequest } = await import(`../../../src/services/api/providerConfig.ts?ts=${nonce}`)
 
-  const resolved = resolveProviderRequest()
+  const resolved = resolveProviderRequest(
+    providerSelection('openai', 'gpt-4o', {
+      OPENAI_BASE_URL: 'undefined',
+    }),
+  )
 
   expect(resolved.baseUrl).toBe('https://api.openai.com/v1')
 
@@ -63,16 +53,15 @@ test('does not warn for OPENAI_API_BASE when OPENAI_BASE_URL is active', async (
     logForDebugging: debugSpy,
   }))
 
-  process.env.AGENC_USE_OPENAI = '1'
-  delete process.env.AGENC_USE_MISTRAL
-  process.env.OPENAI_BASE_URL = 'http://127.0.0.1:11434/v1'
-  process.env.OPENAI_MODEL = 'qwen2.5-coder:7b'
-  process.env.OPENAI_API_BASE = 'undefined'
-
   const nonce = `${Date.now()}-${Math.random()}`
   const { resolveProviderRequest } = await import(`../../../src/services/api/providerConfig.ts?ts=${nonce}`)
 
-  const resolved = resolveProviderRequest()
+  const resolved = resolveProviderRequest(
+    providerSelection('openai', 'qwen2.5-coder:7b', {
+      OPENAI_BASE_URL: 'http://127.0.0.1:11434/v1',
+      OPENAI_API_BASE: 'undefined',
+    }),
+  )
 
   expect(resolved.baseUrl).toBe('http://127.0.0.1:11434/v1')
 
@@ -91,16 +80,14 @@ test('uses OPENAI_API_BASE as fallback in mistral mode when MISTRAL_BASE_URL is 
     logForDebugging: debugSpy,
   }))
 
-  delete process.env.AGENC_USE_OPENAI
-  process.env.AGENC_USE_MISTRAL = '1'
-  delete process.env.MISTRAL_BASE_URL
-  process.env.MISTRAL_MODEL = 'mistral-medium-latest'
-  process.env.OPENAI_API_BASE = 'http://127.0.0.1:11434/v1'
-
   const nonce = `${Date.now()}-${Math.random()}`
   const { resolveProviderRequest } = await import(`../../../src/services/api/providerConfig.ts?ts=${nonce}`)
 
-  const resolved = resolveProviderRequest()
+  const resolved = resolveProviderRequest(
+    providerSelection('mistral', 'mistral-medium-latest', {
+      OPENAI_API_BASE: 'http://127.0.0.1:11434/v1',
+    }),
+  )
 
   expect(resolved.baseUrl).toBe('http://127.0.0.1:11434/v1')
   expect(debugSpy.mock.calls).toHaveLength(0)

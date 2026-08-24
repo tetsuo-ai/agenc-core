@@ -1,3 +1,5 @@
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
+
 /**
  * Compresses old tool_result content for stateless provider-compatible providers
  * (Copilot, Mistral, Ollama). Preserves all conversation structure — tool_use,
@@ -37,13 +39,19 @@ const DEFAULT_CONTEXT_WINDOW = 128_000
 const DEFAULT_MAX_OUTPUT_TOKENS = 8_000
 const MCP_TOOL_PREFIX = 'mcp__'
 
+// Canonical live names plus explicit old-transcript spellings. This module
+// only rewrites stored model history; it is not a tool catalog or dispatcher.
 const COMPACTABLE_TOOLS = new Set<string>([
+  'FileRead',
   'Read',
+  'exec_command',
+  'system.bash',
   'Bash',
   'PowerShell',
   'Grep',
   'Glob',
   'WebSearch',
+  'web_fetch',
   'WebFetch',
   'Edit',
   'Write',
@@ -82,8 +90,13 @@ function positiveIntegerEnv(value: string | undefined): number | undefined {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
 }
 
-function contextWindowForModel(model: string): number {
-  const envWindow = positiveIntegerEnv(process.env.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW)
+function contextWindowForModel(
+  model: string,
+  environment: ProviderEnvironment,
+): number {
+  const envWindow = positiveIntegerEnv(
+    environment.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW,
+  )
   if (envWindow !== undefined) return envWindow
 
   const name = model.toLowerCase()
@@ -96,13 +109,16 @@ function contextWindowForModel(model: string): number {
   return DEFAULT_CONTEXT_WINDOW
 }
 
-function getEffectiveContextWindowSize(model: string): number {
+function getEffectiveContextWindowSize(
+  model: string,
+  environment: ProviderEnvironment,
+): number {
   const reservedTokensForSummary = Math.min(
-    positiveIntegerEnv(process.env.AGENC_MAX_OUTPUT_TOKENS) ??
+    positiveIntegerEnv(environment.AGENC_MAX_OUTPUT_TOKENS) ??
       DEFAULT_MAX_OUTPUT_TOKENS,
     MAX_OUTPUT_TOKENS_FOR_SUMMARY,
   )
-  const contextWindow = contextWindowForModel(model)
+  const contextWindow = contextWindowForModel(model, environment)
   const effectiveContext = contextWindow - reservedTokensForSummary
   return Math.max(
     effectiveContext,
@@ -266,17 +282,15 @@ function shouldCompressBlock(
 export function compressToolHistory<T extends AnyMessage>(
   messages: T[],
   model: string,
+  environment: ProviderEnvironment,
 ): T[] {
   // Master kill-switch. Returns the original reference so callers skip a
   // defensive copy when the feature is disabled.
-  if (
-    isTruthyEnv(process.env.DISABLE_TOOL_HISTORY_COMPRESSION) ||
-    isTruthyEnv(process.env.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION)
-  ) {
+  if (isTruthyEnv(environment.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION)) {
     return messages
   }
 
-  const tiers = getTiers(getEffectiveContextWindowSize(model))
+  const tiers = getTiers(getEffectiveContextWindowSize(model, environment))
 
   const toolResultIndices = indexToolResultMessages(messages)
   const total = toolResultIndices.length

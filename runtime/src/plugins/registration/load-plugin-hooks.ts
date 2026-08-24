@@ -92,10 +92,6 @@ export async function loadPluginHooks(
   return validateHooksConfig(merged);
 }
 
-export function clearPluginHookCache(): void {
-  // Hook loading is uncached; this keeps the registration cache API uniform.
-}
-
 export async function registerPluginHooks(
   runtime: Pick<ConfiguredHooksRuntime, "load">,
   options: PluginHookRegistrationOptions = {},

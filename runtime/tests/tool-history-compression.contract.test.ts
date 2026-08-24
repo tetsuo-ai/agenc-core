@@ -2,16 +2,21 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import {
-  compressToolHistory,
+  compressToolHistory as compressToolHistoryImpl,
   getTiers,
 } from "../src/services/api/compressToolHistory.js";
+
+function compressToolHistory<
+  T extends Parameters<typeof compressToolHistoryImpl>[0],
+>(messages: T, model: string): T {
+  return compressToolHistoryImpl(messages, model, { ...process.env }) as T;
+}
 
 type Block = Record<string, unknown>;
 type Msg = { role: string; content: Block[] | string };
 
 const originalFetch = globalThis.fetch;
 const originalEnv = {
-  DISABLE_TOOL_HISTORY_COMPRESSION: process.env.DISABLE_TOOL_HISTORY_COMPRESSION,
   AGENC_DISABLE_TOOL_HISTORY_COMPRESSION:
     process.env.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION,
   AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW:
@@ -29,7 +34,6 @@ function restoreEnv(): void {
 }
 
 beforeEach(() => {
-  delete process.env.DISABLE_TOOL_HISTORY_COMPRESSION;
   delete process.env.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION;
   delete process.env.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW;
 });

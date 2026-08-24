@@ -6,8 +6,8 @@ import { SUBPROCESS_SECRET_ENV, subprocessEnv } from 'src/utils/subprocessEnv.js
 import { SECRET_ENV_KEYS } from 'src/utils/providerSecrets.js'
 
 // Security regression: the env handed to every Bash / MCP-stdio / hook /
-// shell-snapshot / LSP child goes through subprocessEnv(). By DEFAULT (with
-// AGENC_SUBPROCESS_ENV_SCRUB unset) the agent's provider keys and CI/cloud
+// shell-snapshot / LSP child goes through subprocessEnv(). By default the
+// agent's provider keys and CI/cloud
 // credentials must NOT reach those children — provider calls happen in-process,
 // so a model-run or prompt-injected `printenv` must not be able to exfiltrate
 // them. Benign vars (PATH) must still pass through so subprocesses can run.
@@ -31,7 +31,6 @@ const SECRETS: Record<string, string> = {
 
 const TOUCHED_KEYS = [
   ...Object.keys(SECRETS),
-  'AGENC_SUBPROCESS_ENV_SCRUB',
   'AGENC_SUBPROCESS_ENV_NO_SCRUB',
   'INPUT_ANTHROPIC_API_KEY',
 ]
@@ -61,10 +60,8 @@ afterEach(() => {
   }
 })
 
-describe('subprocessEnv default-scrub (no AGENC_SUBPROCESS_ENV_SCRUB)', () => {
+describe('subprocessEnv default scrub', () => {
   it('strips provider keys + cloud/CI tokens from the child env by default', () => {
-    expect(process.env.AGENC_SUBPROCESS_ENV_SCRUB).toBeUndefined()
-
     const childEnv = subprocessEnv()
 
     for (const key of Object.keys(SECRETS)) {
@@ -107,6 +104,12 @@ describe('subprocessEnv default-scrub (no AGENC_SUBPROCESS_ENV_SCRUB)', () => {
     const childEnv = subprocessEnv()
     // Opt-out restores inheritance for trusted setups that need it.
     expect(childEnv.ANTHROPIC_API_KEY).toBe('sk-ant-secret')
+  })
+
+  it('rejects the removed explicit scrub switch even when falsy', () => {
+    expect(() =>
+      subprocessEnv({ AGENC_SUBPROCESS_ENV_SCRUB: '0' }),
+    ).toThrow(/obsolete configuration environment variable.*AGENC_SUBPROCESS_ENV_SCRUB/u)
   })
 
   // NOT name-enumerated: iterate the ACTUAL denylist so a new entry is

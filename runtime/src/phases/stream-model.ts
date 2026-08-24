@@ -68,7 +68,7 @@ type WireReasoningEffort = NonNullable<LLMChatOptions["reasoningEffort"]>;
 /**
  * Sessions created without an explicit reasoning effort — every
  * daemon-spawned interactive session today — must still honor the
- * persisted `effortLevel` from user settings. Without this fallback the
+ * persisted `reasoning_effort` from canonical config. Without this fallback the
  * provider default applies and grok-4.5 burns ~16k hidden reasoning
  * tokens per trivial reply at xAI's HIGH default (measured: ~2m30s for
  * a 150-word answer, matching the user's "grok is fucking slow").
@@ -229,7 +229,6 @@ function buildProviderOptions(
     reasoningSummary: ctx.reasoningSummary,
     modelVerbosity: ctx.modelVerbosity,
     serviceTier:
-      ctx.serviceTier === "fast" ||
       ctx.serviceTier === "priority" ||
       ctx.serviceTier === "flex"
         ? ctx.serviceTier

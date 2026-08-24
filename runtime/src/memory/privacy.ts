@@ -22,7 +22,7 @@ import {
 } from './paths.js'
 import * as teamMemPathsModule from '../memdir/teamMemPaths.js'
 import { isAnyAgentMemoryPath } from '../tools/AgentTool/agentMemory.js'
-import { getAgenCConfigHomeDir } from '../utils/envUtils.js'
+import { getAgenCHomeDir } from '../utils/envUtils.js'
 import { capitalize } from '../utils/stringUtils.js'
 import {
   posixPathToWindowsPath,
@@ -77,10 +77,10 @@ function isSameOrChildPath(candidate: string, base: string): boolean {
  */
 export function detectSessionFileType(
   filePath: string,
+  configHomeDir = getAgenCHomeDir(),
 ): SessionFileType | null {
-  const configDir = getAgenCConfigHomeDir()
   const normalized = toComparablePath(filePath)
-  if (!isSameOrChildPath(filePath, configDir)) {
+  if (!isSameOrChildPath(filePath, configHomeDir)) {
     return null
   }
   if (normalized.includes('/session-memory/') && normalized.endsWith('.md')) {
@@ -195,7 +195,7 @@ export function isMemoryDirectory(dirPath: string): boolean {
     }
   }
 
-  const underConfig = isSameOrChildPath(normalizedPath, getAgenCConfigHomeDir())
+  const underConfig = isSameOrChildPath(normalizedPath, getAgenCHomeDir())
   const underMemoryBase = isSameOrChildPath(normalizedPath, getMemoryBaseDir())
 
   if (!underConfig && !underMemoryBase) {
@@ -218,7 +218,7 @@ export function isMemoryDirectory(dirPath: string): boolean {
  * path tokens and checking them against memory path predicates.
  */
 export function isShellCommandTargetingMemory(command: string): boolean {
-  const configDir = getAgenCConfigHomeDir()
+  const configDir = getAgenCHomeDir()
   const memoryBase = getMemoryBaseDir()
   const autoMemDir = isAutoMemoryEnabled()
     ? getAutoMemPath().replace(/[/\\]+$/, '')

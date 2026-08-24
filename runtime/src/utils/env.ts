@@ -1,57 +1,11 @@
 import memoize from 'lodash-es/memoize.js'
-import { homedir } from 'os'
-import { join } from 'path'
-import { fileSuffixForOauthConfig } from '../constants/oauth.js'
 import { isRunningWithBun } from './bundledMode.js'
-import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
+import { isEnvTruthy } from './envUtils.js'
 import { findExecutable } from './findExecutable.js'
 import { getFsImplementation } from './fsOperations.js'
 import { which } from './which.js'
 
 type Platform = 'win32' | 'darwin' | 'linux'
-
-// Config and data paths
-export const getGlobalAgenCFile = memoize((): string => {
-  // Compatibility fallback for backwards compatibility
-  if (
-    getFsImplementation().existsSync(
-      join(getAgenCConfigHomeDir(), '.config.json'),
-    )
-  ) {
-    return join(getAgenCConfigHomeDir(), '.config.json')
-  }
-
-  const oauthSuffix = fileSuffixForOauthConfig()
-  const filename = `.agenc${oauthSuffix}.json`
-
-  // Resolve the secrets-bearing global config from the SAME home that
-  // config.toml / auth.json use: AGENC_CONFIG_DIR (explicit per-file override)
-  // > AGENC_HOME > $HOME. Previously AGENC_HOME was ignored here, so a custom
-  // AGENC_HOME relocated config.toml + auth.json but stranded this file at
-  // $HOME/.agenc.json — silently splitting provider keys, MCP servers, and
-  // global settings across two directories.
-  const configDirOverride = process.env.AGENC_CONFIG_DIR
-  const agencHome = process.env.AGENC_HOME
-  const configDir = configDirOverride || agencHome || homedir()
-  const resolvedPath = join(configDir, filename)
-
-  // Backward-compat: an install that set AGENC_HOME before this fix wrote the
-  // file to the legacy $HOME/.agenc.json. If the unified location doesn't exist
-  // yet but that legacy file does, keep reading it so the upgrade doesn't look
-  // like the provider keys were dropped. Scoped to the AGENC_HOME case so the
-  // explicit AGENC_CONFIG_DIR path and the no-env default are unaffected.
-  if (!configDirOverride && agencHome) {
-    const legacyPath = join(homedir(), filename)
-    if (
-      legacyPath !== resolvedPath &&
-      !getFsImplementation().existsSync(resolvedPath) &&
-      getFsImplementation().existsSync(legacyPath)
-    ) {
-      return legacyPath
-    }
-  }
-  return resolvedPath
-})
 
 const hasInternetAccess = memoize(async (): Promise<boolean> => {
   try {

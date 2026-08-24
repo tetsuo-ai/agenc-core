@@ -36,7 +36,7 @@ import {
   isAssistantAPIErrorMessage,
 } from "./messages.js";
 import { createDenialTrackingState } from "./permissions/denialTracking.js";
-import { parseToolListFromCLI } from "./permissions/permissionSetup.js";
+import { parseToolRuleStringsFromCLI } from "../permissions/settings.js";
 import { recordSidechainTranscript } from "./sessionStorage.js";
 import type { SystemPrompt } from "./systemPromptType.js";
 import { captureToolQueueOwner } from "./queueOwnership.js";
@@ -212,7 +212,7 @@ export async function prepareForkedCommandContext(
     .join("\n");
 
   // Parse and prepare allowed tools
-  const allowedTools = parseToolListFromCLI([
+  const allowedTools = parseToolRuleStringsFromCLI([
     ...(isRepositoryControlledSkillSource(command.source)
       ? []
       : (command.allowedTools ?? [])),

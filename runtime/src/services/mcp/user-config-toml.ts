@@ -1,11 +1,6 @@
-import { join } from "node:path";
-
 import { AgenCConfigEditsBuilder } from "../../config/edit.js";
-import { resolveAgencHome } from "../../config/env.js";
-import { loadConfig, parseToml } from "../../config/loader.js";
-import { getErrnoCode } from "../../utils/errors.js";
-import { getFsImplementation } from "../../utils/fsOperations.js";
-import { stripBOM } from "../../utils/jsonRead.js";
+import { mergeConfigLayerSnapshots } from "../../config/repository.js";
+import type { CanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
 import type {
   McpServerConfig,
   ScopedMcpServerConfig,
@@ -31,7 +26,7 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   );
 }
 
-function toCanonicalMcpServerConfig(
+export function serviceMcpServerToCanonicalConfig(
   config: McpServerConfig,
 ): Record<string, unknown> {
   const raw = { ...(config as Record<string, unknown>) };
@@ -52,7 +47,7 @@ function toCanonicalMcpServerConfig(
       delete raw.url;
       return omitUndefined({
         ...raw,
-        transport: type,
+        transport: type === "ws" ? "websocket" : type,
         endpoint: url,
       });
     }
@@ -63,14 +58,15 @@ function toCanonicalMcpServerConfig(
   }
 }
 
-function toServiceMcpServerConfig(config: unknown): McpServerConfig {
+export function canonicalMcpServerToServiceConfig(
+  config: unknown,
+): McpServerConfig {
   const raw = isPlainRecord(config) ? { ...config } : {};
   const transport = raw.transport;
 
   if (
     transport === "sse" ||
     transport === "http" ||
-    transport === "ws" ||
     transport === "websocket"
   ) {
     const endpoint = raw.endpoint;
@@ -90,68 +86,26 @@ function toServiceMcpServerConfig(config: unknown): McpServerConfig {
   }) as McpServerConfig;
 }
 
-function getUserMcpConfigTomlPath(): string {
-  return join(resolveAgencHome(process.env), "config.toml");
+function userMcpConfig(
+  authority: CanonicalSettingsAuthority,
+): Readonly<Record<string, unknown>> {
+  return mergeConfigLayerSnapshots(authority.sources("user"))?.mcp_servers ?? {};
 }
 
-export function getUserMcpConfigsFromToml(): {
+export function getUserMcpConfigsFromToml(
+  authority: CanonicalSettingsAuthority,
+): {
   servers: Record<string, ScopedMcpServerConfig>;
   errors: ValidationError[];
 } {
-  const filePath = getUserMcpConfigTomlPath();
-  let text: string;
-  try {
-    text = getFsImplementation().readFileSync(filePath, { encoding: "utf8" });
-  } catch (error) {
-    if (getErrnoCode(error) === "ENOENT") {
-      return { servers: {}, errors: [] };
-    }
-    return {
-      servers: {},
-      errors: [
-        {
-          file: filePath,
-          path: "mcp_servers",
-          message: `Failed to read config.toml: ${error}`,
-          mcpErrorMetadata: {
-            scope: "user",
-            severity: "fatal",
-          },
-        },
-      ],
-    };
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = parseToml(stripBOM(text));
-  } catch (error) {
-    return {
-      servers: {},
-      errors: [
-        {
-          file: filePath,
-          path: "mcp_servers",
-          message: `Invalid config.toml: ${error}`,
-          mcpErrorMetadata: {
-            scope: "user",
-            severity: "fatal",
-          },
-        },
-      ],
-    };
-  }
-
-  const rawServers = isPlainRecord(parsed) ? parsed.mcp_servers : undefined;
-  if (!isPlainRecord(rawServers)) {
-    return { servers: {}, errors: [] };
-  }
+  const filePath = authority.homeContext.configTomlPath;
+  const rawServers = userMcpConfig(authority);
 
   const servers: Record<string, ScopedMcpServerConfig> = {};
   const errors: ValidationError[] = [];
   for (const [name, config] of Object.entries(rawServers)) {
     const parsed = McpServerConfigSchema().safeParse(
-      toServiceMcpServerConfig(config),
+      canonicalMcpServerToServiceConfig(config),
     );
     if (!parsed.success) {
       errors.push({
@@ -171,29 +125,31 @@ export function getUserMcpConfigsFromToml(): {
   return { servers, errors };
 }
 
-export async function getUserMcpServersFromToml(): Promise<
+export async function getUserMcpServersFromToml(
+  authority: CanonicalSettingsAuthority,
+): Promise<
   Readonly<Record<string, unknown>>
 > {
-  const { config } = await loadConfig({
-    home: resolveAgencHome(process.env),
-    onWarn: () => {},
-  });
-  return config.mcp_servers ?? {};
+  return userMcpConfig(authority);
 }
 
 export async function addUserMcpServerToToml(
   name: string,
   config: McpServerConfig,
+  authority: CanonicalSettingsAuthority,
 ): Promise<void> {
-  await new AgenCConfigEditsBuilder(resolveAgencHome(process.env))
-    .setMcpServer(name, toCanonicalMcpServerConfig(config))
+  await new AgenCConfigEditsBuilder(authority.homeContext.path)
+    .setMcpServer(name, serviceMcpServerToCanonicalConfig(config))
     .apply();
+  await authority.reload();
 }
 
 export async function removeUserMcpServerFromToml(
   name: string,
+  authority: CanonicalSettingsAuthority,
 ): Promise<void> {
-  await new AgenCConfigEditsBuilder(resolveAgencHome(process.env))
+  await new AgenCConfigEditsBuilder(authority.homeContext.path)
     .removeMcpServer(name)
     .apply();
+  await authority.reload();
 }

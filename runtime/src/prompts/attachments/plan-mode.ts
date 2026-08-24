@@ -44,9 +44,8 @@
  * `getPlanFilePath(toolUseContext.agentId)` call. AgenC's
  * `getPlanFilePath(ctx)` keys on `{sessionId, agencHome}`. We derive
  * `sessionId` from `(opts.sessionKey as Session).conversationId` when
- * present, falling back to `"default"`. `agencHome` is read from
- * `process.env.AGENC_HOME` to match `resolveAgencHome` in
- * `planning/plan-files.ts`.
+ * present, falling back to `"default"`. `agencHome` comes from the canonical
+ * HomeContext shared with `planning/plan-files.ts`.
  *
  * @module
  */
@@ -171,13 +170,9 @@ function planFileContext(opts: GetAttachmentsOptions): {
     typeof sessionLike.conversationId === "string"
       ? sessionLike.conversationId
       : undefined;
-  const agencHome = process.env.AGENC_HOME;
   return {
     sessionId,
-    agencHome:
-      typeof agencHome === "string" && agencHome.trim().length > 0
-        ? agencHome
-        : undefined,
+    agencHome: opts.agencHome,
   };
 }
 

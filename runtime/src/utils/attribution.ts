@@ -1,5 +1,4 @@
 import { stat } from 'fs/promises'
-import { getClientType } from '../bootstrap/state.js'
 import {
   getRemoteSessionUrl,
   isRemoteSessionLocal,
@@ -29,6 +28,8 @@ import { getTranscriptPath } from './sessionStorage.js'
 import { readTranscriptForLoad } from './sessionStoragePortable.js'
 import { getExecutionAuthoritySettings } from './settings/settings.js'
 import { isUndercover } from './undercover.js'
+import { getSelectedProviderEnvironment } from './model/providers.js'
+import { isSessionRemoteMode } from '../session/runtime-options.js'
 
 
 // ---- donor-purge stubs ----
@@ -52,14 +53,15 @@ export type AttributionTexts = {
  * - Remote mode: returns session URL for attribution
  */
 export function getAttributionTexts(): AttributionTexts {
-  if (process.env.USER_TYPE === 'ant' && isUndercover()) {
+  const environment = getSelectedProviderEnvironment()
+  if (environment.USER_TYPE === 'ant' && isUndercover()) {
     return { commit: '', pr: '' }
   }
 
-  if (getClientType() === 'remote') {
-    const remoteSessionId = process.env.AGENC_REMOTE_SESSION_ID
+  if (isSessionRemoteMode()) {
+    const remoteSessionId = environment.AGENC_REMOTE_SESSION_ID
     if (remoteSessionId) {
-      const ingressUrl = process.env.SESSION_INGRESS_URL
+      const ingressUrl = environment.SESSION_INGRESS_URL
       // Skip for local dev - URLs won't persist
       if (!isRemoteSessionLocal(remoteSessionId, ingressUrl)) {
         const sessionUrl = getRemoteSessionUrl(remoteSessionId, ingressUrl)
@@ -74,17 +76,11 @@ export function getAttributionTexts(): AttributionTexts {
 
   const settings = getExecutionAuthoritySettings()
 
-  // New attribution setting takes precedence over deprecated includeCoAuthoredBy
   if (settings.attribution) {
     return {
       commit: settings.attribution.commit ?? defaultCommit,
       pr: settings.attribution.pr ?? defaultAttribution,
     }
-  }
-
-  // Backward compatibility: deprecated includeCoAuthoredBy setting
-  if (settings.includeCoAuthoredBy === false) {
-    return { commit: '', pr: '' }
   }
 
   return { commit: defaultCommit, pr: defaultAttribution }
@@ -286,14 +282,15 @@ async function getTranscriptStats(): Promise<{
 export async function getEnhancedPRAttribution(
   getAppState: () => AppState,
 ): Promise<string> {
-  if (process.env.USER_TYPE === 'ant' && isUndercover()) {
+  const environment = getSelectedProviderEnvironment()
+  if (environment.USER_TYPE === 'ant' && isUndercover()) {
     return ''
   }
 
-  if (getClientType() === 'remote') {
-    const remoteSessionId = process.env.AGENC_REMOTE_SESSION_ID
+  if (isSessionRemoteMode()) {
+    const remoteSessionId = environment.AGENC_REMOTE_SESSION_ID
     if (remoteSessionId) {
-      const ingressUrl = process.env.SESSION_INGRESS_URL
+      const ingressUrl = environment.SESSION_INGRESS_URL
       // Skip for local dev - URLs won't persist
       if (!isRemoteSessionLocal(remoteSessionId, ingressUrl)) {
         return getRemoteSessionUrl(remoteSessionId, ingressUrl)
@@ -307,11 +304,6 @@ export async function getEnhancedPRAttribution(
   // If user has custom PR attribution, use that
   if (settings.attribution?.pr) {
     return settings.attribution.pr
-  }
-
-  // Backward compatibility: deprecated includeCoAuthoredBy setting
-  if (settings.includeCoAuthoredBy === false) {
-    return ''
   }
 
   const defaultAttribution = ''

@@ -752,8 +752,8 @@ export function userFacingName(input: Partial<{
   team_name: string;
 }> | undefined): string {
   if (input?.subagent_type && canonicalAgentRoleName(input.subagent_type) !== getDefaultAgentRole().name) {
-    // Display "worker" agents as "Agent" for cleaner UI
-    if (input.subagent_type === 'worker') {
+    // Display the default execution role as "Agent" for cleaner UI.
+    if (input.subagent_type === 'runner') {
       return 'Agent';
     }
     return input.subagent_type;
@@ -852,5 +852,5 @@ function extractLastToolInfo(progressMessages: ProgressMessage<Progress>[], tool
   return null;
 }
 function isCustomSubagentType(subagentType: string | undefined): subagentType is string {
-  return !!subagentType && canonicalAgentRoleName(subagentType) !== getDefaultAgentRole().name && subagentType !== 'worker';
+  return !!subagentType && canonicalAgentRoleName(subagentType) !== getDefaultAgentRole().name && subagentType !== 'runner';
 }

@@ -22,6 +22,11 @@ import type { Tool } from "./_deps/tools-types.js";
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
 import { createMCPConnection } from "./connection.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
+import {
+  EMPTY_MCP_REQUEST_ENVIRONMENT,
+  snapshotMcpRequestEnvironment,
+} from "./environment.js";
 import { createToolBridge } from "./tools.js";
 import {
   ResilientMCPBridge,
@@ -143,7 +148,7 @@ function toScopedMcpServerConfig(
     };
   }
 
-  if (transport === "websocket" || transport === "ws") {
+  if (transport === "websocket") {
     return {
       type: "ws",
       url: config.endpoint ?? "",
@@ -224,6 +229,7 @@ function readClientInstructions(client: unknown): string | undefined {
 export class MCPManager {
   private configs: MCPServerConfig[];
   private readonly logger: Logger;
+  private readonly environment: ProviderEnvironment;
   private readonly bridges: Map<string, MCPToolBridge> = new Map();
   private readonly resourceBridges: Map<string, MCPResourceBridge> = new Map();
   private readonly promptBridges: Map<string, MCPPromptBridge> = new Map();
@@ -264,9 +270,14 @@ export class MCPManager {
   private readonly retainedCleanup = new Map<string, RetainedServerCleanup>();
   private shutdownTask: Promise<ReadonlyArray<unknown>> | undefined;
 
-  constructor(configs: MCPServerConfig[], logger: Logger = silentLogger) {
+  constructor(
+    configs: MCPServerConfig[],
+    logger: Logger = silentLogger,
+    environment: ProviderEnvironment = EMPTY_MCP_REQUEST_ENVIRONMENT,
+  ) {
     this.configs = configs;
     this.logger = logger;
+    this.environment = snapshotMcpRequestEnvironment(environment);
     this.resetConnectionStates();
   }
 
@@ -1112,6 +1123,7 @@ export class MCPManager {
         this.elicitationHandlers,
         this.samplingHandlers,
         this.sandboxExecutionBroker,
+        this.environment,
       );
     } catch (error) {
       if (isMCPTransportCleanupFailure(error)) {
@@ -1174,6 +1186,7 @@ export class MCPManager {
         ...(this.sandboxExecutionBroker !== undefined
           ? { sandboxExecutionBroker: this.sandboxExecutionBroker }
           : {}),
+        environment: this.environment,
         onCleanupFailure: (error) => {
           this.failClosedAutomaticReconnect(config.name, bridge, error);
         },

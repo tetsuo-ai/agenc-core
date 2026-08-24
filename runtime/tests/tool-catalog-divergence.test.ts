@@ -21,6 +21,7 @@ import { describe, expect, it } from "vitest";
 
 import { getAllBaseTools } from "../src/tools.js";
 import { buildToolRegistry } from "../src/tool-registry.js";
+import { runWithStartupProviderSelection } from "../src/utils/model/providers.js";
 
 // getAllBaseTools lazy-requires SendMessageTool by its emitted .js path
 // (a CJS cycle-breaker); under vitest only the .ts source exists, so the
@@ -74,7 +75,6 @@ const KNOWN_DUAL_IMPLEMENTATIONS = [
   "TaskStop",
   "TaskUpdate",
   "TodoWrite",
-  "WebFetch",
   "WebSearch",
   "Write",
   "system.bash",
@@ -125,7 +125,9 @@ describe("tool catalog divergence guard", () => {
   });
   const liveByName = new Map(registry.tools.map((tool) => [tool.name, tool]));
   const legacyByName = new Map(
-    getAllBaseTools().map((tool) => [tool.name, tool]),
+    runWithStartupProviderSelection({ provider: "grok", model: "grok-4.6", environment: { ...process.env } }, () => getAllBaseTools()).map(
+      (tool) => [tool.name, tool],
+    ),
   );
 
   it("pins the set of dual-implemented tool names", () => {

@@ -1,5 +1,7 @@
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { ConfigStore } from '../config/store.js'
+import { runWithCanonicalSettingsAuthority } from '../utils/settings/canonicalAuthority.js'
 
 vi.mock('bun:bundle', () => ({ feature: () => false }))
 vi.mock('../tools.js', () => ({}))
@@ -91,9 +93,12 @@ describe('project-memory API', () => {
   })
 
   it('classifies session files through the canonical detector', () => {
-    const oldConfigDir = process.env.AGENC_CONFIG_DIR
-    process.env.AGENC_CONFIG_DIR = '/tmp/agenc-test-config'
-    try {
+    const store = new ConfigStore({
+      home: '/tmp/agenc-test-config',
+      env: { AGENC_HOME: '/tmp/agenc-test-config' },
+      cwd: '/tmp',
+    })
+    runWithCanonicalSettingsAuthority(store, () => {
       expect(
         detectSessionFileType(
           '/tmp/agenc-test-config/session-memory/summary.md',
@@ -105,9 +110,6 @@ describe('project-memory API', () => {
       expect(detectSessionFileType('/tmp/other/session-memory/summary.md')).toBe(
         null,
       )
-    } finally {
-      if (oldConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR
-      else process.env.AGENC_CONFIG_DIR = oldConfigDir
-    }
+    })
   })
 })

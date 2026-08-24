@@ -76,7 +76,8 @@ export interface Continue {
  * Terminal — why the run-turn generator returned. Mirrors agenc
  * query.ts terminal reasons: 'completed', 'blocking_limit',
  * 'prompt_too_long', 'image_error', 'model_error', 'aborted_streaming',
- * 'stop_hook_prevented', 'aborted_tools', 'hook_stopped', 'max_turns'.
+ * 'stop_hook_prevented', 'aborted_tools', 'hook_stopped', 'max_turns',
+ * 'max_budget_usd'.
  */
 export type TerminalReason =
   | "completed"
@@ -89,6 +90,7 @@ export type TerminalReason =
   | "stop_hook_prevented"
   | "hook_stopped"
   | "max_turns"
+  | "max_budget_usd"
   | "cancelled"
   | "no_progress"; // behavioral backstop (semantic non-termination, goal #3)
 

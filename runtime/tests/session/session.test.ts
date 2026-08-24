@@ -57,11 +57,7 @@ import {
   type PermissionMode,
   type ToolPermissionContext,
 } from "../permissions/types.js";
-import type {
-  LLMContentPart,
-  LLMMessage,
-  LLMProvider,
-} from "../llm/types.js";
+import type { LLMContentPart, LLMMessage, LLMProvider } from "../llm/types.js";
 import { ProviderHttpClient } from "../llm/client.js";
 import {
   createProvider,
@@ -96,10 +92,7 @@ import { CompactionReconstructionRequiredError } from "../services/compact/trans
 // ─────────────────────────────────────────────────────────────────────
 
 function mkFeatures(): ManagedFeatures {
-  return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
-  };
+  return {};
 }
 
 function mkConfig(): Config {
@@ -348,20 +341,20 @@ describe("SessionServices.permissionModeRegistry default bootstrap", () => {
       config: {
         ...mkConfig(),
         agentRoles: [
-          { name: "worker", description: "Implementation work" },
-          { name: "explorer", description: "" },
+          { name: "runner", description: "Implementation work" },
+          { name: "scanner", description: "" },
         ],
       },
     });
 
     expect(session.agentDefinitions.activeAgents).toEqual([
       expect.objectContaining({
-        agentType: "worker",
+        agentType: "runner",
         whenToUse: "Implementation work",
         agentRoleFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
       }),
       expect.objectContaining({
-        agentType: "explorer",
+        agentType: "scanner",
         agentRoleFingerprint: expect.stringMatching(/^[a-f0-9]{64}$/u),
       }),
     ]);
@@ -376,7 +369,7 @@ describe("Session.setPendingProviderSwitch", () => {
   it("assigns a well-typed pending switch record", () => {
     const session = buildSession();
     const pending: PendingProviderSwitch = {
-      provider: "xai",
+      provider: "grok",
       model: "grok-4.3",
     };
     session.setPendingProviderSwitch(pending);
@@ -386,7 +379,7 @@ describe("Session.setPendingProviderSwitch", () => {
   it("clears the slot when passed null", () => {
     const session = buildSession();
     session.setPendingProviderSwitch({
-      provider: "xai",
+      provider: "grok",
       model: "grok-4.3",
     });
     expect(session.pendingProviderSwitch).not.toBeNull();
@@ -397,7 +390,7 @@ describe("Session.setPendingProviderSwitch", () => {
   it("round-trips the optional profile slot (T11 W2 extension)", () => {
     const session = buildSession();
     session.setPendingProviderSwitch({
-      provider: "xai",
+      provider: "grok",
       model: "grok-4.3",
       profile: "coding",
     });
@@ -762,7 +755,7 @@ describe("Session.consumePendingProviderSwitch", () => {
       },
     });
     session.setPendingProviderSwitch({
-      provider: "xai",
+      provider: "grok",
       model: "grok-4.3",
     });
 
@@ -841,7 +834,6 @@ describe("Session.consumePendingProviderSwitch", () => {
     await withEnv(
       {
         OPENAI_API_KEY: undefined,
-        TARGET_OPENAI_KEY: "openai-target",
       },
       async () => {
         const vendKey = vi.fn(() => {
@@ -865,13 +857,15 @@ describe("Session.consumePendingProviderSwitch", () => {
               apiKey: "test-key",
               model: "grok-4",
             }),
+            providerEnvironment: {
+              OPENAI_API_KEY: "openai-target",
+            },
             authBackend,
             authSubscriptionTier: "free",
             configStore: {
               current: () => ({
                 providers: {
                   openai: {
-                    api_key_env: "TARGET_OPENAI_KEY",
                     base_url: "http://127.0.0.1:8000/v1",
                     fallback: {
                       targets: [{ provider: "grok", model: "grok-4.3" }],
@@ -1790,9 +1784,9 @@ describe("Session.partialCompactFromMessage", () => {
       expect(result.event.type).toBe("history_replaced");
       expect(result.event.payload.messages.length).toBeGreaterThan(0);
       expect(
-        harness.store.readAll().some((item) =>
-          item.type === "compaction_committed"
-        ),
+        harness.store
+          .readAll()
+          .some((item) => item.type === "compaction_committed"),
       ).toBe(true);
       const history = session.snapshotHistoryMessages();
       const boundary = history.find(
@@ -1804,7 +1798,9 @@ describe("Session.partialCompactFromMessage", () => {
         expect.stringContaining("agenc_compaction_boundary_v1:"),
       );
       expect(
-        history.some((message) => message.content === sourceHistory[2]?.content),
+        history.some(
+          (message) => message.content === sourceHistory[2]?.content,
+        ),
       ).toBe(false);
     } finally {
       harness.close();
@@ -1832,11 +1828,7 @@ describe("Session.partialCompactFromMessage", () => {
     const sourceHistory: LLMMessage[] = [
       {
         role: "user",
-        content: [
-          { type: "text", text: "keep this" },
-          documentPart,
-          imagePart,
-        ],
+        content: [{ type: "text", text: "keep this" }, documentPart, imagePart],
       },
       {
         role: "user",
@@ -2113,15 +2105,18 @@ describe("Session.rollbackCompaction", () => {
   function rollbackStore() {
     return {
       isDegraded: false,
-      rollbackCompaction: vi.fn(() => ({
-        attempt_id: "attempt-rollback",
-        rollback_mode: "same_session" as const,
-        target_session_id: "conv-test",
-        source_history: [
-          { role: "user" as const, content: "source prompt" },
-          { role: "assistant" as const, content: "source answer" },
-        ],
-      }) as never),
+      rollbackCompaction: vi.fn(
+        () =>
+          ({
+            attempt_id: "attempt-rollback",
+            rollback_mode: "same_session" as const,
+            target_session_id: "conv-test",
+            source_history: [
+              { role: "user" as const, content: "source prompt" },
+              { role: "assistant" as const, content: "source answer" },
+            ],
+          }) as never,
+      ),
       recordProjectionFailure: vi.fn(),
       markCleanupPending: vi.fn(),
       markCleanupComplete: vi.fn(),
@@ -2156,9 +2151,7 @@ describe("Session.rollbackCompaction", () => {
       { role: "user", content: "source prompt" },
       { role: "assistant", content: "source answer" },
     ]);
-    expect(store.markCleanupComplete).toHaveBeenCalledWith(
-      "attempt-rollback",
-    );
+    expect(store.markCleanupComplete).toHaveBeenCalledWith("attempt-rollback");
     expect(store.recordProjectionFailure).not.toHaveBeenCalled();
   });
 
@@ -2184,13 +2177,13 @@ describe("Session.rollbackCompaction", () => {
     expect(store.recordProjectionFailure).not.toHaveBeenCalled();
 
     cleanupFails = false;
-    await expect(session.extendCompactionRollbackRetention({
-      attemptId: "attempt-rollback",
-      extendedUntilMs: Date.now() + 60_000,
-    })).resolves.toMatchObject({ ok: true });
-    expect(store.markCleanupComplete).toHaveBeenCalledWith(
-      "attempt-rollback",
-    );
+    await expect(
+      session.extendCompactionRollbackRetention({
+        attemptId: "attempt-rollback",
+        extendedUntilMs: Date.now() + 60_000,
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(store.markCleanupComplete).toHaveBeenCalledWith("attempt-rollback");
     expect(clearSearchIndexes).toHaveBeenCalledTimes(2);
   });
 
@@ -2201,9 +2194,11 @@ describe("Session.rollbackCompaction", () => {
     const projectionError = new Error("projection failed");
     vi.spyOn(session.state, "with").mockRejectedValueOnce(projectionError);
 
-    await expect(session.rollbackCompaction({
-      attemptId: "attempt-rollback",
-    })).rejects.toBeInstanceOf(CompactionReconstructionRequiredError);
+    await expect(
+      session.rollbackCompaction({
+        attemptId: "attempt-rollback",
+      }),
+    ).rejects.toBeInstanceOf(CompactionReconstructionRequiredError);
     expect(store.recordProjectionFailure).toHaveBeenCalledWith(
       "attempt-rollback",
       projectionError,

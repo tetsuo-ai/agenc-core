@@ -7,6 +7,7 @@ import {
 } from "./structured-output.js";
 import { resolveModelCapabilityHints } from "./registry/model-catalog.js";
 import { supportsGrokServerSideTools } from "./provider-native-search.js";
+import { normalizeProviderIdentity } from "../provider-identity.js";
 
 export interface ProviderModelCapabilities {
   readonly provider: string;
@@ -58,14 +59,6 @@ const registryState = new Map<
   string,
   { lastVerifiedAt: number; stale: boolean }
 >();
-
-export function normalizeProviderSlug(provider: string | undefined): string {
-  const normalized = provider?.trim().toLowerCase() ?? "";
-  if (normalized === "xai") {
-    return "grok";
-  }
-  return normalized;
-}
 
 interface ProviderCapabilityDefinition {
   readonly supportsToolUse: CapabilityFlagValue;
@@ -187,7 +180,7 @@ function buildCapabilities(
 }
 
 function capabilityRegistryKey(provider: string, model: string): string {
-  return `${normalizeProviderSlug(provider)}:${model.trim().toLowerCase()}`;
+  return `${normalizeProviderIdentity(provider, "capability registry") ?? ""}:${model.trim().toLowerCase()}`;
 }
 
 function applyCapabilityOverrides(
@@ -252,7 +245,7 @@ function isOpenAIAudioOutputModel(model: string): boolean {
 function isDeepSeekThinkingModel(model: string): boolean {
   return matchesModelFamily(
     model,
-    /(?:^|[/:])deepseek-reasoner(?:$|[-_.:])/,
+    /(?:^|[/:])deepseek-v4-(?:flash|pro)(?:$|[-_.:])/,
   );
 }
 
@@ -522,7 +515,7 @@ export function resolveProviderModelCapabilities(input: {
   readonly model: string | undefined;
   readonly overrides?: ProviderCapabilityOverrides;
 }): ProviderModelCapabilities {
-  const provider = normalizeProviderSlug(input.provider);
+  const provider = normalizeProviderIdentity(input.provider, "capability resolution") ?? "";
   const model = input.model?.trim() ?? "";
   const definition = PROVIDER_CAPABILITIES[provider];
 
@@ -575,7 +568,7 @@ export function markCapabilityVerified(input: {
   readonly model: string | undefined;
   readonly verifiedAt?: number;
 }): ProviderCapabilityRegistryEntry {
-  const provider = normalizeProviderSlug(input.provider);
+  const provider = normalizeProviderIdentity(input.provider, "capability resolution") ?? "";
   const model = input.model?.trim() ?? "";
   registryState.set(capabilityRegistryKey(provider, model), {
     lastVerifiedAt: input.verifiedAt ?? Date.now(),
@@ -594,7 +587,7 @@ export function markCapabilityDrift(input: {
   readonly detectedAt?: number;
   readonly overrides?: ProviderCapabilityOverrides;
 }): ProviderCapabilityRegistryEntry {
-  const provider = normalizeProviderSlug(input.provider);
+  const provider = normalizeProviderIdentity(input.provider, "capability resolution") ?? "";
   const model = input.model?.trim() ?? "";
   registryState.set(capabilityRegistryKey(provider, model), {
     lastVerifiedAt: input.detectedAt ?? Date.now(),

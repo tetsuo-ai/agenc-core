@@ -3,6 +3,48 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 import { describe, expect, test, vi } from "vitest";
+import type { SecureStorageData } from "../utils/secureStorage/index.js";
+
+const secureStorageRecords = vi.hoisted(
+  () => new Map<string, SecureStorageData>(),
+);
+
+vi.mock("../utils/secureStorage/native.js", async importOriginal => {
+  const actual =
+    await importOriginal<typeof import("../utils/secureStorage/native.js")>();
+  return {
+    ...actual,
+    readNativeSecureStorage: (home: { path: string }) =>
+      structuredClone(secureStorageRecords.get(home.path) ?? {}),
+    readNativeSecureStorageAsync: async (home: { path: string }) =>
+      structuredClone(secureStorageRecords.get(home.path) ?? {}),
+    updateNativeSecureStorage: (
+      home: { path: string },
+      updater: (current: SecureStorageData) => SecureStorageData,
+    ) => {
+      const previous = structuredClone(secureStorageRecords.get(home.path) ?? {});
+      const written = structuredClone(updater(previous));
+      if (JSON.stringify(previous) === JSON.stringify(written)) return null;
+      secureStorageRecords.set(home.path, written);
+      return { previous, written };
+    },
+    rollbackNativeSecureStorage: (
+      home: { path: string },
+      transaction: { previous: SecureStorageData; written: SecureStorageData } | null,
+      updater: (
+        current: SecureStorageData,
+        transaction: { previous: SecureStorageData; written: SecureStorageData },
+      ) => SecureStorageData,
+    ) => {
+      if (transaction === null) return;
+      const current = structuredClone(secureStorageRecords.get(home.path) ?? {});
+      secureStorageRecords.set(
+        home.path,
+        structuredClone(updater(current, transaction)),
+      );
+    },
+  };
+});
 
 import { sourcePath } from "../helpers/source-path.ts";
 import { findCommand } from "../commands.js";
@@ -10,8 +52,15 @@ import { MCPManager } from "../mcp-client/manager.js";
 import { pluginDataDirPath } from "./directories.js";
 import { loadPlugins, type PluginLoadIssue } from "./loader.js";
 import { substitutePluginTemplate } from "./registration/common.js";
-import { loadPluginAgents } from "./registration/load-plugin-agents.js";
-import { loadPluginCommands, loadPluginSkills } from "./registration/load-plugin-commands.js";
+import {
+  loadPluginAgents,
+  setActivePluginAgentSnapshot,
+} from "./registration/load-plugin-agents.js";
+import {
+  loadPluginCommands,
+  loadPluginSkills,
+  setActivePluginCommandSnapshot,
+} from "./registration/load-plugin-commands.js";
 import { loadPluginHooks } from "./registration/load-plugin-hooks.js";
 import { loadPluginLspServers } from "./registration/lsp-plugin-integration.js";
 import { getUnconfiguredChannels, loadPluginMcpServers } from "./registration/mcp-plugin-integration.js";
@@ -31,6 +80,13 @@ import { FILE_READ_TOOL_NAME } from "../tools/system/file-read.js";
 import { FILE_WRITE_TOOL_NAME } from "../tools/system/file-write.js";
 import { createAgentRoleWorkspace } from "../agents/role.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
+import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from "../session/runtime-options.js";
+import { ConfigStore } from "../config/store.js";
+import { PlaintextPluginSecretError } from "../utils/plugins/pluginConfigAuthority.js";
+import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 
 const PLUGIN_MCP_ENV_SERVER_FIXTURE = sourcePath(
   "plugins/test-fixtures/plugin-mcp-env-server.cjs",
@@ -61,7 +117,7 @@ describe("plugin registration", () => {
           type: "text",
           text:
             `Deploy prod api from ${pluginRoot} into prod with ` +
-            `${process.env.AGENC_PLUGIN_CACHE_DIR}/data/${pluginRoot.replace(/[^a-zA-Z0-9\-_]/g, "-")} ` +
+            `${options.agencHome}/plugins/data/${pluginRoot.replace(/[^a-zA-Z0-9\-_]/g, "-")} ` +
             "using [configured:token] tags alpha,beta scopes read,write",
         },
       ]);
@@ -184,6 +240,95 @@ describe("plugin registration", () => {
     });
   });
 
+  test("never exposes a manifest-sensitive value from bundled plugin settings", async () => {
+    await withTempPlugin(async ({ pluginRoot, options, configStore }) => {
+      const manifestPath = join(pluginRoot, ".agenc-plugin", "plugin.json");
+      const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as {
+        mcpServers: { local: { env: Record<string, string> } };
+        channels: Array<{
+          server: string;
+          userConfig: Record<string, Record<string, unknown>>;
+        }>;
+        settings?: {
+          options: Record<string, unknown>;
+        };
+      };
+      manifest.mcpServers.local.env.CHANNEL_SECRET =
+        "${user_config.channel_secret}";
+      manifest.channels[0]!.userConfig.channel_secret = {
+        type: "string",
+        title: "Channel secret",
+        description: "Channel-only secret",
+        sensitive: true,
+      };
+      manifest.settings = {
+        options: {
+          token: "plaintext-bundled-token",
+          channel_secret: "plaintext-channel-token",
+          tags: ["alpha", "beta"],
+        },
+      };
+      await writeJson(manifestPath, manifest);
+      const existing = secureStorageRecords.get(configStore.homeContext.path) ?? {};
+      secureStorageRecords.set(configStore.homeContext.path, {
+        ...existing,
+        pluginSecrets: {
+          ...existing.pluginSecrets,
+          [`${pluginRoot}/local`]: {
+            channel_secret: "channel-vault-token",
+          },
+        },
+      });
+
+      const result = await loadPlugins(options);
+      const plugin = result.enabled[0]!;
+      expect(JSON.stringify(plugin)).not.toContain("plaintext-bundled-token");
+      expect(JSON.stringify(plugin)).not.toContain("plaintext-channel-token");
+      expect(result.errors).toContainEqual(
+        expect.objectContaining({
+          type: "settings",
+          message: expect.stringContaining(
+            "Sensitive plugin option(s) channel_secret, token were ignored",
+          ),
+        }),
+      );
+
+      const servers = await loadPluginMcpServers({
+        agencHome: options.agencHome,
+        plugins: [plugin],
+      });
+      expect(servers["plugin:sample:local"]?.env?.TOKEN).toBe("stored-token");
+      expect(servers["plugin:sample:local"]?.env?.CHANNEL_SECRET).toBe(
+        "channel-vault-token",
+      );
+      expect(JSON.stringify(servers)).not.toContain("plaintext-bundled-token");
+      expect(JSON.stringify(servers)).not.toContain("plaintext-channel-token");
+    });
+  });
+
+  test("rejects a sensitive plugin value from config.toml even when the vault is configured", async () => {
+    await withTempPlugin(async ({ pluginRoot, options, configStore }) => {
+      await writeFileAt(
+        join(options.agencHome, "config.toml"),
+        [
+          "config_version = 2",
+          `[pluginConfigs.${JSON.stringify(pluginRoot)}.options]`,
+          'token = "plaintext-config-token"',
+          "",
+        ].join("\n"),
+      );
+      await configStore.reload();
+      const plugin = (await loadPlugins(options)).enabled[0]!;
+
+      await expect(
+        loadPluginMcpServers({
+          agencHome: options.agencHome,
+          plugins: [plugin],
+        }),
+      ).rejects.toThrowError(PlaintextPluginSecretError);
+    });
+  });
+
   test("template substitution treats replacement-token paths literally and creates data dirs lazily", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-plugin-$&-"));
     const previousCacheDir = process.env.AGENC_PLUGIN_CACHE_DIR;
@@ -202,21 +347,32 @@ describe("plugin registration", () => {
         config: { plugins: { enabled: true } },
       });
       const plugin = result.enabled[0]!;
-      const dataDir = pluginDataDirPath(plugin.source);
-      await rm(dataDir, { recursive: true, force: true });
+      await writeFileAt(join(agencHome, "config.toml"), "config_version = 2\n");
+      const configStore = new ConfigStore({
+        home: agencHome,
+        cwd: root,
+        projectRoot: root,
+        projectTrusted: false,
+        env: { AGENC_HOME: agencHome, HOME: root },
+      });
+      await configStore.reload();
+      await runWithCanonicalSettingsAuthority(configStore, async () => {
+        const dataDir = pluginDataDirPath(plugin.source);
+        await rm(dataDir, { recursive: true, force: true });
 
-      expect(
-        substitutePluginTemplate(
-          "root=${AGENC_PLUGIN_ROOT} session=${AGENC_SESSION_ID}",
-          plugin,
-          { sessionId: "session-$&-$1" },
-        ),
-      ).toBe(`root=${plugin.root} session=session-$&-$1`);
-      await expect(access(dataDir)).rejects.toBeTruthy();
+        expect(
+          substitutePluginTemplate(
+            "root=${AGENC_PLUGIN_ROOT} session=${AGENC_SESSION_ID}",
+            plugin,
+            { sessionId: "session-$&-$1" },
+          ),
+        ).toBe(`root=${plugin.root} session=session-$&-$1`);
+        await expect(access(dataDir)).rejects.toBeTruthy();
 
-      expect(substitutePluginTemplate("data=${AGENC_PLUGIN_DATA}", plugin))
-        .toBe(`data=${dataDir}`);
-      await expect(access(dataDir)).resolves.toBeUndefined();
+        expect(substitutePluginTemplate("data=${AGENC_PLUGIN_DATA}", plugin))
+          .toBe(`data=${dataDir}`);
+        await expect(access(dataDir)).resolves.toBeUndefined();
+      });
     } finally {
       if (previousCacheDir === undefined) {
         delete process.env.AGENC_PLUGIN_CACHE_DIR;
@@ -245,12 +401,24 @@ describe("plugin registration", () => {
           },
         },
       });
-      const mcpServers = await loadPluginMcpServers({
+      await writeFileAt(join(agencHome, "config.toml"), "config_version = 2\n");
+      const configStore = new ConfigStore({
+        home: agencHome,
         cwd: workspaceRoot,
-        agencHome,
-        workspaceRoot,
-        extraPluginDirs: [pluginRoot],
+        projectRoot: workspaceRoot,
+        projectTrusted: false,
+        env: { AGENC_HOME: agencHome, HOME: root },
       });
+      await configStore.reload();
+      const mcpServers = await runWithCanonicalSettingsAuthority(
+        configStore,
+        () => loadPluginMcpServers({
+          cwd: workspaceRoot,
+          agencHome,
+          workspaceRoot,
+          extraPluginDirs: [pluginRoot],
+        }),
+      );
       expect(mcpServers["plugin:ccplugin:goal"]).toMatchObject({
         command: "node",
         args: [`${pluginRoot}/server.mjs`],
@@ -367,88 +535,71 @@ describe("plugin registration", () => {
 
   test("expands general environment variables in plugin MCP and LSP server configs", async () => {
     await withTempPlugin(async ({ pluginRoot, options }) => {
-      const previousCommand = process.env.AGENC_PLUGIN_TEST_COMMAND;
-      const previousArg = process.env.AGENC_PLUGIN_TEST_ARG;
-      const previousCwd = process.env.AGENC_PLUGIN_TEST_CWD;
-      try {
-        process.env.AGENC_PLUGIN_TEST_COMMAND = "node";
-        process.env.AGENC_PLUGIN_TEST_ARG = "expanded-arg";
-        process.env.AGENC_PLUGIN_TEST_CWD = "workspace";
-        await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
-          name: "sample",
-          mcpServers: {
-            local: {
-              command: "${AGENC_PLUGIN_TEST_COMMAND}",
-              args: [
-                "--flag=${AGENC_PLUGIN_TEST_ARG}",
-                "${AGENC_PLUGIN_TEST_DEFAULT:-fallback}",
-              ],
-              env: {
-                EXPANDED: "${AGENC_PLUGIN_TEST_ARG}",
-              },
-              headers: {
-                Authorization: "Bearer ${AGENC_PLUGIN_TEST_ARG}",
-              },
-              cwd: "cwd-${AGENC_PLUGIN_TEST_CWD}",
+      const environment = {
+        AGENC_PLUGIN_TEST_COMMAND: "node",
+        AGENC_PLUGIN_TEST_ARG: "expanded-arg",
+        AGENC_PLUGIN_TEST_CWD: "workspace",
+      };
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "sample",
+        mcpServers: {
+          local: {
+            command: "${AGENC_PLUGIN_TEST_COMMAND}",
+            args: [
+              "--flag=${AGENC_PLUGIN_TEST_ARG}",
+              "${AGENC_PLUGIN_TEST_DEFAULT:-fallback}",
+            ],
+            env: {
+              EXPANDED: "${AGENC_PLUGIN_TEST_ARG}",
+            },
+            headers: {
+              Authorization: "Bearer ${AGENC_PLUGIN_TEST_ARG}",
+            },
+            cwd: "cwd-${AGENC_PLUGIN_TEST_CWD}",
+          },
+        },
+        lspServers: {
+          typescript: {
+            command: "${AGENC_PLUGIN_TEST_COMMAND}",
+            args: ["--stdio=${AGENC_PLUGIN_TEST_ARG}"],
+            env: {
+              EXPANDED: "${AGENC_PLUGIN_TEST_ARG}",
+            },
+            workspaceFolder: "workspace-${AGENC_PLUGIN_TEST_CWD}",
+            extensionToLanguage: {
+              ".ts": "typescript",
             },
           },
-          lspServers: {
-            typescript: {
-              command: "${AGENC_PLUGIN_TEST_COMMAND}",
-              args: ["--stdio=${AGENC_PLUGIN_TEST_ARG}"],
-              env: {
-                EXPANDED: "${AGENC_PLUGIN_TEST_ARG}",
-              },
-              workspaceFolder: "workspace-${AGENC_PLUGIN_TEST_CWD}",
-              extensionToLanguage: {
-                ".ts": "typescript",
-              },
-            },
-          },
-        });
+        },
+      });
 
-        const result = await loadPlugins(options);
-        const errors: PluginLoadIssue[] = [];
-        const mcpServers = await loadPluginMcpServers({
-          plugins: result.enabled,
-          errors,
-        });
-        const lspServers = await loadPluginLspServers({
-          plugins: result.enabled,
-          errors,
-        });
+      const result = await loadPlugins(options);
+      const errors: PluginLoadIssue[] = [];
+      const mcpServers = await loadPluginMcpServers({
+        plugins: result.enabled,
+        errors,
+        env: environment,
+      });
+      const lspServers = await loadPluginLspServers({
+        plugins: result.enabled,
+        errors,
+        env: environment,
+      });
 
-        expect(errors).toEqual([]);
-        expect(mcpServers["plugin:sample:local"]).toMatchObject({
-          command: "node",
-          args: ["--flag=expanded-arg", "fallback"],
-          env: expect.objectContaining({ EXPANDED: "expanded-arg" }),
-          headers: { Authorization: "Bearer expanded-arg" },
-          cwd: join(pluginRoot, "cwd-workspace"),
-        });
-        expect(lspServers["plugin:sample:typescript"]).toMatchObject({
-          command: "node",
-          args: ["--stdio=expanded-arg"],
-          env: expect.objectContaining({ EXPANDED: "expanded-arg" }),
-          workspaceFolder: join(pluginRoot, "workspace-workspace"),
-        });
-      } finally {
-        if (previousCommand === undefined) {
-          delete process.env.AGENC_PLUGIN_TEST_COMMAND;
-        } else {
-          process.env.AGENC_PLUGIN_TEST_COMMAND = previousCommand;
-        }
-        if (previousArg === undefined) {
-          delete process.env.AGENC_PLUGIN_TEST_ARG;
-        } else {
-          process.env.AGENC_PLUGIN_TEST_ARG = previousArg;
-        }
-        if (previousCwd === undefined) {
-          delete process.env.AGENC_PLUGIN_TEST_CWD;
-        } else {
-          process.env.AGENC_PLUGIN_TEST_CWD = previousCwd;
-        }
-      }
+      expect(errors).toEqual([]);
+      expect(mcpServers["plugin:sample:local"]).toMatchObject({
+        command: "node",
+        args: ["--flag=expanded-arg", "fallback"],
+        env: expect.objectContaining({ EXPANDED: "expanded-arg" }),
+        headers: { Authorization: "Bearer expanded-arg" },
+        cwd: join(pluginRoot, "cwd-workspace"),
+      });
+      expect(lspServers["plugin:sample:typescript"]).toMatchObject({
+        command: "node",
+        args: ["--stdio=expanded-arg"],
+        env: expect.objectContaining({ EXPANDED: "expanded-arg" }),
+        workspaceFolder: join(pluginRoot, "workspace-workspace"),
+      });
     });
   });
 
@@ -542,49 +693,41 @@ describe("plugin registration", () => {
 
   test("omits plugin MCP servers whose template-resolved cwd escapes the plugin root", async () => {
     await withTempPlugin(async ({ pluginRoot, options }) => {
-      const previousCwd = process.env.AGENC_PLUGIN_TEST_CWD_ESCAPE;
-      try {
-        process.env.AGENC_PLUGIN_TEST_CWD_ESCAPE = "../outside";
-        await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
-          name: "sample",
-          mcpServers: {
-            local: {
-              command: "node",
-              cwd: "${AGENC_PLUGIN_TEST_CWD_ESCAPE}",
-            },
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "sample",
+        mcpServers: {
+          local: {
+            command: "node",
+            cwd: "${AGENC_PLUGIN_TEST_CWD_ESCAPE}",
           },
-        });
+        },
+      });
 
-        const result = await loadPlugins(options);
-        const errors: PluginLoadIssue[] = [];
-        const mcpServers = await loadPluginMcpServers({
-          plugins: result.enabled,
-          errors,
-        });
+      const result = await loadPlugins(options);
+      const errors: PluginLoadIssue[] = [];
+      const mcpServers = await loadPluginMcpServers({
+        plugins: result.enabled,
+        errors,
+        env: { AGENC_PLUGIN_TEST_CWD_ESCAPE: "../outside" },
+      });
 
-        expect(mcpServers["plugin:sample:local"]).toBeUndefined();
-        expect(errors).toEqual([
-          expect.objectContaining({
-            type: "mcp",
-            path: "local",
-            message: expect.stringContaining("escapes plugin root"),
-          }),
-        ]);
-      } finally {
-        if (previousCwd === undefined) {
-          delete process.env.AGENC_PLUGIN_TEST_CWD_ESCAPE;
-        } else {
-          process.env.AGENC_PLUGIN_TEST_CWD_ESCAPE = previousCwd;
-        }
-      }
+      expect(mcpServers["plugin:sample:local"]).toBeUndefined();
+      expect(errors).toEqual([
+        expect.objectContaining({
+          type: "mcp",
+          path: "local",
+          message: expect.stringContaining("escapes plugin root"),
+        }),
+      ]);
     });
   });
 
   test("omits plugin MCP and LSP servers with unresolved config placeholders", async () => {
-    await withTempPlugin(async ({ root, pluginRoot, options }) => {
+    await withTempPlugin(async ({ root, pluginRoot, options, configStore }) => {
       const previousMissing = process.env.AGENC_PLUGIN_TEST_MISSING;
       try {
         delete process.env.AGENC_PLUGIN_TEST_MISSING;
+        secureStorageRecords.set(configStore.homeContext.path, {});
         await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
           name: "sample",
           userConfig: {
@@ -618,7 +761,6 @@ describe("plugin registration", () => {
             },
           },
         });
-        await writeJson(join(pluginRoot, "settings.json"), { options: {} });
 
         const snapshot = await refreshPluginRegistrations({
           cwd: root,
@@ -992,6 +1134,67 @@ describe("plugin registration", () => {
         .resolves.toEqual([]);
       await expect(loadPluginAgents({ cwd, agencHome: options.agencHome }))
         .resolves.toEqual([]);
+    });
+  });
+
+  test("keeps same-workspace command and agent snapshots isolated by AgenC home", async () => {
+    await withTempPlugin(async ({ root, options }) => {
+      const result = await loadPlugins(options);
+      const commandsA = await loadPluginCommands({
+        cwd: root,
+        agencHome: options.agencHome,
+        plugins: result.enabled,
+      });
+      const agentsA = await loadPluginAgents({
+        cwd: root,
+        agencHome: options.agencHome,
+        plugins: result.enabled,
+      });
+      const homeB = join(root, "home-b");
+      const commandsB = commandsA.map(command => ({
+        ...command,
+        name: `home-b:${command.name}`,
+      }));
+      const agentsB = agentsA.map(agent => ({
+        ...agent,
+        agentType: `home-b:${agent.agentType}`,
+      }));
+
+      setActivePluginCommandSnapshot(
+        { cwd: root, agencHome: options.agencHome },
+        commandsA,
+      );
+      setActivePluginCommandSnapshot({ cwd: root, agencHome: homeB }, commandsB);
+      setActivePluginAgentSnapshot(
+        { cwd: root, agencHome: options.agencHome },
+        agentsA,
+      );
+      setActivePluginAgentSnapshot(
+        { cwd: root, agencHome: homeB },
+        agentsB,
+      );
+
+      const [resolvedCommandsA, resolvedCommandsB, resolvedAgentsA, resolvedAgentsB] =
+        await Promise.all([
+          loadPluginCommands({ cwd: root, agencHome: options.agencHome }),
+          loadPluginCommands({ cwd: root, agencHome: homeB }),
+          loadPluginAgents({ cwd: root, agencHome: options.agencHome }),
+          loadPluginAgents({ cwd: root, agencHome: homeB }),
+        ]);
+
+      expect(resolvedCommandsA.map(command => command.name)).toEqual([
+        "sample:deploy",
+      ]);
+      expect(resolvedCommandsB.map(command => command.name)).toEqual([
+        "home-b:sample:deploy",
+      ]);
+      expect(resolvedAgentsA.map(agent => agent.agentType)).toEqual([
+        "sample:review",
+      ]);
+      expect(resolvedAgentsB.map(agent => agent.agentType)).toEqual([
+        "home-b:sample:review",
+      ]);
+      clearPluginRegistrationCaches();
     });
   });
 
@@ -1396,9 +1599,9 @@ describe("plugin registration", () => {
 
   test("implicit command loading is skipped in simple mode but explicit plugin dirs still load", async () => {
     await withTempPlugin(async ({ root, pluginRoot, options }) => {
-      const previousSimple = process.env.AGENC_SIMPLE;
-      try {
-        process.env.AGENC_SIMPLE = "1";
+      await runWithAgentRuntimeOptions(
+        resolveAgentRuntimeOptions({}, { simpleMode: true }),
+        async () => {
         await expect(loadPluginCommands({
           cwd: root,
           agencHome: options.agencHome,
@@ -1410,13 +1613,8 @@ describe("plugin registration", () => {
         })).resolves.toEqual([
           expect.objectContaining({ name: "sample:deploy" }),
         ]);
-      } finally {
-        if (previousSimple === undefined) {
-          delete process.env.AGENC_SIMPLE;
-        } else {
-          process.env.AGENC_SIMPLE = previousSimple;
-        }
-      }
+        },
+      );
     });
   });
 
@@ -1462,6 +1660,7 @@ async function withTempPlugin(
   fn: (ctx: {
     readonly root: string;
     readonly pluginRoot: string;
+    readonly configStore: ConfigStore;
     readonly options: {
       readonly agencHome: string;
       readonly workspaceRoot: string;
@@ -1520,6 +1719,11 @@ async function withTempPlugin(
           },
         },
       },
+      settings: {
+        options: {
+          tags: ["alpha", "beta"],
+        },
+      },
       userConfig: {
         token: {
           type: "string",
@@ -1568,12 +1772,6 @@ async function withTempPlugin(
         },
       ],
     });
-    await writeJson(join(pluginRoot, "settings.json"), {
-      options: {
-        token: "stored-token",
-        tags: ["alpha", "beta"],
-      },
-    });
     await writeFileAt(
       join(pluginRoot, "commands", "deploy.md"),
       [
@@ -1620,15 +1818,33 @@ async function withTempPlugin(
         "Use short responses.",
       ].join("\n"),
     );
-    await fn({
-      root,
-      pluginRoot,
-      options: {
-        agencHome,
-        workspaceRoot,
-        extraPluginDirs: [pluginRoot],
+    await writeFileAt(join(agencHome, "config.toml"), "config_version = 2\n");
+    await mkdir(workspaceRoot, { recursive: true });
+    const configStore = new ConfigStore({
+      home: agencHome,
+      cwd: workspaceRoot,
+      projectRoot: workspaceRoot,
+      projectTrusted: false,
+      env: { AGENC_HOME: agencHome, HOME: root },
+      managedConfigPath: join(root, "missing-managed.toml"),
+      managedDropInDir: join(root, "missing-managed.d"),
+    });
+    await configStore.reload();
+    secureStorageRecords.set(configStore.homeContext.path, {
+      pluginSecrets: {
+        [pluginRoot]: { token: "stored-token" },
       },
     });
+    await runWithCanonicalSettingsAuthority(configStore, () => fn({
+        root,
+        pluginRoot,
+        configStore,
+        options: {
+          agencHome,
+          workspaceRoot,
+          extraPluginDirs: [pluginRoot],
+        },
+      }));
   } finally {
     if (previousCacheDir === undefined) {
       delete process.env.AGENC_PLUGIN_CACHE_DIR;

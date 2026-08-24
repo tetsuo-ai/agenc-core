@@ -11,7 +11,6 @@ import {
   fromRuntimeMessageContent,
   toRuntimeMessageContent,
 } from "../llm/content-conversion.js";
-import { readProviderFactoryOptions } from "../llm/provider.js";
 import type {
   CompactCleanupDeps,
   CompactionResult,
@@ -46,10 +45,6 @@ import {
   getEffectiveContextWindowSize,
   isAutoCompactEnabled,
 } from "../services/compact/autoCompact.js";
-import {
-  withCompactContextGuards,
-  type CompactGuardEnv,
-} from "../session/compact-env-guard.js";
 import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
 import {
   assembleSystemPrompt,
@@ -412,11 +407,6 @@ interface AgenCToolUseContext {
     readonly contextWindowTokens: number;
     readonly maxOutputTokens?: number;
     readonly systemPrompt?: string;
-    readonly providerOverride?: {
-      readonly model: string;
-      readonly baseURL: string;
-      readonly apiKey: string;
-    };
     readonly querySource?: string;
     readonly agentDefinitions: {
       readonly agentRoleWorkspaceId?: string;
@@ -469,7 +459,6 @@ function buildAgenCToolUseContext(
   opts: { readonly querySource?: string; readonly verbose?: boolean } = {},
 ): AgenCToolUseContext {
   const model = toAgenCModelContext(ctx);
-  const providerOverride = buildProviderOverride(session, model.model);
   const surface = readSessionSurface(session);
   const agentDefinitions = {
     ...(firstNonEmpty(surface.agentDefinitions?.agentRoleWorkspaceId) !== undefined
@@ -506,7 +495,6 @@ function buildAgenCToolUseContext(
         ? { maxOutputTokens: model.maxOutputTokens }
         : {}),
       ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
-      ...(providerOverride !== undefined ? { providerOverride } : {}),
       ...(opts.querySource !== undefined ? { querySource: opts.querySource } : {}),
       agentDefinitions,
       isNonInteractiveSession: false,
@@ -577,22 +565,6 @@ function toAgenCRuntimeTools(tools: readonly LLMTool[]): AgenCRuntimeTool[] {
       maxResultSizeChars: DEFAULT_MAX_RESULT_SIZE_CHARS,
     };
   });
-}
-
-function buildProviderOverride(
-  session: Session,
-  fallbackModel: string,
-): AgenCToolUseContext["options"]["providerOverride"] | undefined {
-  const provider = session.services.provider;
-  const options = readProviderFactoryOptions(provider);
-  const model = firstNonEmpty(options.model, fallbackModel);
-  const baseURL = firstNonEmpty(options.baseURL);
-  if (!model || !baseURL) return undefined;
-  return {
-    model,
-    baseURL,
-    apiKey: options.apiKey ?? "",
-  };
 }
 
 function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
@@ -780,12 +752,12 @@ async function runManualCompact(params: {
       theme: "dark",
     },
   };
-  const result = await withCompactContextGuards(async () => {
-    const { manualCompactCall } =
-      await import("../services/compact/compact.js");
-    const call = manualCompactCall;
-    return await call(params.customInstructions ?? "", commandContext as never);
-  }, envForToolUseContext(toolUseContext));
+  const { manualCompactCall } =
+    await import("../services/compact/compact.js");
+  const result = await manualCompactCall(
+    params.customInstructions ?? "",
+    commandContext as never,
+  );
   if (result.type !== "compact") {
     throw new Error("Compact command did not return a compaction result");
   }
@@ -799,7 +771,6 @@ async function runManualCompact(params: {
     : rawCompactionResult;
   const compactionResult = await toAgenCCompactionResult(
     compactionResultWithSlashMessages,
-    toolUseContext,
   );
   const compactedRollout = buildAgenCCompactedRolloutItem(compactionResult);
   const rolloutStore = params.session.rolloutStore;
@@ -930,9 +901,10 @@ async function runContextUsage(params: {
     },
     ...(sessionTokenUsage !== undefined ? { sessionTokenUsage } : {}),
   };
-  const result = await withCompactContextGuards(async () => {
-    return contextUsageCall(params.args ?? "", commandContext as never);
-  }, envForToolUseContext(toolUseContext));
+  const result = await contextUsageCall(
+    params.args ?? "",
+    commandContext as never,
+  );
   return { text: result.value };
 }
 
@@ -961,8 +933,11 @@ async function loadProjectInstructionsForContext(
     // that diverges from the real turn payload whenever the user
     // has either field set in their config.
     const currentConfig = session.services.configStore?.current();
+    const configHomeDir = session.services.configStore?.homeContext.path;
+    if (configHomeDir === undefined) return "";
     const tiered = await loadTieredInstructions({
       cwd,
+      configHomeDir,
       ...(currentConfig?.project_root_markers !== undefined
         ? { projectRootMarkers: currentConfig.project_root_markers }
         : {}),
@@ -1398,17 +1373,14 @@ async function contextUsageCall(
 
 async function toAgenCCompactionResult(
   result: AgenCCompactionResult,
-  toolUseContext?: AgenCToolUseContext,
 ): Promise<NonNullable<AgenCAutoCompactResult["compactionResult"]>> {
   let replacementHistory: LLMMessage[];
   try {
-    replacementHistory = await withCompactContextGuards(async () => {
-      const { buildPostCompactMessages } =
-        await import("../services/compact/compact.js");
-      return fromAgenCRuntimeMessages(
-        buildPostCompactMessages(toCompactServiceResult(result)) as AgenCRuntimeMessage[],
-      );
-    }, toolUseContext ? envForToolUseContext(toolUseContext) : undefined);
+    const { buildPostCompactMessages } =
+      await import("../services/compact/compact.js");
+    replacementHistory = fromAgenCRuntimeMessages(
+      buildPostCompactMessages(toCompactServiceResult(result)) as AgenCRuntimeMessage[],
+    );
   } catch (error) {
     if (result.transaction !== undefined) {
       throw new CompactionReconstructionRequiredError(
@@ -1675,21 +1647,6 @@ function cloneLLMMessage(message: LLMMessage): LLMMessage {
     ...(message.runtimeOnly !== undefined
       ? { runtimeOnly: { ...message.runtimeOnly } }
       : {}),
-  };
-}
-
-function envForToolUseContext(
-  toolUseContext: AgenCToolUseContext,
-): CompactGuardEnv {
-  const providerOverride = toolUseContext.options.providerOverride;
-  if (!providerOverride) return {};
-  return {
-    AGENC_USE_OPENAI: "1",
-    OPENAI_MODEL: providerOverride.model,
-    OPENAI_BASE_URL: providerOverride.baseURL,
-    OPENAI_API_KEY: providerOverride.apiKey,
-    AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW:
-      toolUseContext.options.contextWindowTokens.toString(),
   };
 }
 

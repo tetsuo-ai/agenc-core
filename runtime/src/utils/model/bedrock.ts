@@ -1,8 +1,8 @@
 import memoize from 'lodash-es/memoize.js'
-import { refreshAndGetAwsCredentials } from '../auth.js'
 import { getAWSRegion, isEnvTruthy } from '../envUtils.js'
 import { logError } from '../log.js'
 import { getAWSClientProxyConfig } from '../proxy.js'
+import { getSelectedProviderEnvironment } from './providers.js'
 
 export const getBedrockInferenceProfiles = memoize(async function (): Promise<
   string[]
@@ -53,16 +53,17 @@ async function createBedrockClient() {
   // - Reads AWS_REGION or AWS_DEFAULT_REGION env vars (not AWS config files)
   // - Falls back to 'us-east-1' if neither is set
   // This ensures we query profiles from the same region the client will use
-  const region = getAWSRegion()
+  const environment = getSelectedProviderEnvironment()
+  const region = getAWSRegion(environment)
 
-  const skipAuth = isEnvTruthy(process.env.AGENC_SKIP_BEDROCK_AUTH)
+  const skipAuth = isEnvTruthy(environment.AGENC_SKIP_BEDROCK_AUTH)
 
   const clientConfig: ConstructorParameters<typeof BedrockClient>[0] = {
     region,
-    ...(process.env.ANTHROPIC_BEDROCK_BASE_URL && {
-      endpoint: process.env.ANTHROPIC_BEDROCK_BASE_URL,
+    ...(environment.ANTHROPIC_BEDROCK_BASE_URL && {
+      endpoint: environment.ANTHROPIC_BEDROCK_BASE_URL,
     }),
-    ...(await getAWSClientProxyConfig()),
+    ...(await getAWSClientProxyConfig(environment)),
     ...(skipAuth && {
       requestHandler: new (
         await import('@smithy/node-http-handler')
@@ -78,18 +79,6 @@ async function createBedrockClient() {
     }),
   }
 
-  if (!skipAuth && !process.env.AWS_BEARER_TOKEN_BEDROCK) {
-    // Only refresh credentials if not using API key authentication
-    const cachedCredentials = await refreshAndGetAwsCredentials()
-    if (cachedCredentials) {
-      clientConfig.credentials = {
-        accessKeyId: cachedCredentials.accessKeyId,
-        secretAccessKey: cachedCredentials.secretAccessKey,
-        sessionToken: cachedCredentials.sessionToken,
-      }
-    }
-  }
-
   return new BedrockClient(clientConfig)
 }
 
@@ -97,15 +86,16 @@ export async function createBedrockRuntimeClient() {
   const { BedrockRuntimeClient } = await import(
     '@aws-sdk/client-bedrock-runtime'
   )
-  const region = getAWSRegion()
-  const skipAuth = isEnvTruthy(process.env.AGENC_SKIP_BEDROCK_AUTH)
+  const environment = getSelectedProviderEnvironment()
+  const region = getAWSRegion(environment)
+  const skipAuth = isEnvTruthy(environment.AGENC_SKIP_BEDROCK_AUTH)
 
   const clientConfig: ConstructorParameters<typeof BedrockRuntimeClient>[0] = {
     region,
-    ...(process.env.ANTHROPIC_BEDROCK_BASE_URL && {
-      endpoint: process.env.ANTHROPIC_BEDROCK_BASE_URL,
+    ...(environment.ANTHROPIC_BEDROCK_BASE_URL && {
+      endpoint: environment.ANTHROPIC_BEDROCK_BASE_URL,
     }),
-    ...(await getAWSClientProxyConfig()),
+    ...(await getAWSClientProxyConfig(environment)),
     ...(skipAuth && {
       // BedrockRuntimeClient defaults to HTTP/2 without fallback
       // proxy servers may not support this, so we explicitly force HTTP/1.1
@@ -121,18 +111,6 @@ export async function createBedrockRuntimeClient() {
       ],
       httpAuthSchemeProvider: () => [{ schemeId: 'smithy.api#noAuth' }],
     }),
-  }
-
-  if (!skipAuth && !process.env.AWS_BEARER_TOKEN_BEDROCK) {
-    // Only refresh credentials if not using API key authentication
-    const cachedCredentials = await refreshAndGetAwsCredentials()
-    if (cachedCredentials) {
-      clientConfig.credentials = {
-        accessKeyId: cachedCredentials.accessKeyId,
-        secretAccessKey: cachedCredentials.secretAccessKey,
-        sessionToken: cachedCredentials.sessionToken,
-      }
-    }
   }
 
   return new BedrockRuntimeClient(clientConfig)

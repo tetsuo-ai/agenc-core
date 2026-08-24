@@ -21,13 +21,12 @@ import {
   createProvider,
   isFactoryProvider,
   KNOWN_PROVIDER_NAMES,
-  normalizeProviderName,
   prepareProviderSwitch,
   readProviderFactoryOptions,
   readProviderIdentity,
-  resolveProviderNameFromEnv,
   type ProviderName,
 } from "./provider.js";
+import { resolveProviderFactoryOptions } from "./provider-options.js";
 import { resolveBuiltInProviderInfo } from "./registry/provider-info.js";
 
 function withEnv<T>(
@@ -150,20 +149,6 @@ describe("createProvider", () => {
       expect(info).toBeDefined();
       const env: Record<string, string | undefined> = {
         AGENC_MODEL: undefined,
-        OPENAI_MODEL: undefined,
-        ANTHROPIC_MODEL: undefined,
-        OLLAMA_MODEL: undefined,
-        LMSTUDIO_MODEL: undefined,
-        OPENAI_COMPATIBLE_MODEL: undefined,
-        OPENROUTER_MODEL: undefined,
-        GROQ_MODEL: undefined,
-        DEEPSEEK_MODEL: undefined,
-        GEMINI_MODEL: undefined,
-        MISTRAL_MODEL: undefined,
-        NVIDIA_MODEL: undefined,
-        MINIMAX_MODEL: undefined,
-        GITHUB_MODEL: undefined,
-        AWS_BEDROCK_MODEL: undefined,
         OPENAI_BASE_URL: undefined,
         ANTHROPIC_BASE_URL: undefined,
         OLLAMA_BASE_URL: undefined,
@@ -259,7 +244,7 @@ describe("createProvider", () => {
     },
     { name: "openrouter", model: "openai/gpt-5" },
     { name: "groq", model: "llama-3.3-70b-versatile" },
-    { name: "deepseek", model: "deepseek-reasoner" },
+    { name: "deepseek", model: "deepseek-v4-pro" },
     { name: "gemini", model: "gemini-2.5-pro" },
     {
       name: "amazon-bedrock",
@@ -399,18 +384,12 @@ describe("createProvider", () => {
   });
 
   test("defaults model metadata on AuthBackend-vended providers without explicit model", () => {
-    const provider = withEnv(
-      {
-        OPENAI_MODEL: undefined,
+    const provider = createProvider("openai", {
+      extra: {
+        authBackend,
+        sessionId: "session-default-model",
       },
-      () =>
-        createProvider("openai", {
-          extra: {
-            authBackend,
-            sessionId: "session-default-model",
-          },
-        }),
-    );
+    });
 
     expect((provider as unknown as { config: { model: string } }).config.model)
       .toBe("gpt-5");
@@ -418,25 +397,19 @@ describe("createProvider", () => {
   });
 
   test("prepares AuthBackend-vended provider switches without explicit model", () => {
-    const prepared = withEnv(
-      {
-        OPENAI_MODEL: undefined,
+    const prepared = prepareProviderSwitch("openai", {
+      extra: {
+        authBackend,
+        sessionId: "session-switch-default-model",
       },
-      () =>
-        prepareProviderSwitch("openai", {
-          extra: {
-            authBackend,
-            sessionId: "session-switch-default-model",
-          },
-        }),
-    );
+    });
 
     expect(prepared.provider).toBe("openai");
     expect(prepared.model).toBe("gpt-5");
     expect(readProviderFactoryOptions(prepared.instance).model).toBe("gpt-5");
   });
 
-  test("keeps env model metadata on AuthBackend-vended providers without explicit model", async () => {
+  test("does not let ambient provider-specific model env change factory selection", async () => {
     const provider = withEnv(
       {
         OPENAI_MODEL: "gpt-5.4",
@@ -463,14 +436,14 @@ describe("createProvider", () => {
     );
 
     expect((provider as unknown as { config: { model: string } }).config.model)
-      .toBe("gpt-5.4");
-    expect(readProviderFactoryOptions(provider).model).toBe("gpt-5.4");
+      .toBe("gpt-5");
+    expect(readProviderFactoryOptions(provider).model).toBe("gpt-5");
     await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
       provider: "openai",
-      model: "gpt-5.4",
+      model: "gpt-5",
     });
-    expect(prepared.model).toBe("gpt-5.4");
-    expect(readProviderFactoryOptions(prepared.instance).model).toBe("gpt-5.4");
+    expect(prepared.model).toBe("gpt-5");
+    expect(readProviderFactoryOptions(prepared.instance).model).toBe("gpt-5");
   });
 
   test("uses AuthBackend-vended keys on delegated compatible requests", async () => {
@@ -982,7 +955,7 @@ describe("createProvider", () => {
       () =>
         createProvider("deepseek", {
           apiKey: "deepseek-test",
-          model: "deepseek-reasoner",
+          model: "deepseek-v4-pro",
         }),
     );
     const mistral = withEnv(
@@ -990,7 +963,7 @@ describe("createProvider", () => {
       () =>
         createProvider("mistral", {
           apiKey: "mistral-test",
-          model: "devstral-latest",
+          model: "mistral-medium-latest",
         }),
     );
     const nvidiaNim = withEnv(
@@ -1028,10 +1001,13 @@ describe("createProvider", () => {
     expect(github).toBeInstanceOf(GitHubProvider);
   });
 
-  test("normalizes generic openai-compatible provider aliases", () => {
-    expect(normalizeProviderName("custom")).toBe("openai-compatible");
-    expect(normalizeProviderName("openai_compatible")).toBe("openai-compatible");
-    expect(normalizeProviderName("openai-compatible")).toBe("openai-compatible");
+  test("rejects retired provider selectors instead of aliasing them", () => {
+    expect(() => createProvider("custom" as ProviderName, {})).toThrow(
+      'retired provider selector "custom" is not accepted at provider factory; use "openai-compatible" instead',
+    );
+    expect(() =>
+      createProvider("openai_compatible" as ProviderName, {})
+    ).toThrow('use "openai-compatible" instead');
   });
 
   test("adds the required OpenRouter routing headers", () => {
@@ -1081,7 +1057,6 @@ describe("createProvider", () => {
     const provider = withEnv(
       {
         OPENAI_API_KEY: undefined,
-        OPENAI_MODEL: undefined,
       },
       () => createProvider("openai", { apiKey: "sk-test" }),
     );
@@ -1116,7 +1091,6 @@ describe("createProvider", () => {
         AWS_SECRET_ACCESS_KEY: undefined,
         AWS_SESSION_TOKEN: undefined,
         AWS_BEDROCK_REGION: undefined,
-        AWS_BEDROCK_MODEL: undefined,
       },
       () =>
         createProvider("amazon-bedrock", {
@@ -1152,7 +1126,6 @@ describe("createProvider", () => {
         AWS_ACCESS_KEY_ID: undefined,
         AWS_BEDROCK_SECRET_ACCESS_KEY: undefined,
         AWS_SECRET_ACCESS_KEY: undefined,
-        AWS_BEDROCK_MODEL: undefined,
       },
       () =>
         createProvider("amazon-bedrock", {
@@ -1183,7 +1156,6 @@ describe("createProvider", () => {
         AWS_ACCESS_KEY_ID: undefined,
         AWS_BEDROCK_SECRET_ACCESS_KEY: undefined,
         AWS_SECRET_ACCESS_KEY: undefined,
-        AWS_BEDROCK_MODEL: undefined,
       },
       () =>
         createProvider("amazon-bedrock", {
@@ -1295,7 +1267,6 @@ describe("createProvider", () => {
     const provider = withEnv(
       {
         ANTHROPIC_API_KEY: undefined,
-        ANTHROPIC_MODEL: undefined,
       },
       () => createProvider("anthropic", { apiKey: "anthropic-test" }),
     );
@@ -1351,9 +1322,7 @@ describe("createProvider", () => {
       name: "ollama",
       env: {
         OLLAMA_BASE_URL: undefined,
-        OLLAMA_MODEL: undefined,
         OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
-        OPENAI_MODEL: "wrong-openai-model",
       },
       model: undefined,
       expectedBaseURL: "http://localhost:11434",
@@ -1363,10 +1332,8 @@ describe("createProvider", () => {
       name: "lmstudio",
       env: {
         LMSTUDIO_BASE_URL: undefined,
-        LMSTUDIO_MODEL: "qwen2.5-coder:7b",
         OPENAI_API_KEY: "wrong-openai-token",
         OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
-        OPENAI_MODEL: "wrong-openai-model",
       },
       model: undefined,
       expectedBaseURL: "http://localhost:1234/v1",
@@ -1412,10 +1379,8 @@ describe("createProvider", () => {
       env: {
         OPENAI_COMPATIBLE_API_KEY: undefined,
         OPENAI_COMPATIBLE_BASE_URL: undefined,
-        OPENAI_COMPATIBLE_MODEL: "self-hosted-coder",
         OPENAI_API_KEY: "wrong-openai-token",
         OPENAI_BASE_URL: "http://127.0.0.1:9000/v1",
-        OPENAI_MODEL: "wrong-openai-model",
       },
       apiKey: "local-token",
       model: undefined,
@@ -1431,9 +1396,7 @@ describe("createProvider", () => {
       env: {
         OPENROUTER_API_KEY: undefined,
         OPENROUTER_BASE_URL: undefined,
-        OPENROUTER_MODEL: "openai/gpt-5",
         OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
-        OPENAI_MODEL: "wrong-openai-model",
       },
       apiKey: "or-test",
       model: undefined,
@@ -1462,9 +1425,7 @@ describe("createProvider", () => {
       env: {
         GROQ_API_KEY: undefined,
         GROQ_BASE_URL: undefined,
-        GROQ_MODEL: undefined,
         OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
-        OPENAI_MODEL: "wrong-openai-model",
       },
       apiKey: "groq-test",
       model: undefined,
@@ -1493,14 +1454,12 @@ describe("createProvider", () => {
       env: {
         DEEPSEEK_API_KEY: undefined,
         DEEPSEEK_BASE_URL: undefined,
-        DEEPSEEK_MODEL: undefined,
         OPENAI_BASE_URL: "http://127.0.0.1:9499/v1",
-        OPENAI_MODEL: "wrong-openai-model",
       },
       apiKey: "deepseek-test",
       model: undefined,
       expectedBaseURL: "https://api.deepseek.com/v1",
-      expectedModel: "deepseek-reasoner",
+      expectedModel: "deepseek-v4-flash",
       expectedUseResponsesApi: false,
       assertApiKey: true,
       expectedApiKey: "deepseek-test",
@@ -1512,9 +1471,9 @@ describe("createProvider", () => {
         OPENAI_BASE_URL: undefined,
       },
       apiKey: "deepseek-test",
-      model: "deepseek-reasoner",
+      model: "deepseek-v4-pro",
       expectedBaseURL: "https://api.deepseek.com/v1",
-      expectedModel: "deepseek-reasoner",
+      expectedModel: "deepseek-v4-pro",
       expectedUseResponsesApi: false,
       assertApiKey: true,
       expectedApiKey: "deepseek-test",
@@ -1524,14 +1483,12 @@ describe("createProvider", () => {
       env: {
         MISTRAL_API_KEY: undefined,
         MISTRAL_BASE_URL: undefined,
-        MISTRAL_MODEL: undefined,
         OPENAI_BASE_URL: "http://127.0.0.1:19090/v1",
-        OPENAI_MODEL: "wrong-openai-model",
       },
       apiKey: "mistral-test",
       model: undefined,
       expectedBaseURL: "https://api.mistral.ai/v1",
-      expectedModel: "devstral-latest",
+      expectedModel: "mistral-medium-latest",
       expectedUseResponsesApi: false,
       expectedInstance: MistralProvider,
       assertApiKey: true,
@@ -1542,9 +1499,7 @@ describe("createProvider", () => {
       env: {
         NVIDIA_API_KEY: undefined,
         NVIDIA_BASE_URL: undefined,
-        NVIDIA_MODEL: undefined,
         OPENAI_BASE_URL: "http://127.0.0.1:19090/v1",
-        OPENAI_MODEL: "wrong-openai-model",
       },
       apiKey: "nvidia-test",
       model: undefined,
@@ -1560,9 +1515,7 @@ describe("createProvider", () => {
       env: {
         MINIMAX_API_KEY: undefined,
         MINIMAX_BASE_URL: undefined,
-        MINIMAX_MODEL: undefined,
         OPENAI_BASE_URL: "http://127.0.0.1:19090/v1",
-        OPENAI_MODEL: "wrong-openai-model",
       },
       apiKey: "minimax-test",
       model: undefined,
@@ -1578,10 +1531,8 @@ describe("createProvider", () => {
       env: {
         GITHUB_TOKEN: undefined,
         GITHUB_BASE_URL: undefined,
-        GITHUB_MODEL: undefined,
         OPENAI_API_KEY: "sk-openai",
         OPENAI_BASE_URL: "http://127.0.0.1:19090/v1",
-        OPENAI_MODEL: "wrong-openai-model",
       },
       apiKey: "github-test",
       model: undefined,
@@ -1640,10 +1591,17 @@ describe("createProvider", () => {
       expectedApiKey,
     }) => {
       const provider = withEnv(env, () =>
-        createProvider(name, {
-          ...(apiKey !== undefined ? { apiKey } : {}),
-          ...(model !== undefined ? { model } : {}),
-        }),
+        createProvider(
+          name,
+          resolveProviderFactoryOptions(
+            name,
+            {
+              ...(apiKey !== undefined ? { apiKey } : {}),
+              model: model ?? expectedModel,
+            },
+            process.env,
+          ),
+        ),
       );
       if (name === "ollama") {
         expect(provider).toBeInstanceOf(OllamaProvider);
@@ -1674,9 +1632,15 @@ describe("createProvider", () => {
         GOOGLE_API_KEY: "google-test",
         GEMINI_API_KEY: undefined,
         GEMINI_BASE_URL: undefined,
-        GEMINI_MODEL: "gemini-2.5-pro",
       },
-      () => createProvider("gemini", {}),
+      () => createProvider(
+        "gemini",
+        resolveProviderFactoryOptions(
+          "gemini",
+          { model: "gemini-2.5-pro" },
+          process.env,
+        ),
+      ),
     );
 
     expect(provider).toBeInstanceOf(GeminiProvider);
@@ -1698,9 +1662,15 @@ describe("createProvider", () => {
         GOOGLE_CLOUD_REGION: undefined,
         GEMINI_VERTEX_LOCATION: undefined,
         GEMINI_BASE_URL: undefined,
-        GEMINI_MODEL: "gemini-2.5-pro",
       },
-      () => createProvider("gemini", {}),
+      () => createProvider(
+        "gemini",
+        resolveProviderFactoryOptions(
+          "gemini",
+          { model: "gemini-2.5-pro" },
+          process.env,
+        ),
+      ),
     );
 
     expect(provider).toBeInstanceOf(GeminiProvider);
@@ -1726,9 +1696,15 @@ describe("createProvider", () => {
         GOOGLE_CLOUD_REGION: undefined,
         GEMINI_VERTEX_LOCATION: undefined,
         GEMINI_BASE_URL: undefined,
-        GEMINI_MODEL: "gemini-2.5-pro",
       },
-      () => createProvider("gemini", {}),
+      () => createProvider(
+        "gemini",
+        resolveProviderFactoryOptions(
+          "gemini",
+          { model: "gemini-2.5-pro" },
+          process.env,
+        ),
+      ),
     );
 
     expect(provider).toBeInstanceOf(GeminiProvider);
@@ -1760,9 +1736,15 @@ describe("createProvider", () => {
         GOOGLE_CLOUD_REGION: undefined,
         GEMINI_VERTEX_LOCATION: undefined,
         GEMINI_BASE_URL: undefined,
-        GEMINI_MODEL: "gemini-2.5-pro",
       },
-      () => createProvider("gemini", {}),
+      () => createProvider(
+        "gemini",
+        resolveProviderFactoryOptions(
+          "gemini",
+          { model: "gemini-2.5-pro" },
+          process.env,
+        ),
+      ),
     );
 
     expect(provider).toBeInstanceOf(GeminiProvider);
@@ -1896,7 +1878,6 @@ describe("createProvider", () => {
       env: {
         OPENAI_API_KEY: "sk-openai",
         OPENROUTER_API_KEY: undefined,
-        OPENROUTER_MODEL: "openai/gpt-5",
       },
       expected: /OPENROUTER_API_KEY|apiKey/i,
     },
@@ -1905,7 +1886,6 @@ describe("createProvider", () => {
       env: {
         OPENAI_API_KEY: "sk-openai",
         GROQ_API_KEY: undefined,
-        GROQ_MODEL: "llama-3.3-70b-versatile",
       },
       expected: /GROQ_API_KEY|apiKey/i,
     },
@@ -1914,7 +1894,6 @@ describe("createProvider", () => {
       env: {
         OPENAI_API_KEY: "sk-openai",
         DEEPSEEK_API_KEY: undefined,
-        DEEPSEEK_MODEL: "deepseek-reasoner",
       },
       expected: /DEEPSEEK_API_KEY|apiKey/i,
     },
@@ -1923,7 +1902,6 @@ describe("createProvider", () => {
       env: {
         OPENAI_API_KEY: "sk-openai",
         MISTRAL_API_KEY: undefined,
-        MISTRAL_MODEL: "devstral-latest",
       },
       expected: /MISTRAL_API_KEY|apiKey/i,
     },
@@ -1932,7 +1910,6 @@ describe("createProvider", () => {
       env: {
         OPENAI_API_KEY: "sk-openai",
         NVIDIA_API_KEY: undefined,
-        NVIDIA_MODEL: "nvidia/llama-3.1-nemotron-70b-instruct",
       },
       expected: /NVIDIA_API_KEY|apiKey/i,
     },
@@ -1941,7 +1918,6 @@ describe("createProvider", () => {
       env: {
         OPENAI_API_KEY: "sk-openai",
         MINIMAX_API_KEY: undefined,
-        MINIMAX_MODEL: "MiniMax-M2.5",
       },
       expected: /MINIMAX_API_KEY|apiKey/i,
     },
@@ -1951,7 +1927,6 @@ describe("createProvider", () => {
         OPENAI_API_KEY: "sk-openai",
         GITHUB_TOKEN: undefined,
         GH_TOKEN: undefined,
-        GITHUB_MODEL: "gpt-4o",
       },
       expected: /GITHUB_TOKEN|apiKey/i,
     },
@@ -1969,7 +1944,6 @@ describe("createProvider", () => {
       {
         OPENAI_API_KEY: "sk-openai",
         LMSTUDIO_API_KEY: "lmstudio-env-token",
-        LMSTUDIO_MODEL: "qwen2.5-coder:7b",
       },
       () => createProvider("lmstudio", {}),
     );
@@ -2037,7 +2011,6 @@ describe("createProvider", () => {
     const provider = withEnv(
       {
         OPENROUTER_API_KEY: undefined,
-        OPENROUTER_MODEL: undefined,
       },
       () => createProvider("openrouter", { apiKey: "or-test" }),
     );
@@ -2046,12 +2019,7 @@ describe("createProvider", () => {
   });
 
   test("'lmstudio' uses the registry default model without an override", () => {
-    const provider = withEnv(
-      {
-        LMSTUDIO_MODEL: undefined,
-      },
-      () => createProvider("lmstudio", {}),
-    );
+    const provider = createProvider("lmstudio", {});
 
     expect(readProviderFactoryOptions(provider).model).toBe("gpt-4o-mini");
   });
@@ -2063,53 +2031,5 @@ describe("createProvider", () => {
         model: "y",
       }),
     ).toThrow(/unknown provider/i);
-  });
-});
-
-describe("resolveProviderNameFromEnv", () => {
-  test("defaults to 'grok' when AGENC_PROVIDER unset", () => {
-    withEnv(
-      {
-        AGENC_PROVIDER: undefined,
-      },
-      () => {
-        expect(resolveProviderNameFromEnv()).toBe("grok");
-      },
-    );
-  });
-
-  test("normalizes the xai alias to grok", () => {
-    withEnv(
-      {
-        AGENC_PROVIDER: "xai",
-      },
-      () => {
-        expect(resolveProviderNameFromEnv()).toBe("grok");
-      },
-    );
-  });
-
-  test("lowercases and trims AGENC_PROVIDER", () => {
-    withEnv(
-      {
-        AGENC_PROVIDER: "  openai  ",
-      },
-      () => {
-        expect(resolveProviderNameFromEnv()).toBe("openai");
-      },
-    );
-  });
-
-  test("rejects unknown provider names", () => {
-    withEnv(
-      {
-        AGENC_PROVIDER: "bogus",
-      },
-      () => {
-        expect(() => resolveProviderNameFromEnv()).toThrow(
-          /not a known provider/i,
-        );
-      },
-    );
   });
 });

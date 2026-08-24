@@ -84,7 +84,7 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
     expect(credentials.source).toBe('env')
   })
 
-  test('parses nested chatgpt_account_id from auth.json tokens', async () => {
+  test('ignores explicit auth.json credentials when native storage is empty', async () => {
     mock.module('../../../src/utils/agencCredentials.ts', () => ({
       isAgencRefreshFailureCoolingDown: () => false,
       readAgencCredentials: () => undefined,
@@ -115,8 +115,9 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
         PROVIDER_CODE_AUTH_JSON_PATH: authPath,
       } as NodeJS.ProcessEnv)
 
-      expect(credentials.accountId).toBe('acct_nested_auth_json')
-      expect(credentials.source).toBe('auth.json')
+      expect(credentials.apiKey).toBe('')
+      expect(credentials.accountId).toBeUndefined()
+      expect(credentials.source).toBe('none')
     } finally {
       rmSync(tempDir, { force: true, recursive: true })
     }
@@ -143,7 +144,7 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
     expect(credentials.source).toBe('secure-storage')
   })
 
-  test('falls back to the default auth.json when stored ProviderCode refresh is cooling down', async () => {
+  test('does not fall back to ambient auth.json when native refresh is cooling down', async () => {
     const tempHomeDir = mkdtempSync(join(tmpdir(), 'agenc-providerCode-home-'))
     const authJson = JSON.stringify({
       openai_api_key: makeJwt({
@@ -177,15 +178,15 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
 
     try {
       const credentials = resolveProviderCodeApiCredentials({} as NodeJS.ProcessEnv)
-      expect(credentials.source).toBe('auth.json')
-      expect(credentials.accountId).toBe('acct_auth_json')
-      expect(credentials.apiKey).not.toBe('stored-token')
+      expect(credentials.source).toBe('secure-storage')
+      expect(credentials.accountId).toBe('acct_stored')
+      expect(credentials.apiKey).toBe('stored-token')
     } finally {
       rmSync(tempHomeDir, { force: true, recursive: true })
     }
   })
 
-  test('preserves the stored account id when auth.json fallback lacks one', async () => {
+  test('keeps native credentials authoritative when ambient auth.json differs', async () => {
     const tempHomeDir = mkdtempSync(join(tmpdir(), 'agenc-providerCode-home-'))
     const authJson = JSON.stringify({
       openai_api_key: 'auth-json-access-token',
@@ -215,8 +216,8 @@ describe('resolveProviderCodeApiCredentials with secure storage', () => {
 
     try {
       const credentials = resolveProviderCodeApiCredentials({} as NodeJS.ProcessEnv)
-      expect(credentials.source).toBe('auth.json')
-      expect(credentials.apiKey).toBe('auth-json-access-token')
+      expect(credentials.source).toBe('secure-storage')
+      expect(credentials.apiKey).toBe('stored-token')
       expect(credentials.accountId).toBe('acct_stored')
     } finally {
       rmSync(tempHomeDir, { force: true, recursive: true })

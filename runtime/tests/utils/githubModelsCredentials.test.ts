@@ -1,4 +1,15 @@
 import { describe, expect, test } from 'bun:test'
+import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from '../../src/session/runtime-options.ts'
+import { resolveHomeContext } from '../../src/config/home.ts'
+
+const SIMPLE_MODE = resolveAgentRuntimeOptions({}, { simpleMode: true })
+const HOME = resolveHomeContext(
+  { AGENC_HOME: '/tmp/agenc-github-models-bare' },
+  { platformHome: '/tmp' },
+)
 
 describe('readGithubModelsToken', () => {
   test('returns undefined in bare mode', async () => {
@@ -6,14 +17,9 @@ describe('readGithubModelsToken', () => {
       '../../src/utils/githubModelsCredentials.ts?read-bare-mode'
     )
 
-    const prev = process.env.AGENC_SIMPLE
-    process.env.AGENC_SIMPLE = '1'
-    expect(readGithubModelsToken()).toBeUndefined()
-    if (prev === undefined) {
-      delete process.env.AGENC_SIMPLE
-    } else {
-      process.env.AGENC_SIMPLE = prev
-    }
+    runWithAgentRuntimeOptions(SIMPLE_MODE, () => {
+      expect(readGithubModelsToken(HOME)).toBeUndefined()
+    })
   })
 })
 
@@ -23,16 +29,11 @@ describe('saveGithubModelsToken / clearGithubModelsToken', () => {
       '../../src/utils/githubModelsCredentials.ts?save-bare-mode'
     )
 
-    const prev = process.env.AGENC_SIMPLE
-    process.env.AGENC_SIMPLE = '1'
-    const r = saveGithubModelsToken('abc')
-    expect(r.success).toBe(false)
-    expect(r.warning).toContain('Bare mode')
-    if (prev === undefined) {
-      delete process.env.AGENC_SIMPLE
-    } else {
-      process.env.AGENC_SIMPLE = prev
-    }
+    runWithAgentRuntimeOptions(SIMPLE_MODE, () => {
+      const r = saveGithubModelsToken(HOME, 'abc')
+      expect(r.success).toBe(false)
+      expect(r.warning).toContain('Bare mode')
+    })
   })
 
   test('clear succeeds in bare mode', async () => {
@@ -40,14 +41,8 @@ describe('saveGithubModelsToken / clearGithubModelsToken', () => {
       '../../src/utils/githubModelsCredentials.ts?clear-bare-mode'
     )
 
-    const prev = process.env.AGENC_SIMPLE
-    process.env.AGENC_SIMPLE = '1'
-    expect(clearGithubModelsToken().success).toBe(true)
-    if (prev === undefined) {
-      delete process.env.AGENC_SIMPLE
-    } else {
-      process.env.AGENC_SIMPLE = prev
-    }
+    runWithAgentRuntimeOptions(SIMPLE_MODE, () => {
+      expect(clearGithubModelsToken(HOME).success).toBe(true)
+    })
   })
 })
-

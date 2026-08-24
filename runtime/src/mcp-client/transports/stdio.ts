@@ -27,7 +27,7 @@ import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import type { Logger } from "../_deps/logger.js";
 import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
-import type { PluginMcpSandboxMetadata } from "../../config/schema.js";
+import type { PluginMcpSandboxMetadata } from "../types.js";
 import { pluginMcpPermissionProfile } from "../../tools/runtimes/sandboxing.js";
 import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
 import {
@@ -40,7 +40,10 @@ import {
   type SandboxExecutionBrokerLike,
 } from "../../sandbox/execution-broker.js";
 import { terminateProcessTreeAndWait } from "../../utils/supervisedProcess.js";
+import { subprocessEnv } from "../../utils/subprocessEnv.js";
 import { connectMCPClientWithCleanup } from "./connect-with-cleanup.js";
+import type { ProviderEnvironment } from "../../llm/provider-options.js";
+import { EMPTY_MCP_REQUEST_ENVIRONMENT } from "../environment.js";
 
 const PROCESS_GROUP_TERM_GRACE_MS = 2_000;
 /**
@@ -122,21 +125,22 @@ export interface StdioTransportServerParameters {
   readonly pluginSandbox?: PluginMcpSandboxMetadata;
 }
 
-type NodeProcessEnv = Readonly<Record<string, string | undefined>>;
+type NodeProcessEnv = ProviderEnvironment;
 
 export function createStdioMCPEnvironment(
   extraEnv: Readonly<Record<string, string>> | undefined,
   envVars: readonly string[] | undefined,
-  parentEnv: NodeProcessEnv = process.env,
+  parentEnv: NodeProcessEnv = EMPTY_MCP_REQUEST_ENVIRONMENT,
 ): Record<string, string> {
   const env: Record<string, string> = {};
+  const sanitizedParent = subprocessEnv({ ...parentEnv });
   const names = new Set<string>(DEFAULT_STDIO_ENV_VARS);
   for (const name of envVars ?? []) {
     if (name.trim().length > 0) names.add(name);
   }
 
   for (const name of names) {
-    const value = parentEnv[name];
+    const value = sanitizedParent[name];
     if (value === undefined || value.startsWith("()")) continue;
     env[name] = value;
   }
@@ -159,9 +163,8 @@ function resolveStdioProgram(
     return command;
   }
 
-  const pathValue = env.PATH ?? process.env.PATH ?? "";
-  const pathExtValue =
-    env.PATHEXT ?? process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD";
+  const pathValue = env.PATH ?? "";
+  const pathExtValue = env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD";
   const extensions = pathExtValue
     .split(";")
     .map((entry) => entry.trim())
@@ -528,8 +531,13 @@ function createStdioMCPTransport(
   config: MCPServerStdioConfig,
   logger: Logger = silentLogger,
   sandboxExecutionBroker?: SandboxExecutionBrokerLike,
+  parentEnvironment: NodeProcessEnv = EMPTY_MCP_REQUEST_ENVIRONMENT,
 ): AgenCStdioClientTransport {
-  const env = createStdioMCPEnvironment(config.env, config.env_vars);
+  const env = createStdioMCPEnvironment(
+    config.env,
+    config.env_vars,
+    parentEnvironment,
+  );
   return new AgenCStdioClientTransport(
     {
       command: config.command,
@@ -551,6 +559,7 @@ export async function createStdioMCPConnection(
   elicitationHandlers?: MCPElicitationHandlers,
   samplingHandlers?: McpSamplingHandlers,
   sandboxExecutionBroker?: SandboxExecutionBrokerLike,
+  parentEnvironment: NodeProcessEnv = EMPTY_MCP_REQUEST_ENVIRONMENT,
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
 ): Promise<any> {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
@@ -559,6 +568,7 @@ export async function createStdioMCPConnection(
     config,
     logger,
     sandboxExecutionBroker,
+    parentEnvironment,
   );
   const client = new Client(
     { name: "agenc-runtime", version: VERSION },

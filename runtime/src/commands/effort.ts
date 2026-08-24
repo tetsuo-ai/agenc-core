@@ -16,7 +16,8 @@ import {
   getDisplayedEffortLevel,
   isAvailableEffortLevel,
   modelSupportsEffort,
-  toPersistableEffort,
+  effortValueToReasoningEffort,
+  reasoningEffortToEffortLevel,
   type AvailableEffortLevel,
 } from "../utils/effort.js";
 import { getMainLoopModel } from "../utils/model/model.js";
@@ -47,7 +48,7 @@ export const effortCommand: SlashCommand = {
   execute: async (ctx) =>
     safeExecute(async () => {
       // The session's configured model is authoritative: a stale
-      // settings.json `model` (what getMainLoopModel reads) can diverge
+      // canonical config `model` (what getMainLoopModel reads) can diverge
       // from what the daemon session actually runs (e.g. grok-4.5 from the
       // provider switch), and effort support must be judged against the
       // model that will receive the parameter.
@@ -67,7 +68,9 @@ export const effortCommand: SlashCommand = {
           model,
           currentEffortValue(ctx) as never,
         );
-        const persisted = getSettingsForSource("userSettings")?.effortLevel;
+        const persisted = reasoningEffortToEffortLevel(
+          getSettingsForSource("userSettings")?.reasoning_effort,
+        );
         const levels = getAvailableEffortLevels(model).join("/");
         const source =
           persisted !== undefined
@@ -93,8 +96,8 @@ export const effortCommand: SlashCommand = {
       }
 
       if (arg === "default" || arg === "auto" || arg === "unset") {
-        updateSettingsForSource("userSettings", {
-          effortLevel: undefined,
+        await updateSettingsForSource("userSettings", {
+          reasoning_effort: undefined,
         });
         ctx.appState?.setAppState?.((prev: unknown) => ({
           ...(prev as Record<string, unknown>),
@@ -122,8 +125,8 @@ export const effortCommand: SlashCommand = {
         };
       }
 
-      updateSettingsForSource("userSettings", {
-        effortLevel: toPersistableEffort(level),
+      await updateSettingsForSource("userSettings", {
+        reasoning_effort: effortValueToReasoningEffort(level),
       });
       ctx.appState?.setAppState?.((prev: unknown) => ({
         ...(prev as Record<string, unknown>),

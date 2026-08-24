@@ -55,7 +55,6 @@ export interface UnifiedExecRuntimeSandbox {
   readonly networkPolicyDecider?: NetworkPolicyDecider;
   readonly blockedRequestObserver?: BlockedRequestObserver;
   readonly agencLinuxSandboxExe?: string;
-  readonly useLegacyLandlock?: boolean;
   readonly windowsSandboxLevel?: WindowsSandboxLevel;
   readonly windowsSandboxPrivateDesktop?: boolean;
   /** Opt-in GPU compute inside the sandbox (config `sandbox.allow_gpu`). */

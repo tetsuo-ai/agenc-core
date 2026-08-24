@@ -13,7 +13,12 @@ async function main() {
   }
 
   fs.mkdirSync(path.dirname(pidFile), { recursive: true });
-  fs.writeFileSync(pidFile, `${process.pid}\n`, "utf8");
+  const sessionMarker = process.env.MCP_SESSION_MARKER;
+  fs.writeFileSync(
+    pidFile,
+    `${process.pid}\n${sessionMarker === undefined ? "" : sessionMarker}\n`,
+    "utf8",
+  );
 
   const server = new McpServer(
     { name: "stdio-pid-server", version: "1.0.0" },

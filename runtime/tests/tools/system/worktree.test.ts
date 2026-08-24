@@ -21,15 +21,50 @@ import {
   createEnterWorktreeTool as createUnboundEnterWorktreeTool,
   createExitWorktreeTool as createUnboundExitWorktreeTool,
 } from "./worktree.js";
+import {
+  SESSION_AGENC_HOME_ARG,
+  withSignedSessionId,
+} from "../../../src/tools/system/filesystem.js";
 import { bindExplicitDangerBoundary } from "../../helpers/explicit-danger-boundary.js";
+
+function bindSessionAuthority<
+  T extends {
+    readonly execute: (
+      args: Record<string, unknown>,
+    ) => Promise<unknown>;
+  },
+>(tool: T, agencHome: string): T {
+  const execute = tool.execute.bind(tool);
+  return {
+    ...tool,
+    execute(args: Record<string, unknown>): Promise<unknown> {
+      const sessionId = args.__agencSessionId;
+      const authorized = typeof sessionId === "string"
+        ? {
+            ...withSignedSessionId(args, sessionId),
+            [SESSION_AGENC_HOME_ARG]: agencHome,
+          }
+        : args;
+      return execute(authorized);
+    },
+  } as T;
+}
 
 const createEnterWorktreeTool = (
   config: Parameters<typeof createUnboundEnterWorktreeTool>[0],
-) => bindExplicitDangerBoundary(createUnboundEnterWorktreeTool(config));
+) =>
+  bindSessionAuthority(
+    bindExplicitDangerBoundary(createUnboundEnterWorktreeTool(config)),
+    config.cwd,
+  );
 
 const createExitWorktreeTool = (
   config: Parameters<typeof createUnboundExitWorktreeTool>[0],
-) => bindExplicitDangerBoundary(createUnboundExitWorktreeTool(config));
+) =>
+  bindSessionAuthority(
+    bindExplicitDangerBoundary(createUnboundExitWorktreeTool(config)),
+    config.cwd,
+  );
 
 const execFileP = promisify(execFile);
 

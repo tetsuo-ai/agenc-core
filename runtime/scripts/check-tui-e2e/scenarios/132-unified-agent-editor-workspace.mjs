@@ -12,7 +12,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export const meta = {
   description:
     "Agent and Editor share one session: Neovim Ask opens a scrollable AI panel, tab state survives, and Agent reads the saved edit.",
-  args: ["--yolo"],
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   timeoutMs: 120_000,
   env: {
     AGENC_TUI_WORKBENCH: "1",

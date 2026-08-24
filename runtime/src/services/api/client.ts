@@ -4,13 +4,13 @@ import { randomUUID } from 'crypto'
 import {
   checkAndRefreshOAuthTokenIfNeeded,
   getproviderApiKey,
-  getApiKeyFromApiKeyHelper,
   getAgenCAIOAuthTokens,
   isAgenCAISubscriber,
 } from 'src/utils/auth.js'
 import { getUserAgent } from 'src/utils/http.js'
 import {
   getAPIProvider,
+  getSelectedProviderEnvironment,
   isFirstPartyproviderBaseUrl,
   isGithubNativeproviderMode,
 } from 'src/utils/model/providers.js'
@@ -22,6 +22,7 @@ import {
 import { getOauthConfig } from '../../constants/oauth.js'
 import { isDebugToStdErr, logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { resolveSecureStorageHome } from '../../utils/secureStorage/home.js'
 
 /**
  * Environment variables for different client types:
@@ -67,26 +68,6 @@ function stripForwardedAuthHeaders(
   return safeHeaders
 }
 
-function hasProviderEnvValue(value: string | undefined): boolean {
-  return typeof value === 'string' && value.trim() !== ''
-}
-
-function resolveShimSelectedProvider(
-  apiProvider: ReturnType<typeof getAPIProvider>,
-): ReturnType<typeof getAPIProvider> {
-  if (isEnvTruthy(process.env.AGENC_USE_GEMINI)) return 'gemini'
-  if (isEnvTruthy(process.env.AGENC_USE_MISTRAL)) return 'mistral'
-  if (isEnvTruthy(process.env.AGENC_USE_GITHUB)) return 'github'
-  if (isEnvTruthy(process.env.AGENC_USE_MINIMAX)) return 'minimax'
-  if (hasProviderEnvValue(process.env.XAI_API_KEY)) return 'xai'
-  if (isEnvTruthy(process.env.AGENC_USE_OPENAI)) {
-    return apiProvider === 'agenc' ? 'agenc' : 'openai'
-  }
-  if (isEnvTruthy(process.env.NVIDIA_NIM)) return 'nvidia-nim'
-  if (hasProviderEnvValue(process.env.MINIMAX_API_KEY)) return 'minimax'
-  return apiProvider
-}
-
 export async function getproviderClient({
   apiKey,
   maxRetries,
@@ -102,10 +83,12 @@ export async function getproviderClient({
   source?: string
   providerOverride?: { model: string; baseURL: string; apiKey: string }
 }): Promise<ProviderSdk> {
-  const containerId = process.env.AGENC_CONTAINER_ID
-  const remoteSessionId = process.env.AGENC_REMOTE_SESSION_ID
-  const clientApp = process.env.AGENC_AGENT_SDK_CLIENT_APP
-  const customHeaders = getCustomHeaders()
+  const providerEnvironment = getSelectedProviderEnvironment()
+  const credentialHome = resolveSecureStorageHome()
+  const containerId = providerEnvironment.AGENC_CONTAINER_ID
+  const remoteSessionId = providerEnvironment.AGENC_REMOTE_SESSION_ID
+  const clientApp = providerEnvironment.AGENC_AGENT_SDK_CLIENT_APP
+  const customHeaders = getCustomHeaders(providerEnvironment)
   const defaultHeaders: { [key: string]: string } = {
     'x-app': 'cli',
     'User-Agent': getUserAgent(),
@@ -121,23 +104,30 @@ export async function getproviderClient({
 
   // Log API client configuration for HFI debugging
   logForDebugging(
-    `[API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: ${!!process.env.ANTHROPIC_CUSTOM_HEADERS}, has Authorization header: ${!!customHeaders['Authorization']}`,
+    `[API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: ${!!providerEnvironment.ANTHROPIC_CUSTOM_HEADERS}, has Authorization header: ${!!customHeaders['Authorization']}`,
   )
 
   // Add additional protection header if enabled via env var
   const additionalProtectionEnabled = isEnvTruthy(
-    process.env.AGENC_ADDITIONAL_PROTECTION,
+    providerEnvironment.AGENC_ADDITIONAL_PROTECTION,
   )
   if (additionalProtectionEnabled) {
     defaultHeaders['x-anthropic-additional-protection'] = 'true'
   }
 
   logForDebugging('[API:auth] OAuth token check starting')
-  await checkAndRefreshOAuthTokenIfNeeded()
+  await checkAndRefreshOAuthTokenIfNeeded(
+    credentialHome,
+    providerEnvironment,
+  )
   logForDebugging('[API:auth] OAuth token check complete')
 
-  if (!isAgenCAISubscriber()) {
-    await configureApiKeyHeaders(defaultHeaders, getIsNonInteractiveSession())
+  if (!isAgenCAISubscriber(credentialHome)) {
+    await configureApiKeyHeaders(
+      defaultHeaders,
+      getIsNonInteractiveSession(),
+      providerEnvironment,
+    )
   }
 
   const resolvedFetch = buildFetch(fetchOverride, source)
@@ -145,10 +135,14 @@ export async function getproviderClient({
   const ARGS = {
     defaultHeaders,
     maxRetries,
-    timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
+    timeout: parseInt(
+      providerEnvironment.API_TIMEOUT_MS || String(600 * 1000),
+      10,
+    ),
     dangerouslyAllowBrowser: true,
     fetchOptions: getProxyFetchOptions({
       forAnthropicAPI: true,
+      environment: providerEnvironment,
     }) as ClientOptions['fetchOptions'],
     ...(resolvedFetch && {
       fetch: resolvedFetch,
@@ -160,9 +154,12 @@ export async function getproviderClient({
   if (providerOverride) {
     const { createOpenAiShimClient } = await import('./openaiShim.js')
     return createOpenAiShimClient({
+      home: credentialHome,
+      model: providerOverride.model,
+      providerEnvironment,
       defaultHeaders: stripForwardedAuthHeaders(defaultHeaders),
       maxRetries,
-      timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
+      timeout: parseInt(providerEnvironment.API_TIMEOUT_MS || String(600 * 1000), 10),
       providerOverride,
     }) as unknown as ProviderSdk
   }
@@ -170,13 +167,13 @@ export async function getproviderClient({
   // format so cache_control blocks are honoured and prompt caching works.
   // Requires the GitHub endpoint (GITHUB_BASE_URL) to support provider's
   // messages API — set AGENC_GITHUB_ANTHROPIC_API=1 to opt in.
-  if (isGithubNativeproviderMode(model)) {
+  if (model !== undefined && isGithubNativeproviderMode(model)) {
     const githubBaseUrl =
-      process.env.GITHUB_BASE_URL?.replace(/\/$/, '') ??
-      process.env.OPENAI_BASE_URL?.replace(/\/$/, '') ??
+      providerEnvironment.GITHUB_BASE_URL?.replace(/\/$/, '') ??
+      providerEnvironment.OPENAI_BASE_URL?.replace(/\/$/, '') ??
       'https://api.githubcopilot.com'
     const githubToken =
-      process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
+      providerEnvironment.GITHUB_TOKEN ?? providerEnvironment.GH_TOKEN ?? ''
     const nativeArgs: ConstructorParameters<typeof ProviderSdk>[0] = {
       ...ARGS,
       baseURL: githubBaseUrl,
@@ -187,34 +184,30 @@ export async function getproviderClient({
     return new ProviderSdk(nativeArgs)
   }
   const apiProvider = getAPIProvider()
-  if (
-    apiProvider !== 'firstParty' ||
-    isEnvTruthy(process.env.AGENC_USE_OPENAI) ||
-    isEnvTruthy(process.env.AGENC_USE_GITHUB) ||
-    isEnvTruthy(process.env.AGENC_USE_GEMINI) ||
-    isEnvTruthy(process.env.AGENC_USE_MISTRAL) ||
-    isEnvTruthy(process.env.NVIDIA_NIM) ||
-    isEnvTruthy(process.env.AGENC_USE_MINIMAX) ||
-    (typeof process.env.MINIMAX_API_KEY === 'string' &&
-      process.env.MINIMAX_API_KEY.trim() !== '')
-  ) {
+  if (apiProvider !== 'firstParty') {
     const { createOpenAiShimClient } = await import('./openaiShim.js')
     return createOpenAiShimClient({
+      home: credentialHome,
+      ...(model !== undefined ? { model } : {}),
+      providerEnvironment,
       defaultHeaders: stripForwardedAuthHeaders(defaultHeaders),
       maxRetries,
-      timeout: parseInt(process.env.API_TIMEOUT_MS || String(600 * 1000), 10),
-      selectedProvider: resolveShimSelectedProvider(apiProvider),
+      timeout: parseInt(providerEnvironment.API_TIMEOUT_MS || String(600 * 1000), 10),
+      selectedProvider: apiProvider,
     }) as unknown as ProviderSdk
   }
   // Determine authentication method based on available tokens
   const clientConfig: ConstructorParameters<typeof ProviderSdk>[0] = {
-    apiKey: isAgenCAISubscriber() ? null : apiKey || getproviderApiKey(),
-    authToken: isAgenCAISubscriber()
-      ? getAgenCAIOAuthTokens()?.accessToken
+    apiKey: isAgenCAISubscriber(credentialHome) ? null : apiKey || getproviderApiKey(),
+    authToken: isAgenCAISubscriber(credentialHome)
+      ? getAgenCAIOAuthTokens(
+          credentialHome,
+          providerEnvironment,
+        )?.accessToken
       : undefined,
     // Set baseURL from OAuth config when using staging OAuth
-    ...(process.env.USER_TYPE === 'ant' &&
-    isEnvTruthy(process.env.USE_STAGING_OAUTH)
+    ...(providerEnvironment.USER_TYPE === 'ant' &&
+    isEnvTruthy(providerEnvironment.USE_STAGING_OAUTH)
       ? { baseURL: getOauthConfig().BASE_API_URL }
       : {}),
     ...ARGS,
@@ -226,19 +219,20 @@ export async function getproviderClient({
 
 async function configureApiKeyHeaders(
   headers: Record<string, string>,
-  isNonInteractiveSession: boolean,
+  _isNonInteractiveSession: boolean,
+  environment: Readonly<Record<string, string | undefined>>,
 ): Promise<void> {
-  const token =
-    process.env.ANTHROPIC_AUTH_TOKEN ||
-    (await getApiKeyFromApiKeyHelper(isNonInteractiveSession))
+  const token = environment.ANTHROPIC_AUTH_TOKEN
   if (token) {
     headers['Authorization'] = `Bearer ${token}`
   }
 }
 
-function getCustomHeaders(): Record<string, string> {
+function getCustomHeaders(
+  environment: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
   const customHeaders: Record<string, string> = {}
-  const customHeadersEnv = process.env.ANTHROPIC_CUSTOM_HEADERS
+  const customHeadersEnv = environment.ANTHROPIC_CUSTOM_HEADERS
 
   if (!customHeadersEnv) return customHeaders
 

@@ -1,6 +1,6 @@
 export const meta = {
   description: "long unbroken prompt input wraps inside the prompt box",
-  args: ["--yolo"],
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   timeoutMs: 30_000,
 };
 

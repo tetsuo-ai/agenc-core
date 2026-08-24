@@ -10,6 +10,7 @@
  */
 
 import { getMcpConfigsByScope } from '../../services/mcp/config.js'
+import type { CanonicalSettingsAuthority } from './canonicalAuthority.js'
 import { getSettingsWithErrors } from './settings.js'
 import type { SettingsWithErrors } from './validation.js'
 
@@ -20,11 +21,15 @@ import type { SettingsWithErrors } from './validation.js'
  * errors (settings + MCP). The underlying getSettingsWithErrors() no longer
  * includes MCP errors to avoid the circular dependency.
  */
-export function getSettingsWithAllErrors(): SettingsWithErrors {
+export function getSettingsWithAllErrors(
+  authority: CanonicalSettingsAuthority,
+): SettingsWithErrors {
   const result = getSettingsWithErrors()
   // 'dynamic' scope does not have errors returned; it throws and is set on cli startup
   const scopes = ['user', 'project', 'local'] as const
-  const mcpErrors = scopes.flatMap(scope => getMcpConfigsByScope(scope).errors)
+  const mcpErrors = scopes.flatMap(
+    scope => getMcpConfigsByScope(scope, authority).errors,
+  )
   return {
     settings: result.settings,
     errors: [...result.errors, ...mcpErrors],

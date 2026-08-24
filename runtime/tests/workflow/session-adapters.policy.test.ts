@@ -3,7 +3,7 @@
  *
  * A2: the frozen spec's permissionMode/unattendedAllow/unattendedDeny are
  * applied to the run's bootstrapped session exactly like the
- * background-agent runner applies them (`--permission-mode`/`--yolo`
+ * background-agent runner applies them (`--permission-mode`/`--dangerously-bypass-approvals-and-sandbox`
  * bootstrap argv + unattended-policy install on the permission-mode
  * registry) — on start (explicit policy) AND on resume (policy re-resolved
  * from the durable intake spec).
@@ -98,7 +98,7 @@ const fakeBootstrap: AgenCBootstrapFunction = async (options) => {
   const argv = options.argv;
   let mode: ToolPermissionContext["mode"] = "default";
   if (argv !== undefined) {
-    if (argv.includes("--yolo")) mode = "bypassPermissions";
+    if (argv.includes("--dangerously-bypass-approvals-and-sandbox")) mode = "bypassPermissions";
     const flag = argv.indexOf("--permission-mode");
     if (flag >= 0 && typeof argv[flag + 1] === "string") {
       mode = argv[flag + 1] as ToolPermissionContext["mode"];
@@ -145,14 +145,14 @@ function makeSeams(
 }
 
 describe("A2 — spec permission policy on the run session", () => {
-  it("bypassPermissions rides --yolo on the bootstrap argv", async () => {
+  it("bypassPermissions rides --dangerously-bypass-approvals-and-sandbox on the bootstrap argv", async () => {
     const seams = makeSeams();
     await seams.journal.open(RUN_ID, {
       repoPath: cwd,
       policy: { permissionMode: "bypassPermissions" },
     });
     expect(bootstrapCalls).toHaveLength(1);
-    expect(bootstrapCalls[0].argv).toContain("--yolo");
+    expect(bootstrapCalls[0].argv).toContain("--dangerously-bypass-approvals-and-sandbox");
     expect(bootstrapCalls[0].argv).not.toContain("--permission-mode");
     expect(bootstrapCalls[0].registry.current().mode).toBe(
       "bypassPermissions",
@@ -220,8 +220,16 @@ describe("A2 — spec permission policy on the run session", () => {
 
   it("workflowPermissionModeArgv never duplicates flags already present", () => {
     expect(
-      workflowPermissionModeArgv("bypassPermissions", ["node", "agenc", "--yolo"]),
-    ).toEqual(["node", "agenc", "--yolo"]);
+      workflowPermissionModeArgv("bypassPermissions", [
+        "node",
+        "agenc",
+        "--dangerously-bypass-approvals-and-sandbox",
+      ]),
+    ).toEqual([
+      "node",
+      "agenc",
+      "--dangerously-bypass-approvals-and-sandbox",
+    ]);
     expect(
       workflowPermissionModeArgv("acceptEdits", [
         "node",
@@ -237,6 +245,19 @@ describe("A2 — spec permission policy on the run session", () => {
       "plan",
     ]);
   });
+
+  it.each(["--yolo", "--allow-dangerously-skip-permissions"])(
+    "rejects retired bypass flag %s instead of forwarding it",
+    (flag) => {
+      expect(() =>
+        workflowPermissionModeArgv("bypassPermissions", [
+          "node",
+          "agenc",
+          flag,
+        ]),
+      ).toThrow(`unknown option '${flag}'`);
+    },
+  );
 
   it("inserts generated permission options before a positional argv boundary", () => {
     const argv = workflowPermissionModeArgv("plan", [

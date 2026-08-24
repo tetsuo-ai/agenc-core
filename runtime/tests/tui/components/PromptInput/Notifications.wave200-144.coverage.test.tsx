@@ -3,6 +3,7 @@ import { PassThrough } from "node:stream";
 import React from "react";
 import stripAnsi from "strip-ansi";
 import { beforeEach, describe, expect, test, vi } from "vitest";
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../../remoteAuthSessionContext.fixture.js";
 
 const harness = vi.hoisted(() => ({
   addNotification: vi.fn(),
@@ -38,7 +39,7 @@ vi.mock("bun:bundle", () => ({
 }));
 
 vi.mock("../../../services/compact/autoCompact.js", () => ({
-  calculateTokenWarningState: (tokenUsage: number, model: string) => ({
+  calculateTokenWarningStateForEnvironment: (tokenUsage: number, model: string) => ({
     isAboveWarningThreshold: harness.compactWarning,
     model,
     tokenUsage,
@@ -49,7 +50,7 @@ vi.mock("../../../utils/auth.js", () => ({
   getApiKeyHelperElapsedMs: () => harness.helperElapsedMs,
   getConfiguredApiKeyHelper: () =>
     harness.helperConfigured ? "echo helper" : null,
-  getSubscriptionType: () => harness.subscriptionType,
+  getSubscriptionTypeForContext: () => harness.subscriptionType,
 }));
 
 vi.mock("../../../utils/editor.js", () => ({
@@ -180,13 +181,19 @@ vi.mock("../../cost/TokenWarning.js", async () => {
 
   return {
     TokenWarning: ({
+      environment,
       model,
       tokenUsage,
     }: {
+      environment: unknown;
       model: string;
       tokenUsage: number;
     }) =>
-      ReactModule.createElement(Text, null, `TokenWarning:${tokenUsage}:${model}`),
+      ReactModule.createElement(
+        Text,
+        null,
+        `TokenWarning:${tokenUsage}:${model}:${String(environment === TEST_REMOTE_AUTH_SESSION_CONTEXT.environment)}`,
+      ),
   };
 });
 
@@ -242,6 +249,7 @@ function baseProps(): NotificationsProps {
     mcpClients: undefined,
     onAutoUpdaterResult: vi.fn(),
     onChangeIsUpdating: vi.fn(),
+    remoteAuthSessionContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
     verbose: false,
   };
 }
@@ -341,7 +349,7 @@ describe("Notifications wave200-144 coverage", () => {
 
     try {
       expect(rendered.output()).toContain("IDE:selected text:1");
-      expect(rendered.output()).toContain("TokenWarning:1776:gpt-5.4");
+      expect(rendered.output()).toContain("TokenWarning:1776:gpt-5.4:true");
       expect(rendered.output()).not.toContain("AutoUpdater");
       expect(harness.autoUpdaterProps).toHaveLength(0);
       expect(harness.mcpClientsSeen).toBe(mcpClients);

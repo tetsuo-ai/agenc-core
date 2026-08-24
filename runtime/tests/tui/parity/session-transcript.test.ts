@@ -851,7 +851,7 @@ describe("AgenC TUI session transcript", () => {
       },
     ]);
 
-    expect([...transcript.toolNames]).toEqual(["Bash"]);
+    expect([...transcript.toolNames]).toEqual(["exec_command"]);
     expect(transcript.inProgressToolUseIDs.size).toBe(0);
     expect(transcript.messages.map((message) => message.type)).toEqual([
       "assistant",

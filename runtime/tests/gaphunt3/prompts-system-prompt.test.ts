@@ -51,7 +51,7 @@ function baseOpts(cwd: string): AssembleSystemPromptOpts {
     provider: "xai",
     permissionContext: null,
     // Keep the full (non-SIMPLE) assembly path.
-    envForSimpleMode: {},
+    simpleMode: false,
   };
 }
 

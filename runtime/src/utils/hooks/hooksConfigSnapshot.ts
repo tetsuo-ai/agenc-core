@@ -3,8 +3,7 @@ import { resetSdkInitState } from '../../bootstrap/state.js'
 import { isRestrictedToPluginOnly } from '../settings/pluginOnlyPolicy.js'
 // Import as module object so spyOn works in tests (direct imports bypass spies)
 import * as settingsModule from '../settings/settings.js'
-import { resetSettingsCache } from '../settings/settingsCache.js'
-import type { HooksSettings } from '../settings/types.js'
+import type { HooksSettings } from '../../schemas/hooks.js'
 
 let initialHooksConfig: HooksSettings | null = null
 
@@ -103,12 +102,6 @@ export function captureHooksConfigSnapshot(): void {
  * Respects the allowManagedHooksOnly setting
  */
 export function updateHooksConfigSnapshot(): void {
-  // Reset the session cache to ensure we read fresh settings from disk.
-  // Without this, the snapshot could use stale cached settings when the user
-  // edits settings.json externally and then runs /hooks - the session cache
-  // may not have been invalidated yet (e.g., if the file watcher's stability
-  // threshold hasn't elapsed).
-  resetSettingsCache()
   initialHooksConfig = getHooksFromAllowedSources()
 }
 

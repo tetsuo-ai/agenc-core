@@ -27,8 +27,13 @@ describe("agenc CLI help", () => {
     expect(help).toContain("agenc daemon <stop|status|reload|restart>");
     expect(help).toContain("agenc mcp serve --transport stdio");
     expect(help).toContain("-p, --print");
-    expect(help).toContain("--autonomous, --proactive");
-    expect(help).toContain("--yolo");
+    expect(help).toContain("--bare");
+    expect(help).toContain("--config <path>");
+    expect(help).toContain("--autonomous");
+    expect(help).toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(help).not.toContain("--yolo");
+    expect(help).not.toContain("--allow-dangerously-skip-permissions");
+    expect(help).not.toContain("--proactive");
   });
 
   it("resolves help topics for every routed CLI command", () => {
@@ -167,4 +172,35 @@ describe("agenc CLI help", () => {
       stderrSpy.mockRestore();
     }
   });
+
+  it.each(["AGENC_SIMPLE", "AGENC_BARE"] as const)(
+    "fails closed when removed %s is present",
+    async (key) => {
+    const prevArgv = [...process.argv];
+    const previousValue = process.env[key];
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+
+    process.argv = ["/usr/bin/node", "/opt/agenc/bin/agenc.js", "--help"];
+    process.env[key] = "0";
+
+    try {
+      expect(await main()).toBe(2);
+      expect(stdoutSpy).not.toHaveBeenCalled();
+      expect(
+        stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
+      ).toContain(`${key} was removed; use --bare`);
+    } finally {
+      process.argv = prevArgv;
+      if (previousValue === undefined) delete process.env[key];
+      else process.env[key] = previousValue;
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+    }
+    },
+  );
 });

@@ -1,4 +1,6 @@
 import { getPlatform } from '../../utils/platform.js'
+import { NON_REBINDABLE_KEYBINDINGS } from './grammar.js'
+export { normalizeKeyForComparison } from './grammar.js'
 
 /**
  * Shortcuts that are typically intercepted by the OS, terminal, or shell
@@ -13,24 +15,12 @@ export type ReservedShortcut = {
 /**
  * Shortcuts that cannot be rebound - they are hardcoded in AgenC.
  */
-export const NON_REBINDABLE: ReservedShortcut[] = [
-  {
-    key: 'ctrl+c',
-    reason: 'Cannot be rebound - used for interrupt/exit (hardcoded)',
+export const NON_REBINDABLE: ReservedShortcut[] =
+  NON_REBINDABLE_KEYBINDINGS.map(({ key, reason }) => ({
+    key,
+    reason,
     severity: 'error',
-  },
-  {
-    key: 'ctrl+d',
-    reason: 'Cannot be rebound - used for exit (hardcoded)',
-    severity: 'error',
-  },
-  {
-    key: 'ctrl+m',
-    reason:
-      'Cannot be rebound - identical to Enter in terminals (both send CR)',
-    severity: 'error',
-  },
-]
+  }))
 
 /**
  * Terminal control shortcuts that are intercepted by the terminal/OS.
@@ -80,48 +70,4 @@ export function getReservedShortcuts(): ReservedShortcut[] {
   }
 
   return reserved
-}
-
-/**
- * Normalize a key string for comparison (lowercase, sorted modifiers).
- * Chords (space-separated steps like "ctrl+x ctrl+b") are normalized
- * per-step — splitting on '+' first would mangle "x ctrl" into a mainKey
- * overwritten by the next step, collapsing the chord into its last key.
- */
-export function normalizeKeyForComparison(key: string): string {
-  return key.trim().split(/\s+/).map(normalizeStep).join(' ')
-}
-
-function normalizeStep(step: string): string {
-  const parts = step.split('+')
-  const modifiers: string[] = []
-  let mainKey = ''
-
-  for (const part of parts) {
-    const lower = part.trim().toLowerCase()
-    if (
-      [
-        'ctrl',
-        'control',
-        'alt',
-        'opt',
-        'option',
-        'meta',
-        'cmd',
-        'command',
-        'shift',
-      ].includes(lower)
-    ) {
-      // Normalize modifier names
-      if (lower === 'control') modifiers.push('ctrl')
-      else if (lower === 'option' || lower === 'opt') modifiers.push('alt')
-      else if (lower === 'command' || lower === 'cmd') modifiers.push('cmd')
-      else modifiers.push(lower)
-    } else {
-      mainKey = lower
-    }
-  }
-
-  modifiers.sort()
-  return [...modifiers, mainKey].join('+')
 }

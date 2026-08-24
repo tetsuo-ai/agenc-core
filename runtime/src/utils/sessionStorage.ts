@@ -66,7 +66,7 @@ import { updateSessionName } from './concurrentSessions.js'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { logForDiagnosticsNoPII } from './diagLogs.js'
-import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
+import { getAgenCHomeDir, isEnvTruthy } from './envUtils.js'
 import { getErrnoCode, isFsInaccessible } from './errors.js'
 import type { FileHistorySnapshot } from './fileHistory.js'
 import { formatFileSize } from './format.js'
@@ -193,7 +193,7 @@ export function isEphemeralToolProgress(dataType: unknown): boolean {
 }
 
 export function getProjectsDir(): string {
-  return join(getAgenCConfigHomeDir(), 'projects')
+  return join(getAgenCHomeDir(), 'projects')
 }
 
 export function getTranscriptPath(): string {
@@ -522,14 +522,13 @@ export function isCustomTitleEnabled(): boolean {
   return true
 }
 
-// Memoized: called 12+ times per turn via hooks.ts createBaseHookInput
-// (PostToolUse path, 5×/turn) + various save* functions. Input is a cwd
-// string; homedir/env/regex are all session-invariant so the result is
-// stable for a given input. Worktree switches just change the key — no
-// cache clear needed.
-export const getProjectDir = memoize((projectDir: string): string => {
-  return join(getProjectsDir(), sanitizePath(projectDir))
-})
+// Memoized per canonical home + cwd: a daemon can host the same checkout in
+// multiple isolated session homes.
+export const getProjectDir = memoize(
+  (projectDir: string): string =>
+    join(getProjectsDir(), sanitizePath(projectDir)),
+  (projectDir: string) => `${getAgenCHomeDir()}\u0000${projectDir}`,
+)
 
 let project: Project | null = null
 let cleanupRegistered = false
@@ -570,7 +569,7 @@ export function resetProjectFlushStateForTesting(): void {
 
 /**
  * Reset the entire Project singleton for testing.
- * This ensures tests with different AGENC_CONFIG_DIR values
+ * This ensures tests with different AGENC_HOME values
  * don't share stale sessionFile paths.
  */
 export function resetProjectForTesting(): void {
@@ -1096,7 +1095,7 @@ class Project {
   }
 
   /**
-   * True when test env / cleanupPeriodDays=0 / --no-session-persistence /
+   * True when test env / transcript persistence config / CLI override /
    * AGENC_SKIP_PROMPT_HISTORY should suppress all transcript writes.
    * Shared guard for appendEntry and materializeSessionFile so both skip
    * consistently. The env var is set by tmuxSocket.ts so Tungsten-spawned
@@ -1108,7 +1107,7 @@ class Project {
     )
     return (
       (getNodeEnv() === 'test' && !allowTestPersistence) ||
-      getExecutionAuthoritySettings().cleanupPeriodDays === 0 ||
+      getExecutionAuthoritySettings().transcriptPersistenceEnabled === false ||
       isSessionPersistenceDisabled() ||
       isEnvTruthy(process.env.AGENC_SKIP_PROMPT_HISTORY)
     )
@@ -4175,7 +4174,8 @@ const getSessionMessages = memoize(
     const { messages } = await loadSessionFile(sessionId)
     return new Set(messages.keys())
   },
-  (sessionId: UUID) => sessionId,
+  (sessionId: UUID) =>
+    `${getAgenCHomeDir()}\u0000${getSessionProjectDir() ?? ''}\u0000${getOriginalCwd()}\u0000${sessionId}`,
 )
 
 /**

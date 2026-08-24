@@ -132,8 +132,7 @@ import type { ThreadManager } from "./thread-manager.js";
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * I-1 default cap. Overrideable via `config.agent_max_depth` or the
- * `AGENC_AGENT_MAX_DEPTH` env var (test/ops escape hatch).
+ * I-1 default cap. Overrideable through canonical `config.agent_max_depth`.
  *
  * Semantics: `spawn` rejects when `childDepth > cap`, so the cap value is the
  * deepest allowed child depth. Cap=1 means root (depth 0) may spawn one
@@ -144,38 +143,23 @@ const DEFAULT_MAX_AGENT_DEPTH = 1;
 const ROOT_FOLLOWUP_RETRY_BASE_MS = 100;
 const ROOT_FOLLOWUP_RETRY_MAX_MS = 5_000;
 
-function asPositiveIntegerDepth(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) {
+function asNonNegativeIntegerDepth(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
     return undefined;
   }
   return value;
 }
 
-function parseDepthOverride(raw: string | undefined): number | undefined {
-  if (!raw) return DEFAULT_MAX_AGENT_DEPTH;
-  const parsed = Number.parseInt(raw, 10);
-  if (!Number.isFinite(parsed) || parsed < 1) {
-    return undefined;
-  }
-  return parsed;
-}
-
-function resolveDefaultMaxDepth(env: NodeJS.ProcessEnv = process.env): number {
-  return (
-    parseDepthOverride(env.AGENC_AGENT_MAX_DEPTH) ?? DEFAULT_MAX_AGENT_DEPTH
-  );
-}
-
-export const MAX_AGENT_DEPTH: number = resolveDefaultMaxDepth();
+export const MAX_AGENT_DEPTH = DEFAULT_MAX_AGENT_DEPTH;
 
 function resolveSessionMaxDepth(session: Session): number | undefined {
-  const configDepth = asPositiveIntegerDepth(
+  const configDepth = asNonNegativeIntegerDepth(
     (session.config as { agent_max_depth?: unknown } | undefined)
       ?.agent_max_depth,
   );
   if (configDepth !== undefined) return configDepth;
 
-  const originalDepth = asPositiveIntegerDepth(
+  const originalDepth = asNonNegativeIntegerDepth(
     (
       session.sessionConfiguration?.originalConfigDoNotUse as
         { agent_max_depth?: unknown } | undefined

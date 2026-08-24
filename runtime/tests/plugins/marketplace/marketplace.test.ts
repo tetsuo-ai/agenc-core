@@ -48,8 +48,9 @@ async function writePlugin(root: string, name: string): Promise<string> {
 
 async function writeMarketplace(root: string, name: string): Promise<string> {
   await writePlugin(root, "alpha");
+  await mkdir(join(root, ".agenc-plugin"), { recursive: true });
   await writeFile(
-    join(root, "marketplace.json"),
+    marketplaceManifestPath(root),
     `${JSON.stringify({
       metadata: {
         name,
@@ -69,6 +70,10 @@ async function writeMarketplace(root: string, name: string): Promise<string> {
   return root;
 }
 
+function marketplaceManifestPath(root: string): string {
+  return join(root, ".agenc-plugin", "marketplace.json");
+}
+
 describe("plugin marketplace runtime", () => {
   it("materializes local marketplaces, indexes them, and resolves installable plugin entries", async () => {
     const { agencHome, workspaceRoot } = await tempRuntime();
@@ -86,13 +91,10 @@ describe("plugin marketplace runtime", () => {
     expect(result.marketplace.installedPath).toBe(marketplaceInstalledPath("team", { agencHome }));
     expect(JSON.parse(await readFile(marketplaceIndexPath({ agencHome }), "utf8")))
       .toMatchObject({
-        version: 1,
-        marketplaces: {
-          team: {
-            name: "team",
-            sourceType: "local",
-            sourceDescriptor: { source: "directory", path: marketplaceRoot },
-          },
+        team: {
+          source: { source: "directory", path: marketplaceRoot },
+          installLocation: marketplaceInstalledPath("team", { agencHome }),
+          manifestPath: result.marketplace.manifestPath,
         },
       });
 
@@ -109,6 +111,21 @@ describe("plugin marketplace runtime", () => {
         category: "productivity",
       },
     });
+  });
+
+  it("rejects duplicate object keys in canonical marketplace manifests", async () => {
+    const { workspaceRoot } = await tempRuntime();
+    const marketplaceRoot = join(workspaceRoot, "duplicate-marketplace");
+    await mkdir(join(marketplaceRoot, ".agenc-plugin"), { recursive: true });
+    const manifestPath = marketplaceManifestPath(marketplaceRoot);
+    await writeFile(
+      manifestPath,
+      '{"metadata":{"name":"team","name":"shadow"},"plugins":[]}',
+      "utf8",
+    );
+
+    await expect(loadMarketplace(manifestPath))
+      .rejects.toThrow("duplicate object keys");
   });
 
   it("preserves configured marketplace names when manifest metadata differs", async () => {
@@ -135,7 +152,7 @@ describe("plugin marketplace runtime", () => {
     expect(plugin.marketplaceName).toBe("team");
   });
 
-  it("removes by computed install path and ignores untrusted index paths", async () => {
+  it("fails closed on an invalid marketplace inventory instead of trusting alternate fields", async () => {
     const { agencHome, root, workspaceRoot } = await tempRuntime();
     const marketplaceRoot = await writeMarketplace(join(workspaceRoot, "team-marketplace"), "team");
     await addMarketplaceOp({ agencHome, workspaceRoot, source: marketplaceRoot });
@@ -156,10 +173,11 @@ describe("plugin marketplace runtime", () => {
       }, null, 2)}\n`,
     );
 
-    await removeMarketplaceOp({ agencHome, name: "team" });
+    await expect(removeMarketplaceOp({ agencHome, name: "team" }))
+      .rejects.toThrow("Marketplace inventory is invalid");
 
-    await expect(stat(marketplaceInstalledPath("team", { agencHome })))
-      .rejects.toMatchObject({ code: "ENOENT" });
+    expect((await stat(marketplaceInstalledPath("team", { agencHome }))).isDirectory())
+      .toBe(true);
     expect((await stat(outside)).isDirectory()).toBe(true);
   });
 
@@ -216,16 +234,17 @@ describe("plugin marketplace runtime", () => {
     const result = await addMarketplaceOp({
       agencHome,
       workspaceRoot,
+      env: {},
       source: "agenc-org/plugins#stable",
       runProcess: async (_command, args) => {
-        if (args[0] === "clone") {
+        if (args.includes("clone")) {
           cloneCalls.push([...args]);
           const target = args.at(-1);
           if (target === undefined) throw new Error("missing clone target");
           await writeMarketplace(target, "team");
           return { stdout: "", stderr: "" };
         }
-        if (args[0] === "rev-parse") {
+        if (args.includes("rev-parse")) {
           return { stdout: "abc123\n", stderr: "" };
         }
         return { stdout: "", stderr: "" };
@@ -305,20 +324,15 @@ describe("plugin marketplace runtime", () => {
     expect(rawIndex).not.toContain("secret-token");
     expect(rawIndex).not.toContain("Authorization");
     expect(rawIndex).not.toContain("X-API-Key");
-    const index = JSON.parse(rawIndex) as {
-      marketplaces: Record<string, {
-        source?: string;
-        sourceDescriptor?: { source?: string; url?: string; headers?: unknown };
-      }>;
-    };
-    expect(index.marketplaces["url-team"]?.source).toBe(
-      "https://agenc.tech/marketplace.json?token=<redacted>",
-    );
-    expect(index.marketplaces["url-team"]?.sourceDescriptor).toEqual({
+    const index = JSON.parse(rawIndex) as Record<string, {
+      source?: { source?: string; url?: string; headers?: unknown };
+      refreshable?: boolean;
+    }>;
+    expect(index["url-team"]?.source).toEqual({
       source: "url",
-      url: "https://agenc.tech/marketplace.json?token=<redacted>",
-      refreshable: false,
+      url: "https://agenc.tech/marketplace.json?token=%3Credacted%3E",
     });
+    expect(index["url-team"]?.refreshable).toBe(false);
   });
 
   it("skips credential-bearing URL marketplace upgrades instead of fetching redacted URLs", async () => {
@@ -359,62 +373,62 @@ describe("plugin marketplace runtime", () => {
   it("fails malformed marketplace plugin entries instead of silently skipping them", async () => {
     const { workspaceRoot } = await tempRuntime();
     const marketplaceRoot = join(workspaceRoot, "bad-marketplace");
-    await mkdir(marketplaceRoot, { recursive: true });
+    await mkdir(join(marketplaceRoot, ".agenc-plugin"), { recursive: true });
 
     await writeFile(
-      join(marketplaceRoot, "marketplace.json"),
+      marketplaceManifestPath(marketplaceRoot),
       JSON.stringify({
         metadata: { name: "bad" },
         plugins: [{ name: "alpha" }],
       }),
     );
-    await expect(loadMarketplace(join(marketplaceRoot, "marketplace.json")))
+    await expect(loadMarketplace(marketplaceManifestPath(marketplaceRoot)))
       .rejects.toThrow("must define source");
 
     await writeFile(
-      join(marketplaceRoot, "marketplace.json"),
+      marketplaceManifestPath(marketplaceRoot),
       JSON.stringify({
         metadata: { name: "bad" },
         plugins: [{ name: "alpha", source: { source: "git-subdir", url: "https://github.com/agenc-org/plugins.git" } }],
       }),
     );
-    await expect(loadMarketplace(join(marketplaceRoot, "marketplace.json")))
+    await expect(loadMarketplace(marketplaceManifestPath(marketplaceRoot)))
       .rejects.toThrow("git-subdir marketplace plugin source must include a path");
 
     await writeFile(
-      join(marketplaceRoot, "marketplace.json"),
+      marketplaceManifestPath(marketplaceRoot),
       JSON.stringify({
         metadata: { name: "bad" },
         plugins: [{ name: "alpha", source: { source: "git", url: "http://agenc.tech/plugins.git" } }],
       }),
     );
-    await expect(loadMarketplace(join(marketplaceRoot, "marketplace.json")))
+    await expect(loadMarketplace(marketplaceManifestPath(marketplaceRoot)))
       .rejects.toThrow("marketplace plugin git URL must use HTTPS or loopback HTTP");
 
     await writeFile(
-      join(marketplaceRoot, "marketplace.json"),
+      marketplaceManifestPath(marketplaceRoot),
       JSON.stringify({
         metadata: { name: "bad" },
         plugins: [{ name: "alpha", source: "../outside" }],
       }),
     );
-    await expect(loadMarketplace(join(marketplaceRoot, "marketplace.json")))
+    await expect(loadMarketplace(marketplaceManifestPath(marketplaceRoot)))
       .rejects.toThrow("must start with './'");
 
     const outsidePlugin = await writePlugin(join(workspaceRoot, "outside"), "alpha");
     await symlink(outsidePlugin, join(marketplaceRoot, "alpha"));
     await writeFile(
-      join(marketplaceRoot, "marketplace.json"),
+      marketplaceManifestPath(marketplaceRoot),
       JSON.stringify({
         metadata: { name: "bad" },
         plugins: [{ name: "alpha", source: "./alpha" }],
       }),
     );
-    await expect(loadMarketplace(join(marketplaceRoot, "marketplace.json")))
+    await expect(loadMarketplace(marketplaceManifestPath(marketplaceRoot)))
       .rejects.toThrow("must stay within the marketplace root");
 
     await writeFile(
-      join(marketplaceRoot, "marketplace.json"),
+      marketplaceManifestPath(marketplaceRoot),
       JSON.stringify({
         metadata: { name: "bad" },
         plugins: [
@@ -423,7 +437,7 @@ describe("plugin marketplace runtime", () => {
         ],
       }),
     );
-    await expect(loadMarketplace(join(marketplaceRoot, "marketplace.json")))
+    await expect(loadMarketplace(marketplaceManifestPath(marketplaceRoot)))
       .rejects.toThrow("duplicate plugin names");
   });
 
@@ -438,10 +452,10 @@ describe("plugin marketplace runtime", () => {
     ): Promise<void> {
       const { agencHome, workspaceRoot } = await tempRuntime();
       const marketplaceRoot = join(workspaceRoot, "bad-marketplace");
-      await mkdir(marketplaceRoot, { recursive: true });
+      await mkdir(join(marketplaceRoot, ".agenc-plugin"), { recursive: true });
       await setup?.({ marketplaceRoot, workspaceRoot });
       await writeFile(
-        join(marketplaceRoot, "marketplace.json"),
+        marketplaceManifestPath(marketplaceRoot),
         JSON.stringify({
           metadata: { name: "bad" },
           plugins: [{ name: "alpha", source }],

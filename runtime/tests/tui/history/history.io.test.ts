@@ -50,7 +50,7 @@ vi.mock('../../utils/debug.js', () => ({
 }))
 
 vi.mock('../../utils/envUtils.js', () => ({
-  getAgenCConfigHomeDir: () => harness.configHome,
+  getAgenCHomeDir: () => harness.configHome,
   isEnvTruthy: () => harness.skipHistory,
 }))
 

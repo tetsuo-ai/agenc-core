@@ -15,8 +15,8 @@ import type { LLMContentPart, LLMMessage } from "../src/llm/types.js";
 
 const COMPACT_ENV_KEYS = [
   "AGENC_DISABLE_AUTO_COMPACT",
-  "AGENC_USE_OPENAI",
-  "OPENAI_MODEL",
+  "AGENC_PROVIDER",
+  "AGENC_MODEL",
   "OPENAI_BASE_URL",
   "OPENAI_API_KEY",
   "AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW",
@@ -102,9 +102,9 @@ describe("runtime session compact contract", () => {
     expect(JSON.stringify(state.history)).not.toContain("summary from compact provider");
   });
 
-  test("manual compact preserves process env when provider override is absent", async () => {
-    process.env.AGENC_USE_OPENAI = "1";
-    process.env.OPENAI_MODEL = "env-model";
+  test("manual compact preserves canonical process env when provider override is absent", async () => {
+    process.env.AGENC_PROVIDER = "openai";
+    process.env.AGENC_MODEL = "env-model";
     process.env.OPENAI_BASE_URL = "http://127.0.0.1:18081";
     process.env.OPENAI_API_KEY = "env-key";
     process.env.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW = "1234";
@@ -114,8 +114,8 @@ describe("runtime session compact contract", () => {
       {
         onChat: () => {
           seenEnv = {
-            AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,
-            OPENAI_MODEL: process.env.OPENAI_MODEL,
+            AGENC_PROVIDER: process.env.AGENC_PROVIDER,
+            AGENC_MODEL: process.env.AGENC_MODEL,
             OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
             OPENAI_API_KEY: process.env.OPENAI_API_KEY,
             AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW:
@@ -140,8 +140,8 @@ describe("runtime session compact contract", () => {
     expect(result).toMatchObject({ kind: "error" });
     expect(seenEnv).toEqual({});
     expect(process.env).toMatchObject({
-      AGENC_USE_OPENAI: "1",
-      OPENAI_MODEL: "env-model",
+      AGENC_PROVIDER: "openai",
+      AGENC_MODEL: "env-model",
       OPENAI_BASE_URL: "http://127.0.0.1:18081",
       OPENAI_API_KEY: "env-key",
       AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW: "1234",

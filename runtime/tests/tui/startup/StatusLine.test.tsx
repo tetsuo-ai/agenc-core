@@ -75,7 +75,13 @@ vi.mock('../../permissions/trust/project-trust.js', () => ({
 }))
 
 vi.mock('../../utils/config.js', () => ({
-  getGlobalConfig: () => ({ tui: { vimMode: true } }),
+  getRuntimeState: () => ({ tui: { vimMode: true } }),
+}))
+
+vi.mock('../../utils/settings/canonicalAuthority.js', () => ({
+  getCanonicalSettingsAuthority: () => ({
+    current: () => ({ tui: { vimMode: true } }),
+  }),
 }))
 
 vi.mock('../../utils/context.js', () => ({

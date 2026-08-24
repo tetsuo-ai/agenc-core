@@ -42,9 +42,9 @@ vi.mock("../../utils/log.js", () => ({
 }));
 
 vi.mock("../../utils/config.js", () => ({
-  getGlobalConfig: () => ({ theme: "dark" }),
+  getRuntimeState: () => ({ theme: "dark" }),
   isAutoUpdaterDisabled: harness.isAutoUpdaterDisabled,
-  saveGlobalConfig: vi.fn(),
+  updateRuntimeState: vi.fn(),
 }));
 
 vi.mock("../../utils/nativeInstaller/installer.js", () => ({

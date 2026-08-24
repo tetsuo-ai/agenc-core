@@ -2,7 +2,6 @@ import { feature } from 'bun:bundle'
 import type { ToolUseContext } from '../tools/Tool.js'
 import type { AgentDefinition } from 'src/tools/AgentTool/loadAgentsDir.js'
 import { isBuiltInAgent } from 'src/tools/AgentTool/loadAgentsDir.js'
-import { isEnvTruthy } from './envUtils.js'
 import { asSystemPrompt, type SystemPrompt } from './systemPromptType.js'
 
 export { asSystemPrompt, type SystemPrompt } from './systemPromptType.js'
@@ -57,19 +56,21 @@ export function buildEffectiveSystemPrompt({
   if (overrideSystemPrompt) {
     return asSystemPrompt([overrideSystemPrompt])
   }
-  // Coordinator mode: use coordinator prompt instead of default
-  // Use inline env check instead of coordinatorModule to avoid circular
-  // dependency issues during test module loading.
+  // Lazy require avoids a module cycle; the decision itself comes from the
+  // ambient session's immutable canonical config snapshot.
+  const {
+    isCoordinatorMode,
+    getLiveCoordinatorSystemPrompt,
+    getCoordinatorSystemPrompt,
+  } =
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require('../coordinator/coordinatorMode.js') as typeof import('../coordinator/coordinatorMode.js')
   if (
     feature('COORDINATOR_MODE') &&
-    isEnvTruthy(process.env.AGENC_COORDINATOR_MODE) &&
+    isCoordinatorMode() &&
     !mainThreadAgentDefinition
   ) {
-    // Lazy require to avoid circular dependency at module load time
-    // Prefer LIVE coordinator prompt (todo-119) so tool names match MultiAgentV2.
-    const { getLiveCoordinatorSystemPrompt, getCoordinatorSystemPrompt } =
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      require('../coordinator/coordinatorMode.js') as typeof import('../coordinator/coordinatorMode.js')
+    // Prefer LIVE coordinator prompt so tool names match MultiAgentV2.
     const live =
       typeof getLiveCoordinatorSystemPrompt === 'function'
         ? getLiveCoordinatorSystemPrompt()

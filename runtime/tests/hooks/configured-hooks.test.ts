@@ -2224,6 +2224,7 @@ describe("configured hooks trust gate", () => {
   function makeRuntime(opts: {
     readonly trusted: boolean;
     readonly env?: NodeJS.ProcessEnv;
+    readonly allowUntrustedHooks?: boolean;
     readonly sentinel: string;
   }): ConfiguredHooksRuntime {
     const runtime = new ConfiguredHooksRuntime({
@@ -2231,6 +2232,7 @@ describe("configured hooks trust gate", () => {
       env: opts.env ?? {},
       agencHome: "/tmp/agenc-test",
       shellPath: process.env.SHELL ?? "/bin/sh",
+      allowUntrustedHooks: opts.allowUntrustedHooks ?? false,
       isWorkspaceTrusted: () => opts.trusted,
     });
     runtime.attachTarget(makeTarget());
@@ -2262,7 +2264,7 @@ describe("configured hooks trust gate", () => {
     expect(existsSync(sentinel)).toBe(true);
   });
 
-  test("(c) untrusted + non-interactive is skipped unless AGENC_ALLOW_UNTRUSTED_HOOKS opt-in is set", async () => {
+  test("(c) untrusted + non-interactive is skipped unless the session opt-in is set", async () => {
     const blockedSentinel = await tempSentinel();
     const blocked = makeRuntime({ trusted: false, sentinel: blockedSentinel });
     const blockedDiag = await blocked.testHook(blocked.listHooks()[0]!);
@@ -2272,7 +2274,7 @@ describe("configured hooks trust gate", () => {
     const allowedSentinel = await tempSentinel();
     const allowed = makeRuntime({
       trusted: false,
-      env: { AGENC_ALLOW_UNTRUSTED_HOOKS: "1" },
+      allowUntrustedHooks: true,
       sentinel: allowedSentinel,
     });
     const allowedDiag = await allowed.testHook(allowed.listHooks()[0]!);
@@ -2311,11 +2313,11 @@ describe("configured hooks trust gate", () => {
     expect(existsSync(sentinel)).toBe(false);
   });
 
-  test("opt-in flag accepts true/yes and rejects other values", async () => {
+  test("explicit session opt-in allows hooks and explicit false blocks them", async () => {
     const yesSentinel = await tempSentinel();
     const yes = makeRuntime({
       trusted: false,
-      env: { AGENC_ALLOW_UNTRUSTED_HOOKS: "true" },
+      allowUntrustedHooks: true,
       sentinel: yesSentinel,
     });
     expect((await yes.testHook(yes.listHooks()[0]!)).status).toBe("success");
@@ -2324,7 +2326,7 @@ describe("configured hooks trust gate", () => {
     const noSentinel = await tempSentinel();
     const no = makeRuntime({
       trusted: false,
-      env: { AGENC_ALLOW_UNTRUSTED_HOOKS: "0" },
+      allowUntrustedHooks: false,
       sentinel: noSentinel,
     });
     expect((await no.testHook(no.listHooks()[0]!)).status).toBe("skipped");

@@ -1,12 +1,21 @@
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import { CONTEXT_1M_BETA_HEADER } from '../constants/betas.js'
-import { getGlobalConfig } from './config.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
 import { resolveAntModel } from './model/antModels.js'
 import { getModelCapability } from './model/modelCapabilities.js'
-import { getOpenAIContextWindow, getOpenAIMaxOutputTokens } from './model/openaiContextWindows.js'
+import {
+  CAPPED_DEFAULT_MAX_OUTPUT_TOKENS,
+  ESCALATED_MAX_OUTPUT_TOKENS,
+  getOpenAICompatibleContextWindow,
+  getOpenAICompatibleMaxOutputTokens,
+  OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW,
+} from '../llm/openai-compatible-token-limits.js'
 import { resolveModelCatalogMetadata } from '../llm/registry/model-catalog.js'
+import {
+  getSelectedProviderEnvironment,
+  getSelectedProviderName,
+} from './model/providers.js'
 
 // Model context window size (200k tokens for all models right now)
 export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
@@ -16,10 +25,15 @@ export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
 // otherwise auto-compact fires on every message (issue #635).
 // Override via AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW env var to avoid
 // hardcoding when deploying models not yet in openaiContextWindows.ts.
-export const OPENAI_FALLBACK_CONTEXT_WINDOW = (() => {
-  const v = parseInt(process.env.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW ?? '', 10)
-  return !isNaN(v) && v > 0 ? v : 128_000
-})()
+function openAiFallbackContextWindow(): number {
+  const v = parseInt(
+    getSelectedProviderEnvironment().AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW ?? '',
+    10,
+  )
+  return !isNaN(v) && v > 0
+    ? v
+    : OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW
+}
 
 // Maximum output tokens for compact operations
 export const COMPACT_MAX_OUTPUT_TOKENS = 20_000
@@ -34,8 +48,15 @@ const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 64_000
 // (see query.ts max_output_tokens_escalate). Cap is applied in
 // agenc.ts:getMaxOutputTokensForModel to avoid the growthbook→betas→context
 // import cycle.
-export const CAPPED_DEFAULT_MAX_TOKENS = 8_000
-export const ESCALATED_MAX_TOKENS = 64_000
+export const CAPPED_DEFAULT_MAX_TOKENS = CAPPED_DEFAULT_MAX_OUTPUT_TOKENS
+export const ESCALATED_MAX_TOKENS = ESCALATED_MAX_OUTPUT_TOKENS
+
+function usesOpenAICompatibleModelLimits(): boolean {
+  const provider = getSelectedProviderName()
+  return provider !== 'anthropic' &&
+    provider !== 'amazon-bedrock' &&
+    provider !== 'agenc'
+}
 
 /**
  * Check if 1M context is disabled via environment variable.
@@ -118,10 +139,13 @@ export function getContextWindowForModel(
   // so users can cap the effective context window for local decisions (auto-compact, etc.)
   // while still using a 1M-capable endpoint.
   if (
-    process.env.USER_TYPE === 'ant' &&
-    process.env.AGENC_MAX_CONTEXT_TOKENS
+    getSelectedProviderEnvironment().USER_TYPE === 'ant' &&
+    getSelectedProviderEnvironment().AGENC_MAX_CONTEXT_TOKENS
   ) {
-    const override = parseInt(process.env.AGENC_MAX_CONTEXT_TOKENS, 10)
+    const override = parseInt(
+      getSelectedProviderEnvironment().AGENC_MAX_CONTEXT_TOKENS!,
+      10,
+    )
     if (!isNaN(override) && override > 0) {
       return override
     }
@@ -145,13 +169,13 @@ export function getContextWindowForModel(
   // Unknown models get a conservative 128k default. This was previously 8k,
   // but that caused auto-compact to fire on every turn because the effective
   // context (8k minus output reservation) became negative (issue #635).
-  const isOpenAIProvider =
-    isEnvTruthy(process.env.AGENC_USE_OPENAI) ||
-    isEnvTruthy(process.env.AGENC_USE_GEMINI) ||
-    isEnvTruthy(process.env.AGENC_USE_GITHUB) ||
-    isEnvTruthy(process.env.AGENC_USE_MISTRAL)
-  if (isOpenAIProvider) {
-    const openaiWindow = getOpenAIContextWindow(model)
+  if (usesOpenAICompatibleModelLimits()) {
+    const selectionEnvironment = getSelectedProviderEnvironment()
+    const openaiWindow = getOpenAICompatibleContextWindow(model, {
+      provider: getSelectedProviderName(),
+      externalOverridesJson:
+        selectionEnvironment.AGENC_OPENAI_CONTEXT_WINDOWS,
+    })
     if (openaiWindow !== undefined) {
       return openaiWindow
     }
@@ -159,7 +183,7 @@ export function getContextWindowForModel(
       `[context] Warning: model "${model}" not in context window table — using conservative 128k default. ` +
       'Add it to src/utils/model/openaiContextWindows.ts for accurate compaction.',
     )
-    return OPENAI_FALLBACK_CONTEXT_WINDOW
+    return openAiFallbackContextWindow()
   }
 
   const cap = getModelCapability(model)
@@ -174,9 +198,6 @@ export function getContextWindowForModel(
   }
 
   if (betas?.includes(CONTEXT_1M_BETA_HEADER) && modelSupports1M(model)) {
-    return 1_000_000
-  }
-  if (getSonnet1mExpTreatmentEnabled(model)) {
     return 1_000_000
   }
   if (process.env.USER_TYPE === 'ant') {
@@ -200,20 +221,6 @@ function resolveCatalogContextWindow(model: string): number | undefined {
     return undefined
   }
   return resolveModelCatalogMetadata({ provider: 'grok', model })?.contextWindow
-}
-
-export function getSonnet1mExpTreatmentEnabled(model: string): boolean {
-  if (is1mContextDisabled()) {
-    return false
-  }
-  // Only applies to sonnet 4.6 without an explicit [1m] suffix
-  if (has1mContext(model)) {
-    return false
-  }
-  if (!getCanonicalName(model).includes('sonnet-4-6')) {
-    return false
-  }
-  return getGlobalConfig().clientDataCache?.['coral_reef_sonnet'] === 'true'
 }
 
 /**
@@ -268,13 +275,13 @@ export function getModelMaxOutputTokens(model: string): {
   }
 
   // openai-compatible provider — use known output limits to avoid 400 errors
-  if (
-    isEnvTruthy(process.env.AGENC_USE_OPENAI) ||
-    isEnvTruthy(process.env.AGENC_USE_GEMINI) ||
-    isEnvTruthy(process.env.AGENC_USE_GITHUB) ||
-    isEnvTruthy(process.env.AGENC_USE_MISTRAL)
-  ) {
-    const openaiMax = getOpenAIMaxOutputTokens(model)
+  if (usesOpenAICompatibleModelLimits()) {
+    const selectionEnvironment = getSelectedProviderEnvironment()
+    const openaiMax = getOpenAICompatibleMaxOutputTokens(model, {
+      provider: getSelectedProviderName(),
+      externalOverridesJson:
+        selectionEnvironment.AGENC_OPENAI_MAX_OUTPUT_TOKENS,
+    })
     if (openaiMax !== undefined) {
       return { default: openaiMax, upperLimit: openaiMax }
     }

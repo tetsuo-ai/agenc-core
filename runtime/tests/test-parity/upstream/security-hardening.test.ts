@@ -41,7 +41,7 @@ describe('MCP tool result sanitization', () => {
 // Fix 2: Sandbox settings source filtering
 // ---------------------------------------------------------------------------
 describe('Sandbox settings trust boundary', () => {
-  test('getSandboxEnabledSetting does not use getSettings_DEPRECATED', async () => {
+  test('getSandboxEnabledSetting reads only trusted canonical sources', async () => {
     const content = await file('utils/sandbox/sandbox-runtime.ts').text()
     // Extract the getSandboxEnabledSetting function body
     const fnMatch = content.match(
@@ -49,8 +49,6 @@ describe('Sandbox settings trust boundary', () => {
     )
     expect(fnMatch).not.toBeNull()
     const fnBody = fnMatch![1]
-    // Must NOT use getSettings_DEPRECATED (reads all sources including project)
-    expect(fnBody).not.toContain('getSettings_DEPRECATED')
     // Must use getSettingsForSource for individual trusted sources
     expect(fnBody).toContain("getSettingsForSource('userSettings')")
     expect(fnBody).toContain("getSettingsForSource('policySettings')")
@@ -63,32 +61,10 @@ describe('Sandbox settings trust boundary', () => {
 // Fix 3: Plugin git hooks disabled
 // ---------------------------------------------------------------------------
 describe('Plugin git operations disable hooks', () => {
-  test('gitClone includes core.hooksPath=/dev/null', async () => {
-    const content = await file('utils/plugins/marketplaceManager.ts').text()
-    // The clone args must disable hooks
-    const cloneSection = content.slice(
-      content.indexOf('export async function gitClone('),
-      content.indexOf('export async function gitClone(') + 2000,
-    )
-    expect(cloneSection).toContain("'core.hooksPath=/dev/null'")
-  })
-
-  test('gitPull includes core.hooksPath=/dev/null', async () => {
-    const content = await file('utils/plugins/marketplaceManager.ts').text()
-    const pullSection = content.slice(
-      content.indexOf('export async function gitPull('),
-      content.indexOf('export async function gitPull(') + 2000,
-    )
-    expect(pullSection).toContain("'core.hooksPath=/dev/null'")
-  })
-
-  test('gitSubmoduleUpdate includes core.hooksPath=/dev/null', async () => {
-    const content = await file('utils/plugins/marketplaceManager.ts').text()
-    const subSection = content.slice(
-      content.indexOf('async function gitSubmoduleUpdate('),
-      content.indexOf('async function gitSubmoduleUpdate(') + 1000,
-    )
-    expect(subSection).toContain("'core.hooksPath=/dev/null'")
+  test('the canonical marketplace acquisition path disables git hooks', async () => {
+    const content = await file('plugins/marketplace/marketplace.ts').text()
+    expect(content).toContain('const GIT_NO_HOOKS_ARGS = ["-c", "core.hooksPath=/dev/null"]')
+    expect(content).not.toContain('utils/plugins/marketplaceManager')
   })
 })
 

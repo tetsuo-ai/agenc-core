@@ -7,6 +7,8 @@ import { getCACertificates } from './caCerts.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getFsImplementation } from './fsOperations.js'
 
+type EnvLike = Readonly<Record<string, string | undefined>>
+
 export type MTLSConfig = {
   cert?: string
   key?: string
@@ -20,17 +22,19 @@ export type TLSConfig = MTLSConfig & {
 /**
  * Get mTLS configuration from environment variables
  */
-export const getMTLSConfig = memoize((): MTLSConfig | undefined => {
+export const getMTLSConfig = memoize((
+  environment: EnvLike,
+): MTLSConfig | undefined => {
   const config: MTLSConfig = {}
 
   // Note: NODE_EXTRA_CA_CERTS is automatically handled by Node.js at runtime
   // We don't need to manually load it - Node.js appends it to the built-in CAs automatically
 
   // Client certificate
-  if (process.env.AGENC_CLIENT_CERT) {
+  if (environment.AGENC_CLIENT_CERT) {
     try {
       config.cert = getFsImplementation().readFileSync(
-        process.env.AGENC_CLIENT_CERT,
+        environment.AGENC_CLIENT_CERT,
         { encoding: 'utf8' },
       )
       logForDebugging(
@@ -44,10 +48,10 @@ export const getMTLSConfig = memoize((): MTLSConfig | undefined => {
   }
 
   // Client key
-  if (process.env.AGENC_CLIENT_KEY) {
+  if (environment.AGENC_CLIENT_KEY) {
     try {
       config.key = getFsImplementation().readFileSync(
-        process.env.AGENC_CLIENT_KEY,
+        environment.AGENC_CLIENT_KEY,
         { encoding: 'utf8' },
       )
       logForDebugging('mTLS: Loaded client key from AGENC_CLIENT_KEY')
@@ -59,8 +63,8 @@ export const getMTLSConfig = memoize((): MTLSConfig | undefined => {
   }
 
   // Key passphrase
-  if (process.env.AGENC_CLIENT_KEY_PASSPHRASE) {
-    config.passphrase = process.env.AGENC_CLIENT_KEY_PASSPHRASE
+  if (environment.AGENC_CLIENT_KEY_PASSPHRASE) {
+    config.passphrase = environment.AGENC_CLIENT_KEY_PASSPHRASE
     logForDebugging('mTLS: Using client key passphrase')
   }
 
@@ -70,14 +74,20 @@ export const getMTLSConfig = memoize((): MTLSConfig | undefined => {
   }
 
   return config
-})
+}, (environment: EnvLike) => [
+  environment.AGENC_CLIENT_CERT ?? '',
+  environment.AGENC_CLIENT_KEY ?? '',
+  environment.AGENC_CLIENT_KEY_PASSPHRASE ?? '',
+].join('\0'))
 
 /**
  * Create an HTTPS agent with mTLS configuration
  */
-export const getMTLSAgent = memoize((): HttpsAgent | undefined => {
-  const mtlsConfig = getMTLSConfig()
-  const caCerts = getCACertificates()
+export const getMTLSAgent = memoize((
+  environment: EnvLike,
+): HttpsAgent | undefined => {
+  const mtlsConfig = getMTLSConfig(environment)
+  const caCerts = getCACertificates(environment)
 
   if (!mtlsConfig && !caCerts) {
     return undefined
@@ -92,14 +102,16 @@ export const getMTLSAgent = memoize((): HttpsAgent | undefined => {
 
   logForDebugging('mTLS: Creating HTTPS agent with custom certificates')
   return new HttpsAgent(agentOptions)
-})
+}, (environment: EnvLike) => environment)
 
 /**
  * Get TLS options for WebSocket connections
  */
-export function getWebSocketTLSOptions(): tls.ConnectionOptions | undefined {
-  const mtlsConfig = getMTLSConfig()
-  const caCerts = getCACertificates()
+export function getWebSocketTLSOptions(
+  environment: EnvLike,
+): tls.ConnectionOptions | undefined {
+  const mtlsConfig = getMTLSConfig(environment)
+  const caCerts = getCACertificates(environment)
 
   if (!mtlsConfig && !caCerts) {
     return undefined
@@ -114,12 +126,14 @@ export function getWebSocketTLSOptions(): tls.ConnectionOptions | undefined {
 /**
  * Get fetch options with TLS configuration (mTLS + CA certs) for undici
  */
-export function getTLSFetchOptions(): {
+export function getTLSFetchOptions(
+  environment: EnvLike,
+): {
   tls?: TLSConfig
   dispatcher?: undici.Dispatcher
 } {
-  const mtlsConfig = getMTLSConfig()
-  const caCerts = getCACertificates()
+  const mtlsConfig = getMTLSConfig(environment)
+  const caCerts = getCACertificates(environment)
 
   if (!mtlsConfig && !caCerts) {
     return {}
@@ -158,22 +172,4 @@ export function clearMTLSCache(): void {
   getMTLSConfig.cache.clear?.()
   getMTLSAgent.cache.clear?.()
   logForDebugging('Cleared mTLS configuration cache')
-}
-
-/**
- * Configure global Node.js TLS settings
- */
-export function configureGlobalMTLS(): void {
-  const mtlsConfig = getMTLSConfig()
-
-  if (!mtlsConfig) {
-    return
-  }
-
-  // NODE_EXTRA_CA_CERTS is automatically handled by Node.js at runtime
-  if (process.env.NODE_EXTRA_CA_CERTS) {
-    logForDebugging(
-      'NODE_EXTRA_CA_CERTS detected - Node.js will automatically append to built-in CAs',
-    )
-  }
 }

@@ -1,5 +1,4 @@
-import { HOOK_EVENT_NAMES, normalizeHookEventName } from "../config/schema.js";
-import type { HookEventName } from "../config/schema.js";
+import { HOOK_EVENT_NAMES, type HookEventName } from "../config/schema.js";
 import type {
   ConfiguredHooksRuntime,
   HookRunDiagnostic,
@@ -270,7 +269,9 @@ function resolveHook(
   args: readonly string[],
 ): IndividualHookConfig | SlashCommandResult {
   const eventRaw = args[0] ?? "";
-  const event = normalizeHookEventName(eventRaw);
+  const event = (HOOK_EVENT_NAMES as readonly string[]).includes(eventRaw)
+    ? eventRaw as HookEventName
+    : undefined;
   if (!event) {
     return {
       kind: "error",

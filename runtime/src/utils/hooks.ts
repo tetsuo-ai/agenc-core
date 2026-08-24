@@ -10,8 +10,7 @@ import { wrapSpawn } from "./ShellCommand.js";
 import { TaskOutput } from "./task/TaskOutput.js";
 import { getCwd } from "./cwd.js";
 import { randomUUID } from "crypto";
-import { feature } from "bun:bundle";
-import { formatShellPrefixCommand } from "./bash/shellPrefix.js";
+import { formatShellWrapperCommand } from "./bash/shellPrefix.js";
 import {
   getHookEnvFilePath,
   invalidateSessionEnvCache,
@@ -27,6 +26,7 @@ import { buildPowerShellArgs } from "./shell/powershellProvider.js";
 import {
   loadPluginOptions,
   substituteUserConfigVariables,
+  type PluginOptionSchema,
 } from "./plugins/pluginOptionsStorage.js";
 import { getPluginDataDir } from "./plugins/pluginDirectories.js";
 import {
@@ -117,14 +117,12 @@ import type {
   HookCommand,
   PluginHookMatcher,
   SkillHookMatcher,
-} from "./settings/types.js";
+} from "../schemas/hooks.js";
 import { getHookDisplayText } from "./hooks/hooksSettings.js";
 import { logForDebugging } from "src/utils/debug.js";
 import { logForDiagnosticsNoPII } from "./diagLogs.js";
 import { firstLineOf } from "./stringUtils.js";
 import {
-  normalizeLegacyToolName,
-  getLegacyToolNames,
   permissionRuleValueFromString,
 } from "./permissions/permissionRuleParser.js";
 import { logError } from "./log.js";
@@ -135,7 +133,6 @@ import { enqueuePendingNotification } from "./messageQueueManager.js";
 import { sessionQueueOwner, type SessionQueueOwner } from "./queueOwnership.js";
 import {
   extractTextContent,
-  createAssistantMessage,
   getLastAssistantMessage,
   wrapInSystemReminder,
 } from "./messages.js";
@@ -152,7 +149,6 @@ import {
   type Tools,
   type ToolUseContext,
 } from "../tools/Tool.js";
-import type { CanUseToolFn } from "../tui/hooks/useCanUseTool.js";
 import { execPromptHook } from "./hooks/execPromptHook.js";
 import type { Message, AssistantMessage } from "../types/message.js";
 import { execAgentHook } from "./hooks/execAgentHook.js";
@@ -168,146 +164,11 @@ import {
 } from "./hooks/sessionHooks.js";
 import type { AppState } from "../tui/state/AppState.js";
 import { jsonStringify, jsonParse } from "./slowOperations.js";
-import { isEnvTruthy } from "./envUtils.js";
+import { isBareMode } from "./envUtils.js";
 import { errorMessage, getErrnoCode } from "./errors.js";
-import { getAgentName, getTeamName, getTeammateColor } from "./teammate.js";
-import type {
-  HookChainOutcome,
-  HookChainRuntimeContext,
-  SpawnFallbackAgentRequest,
-  SpawnFallbackAgentResponse,
-} from "./hookChains.js";
+import { getSelectedProviderEnvironment } from "./model/providers.js";
 
 const TOOL_HOOK_EXECUTION_TIMEOUT_MS = 10 * 60 * 1000;
-
-function normalizeFallbackAgentModel(
-  model: string | undefined,
-): "sonnet" | "opus" | "haiku" | undefined {
-  if (model === "sonnet" || model === "opus" || model === "haiku") {
-    return model;
-  }
-  return undefined;
-}
-
-async function launchFallbackAgentFromHookChains(
-  request: SpawnFallbackAgentRequest,
-  toolUseContext: ToolUseContext,
-  canUseTool: CanUseToolFn,
-): Promise<SpawnFallbackAgentResponse> {
-  try {
-    const { AgentTool } = await import("../tools/AgentTool/AgentTool.js");
-    const normalizedModel = normalizeFallbackAgentModel(request.model);
-    const result = await AgentTool.call(
-      {
-        prompt: request.prompt,
-        description: request.description,
-        run_in_background: true,
-        ...(request.agentType ? { subagent_type: request.agentType } : {}),
-        ...(normalizedModel ? { model: normalizedModel } : {}),
-      },
-      toolUseContext,
-      canUseTool,
-      createAssistantMessage({ content: [] }),
-    );
-
-    const data = result.data as
-      | {
-          status?: string;
-          agentId?: string;
-          agent_id?: string;
-        }
-      | undefined;
-    const status = data?.status;
-
-    if (
-      status === "async_launched" ||
-      status === "completed" ||
-      status === "teammate_spawned"
-    ) {
-      return {
-        launched: true,
-        agentId: data?.agentId ?? data?.agent_id,
-      };
-    }
-
-    return {
-      launched: true,
-      reason:
-        status !== undefined
-          ? `Fallback launched with status ${status}`
-          : undefined,
-    };
-  } catch (error) {
-    return {
-      launched: false,
-      reason: `Fallback launch failed: ${errorMessage(error)}`,
-    };
-  }
-}
-
-async function dispatchHookChainFromHookRuntime(args: {
-  eventName: "PostToolUseFailure" | "TaskCompleted";
-  outcome: HookChainOutcome;
-  payload: Record<string, unknown>;
-  signal?: AbortSignal;
-  toolUseContext?: ToolUseContext;
-}): Promise<void> {
-  try {
-    if (!feature("HOOK_CHAINS")) {
-      return;
-    }
-
-    const { dispatchHookChainsForEvent } = await import("./hookChains.js");
-
-    const runtime: HookChainRuntimeContext = {
-      signal: args.signal,
-      senderName: getAgentName() ?? undefined,
-      senderColor: getTeammateColor() ?? undefined,
-      teamName: getTeamName() ?? undefined,
-    };
-
-    const chainDepth = args.toolUseContext?.queryTracking?.depth;
-    if (typeof chainDepth === "number" && Number.isFinite(chainDepth)) {
-      runtime.chainDepth = chainDepth;
-    }
-
-    const hookChainsCanUseTool = (
-      args.toolUseContext as
-        (ToolUseContext & { hookChainsCanUseTool?: CanUseToolFn }) | undefined
-    )?.hookChainsCanUseTool;
-
-    if (args.toolUseContext) {
-      runtime.onSpawnFallbackAgent = (request) => {
-        if (!hookChainsCanUseTool) {
-          return Promise.resolve({
-            launched: false,
-            reason:
-              "Fallback action requires canUseTool in this hook runtime context",
-          });
-        }
-
-        return launchFallbackAgentFromHookChains(
-          request,
-          args.toolUseContext!,
-          hookChainsCanUseTool,
-        );
-      };
-    }
-
-    await dispatchHookChainsForEvent({
-      event: {
-        eventName: args.eventName,
-        outcome: args.outcome,
-        payload: args.payload,
-      },
-      runtime,
-    });
-  } catch (error) {
-    logForDebugging(
-      `[hook-chains] Dispatch failed for ${args.eventName}: ${errorMessage(error)}`,
-    );
-  }
-}
 
 /**
  * SessionEnd hooks run during shutdown/clear and need a much tighter bound
@@ -417,7 +278,7 @@ function executeInBackground({
  * Checks if a hook should be skipped due to lack of workspace trust.
  *
  * ALL hooks require workspace trust because they execute arbitrary commands from
- * .agenc/settings.json. This is a defense-in-depth security measure.
+ * .agenc/config.toml. This is a defense-in-depth security measure.
  *
  * Context: Hooks are captured via captureHooksConfigSnapshot() before the trust
  * dialog is shown. While most hooks won't execute until after trust is established
@@ -441,8 +302,8 @@ export function shouldSkipHookDueToTrust(): boolean {
     // implicitly trust the workspace — a freshly-cloned untrusted repo's config
     // would otherwise execute host code. Default to running hooks ONLY when the
     // workspace is persisted as trusted (trusted-projects.json). An UNTRUSTED
-    // workspace runs hooks only via the explicit AGENC_ALLOW_UNTRUSTED_HOOKS
-    // opt-in (headless automation that vetted the workspace out-of-band).
+    // workspace runs hooks only via the explicit session-scoped opt-in
+    // resolved at the client boundary.
     if (allowUntrustedHooksOptIn()) {
       return false;
     }
@@ -454,15 +315,11 @@ export function shouldSkipHookDueToTrust(): boolean {
   return !hasTrust;
 }
 
-/**
- * SECURITY opt-in: AGENC_ALLOW_UNTRUSTED_HOOKS="1"|"true"|"yes" permits command
- * hooks to run even in an untrusted workspace. Intended for headless/SDK
- * automation that has already vetted the workspace. Unset (default) keeps
- * untrusted workspaces from running command hooks.
- */
 function allowUntrustedHooksOptIn(): boolean {
-  const value = process.env.AGENC_ALLOW_UNTRUSTED_HOOKS?.trim().toLowerCase();
-  return value === "1" || value === "true" || value === "yes";
+  return (
+    peekAmbientRuntimeSession()?.services?.runtimeOptions?.allowUntrustedHooks ===
+    true
+  );
 }
 
 /**
@@ -924,6 +781,7 @@ async function execCommandHook(
   hookIndex?: number,
   pluginRoot?: string,
   pluginId?: string,
+  pluginConfigSchema?: PluginOptionSchema,
   skillRoot?: string,
   forceSyncExecution?: boolean,
   requestPrompt?: (request: PromptRequest) => Promise<PromptResponse>,
@@ -1018,7 +876,7 @@ async function execCommandHook(
       command = command.replace(/\$\{AGENC_PLUGIN_DATA\}/g, () => dataPath);
     }
     if (pluginId) {
-      pluginOpts = loadPluginOptions(pluginId);
+      pluginOpts = loadPluginOptions(pluginId, pluginConfigSchema ?? {});
       // Throws if a referenced key is missing — that means the hook uses a key
       // that's either not declared in manifest.userConfig or not yet configured.
       // Caught upstream like any other hook exec failure.
@@ -1035,13 +893,13 @@ async function execCommandHook(
     }
   }
 
-  // AGENC_SHELL_PREFIX wraps the command via POSIX quoting
-  // (formatShellPrefixCommand uses shell-quote). This makes no sense for
-  // PowerShell — see design §8.1. currently PS hooks ignore the prefix;
-  // a AGENC_PS_SHELL_PREFIX (or shell-aware prefix) is a follow-up.
+  const commandWrapperArgv =
+    peekAmbientRuntimeSession()?.services?.runtimeOptions?.commandWrapperArgv;
+  // The client boundary tokenizes the POSIX wrapper once. PowerShell hooks do
+  // not receive a POSIX wrapper.
   const finalCommand =
-    !isPowerShell && process.env.AGENC_SHELL_PREFIX
-      ? formatShellPrefixCommand(process.env.AGENC_SHELL_PREFIX, command)
+    !isPowerShell && (commandWrapperArgv?.length ?? 0) > 0
+      ? formatShellWrapperCommand(commandWrapperArgv!, command)
       : command;
 
   const hookTimeoutMs = hook.timeout
@@ -1712,11 +1570,11 @@ export function matchesPattern(matchQuery: string, matcher: string): boolean {
     if (matcher.includes("|")) {
       const patterns = matcher
         .split("|")
-        .map((p) => normalizeLegacyToolName(p.trim()));
+        .map((p) => p.trim());
       return patterns.includes(matchQuery);
     }
     // Simple exact match
-    return matchQuery === normalizeLegacyToolName(matcher);
+    return matchQuery === matcher;
   }
 
   // gaphunt3 #25: reject ReDoS-prone matchers before RegExp compilation/.test().
@@ -1730,16 +1588,7 @@ export function matchesPattern(matchQuery: string, matcher: string): boolean {
   // Otherwise treat as regex
   try {
     const regex = new RegExp(matcher);
-    if (regex.test(matchQuery)) {
-      return true;
-    }
-    // Also test against compatibility names so patterns like "^Task$" still match
-    for (const legacyName of getLegacyToolNames(matchQuery)) {
-      if (regex.test(legacyName)) {
-        return true;
-      }
-    }
-    return false;
+    return regex.test(matchQuery);
   } catch {
     // If the regex is invalid, log error and return false
     logForDebugging(`Invalid regex pattern in hook matcher: ${matcher}`);
@@ -1767,7 +1616,7 @@ async function prepareIfConditionMatcher(
     return undefined;
   }
 
-  const toolName = normalizeLegacyToolName(hookInput.tool_name);
+  const toolName = hookInput.tool_name;
   const tool = tools && findToolByName(tools, hookInput.tool_name);
   const input = tool?.inputSchema.safeParse(hookInput.tool_input);
   const patternMatcher =
@@ -1777,7 +1626,7 @@ async function prepareIfConditionMatcher(
 
   return (ifCondition) => {
     const parsed = permissionRuleValueFromString(ifCondition);
-    if (normalizeLegacyToolName(parsed.toolName) !== toolName) {
+    if (parsed.toolName !== toolName) {
       return false;
     }
     if (!parsed.ruleContent) {
@@ -1800,6 +1649,7 @@ type MatchedHook = {
   hook: HookCommand | HookCallback | FunctionHook;
   pluginRoot?: string;
   pluginId?: string;
+  pluginConfigSchema?: PluginOptionSchema;
   skillRoot?: string;
   hookSource?: string;
 };
@@ -2025,6 +1875,10 @@ export async function getMatchingHooks(
       const pluginRoot =
         "pluginRoot" in matcher ? matcher.pluginRoot : undefined;
       const pluginId = "pluginId" in matcher ? matcher.pluginId : undefined;
+      const pluginConfigSchema =
+        "pluginConfigSchema" in matcher
+          ? matcher.pluginConfigSchema
+          : undefined;
       const skillRoot = "skillRoot" in matcher ? matcher.skillRoot : undefined;
       const hookSource = pluginRoot
         ? "pluginName" in matcher
@@ -2039,6 +1893,7 @@ export async function getMatchingHooks(
         hook,
         pluginRoot,
         pluginId,
+        pluginConfigSchema,
         skillRoot,
         hookSource,
       }));
@@ -2318,7 +2173,7 @@ async function* executeHooks({
     return;
   }
 
-  if (isEnvTruthy(process.env.AGENC_SIMPLE)) {
+  if (isBareMode()) {
     return;
   }
 
@@ -2435,7 +2290,7 @@ async function* executeHooks({
 
   // Run all hooks in parallel with individual timeouts
   const hookPromises = matchingHooks.map(async function* (
-    { hook, pluginRoot, pluginId, skillRoot },
+    { hook, pluginRoot, pluginId, pluginConfigSchema, skillRoot },
     hookIndex,
   ): AsyncGenerator<HookResult> {
     if (hook.type === "callback") {
@@ -2597,6 +2452,7 @@ async function* executeHooks({
           hook,
           hookEvent,
           jsonInput,
+          getSelectedProviderEnvironment(),
           signal,
         );
         cleanup?.();
@@ -2750,6 +2606,7 @@ async function* executeHooks({
         hookIndex,
         pluginRoot,
         pluginId,
+        pluginConfigSchema,
         skillRoot,
         forceSyncExecution,
         boundRequestPrompt,
@@ -3270,7 +3127,7 @@ async function executeHooksOutsideREPL({
   signal?: AbortSignal;
   timeoutMs: number;
 }): Promise<HookOutsideReplResult[]> {
-  if (isEnvTruthy(process.env.AGENC_SIMPLE)) {
+  if (isBareMode()) {
     return [];
   }
 
@@ -3320,7 +3177,7 @@ async function executeHooksOutsideREPL({
 
   // Run all hooks in parallel with individual timeouts
   const hookPromises = matchingHooks.map(
-    async ({ hook, pluginRoot, pluginId }, hookIndex) => {
+    async ({ hook, pluginRoot, pluginId, pluginConfigSchema }, hookIndex) => {
       // Handle callback hooks
       if (hook.type === "callback") {
         const callbackTimeoutMs = hook.timeout
@@ -3434,6 +3291,7 @@ async function executeHooksOutsideREPL({
             hook,
             hookEvent,
             jsonInput,
+            getSelectedProviderEnvironment(),
             signal,
           );
 
@@ -3533,6 +3391,7 @@ async function executeHooksOutsideREPL({
           hookIndex,
           pluginRoot,
           pluginId,
+          pluginConfigSchema,
         );
 
         // Clear timeout if hook completes
@@ -3758,8 +3617,6 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
     is_interrupt: isInterrupt,
   };
 
-  let blockingHookCount = 0;
-
   if (hasPostToolFailureHooks) {
     for await (const result of executeHooks({
       hookInput,
@@ -3769,24 +3626,9 @@ export async function* executePostToolUseFailureHooks<ToolInput>(
       timeoutMs,
       toolUseContext,
     })) {
-      if (result.blockingError) {
-        blockingHookCount++;
-      }
       yield result;
     }
   }
-
-  await dispatchHookChainFromHookRuntime({
-    eventName: "PostToolUseFailure",
-    outcome: "failed",
-    payload: {
-      ...hookInput,
-      hook_blocking_error_count: blockingHookCount,
-      hook_execution_skipped: !hasPostToolFailureHooks,
-    },
-    signal,
-    toolUseContext,
-  });
 }
 
 export async function* executePermissionDeniedHooks<ToolInput>(
@@ -4070,9 +3912,6 @@ export async function* executeTaskCompletedHooks(
     team_name: teamName,
   };
 
-  let blockingHookCount = 0;
-  let preventedContinuation = false;
-
   for await (const result of executeHooks({
     hookInput,
     toolUseID: randomUUID(),
@@ -4080,27 +3919,8 @@ export async function* executeTaskCompletedHooks(
     timeoutMs,
     toolUseContext,
   })) {
-    if (result.blockingError) {
-      blockingHookCount++;
-    }
-    if (result.preventContinuation) {
-      preventedContinuation = true;
-    }
     yield result;
   }
-
-  await dispatchHookChainFromHookRuntime({
-    eventName: "TaskCompleted",
-    outcome:
-      blockingHookCount > 0 || preventedContinuation ? "failed" : "success",
-    payload: {
-      ...hookInput,
-      hook_blocking_error_count: blockingHookCount,
-      hook_prevented_continuation: preventedContinuation,
-    },
-    signal,
-    toolUseContext,
-  });
 }
 
 /**
@@ -4594,7 +4414,7 @@ export type InstructionsMemoryType = "User" | "Project" | "Local" | "Managed";
  * Callers should check this before invoking executeInstructionsLoadedHooks to avoid
  * building hook inputs for every instruction file when no hook is configured.
  *
- * Checks both settings-file hooks (getHooksConfigFromSnapshot) and registered
+ * Checks both canonical-config hooks (getHooksConfigFromSnapshot) and registered
  * hooks (plugin hooks + SDK callback hooks via registerHookCallbacks). Session-
  * derived hooks (structured output enforcement etc.) are internal and not checked.
  */
@@ -5197,7 +5017,7 @@ async function executeHookCallback({
 /**
  * Check if WorktreeCreate hooks are configured (without executing them).
  *
- * Checks both settings-file hooks (getHooksConfigFromSnapshot) and registered
+ * Checks both canonical-config hooks (getHooksConfigFromSnapshot) and registered
  * hooks (plugin hooks + SDK callback hooks via registerHookCallbacks).
  *
  * Must mirror the managedOnly filtering in getHooksConfig() — when
@@ -5260,7 +5080,7 @@ export async function executeWorktreeCreateHook(
  * Execute WorktreeRemove hooks if configured.
  * Returns true if hooks were configured and ran, false if no hooks are configured.
  *
- * Checks both settings-file hooks (getHooksConfigFromSnapshot) and registered
+ * Checks both canonical-config hooks (getHooksConfigFromSnapshot) and registered
  * hooks (plugin hooks + SDK callback hooks via registerHookCallbacks).
  */
 export async function executeWorktreeRemoveHook(

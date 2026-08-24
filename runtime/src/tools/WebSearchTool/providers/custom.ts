@@ -27,6 +27,9 @@
  */
 
 import type { SearchInput, SearchProvider } from './types.js'
+import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
+import type { ProviderEnvironment } from '../../../llm/provider-options.js'
+import { getProxyFetchOptions } from '../../../utils/proxy.js'
 import {
   arrayField,
   applyDomainFilters,
@@ -290,7 +293,8 @@ function validateUrl(urlString: string): void {
   }
 
   // 2. HTTPS-only (unless explicitly opted out)
-  const allowHttp = process.env.WEB_CUSTOM_ALLOW_HTTP === 'true'
+  const allowHttp =
+    getSelectedProviderEnvironment().WEB_CUSTOM_ALLOW_HTTP === 'true'
   if (!allowHttp && parsed.protocol !== 'https:') {
     throw new Error(
       `Custom search URL must use https:// (got ${parsed.protocol}). ` +
@@ -299,7 +303,8 @@ function validateUrl(urlString: string): void {
   }
 
   // 3. Private network check (unless explicitly opted out)
-  const allowPrivate = process.env.WEB_CUSTOM_ALLOW_PRIVATE === 'true'
+  const allowPrivate =
+    getSelectedProviderEnvironment().WEB_CUSTOM_ALLOW_PRIVATE === 'true'
   if (!allowPrivate && isPrivateHostname(parsed.hostname)) {
     throw new Error(
       `Custom search URL targets a private/reserved address (${parsed.hostname}). ` +
@@ -314,7 +319,9 @@ function validateUrl(urlString: string): void {
  * unless WEB_CUSTOM_ALLOW_ARBITRARY_HEADERS=true.
  */
 function validateHeaderName(name: string): boolean {
-  const allowArbitrary = process.env.WEB_CUSTOM_ALLOW_ARBITRARY_HEADERS === 'true'
+  const allowArbitrary =
+    getSelectedProviderEnvironment().WEB_CUSTOM_ALLOW_ARBITRARY_HEADERS ===
+    'true'
   if (allowArbitrary) return true
   return SAFE_HEADER_NAMES.has(name.toLowerCase())
 }
@@ -340,16 +347,17 @@ function auditLogCustomSearch(url: string): void {
 // ---------------------------------------------------------------------------
 
 export function buildAuthHeadersForPreset(preset?: ProviderPreset): Record<string, string> {
-  const apiKey = process.env.WEB_KEY
+  const environment = getSelectedProviderEnvironment()
+  const apiKey = environment.WEB_KEY
   if (!apiKey) return {}
 
   // WEB_AUTH_HEADER="" is an explicit opt-out of auth headers entirely
-  const explicitHeader = process.env.WEB_AUTH_HEADER
+  const explicitHeader = environment.WEB_AUTH_HEADER
   if (explicitHeader === '') return {}
 
   const headerName = explicitHeader ?? preset?.authHeader ?? 'Authorization'
-  const scheme = process.env.WEB_AUTH_SCHEME !== undefined
-    ? process.env.WEB_AUTH_SCHEME
+  const scheme = environment.WEB_AUTH_SCHEME !== undefined
+    ? environment.WEB_AUTH_SCHEME
     : (preset?.authScheme ?? 'Bearer')
   return { [headerName]: `${scheme} ${apiKey}`.trim() }
 }
@@ -366,24 +374,25 @@ function resolveConfig(): {
   responseAdapter?: (data: unknown) => SearchHit[]
   preset?: ProviderPreset
 } {
-  const providerName = process.env.WEB_PROVIDER
+  const environment = getSelectedProviderEnvironment()
+  const providerName = environment.WEB_PROVIDER
   const preset = providerName ? BUILT_IN_PROVIDERS[providerName] : undefined
 
   return {
-    urlTemplate: process.env.WEB_URL_TEMPLATE
-      ?? process.env.WEB_SEARCH_API
+    urlTemplate: environment.WEB_URL_TEMPLATE
+      ?? environment.WEB_SEARCH_API
       ?? preset?.urlTemplate
       ?? '',
-    queryParam: process.env.WEB_QUERY_PARAM ?? preset?.queryParam ?? 'q',
-    method: process.env.WEB_METHOD ?? preset?.method ?? 'GET',
-    jsonPath: process.env.WEB_JSON_PATH ?? preset?.jsonPath,
+    queryParam: environment.WEB_QUERY_PARAM ?? preset?.queryParam ?? 'q',
+    method: environment.WEB_METHOD ?? preset?.method ?? 'GET',
+    jsonPath: environment.WEB_JSON_PATH ?? preset?.jsonPath,
     responseAdapter: preset?.responseAdapter,
     preset,
   }
 }
 
 function parseExtraParams(): Record<string, string> {
-  const raw = process.env.WEB_PARAMS
+  const raw = getSelectedProviderEnvironment().WEB_PARAMS
   if (!raw) return {}
   try {
     const obj = JSON.parse(raw)
@@ -435,7 +444,8 @@ function buildRequest(query: string) {
   }
 
   // Merge WEB_HEADERS with allowlist enforcement
-  const rawExtra = process.env.WEB_HEADERS
+  const environment = getSelectedProviderEnvironment()
+  const rawExtra = environment.WEB_HEADERS
   if (rawExtra) {
     for (const pair of rawExtra.split(';')) {
       const i = pair.indexOf(':')
@@ -460,10 +470,12 @@ function buildRequest(query: string) {
 
   if (method === 'POST') {
     headers['Content-Type'] = 'application/json'
-    const bodyTemplate = process.env.WEB_BODY_TEMPLATE
+    const bodyTemplate = environment.WEB_BODY_TEMPLATE
     if (bodyTemplate) {
       const body = bodyTemplate.replace(/\{query\}/g, query)
-      const maxBodyBytes = (Number(process.env.WEB_CUSTOM_MAX_BODY_KB) || DEFAULT_MAX_BODY_KB) * 1024
+      const maxBodyBytes =
+        (Number(environment.WEB_CUSTOM_MAX_BODY_KB) || DEFAULT_MAX_BODY_KB) *
+        1024
       if (Buffer.byteLength(body) > maxBodyBytes) {
         throw new Error(
           `POST body exceeds ${maxBodyBytes} bytes. ` +
@@ -529,8 +541,15 @@ export function extractHits(raw: unknown, jsonPath?: string): SearchHit[] {
 // Fetch with one retry + timeout
 // ---------------------------------------------------------------------------
 
-async function fetchWithRetry(url: string, init: RequestInit, signal?: AbortSignal): Promise<unknown> {
-  const timeoutSec = Number(process.env.WEB_CUSTOM_TIMEOUT_SEC) || DEFAULT_TIMEOUT_SECONDS
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  environment: ProviderEnvironment,
+  signal?: AbortSignal,
+): Promise<unknown> {
+  const timeoutSec =
+    Number(environment.WEB_CUSTOM_TIMEOUT_SEC) ||
+    DEFAULT_TIMEOUT_SECONDS
   const timeoutMs = timeoutSec * 1000
   let lastErr: Error | undefined
   let lastStatus: number | undefined
@@ -547,7 +566,11 @@ async function fetchWithRetry(url: string, init: RequestInit, signal?: AbortSign
 
     lastStatus = undefined
     try {
-      const res = await fetch(url, { ...init, signal: combined })
+      const res = await fetch(url, {
+        ...init,
+        signal: combined,
+        ...getProxyFetchOptions({ environment }),
+      })
 
       if (!res.ok) {
         lastStatus = res.status
@@ -585,13 +608,19 @@ export const customProvider: SearchProvider = {
   name: 'custom',
 
   isConfigured() {
-    return Boolean(process.env.WEB_SEARCH_API || process.env.WEB_PROVIDER || process.env.WEB_URL_TEMPLATE)
+    const environment = getSelectedProviderEnvironment()
+    return Boolean(
+      environment.WEB_SEARCH_API ||
+        environment.WEB_PROVIDER ||
+        environment.WEB_URL_TEMPLATE,
+    )
   },
 
   async search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput> {
     const start = performance.now()
+    const environment = getSelectedProviderEnvironment()
     const { url, init, config } = buildRequest(input.query)
-    const raw = await fetchWithRetry(url, init, signal)
+    const raw = await fetchWithRetry(url, init, environment, signal)
 
     const hits = config.responseAdapter
       ? config.responseAdapter(raw)

@@ -48,7 +48,6 @@ import {
 } from "../mcp-client/tui-connections.js";
 import type { MCPServerConnection } from "../services/mcp/types.js";
 import { ProviderHttpClient } from "../llm/client.js";
-import { setContextWindowUpgradeContext } from "../llm/context-window-upgrade.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type { LLMProvider } from "../llm/types.js";
 import {
@@ -82,15 +81,17 @@ import {
   type CompactionHistoryMarkerV1,
 } from "./compaction-history-marker.js";
 import {
-  normalizeProviderName,
+  resolveBuiltInProviderSlug,
   normalizeManagedGatewayModel,
-  prepareProviderSwitch,
   type ProviderFactoryOptions,
-  type PreparedProviderSwitch,
   type ProviderName,
-  readProviderFactoryOptions,
-  readProviderIdentity,
 } from "../llm/provider.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
+import {
+  SessionProviderService,
+  type PreparedProviderBinding,
+  type ProviderBinding,
+} from "./provider-service.js";
 import type { ProviderFallbackLadderOptions } from "../llm/api/fallback-ladder.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
@@ -191,12 +192,14 @@ import type { ExternalInstructionApprovalStore } from "../prompts/secure-instruc
 import type { PhaseEvent } from "../phases/events.js";
 import type { RunTurnOptions, Terminal } from "./run-turn.js";
 import { runWithCurrentRuntimeSession } from "./current-session.js";
+import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import type { UnifiedExecProcessManagerLike } from "../unified-exec/types.js";
 import type { CodeModeService } from "../tools/code-mode/types.js";
 import type { ToolLatencyStore } from "../tools/tool-latency-store.js";
 import type { PolicyLimitsService } from "../services/policyLimits/index.js";
 import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import type { AgentStatus as RuntimeAgentStatus } from "../agents/status.js";
+import type { AgentRuntimeOptions } from "./runtime-options.js";
 import type {
   SessionStartHookInput,
   SessionStartSource as HookSessionStartSource,
@@ -1111,7 +1114,7 @@ export interface McpServerMutationResult {
 
 export interface McpSessionServerConfig {
   readonly name: string;
-  readonly transport?: "stdio" | "sse" | "http" | "websocket" | "ws";
+  readonly transport?: "stdio" | "sse" | "http" | "websocket";
   readonly command?: string;
   readonly args?: readonly string[];
   readonly endpoint?: string;
@@ -1286,6 +1289,8 @@ export interface StateDbContext {
 
 /** agenc runtime `SessionServices` — DI container of all session-scoped services. */
 export interface SessionServices {
+  /** Immutable operator policy captured for this session at creation time. */
+  readonly runtimeOptions: AgentRuntimeOptions;
   readonly mcpConnectionManager: McpConnectionManager;
   readonly mcpStartupCancellationToken: McpStartupCancellationToken;
   readonly unifiedExecManager: UnifiedExecProcessManager;
@@ -1377,6 +1382,15 @@ export interface SessionServices {
   readonly codeModeService: CodeModeService;
   readonly environment?: Environment;
   // T-future: AgenC-specific additions
+  /**
+   * Canonical provider authority. Session construction fills this for legacy
+   * embedders that supplied only `provider`; production callers should bind it
+   * explicitly so the environment snapshot is captured at ingress.
+   */
+  readonly providerService?: SessionProviderService;
+  /** Immutable provider-only environment captured for this session. */
+  readonly providerEnvironment?: ProviderEnvironment;
+  /** Read-only projection of `providerService.current().instance`. */
   readonly provider: LLMProvider;
   readonly registry: ToolRegistry;
   /** Daemon-owned M3 execution authority shared by model/tool/spawn paths. */
@@ -1613,7 +1627,7 @@ async function providerFactoryOptionsFromSettings(params: {
       extra.providerFallback = providerFallback;
     }
   }
-  const normalizedProvider = normalizeProviderName(params.provider);
+  const normalizedProvider = resolveBuiltInProviderSlug(params.provider);
   if (normalizedProvider === "agenc" && params.authBackend !== undefined) {
     extra.authBackend = params.authBackend;
     extra.sessionId = params.sessionId;
@@ -1639,7 +1653,7 @@ async function providerFactoryOptionsFromSettings(params: {
     if (
       params.managedKeysEnabled &&
       byokApiKey === undefined &&
-      normalizedProvider !== null &&
+      normalizedProvider !== undefined &&
       MANAGED_KEY_PROVIDERS.has(normalizedProvider)
     ) {
       throw new Error(
@@ -1650,7 +1664,7 @@ async function providerFactoryOptionsFromSettings(params: {
   const managedCredential =
     byokApiKey === undefined &&
     params.managedKeysEnabled &&
-    normalizedProvider !== null
+    normalizedProvider !== undefined
       ? await vendManagedProviderKey({
           provider: normalizedProvider,
           authBackend: params.authBackend,
@@ -1986,8 +2000,7 @@ function normalizeHistoryMessages(
                 : {}),
               ...(candidate.runtimeOnly?.compactionHistory !== undefined
                 ? {
-                    compactionHistory:
-                      candidate.runtimeOnly.compactionHistory,
+                    compactionHistory: candidate.runtimeOnly.compactionHistory,
                   }
                 : {}),
             },
@@ -2011,7 +2024,9 @@ const NON_SELECTABLE_USER_TAGS = [
   "teammate-message",
 ] as const;
 
-export function isCompactBoundaryMessage(message: LLMMessage | undefined): boolean {
+export function isCompactBoundaryMessage(
+  message: LLMMessage | undefined,
+): boolean {
   return isAuthenticatedCompactionBoundary(message);
 }
 
@@ -2019,9 +2034,11 @@ export function isTransactionalCompactSummaryMessage(
   message: LLMMessage | undefined,
 ): boolean {
   const marker = message?.runtimeOnly?.compactionHistory;
-  return message?.role === "user" &&
+  return (
+    message?.role === "user" &&
     marker?.version === COMPACTION_HISTORY_MARKER_VERSION &&
-    marker.kind === "summary";
+    marker.kind === "summary"
+  );
 }
 
 function isCompactSummaryMessage(message: LLMMessage | undefined): boolean {
@@ -2701,11 +2718,36 @@ export class Session {
           : {}),
       },
     } as SessionConfiguration;
-    this.services = {
+    const initialSelection = opts.initialState
+      .sessionConfiguration as SessionConfiguration & {
+      readonly provider?: { readonly slug?: string };
+    };
+    const providerService =
+      opts.services.providerService ??
+      new SessionProviderService({
+        initialProvider: opts.services.provider,
+        ...(initialSelection.provider?.slug !== undefined
+          ? { initialProviderName: initialSelection.provider.slug }
+          : {}),
+        ...(initialSelection.collaborationMode?.model !== undefined
+          ? { initialModel: initialSelection.collaborationMode.model }
+          : {}),
+        environment: opts.services.providerEnvironment ?? {},
+      });
+    const services = {
       ...opts.services,
+      providerService,
       permissionModeRegistry: resolvedRegistry,
       querySource: opts.services.querySource ?? "repl_main_thread",
     };
+    // `provider` is a read-only projection for consumers; all mutations are
+    // transactional operations on the session-owned provider service.
+    Object.defineProperty(services, "provider", {
+      enumerable: true,
+      configurable: false,
+      get: () => providerService.current().instance,
+    });
+    this.services = services;
     this.jsRepl = opts.jsRepl;
     this.config =
       opts.config ??
@@ -2852,11 +2894,11 @@ export class Session {
 
   /**
    * Session-scoped provider accessor for the canonical turn builder path.
-   * Throws when a loose-cast test fixture omitted the provider and then
-   * attempted to use the live turn owner path.
+   * The active binding belongs to `SessionProviderService`; the service
+   * container's `provider` property is only a compatibility projection.
    */
   get provider(): LLMProvider {
-    const provider = (this.services as Partial<SessionServices>).provider;
+    const provider = this.providerService.current().instance;
     if (!provider) {
       throw new Error(
         "Session provider is required to build or run a live turn",
@@ -2865,21 +2907,30 @@ export class Session {
     return provider;
   }
 
+  get providerService(): SessionProviderService {
+    const service = this.services.providerService;
+    if (!service) {
+      throw new Error("Session provider service was not initialized");
+    }
+    return service;
+  }
+
+  get providerBinding(): ProviderBinding {
+    return this.providerService.current();
+  }
+
   bindProviderConversation(provider?: LLMProvider): void {
-    const target =
-      provider ?? (this.services as Partial<SessionServices>).provider;
+    const target = provider ?? this.provider;
     readProviderHttpClient(target)?.bindConversationId(this.conversationId);
   }
 
   clearProviderResponseId(provider?: LLMProvider): void {
-    const target =
-      provider ?? (this.services as Partial<SessionServices>).provider;
+    const target = provider ?? this.provider;
     readProviderHttpClient(target)?.clearResponsesResponseId();
   }
 
   resetProviderIncrementalState(provider?: LLMProvider): void {
-    const target =
-      provider ?? (this.services as Partial<SessionServices>).provider;
+    const target = provider ?? this.provider;
     const client = readProviderHttpClient(target);
     client?.bindConversationId(this.conversationId);
     client?.resetResponsesContinuation();
@@ -2972,19 +3023,16 @@ export class Session {
         collaborationMode?: { model?: string };
       };
     };
-    const liveProvider = (this.services as Partial<SessionServices>).provider;
-    const liveProviderOptions = liveProvider
-      ? readProviderFactoryOptions(liveProvider)
-      : undefined;
+    const providerService = this.providerService;
+    const liveBinding = providerService.current();
+    const liveProvider = liveBinding.instance;
+    const liveProviderOptions = liveBinding.factoryOptions;
     const beforeModel =
-      liveProviderOptions?.model ??
+      liveBinding.model ??
       peeked.sessionConfiguration?.collaborationMode?.model ??
       "unknown";
     const beforeProvider =
-      readProviderIdentity(
-        liveProvider,
-        peeked.sessionConfiguration?.provider?.slug,
-      ) ??
+      liveBinding.provider ??
       peeked.sessionConfiguration?.provider?.slug ??
       "unknown";
 
@@ -3016,32 +3064,29 @@ export class Session {
       }
     }
 
-    let preparedSwitch: PreparedProviderSwitch;
+    let preparedSwitch: PreparedProviderBinding;
     let targetProviderSettings: ResolvedProviderSettings | undefined;
     try {
-      const targetNormalizedProvider = normalizeProviderName(resolvedProvider);
-      const liveProviderIdentity = readProviderIdentity(
-        liveProvider,
-        peeked.sessionConfiguration?.provider?.slug,
-      );
+      const targetNormalizedProvider =
+        resolveBuiltInProviderSlug(resolvedProvider);
       const reusableLiveProviderOptions =
         liveProviderOptions &&
-        liveProviderIdentity !== null &&
-        liveProviderIdentity === targetNormalizedProvider
+        resolveBuiltInProviderSlug(liveBinding.provider) ===
+          targetNormalizedProvider
           ? liveProviderOptions
           : undefined;
       const configStore = (this.services as Partial<SessionServices>)
         .configStore;
       targetProviderSettings =
-        targetNormalizedProvider !== null && configStore?.current
+        targetNormalizedProvider !== undefined && configStore?.current
           ? resolveProviderSettings(
               targetNormalizedProvider,
               configStore.current(),
-              process.env,
+              providerService.environment(),
             )
           : undefined;
       const settingsOptions =
-        targetNormalizedProvider !== null
+        targetNormalizedProvider !== undefined
           ? await providerFactoryOptionsFromSettings({
               provider: targetNormalizedProvider,
               model: resolvedModel,
@@ -3057,20 +3102,25 @@ export class Session {
                 this.services.admissionRequired !== false,
             })
           : {};
-      preparedSwitch = prepareProviderSwitch(resolvedProvider, {
-        ...mergeProviderFactoryOptions(
-          reusableLiveProviderOptions,
-          settingsOptions,
-        ),
-        model: settingsOptions.model ?? resolvedModel,
-        tools: this.services.registry.toLLMTools(),
-      });
+      preparedSwitch = providerService.prepare(
+        { provider: resolvedProvider, model: resolvedModel },
+        {
+          ...mergeProviderFactoryOptions(
+            reusableLiveProviderOptions,
+            settingsOptions,
+          ),
+          model: settingsOptions.model ?? resolvedModel,
+          tools: this.services.registry.toLLMTools(),
+        },
+      );
     } catch (error) {
       const reason =
         error instanceof Error && error.message.length > 0
           ? error.message
           : "provider rebuild failed";
-      this.setPendingProviderSwitch(null);
+      if (this.pendingProviderSwitch === pending) {
+        this.setPendingProviderSwitch(null);
+      }
       this.emit({
         id: this.nextInternalSubId(),
         msg: {
@@ -3086,25 +3136,25 @@ export class Session {
 
     const rawNextModelInfo = await deriveNextModelInfo(
       this.services.modelsManager,
-      preparedSwitch.model,
+      preparedSwitch.binding.model,
     );
-    const preparedSwitchOptions = readProviderFactoryOptions(
-      preparedSwitch.instance,
-    );
+    const preparedSwitchOptions = preparedSwitch.binding.factoryOptions;
     const nextModelInfo =
-      normalizeProviderName(preparedSwitch.provider) === "openrouter" &&
+      resolveBuiltInProviderSlug(preparedSwitch.binding.provider) ===
+        "openrouter" &&
       isManagedCredentialProviderOptions(preparedSwitchOptions) &&
       targetProviderSettings?.maxOutputTokens === undefined
         ? capManagedOpenRouterModelInfo(rawNextModelInfo)
         : rawNextModelInfo;
     const nextBaseInstructions = await buildBaseInstructionsForModel({
       registry: this.services.registry,
-      model: preparedSwitch.model,
-      compactProfile: usesLocalToolProfile(preparedSwitch.provider),
+      model: preparedSwitch.binding.model,
+      compactProfile: usesLocalToolProfile(preparedSwitch.binding.provider),
     });
     const previousClient = readProviderHttpClient(liveProvider);
-    const nextClient = readProviderHttpClient(preparedSwitch.instance);
+    const nextClient = readProviderHttpClient(preparedSwitch.binding.instance);
 
+    providerService.commit(preparedSwitch);
     await this.state.with((state) => {
       const cfg = (
         state as {
@@ -3116,10 +3166,10 @@ export class Session {
         }
       ).sessionConfiguration;
       if (!cfg) return;
-      cfg.provider = { slug: preparedSwitch.provider };
+      cfg.provider = { slug: preparedSwitch.binding.provider };
       cfg.collaborationMode = {
         ...(cfg.collaborationMode ?? {}),
-        model: preparedSwitch.model,
+        model: preparedSwitch.binding.model,
       };
       cfg.baseInstructions = nextBaseInstructions;
     });
@@ -3127,25 +3177,15 @@ export class Session {
     (this as { modelInfo: ModelInfo }).modelInfo = nextModelInfo;
     (this as { config: Config }).config = {
       ...this.config,
-      model: preparedSwitch.model,
+      model: preparedSwitch.binding.model,
     };
-    (this.services as { provider: LLMProvider }).provider =
-      preparedSwitch.instance;
     previousClient?.resetResponsesContinuation();
     nextClient?.bindConversationId(this.conversationId);
     nextClient?.resetResponsesContinuation();
 
-    // Keep the sync upgrade-message snapshot in sync with the live model.
-    // Bootstrap registers the initial snapshot; subsequent /model switches
-    // (or recovery-driven model fallbacks) flow through here so the
-    // post-compact stdout breadcrumb continues to surface accurate
-    // upgrade tips after a switch.
-    setContextWindowUpgradeContext({
-      currentModel: preparedSwitch.model,
-      modelsManager: this.services.modelsManager,
-    });
-
-    this.setPendingProviderSwitch(null);
+    if (this.pendingProviderSwitch === pending) {
+      this.setPendingProviderSwitch(null);
+    }
 
     this.emit({
       id: this.nextInternalSubId(),
@@ -3153,7 +3193,7 @@ export class Session {
         type: "warning",
         payload: {
           cause: "provider_switched",
-          message: `provider ${beforeProvider} -> ${preparedSwitch.provider}; model ${beforeModel} -> ${preparedSwitch.model}; previous_response_id reset${
+          message: `provider ${beforeProvider} -> ${preparedSwitch.binding.provider}; model ${beforeModel} -> ${preparedSwitch.binding.model}; previous_response_id reset${
             pending.profile ? `; profile ${pending.profile}` : ""
           }`,
         },
@@ -3161,8 +3201,8 @@ export class Session {
     });
     return {
       applied: true,
-      provider: preparedSwitch.provider,
-      model: preparedSwitch.model,
+      provider: preparedSwitch.binding.provider,
+      model: preparedSwitch.binding.model,
     };
   }
 
@@ -3179,17 +3219,31 @@ export class Session {
         "Session.runTurn accepts either ctx or subId/configOverrides, not both",
       );
     }
-    if (opts.ctx === undefined && this.pendingProviderSwitch !== null) {
-      await this.consumePendingProviderSwitch();
+    const configStore = this.services.configStore;
+    if (configStore === undefined) {
+      throw new Error(
+        "Session.runTurn requires the session's canonical ConfigStore authority",
+      );
     }
-    const ctx =
-      opts.ctx ??
-      (opts.configOverrides !== undefined
-        ? this.newTurnWithSubId(
-            opts.subId ?? this.nextInternalSubId(),
-            opts.configOverrides,
-          )
-        : this.newDefaultTurnWithSubId(opts.subId ?? this.nextInternalSubId()));
+    const withTurnAuthority = <T>(operation: () => T): T =>
+      runWithCurrentRuntimeSession(this, () =>
+        runWithCanonicalSettingsAuthority(configStore, operation),
+      );
+    if (opts.ctx === undefined && this.pendingProviderSwitch !== null) {
+      await withTurnAuthority(() => this.consumePendingProviderSwitch());
+    }
+    const ctx = withTurnAuthority(
+      () =>
+        opts.ctx ??
+        (opts.configOverrides !== undefined
+          ? this.newTurnWithSubId(
+              opts.subId ?? this.nextInternalSubId(),
+              opts.configOverrides,
+            )
+          : this.newDefaultTurnWithSubId(
+              opts.subId ?? this.nextInternalSubId(),
+            )),
+    );
     const {
       ctx: _ctx,
       subId: _subId,
@@ -3199,11 +3253,13 @@ export class Session {
     void _ctx;
     void _subId;
     void _configOverrides;
-    const { runTurnKernel } = await import("./run-turn.js");
+    const { runTurnKernel } = await withTurnAuthority(
+      () => import("./run-turn.js"),
+    );
     const history =
       runOpts.history ??
       normalizeHistoryMessages(this.state.unsafePeek().history);
-    const iter = runWithCurrentRuntimeSession(this, () =>
+    const iter = withTurnAuthority(() =>
       runTurnKernel(this, ctx, userMessage, {
         ...runOpts,
         history,
@@ -3212,9 +3268,7 @@ export class Session {
     let completed = false;
     try {
       while (true) {
-        const next = await runWithCurrentRuntimeSession(this, () =>
-          iter.next(),
-        );
+        const next = await withTurnAuthority(() => iter.next());
         if (next.done) {
           completed = true;
           return next.value;
@@ -3223,9 +3277,7 @@ export class Session {
       }
     } finally {
       if (!completed) {
-        await runWithCurrentRuntimeSession(this, () =>
-          iter.return({ reason: "cancelled" }),
-        );
+        await withTurnAuthority(() => iter.return({ reason: "cancelled" }));
       }
     }
   }
@@ -3562,16 +3614,17 @@ export class Session {
       if (compactionResult.transaction === undefined) {
         this.throwIfPartialCompactAborted(abortController.signal);
       }
-      const replacementHistory = compactionResult.transaction !== undefined
-        ? compactionResult.transaction.committed.replacement_history
-          .map(responseItemToLlmMessage)
-          .map(cloneLlmMessage)
-        : [
-            ...prefixBeforeActive,
-            ...fromCompactRuntimeMessages(
-              buildPostCompactMessages(compactionResult),
-            ),
-          ].map(cloneLlmMessage);
+      const replacementHistory =
+        compactionResult.transaction !== undefined
+          ? compactionResult.transaction.committed.replacement_history
+              .map(responseItemToLlmMessage)
+              .map(cloneLlmMessage)
+          : [
+              ...prefixBeforeActive,
+              ...fromCompactRuntimeMessages(
+                buildPostCompactMessages(compactionResult),
+              ),
+            ].map(cloneLlmMessage);
       const event = createHistoryReplacedEvent({
         replacementHistory,
         id: `history-replaced-${task.subId}`,
@@ -3717,7 +3770,8 @@ export class Session {
         sessionId: this.conversationId,
         eventAlreadyEmitted: false,
         code: "ROLLOUT_DEGRADED",
-        message: "Compaction rollback is disabled while durable history is degraded.",
+        message:
+          "Compaction rollback is disabled while durable history is degraded.",
       };
     }
 
@@ -3729,7 +3783,10 @@ export class Session {
         autoStart: false,
       });
     } catch (error) {
-      if (error instanceof Error && error.message.includes("turn is currently in flight")) {
+      if (
+        error instanceof Error &&
+        error.message.includes("turn is currently in flight")
+      ) {
         return {
           ok: false,
           sessionId: this.conversationId,
@@ -3762,7 +3819,10 @@ export class Session {
           attemptId: params.attemptId,
           nowMs: Date.now(),
           ...(params.reviewedBranchTargetSessionId !== undefined
-            ? { reviewedBranchTargetSessionId: params.reviewedBranchTargetSessionId }
+            ? {
+                reviewedBranchTargetSessionId:
+                  params.reviewedBranchTargetSessionId,
+              }
             : {}),
         });
         if (rollback.mode === "reviewed_branch") {
@@ -3794,9 +3854,12 @@ export class Session {
           try {
             rolloutStore.recordProjectionFailure(rollback.attemptId, error);
           } catch (recordError) {
-            throw new CompactionReconstructionRequiredError(rollback.attemptId, {
-              cause: new AggregateError([error, recordError]),
-            });
+            throw new CompactionReconstructionRequiredError(
+              rollback.attemptId,
+              {
+                cause: new AggregateError([error, recordError]),
+              },
+            );
           }
           throw new CompactionReconstructionRequiredError(rollback.attemptId, {
             cause: error,
@@ -3811,9 +3874,12 @@ export class Session {
           try {
             rolloutStore.markCleanupPending(rollback.attemptId, error);
           } catch (markError) {
-            throw new CompactionReconstructionRequiredError(rollback.attemptId, {
-              cause: new AggregateError([error, markError]),
-            });
+            throw new CompactionReconstructionRequiredError(
+              rollback.attemptId,
+              {
+                cause: new AggregateError([error, markError]),
+              },
+            );
           }
           this.registerCompactionCleanupRetry(rollback.attemptId, cleanup);
         }
@@ -3829,7 +3895,8 @@ export class Session {
           displayText: "Compaction rolled back in the current session",
         };
       });
-      if (result === null) throw new Error("compaction rollback produced no result");
+      if (result === null)
+        throw new Error("compaction rollback produced no result");
       return result;
     } finally {
       if (task !== null) await this.onTaskFinished(task.subId);
@@ -3845,7 +3912,8 @@ export class Session {
         ok: false,
         sessionId: this.conversationId,
         code: "ROLLOUT_UNAVAILABLE",
-        message: "Compaction retention extension requires a durable session history.",
+        message:
+          "Compaction retention extension requires a durable session history.",
       };
     }
     if (rolloutStore.isDegraded) {
@@ -3853,7 +3921,8 @@ export class Session {
         ok: false,
         sessionId: this.conversationId,
         code: "ROLLOUT_DEGRADED",
-        message: "Compaction retention cannot change while durable history is degraded.",
+        message:
+          "Compaction retention cannot change while durable history is degraded.",
       };
     }
 
@@ -3865,12 +3934,16 @@ export class Session {
         autoStart: false,
       });
     } catch (error) {
-      if (error instanceof Error && error.message.includes("turn is currently in flight")) {
+      if (
+        error instanceof Error &&
+        error.message.includes("turn is currently in flight")
+      ) {
         return {
           ok: false,
           sessionId: this.conversationId,
           code: "ACTIVE_TURN",
-          message: "Cannot extend compaction retention while a turn is in flight.",
+          message:
+            "Cannot extend compaction retention while a turn is in flight.",
         };
       }
       throw error;
@@ -4135,7 +4208,8 @@ export class Session {
         cleanup: {
           clearReadFileState: () => this.compactionReadFileState()?.clear(),
           clearProviderResponseId: () => this.clearProviderResponseId(),
-          clearSearchIndexes: this.compactionCleanupCallback("clearSearchIndexes"),
+          clearSearchIndexes:
+            this.compactionCleanupCallback("clearSearchIndexes"),
           clearToolIndexes: this.compactionCleanupCallback("clearToolIndexes"),
           resetMicrocompactState,
         },
@@ -4157,7 +4231,9 @@ export class Session {
     key: "clearSearchIndexes" | "clearToolIndexes",
   ): (() => void) | undefined {
     const value = (this as unknown as Record<string, unknown>)[key];
-    return typeof value === "function" ? value.bind(this) as () => void : undefined;
+    return typeof value === "function"
+      ? (value.bind(this) as () => void)
+      : undefined;
   }
 
   private runPostCompactionCleanup(): void {
@@ -4234,9 +4310,10 @@ export class Session {
           { durable: true },
         );
       }
-      const projectedItems = params.compactionResult.transaction === undefined
-        ? replacementItems
-        : params.compactionResult.transaction.committed.replacement_history;
+      const projectedItems =
+        params.compactionResult.transaction === undefined
+          ? replacementItems
+          : params.compactionResult.transaction.committed.replacement_history;
       const applyProjection = async (): Promise<void> => {
         await this.state.with((sessionState) => {
           sessionState.history = projectedItems.map(responseItemToLlmMessage);
@@ -5633,6 +5710,19 @@ export class Session {
     }
     this.eventLog.close();
     this.txEvent.close();
+    const sessionEnvironmentHome = this.services.configStore?.homeContext?.path;
+    if (sessionEnvironmentHome !== undefined) {
+      try {
+        const { disposeSessionEnvironment } =
+          await import("../utils/sessionEnvironment.js");
+        disposeSessionEnvironment({
+          homePath: sessionEnvironmentHome,
+          sessionId: String(this.conversationId),
+        });
+      } catch {
+        /* best-effort cache release; no session state may survive shutdown */
+      }
+    }
     this.agentStatus.next({ status: "shutdown", endedAtMs: monotonicMs() });
     this.agentStatus.complete();
     this.lifecycleState = "closed";

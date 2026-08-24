@@ -14,10 +14,10 @@ export const SETTING_SOURCES = [
   // Local settings (gitignored)
   'localSettings',
 
-  // Flag settings (from --settings flag)
+  // Explicit ephemeral config layers (profile/environment/CLI)
   'flagSettings',
 
-  // Policy settings (managed-settings.json or remote settings from API)
+  // Policy settings (canonical managed TOML or remote policy)
   'policySettings',
 ] as const
 
@@ -193,10 +193,3 @@ export const SOURCES = [
   'projectSettings',
   'userSettings',
 ] as const satisfies readonly EditableSettingSource[]
-
-/**
- * The JSON Schema URL for AgenC settings
- * You can edit the contents at https://github.com/SchemaStore/schemastore/blob/master/src/schemas/json/agenc-code-settings.json
- */
-export const AGENC_SETTINGS_SCHEMA_URL =
-  'https://json.schemastore.org/agenc-code-settings.json'

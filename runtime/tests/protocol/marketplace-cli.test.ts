@@ -19,7 +19,6 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { MarketplaceKitCliAdapter } from "../../src/protocol/marketplace-cli.js";
-import { NullTransport } from "../../src/protocol/null-transport.js";
 import { createProtocolTransport } from "../../src/protocol/index.js";
 import { isValidTaskPda, sanitizeUntrustedText } from "../../src/protocol/types.js";
 import {
@@ -240,45 +239,8 @@ describe("MarketplaceKitCliAdapter — mutating verbs stay owner-gated", () => {
   });
 });
 
-describe("NullTransport and factory defaults (A1)", () => {
-  it("NullTransport read verbs report TRANSPORT_NOT_CONFIGURED", async () => {
-    const transport = new NullTransport();
-    const list = await transport.listClaimable();
-    const detail = await transport.taskDetail(FIXTURE_TASK_PDA_1);
-    for (const result of [list, detail]) {
-      expect(result.ok).toBe(false);
-      if (result.ok) continue;
-      expect(result.error.code).toBe("TRANSPORT_NOT_CONFIGURED");
-    }
-  });
-
-  it("NullTransport mutating verbs report VERB_NOT_ENABLED", async () => {
-    const transport = new NullTransport();
-    const results = await Promise.all([
-      transport.claimTask(FIXTURE_TASK_PDA_1),
-      transport.delegateStep("agent", "step"),
-      transport.submitProof(),
-      transport.settleTask(),
-      transport.adjustStake(),
-    ]);
-    for (const result of results) {
-      expect(result.ok).toBe(false);
-      if (result.ok) continue;
-      expect(result.error.code).toBe("VERB_NOT_ENABLED");
-      expect(result.error.message).toContain("owner approval");
-    }
-  });
-
-  it("createProtocolTransport only builds the CLI adapter for an explicit enabled marketplace-cli block", () => {
-    expect(createProtocolTransport(undefined).kind).toBe("null");
-    expect(createProtocolTransport({}).kind).toBe("null");
-    expect(createProtocolTransport({ enabled: false }).kind).toBe("null");
-    expect(
-      createProtocolTransport({ enabled: true, adapter: "null" }).kind,
-    ).toBe("null");
-    expect(
-      createProtocolTransport({ enabled: false, adapter: "marketplace-cli" }).kind,
-    ).toBe("null");
+describe("protocol transport factory (A1)", () => {
+  it("builds the sole active marketplace-cli adapter", () => {
     expect(
       createProtocolTransport({ enabled: true, adapter: "marketplace-cli" }).kind,
     ).toBe("marketplace-cli");

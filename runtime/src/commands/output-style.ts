@@ -192,7 +192,7 @@ export async function applyOutputStyleSwitch(
   if (resolved.error !== undefined) return resolved.error;
   const target = resolved.name!;
 
-  const result = updateSettingsForSource("userSettings", {
+  const result = await updateSettingsForSource("userSettings", {
     outputStyle: target,
   });
   if (result.error !== null) {

@@ -1,9 +1,9 @@
 import { spawnSync } from 'child_process'
 import { getIsInteractive } from '../bootstrap/state.js'
-import { getGlobalConfig } from './config.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
+import { getExecutionAuthoritySettings } from './settings/settings.js'
 
 let loggedTmuxCcDisable = false
 let checkedTmuxMouseHint = false
@@ -135,9 +135,7 @@ export function isFullscreenEnvEnabled(): boolean {
   }
   // Config-based toggle: lets external users enable flicker-free mode via
   // `/config` without having to set an env var.
-  const configValue = getGlobalConfig().flickerFreeMode
-  if (configValue !== undefined) return configValue
-  return false
+  return getExecutionAuthoritySettings().tui?.flickerFreeMode ?? true
 }
 
 /**

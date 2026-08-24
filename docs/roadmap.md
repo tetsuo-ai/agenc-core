@@ -1,7 +1,7 @@
 # AgenC product roadmap
 
-**As of 2026-08-19.** Product line **0.17.0** (SDK package **0.3.0**). What is
-shipped in-tree versus open backlog.
+**As of 2026-08-23.** Product line **0.17.0** (SDK package **0.3.0**). What is
+shipped in-tree versus open backlog. Map: [INDEX.md](INDEX.md).
 
 This replaces the competitive parity plan. Superseded research and phase
 narratives remain available in Git history and are **not** product truth.
@@ -13,14 +13,14 @@ shipped / open summary.
 
 ---
 
-## Shipped (in product as of 2026-08-19 / 0.17.0)
+## Shipped (in product as of 2026-08-23 / 0.17.0)
 
 ### Core coding agent
 
 - Daemon-backed CLI + fullscreen TUI (custom Ink fork, workbench default)
 - Multi-provider LLM layer (default xAI / Grok; many built-ins)
 - LIVE tool registry: shell, files, patch, search, web, LSP, MCP, tasks, skills, …
-- Permissions modes + OS sandbox (bubblewrap / Seatbelt)
+- Permissions modes + OS sandbox (Linux bubblewrap, Landlock fallback, macOS Seatbelt)
 - MCP client + server, plugins, skills, hooks
 - Browser automation tool (`Browser`): isolated Chromium over a CDP pipe,
   accessibility-ref actions, SSRF-proxy egress control (task 18)
@@ -53,7 +53,8 @@ shipped / open summary.
 
 ### Onboarding & distribution
 
-- One-line installer / releases packaging, Docker, Homebrew paths
+- One-line installer / releases packaging, local Docker build. Homebrew
+  formula is an unpublished in-tree template ([install.md](install.md))
 - `agenc onboard` (+ identity / channel / autonomy / recap acts)
 - `agenc security audit [--fix]`
 - `agenc update` self-update CLI
@@ -152,5 +153,6 @@ Established product policy:
 | --- | --- |
 | This file | Shipped vs open product summary |
 | `TODO.md` (local/gitignored) | Engineer backlog, gates, completed SHAs |
+| [`INDEX.md`](INDEX.md) | Documentation map |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | How the system is put together |
 | Git history | Superseded planning and audit provenance |

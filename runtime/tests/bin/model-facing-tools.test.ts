@@ -376,7 +376,7 @@ describe("model-facing tools", () => {
     _resetAgentRolesForTesting();
   });
 
-  it("registers the requested product tools and omits raw system HTTP tools", () => {
+  it("registers only canonical product tool names and inputs", async () => {
     const registry = buildBootstrapToolRegistry({
       workspaceRoot: process.cwd(),
       agencHome: join(tmpdir(), "agenc-tools-test"),
@@ -390,7 +390,6 @@ describe("model-facing tools", () => {
     expect(allNames).toEqual(
       expect.arrayContaining([
         "web_fetch",
-        "WebFetch",
         "WebSearch",
         "spawn_agent",
         "wait_agent",
@@ -418,7 +417,6 @@ describe("model-facing tools", () => {
         "CronDelete",
         "CronList",
         "WorkflowTool",
-        "Brief",
         "SendUserMessage",
         "VerifyPlanExecution",
         "StructuredOutput",
@@ -431,6 +429,26 @@ describe("model-facing tools", () => {
     expect(allNames).not.toContain("resume_agent");
     expect(allNames).not.toContain("TeamCreate");
     expect(allNames).not.toContain("TeamDelete");
+    expect(allNames).not.toContain("WebFetch");
+    expect(allNames).not.toContain("Brief");
+
+    for (const removedName of ["WebFetch", "Brief"]) {
+      const result = await registry.dispatch({
+        id: `removed-${removedName}`,
+        name: removedName,
+        arguments: JSON.stringify({ message: "hello", url: "https://agenc.tech" }),
+      });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain(`unknown tool: ${removedName}`);
+    }
+
+    const skillSchema = registry.tools.find(
+      (tool) => tool.name === "Skill",
+    )?.inputSchema as
+      | { properties?: Record<string, unknown>; required?: readonly string[] }
+      | undefined;
+    expect(skillSchema?.required).toEqual(["skill"]);
+    expect(skillSchema?.properties).not.toHaveProperty("name");
 
     // followup_task was a dormant deferred alias of assign_task — deleted.
     expect(allNames).not.toContain("followup_task");
@@ -661,7 +679,7 @@ describe("model-facing tools", () => {
     expect(visibleNames).not.toContain("StructuredOutput");
   });
 
-  it("accepts max_concurrency and the upstream max_workers alias", async () => {
+  it("exposes only max_concurrency for CSV worker limits", async () => {
     const tools = createModelFacingTools({
       workspaceRoot: process.cwd(),
       getSession: () => null,
@@ -676,11 +694,7 @@ describe("model-facing tools", () => {
       minimum: 1,
       maximum: 64,
     });
-    expect(properties.max_workers).toMatchObject({
-      type: "integer",
-      minimum: 1,
-      maximum: 64,
-    });
+    expect(properties).not.toHaveProperty("max_workers");
 
     const accepted = await spawn.execute({
       csv_path: "input.csv",
@@ -691,13 +705,14 @@ describe("model-facing tools", () => {
       "tool invoked before session was initialized",
     );
 
-    const aliasAccepted = await spawn.execute({
+    const removedAlias = await spawn.execute({
       csv_path: "input.csv",
       instruction: "process {value}",
       max_workers: 2,
     });
-    expect(JSON.parse(aliasAccepted.content).error).toBe(
-      "tool invoked before session was initialized",
+    expect(removedAlias.isError).toBe(true);
+    expect(JSON.parse(removedAlias.content).error).toContain(
+      "unknown field `max_workers`",
     );
   });
 
@@ -817,7 +832,7 @@ describe("model-facing tools", () => {
     }
   });
 
-  it("uses max_workers as the CSV agent concurrency alias", async () => {
+  it("honors max_concurrency for CSV agent scheduling", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-csv-alias-"));
     const csvAgentJobsRepositories = new CsvAgentJobsRepositoryAuthority({
       agencHome: join(root, "agenc-home"),
@@ -905,7 +920,7 @@ describe("model-facing tools", () => {
         csv_path: csvPath,
         instruction: "  process the structured value field  ",
         id_column: "id",
-        max_workers: 1,
+        max_concurrency: 1,
       });
 
       await Promise.all(reports);
@@ -998,15 +1013,14 @@ describe("model-facing tools", () => {
       });
       const spawn = tools.find((tool) => tool.name === "spawn_agents_on_csv")!;
 
-      const mismatchedAliases = await spawn.execute({
+      const removedAlias = await spawn.execute({
         csv_path: "input.csv",
         instruction: "process",
-        max_concurrency: 2,
         max_workers: 3,
       });
-      expect(mismatchedAliases.isError).toBe(true);
-      expect(JSON.parse(mismatchedAliases.content).error).toMatch(
-        /must match/u,
+      expect(removedAlias.isError).toBe(true);
+      expect(JSON.parse(removedAlias.content).error).toContain(
+        "unknown field `max_workers`",
       );
 
       const invalidSchema = await spawn.execute({
@@ -1956,35 +1970,14 @@ describe("model-facing tools", () => {
     }
   });
 
-  it("WebFetch legacy alias flags non-preapproved hosts as preapproved=false", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      url: "https://github.com/random-org/repo",
-      headers: {
-        get: (name: string) =>
-          name.toLowerCase() === "content-type" ? "text/plain" : null,
-      },
-      text: async () => "plain body",
-    });
-    const previousFetch = globalThis.fetch;
-    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
-    try {
-      const tools = createModelFacingTools({
-        workspaceRoot: process.cwd(),
-        getSession: () => null,
-      });
-      const byName = new Map(tools.map((tool) => [tool.name, tool]));
-      const result = await byName.get("WebFetch")!.execute({
-        url: "https://github.com/random-org/repo",
-      });
-      const parsed = JSON.parse(result.content);
-      expect(parsed.preapproved).toBe(false);
-      expect(parsed.rendered_as).toBe("passthrough");
-      expect(parsed.content).toBe("plain body");
-    } finally {
-      globalThis.fetch = previousFetch;
-    }
+  it("registers only the canonical web_fetch name", () => {
+    const names = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => null,
+    }).map((tool) => tool.name);
+
+    expect(names).toContain("web_fetch");
+    expect(names).not.toContain("WebFetch");
   });
 
   it("web_fetch truncates streamed bodies before unbounded text reads", async () => {
@@ -2419,37 +2412,6 @@ describe("model-facing tools", () => {
         ),
       });
     }
-
-    const legacyAllowed = await tool!.checkPermissions?.(
-      { url: "https://github.com/random-org/repo" },
-      fakeEvaluatorContext(
-        createEmptyToolPermissionContext({
-          alwaysAllowRules: {
-            localSettings: ["WebFetch(domain:github.com)"],
-          },
-        }),
-      ),
-    );
-    expect(legacyAllowed).toMatchObject({
-      behavior: "allow",
-      decisionReason: { type: "rule" },
-    });
-
-    const legacyTool = tools.find((candidate) => candidate.name === "WebFetch");
-    const legacyDenied = await legacyTool!.checkPermissions?.(
-      { url: "https://github.com/random-org/repo" },
-      fakeEvaluatorContext(
-        createEmptyToolPermissionContext({
-          alwaysDenyRules: {
-            localSettings: ["web_fetch(domain:github.com)"],
-          },
-        }),
-      ),
-    );
-    expect(legacyDenied).toMatchObject({
-      behavior: "deny",
-      decisionReason: { type: "rule" },
-    });
 
     const ask = await tool!.checkPermissions?.(
       { url: "https://github.com/random-org/repo" },
@@ -2896,7 +2858,7 @@ describe("model-facing tools", () => {
     expect(result.content).not.toContain("<system-reminder>");
   });
 
-  it("reports the same available skills as /skills when Skill cannot resolve a name", async () => {
+  it("reports the same canonical skill surface as /skills and rejects retired roots", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-skill-tool-home-"));
     const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-skill-tool-ws-"));
     const home = await mkdtemp(join(tmpdir(), "agenc-skill-tool-user-"));
@@ -2941,12 +2903,18 @@ describe("model-facing tools", () => {
         slashSnapshot.availableSkills.map((entry) => entry.name),
       );
 
-      const loaded = await skill.execute({ skill: "legacy-visible" });
+      const retired = await skill.execute({ skill: "legacy-visible" });
+      expect(retired.isError).toBe(true);
+      expect(JSON.parse(retired.content).available).not.toContain(
+        "legacy-visible",
+      );
+
+      const loaded = await skill.execute({ skill: "shared-visible" });
       expect(loaded.isError).toBeUndefined();
       expect(loaded.content).toContain(
-        "<command-name>legacy-visible</command-name>",
+        "<command-name>shared-visible</command-name>",
       );
-      expect(loaded.content).toContain("Use legacy-visible.");
+      expect(loaded.content).toContain("Use shared-visible.");
       // Loading a bundled skill through this tool is covered by
       // tests/bin/skill-tool-bundled.test.ts — invoking one extracts its
       // reference files, which needs the MACRO stub this file does not set.
@@ -3416,7 +3384,7 @@ describe("model-facing tools", () => {
         description: "Review quickly.",
         configToml: [
           'model = "gpt-5.4"',
-          'model_reasoning_effort = "high"',
+          'reasoning_effort = "high"',
           'service_tier = "priority"',
         ].join("\n"),
       },
@@ -3585,7 +3553,7 @@ describe("model-facing tools", () => {
           agentId: "thread-reviewer",
           agentPath: "/root/reviewer",
           nickname: "Reviewer",
-          role: { name: "worker" },
+          role: { name: "runner" },
           status: {
             value: {
               status: "running",
@@ -3620,7 +3588,7 @@ describe("model-facing tools", () => {
     expect(result.isError).not.toBe(true);
     expect(delegateMock).toHaveBeenCalledWith(
       expect.objectContaining({
-        role: "worker",
+        role: "runner",
         reasoningEffort: "xhigh",
       }),
     );
@@ -3642,7 +3610,7 @@ describe("model-facing tools", () => {
               agentPath: "/root/child_1",
               depth: 1,
               nickname: "Deckard",
-              role: { name: "worker" },
+              role: { name: "runner" },
               status: {
                 value: { status: "running", turnId: "t", startedAtMs: 1 },
               },
@@ -3657,7 +3625,7 @@ describe("model-facing tools", () => {
           agentId: "grandchild-1",
           agentPath: "/root/child_1/grandchild",
           nickname: "Molly",
-          role: { name: "worker" },
+          role: { name: "runner" },
           status: {
             value: {
               status: "running",
@@ -3751,7 +3719,7 @@ describe("model-facing tools", () => {
       agentId: "thread-1",
       agentPath: "/root/task_1",
       nickname: "Snowcrash",
-      role: { name: "worker" },
+      role: { name: "runner" },
       status: {
         get value() {
           return status;
@@ -3791,7 +3759,7 @@ describe("model-facing tools", () => {
         parentPath: "/root",
         taskPrompt: "inspect",
         agentName: "task_1",
-        role: "worker",
+        role: "runner",
         reasoningEffort: "xhigh",
         runInBackground: true,
       }),
@@ -3821,7 +3789,7 @@ describe("model-facing tools", () => {
       agentId: "thread-visible-1",
       agentPath: "/root/visible_task",
       nickname: "Visible",
-      role: { name: "worker" },
+      role: { name: "runner" },
       status: {
         value: {
           status: "running" as const,
@@ -4102,7 +4070,7 @@ describe("model-facing tools", () => {
       agentId: "thread-handle-1",
       agentPath: "/root/task_handle",
       nickname: "TaskHandle",
-      role: { name: "worker" },
+      role: { name: "runner" },
       abortController,
       status: {
         value: {
@@ -4273,12 +4241,12 @@ describe("model-facing tools", () => {
               agentId: "agent-1",
               agentPath: "/root/task_1",
               nickname: "TaskOne",
-              role: { name: "worker" },
+              role: { name: "runner" },
               metadata: {
                 agentId: "agent-1",
                 agentPath: "/root/task_1",
                 agentNickname: "TaskOne",
-                agentRole: "worker",
+                agentRole: "runner",
               },
             }
           : undefined,
@@ -4287,7 +4255,7 @@ describe("model-facing tools", () => {
         agentId: "agent-1",
         agentPath: "/root/task_1",
         agentNickname: "TaskOne",
-        agentRole: "worker",
+        agentRole: "runner",
       })),
       resolveAgentReference: vi.fn(() => "agent-1"),
       sendInterAgentCommunication: vi.fn(async () => {
@@ -4586,13 +4554,13 @@ describe("model-facing tools", () => {
               agentId: "agent-1",
               agentPath: "/root/task_1",
               nickname: "TaskOne",
-              role: { name: "worker" },
+              role: { name: "runner" },
               status: { value: idleStatus },
               metadata: {
                 agentId: "agent-1",
                 agentPath: "/root/task_1",
                 agentNickname: "TaskOne",
-                agentRole: "worker",
+                agentRole: "runner",
               },
             }
           : undefined,
@@ -4601,7 +4569,7 @@ describe("model-facing tools", () => {
         agentId: "agent-1",
         agentPath: "/root/task_1",
         agentNickname: "TaskOne",
-        agentRole: "worker",
+        agentRole: "runner",
       })),
       resolveAgentReference: vi.fn(() => "agent-1"),
       assignTask,
@@ -4685,7 +4653,7 @@ describe("model-facing tools", () => {
       );
 
       const roleFiltered = await byName.get("list_agents")!.execute({
-        role: "worker",
+        role: "runner",
       });
       expect(roleFiltered.isError).toBe(true);
       expect(JSON.parse(roleFiltered.content).error).toBe(
@@ -4919,14 +4887,14 @@ describe("model-facing tools", () => {
         agentId: "550e8400-e29b-41d4-a716-446655440003",
         agentPath: "/root/live",
         nickname: "Neuromancer",
-        role: { name: "worker" },
+        role: { name: "runner" },
         status: { value: status },
       })),
       getAgentMetadata: vi.fn(() => ({
         agentId: "550e8400-e29b-41d4-a716-446655440003",
         agentPath: "/root/live",
         agentNickname: "Neuromancer",
-        agentRole: "worker",
+        agentRole: "runner",
         depth: 1,
       })),
       shutdown: vi.fn(),
@@ -4950,11 +4918,11 @@ describe("model-facing tools", () => {
       expect(emit.mock.calls.map((call) => call[0].msg.payload)).toEqual([
         expect.objectContaining({
           receiverAgentNickname: "Neuromancer",
-          receiverAgentRole: "worker",
+          receiverAgentRole: "runner",
         }),
         expect.objectContaining({
           receiverAgentNickname: "Neuromancer",
-          receiverAgentRole: "worker",
+          receiverAgentRole: "runner",
           status,
         }),
       ]);
@@ -4984,7 +4952,7 @@ describe("model-facing tools", () => {
               agentId: "550e8400-e29b-41d4-a716-446655440004",
               agentPath: "/root/failing_close",
               nickname: "ShutdownProbe",
-              role: { name: "worker" },
+              role: { name: "runner" },
               status: { value: status },
             }
           : undefined,
@@ -4995,7 +4963,7 @@ describe("model-facing tools", () => {
               agentId: "550e8400-e29b-41d4-a716-446655440004",
               agentPath: "/root/failing_close",
               agentNickname: "ShutdownProbe",
-              agentRole: "worker",
+              agentRole: "runner",
               depth: 1,
             }
           : undefined,
@@ -5028,7 +4996,7 @@ describe("model-facing tools", () => {
         expect.objectContaining({
           receiverThreadId: "550e8400-e29b-41d4-a716-446655440004",
           receiverAgentNickname: "ShutdownProbe",
-          receiverAgentRole: "worker",
+          receiverAgentRole: "runner",
           status,
         }),
       );

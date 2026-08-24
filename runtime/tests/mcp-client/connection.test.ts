@@ -225,16 +225,16 @@ describe("createMCPConnection", () => {
     expect(result).toBe("ws-client");
   });
 
-  it("routes transport='ws' to createWebSocketMCPConnection", async () => {
-    mockCreateWebSocket.mockResolvedValueOnce("ws-client");
-
-    await createMCPConnection({
+  it("rejects the removed transport='ws' spelling", async () => {
+    await expect(createMCPConnection({
       name: "socket",
       transport: "ws",
       endpoint: "ws://127.0.0.1:4103/mcp",
-    });
+    } as unknown as MCPServerConfig)).rejects.toThrow(
+      /unknown transport "ws"/u,
+    );
 
-    expect(mockCreateWebSocket).toHaveBeenCalledOnce();
+    expect(mockCreateWebSocket).not.toHaveBeenCalled();
   });
 
   it("throws when websocket transport is missing an endpoint", async () => {

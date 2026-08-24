@@ -1,7 +1,12 @@
 import type { OverageDisabledReason } from 'src/services/agencAiLimits.js'
 import { isAgenCAISubscriber } from '../auth.js'
-import { getGlobalConfig } from '../config.js'
+import { getRuntimeState } from '../config.js'
 import { is1mContextDisabled } from '../context.js'
+import { resolveSecureStorageHome } from '../secureStorage/home.js'
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 
 /**
  * Check if extra usage is enabled based on the cached disabled reason.
@@ -9,7 +14,7 @@ import { is1mContextDisabled } from '../context.js'
  * or if the disabled reason indicates it's provisioned but temporarily unavailable.
  */
 function isExtraUsageEnabled(): boolean {
-  const reason = getGlobalConfig().cachedExtraUsageDisabledReason
+  const reason = getRuntimeState().cachedExtraUsageDisabledReason
   // undefined = no cache yet, treat as not enabled (conservative)
   if (reason === undefined) {
     return false
@@ -48,7 +53,7 @@ export function checkOpus1mAccess(): boolean {
     return false
   }
 
-  if (isAgenCAISubscriber()) {
+  if (isAgenCAISubscriber(credentialHome())) {
     // Subscribers have access if extra usage is enabled for their account
     return isExtraUsageEnabled()
   }
@@ -62,7 +67,7 @@ export function checkSonnet1mAccess(): boolean {
     return false
   }
 
-  if (isAgenCAISubscriber()) {
+  if (isAgenCAISubscriber(credentialHome())) {
     // Subscribers have access if extra usage is enabled for their account
     return isExtraUsageEnabled()
   }

@@ -65,7 +65,7 @@ describe("statusCommand", () => {
         id: "abc",
         history: [{}, {}, {}],
         model: "grok-4.3",
-        provider: "xai",
+        provider: "grok",
         approval: "on_request",
         permissionModeRegistry: registry,
       }),
@@ -76,7 +76,7 @@ describe("statusCommand", () => {
     expect(flat["Session ID"]).toBe("abc");
     expect(flat["CWD"]).toBe("/ws");
     expect(flat["Model"]).toBe("grok-4.3");
-    expect(flat["Provider"]).toBe("xai");
+    expect(flat["Provider"]).toBe("grok");
     expect(flat["Turn count"]).toBe("3");
     expect(flat["Uptime (ms)"]).toBe("4000");
     expect(flat["Permission mode"]).toBe("acceptEdits");

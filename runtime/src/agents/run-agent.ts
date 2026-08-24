@@ -2422,7 +2422,6 @@ const THREAD_SPAWN_MAIN_THREAD_TOOL_NAMES = new Set([
   "TaskList",
   "TaskOutput",
   "TaskStop",
-  "Brief",
   "SendUserMessage",
   "VerifyPlanExecution",
   "CronCreate",
@@ -2471,7 +2470,7 @@ export function mergeRoleDisallowlist(
 
 function resolveSessionMaxAgentDepth(parent: Session): number {
   const asDepth = (value: unknown): number | undefined =>
-    typeof value === "number" && Number.isInteger(value) && value >= 1
+    typeof value === "number" && Number.isInteger(value) && value >= 0
       ? value
       : undefined;
   return (
@@ -3017,6 +3016,11 @@ function buildChildSession(
     services: {
       ...params.parent.services,
       provider,
+      // A provider service is session-owned. Do not let the parent's service
+      // survive the spread above and silently override the forked provider in
+      // the ChildSession constructor.
+      providerService: undefined,
+      providerEnvironment: params.parent.providerService.environment(),
       registry,
       ...(params.parent.services.executionAdmission !== undefined
         ? {
@@ -3719,6 +3723,7 @@ export async function* runAgent(
       let stopReason:
         | "completed"
         | "max_turns"
+        | "max_budget_usd"
         | "cancelled"
         | "error"
         | "empty_response"
@@ -3761,6 +3766,39 @@ export async function* runAgent(
         const step = await iter.next();
         if (step.done) {
           terminalError = step.value?.error;
+          // The terminal return value is authoritative even when a failing
+          // phase cannot emit its usual turn_complete event. Without this
+          // fallback, provider failures were misreported as successful child
+          // runs because the local stop reason starts at "completed".
+          if (stopReason === "completed") {
+            switch (step.value?.reason) {
+              case "max_turns":
+                stopReason = "max_turns";
+                break;
+              case "max_budget_usd":
+                stopReason = "max_budget_usd";
+                break;
+              case "cancelled":
+              case "aborted_streaming":
+              case "aborted_tools":
+                stopReason = "cancelled";
+                break;
+              case "no_progress":
+                stopReason = "no_progress";
+                break;
+              case "blocking_limit":
+              case "prompt_too_long":
+              case "image_error":
+              case "model_error":
+              case "stop_hook_prevented":
+              case "hook_stopped":
+                stopReason = "error";
+                break;
+              case "completed":
+              case undefined:
+                break;
+            }
+          }
           break;
         }
         const event = step.value;
@@ -3860,11 +3898,14 @@ export async function* runAgent(
       if (
         stopReason === "error" ||
         stopReason === "max_turns" ||
+        stopReason === "max_budget_usd" ||
         stopReason === "no_progress"
       ) {
         let message: string;
         if (stopReason === "max_turns") {
           message = `subagent exceeded maxTurns${params.maxTurns !== undefined ? ` (${params.maxTurns})` : ""}`;
+        } else if (stopReason === "max_budget_usd") {
+          message = "subagent reached the canonical session cost cap";
         } else if (stopReason === "no_progress") {
           message =
             assistantText ||

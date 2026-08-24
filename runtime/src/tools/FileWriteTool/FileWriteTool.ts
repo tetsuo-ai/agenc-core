@@ -17,7 +17,6 @@ import { buildTool, type ToolDef } from '../Tool.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { countLinesChanged, getPatchForDisplay } from '../../utils/diff.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
 import { isENOENT } from '../../utils/errors.js'
 import { getFileModificationTime, writeTextContent } from '../../utils/file.js'
 import {
@@ -26,10 +25,6 @@ import {
 } from '../../utils/fileHistory.js'
 import { readFileSyncWithMetadata } from '../../utils/fileRead.js'
 import { getFsImplementation } from '../../utils/fsOperations.js'
-import {
-  fetchSingleFileGitDiff,
-  type ToolUseDiff,
-} from '../../utils/gitDiff.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logError } from '../../utils/log.js'
 import { expandPath } from '../../utils/path.js'
@@ -356,19 +351,6 @@ export const FileWriteTool = buildTool({
       limit: undefined,
     })
 
-    let gitDiff: ToolUseDiff | undefined
-    if (
-      isEnvTruthy(process.env.AGENC_REMOTE) &&
-      false
-    ) {
-      const diff = await fetchSingleFileGitDiff(fullFilePath)
-      // `diff` is non-null inside this branch; `?? undefined` only normalizes
-      // the declared `ToolUseDiff | null` to the `ToolUseDiff | undefined`
-      // target type (the enclosing `&& false` guard makes this block dead, so
-      // control-flow narrowing of `diff` is not propagated here).
-      if (diff) gitDiff = diff ?? undefined
-    }
-
     if (oldContent) {
       const patch = getPatchForDisplay({
         filePath: file_path,
@@ -388,7 +370,6 @@ export const FileWriteTool = buildTool({
         content,
         structuredPatch: patch,
         originalFile: oldContent,
-        ...(gitDiff && { gitDiff }),
       }
       // Track lines added and removed for file updates, right before yielding result
       countLinesChanged(patch)
@@ -404,7 +385,6 @@ export const FileWriteTool = buildTool({
       content,
       structuredPatch: [],
       originalFile: null,
-      ...(gitDiff && { gitDiff }),
     }
 
     // For creation of new files, count all lines as additions, right before yielding the result

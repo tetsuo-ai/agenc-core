@@ -15,10 +15,14 @@ import {
   getProjectRoot,
 } from '../bootstrap/state.js'
 import {
-  getAgenCConfigHomeDir,
-  isEnvDefinedFalsy,
-  isEnvTruthy,
+  getAgenCHomeDir,
+  isBareMode,
 } from '../utils/envUtils.js'
+import {
+  getSessionCoworkMemoryPathOverride,
+  getSessionRemoteMemoryRoot,
+  isSessionRemoteMode,
+} from '../session/runtime-options.js'
 import { findCanonicalGitRoot } from '../utils/git.js'
 import { sanitizePath } from '../utils/path.js'
 import {
@@ -28,30 +32,22 @@ import {
 
 /**
  * Whether auto-memory features are enabled (memdir, agent memory, past session search).
- * Enabled by default. Priority chain (first defined wins):
- *   1. AGENC_DISABLE_AUTO_MEMORY env var (1/true → OFF, 0/false → ON)
- *   2. AGENC_SIMPLE (--bare) → OFF
- *   3. CCR without persistent storage → OFF (no AGENC_REMOTE_MEMORY_DIR)
- *   4. autoMemoryEnabled in settings.json (supports project-level opt-out)
- *   5. Default: enabled
+ * Enabled by default. Priority chain:
+ *   1. Typed simple mode selected by --bare → OFF
+ *   2. CCR without persistent storage → OFF (no AGENC_REMOTE_MEMORY_DIR)
+ *   3. autoMemoryEnabled from the canonical config snapshot
+ *   4. Default: enabled
  */
 export function isAutoMemoryEnabled(): boolean {
-  const envVal = process.env.AGENC_DISABLE_AUTO_MEMORY
-  if (isEnvTruthy(envVal)) {
-    return false
-  }
-  if (isEnvDefinedFalsy(envVal)) {
-    return true
-  }
-  // --bare / SIMPLE: prompts.ts already drops the memory section from the
-  // system prompt via its SIMPLE early-return; this gate stops the other half
+  // --bare: prompts.ts already drops the memory section from the system
+  // prompt via its reduced-mode early return; this gate stops the other half
   // (extractMemories turn-end fork, autoDream, /remember, /dream, team sync).
-  if (isEnvTruthy(process.env.AGENC_SIMPLE)) {
+  if (isBareMode()) {
     return false
   }
   if (
-    isEnvTruthy(process.env.AGENC_REMOTE) &&
-    !process.env.AGENC_REMOTE_MEMORY_DIR
+    isSessionRemoteMode() &&
+    getSessionRemoteMemoryRoot() === undefined
   ) {
     return false
   }
@@ -85,10 +81,7 @@ export function isExtractModeActive(): boolean {
  *   2. ~/.agenc (default config home)
  */
 export function getMemoryBaseDir(): string {
-  if (process.env.AGENC_REMOTE_MEMORY_DIR) {
-    return process.env.AGENC_REMOTE_MEMORY_DIR
-  }
-  return getAgenCConfigHomeDir()
+  return getSessionRemoteMemoryRoot() ?? getAgenCHomeDir()
 }
 
 export const MEMORY_DIRNAME = 'memory'
@@ -118,7 +111,7 @@ function validateMemoryPath(
     return undefined
   }
   let candidate = raw
-  // Settings.json paths support ~/ expansion (user-friendly). The env var
+  // Canonical config paths support ~/ expansion (user-friendly). The env var
   // override does not (it's set programmatically by Cowork/SDK, which should
   // always pass absolute paths). Bare "~", "~/", "~/.", "~/..", etc. are NOT
   // expanded — they would make isAutoMemPath() match all of $HOME or its
@@ -164,20 +157,20 @@ function validateMemoryPath(
  */
 function getAutoMemPathOverride(): string | undefined {
   return validateMemoryPath(
-    process.env.AGENC_COWORK_MEMORY_PATH_OVERRIDE,
+    getSessionCoworkMemoryPathOverride(),
     false,
   )
 }
 
 /**
- * Settings.json override for the full auto-memory directory path.
+ * Canonical config override for the full auto-memory directory path.
  * Supports ~/ expansion for user convenience.
  *
  * SECURITY: project/local repository settings are intentionally excluded — a malicious repo could otherwise set
  * autoMemoryDirectory: "~/.ssh" and gain silent write access to sensitive
  * directories via the filesystem.ts write carve-out (which fires when
  * isAutoMemPath() matches and hasAutoMemPathOverride() is false). This follows
- * the same pattern as hasSkipDangerousModePermissionPrompt() etc.
+ * the same trusted-authority pattern as other security-sensitive preferences.
  */
 function getAutoMemPathSetting(): string | undefined {
   const dir =
@@ -211,15 +204,15 @@ function getAutoMemBase(): string {
  *
  * Resolution order:
  *   1. AGENC_COWORK_MEMORY_PATH_OVERRIDE env var (full-path override, used by Cowork)
- *   2. autoMemoryDirectory in settings.json (trusted sources only: policy/flag/user)
+ *   2. autoMemoryDirectory in trusted canonical config (policy/flag/user)
  *   3. In remote mode, <memoryBase>/projects/<sanitized-git-root>/memory/
  *   4. Otherwise, <projectRoot>/.agenc/memory/
  *
  * Memoized: render-path callers (collapseReadSearchGroups → isAutoManagedMemoryFile)
  * fire per tool-use message per Messages re-render; each miss costs
- * getSettingsForSource × 4 → parseSettingsFile (realpathSync + readFileSync).
+ * getSettingsForSource reads the already-loaded per-session ConfigStore snapshot.
  * Keyed on projectRoot so tests that change its mock mid-block recompute;
- * env vars / settings.json / AGENC_CONFIG_DIR are session-stable in
+ * runtime options and canonical settings/state snapshots are session-stable in
  * production and covered by per-test cache.clear.
  */
 export const getProjectMemoryPath = memoize(
@@ -228,7 +221,7 @@ export const getProjectMemoryPath = memoize(
     if (override) {
       return override
     }
-    if (process.env.AGENC_REMOTE_MEMORY_DIR) {
+    if (getSessionRemoteMemoryRoot() !== undefined) {
       const projectsDir = join(getMemoryBaseDir(), 'projects')
       return (
         join(projectsDir, sanitizePath(getAutoMemBase()), MEMORY_DIRNAME) + sep
@@ -238,7 +231,8 @@ export const getProjectMemoryPath = memoize(
       join(getProjectRoot(), PROJECT_MEMORY_DIR, MEMORY_DIRNAME) + sep
     ).normalize('NFC')
   },
-  () => getProjectRoot(),
+  () =>
+    `${getAgenCHomeDir()}\u0000${getSessionRemoteMemoryRoot() ?? ''}\u0000${getProjectRoot()}`,
 )
 
 export function getAutoMemPath(): string {
@@ -293,7 +287,7 @@ export function getAutoMemEntrypoint(): string {
  * write permission in that case — the filesystem.ts write carve-out is gated
  * on !hasAutoMemPathOverride() (it exists to bypass DANGEROUS_DIRECTORIES).
  *
- * The settings.json autoMemoryDirectory DOES get the write carve-out: it's the
+ * The canonical autoMemoryDirectory DOES get the write carve-out: it is the
  * user's explicit choice from a trusted settings source (projectSettings is
  * excluded — see getAutoMemPathSetting), and hasAutoMemPathOverride() remains
  * false for it.

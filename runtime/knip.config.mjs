@@ -26,10 +26,9 @@ const intentionalEntryPointIssueIgnores = {
   "src/entrypoints/sdk/coreSchemas.ts": ["exports"],
   // Generated public SDK type surface, re-exported for external consumers.
   "src/entrypoints/sdk/coreTypes.generated.ts": ["types"],
-  // SDK control protocol and sandbox settings types are public declaration
-  // surfaces even when no production runtime file imports them directly.
+  // SDK control protocol types are public declaration surfaces even when no
+  // production runtime file imports them directly.
   "src/entrypoints/sdk/controlTypes.ts": ["types"],
-  "src/entrypoints/sandboxTypes.ts": ["types"],
 };
 const serviceTestContractExportFiles = [
   // Contract tests and service-level harnesses import these directly; the
@@ -455,7 +454,6 @@ const binConfigTaskOnboardingContractExportFiles = [
   "src/bin/task-store.ts",
   "src/bin/tui-local-events.ts",
   "src/bin/web-fetch-preapproved.ts",
-  "src/config/init.ts",
   "src/config/loader.ts",
   "src/config/profiles.ts",
   "src/config/project-init.ts",
@@ -503,7 +501,6 @@ const conversationRecoveryStateShellContractExportFiles = [
   "src/shell-command/safety.ts",
   "src/state/atomic-snapshot-writes.ts",
   "src/state/backfill.ts",
-  "src/state/migrations/config-migrations.ts",
   "src/state/pruning.ts",
   "src/state/sqlite-driver.ts",
   "src/state/tool-output-rotation.ts",
@@ -551,7 +548,6 @@ const remainingRuntimeContractExportFiles = [
   "src/mcp-server/http-sse.ts",
   "src/mcp-server/stdio.ts",
   "src/mcp/server/start.ts",
-  "src/personality/migration.ts",
   "src/phases/_deps/tool-runtime.ts",
   "src/phases/post-sample-recovery.ts",
   "src/phases/stop-hooks.ts",
@@ -657,7 +653,6 @@ export default {
     "powershell.exe",
     "rec",
     "rg",
-    "secret-tool",
     "security",
     "taskkill",
     "tmux",

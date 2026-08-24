@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { extname, isAbsolute, join, resolve } from "node:path";
 import { lookup as dnsLookup } from "node:dns";
 import { isIP } from "node:net";
 import type { LookupFunction } from "node:net";
 import type * as undici from "undici";
+import { resolveHomeContext } from "../config/home.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
+import { normalizeProviderIdentity } from "../provider-identity.js";
 import {
   ROOT_AGENT_PATH,
   type AgentPath,
@@ -44,7 +46,7 @@ import type {
 } from "../llm/types.js";
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 import { AdmissionDeniedError } from "../budget/admission-client.js";
-import type { LlmXaiConfig } from "../config/schema.js";
+import type { GrokCapabilityConfig } from "../config/schema.js";
 import {
   hasXaiCredentials,
   isDirectXaiInferenceHost,
@@ -134,6 +136,15 @@ import {
 } from "../services/lsp/manager.js";
 import { readSandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
+import { resolveSecureStorageHome } from "../utils/secureStorage/home.js";
+import { getCACertificates } from "../utils/caCerts.js";
+import { getMTLSConfig } from "../utils/mtls.js";
+import {
+  getNoProxy,
+  getProxyFetchOptions,
+  getProxyUrl,
+  shouldBypassProxy,
+} from "../utils/proxy.js";
 
 export interface ModelFacingToolOptions {
   readonly workspaceRoot: string;
@@ -162,8 +173,8 @@ export interface ModelFacingToolOptions {
     readonly web_search_endpoint_kind?: string;
     readonly [k: string]: unknown;
   };
-  /** `[llm.xai]` capability profile for Grok-native LIVE tools (XSearch). */
-  readonly llmXai?: LlmXaiConfig;
+  /** `[providers.grok]` capability profile for Grok-native LIVE tools. */
+  readonly grokCapabilities?: GrokCapabilityConfig;
   /**
    * Session provider slug at registry build time (e.g. `grok`, `openai`).
    * Used for Hermes-style *catalog* gating: xAI-only LIVE tools must not be
@@ -172,6 +183,15 @@ export interface ModelFacingToolOptions {
   readonly sessionProvider?: string;
   /** Session inference base URL — OpenRouter/custom hosts are not "direct xAI". */
   readonly sessionBaseURL?: string;
+}
+
+function requireModelFacingRequestEnvironment(
+  opts: ModelFacingToolOptions,
+): ProviderEnvironment {
+  if (opts.env === undefined) {
+    throw new Error("model-facing tools require a captured request environment");
+  }
+  return opts.env;
 }
 
 /**
@@ -183,8 +203,11 @@ export function isGrokDirectXaiSession(opts: {
   readonly sessionProvider?: string;
   readonly sessionBaseURL?: string;
 }): boolean {
-  const provider = (opts.sessionProvider ?? "").trim().toLowerCase();
-  if (provider !== "grok" && provider !== "xai") return false;
+  const provider = normalizeProviderIdentity(
+    opts.sessionProvider,
+    "model-facing tool provider",
+  );
+  if (provider !== "grok") return false;
   return isDirectXaiInferenceHost(opts.sessionBaseURL);
 }
 
@@ -219,11 +242,6 @@ const MIN_FETCH_BYTES = 16_384;
 const MAX_FETCH_REDIRECTS = 5;
 const MAX_SEARCH_RESULTS = 8;
 const WEB_FETCH_TOOL_NAME = "web_fetch";
-const LEGACY_WEB_FETCH_TOOL_NAME = "WebFetch";
-const WEB_FETCH_TOOL_NAMES = [
-  WEB_FETCH_TOOL_NAME,
-  LEGACY_WEB_FETCH_TOOL_NAME,
-] as const;
 
 function json(content: unknown, isError?: boolean): ToolResult {
   return {
@@ -325,7 +343,11 @@ function normalizedStringArray(value: unknown): readonly string[] {
 }
 
 function stateRoot(opts: ModelFacingToolOptions): string {
-  return opts.agencHome ?? join(homedir(), ".agenc");
+  return resolveHomeContext(
+    opts.agencHome === undefined
+      ? requireModelFacingRequestEnvironment(opts)
+      : { AGENC_HOME: opts.agencHome },
+  ).path;
 }
 
 function stateFile(opts: ModelFacingToolOptions): string {
@@ -446,7 +468,7 @@ export function __setLiveWebFetchDnsAllLookupForTests(
     ((hostname, callback) => {
       dnsLookup(hostname, { all: true }, callback);
     });
-  liveWebFetchSsrfDispatcher = undefined;
+  liveWebFetchSsrfDispatchers = new WeakMap();
 }
 
 /**
@@ -535,24 +557,32 @@ function liveWebFetchSsrfLookup(
   });
 }
 
-let liveWebFetchSsrfDispatcher: undici.Dispatcher | undefined;
+let liveWebFetchSsrfDispatchers = new WeakMap<object, undici.Dispatcher>();
 
-function getLiveWebFetchSsrfDispatcher(): undici.Dispatcher {
-  if (!liveWebFetchSsrfDispatcher) {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const undiciMod = require("undici") as typeof undici;
-    liveWebFetchSsrfDispatcher = new undiciMod.Agent({
-      connect: {
-        lookup: liveWebFetchSsrfLookup as unknown as LookupFunction,
-      },
-    });
-  }
-  return liveWebFetchSsrfDispatcher;
+function getLiveWebFetchSsrfDispatcher(
+  environment: ProviderEnvironment,
+): undici.Dispatcher {
+  const cached = liveWebFetchSsrfDispatchers.get(environment);
+  if (cached !== undefined) return cached;
+
+  const mtlsConfig = getMTLSConfig(environment);
+  const caCerts = getCACertificates(environment);
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const undiciMod = require("undici") as typeof undici;
+  const dispatcher = new undiciMod.Agent({
+    connect: {
+      lookup: liveWebFetchSsrfLookup as unknown as LookupFunction,
+      ...(mtlsConfig ?? {}),
+      ...(caCerts !== undefined ? { ca: caCerts } : {}),
+    },
+  });
+  liveWebFetchSsrfDispatchers.set(environment, dispatcher);
+  return dispatcher;
 }
 
 /** @internal test seam — reset memoized dispatcher between tests */
 export function __resetLiveWebFetchSsrfDispatcherForTests(): void {
-  liveWebFetchSsrfDispatcher = undefined;
+  liveWebFetchSsrfDispatchers = new WeakMap();
 }
 
 /**
@@ -597,13 +627,14 @@ export async function assertLiveWebFetchHostAllowed(
 
 async function fetchWithTimeout(
   url: string,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
+  timeoutMs: number,
   opts: {
+    readonly environment: ProviderEnvironment;
     readonly validateWebFetchUrls?: boolean;
     readonly allowWebFetchRedirect?: (nextUrl: string) => boolean;
     readonly headers?: Readonly<Record<string, string>>;
     readonly signal?: AbortSignal;
-  } = {},
+  },
 ): Promise<Response> {
   const timeoutSignal = AbortSignal.timeout(Math.max(1, Math.floor(timeoutMs)));
   const requestSignal = opts.signal
@@ -618,6 +649,7 @@ async function fetchWithTimeout(
         accept: "text/html,text/plain,application/json,*/*",
         ...(opts.headers ?? {}),
       },
+      ...getProxyFetchOptions({ environment: opts.environment }),
     });
   }
 
@@ -631,12 +663,17 @@ async function fetchWithTimeout(
       requestSignal,
     );
     requestSignal.throwIfAborted();
+    const envProxyActive =
+      getProxyUrl(opts.environment) !== undefined &&
+      !shouldBypassProxy(currentUrl, getNoProxy(opts.environment));
     const response = await fetch(currentUrl, {
       signal: requestSignal,
       redirect: "manual",
-      // Node's fetch is undici; dispatcher pins DNS through our lookup.
-      // @ts-expect-error dispatcher is undici-specific
-      dispatcher: getLiveWebFetchSsrfDispatcher(),
+      // Direct requests pin DNS through our lookup. Proxied requests delegate
+      // resolution to the session-owned proxy while retaining its TLS config.
+      ...(envProxyActive
+        ? getProxyFetchOptions({ environment: opts.environment })
+        : { dispatcher: getLiveWebFetchSsrfDispatcher(opts.environment) }),
       headers: {
         "user-agent": "agenc-runtime/0.2",
         accept: "text/html,text/plain,application/json,*/*",
@@ -757,12 +794,10 @@ function webSearchFilters(args: Record<string, unknown>): WebSearchFilters {
 
 function webSearchConfigFromFilters(
   filters: WebSearchFilters,
-  llmXai?: LlmXaiConfig,
-  env?: NodeJS.ProcessEnv,
+  grokCapabilities?: GrokCapabilityConfig,
 ): LLMWebSearchConfig | undefined {
   const fromLlm = resolveXaiLiveWebSearchOptions(
-    llmXai,
-    env as Readonly<Record<string, string | undefined>> | undefined,
+    grokCapabilities,
   );
   if (
     filters.allowedDomains.length === 0 &&
@@ -972,8 +1007,7 @@ function buildGrokNativeWebSearchProvider(
   }
   const webSearchOptions = webSearchConfigFromFilters(
     filters,
-    opts.llmXai,
-    opts.env,
+    opts.grokCapabilities,
   );
   const extra: ProviderFactoryOptions["extra"] = {
     ...(factoryOptions.extra ?? {}),
@@ -1134,10 +1168,7 @@ function xSearchOptionsFromArgs(
 
 function isXSearchEnabledForSession(opts: ModelFacingToolOptions): boolean {
   if (
-    isXaiLiveXSearchEnabled(
-      opts.llmXai,
-      opts.env as Readonly<Record<string, string | undefined>> | undefined,
-    )
+    isXaiLiveXSearchEnabled(opts.grokCapabilities)
   ) {
     return true;
   }
@@ -1169,8 +1200,7 @@ function buildGrokNativeXSearchProvider(
     return undefined;
   }
   const fromLlm = resolveXaiLiveXSearchOptions(
-    opts.llmXai,
-    opts.env as Readonly<Record<string, string | undefined>> | undefined,
+    opts.grokCapabilities,
   );
   const mergedXSearchOptions: LLMXSearchConfig | undefined = (() => {
     if (xSearchOptions === undefined && fromLlm === undefined) return undefined;
@@ -1256,7 +1286,7 @@ async function runGrokNativeXSearch(
     return json(
       {
         error:
-          "XSearch is disabled. Enable with [llm.xai] x_search = true (or AGENC_XAI_X_SEARCH=1).",
+          "XSearch is disabled. Enable with [providers.grok] x_search = true.",
       },
       true,
     );
@@ -1630,7 +1660,6 @@ function createMultiAgentV2RuntimeTools(
         "output_csv_path",
         "output_mode",
         "max_concurrency",
-        "max_workers",
         "max_runtime_seconds",
         "output_schema",
       ]),
@@ -1674,26 +1703,12 @@ function createMultiAgentV2RuntimeTools(
       "max_concurrency",
     );
     if (isToolResult(maxConcurrencyArg)) return maxConcurrencyArg;
-    const maxWorkersArg = optionalPositiveIntegerArg(args, "max_workers");
-    if (isToolResult(maxWorkersArg)) return maxWorkersArg;
-    if (
-      maxConcurrencyArg !== undefined &&
-      maxWorkersArg !== undefined &&
-      maxConcurrencyArg !== maxWorkersArg
-    ) {
-      return json(
-        {
-          error: "max_concurrency and max_workers must match when both are set",
-        },
-        true,
-      );
-    }
     const maxRuntimeSeconds = optionalPositiveIntegerArg(
       args,
       "max_runtime_seconds",
     );
     if (isToolResult(maxRuntimeSeconds)) return maxRuntimeSeconds;
-    const maxConcurrency = maxConcurrencyArg ?? maxWorkersArg;
+    const maxConcurrency = maxConcurrencyArg;
     if (
       args.output_schema !== undefined &&
       (typeof args.output_schema !== "object" ||
@@ -2310,13 +2325,6 @@ function createMultiAgentV2RuntimeTools(
             description:
               "Maximum concurrent workers for this job. Defaults to 16 and is capped by config.",
           },
-          max_workers: {
-            type: "integer",
-            minimum: 1,
-            maximum: CSV_MAX_JOB_CONCURRENCY,
-            description:
-              "Alias for max_concurrency. Set to 1 to run sequentially.",
-          },
           max_runtime_seconds: {
             type: "integer",
             minimum: 1,
@@ -2670,21 +2678,15 @@ function createSkillInvocationRuntimeTool(opts: ModelFacingToolOptions): Tool {
           description:
             "Skill name only. Do not pass MCP tool names such as mcp.server.tool.",
         },
-        name: {
-          type: "string",
-          description:
-            "Compatibility alias for skill. Do not pass MCP tool names such as mcp.server.tool.",
-        },
         args: { type: "string" },
       },
+      required: ["skill"],
       additionalProperties: false,
     },
     checkPermissions: async (input, context) =>
       checkSkillPermissions(input, context),
     execute: async (args) => {
-      const skillName = normalizeSkillName(
-        stringValue(args.skill) ?? stringValue(args.name) ?? "",
-      );
+      const skillName = normalizeSkillName(stringValue(args.skill) ?? "");
       if (!skillName) return json({ error: "skill is required" }, true);
       if (isMcpToolName(skillName)) {
         return json({ error: mcpToolUsedAsSkillMessage(skillName) }, true);
@@ -3058,33 +3060,25 @@ function webFetchInputToPermissionRuleContent(input: unknown): string {
 function getMatchingWebFetchRule(
   permissionContext: ToolPermissionContext,
   behavior: "allow" | "ask" | "deny",
-  toolName: string,
   ruleContent: string,
 ) {
-  const names = [
-    toolName,
-    ...WEB_FETCH_TOOL_NAMES.filter((name) => name !== toolName),
-  ];
-  for (const candidateName of names) {
-    const rule = getRuleByContentsForTool(
+  return (
+    getRuleByContentsForTool(
       permissionContext,
-      candidateName,
+      WEB_FETCH_TOOL_NAME,
       behavior,
-    ).get(ruleContent);
-    if (rule) return rule;
-  }
-  return null;
+    ).get(ruleContent) ?? null
+  );
 }
 
 function webFetchPermissionSuggestions(
-  toolName: string,
   ruleContent: string,
 ): readonly PermissionUpdate[] {
   return [
     {
       type: "addRules",
       destination: "session",
-      rules: [{ toolName, ruleContent }],
+      rules: [{ toolName: WEB_FETCH_TOOL_NAME, ruleContent }],
       behavior: "allow",
     },
   ];
@@ -3093,13 +3087,12 @@ function webFetchPermissionSuggestions(
 function checkWebFetchPermissions(
   input: unknown,
   context: ToolEvaluatorContext,
-  toolName: string,
 ): PermissionResult {
   const url = stringValue((input as { readonly url?: unknown })?.url);
   if (!url) {
     return {
       behavior: "deny",
-      message: `${toolName} requires a url.`,
+      message: `${WEB_FETCH_TOOL_NAME} requires a url.`,
       decisionReason: { type: "other", reason: "missing url" },
     };
   }
@@ -3112,7 +3105,7 @@ function checkWebFetchPermissions(
   } catch (error) {
     return {
       behavior: "deny",
-      message: `${toolName} received an invalid URL: ${errorMessage(error)}`,
+      message: `${WEB_FETCH_TOOL_NAME} received an invalid URL: ${errorMessage(error)}`,
       decisionReason: { type: "other", reason: "invalid url" },
     };
   }
@@ -3122,13 +3115,12 @@ function checkWebFetchPermissions(
   const denyRule = getMatchingWebFetchRule(
     permissionContext,
     "deny",
-    toolName,
     ruleContent,
   );
   if (denyRule !== null) {
     return {
       behavior: "deny",
-      message: `${toolName} denied access to ${ruleContent}.`,
+      message: `${WEB_FETCH_TOOL_NAME} denied access to ${ruleContent}.`,
       decisionReason: { type: "rule", rule: denyRule },
     };
   }
@@ -3136,7 +3128,6 @@ function checkWebFetchPermissions(
   const askRule = getMatchingWebFetchRule(
     permissionContext,
     "ask",
-    toolName,
     ruleContent,
   );
   if (askRule !== null) {
@@ -3145,14 +3136,13 @@ function checkWebFetchPermissions(
       message: `AgenC requested permission to fetch ${parsed.hostname}.`,
       updatedInput: { ...(input as Record<string, unknown>), url: normalized },
       decisionReason: { type: "rule", rule: askRule },
-      suggestions: webFetchPermissionSuggestions(toolName, ruleContent),
+      suggestions: webFetchPermissionSuggestions(ruleContent),
     };
   }
 
   const allowRule = getMatchingWebFetchRule(
     permissionContext,
     "allow",
-    toolName,
     ruleContent,
   );
   if (allowRule !== null) {
@@ -3175,7 +3165,7 @@ function checkWebFetchPermissions(
     behavior: "ask",
     message: `AgenC requested permission to fetch ${parsed.hostname}.`,
     updatedInput: { ...(input as Record<string, unknown>), url: normalized },
-    suggestions: webFetchPermissionSuggestions(toolName, ruleContent),
+    suggestions: webFetchPermissionSuggestions(ruleContent),
     decisionReason: { type: "other", reason: "web fetch requires approval" },
   };
 }
@@ -3238,19 +3228,13 @@ async function runWebFetchExtraction(
   }
 }
 
-function createWebFetchTool(
-  toolName: string,
-  opts: ModelFacingToolOptions,
-): Tool {
-  const isLegacy = toolName === LEGACY_WEB_FETCH_TOOL_NAME;
+function createWebFetchTool(opts: ModelFacingToolOptions): Tool {
   return {
-    name: toolName,
+    name: WEB_FETCH_TOOL_NAME,
     description:
       "Fetch an HTTPS URL and return readable text content plus status and final URL. When `prompt` is provided, large pages are distilled: the prompt runs against the fetched content and the response carries the extraction plus a short raw preview (the full text is saved to disk for follow-up reads).",
     metadata: toolMetadata("web", {
       keywords: ["web", "fetch", "url", "http"],
-      deferred: isLegacy,
-      hiddenByDefault: isLegacy,
     }),
     isReadOnly: true,
     concurrencyClass: { kind: "shared_read" },
@@ -3267,7 +3251,7 @@ function createWebFetchTool(
       additionalProperties: false,
     },
     checkPermissions: (input, context) =>
-      checkWebFetchPermissions(input, context, toolName),
+      checkWebFetchPermissions(input, context),
     execute: async (args) => {
       const effectSignal = abortSignalFromArgs(args);
       effectSignal?.throwIfAborted();
@@ -3300,6 +3284,7 @@ function createWebFetchTool(
           normalized,
           numberValue(args.timeout_ms) ?? DEFAULT_TIMEOUT_MS,
           {
+            environment: requireModelFacingRequestEnvironment(opts),
             ...(effectSignal !== undefined ? { signal: effectSignal } : {}),
             validateWebFetchUrls: true,
             allowWebFetchRedirect: (nextUrl) => {
@@ -3452,7 +3437,7 @@ function webSearchEndpointKind(
 async function runConfiguredEndpointSearch(
   endpoint: string,
   kind: WebSearchEndpointKind,
-  env: NodeJS.ProcessEnv | undefined,
+  environment: ProviderEnvironment,
   query: string,
   signal?: AbortSignal,
 ): Promise<{
@@ -3465,12 +3450,13 @@ async function runConfiguredEndpointSearch(
     kind === "searxng"
       ? `${endpoint}${sep}q=${encodeURIComponent(query)}&format=json`
       : `${endpoint}${sep}q=${encodeURIComponent(query)}`;
-  const apiKey = stringValue(env?.AGENC_WEB_SEARCH_API_KEY);
+  const apiKey = stringValue(environment.AGENC_WEB_SEARCH_API_KEY);
   const headers: Record<string, string> =
     kind === "brave" && apiKey !== undefined
       ? { "X-Subscription-Token": apiKey, Accept: "application/json" }
       : { Accept: "application/json" };
   const response = await fetchWithTimeout(searchUrl, DEFAULT_TIMEOUT_MS, {
+    environment,
     headers,
     ...(signal !== undefined ? { signal } : {}),
   });
@@ -3601,6 +3587,7 @@ function resolveDdgResultUrl(href: string): string | null {
  */
 async function runDuckDuckGoHtmlSearch(
   query: string,
+  environment: ProviderEnvironment,
   signal?: AbortSignal,
 ): Promise<WebSearchResultEntry[]> {
   try {
@@ -3608,6 +3595,7 @@ async function runDuckDuckGoHtmlSearch(
       `${DDG_HTML_SEARCH_URL}?q=${encodeURIComponent(query)}`,
       DEFAULT_TIMEOUT_MS,
       {
+        environment,
         ...(signal !== undefined ? { signal } : {}),
         headers: {
           Accept: "text/html",
@@ -3647,9 +3635,9 @@ async function runDuckDuckGoHtmlSearch(
 }
 
 function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
+  const requestEnvironment = requireModelFacingRequestEnvironment(opts);
   const tools: Tool[] = [
-    createWebFetchTool(WEB_FETCH_TOOL_NAME, opts),
-    createWebFetchTool(LEGACY_WEB_FETCH_TOOL_NAME, opts),
+    createWebFetchTool(opts),
     {
       name: "WebSearch",
       description:
@@ -3712,7 +3700,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
           const configured = await runConfiguredEndpointSearch(
             endpoint,
             kind,
-            opts.env,
+            requestEnvironment,
             query,
             effectSignal,
           );
@@ -3735,7 +3723,11 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         }
         // 2. Keyless real-SERP default: DuckDuckGo HTML.
         const htmlResults = filterWebSearchResults(
-          await runDuckDuckGoHtmlSearch(query, effectSignal),
+          await runDuckDuckGoHtmlSearch(
+            query,
+            requestEnvironment,
+            effectSignal,
+          ),
           filters,
         ).slice(0, maxResults);
         if (htmlResults.length > 0) {
@@ -3750,7 +3742,10 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
         const response = await fetchWithTimeout(
           `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1`,
           DEFAULT_TIMEOUT_MS,
-          effectSignal === undefined ? {} : { signal: effectSignal },
+          {
+            environment: requestEnvironment,
+            ...(effectSignal === undefined ? {} : { signal: effectSignal }),
+          },
         );
         const raw =
           recordValue(await response.json().catch(() => undefined)) ?? {};
@@ -3770,7 +3765,7 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
     {
       name: "XSearch",
       description:
-        "Search X (Twitter) via xAI native x_search when the session uses Grok on api.x.ai and [llm.xai] x_search is enabled. Read-only research with x.com citations.",
+        "Search X (Twitter) via xAI native x_search when the session uses Grok on api.x.ai and [providers.grok] x_search is enabled. Read-only research with x.com citations.",
       metadata: toolMetadata("web", {
         keywords: ["x", "twitter", "search", "social", "posts"],
       }),
@@ -3806,14 +3801,11 @@ function createWebTools(opts: ModelFacingToolOptions): readonly Tool[] {
   ];
 
   // Catalog gate (Hermes is_available): only register XSearch when session is
-  // Grok+direct-xAI AND [llm.xai].x_search is enabled. Non-Grok models must
+  // Grok+direct-xAI AND [providers.grok].x_search is enabled. Non-Grok models must
   // never see this tool in the schema list.
   const includeXSearch =
     isGrokDirectXaiSession(opts) &&
-    isXaiLiveXSearchEnabled(
-      opts.llmXai,
-      opts.env as Readonly<Record<string, string | undefined>> | undefined,
-    );
+    isXaiLiveXSearchEnabled(opts.grokCapabilities);
   if (!includeXSearch) {
     return tools.filter((t) => t.name !== "XSearch");
   }
@@ -4216,7 +4208,6 @@ function createPlanAndMessageTools(
         });
       },
     },
-    sendMessage("Brief"),
     sendMessage("SendUserMessage"),
   ];
 }
@@ -4895,7 +4886,7 @@ function findPowerShell(env: NodeJS.ProcessEnv): string | null {
 }
 
 function createPowerShellTool(opts: ModelFacingToolOptions): readonly Tool[] {
-  const env = opts.env ?? process.env;
+  const env = requireModelFacingRequestEnvironment(opts);
   const shell = findPowerShell(env);
   if (shell === null || opts.unifiedExecManager === undefined) return [];
   return [
@@ -4990,49 +4981,62 @@ function createRemoteTriggerTool(opts: ModelFacingToolOptions): Tool {
 export function createModelFacingTools(
   opts: ModelFacingToolOptions,
 ): readonly Tool[] {
+  const scopedOpts: ModelFacingToolOptions = Object.freeze({
+    ...opts,
+    env: Object.freeze({ ...(opts.env ?? process.env) }),
+  });
   // Hermes-style catalog gates: xAI-only LIVE tools are omitted unless the
   // session is Grok on a direct xAI host (and credentials/config allow).
   // Credentials = BYOK **or** /grok-login OAuth (subscription Grok Build).
   // Execute-time refuses remain as defense-in-depth.
-  const grokDirect = isGrokDirectXaiSession(opts);
+  const grokDirect = isGrokDirectXaiSession(scopedOpts);
+  const credentialHome = resolveSecureStorageHome(
+    scopedOpts.env!,
+    scopedOpts.agencHome,
+  );
   // Image + video Imagine surface (same credential probe as Hermes).
-  const includeImagineMedia = grokDirect && hasXaiCredentials(opts.env);
+  const includeImagineMedia =
+    grokDirect && hasXaiCredentials(credentialHome, scopedOpts.env);
 
   return [
-    ...createMultiAgentV2RuntimeTools(opts),
-    ...createMcpResourceTools(opts),
-    createSkillInvocationRuntimeTool(opts),
-    ...createWebTools(opts),
+    ...createMultiAgentV2RuntimeTools(scopedOpts),
+    ...createMcpResourceTools(scopedOpts),
+    createSkillInvocationRuntimeTool(scopedOpts),
+    ...createWebTools(scopedOpts),
     ...(includeImagineMedia
       ? [
           createImagineImageTool({
-            workspaceRoot: opts.workspaceRoot,
-            getSession: opts.getSession,
-            ...(opts.env !== undefined ? { env: opts.env } : {}),
+            workspaceRoot: scopedOpts.workspaceRoot,
+            home: credentialHome,
+            getSession: scopedOpts.getSession,
+            env: scopedOpts.env!,
           }),
           createImagineVideoTool({
-            workspaceRoot: opts.workspaceRoot,
-            getSession: opts.getSession,
-            ...(opts.env !== undefined ? { env: opts.env } : {}),
+            workspaceRoot: scopedOpts.workspaceRoot,
+            home: credentialHome,
+            getSession: scopedOpts.getSession,
+            env: scopedOpts.env!,
           }),
         ]
       : []),
-    createNotebookReadTool(opts),
-    createNotebookEditTool(opts),
-    createLspTool(opts),
-    createRequestLedgerTransferTool(opts),
+    createNotebookReadTool(scopedOpts),
+    createNotebookEditTool(scopedOpts),
+    createLspTool(scopedOpts),
+    createRequestLedgerTransferTool(scopedOpts),
     ...createLedgerWalletCliTools({
-      ...(opts.agencHome !== undefined ? { agencHome: opts.agencHome } : {}),
-      ...(opts.env !== undefined ? { env: opts.env } : {}),
+      ...(scopedOpts.agencHome !== undefined
+        ? { agencHome: scopedOpts.agencHome }
+        : {}),
+      env: scopedOpts.env!,
     }),
-    createRequestUserInputTool(opts),
-    ...createPlanAndMessageTools(opts),
-    ...createTaskTools(opts),
-    ...createCronAndWorkflowTools(opts),
-    createRemoteTriggerTool(opts),
-    ...createPowerShellTool(opts),
+    createRequestUserInputTool(scopedOpts),
+    ...createPlanAndMessageTools(scopedOpts),
+    ...createTaskTools(scopedOpts),
+    ...createCronAndWorkflowTools(scopedOpts),
+    createRemoteTriggerTool(scopedOpts),
+    ...createPowerShellTool(scopedOpts),
     createEditorProposalTool(),
-    createSessionStructuredOutputTool(opts),
+    createSessionStructuredOutputTool(scopedOpts),
   ];
 }
 

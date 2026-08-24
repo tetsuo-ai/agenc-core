@@ -125,7 +125,7 @@ async function preparePipelineWorkspace() {
 async function runOneShot(prompt, { yolo = false, timeoutMs = 120_000 } = {}) {
   return new Promise((resolve, reject) => {
     const args = [BIN_AGENC];
-    if (yolo) args.push("--yolo");
+    if (yolo) args.push("--dangerously-bypass-approvals-and-sandbox");
     args.push("-p", prompt);
     const child = spawn(process.execPath, args, {
       stdio: ["ignore", "pipe", "pipe"],
@@ -284,7 +284,7 @@ scenarios.push({
 
 scenarios.push({
   name: "03-yolo-sets-approvalPolicy-never",
-  description: "agenc --yolo -p produces turn_context with approvalPolicy='never'.",
+  description: "agenc --dangerously-bypass-approvals-and-sandbox -p produces turn_context with approvalPolicy='never'.",
   async run() {
     const result = await runOneShot("reply with the single word YES", {
       yolo: true,
@@ -298,13 +298,13 @@ scenarios.push({
     const policy = tc.payload?.approvalPolicy;
     if (policy !== "never") {
       throw new Error(
-        `--yolo expected approvalPolicy='never', got '${policy}'. The yolo propagation chain (route.ts → daemon protocol → background-agent-runner.buildBootstrapArgv → bootstrap → sessionConfiguration) is broken.`,
+        `--dangerously-bypass-approvals-and-sandbox expected approvalPolicy='never', got '${policy}'. The yolo propagation chain (route.ts → daemon protocol → background-agent-runner.buildBootstrapArgv → bootstrap → sessionConfiguration) is broken.`,
       );
     }
     const sandbox = tc.payload?.sandboxPolicy;
     if (sandbox !== "danger_full_access") {
       throw new Error(
-        `--yolo expected sandboxPolicy='danger_full_access', got '${sandbox}'`,
+        `--dangerously-bypass-approvals-and-sandbox expected sandboxPolicy='danger_full_access', got '${sandbox}'`,
       );
     }
   },

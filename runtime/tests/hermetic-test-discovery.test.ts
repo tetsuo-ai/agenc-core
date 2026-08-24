@@ -60,6 +60,7 @@ const NATIVE_TEST_FILES = [
   "tests/state/recovery-file.win32.test.ts",
   "tests/tools/runtimes/runtime.darwin.test.ts",
   "tests/utils/execFileNoThrow.win32.test.ts",
+  "tests/utils/secureStorage/macOsKeychainHelper.darwin.test.ts",
   "tests/workspace/bound-helper-transport.win32.test.ts",
 ] as const;
 

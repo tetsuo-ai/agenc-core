@@ -1,5 +1,3 @@
-import { join } from "node:path";
-
 import {
   assertAgentRoleWorkspaceMatches,
   type AgentRoleWorkspace,
@@ -7,6 +5,7 @@ import {
 import type { AgenCConfig, HooksMap, LspServerConfigInput, McpServerConfig } from "../../config/schema.js";
 import type { Command } from "../../commands.js";
 import type { SlashCommandContext } from "../../commands/types.js";
+import { agencHomeFromCommandContext } from "../../commands/config-context.js";
 import {
   requireAgentDefinitionRoleFingerprint,
   type PluginAgentDefinition,
@@ -31,9 +30,9 @@ import {
   setActivePluginCommandSnapshot,
   setActivePluginSkillSnapshot,
 } from "./load-plugin-commands.js";
-import { clearPluginHookCache, loadPluginHooks } from "./load-plugin-hooks.js";
-import { clearPluginLspServerCache, loadPluginLspServers } from "./lsp-plugin-integration.js";
-import { clearPluginMcpServerCache, loadPluginMcpServers } from "./mcp-plugin-integration.js";
+import { loadPluginHooks } from "./load-plugin-hooks.js";
+import { loadPluginLspServers } from "./lsp-plugin-integration.js";
+import { loadPluginMcpServers } from "./mcp-plugin-integration.js";
 import {
   clearPluginOutputStyleCache,
   loadPluginOutputStyles,
@@ -368,7 +367,7 @@ function pluginRuntimeOptionsFromContext(
   return {
     cwd: workspace.cwd,
     workspaceRoot: workspace.cwd,
-    agencHome: ctx.agencHome ?? join(ctx.home, ".agenc"),
+    agencHome: agencHomeFromCommandContext(ctx),
     ...(config !== undefined ? { config } : {}),
   };
 }
@@ -436,8 +435,5 @@ export function clearPluginRegistrationCaches(): void {
   clearPluginCommandCache();
   clearPluginSkillsCache();
   clearPluginAgentCache();
-  clearPluginHookCache();
-  clearPluginMcpServerCache();
-  clearPluginLspServerCache();
   clearPluginOutputStyleCache();
 }

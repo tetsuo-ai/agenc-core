@@ -58,7 +58,7 @@ describe("state migration registry", () => {
   it("loads state migrations from numbered migration files in order", () => {
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.version)).toEqual([
       1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
-      22, 23, 24, 25, 26, 27,
+      22, 23, 24, 25, 26, 27, 28,
     ]);
     expect(STATE_DB_MIGRATIONS.map((migration) => migration.name)).toEqual([
       "initial_state_schema",
@@ -88,6 +88,7 @@ describe("state migration registry", () => {
       "csv_output_writer_identity",
       "csv_output_orphan_accounting",
       "run_suspension_schema",
+      "runtime_settings_canonical_values",
     ]);
     expectMigrationVersionsAreUnique(STATE_DB_MIGRATIONS);
   });
@@ -133,7 +134,72 @@ describe("state migration registry", () => {
       "025_csv_output_writer_identity.ts",
       "026_csv_output_orphan_accounting.ts",
       "027_run_suspension_schema.ts",
+      "028_runtime_settings_canonical_values.ts",
     ]);
+  });
+
+  it("canonicalizes retired durable setting values and rejects their reintroduction", () => {
+    const db = new Database(":memory:");
+    try {
+      applyMigrations(
+        db,
+        STATE_DB_MIGRATIONS.filter((migration) => migration.version <= 27),
+      );
+      db.exec(`
+        INSERT INTO run_lifecycle_epochs (run_id, epoch, opened_at)
+        VALUES ('alias-run', 1, '2026-08-23T00:00:00.000Z');
+        INSERT INTO run_runtime_settings (
+          run_id, epoch, settings_event_id, settings_sequence, reason,
+          changed_at, permission_mode, auto_mode_active, model, provider,
+          reasoning_effort, service_tier, hooks_disabled
+        ) VALUES (
+          'alias-run', 1, 'settings-1', 1, 'initial',
+          '2026-08-23T00:00:00.000Z', 'default', 0, 'grok-4.5', 'grok',
+          'minimal', 'fast', 0
+        );
+      `);
+
+      applyMigrations(db, STATE_DB_MIGRATIONS);
+
+      expect(
+        db.prepare(
+          `SELECT reasoning_effort, service_tier
+           FROM run_runtime_settings WHERE run_id = 'alias-run'`,
+        ).get(),
+      ).toEqual({ reasoning_effort: "low", service_tier: "priority" });
+      const finalSql = String(
+        (db.prepare(
+          `SELECT sql FROM sqlite_master
+           WHERE type = 'table' AND name = 'run_runtime_settings'`,
+        ).get() as { readonly sql: string }).sql,
+      );
+      expect(finalSql).not.toContain("'minimal'");
+      expect(finalSql).not.toContain("'fast'");
+      expect(() => db.exec(`
+        INSERT INTO run_runtime_settings (
+          run_id, epoch, settings_event_id, settings_sequence, reason,
+          changed_at, permission_mode, auto_mode_active, model, provider,
+          reasoning_effort, service_tier, hooks_disabled
+        ) VALUES (
+          'alias-run', 1, 'settings-2', 2, 'config_applied',
+          '2026-08-23T00:00:01.000Z', 'default', 0, 'grok-4.5', 'grok',
+          'low', 'fast', 0
+        );
+      `)).toThrow();
+      expect(() => db.exec(`
+        INSERT INTO run_runtime_settings (
+          run_id, epoch, settings_event_id, settings_sequence, reason,
+          changed_at, permission_mode, auto_mode_active, model, provider,
+          reasoning_effort, service_tier, hooks_disabled
+        ) VALUES (
+          'alias-run', 1, 'settings-3', 3, 'config_applied',
+          '2026-08-23T00:00:02.000Z', 'default', 0, 'grok-4.5', 'grok',
+          'minimal', 'priority', 0
+        );
+      `)).toThrow();
+    } finally {
+      db.close();
+    }
   });
 
   it("adds durable CSV writer anchor state without backfilling legacy intents", () => {

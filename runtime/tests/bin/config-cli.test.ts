@@ -5,6 +5,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -16,7 +17,10 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { parseToml } from "../config/loader.js";
-import { CONFIG_FILE_VERSION_KEY, CURRENT_CONFIG_FILE_VERSION } from "../config/migrate.js";
+import {
+  CANONICAL_CONFIG_VERSION,
+  CANONICAL_CONFIG_VERSION_KEY,
+} from "../config/repository.js";
 import {
   formatAgenCConfigCliHelpText,
   parseAgenCConfigCliArgs,
@@ -145,7 +149,12 @@ describe("agenc config CLI", () => {
       },
     );
     expect(editExit).toBe(0);
-    expect(calls).toEqual([{ command: "code", args: ["--wait", configPath(home)] }]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.command).toBe("code");
+    expect(calls[0]?.args[0]).toBe("--wait");
+    expect(calls[0]?.args[1]).toMatch(
+      new RegExp(`${home.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}/\\.agenc-config-edit-[^/]+/config\\.toml$`, "u"),
+    );
     expect(existsSync(home)).toBe(true);
     expect(editIo.stdoutText()).toContain(`Edited ${configPath(home)}`);
 
@@ -163,11 +172,13 @@ describe("agenc config CLI", () => {
       },
     );
     expect(failedExit).toBe(1);
-    expect(calls.at(-1)).toEqual({ command: "vim", args: ["-n", configPath(home)] });
+    expect(calls.at(-1)?.command).toBe("vim");
+    expect(calls.at(-1)?.args[0]).toBe("-n");
+    expect(calls.at(-1)?.args[1]).toContain("/.agenc-config-edit-");
     expect(failedIo.stderrText()).toContain('editor "vim" exited with code 42');
   });
 
-  it("migrates legacy JSON before edit and refuses unsafe JSON shadowing", async () => {
+  it("edit refuses retired JSON without parsing, archiving, or rewriting it", async () => {
     const home = makeHome();
     writeFileSync(
       join(home, "config.json"),
@@ -184,18 +195,20 @@ describe("agenc config CLI", () => {
         io: editIo,
         spawner: async (_command, args) => {
           calls.push([...args]);
-          expect(existsSync(configPath(home))).toBe(true);
+          expect(existsSync(configPath(home))).toBe(false);
           return 0;
         },
       },
     );
-    expect(exit).toBe(0);
-    expect(calls).toEqual([[configPath(home)]]);
-    expect(existsSync(join(home, "config.json.bak-cf12"))).toBe(true);
-    expect(readRawConfig(home)).toMatchObject({
-      model: "legacy",
-      model_provider: "grok",
-    });
+    expect(exit).toBe(1);
+    expect(calls).toHaveLength(0);
+    expect(editIo.stderrText()).toMatch(/Retired configuration input/u);
+    expect(editIo.stderrText()).toContain("agenc config migrate check");
+    expect(readFileSync(join(home, "config.json"), "utf8")).toBe(
+      JSON.stringify({ provider: "xai", model: "legacy" }),
+    );
+    expect(existsSync(configPath(home))).toBe(false);
+    expect(readdirSync(home)).toEqual(["config.json"]);
 
     const invalidHome = makeHome();
     writeFileSync(join(invalidHome, "config.json"), "{not json", "utf8");
@@ -213,15 +226,18 @@ describe("agenc config CLI", () => {
     expect(refused).toBe(1);
     expect(spawner).not.toHaveBeenCalled();
     expect(existsSync(configPath(invalidHome))).toBe(false);
-    expect(refusedIo.stderrText()).toContain("skipped config migration");
+    expect(readFileSync(join(invalidHome, "config.json"), "utf8")).toBe(
+      "{not json",
+    );
+    expect(refusedIo.stderrText()).toMatch(/Retired configuration input/u);
   });
 
   it("shows, gets, and validates effective config without hiding invalid files", async () => {
     const home = makeHome();
-    writeFileSync(configPath(home), `model = "grok-3"\n`, "utf8");
+    writeFileSync(configPath(home), `config_version = 2\nmodel = "grok-3"\n`, "utf8");
 
     const show = await run(parseAgenCConfigCliArgs(["config", "show"]), home);
-    expect(show.code).toBe(0);
+    expect(show.code, show.io.stderrText()).toBe(0);
     expect(JSON.parse(show.io.stdoutText())).toMatchObject({ model: "grok-3" });
 
     const get = await run(parseAgenCConfigCliArgs(["config", "get", "model"]), home);
@@ -248,12 +264,12 @@ describe("agenc config CLI", () => {
 
     const validate = await run(parseAgenCConfigCliArgs(["config", "validate"]), home);
     expect(validate.code).toBe(0);
-    expect(validate.io.stdoutText()).toContain(`Config valid: ${configPath(home)}`);
+    expect(validate.io.stdoutText()).toContain(`home ${home}`);
 
-    writeFileSync(configPath(home), `[plugins]\nenabled = "bad"\n`, "utf8");
+    writeFileSync(configPath(home), `config_version = 2\n[plugins]\nenabled = "bad"\n`, "utf8");
     const invalid = await run(parseAgenCConfigCliArgs(["config", "validate"]), home);
     expect(invalid.code).toBe(1);
-    expect(invalid.io.stderrText()).toContain("invalid config");
+    expect(invalid.io.stderrText()).toContain("Invalid plugins.enabled");
   });
 
   it("sets TOML values, versions the file, and preserves sibling config", async () => {
@@ -263,47 +279,39 @@ describe("agenc config CLI", () => {
       ["config", "set", "model", "grok-3"],
       ["config", "set", "plugins.enabled", "true"],
       ["config", "set", "project_root_markers", "[\".git\", \"package.json\"]"],
-      ["config", "set", "custom.inline", "{ enabled = true }"],
-      ["config", "set", "custom.label", "plain text"],
+      ["config", "set", "browser.allow_private_network", "true"],
+      ["config", "set", "browser.executable_path", "plain text"],
     ] as const) {
       const result = await run(parseAgenCConfigCliArgs(args), home);
       expect(result.code, args.join(" ")).toBe(0);
     }
 
     const raw = readRawConfig(home);
-    expect(raw[CONFIG_FILE_VERSION_KEY]).toBe(CURRENT_CONFIG_FILE_VERSION);
+    expect(raw[CANONICAL_CONFIG_VERSION_KEY]).toBe(CANONICAL_CONFIG_VERSION);
     expect(raw.model).toBe("grok-3");
     expect(raw.plugins).toEqual({ enabled: true });
     expect(raw.project_root_markers).toEqual([".git", "package.json"]);
-    expect(raw.custom).toEqual({
-      inline: { enabled: true },
-      label: "plain text",
+    expect(raw.browser).toEqual({
+      allow_private_network: true,
+      executable_path: "plain text",
     });
   });
 
-  it("normalizes BOM-prefixed TOML before set and unset", async () => {
+  it("normalizes BOM-prefixed TOML before editing", async () => {
     const setHome = makeHome();
+    const original = `\ufeffconfig_version = ${CANONICAL_CONFIG_VERSION}\nmodel = "old"\n`;
     writeFileSync(
       configPath(setHome),
-      `\ufeffconfigVersion = ${CURRENT_CONFIG_FILE_VERSION}\nmodel = "old"\n`,
+      original,
       "utf8",
     );
     const set = await run(parseAgenCConfigCliArgs(["config", "set", "model", "grok-3"]), setHome);
-    expect(set.code).toBe(0);
+    expect(set.code, set.io.stderrText()).toBe(0);
     expect(readRawConfig(setHome).model).toBe("grok-3");
-
-    const unsetHome = makeHome();
-    writeFileSync(
-      configPath(unsetHome),
-      `\ufeffconfigVersion = ${CURRENT_CONFIG_FILE_VERSION}\n\n[custom]\nlabel = "remove"\n`,
-      "utf8",
-    );
-    const unset = await run(parseAgenCConfigCliArgs(["config", "unset", "custom.label"]), unsetHome);
-    expect(unset.code).toBe(0);
-    expect(readRawConfig(unsetHome).custom).toBeUndefined();
+    expect(readFileSync(configPath(setHome), "utf8")).not.toContain("\ufeff");
   });
 
-  it("migrates legacy JSON before set and refuses unsafe JSON shadowing", async () => {
+  it("set and validate reject retired JSON without mutating it", async () => {
     const home = makeHome();
     writeFileSync(
       join(home, "config.json"),
@@ -312,13 +320,11 @@ describe("agenc config CLI", () => {
     );
 
     const migrated = await run(parseAgenCConfigCliArgs(["config", "set", "model", "grok-3"]), home);
-    expect(migrated.code).toBe(0);
-    expect(existsSync(join(home, "config.json.bak-cf12"))).toBe(true);
-    expect(readRawConfig(home)).toMatchObject({
-      model_provider: "grok",
-      model: "grok-3",
-      providers: { grok: { default_model: "grok-4-fast" } },
-    });
+    expect(migrated.code).toBe(1);
+    expect(existsSync(join(home, "config.json"))).toBe(true);
+    expect(existsSync(configPath(home))).toBe(false);
+    expect(migrated.io.stderrText()).toContain("agenc config migrate check");
+    expect(readdirSync(home)).toEqual(["config.json"]);
 
     const invalidHome = makeHome();
     writeFileSync(join(invalidHome, "config.json"), "{not json", "utf8");
@@ -327,31 +333,33 @@ describe("agenc config CLI", () => {
       invalidHome,
     );
     expect(invalidValidate.code).toBe(1);
-    expect(invalidValidate.io.stderrText()).toContain("skipped config migration");
-    expect(invalidValidate.io.stdoutText()).not.toContain("Config valid");
+    expect(invalidValidate.io.stderrText()).toContain("agenc config migrate check");
+    expect(invalidValidate.io.stdoutText()).toBe("");
 
     const rejected = await run(parseAgenCConfigCliArgs(["config", "set", "model", "grok-3"]), invalidHome);
     expect(rejected.code).toBe(1);
     expect(existsSync(configPath(invalidHome))).toBe(false);
-    expect(rejected.io.stderrText()).toContain("skipped config migration");
+    expect(readFileSync(join(invalidHome, "config.json"), "utf8")).toBe(
+      "{not json",
+    );
   });
 
   it("rejects managed fields, malformed structured values, and invalid schema writes", async () => {
     const home = makeHome();
     writeFileSync(
       configPath(home),
-      `configVersion = ${CURRENT_CONFIG_FILE_VERSION}\n\n[plugins]\nenabled = true\n`,
+      `config_version = ${CANONICAL_CONFIG_VERSION}\n\n[plugins]\nenabled = true\n`,
       "utf8",
     );
-    const before = readFileSync(configPath(home), "utf8");
+    const before = readRawConfig(home);
 
-    const managed = await run(parseAgenCConfigCliArgs(["config", "set", "configVersion", "99"]), home);
+    const managed = await run(parseAgenCConfigCliArgs(["config", "set", "config_version", "99"]), home);
     expect(managed.code).toBe(1);
-    expect(managed.io.stderrText()).toContain("configVersion is managed");
+    expect(managed.io.stderrText()).toContain("config_version is managed");
 
-    const managedUnset = await run(parseAgenCConfigCliArgs(["config", "unset", "configVersion"]), home);
+    const managedUnset = await run(parseAgenCConfigCliArgs(["config", "unset", "config_version"]), home);
     expect(managedUnset.code).toBe(1);
-    expect(managedUnset.io.stderrText()).toContain("configVersion is managed");
+    expect(managedUnset.io.stderrText()).toContain("config_version is managed");
 
     const malformed = await run(parseAgenCConfigCliArgs(["config", "set", "custom.bad", "{ broken"]), home);
     expect(malformed.code).toBe(1);
@@ -360,7 +368,86 @@ describe("agenc config CLI", () => {
     const invalidSchema = await run(parseAgenCConfigCliArgs(["config", "set", "plugins.enabled", "nope"]), home);
     expect(invalidSchema.code).toBe(1);
     expect(invalidSchema.io.stderrText()).toContain("Invalid plugins.enabled");
+    expect(readRawConfig(home)).toEqual(before);
+  });
+
+  it("rejects managed-only user writes, permits repair unset, and edits atomically", async () => {
+    const home = makeHome();
+    const set = await run(
+      parseAgenCConfigCliArgs([
+        "config",
+        "set",
+        "availableModels",
+        '["grok-4.6"]',
+      ]),
+      home,
+    );
+    expect(set.code).toBe(1);
+    expect(set.io.stderrText()).toContain("managed-only key availableModels");
+    expect(existsSync(configPath(home))).toBe(false);
+
+    writeFileSync(
+      configPath(home),
+      'config_version = 2\nmodel = "grok-4.6"\navailableModels = ["grok-4.6"]\n',
+      "utf8",
+    );
+    const repaired = await run(
+      parseAgenCConfigCliArgs(["config", "unset", "availableModels"]),
+      home,
+    );
+    expect(repaired.code).toBe(0);
+    expect(readRawConfig(home)).toMatchObject({ model: "grok-4.6" });
+    expect(readRawConfig(home)).not.toHaveProperty("availableModels");
+
+    const before = readFileSync(configPath(home), "utf8");
+    const edited = await runAgenCConfigCli(
+      { kind: "edit" },
+      {
+        agencHome: home,
+        env: { EDITOR: "test-editor" },
+        io: createIo(),
+        spawner: async (_command, args) => {
+          writeFileSync(
+            args.at(-1)!,
+            'config_version = 2\navailableModels = ["grok-4.6"]\n',
+            "utf8",
+          );
+          return 0;
+        },
+      },
+    );
+    expect(edited).toBe(1);
     expect(readFileSync(configPath(home), "utf8")).toBe(before);
+  });
+
+  it("refuses to overwrite a concurrent canonical update made while the editor is open", async () => {
+    const home = makeHome();
+    const initial = 'config_version = 2\nmodel = "initial"\n';
+    const concurrent = 'config_version = 2\nmodel = "concurrent"\n';
+    writeFileSync(configPath(home), initial, "utf8");
+
+    const io = createIo();
+    const exit = await runAgenCConfigCli(
+      { kind: "edit" },
+      {
+        agencHome: home,
+        env: { EDITOR: "test-editor" },
+        io,
+        spawner: async (_command, args) => {
+          writeFileSync(
+            args.at(-1)!,
+            'config_version = 2\nmodel = "stale-editor"\n',
+            "utf8",
+          );
+          writeFileSync(configPath(home), concurrent, "utf8");
+          return 0;
+        },
+      },
+    );
+
+    expect(exit).toBe(1);
+    expect(io.stderrText()).toContain("config changed while the editor was open");
+    expect(readFileSync(configPath(home), "utf8")).toBe(concurrent);
   });
 
   it("rejects prototype-polluting path segments on set and unset", async () => {
@@ -409,30 +496,30 @@ describe("agenc config CLI", () => {
     const home = makeHome();
     writeFileSync(
       configPath(home),
-      `configVersion = ${CURRENT_CONFIG_FILE_VERSION}\n\n[permissions]\ndefault_mode = "bad"\n`,
+      `config_version = ${CANONICAL_CONFIG_VERSION}\n\n[permissions]\ndefaultMode = "bad"\n`,
       "utf8",
     );
 
     const validate = await run(parseAgenCConfigCliArgs(["config", "validate"]), home);
     expect(validate.code).toBe(1);
-    expect(validate.io.stderrText()).toContain("Invalid permissions.default_mode");
+    expect(validate.io.stderrText()).toContain("Invalid permissions.defaultMode");
 
     const setHome = makeHome();
     writeFileSync(
       configPath(setHome),
-      `configVersion = ${CURRENT_CONFIG_FILE_VERSION}\nmodel = "grok-3"\n`,
+      `config_version = ${CANONICAL_CONFIG_VERSION}\nmodel = "grok-3"\n`,
       "utf8",
     );
-    const before = readFileSync(configPath(setHome), "utf8");
+    const before = readRawConfig(setHome);
     const setInvalid = await run(parseAgenCConfigCliArgs([
       "config",
       "set",
-      "permissions.default_mode",
+      "permissions.defaultMode",
       "bad",
     ]), setHome);
     expect(setInvalid.code).toBe(1);
-    expect(setInvalid.io.stderrText()).toContain("Invalid permissions.default_mode");
-    expect(readFileSync(configPath(setHome), "utf8")).toBe(before);
+    expect(setInvalid.io.stderrText()).toContain("Invalid permissions.defaultMode");
+    expect(readRawConfig(setHome)).toEqual(before);
   });
 
   it("unsets nested values, prunes empty records, and leaves missing config absent", async () => {
@@ -440,7 +527,7 @@ describe("agenc config CLI", () => {
     writeFileSync(
       configPath(home),
       [
-        `configVersion = ${CURRENT_CONFIG_FILE_VERSION}`,
+        `config_version = ${CANONICAL_CONFIG_VERSION}`,
         "",
         "[plugins]",
         "enabled = true",
@@ -473,15 +560,34 @@ describe("agenc config CLI", () => {
     const home = makeHome();
     const targetRoot = makeHome("agenc-config-target");
     const target = join(targetRoot, "real-config.toml");
-    writeFileSync(target, `model = "old"\n`, { encoding: "utf8", mode: 0o600 });
+    writeFileSync(target, `config_version = 2\nmodel = "old"\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+    });
     chmodSync(target, 0o600);
     symlinkSync(target, configPath(home));
 
     const result = await run(parseAgenCConfigCliArgs(["config", "set", "model", "grok-3"]), home);
-    expect(result.code).toBe(0);
+    expect(result.code, result.io.stderrText()).toBe(0);
     expect(lstatSync(configPath(home)).isSymbolicLink()).toBe(true);
     expect(parseToml(readFileSync(target, "utf8"))).toMatchObject({ model: "grok-3" });
     expect(statSync(target).mode & 0o777).toBe(0o600);
+  });
+
+  it("refuses a broken config symlink instead of replacing it", async () => {
+    const home = makeHome();
+    const missingTarget = join(home, "missing-config.toml");
+    symlinkSync(missingTarget, configPath(home));
+
+    const result = await run(
+      parseAgenCConfigCliArgs(["config", "set", "model", "grok-4.6"]),
+      home,
+    );
+
+    expect(result.code).toBe(1);
+    expect(result.io.stderrText()).toContain("config symlink target does not exist");
+    expect(lstatSync(configPath(home)).isSymbolicLink()).toBe(true);
+    expect(existsSync(missingTarget)).toBe(false);
   });
 
   it("routes agenc config through the top-level main dispatcher", async () => {

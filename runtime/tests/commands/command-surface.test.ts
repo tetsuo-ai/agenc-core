@@ -51,6 +51,7 @@ const MINIMAL_NAMES = [
   "tasks",
   "todos",
   "config",
+  "keybindings",
   "hooks",
   "skills",
   "mcp",

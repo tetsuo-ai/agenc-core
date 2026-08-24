@@ -66,7 +66,7 @@ async function getBedrockModelStrings(): Promise<ModelStrings> {
 }
 
 /**
- * Layer user-configured modelOverrides (from settings.json) on top of the
+ * Layer user-configured modelOverrides (from config.toml) on top of the
  * provider-derived model strings. Overrides are keyed by canonical first-party
  * model ID (e.g. "claude-opus-4-6") and map to arbitrary provider-specific
  * strings — typically Bedrock inference profile ARNs.

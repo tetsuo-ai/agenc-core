@@ -33,7 +33,7 @@ vi.mock("../utils/env.js", () => ({
   env: { isCI: false },
 }));
 vi.mock("../utils/envUtils.js", () => ({
-  getAgenCConfigHomeDir: () => process.cwd(),
+  getAgenCHomeDir: () => process.cwd(),
   isEnvTruthy: (value: string | boolean | undefined) =>
     value === true || value === "1" || value === "true",
 }));

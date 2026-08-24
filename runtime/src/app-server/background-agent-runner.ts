@@ -15,9 +15,8 @@ import {
   type LocalRuntimeBootstrap,
 } from "../bin/bootstrap.js";
 import {
-  insertProcessCliOptionsBeforePrompt,
-  tokenizeCliOptionRegion,
-} from "../bin/cli-option-region.js";
+  DANGEROUS_BYPASS_FLAG,
+} from "../bin/startup-flags.js";
 import { ensureAgentControl } from "../bin/delegate-tool.js";
 import { clearSession } from "../commands/clear.js";
 import type { AgentControl } from "../agents/control.js";
@@ -66,6 +65,7 @@ import {
   DEFAULT_MODEL_COSTS,
   type ModelUsage,
 } from "../session/cost.js";
+import { runWithCurrentRuntimeSession } from "../session/current-session.js";
 import {
   transitionPermissionMode,
   type PermissionModeRegistry,
@@ -86,6 +86,7 @@ import {
   type ResolveDurableEffectReviewResult,
 } from "../state/effect-review.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
+import { mergeDaemonClientEnvironment } from "./client-env-snapshot.js";
 
 import { permissionGrantsFromToolPermissionContext } from "../permissions/permission-grants.js";
 import { applyUnattendedPermissionPolicyToContext } from "../permissions/unattended-policy.js";
@@ -162,6 +163,7 @@ import {
   type RunTerminalResult,
 } from "../contracts/run-contracts.js";
 import type { ResumeRolloutDescriptorLease } from "../session/session-store.js";
+import type { AgentRuntimeOptions } from "../session/runtime-options.js";
 
 export interface AgenCBackgroundAgentStartParams {
   readonly objective: string;
@@ -169,6 +171,7 @@ export interface AgenCBackgroundAgentStartParams {
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  readonly configPath?: string;
   readonly initialContent?: MessageContent;
   readonly deferInitialTurn?: boolean;
   readonly initialDisplayUserMessage?: string | null;
@@ -183,6 +186,7 @@ export interface AgenCBackgroundAgentStartParams {
     | "bypassPermissions"
     | "dontAsk"
     | "auto";
+  readonly runtimeOptions: AgentRuntimeOptions;
   /**
    * Per-invocation env overrides forwarded from the CLI. Merged on
    * top of `this.#env` so the user's latest `OPENAI_BASE_URL` /
@@ -211,6 +215,7 @@ export interface AgenCBackgroundAgentRestoreParams {
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  readonly configPath?: string;
   readonly permissionMode?:
     | "default"
     | "plan"
@@ -218,6 +223,7 @@ export interface AgenCBackgroundAgentRestoreParams {
     | "bypassPermissions"
     | "dontAsk"
     | "auto";
+  readonly runtimeOptions: AgentRuntimeOptions;
   /** Exact canonical rollout selected by the trusted CLI resolver. */
   readonly resumeRolloutPath?: string;
   /** One-shot daemon descriptor authority transferred into SessionStore. */
@@ -1084,22 +1090,17 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   async startAgent(
     params: AgenCBackgroundAgentStartParams,
   ): Promise<AgenCBackgroundAgentStartResult> {
-    // Merge per-invocation envOverrides on top of the runner's
-    // captured env snapshot. Without this, the daemon's first-launch
-    // env wins for every subsequent agent — so the user's latest
-    // OPENAI_BASE_URL / proxy / API key gets silently ignored.
-    const mergedEnv =
-      params.envOverrides !== undefined && this.#env !== undefined
-        ? { ...this.#env, ...params.envOverrides }
-        : params.envOverrides !== undefined
-          ? (params.envOverrides as NodeJS.ProcessEnv)
-          : this.#env;
+    // Merge the client's complete allowlisted snapshot on top of the runner's
+    // captured env. Empty-string entries intentionally clear daemon-start
+    // provider/config values; they are not omitted fallback markers.
+    const mergedEnv = mergeDaemonClientEnvironment(this.#env, params.envOverrides);
     const bootstrap = await this.#bootstrap({
       ...(mergedEnv !== undefined ? { env: mergedEnv } : {}),
       ...(this.#authBackend !== undefined
         ? { authBackend: this.#authBackend }
         : {}),
       argv: buildBootstrapArgv(params, this.#argv),
+      runtimeOptions: params.runtimeOptions,
       // Daemon agents are unattended execution for budget policy, but this
       // hint deliberately does not enable autonomous keepalive ticks.
       executionAdmissionAutonomous: true,
@@ -1149,7 +1150,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           workspaceRoot,
         )
       ) {
-        // `--yolo` is explicit operator authority for this exact startup
+        // `--dangerously-bypass-approvals-and-sandbox` is explicit operator authority for this exact startup
         // workspace. Bind that authority into the live registry before the
         // durable snapshot is captured; otherwise canonical persistence would
         // either invent a broader grant or reject the legitimate startup.
@@ -1472,18 +1473,19 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       let uninstallApprovalBridge: (() => void) | undefined;
       let insertedGeneration: ActiveBackgroundAgent | undefined;
       try {
-        const mergedEnv =
-          params.envOverrides !== undefined && this.#env !== undefined
-            ? { ...this.#env, ...params.envOverrides }
-            : params.envOverrides !== undefined
-              ? (params.envOverrides as NodeJS.ProcessEnv)
-              : this.#env;
+        // Restores retain the same complete per-client snapshot semantics as
+        // first start, including empty-string clears of daemon-start state.
+        const mergedEnv = mergeDaemonClientEnvironment(
+          this.#env,
+          params.envOverrides,
+        );
         bootstrap = await this.#bootstrap({
           ...(mergedEnv !== undefined ? { env: mergedEnv } : {}),
           ...(this.#authBackend !== undefined
             ? { authBackend: this.#authBackend }
             : {}),
           conversationId: params.agentId,
+          runtimeOptions: params.runtimeOptions,
           resumeConversation: true,
           ...(params.resumeRolloutPath !== undefined
             ? { resumeRolloutPath: params.resumeRolloutPath }
@@ -3020,55 +3022,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         summary.startsWith("Model switch staged:") ||
         summary.startsWith("Provider switched ") ||
         summary.startsWith("Provider switch staged:");
-      if (applied) {
-        void this.#resolveEffectiveConfigModel(
-          session,
-          params.model,
-          params.provider,
-        );
-      }
       return { applied, summary };
     });
-  }
-
-  /**
-   * Resolve the provider/model the daemon session now points at after a
-   * switch, preferring explicit params and filling gaps from the live session
-   * selection. Returns undefined when neither source yields a usable pair so
-   * we never clobber activeConfigModel with `"unknown"` placeholders.
-   */
-  #resolveEffectiveConfigModel(
-    session: unknown,
-    paramModel?: string,
-    paramProvider?: string,
-  ): { provider: string; model: string } | undefined {
-    let current: { provider: string; model: string } | undefined;
-    try {
-      current = readSessionSelection(session as never);
-    } catch {
-      current = undefined;
-    }
-    const provider =
-      paramProvider ??
-      (current?.provider !== undefined && current.provider !== "unknown"
-        ? current.provider
-        : undefined);
-    // Backfill the model from the live session ONLY when it belongs to the
-    // same provider we are resolving for. A provider-only switch is staged
-    // and consumed on the NEXT turn, so `current` still reports the
-    // pre-switch selection here — backfilling it produced mixed pairs like
-    // {provider: "grok", model: "qwen3-coder-next-fp8"} in the process-global
-    // activeConfigModel, which later daemon sessions then inherited and sent
-    // to the wrong API (audit finding #10).
-    const currentModelUsable =
-      current !== undefined &&
-      current.model !== "unknown" &&
-      current.provider !== "unknown" &&
-      (paramProvider === undefined || current.provider === paramProvider);
-    const model =
-      paramModel ?? (currentModelUsable ? current!.model : undefined);
-    if (provider === undefined || model === undefined) return undefined;
-    return { provider, model };
   }
 
   async setAgentPermissionMode(
@@ -3102,15 +3057,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (current.mode === target) {
       return { applied: false, previousMode: current.mode, mode: target };
     }
-    const transitioned = transitionPermissionMode(
-      current.mode,
-      target,
-      current,
+    const transitioned = runWithCurrentRuntimeSession(
+      active.bootstrap.session,
+      () => transitionPermissionMode(current.mode, target, current),
     );
     let nextCtx: ToolPermissionContext = { ...transitioned, mode: target };
     if (target === "bypassPermissions") {
       // An explicit session.setPermissionMode to bypass carries the same
-      // operator authority as `--yolo` / permissionMode at agent.create
+      // operator authority as `--dangerously-bypass-approvals-and-sandbox` / permissionMode at agent.create
       // (see startAgent's identical binding): grant consent for this exact
       // workspace so canonical runtime-settings persistence accepts the
       // transition instead of refusing with the workspace-consent error.
@@ -6709,6 +6663,12 @@ function phaseEventToProgressEvent(
           error: "Agent exceeded maxTurns",
         };
       }
+      if (event.stopReason === "max_budget_usd") {
+        return {
+          kind: "run_error",
+          error: "Agent reached the canonical session cost cap",
+        };
+      }
       if (event.stopReason === "no_progress") {
         return {
           kind: "run_error",
@@ -7037,10 +6997,13 @@ async function applyRestoredRuntimeSettings(
   const session = bootstrap.session;
   const registry = session.permissionModeRegistry;
   const current = registry.current();
-  let transitioned = transitionPermissionMode(
-    current.mode,
-    settings.permissionMode,
-    current,
+  let transitioned = runWithCurrentRuntimeSession(
+    session,
+    () => transitionPermissionMode(
+      current.mode,
+      settings.permissionMode,
+      current,
+    ),
   );
   const bypassAccepted =
     settings.bypassPermissionsWorkspace === workspaceRoot
@@ -8201,6 +8164,7 @@ function restoreBootstrapSelection(params: AgenCBackgroundAgentRestoreParams): {
   readonly provider?: string;
   readonly model?: string;
   readonly profile?: string;
+  readonly configPath?: string;
   readonly permissionMode?:
     | "default"
     | "plan"
@@ -8215,6 +8179,9 @@ function restoreBootstrapSelection(params: AgenCBackgroundAgentRestoreParams): {
     provider: canonical.provider,
     model: canonical.model,
     ...(canonical.profile !== null ? { profile: canonical.profile } : {}),
+    ...(params.configPath !== undefined
+      ? { configPath: params.configPath }
+      : {}),
     ...(canonical.permissionMode !== "unattended"
       ? { permissionMode: canonical.permissionMode }
       : {}),
@@ -8259,6 +8226,7 @@ function buildBootstrapArgv(
     readonly provider?: string;
     readonly model?: string;
     readonly profile?: string;
+    readonly configPath?: string;
     readonly permissionMode?:
       | "default"
       | "plan"
@@ -8270,32 +8238,23 @@ function buildBootstrapArgv(
   baseArgv: readonly string[] | undefined,
 ): readonly string[] {
   const argv = baseArgv ?? process.argv;
-  const optionArgs = tokenizeCliOptionRegion(argv.slice(2)).optionArgs;
   const generatedOptions: string[] = [];
   appendFlag(generatedOptions, "--provider", params.provider);
   appendFlag(generatedOptions, "--model", params.model);
   appendFlag(generatedOptions, "--profile", params.profile);
-  // Forward `--yolo` when the caller asked for bypassPermissions mode.
-  // bin/bootstrap.ts:1146 keys off cli.allowDangerouslySkipPermissions
-  // (which startup-selection.ts sets when --yolo is in argv), so adding
-  // the flag here makes the daemon-spawned bootstrap honor the override
-  // exactly like the CLI bootstrap does. Avoid duplicate flags if argv
-  // already carries one.
-  if (
-    params.permissionMode === "bypassPermissions" &&
-    !optionArgs.includes("--yolo") &&
-    !optionArgs.includes("--dangerously-bypass-approvals-and-sandbox") &&
-    !optionArgs.includes("--allow-dangerously-skip-permissions")
-  ) {
-    generatedOptions.push("--yolo");
+  appendFlag(generatedOptions, "--config", params.configPath);
+  // Forward the canonical dangerous-bypass flag when the caller asked for
+  // bypassPermissions mode. startup-selection sets the matching bootstrap
+  // boolean, so the daemon-spawned bootstrap honors the structured request.
+  if (params.permissionMode === "bypassPermissions") {
+    generatedOptions.push(DANGEROUS_BYPASS_FLAG);
   }
   // Mirror non-bypass modes via `--permission-mode <value>` so plan and
   // acceptEdits also propagate. startup-selection.ts already parses
   // this flag.
   if (
     params.permissionMode !== undefined &&
-    params.permissionMode !== "bypassPermissions" &&
-    !optionArgs.includes("--permission-mode")
+    params.permissionMode !== "bypassPermissions"
   ) {
     generatedOptions.push("--permission-mode", params.permissionMode);
   }
@@ -8303,7 +8262,10 @@ function buildBootstrapArgv(
   // permission policy is installed separately; keepalive ticks only exist on
   // the TUI contract path. Forcing autonomous here made models expect ticks
   // that never arrived and defaulted empty unattended allowlists to pause-all.
-  return insertProcessCliOptionsBeforePrompt(argv, generatedOptions);
+  // The daemon process argv is not a session configuration authority. Only
+  // the structured agent.create/restore fields become bootstrap flags; keeping
+  // daemon-launch options here would create a second, first-match-wins layer.
+  return [...argv.slice(0, 2), ...generatedOptions];
 }
 
 function appendFlag(

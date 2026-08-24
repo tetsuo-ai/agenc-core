@@ -1,25 +1,16 @@
-import {
-  readFile,
-  mkdtemp,
-  mkdir,
-  rm,
-  writeFile,
-} from "node:fs/promises";
+import { readFile, mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { LLMMessage } from "../../llm/types.js";
 import type { RunAgentParams } from "../../agents/run-agent.js";
-import { clearFileReadListenersForTests, createFileReadTool, registerFileReadListener } from "../../tools/system/file-read.js";
+import {
+  clearFileReadListenersForTests,
+  createFileReadTool,
+  registerFileReadListener,
+} from "../../tools/system/file-read.js";
 import {
   clearSessionReadState,
   getSessionReadSnapshot,
@@ -60,7 +51,6 @@ vi.mock("../../agents/run-agent.js", () => ({
 
 let tempRoot: string;
 let previousAgencHome: string | undefined;
-let previousAgencConfigDir: string | undefined;
 
 const idleMessages: LLMMessage[] = [
   { role: "user", content: "What changed?" },
@@ -70,9 +60,7 @@ const idleMessages: LLMMessage[] = [
 beforeEach(async () => {
   tempRoot = await mkdtemp(join(tmpdir(), "agenc-magic-docs-"));
   previousAgencHome = process.env.AGENC_HOME;
-  previousAgencConfigDir = process.env.AGENC_CONFIG_DIR;
   process.env.AGENC_HOME = tempRoot;
-  delete process.env.AGENC_CONFIG_DIR;
   clearFileReadListenersForTests();
   resetMagicDocsForTests();
   runAgentMockState.calls.length = 0;
@@ -84,15 +72,10 @@ afterEach(async () => {
   runAgentMockState.calls.length = 0;
   if (previousAgencHome === undefined) delete process.env.AGENC_HOME;
   else process.env.AGENC_HOME = previousAgencHome;
-  if (previousAgencConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR;
-  else process.env.AGENC_CONFIG_DIR = previousAgencConfigDir;
   await rm(tempRoot, { recursive: true, force: true });
 });
 
-function makeMagicDocsSession(
-  sessionId: string,
-  childId: string,
-): Session {
+function makeMagicDocsSession(sessionId: string, childId: string): Session {
   return {
     conversationId: sessionId,
     sessionConfiguration: {
@@ -149,7 +132,13 @@ describe("MagicDocs", () => {
     );
 
     await expect(
-      buildMagicDocsUpdatePrompt("body", "/tmp/doc.md", "Architecture", "Be terse"),
+      buildMagicDocsUpdatePrompt(
+        "body",
+        "/tmp/doc.md",
+        "Architecture",
+        "Be terse",
+        tempRoot,
+      ),
     ).resolves.toContain("Path=/tmp/doc.md\nTitle=Architecture");
   });
 
@@ -298,7 +287,11 @@ describe("MagicDocs", () => {
     const childId = "child-session";
     const docPath = join(tempRoot, "architecture.md");
     const otherPath = join(tempRoot, "other.md");
-    await writeFile(docPath, "# MAGIC DOC: Architecture\n\nCurrent body\n", "utf8");
+    await writeFile(
+      docPath,
+      "# MAGIC DOC: Architecture\n\nCurrent body\n",
+      "utf8",
+    );
     await writeFile(otherPath, "Other context\n", "utf8");
     seedSessionReadState(parentId, [
       {
@@ -328,11 +321,15 @@ describe("MagicDocs", () => {
     const params = runAgentMockState.calls[0] as RunAgentParams;
     expect(params.querySource).toBe("magic_docs");
     expect(params.toolAllowlist).toEqual(["Edit"]);
-    expect(getSessionReadSnapshot(childId, otherPath)?.content).toBe("Other context\n");
+    expect(getSessionReadSnapshot(childId, otherPath)?.content).toBe(
+      "Other context\n",
+    );
     expect(getSessionReadSnapshot(childId, docPath)?.rawContent).toBe(
       await readFile(docPath, "utf8"),
     );
-    expect(getSessionReadSnapshot(childId, docPath)?.content).not.toBe("stale body");
+    expect(getSessionReadSnapshot(childId, docPath)?.content).not.toBe(
+      "stale body",
+    );
 
     clearSessionReadState(parentId);
     clearSessionReadState(childId);
@@ -384,7 +381,9 @@ describe("MagicDocs", () => {
       Promise.resolve(policy({ name: "Edit" }, { file_path: "/tmp/other.md" })),
     ).resolves.toMatchObject({ behavior: "deny" });
     await expect(
-      Promise.resolve(policy({ name: "FileRead" }, { file_path: "/tmp/doc.md" })),
+      Promise.resolve(
+        policy({ name: "FileRead" }, { file_path: "/tmp/doc.md" }),
+      ),
     ).resolves.toMatchObject({ behavior: "deny" });
   });
 });

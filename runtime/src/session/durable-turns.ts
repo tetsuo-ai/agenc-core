@@ -26,6 +26,7 @@ import { createHash } from "node:crypto";
 import { VERSION } from "../version.js";
 import type { ResponseItem } from "./rollout-item.js";
 import type { TurnCheckpointSliceLine } from "./event-log.js";
+import type { DurableTurnsConfig } from "../config/schema.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Build identifier (build pin, §3.6)
@@ -75,57 +76,26 @@ export interface ResolvedDurableTurnsConfig {
   readonly checkpointEnabled: boolean;
   readonly checkpointMinIntervalMs: number;
   readonly resumeOnRestart: boolean;
-  /** Stage 1 supports only "safe". */
-  readonly resumePolicy: "safe";
   readonly requireLease: boolean;
   readonly buildPinning: boolean;
 }
 
 interface DurableTurnsConfigInput {
-  readonly durableTurns?: {
-    readonly checkpoint?: {
-      readonly enabled?: boolean;
-      readonly minIntervalMs?: number;
-    };
-    readonly resume?: {
-      readonly onRestart?: boolean;
-      readonly policy?: string;
-      readonly requireLease?: boolean;
-      readonly buildPinning?: boolean;
-    };
-  };
-}
-
-function envFlag(name: string): boolean | undefined {
-  const raw = process.env[name];
-  if (raw === undefined || raw === "") return undefined;
-  if (raw === "0" || raw.toLowerCase() === "false" || raw.toLowerCase() === "off") {
-    return false;
-  }
-  if (raw === "1" || raw.toLowerCase() === "true" || raw.toLowerCase() === "on") {
-    return true;
-  }
-  return undefined;
+  readonly durableTurns?: DurableTurnsConfig;
 }
 
 /**
- * Resolve the effective durable-turns config. Precedence per field:
- * explicit config value > env override > conservative default.
- *
- * The master kill-switch `AGENC_DURABLE_TURNS=0` disables BOTH checkpoint
- * writes and resume (the feature is fully off → today's behavior).
+ * Resolve the effective durable-turns config from the canonical captured
+ * config snapshot. Environment inputs are projected by config/env before a
+ * session is constructed; runtime consumers never read them independently.
  */
 export function resolveDurableTurnsConfig(
   config: unknown,
 ): ResolvedDurableTurnsConfig {
-  const masterDisabled = envFlag("AGENC_DURABLE_TURNS") === false;
   const cfg = (config as DurableTurnsConfigInput | undefined)?.durableTurns;
 
   const checkpointEnabled =
-    !masterDisabled &&
-    (cfg?.checkpoint?.enabled ??
-      envFlag("AGENC_DURABLE_TURNS_CHECKPOINT") ??
-      true);
+    cfg?.checkpoint?.enabled ?? true;
 
   const minIntervalRaw = cfg?.checkpoint?.minIntervalMs;
   const checkpointMinIntervalMs =
@@ -134,15 +104,7 @@ export function resolveDurableTurnsConfig(
       : 0;
 
   const resumeOnRestart =
-    !masterDisabled &&
-    (cfg?.resume?.onRestart ??
-      envFlag("AGENC_DURABLE_TURNS_RESUME") ??
-      true);
-
-  // Stage 1 NEVER honours "idempotent" — only "safe" is supported. Any
-  // other value (including a Stage-2 "idempotent" left in a config) is
-  // clamped to "safe" so a stale/forward config cannot enable auto-replay.
-  const resumePolicy: "safe" = "safe";
+    cfg?.resume?.onRestart ?? true;
 
   const requireLease = cfg?.resume?.requireLease ?? true;
   const buildPinning = cfg?.resume?.buildPinning ?? true;
@@ -151,7 +113,6 @@ export function resolveDurableTurnsConfig(
     checkpointEnabled,
     checkpointMinIntervalMs,
     resumeOnRestart,
-    resumePolicy,
     requireLease,
     buildPinning,
   };

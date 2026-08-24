@@ -64,6 +64,11 @@ import {
 } from "./csv-job-review.js";
 import type { AuthBackend, AuthDaemonSocketIdentity } from "../auth/backend.js";
 import {
+  AgentRuntimeOptionsError,
+  validateAgentRuntimeOptions,
+} from "../session/runtime-options.js";
+import { normalizeDaemonClientEnvOverrides } from "./client-env-snapshot.js";
+import {
   requireAbsoluteWorkspaceCwd,
   WorkspaceCwdError,
 } from "./workspace-cwd.js";
@@ -2216,6 +2221,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "model",
       "provider",
       "profile",
+      "configPath",
       "instructions",
       "permissionMode",
     ],
@@ -2223,6 +2229,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
     objectFields: [
       "metadata",
       "envOverrides",
+      "runtimeOptions",
       "initialEditorInteraction",
       "resumeSourceProof",
     ],
@@ -2241,6 +2248,16 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       throw invalidParams(error.message);
     }
     throw error;
+  }
+  if (
+    validated.configPath !== undefined &&
+    (typeof validated.configPath !== "string" ||
+      validated.configPath.trim().length === 0 ||
+      !isAbsolute(validated.configPath))
+  ) {
+    throw invalidParams(
+      "agent.create param 'configPath' must be a non-empty absolute path",
+    );
   }
   if (validated.initialContent !== undefined) {
     validateMessageContent(
@@ -2376,6 +2393,7 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       );
     }
   }
+  let envOverrides: Record<string, string>;
   if (validated.envOverrides !== undefined) {
     validateStringRecord(
       validated.envOverrides as JsonObject,
@@ -2383,9 +2401,32 @@ function validateAgentCreateParams(params: JsonObject): AgentCreateParams {
       "envOverrides",
     );
   }
+  try {
+    envOverrides = normalizeDaemonClientEnvOverrides(
+      validated.envOverrides as Record<string, string> | undefined,
+    );
+  } catch (error) {
+    throw invalidParams(
+      `agent.create param 'envOverrides' ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (validated.runtimeOptions === undefined) {
+    throw invalidParams("agent.create requires runtimeOptions");
+  }
+  let runtimeOptions;
+  try {
+    runtimeOptions = validateAgentRuntimeOptions(validated.runtimeOptions);
+  } catch (error) {
+    if (error instanceof AgentRuntimeOptionsError) {
+      throw invalidParams(`agent.create ${error.message}`);
+    }
+    throw error;
+  }
   return {
     ...validated,
     cwd,
+    envOverrides,
+    runtimeOptions,
     ...(initialEditorInteraction !== undefined
       ? { initialEditorInteraction }
       : {}),
@@ -2956,11 +2997,10 @@ function validateSessionMcpAddServerParams(
     config.transport !== "stdio" &&
     config.transport !== "sse" &&
     config.transport !== "http" &&
-    config.transport !== "websocket" &&
-    config.transport !== "ws"
+    config.transport !== "websocket"
   ) {
     throw invalidParams(
-      "session.mcp.addServer.config transport must be stdio, sse, http, websocket, or ws",
+      "session.mcp.addServer.config transport must be stdio, sse, http, or websocket",
     );
   }
   for (const field of ["enabled", "required"] as const) {

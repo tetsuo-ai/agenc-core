@@ -13,7 +13,7 @@ AgenC has one authenticated process-execution boundary. A restricted policy
 2. execution stops before the host process is spawned.
 
 There is no warning-only fallback. Raw host execution is permitted only when a
-trusted operator explicitly selected `danger-full-access`/`--yolo`, or when an
+trusted operator explicitly selected `danger-full-access`/`--dangerously-bypass-approvals-and-sandbox`, or when an
 explicit external sandbox policy says isolation is owned outside AgenC.
 Repository content and model-supplied arguments cannot create either decision.
 
@@ -51,9 +51,11 @@ and adding a boundary regression test.
 ## Platform readiness
 
 - Linux requires the packaged `agenc-linux-sandbox` helper outside the writable
-  workspace and a trusted system `bubblewrap`. Readiness executes a bounded
-  namespace probe; finding binaries on disk is insufficient. The helper is
-  resolved through the installed runtime package root so source and bundled
+  workspace. Preferred confinement is trusted system `bubblewrap` after a
+  bounded namespace probe; finding binaries on disk is insufficient. When that
+  probe fails and Landlock is fully enforced, readiness is `kind: "ready"` via
+  `agenc-landlock-run` unless `AGENC_DISABLE_LANDLOCK_FALLBACK=1`. The helper
+  is resolved through the installed runtime package root so source and bundled
   layouts agree. It is launched through the absolute trusted Node executable,
   and runtime/native-loader injection variables are removed before the first
   pre-sandbox process. A command profile that could write either launcher is

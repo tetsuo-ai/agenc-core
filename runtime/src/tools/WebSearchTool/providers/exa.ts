@@ -4,6 +4,8 @@
  * Auth: x-api-key: <key>
  */
 import type { SearchInput, SearchProvider } from './types.js'
+import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
+import { getProxyFetchOptions } from '../../../utils/proxy.js'
 import {
   arrayField,
   isSearchProviderJsonRecord,
@@ -16,11 +18,12 @@ export const exaProvider: SearchProvider = {
   name: 'exa',
 
   isConfigured() {
-    return Boolean(process.env.EXA_API_KEY)
+    return Boolean(getSelectedProviderEnvironment().EXA_API_KEY)
   },
 
   async search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput> {
     const start = performance.now()
+    const environment = getSelectedProviderEnvironment()
 
     const body: Record<string, unknown> = {
       query: input.query,
@@ -35,10 +38,11 @@ export const exaProvider: SearchProvider = {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': process.env.EXA_API_KEY!,
+        'x-api-key': environment.EXA_API_KEY!,
       },
       body: JSON.stringify(body),
       signal,
+      ...getProxyFetchOptions({ environment }),
     })
 
     if (!res.ok) {

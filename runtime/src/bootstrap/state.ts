@@ -15,8 +15,7 @@ import { randomUUID } from "../utils/crypto.js";
 import type { ModelSetting } from "src/utils/model/model.js";
 import type { ModelStrings } from "src/utils/model/modelStrings.js";
 import type { SettingSource } from "src/utils/settings/constants.js";
-import { resetSettingsCache } from "../utils/settings/settingsCache.js";
-import type { PluginHookMatcher } from "src/utils/settings/types.js";
+import type { PluginHookMatcher } from "src/schemas/hooks.js";
 import { createSignal } from "../utils/signal.js";
 
 // Union type for registered hooks - can be SDK callbacks or native plugin hooks
@@ -59,12 +58,6 @@ type State = {
   modelUsage: { [modelName: string]: ModelUsage };
   mainLoopModelOverride: ModelSetting | undefined;
   initialMainLoopModel: ModelSetting;
-  // The active AgenC TOML config model selection (config.model) and the
-  // provider it was resolved for, seeded once at startup. The env-driven
-  // model.ts helpers (welcome display, WebSearchTool, useMainLoopModel
-  // fallback, …) read this so they reflect `agenc config set model` instead
-  // of the hardcoded provider default. Undefined when no config model is set.
-  activeConfigModel: { provider: string; model: string } | undefined;
   modelStrings: ModelStrings | null;
   isInteractive: boolean;
   kairosActive: boolean;
@@ -78,12 +71,7 @@ type State = {
   clientType: string;
   sessionSource: string | undefined;
   questionPreviewFormat: "markdown" | "html" | undefined;
-  flagSettingsPath: string | undefined;
-  flagSettingsInline: Record<string, unknown> | null;
   allowedSettingSources: SettingSource[];
-  sessionIngressToken: string | null | undefined;
-  oauthTokenFromFd: string | null | undefined;
-  apiKeyFromFd: string | null | undefined;
   sessionId: SessionId;
   // Parent session ID for tracking session lineage (e.g., plan mode -> implementation)
   parentSessionId: SessionId | undefined;
@@ -106,8 +94,6 @@ type State = {
   inlinePlugins: Array<string>;
   // Explicit --chrome / --no-chrome flag value (undefined = not set on CLI)
   chromeFlagOverride: boolean | undefined;
-  // Use cowork_plugins directory instead of plugins (--cowork flag or env var)
-  useCoworkPlugins: boolean;
   // Session-only bypass permissions mode flag (not persisted)
   sessionBypassPermissionsMode: boolean;
   // Session-only flag gating the .agenc/scheduled_tasks.json watcher
@@ -277,7 +263,6 @@ function getInitialState(): State {
     modelUsage: {},
     mainLoopModelOverride: undefined,
     initialMainLoopModel: null,
-    activeConfigModel: undefined,
     modelStrings: null,
     isInteractive: false,
     kairosActive: false,
@@ -287,11 +272,6 @@ function getInitialState(): State {
     clientType: "cli",
     sessionSource: undefined,
     questionPreviewFormat: undefined,
-    sessionIngressToken: undefined,
-    oauthTokenFromFd: undefined,
-    apiKeyFromFd: undefined,
-    flagSettingsPath: undefined,
-    flagSettingsInline: null,
     allowedSettingSources: [
       "userSettings",
       "projectSettings",
@@ -315,8 +295,6 @@ function getInitialState(): State {
     inlinePlugins: [],
     // Explicit --chrome / --no-chrome flag value (undefined = not set on CLI)
     chromeFlagOverride: undefined,
-    // Use cowork_plugins directory instead of plugins
-    useCoworkPlugins: false,
     // Session-only bypass permissions mode flag (not persisted)
     sessionBypassPermissionsMode: false,
     // Scheduled tasks disabled until flag or dialog enables them
@@ -805,23 +783,6 @@ export function setInitialMainLoopModel(model: ModelSetting): void {
   STATE.initialMainLoopModel = model;
 }
 
-/**
- * Records the AgenC config-resolved model + provider for the active session
- * so the env-driven model.ts helpers can reflect `config.model` instead of a
- * hardcoded provider default. Seeded from the same resolved startup selection
- * that drives the daemon session model (bin/bootstrap.ts).
- */
-export function setActiveConfigModel(
-  selection: { provider: string; model: string } | undefined,
-): void {
-  STATE.activeConfigModel = selection;
-}
-
-export function getActiveConfigModel():
-  { provider: string; model: string } | undefined {
-  return STATE.activeConfigModel;
-}
-
 export function getSdkBetas(): string[] | undefined {
   return STATE.sdkBetas;
 }
@@ -989,48 +950,6 @@ export function getAgentColorMap(): Map<string, AgentColorName> {
   return STATE.agentColorMap;
 }
 
-export function getFlagSettingsPath(): string | undefined {
-  return STATE.flagSettingsPath;
-}
-
-export function setFlagSettingsPath(path: string | undefined): void {
-  STATE.flagSettingsPath = path;
-}
-
-export function getFlagSettingsInline(): Record<string, unknown> | null {
-  return STATE.flagSettingsInline;
-}
-
-export function setFlagSettingsInline(
-  settings: Record<string, unknown> | null,
-): void {
-  STATE.flagSettingsInline = settings;
-}
-
-export function getSessionIngressToken(): string | null | undefined {
-  return STATE.sessionIngressToken;
-}
-
-export function setSessionIngressToken(token: string | null): void {
-  STATE.sessionIngressToken = token;
-}
-
-export function getOauthTokenFromFd(): string | null | undefined {
-  return STATE.oauthTokenFromFd;
-}
-
-export function setOauthTokenFromFd(token: string | null): void {
-  STATE.oauthTokenFromFd = token;
-}
-
-export function getApiKeyFromFd(): string | null | undefined {
-  return STATE.apiKeyFromFd;
-}
-
-export function setApiKeyFromFd(key: string | null): void {
-  STATE.apiKeyFromFd = key;
-}
-
 export function setLastAPIRequest(
   params: Omit<BetaMessageStreamParams, "messages"> | null,
 ): void {
@@ -1101,15 +1020,6 @@ export function setChromeFlagOverride(value: boolean | undefined): void {
 
 export function getChromeFlagOverride(): boolean | undefined {
   return STATE.chromeFlagOverride;
-}
-
-export function setUseCoworkPlugins(value: boolean): void {
-  STATE.useCoworkPlugins = value;
-  resetSettingsCache();
-}
-
-export function getUseCoworkPlugins(): boolean {
-  return STATE.useCoworkPlugins;
 }
 
 export function setSessionBypassPermissionsMode(enabled: boolean): void {

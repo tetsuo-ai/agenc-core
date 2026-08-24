@@ -1,5 +1,6 @@
 import { c as _c } from "react-compiler-runtime";
 import * as React from 'react';
+import type { ProviderAuthReadContext } from '../../../utils/auth.js';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import { builtInCommandNames, type Command, type CommandResultDisplay } from '../../../commands.js';
@@ -18,13 +19,15 @@ type Props = {
   }) => void;
   commands: Command[];
   query?: string;
+  remoteAuthSessionContext: ProviderAuthReadContext;
 };
 export function HelpV2(t0: Props): React.ReactNode {
   const $ = _c(44);
   const {
     onClose,
     commands,
-    query
+    query,
+    remoteAuthSessionContext
   } = t0;
   const {
     rows,
@@ -71,14 +74,15 @@ export function HelpV2(t0: Props): React.ReactNode {
   }
   const customCommands = t3;
   let t4;
-  if ($[8] === Symbol.for("react.memo_cache_sentinel")) {
-    t4 = <Tab key="general" title="general"><General /></Tab>;
-    $[8] = t4;
+  if ($[6] !== remoteAuthSessionContext) {
+    t4 = <Tab key="general" title="general"><General remoteAuthSessionContext={remoteAuthSessionContext} /></Tab>;
+    $[6] = remoteAuthSessionContext;
+    $[7] = t4;
   } else {
-    t4 = $[8];
+    t4 = $[7];
   }
   let tabs;
-  if ($[9] !== builtinCommands || $[10] !== close || $[11] !== columns || $[12] !== customCommands || $[13] !== maxHeight || $[14] !== query) {
+  if ($[8] !== t4 || $[9] !== builtinCommands || $[10] !== close || $[11] !== columns || $[12] !== customCommands || $[13] !== maxHeight || $[14] !== query) {
     tabs = [t4];
     let t5;
     if ($[16] !== builtinCommands || $[17] !== close || $[18] !== columns || $[19] !== maxHeight || $[20] !== query) {
@@ -106,6 +110,7 @@ export function HelpV2(t0: Props): React.ReactNode {
       t6 = $[27];
     }
     tabs.push(t6);
+    $[8] = t4;
     $[9] = builtinCommands;
     $[10] = close;
     $[11] = columns;

@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,8 +10,38 @@ import {
 } from "./provider.js";
 import { readProviderMenuSnapshot } from "./provider-menu.js";
 import type { Session } from "../session/session.js";
-import type { SlashCommandAppStateBridge, SlashCommandContext } from "./types.js";
+import type {
+  SlashCommandAppStateBridge,
+  SlashCommandContext,
+} from "./types.js";
+import type { EnvSnapshot } from "../config/env.js";
 import type { ConfigStore } from "../config/store.js";
+import { resolveHomeContext, type HomeContext } from "../config/home.js";
+import { RemoteAuthBackend } from "../auth/backends/remote.js";
+
+const TEST_ENVIRONMENT: EnvSnapshot = Object.freeze({
+  AGENC_HOME: "/tmp/agenc-provider-command-test",
+});
+const TEST_HOME = resolveHomeContext(TEST_ENVIRONMENT, {
+  platformHome: "/tmp",
+});
+
+type CommandConfigStore = Pick<ConfigStore, "current" | "homeContext">;
+
+interface CommandAuthority {
+  readonly configStore: CommandConfigStore;
+  readonly environment: EnvSnapshot;
+}
+
+function commandConfigStore(
+  homeContext: HomeContext = TEST_HOME,
+  config: unknown = {},
+): CommandConfigStore {
+  return {
+    homeContext,
+    current: () => config as ReturnType<ConfigStore["current"]>,
+  };
+}
 
 interface StubSessionOpts {
   provider?: string;
@@ -21,11 +51,13 @@ interface StubSessionOpts {
   pendingProviderSwitch?: unknown;
   history?: unknown[];
   configModelByProvider?: Record<string, string>;
+  configStore?: CommandConfigStore;
+  environment?: EnvSnapshot;
 }
 
 function stubSession(opts: StubSessionOpts = {}): Session {
   const sessionConfiguration = {
-    provider: { slug: opts.provider ?? "xai" },
+    provider: { slug: opts.provider ?? "grok" },
     collaborationMode: { model: opts.model ?? "grok-4" },
   };
   const abortTerminal = opts.abortTerminal ?? vi.fn();
@@ -35,7 +67,8 @@ function stubSession(opts: StubSessionOpts = {}): Session {
     abortTerminal: ReturnType<typeof vi.fn>;
     pendingProviderSwitch: unknown;
     services: {
-      configStore?: Pick<ConfigStore, "current">;
+      configStore: CommandConfigStore;
+      providerEnvironment: EnvSnapshot;
     };
     setPendingProviderSwitch(next: unknown): void;
   } = {
@@ -48,19 +81,23 @@ function stubSession(opts: StubSessionOpts = {}): Session {
     activeTurn: { unsafePeek: () => opts.activeTurn ?? null },
     abortTerminal,
     pendingProviderSwitch: opts.pendingProviderSwitch ?? null,
-    services: opts.configModelByProvider
-      ? {
-          configStore: {
-            current: () => ({
-              providers: Object.fromEntries(
-                Object.entries(opts.configModelByProvider ?? {}).map(
-                  ([provider, model]) => [provider, { default_model: model }],
+    services: {
+      configStore:
+        opts.configStore ??
+        commandConfigStore(
+          TEST_HOME,
+          opts.configModelByProvider
+            ? {
+                providers: Object.fromEntries(
+                  Object.entries(opts.configModelByProvider).map(
+                    ([provider, model]) => [provider, { default_model: model }],
+                  ),
                 ),
-              ),
-            }),
-          } satisfies Pick<ConfigStore, "current">,
-        }
-      : {},
+              }
+            : {},
+        ),
+      providerEnvironment: opts.environment ?? TEST_ENVIRONMENT,
+    },
     setPendingProviderSwitch(next) {
       this.pendingProviderSwitch = next;
     },
@@ -82,26 +119,39 @@ function mkctx(
   };
 }
 
-function withProAuthSession<T>(fn: () => T): T {
+async function withProAuthSession<T>(
+  fn: (authority: CommandAuthority) => T | Promise<T>,
+): Promise<T> {
   const agencHome = mkdtempSync(join(tmpdir(), "agenc-provider-pro-"));
-  writeFileSync(
-    join(agencHome, "auth.json"),
-    JSON.stringify({
-      provider: "remote",
+  const environment: EnvSnapshot = Object.freeze({ AGENC_HOME: agencHome });
+  const homeContext = resolveHomeContext(environment, {
+    platformHome: tmpdir(),
+  });
+  const backend = new RemoteAuthBackend({
+    agencHome,
+    env: environment,
+    loginFlow: () => ({
       token: "test-token",
       expiresAt: "2099-01-01T00:00:00.000Z",
       subscriptionTier: "pro",
     }),
-  );
-  const previousHome = process.env.AGENC_HOME;
-  process.env.AGENC_HOME = agencHome;
+    now: () => new Date("2026-08-24T00:00:00.000Z"),
+  });
+  let signedIn = false;
   try {
-    return fn();
+    await backend.login();
+    signedIn = true;
+    return await fn({
+      environment,
+      configStore: commandConfigStore(homeContext, {
+        auth: { managedKeys: { enabled: true } },
+      }),
+    });
   } finally {
-    if (previousHome === undefined) {
-      delete process.env.AGENC_HOME;
-    } else {
-      process.env.AGENC_HOME = previousHome;
+    try {
+      if (signedIn) await backend.logout();
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
     }
   }
 }
@@ -160,27 +210,27 @@ describe("providerCommand", () => {
 
   it("applies the provider default model immediately when no turn is active", async () => {
     const session = stubSession({
-      provider: "xai",
+      provider: "grok",
       model: "grok-4",
       activeTurn: null,
     });
-    const res = await providerCommand.execute(
-      mkctx(session, "ollama"),
-    );
+    const res = await providerCommand.execute(mkctx(session, "ollama"));
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
       expect(res.text).toMatch(/ollama/);
       expect(res.text).toMatch(/model "llama3\.3"/);
     }
-    const pending = (session as unknown as {
-      pendingProviderSwitch: { provider: string; model: string } | null;
-    }).pendingProviderSwitch;
+    const pending = (
+      session as unknown as {
+        pendingProviderSwitch: { provider: string; model: string } | null;
+      }
+    ).pendingProviderSwitch;
     expect(pending).toEqual({ provider: "ollama", model: "llama3.3" });
   });
 
   it("updates TUI model chrome when provider switch selects a model", async () => {
     const session = stubSession({
-      provider: "xai",
+      provider: "grok",
       model: "grok-4",
       activeTurn: null,
     });
@@ -194,7 +244,7 @@ describe("providerCommand", () => {
 
   it("updates app state without overwriting the pending provider switch", async () => {
     const session = stubSession({
-      provider: "xai",
+      provider: "grok",
       model: "grok-4",
       activeTurn: null,
     });
@@ -217,66 +267,70 @@ describe("providerCommand", () => {
       mainLoopModel: "llama3.3",
       mainLoopModelForSession: "llama3.3",
     });
-    const pending = (session as unknown as {
-      pendingProviderSwitch: { provider: string; model: string } | null;
-    }).pendingProviderSwitch;
+    const pending = (
+      session as unknown as {
+        pendingProviderSwitch: { provider: string; model: string } | null;
+      }
+    ).pendingProviderSwitch;
     expect(pending).toEqual({ provider: "ollama", model: "llama3.3" });
   });
 
   it("uses an explicit model when the picker submits provider and model", async () => {
     const session = stubSession({
-      provider: "xai",
+      provider: "grok",
       model: "grok-4",
     });
-    const res = await providerCommand.execute(
-      mkctx(session, "openai gpt-5"),
-    );
+    const res = await providerCommand.execute(mkctx(session, "openai gpt-5"));
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
       expect(res.text).toMatch(/openai/);
       expect(res.text).toMatch(/gpt-5/);
     }
-    const pending = (session as unknown as {
-      pendingProviderSwitch: { provider: string; model: string } | null;
-    }).pendingProviderSwitch;
+    const pending = (
+      session as unknown as {
+        pendingProviderSwitch: { provider: string; model: string } | null;
+      }
+    ).pendingProviderSwitch;
     expect(pending).toEqual({ provider: "openai", model: "gpt-5" });
   });
 
   it("prefers configured provider defaults when available", async () => {
     const session = stubSession({
-      provider: "xai",
+      provider: "grok",
       model: "grok-4",
       configModelByProvider: {
         openai: "gpt-5-mini",
       },
     });
     await providerCommand.execute(mkctx(session, "openai"));
-    const pending = (session as unknown as {
-      pendingProviderSwitch: { provider: string; model: string } | null;
-    }).pendingProviderSwitch;
+    const pending = (
+      session as unknown as {
+        pendingProviderSwitch: { provider: string; model: string } | null;
+      }
+    ).pendingProviderSwitch;
     expect(pending).toEqual({ provider: "openai", model: "gpt-5-mini" });
   });
 
   it("stages pending switch + aborts current turn when I-13 applies", async () => {
     const abortTerminal = vi.fn();
     const session = stubSession({
-      provider: "xai",
+      provider: "grok",
       model: "grok-4",
       activeTurn: { turnId: "t1" },
       abortTerminal,
     });
-    const res = await providerCommand.execute(
-      mkctx(session, "ollama"),
-    );
+    const res = await providerCommand.execute(mkctx(session, "ollama"));
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
       expect(res.text).toMatch(/staged/);
       expect(res.text).toMatch(/aborted/);
     }
     expect(abortTerminal).toHaveBeenCalledWith("provider_switched");
-    const pending = (session as unknown as {
-      pendingProviderSwitch: { provider: string; model: string } | null;
-    }).pendingProviderSwitch;
+    const pending = (
+      session as unknown as {
+        pendingProviderSwitch: { provider: string; model: string } | null;
+      }
+    ).pendingProviderSwitch;
     expect(pending).toEqual({ provider: "ollama", model: "llama3.3" });
   });
 
@@ -298,9 +352,11 @@ describe("providerCommand", () => {
       expect(res.text).toMatch(/blocked/);
       expect(res.text).toMatch(/thinking history/);
     }
-    const pending = (session as unknown as {
-      pendingProviderSwitch: { provider: string; model: string } | null;
-    }).pendingProviderSwitch;
+    const pending = (
+      session as unknown as {
+        pendingProviderSwitch: { provider: string; model: string } | null;
+      }
+    ).pendingProviderSwitch;
     expect(pending).toBeNull();
   });
 
@@ -333,17 +389,13 @@ describe("providerCommand", () => {
   });
 
   it("whitespace-only args are treated as empty", async () => {
-    const res = await providerCommand.execute(
-      mkctx(stubSession(), "   "),
-    );
+    const res = await providerCommand.execute(mkctx(stubSession(), "   "));
     expect(res.kind).toBe("text");
   });
 
   it("does not mention branded references in output strings", async () => {
     const session = stubSession();
-    const res = await providerCommand.execute(
-      mkctx(session, "some-provider"),
-    );
+    const res = await providerCommand.execute(mkctx(session, "some-provider"));
     expect(res.kind).toBe("text");
     if (res.kind === "text") {
       expect(res.text.toLowerCase()).not.toContain(["cla", "ude"].join(""));
@@ -354,8 +406,8 @@ describe("providerCommand", () => {
 
   it("provider menu snapshot exposes v2 auth and model availability state", () => {
     const snapshot = readProviderMenuSnapshot(mkctx(stubSession(), ""));
-    const ollama = snapshot.rows.find(row => row.provider === "ollama");
-    const openai = snapshot.rows.find(row => row.provider === "openai");
+    const ollama = snapshot.rows.find((row) => row.provider === "ollama");
+    const openai = snapshot.rows.find((row) => row.provider === "openai");
 
     expect(ollama).toMatchObject({
       runtimeState: "local",
@@ -366,20 +418,22 @@ describe("providerCommand", () => {
     expect(openai?.credentialSource).toContain("OPENAI_API_KEY");
   });
 
-  it("shows subscription-managed auth when managed keys are enabled and BYOK is absent", () => {
-    withProAuthSession(() => {
-    const previous = process.env.OPENROUTER_API_KEY;
-    delete process.env.OPENROUTER_API_KEY;
-    try {
-      const snapshot = readProviderMenuSnapshot({
-        ...mkctx(stubSession({ provider: "openrouter", model: "x-ai/grok-4.3" }), ""),
-        configStore: {
-          current: () => ({
-            auth: { managedKeys: { enabled: true } },
+  it("shows subscription-managed auth when managed keys are enabled and BYOK is absent", async () => {
+    await withProAuthSession(({ configStore, environment }) => {
+      const snapshot = readProviderMenuSnapshot(
+        mkctx(
+          stubSession({
+            provider: "openrouter",
+            model: "x-ai/grok-4.3",
+            configStore,
+            environment,
           }),
-        } as SlashCommandContext["configStore"],
-      });
-      const openrouter = snapshot.rows.find(row => row.provider === "openrouter");
+          "",
+        ),
+      );
+      const openrouter = snapshot.rows.find(
+        (row) => row.provider === "openrouter",
+      );
 
       expect(openrouter).toMatchObject({
         authState: "managed",
@@ -396,7 +450,6 @@ describe("providerCommand", () => {
         "anthropic/claude-haiku-4.5",
         "google/gemini-2.5-flash",
         "google/gemini-2.5-flash-lite",
-        "deepseek/deepseek-chat",
         "deepseek/deepseek-v4-flash",
         "deepseek/deepseek-v3.2",
         "qwen/qwen3-coder-30b-a3b-instruct",
@@ -406,169 +459,135 @@ describe("providerCommand", () => {
         "meta-llama/llama-4-scout",
         "minimax/minimax-m2.5",
         "z-ai/glm-4.7-flash",
+        "cohere/north-mini-code:free",
       ]);
       expect(openrouter?.models).not.toContain("openrouter/free");
       expect(openrouter?.models).toContain("openai/gpt-oss-20b:free");
       expect(openrouter?.models.length).toBeGreaterThan(20);
-      expect(openrouter?.credentialSource).toContain("subscription-managed key");
-    } finally {
-      if (previous === undefined) {
-        delete process.env.OPENROUTER_API_KEY;
-      } else {
-        process.env.OPENROUTER_API_KEY = previous;
-      }
-    }
+      expect(openrouter?.credentialSource).toContain(
+        "subscription-managed key",
+      );
     });
   });
 
-  it("prioritizes hosted OpenRouter for paid managed sessions", () => {
-    withProAuthSession(() => {
-      const previous = process.env.OPENROUTER_API_KEY;
-      delete process.env.OPENROUTER_API_KEY;
-      try {
-        const snapshot = readProviderMenuSnapshot({
-          ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), ""),
-          configStore: {
-            current: () => ({
-              auth: { managedKeys: { enabled: true } },
-            }),
-          } as SlashCommandContext["configStore"],
-        });
+  it("prioritizes hosted OpenRouter for paid managed sessions", async () => {
+    await withProAuthSession(({ configStore, environment }) => {
+      const snapshot = readProviderMenuSnapshot(
+        mkctx(
+          stubSession({
+            provider: "grok",
+            model: "grok-4.3",
+            configStore,
+            environment,
+          }),
+          "",
+        ),
+      );
 
-        expect(snapshot.rows[0]).toMatchObject({
-          provider: "openrouter",
-          authState: "managed",
-          auth: "subscription",
-          model: "x-ai/grok-4.5",
-        });
-        expect(snapshot.rows[snapshot.activeIndex]?.provider).toBe("openrouter");
-        expect(snapshot.currentProvider).toBe("grok");
-      } finally {
-        if (previous === undefined) {
-          delete process.env.OPENROUTER_API_KEY;
-        } else {
-          process.env.OPENROUTER_API_KEY = previous;
-        }
-      }
+      expect(snapshot.rows[0]).toMatchObject({
+        provider: "openrouter",
+        authState: "managed",
+        auth: "subscription",
+        model: "x-ai/grok-4.5",
+      });
+      expect(snapshot.rows[snapshot.activeIndex]?.provider).toBe("openrouter");
+      expect(snapshot.currentProvider).toBe("grok");
     });
   });
 
   it("does not mark providers without live managed routes as subscription-managed", () => {
-    const previous = process.env.OPENAI_API_KEY;
-    delete process.env.OPENAI_API_KEY;
-    try {
-      const snapshot = readProviderMenuSnapshot({
-        ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), ""),
-        configStore: {
-          current: () => ({
-            auth: { managedKeys: { enabled: true } },
-          }),
-        } as SlashCommandContext["configStore"],
-      });
-      const openai = snapshot.rows.find(row => row.provider === "openai");
+    const configStore = commandConfigStore(TEST_HOME, {
+      auth: { managedKeys: { enabled: true } },
+    });
+    const snapshot = readProviderMenuSnapshot(
+      mkctx(
+        stubSession({
+          provider: "grok",
+          model: "grok-4.3",
+          configStore,
+        }),
+        "",
+      ),
+    );
+    const openai = snapshot.rows.find((row) => row.provider === "openai");
 
-      expect(openai).toMatchObject({
-        authState: "missing",
-      });
-      expect(openai?.auth).toContain("OPENAI_API_KEY");
-      expect(openai?.credentialSource).toContain("OPENAI_API_KEY");
-      expect(openai?.credentialSource).not.toContain("subscription-managed key");
-    } finally {
-      if (previous === undefined) {
-        delete process.env.OPENAI_API_KEY;
-      } else {
-        process.env.OPENAI_API_KEY = previous;
-      }
-    }
+    expect(openai).toMatchObject({
+      authState: "missing",
+    });
+    expect(openai?.auth).toContain("OPENAI_API_KEY");
+    expect(openai?.credentialSource).toContain("OPENAI_API_KEY");
+    expect(openai?.credentialSource).not.toContain("subscription-managed key");
   });
 
   it("marks local providers as local-only under managed subscription mode", () => {
-    const previous = process.env.LMSTUDIO_API_KEY;
-    delete process.env.LMSTUDIO_API_KEY;
-    try {
-      const snapshot = readProviderMenuSnapshot({
-        ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), ""),
-        configStore: {
-          current: () => ({
-            auth: { managedKeys: { enabled: true } },
-          }),
-        } as SlashCommandContext["configStore"],
-      });
-      const lmstudio = snapshot.rows.find(row => row.provider === "lmstudio");
+    const configStore = commandConfigStore(TEST_HOME, {
+      auth: { managedKeys: { enabled: true } },
+    });
+    const snapshot = readProviderMenuSnapshot(
+      mkctx(
+        stubSession({
+          provider: "grok",
+          model: "grok-4.3",
+          configStore,
+        }),
+        "",
+      ),
+    );
+    const lmstudio = snapshot.rows.find((row) => row.provider === "lmstudio");
 
-      expect(lmstudio).toMatchObject({
-        runtimeState: "local",
-        authState: "optional",
-        auth: "local only",
-        detail: "local endpoint",
-      });
-      expect(lmstudio?.credentialSource).toContain("subscription is not used");
-    } finally {
-      if (previous === undefined) {
-        delete process.env.LMSTUDIO_API_KEY;
-      } else {
-        process.env.LMSTUDIO_API_KEY = previous;
-      }
-    }
+    expect(lmstudio).toMatchObject({
+      runtimeState: "local",
+      authState: "optional",
+      auth: "local only",
+      detail: "local endpoint",
+    });
+    expect(lmstudio?.credentialSource).toContain("subscription is not used");
   });
 
   it("does not block direct switches to local providers under managed subscription mode", async () => {
-    const previous = process.env.LMSTUDIO_API_KEY;
-    delete process.env.LMSTUDIO_API_KEY;
-    try {
-      const session = stubSession({ provider: "grok", model: "grok-4.3" });
-      const res = await providerCommand.execute({
-        ...mkctx(session, "lmstudio"),
-        configStore: {
-          current: () => ({
-            auth: { managedKeys: { enabled: true } },
-          }),
-        } as SlashCommandContext["configStore"],
-      });
+    const configStore = commandConfigStore(TEST_HOME, {
+      auth: { managedKeys: { enabled: true } },
+    });
+    const session = stubSession({
+      provider: "grok",
+      model: "grok-4.3",
+      configStore,
+    });
+    const res = await providerCommand.execute(mkctx(session, "lmstudio"));
 
-      expect(res.kind).toBe("text");
-      if (res.kind === "text") {
-        expect(res.text).toContain('Provider switched to "lmstudio"');
-        expect(res.text).not.toContain("subscription-managed access");
-      }
-      const pending = (session as unknown as {
-        pendingProviderSwitch: { provider: string; model: string } | null;
-      }).pendingProviderSwitch;
-      expect(pending).toEqual({ provider: "lmstudio", model: "gpt-4o-mini" });
-    } finally {
-      if (previous === undefined) {
-        delete process.env.LMSTUDIO_API_KEY;
-      } else {
-        process.env.LMSTUDIO_API_KEY = previous;
-      }
+    expect(res.kind).toBe("text");
+    if (res.kind === "text") {
+      expect(res.text).toContain('Provider switched to "lmstudio"');
+      expect(res.text).not.toContain("subscription-managed access");
     }
+    const pending = (
+      session as unknown as {
+        pendingProviderSwitch: { provider: string; model: string } | null;
+      }
+    ).pendingProviderSwitch;
+    expect(pending).toEqual({ provider: "lmstudio", model: "gpt-4o-mini" });
   });
 
   it("blocks direct provider switches to providers without subscription-managed routes or BYOK", async () => {
-    const previous = process.env.OPENAI_API_KEY;
-    delete process.env.OPENAI_API_KEY;
-    try {
-      const res = await providerCommand.execute({
-        ...mkctx(stubSession({ provider: "grok", model: "grok-4.3" }), "openai"),
-        configStore: {
-          current: () => ({
-            auth: { managedKeys: { enabled: true } },
-          }),
-        } as SlashCommandContext["configStore"],
-      });
+    const configStore = commandConfigStore(TEST_HOME, {
+      auth: { managedKeys: { enabled: true } },
+    });
+    const res = await providerCommand.execute(
+      mkctx(
+        stubSession({
+          provider: "grok",
+          model: "grok-4.3",
+          configStore,
+        }),
+        "openai",
+      ),
+    );
 
-      expect(res).toEqual({
-        kind: "text",
-        text: expect.stringContaining(
-          "hosted subscription access is available through OpenRouter",
-        ),
-      });
-    } finally {
-      if (previous === undefined) {
-        delete process.env.OPENAI_API_KEY;
-      } else {
-        process.env.OPENAI_API_KEY = previous;
-      }
-    }
+    expect(res).toEqual({
+      kind: "text",
+      text: expect.stringContaining(
+        "hosted subscription access is available through OpenRouter",
+      ),
+    });
   });
 });

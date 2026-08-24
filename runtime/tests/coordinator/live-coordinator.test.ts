@@ -3,10 +3,10 @@
  * Previously the mode was env-gated onto the retired classic
  * Agent/SendMessage stack; the live registry and the live system
  * prompt never changed. These tests pin the first-class resolution
- * (config flag + env override), the live-tool prompt, and the
+ * (final canonical config flag), the live-tool prompt, and the
  * allowlist restriction semantics the bootstrap applies.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
   getLiveCoordinatorSystemPrompt,
@@ -18,25 +18,13 @@ import { coordinatorCommand } from "../commands/coordinator.js";
 import type { Session } from "../session/session.js";
 import type { SlashCommandContext } from "../commands/types.js";
 
-afterEach(() => {
-  delete process.env.AGENC_COORDINATOR_MODE;
-});
-
 describe("isCoordinatorModeEnabled", () => {
-  it("uses the config flag when the env var is unset", () => {
+  it("uses only the final canonical config flag", () => {
     expect(isCoordinatorModeEnabled(true)).toBe(true);
     expect(isCoordinatorModeEnabled(false)).toBe(false);
     expect(isCoordinatorModeEnabled(undefined)).toBe(false);
   });
 
-  it("env var overrides in both directions", () => {
-    process.env.AGENC_COORDINATOR_MODE = "1";
-    expect(isCoordinatorModeEnabled(false)).toBe(true);
-    process.env.AGENC_COORDINATOR_MODE = "0";
-    expect(isCoordinatorModeEnabled(true)).toBe(false);
-    process.env.AGENC_COORDINATOR_MODE = "off";
-    expect(isCoordinatorModeEnabled(true)).toBe(false);
-  });
 });
 
 describe("live coordinator surface", () => {

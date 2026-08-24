@@ -47,6 +47,11 @@ import {
 import type { LSPServerInstance } from "../services/lsp/LSPServerInstance.js";
 import { bootstrapSession } from "../session/bootstrap.js";
 
+const TEST_RUNTIME_OPTIONS = Object.freeze({
+  simpleMode: false,
+  allowUntrustedHooks: false,
+});
+
 afterEach(() => {
   policyLimitsMocks.configurePolicyLimitsService.mockReset();
 });
@@ -477,6 +482,7 @@ describe("SessionStart bootstrap hooks", () => {
       conversationId: "session-sessionstart",
       model: "test-model",
       sessionConfiguration: sessionConfiguration as never,
+      runtimeOptions: TEST_RUNTIME_OPTIONS,
       admissionRequired: false,
     });
     const session = await bootstrapSession({
@@ -650,6 +656,7 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
         conversationId: "session-policy-bootstrap",
         model: "agenc-opus-4-7",
         sessionConfiguration: {} as never,
+        runtimeOptions: TEST_RUNTIME_OPTIONS,
       });
 
       expect(
@@ -750,6 +757,7 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
       conversationId: "session-lsp-refresh",
       model: "agenc-opus-4-7",
       sessionConfiguration: {} as never,
+      runtimeOptions: TEST_RUNTIME_OPTIONS,
     });
     try {
       await new Promise((resolve) => setTimeout(resolve, 0));

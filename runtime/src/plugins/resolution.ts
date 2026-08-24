@@ -25,6 +25,10 @@ import { redactSecrets } from "../secrets/index.js";
 import { isRecord } from "../utils/record.js";
 import { findPluginManifestPath, loadPluginManifest } from "./manifest.js";
 import { sanitizePluginId } from "./directories.js";
+import {
+  buildPluginIdentifier,
+  parsePluginIdentifier,
+} from "./identifier.js";
 import type { LoadedPlugin } from "./loader.js";
 
 export type PluginResolutionKind =
@@ -51,7 +55,7 @@ export type PluginProcessRunner = (
 
 export interface PluginResolverOptions {
   readonly agencHome: string;
-  readonly workspaceRoot?: string;
+  readonly workspaceRoot: string;
   readonly cache?: boolean;
   readonly refreshCache?: boolean;
   readonly requireSignature?: boolean;
@@ -81,11 +85,6 @@ export interface PluginSignatureVerification {
   readonly publisher?: string;
   readonly payloadFileCount?: number;
   readonly reason?: string;
-}
-
-export interface ParsedPluginIdentifier {
-  readonly name: string;
-  readonly marketplace?: string;
 }
 
 export interface PluginDependencyLookupResult {
@@ -152,7 +151,7 @@ export async function resolvePluginSource(
   source: string,
   options: PluginResolverOptions,
 ): Promise<ResolvedPluginSource> {
-  const kind = await classifyPluginSource(source, options.workspaceRoot ?? process.cwd());
+  const kind = await classifyPluginSource(source, options.workspaceRoot);
   const signatureOptions = {
     ...options,
     requireSignature: options.requireSignature ?? kind !== "local",
@@ -210,7 +209,7 @@ export async function resolvePluginSource(
 
 export async function classifyPluginSource(
   source: string,
-  workspaceRoot = process.cwd(),
+  workspaceRoot: string,
 ): Promise<PluginResolutionKind> {
   const localPath = resolve(workspaceRoot, source);
   if (await pathIsDirectory(localPath)) return "local";
@@ -218,19 +217,6 @@ export async function classifyPluginSource(
   if (isTarballSource(source)) return "tarball";
   if (isMcpbSource(source) || (source.endsWith(".mcpb") && await pathIsFile(localPath))) return "mcpb";
   return "npm";
-}
-
-function parsePluginIdentifier(plugin: string): ParsedPluginIdentifier {
-  const marker = plugin.indexOf("@", 1);
-  if (marker === -1) return { name: plugin };
-  return {
-    name: plugin.slice(0, marker),
-    marketplace: plugin.slice(marker + 1) || undefined,
-  };
-}
-
-function buildPluginIdentifier(name: string, marketplace?: string): string {
-  return marketplace ? `${name}@${marketplace}` : name;
 }
 
 export function qualifyPluginDependency(dep: string, declaringPluginId: string): string {
@@ -686,7 +672,7 @@ export async function verifyResolvedPluginSignature(
   pluginRoot: string,
   options: Pick<
     PluginResolverOptions,
-    "maxExtractDepth" | "maxExtractedBytes" | "maxExtractedFiles" | "publishersPath" | "requireSignature"
+    "agencHome" | "maxExtractDepth" | "maxExtractedBytes" | "maxExtractedFiles" | "publishersPath" | "requireSignature"
   >,
 ): Promise<PluginSignatureVerification> {
   const signaturePath = join(pluginRoot, ".agenc-plugin", "signature.json");
@@ -707,7 +693,9 @@ export async function verifyResolvedPluginSignature(
     }
     throw error;
   }
-  const publishersPath = options.publishersPath ?? defaultPublishersPath();
+  const publishersPath = options.publishersPath ?? defaultPublishersPath(
+    options.agencHome,
+  );
   const publicKey = await readPublisherPublicKey(publishersPath, signature.publisher);
   const manifestPath = await findPluginManifestPath(pluginRoot);
   if (!manifestPath) throw new Error("cannot verify plugin signature without plugin.json");
@@ -780,7 +768,7 @@ async function materializePluginSource(
 ): Promise<string> {
   switch (kind) {
     case "local":
-      return resolve(options.workspaceRoot ?? process.cwd(), source);
+      return resolve(options.workspaceRoot, source);
     case "npm":
       return materializeNpmPackage(source, tempRoot, options);
     case "git":
@@ -858,7 +846,7 @@ async function materializeMcpbBundle(
     await writeFile(bundlePath, await fetchBytes(source, options));
     return bundlePath;
   }
-  const bundlePath = resolve(options.workspaceRoot ?? process.cwd(), source);
+  const bundlePath = resolve(options.workspaceRoot, source);
   await access(bundlePath);
   return bundlePath;
 }
@@ -1501,9 +1489,8 @@ async function readPublisherPublicKey(path: string, publisher: string): Promise<
   return publicKey;
 }
 
-function defaultPublishersPath(): string {
-  const home = process.env.HOME ?? process.cwd();
-  return join(home, ".agenc", "plugin-publishers.json");
+function defaultPublishersPath(agencHome: string): string {
+  return join(agencHome, "plugin-publishers.json");
 }
 
 function cacheKeyForSource(source: string): string {

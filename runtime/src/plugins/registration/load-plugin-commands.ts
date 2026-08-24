@@ -13,7 +13,6 @@ import { isRecord } from "../manifest-schema.js";
 import {
   collectMarkdownFiles,
   coerceString,
-  cwdOnlyRuntimeIdentityKey,
   descriptionFromMarkdown,
   hasExplicitPluginDiscoveryInput,
   isPluginRuntimeSimpleMode,
@@ -63,22 +62,20 @@ function setActiveSnapshot<T>(
 ): void {
   const copy = [...values];
   snapshots.set(runtimeIdentityKey(options), copy);
-  snapshots.set(cwdOnlyRuntimeIdentityKey(options.cwd), copy);
 }
 
 function getActiveSnapshot<T>(
   snapshots: Map<string, readonly T[]>,
   options: PluginCommandRegistrationOptions,
 ): readonly T[] | undefined {
-  const exact = snapshots.get(runtimeIdentityKey(options));
-  return exact ?? snapshots.get(cwdOnlyRuntimeIdentityKey(options.cwd));
+  return snapshots.get(runtimeIdentityKey(options));
 }
 
 function shouldSkipImplicitPluginDiscovery(
   options: PluginCommandRegistrationOptions,
 ): boolean {
   return !hasExplicitPluginDiscoveryInput(options) &&
-    isPluginRuntimeSimpleMode(options.env);
+    isPluginRuntimeSimpleMode();
 }
 
 export function setActivePluginCommandSnapshot(

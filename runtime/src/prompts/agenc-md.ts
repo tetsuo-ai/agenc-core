@@ -25,8 +25,9 @@
  * @module
  */
 import { lstat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { resolveHomeContext } from "../config/home.js";
+import { getAgenCHomeDir } from "../utils/envUtils.js";
 
 import { normalizeExternalText } from "./_deps/file-read.js";
 import {
@@ -108,9 +109,9 @@ export interface TieredInstructions {
 export interface LoadTieredInstructionsOptions extends ProjectInstructionsConfig {
   /** Current working directory for project/local tier discovery. */
   readonly cwd: string;
-  /** Override `HOME` for testing. Defaults to `os.homedir()`. */
+  /** Override platform home for tests; runtime defaults to session authority. */
   readonly homeDir?: string;
-  /** Resolved AgenC config home (AGENC_CONFIG_DIR/AGENC_HOME), if relocated. */
+  /** Resolved AgenC home (AGENC_HOME), if relocated. */
   readonly configHomeDir?: string;
   /** Explicit source policy. Omitted means all four tiers. */
   readonly enabledTiers?: readonly InstructionTier[];
@@ -126,6 +127,18 @@ export interface LoadTieredInstructionsOptions extends ProjectInstructionsConfig
   readonly includeMaxBytes?: number;
   /** Trusted operator channel for exact external includes. Disabled by default. */
   readonly externalApprovals?: ExternalInstructionApprovalStore;
+}
+
+function instructionConfigHome(
+  opts: Pick<LoadTieredInstructionsOptions, "configHomeDir" | "homeDir">,
+): string {
+  if (opts.configHomeDir !== undefined) {
+    return resolveHomeContext({ AGENC_HOME: opts.configHomeDir }).path;
+  }
+  if (opts.homeDir !== undefined) {
+    return resolveHomeContext({}, { platformHome: opts.homeDir }).path;
+  }
+  return getAgenCHomeDir();
 }
 
 /** Metadata about a rejected/skipped `@include` target. */
@@ -681,8 +694,7 @@ function tieredInstructionsCacheKey(opts: LoadTieredInstructionsOptions): string
     opts.managedPath ??
     process.env.AGENC_MANAGED_INSTRUCTIONS ??
     DEFAULT_MANAGED_INSTRUCTION_PATH;
-  const home = opts.homeDir ?? homedir();
-  const configHome = opts.configHomeDir ?? join(home, ".agenc");
+  const configHome = instructionConfigHome(opts);
   // includeMaxDepth/Bytes also affect output, but most callers use the
   // defaults; key them too so a caller bumping the budget never gets a
   // stale shorter-budget result.
@@ -701,7 +713,7 @@ function tieredInstructionsCacheKey(opts: LoadTieredInstructionsOptions): string
   return [
     opts.cwd,
     managedPath,
-    home,
+    opts.homeDir ?? "",
     configHome,
     JSON.stringify(opts.enabledTiers ?? ["managed", "user", "project", "local"]),
     includeMaxDepth,
@@ -833,12 +845,11 @@ function canonicalTierPaths(opts: LoadTieredInstructionsOptions): string[] {
   );
   if (enabled.size === 0) return [];
 
-  const home = opts.homeDir ?? homedir();
   const managedPath =
     opts.managedPath ??
     process.env.AGENC_MANAGED_INSTRUCTIONS ??
     DEFAULT_MANAGED_INSTRUCTION_PATH;
-  const agencHome = opts.configHomeDir ?? join(home, ".agenc");
+  const agencHome = instructionConfigHome(opts);
   const userPrimary = join(agencHome, USER_INSTRUCTION_FILENAME);
   const ancestorCandidates =
     enabled.has("project") || enabled.has("local")
@@ -905,7 +916,6 @@ async function loadTieredInstructionsUncached(
     DEFAULT_INCLUDE_MAX_BYTES,
     DEFAULT_INCLUDE_MAX_BYTES,
   );
-  const home = opts.homeDir ?? homedir();
   const enabled = new Set<InstructionTier>(
     opts.enabledTiers ?? ["managed", "user", "project", "local"],
   );
@@ -968,7 +978,7 @@ async function loadTieredInstructionsUncached(
   }
 
   // User tier — boundary is `~/.agenc`.
-  const agencHome = opts.configHomeDir ?? join(home, ".agenc");
+  const agencHome = instructionConfigHome(opts);
   const userPrimary = join(agencHome, USER_INSTRUCTION_FILENAME);
   let user: TierEntry | null = null;
   if (enabled.has("user") && await pathExists(userPrimary)) {

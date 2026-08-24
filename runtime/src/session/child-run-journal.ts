@@ -66,6 +66,7 @@ export function recordUnconstructedChildRunTerminal(
     cwd: options.cwd,
     sessionId: options.childRunId,
     agencVersion: parentRollout.store.agencVersion,
+    agencHome: parentRollout.store.agencHome,
     resume: true,
     ...(parentRollout.projectRootMarkers !== undefined
       ? { projectRootMarkers: parentRollout.projectRootMarkers }
@@ -180,6 +181,7 @@ export function mountChildRunJournal(
     cwd: sessionConfiguration.cwd,
     sessionId: child.conversationId,
     agencVersion: parentRollout.store.agencVersion,
+    agencHome: parentRollout.store.agencHome,
     ...(parentRollout.projectRootMarkers !== undefined
       ? { projectRootMarkers: parentRollout.projectRootMarkers }
       : {}),

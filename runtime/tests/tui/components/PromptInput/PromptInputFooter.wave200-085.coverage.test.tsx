@@ -2,6 +2,7 @@ import React from 'react'
 import { describe, expect, test, vi } from 'vitest'
 
 import { renderToString } from '../../../utils/staticRender.js'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../../remoteAuthSessionContext.fixture.js'
 
 const harness = vi.hoisted(() => ({
   appState: {
@@ -196,6 +197,7 @@ function props(overrides: Partial<FooterProps> = {}): FooterProps {
     mode: 'prompt',
     onAutoUpdaterResult: vi.fn(),
     onChangeIsUpdating: vi.fn(),
+    remoteAuthSessionContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
     selectedSuggestion: 0,
     setHistoryQuery: vi.fn(),
     suggestionType: 'command',

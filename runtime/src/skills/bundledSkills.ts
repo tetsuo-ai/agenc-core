@@ -6,7 +6,7 @@ import type { ToolUseContext } from '../tools/Tool.js'
 import type { Command } from '../types/command.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { getBundledSkillsRoot } from '../utils/permissions/filesystem.js'
-import type { HooksSettings } from '../utils/settings/types.js'
+import type { HooksSettings } from '../schemas/hooks.js'
 // Pure data (type-only back-reference to this module — no runtime cycle).
 import { AGENC_MARKETPLACE_KIT_INSTALLER_SKILL } from './bundled/agencMarketplaceKitInstaller.js'
 import { BROWSER_AUTOMATION_SKILL } from './bundled/browserAutomation.js'

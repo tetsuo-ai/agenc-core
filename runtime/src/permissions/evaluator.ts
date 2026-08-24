@@ -283,7 +283,7 @@ export async function checkRuleBasedPermissions(
   );
   if (askRule) {
     const canSandboxAutoAllow =
-      tool.name === "Bash" &&
+      tool.name === "system.bash" &&
       context.autoAllowBashIfSandboxed === true &&
       typeof context.shouldUseSandbox === "function" &&
       context.shouldUseSandbox(input) === true;
@@ -552,11 +552,11 @@ async function checkUnattendedPolicy(
   );
 
   // The operator denylist is a HARD, bypass-immune deny: an explicit
-  // operator deny (daemon `deny: ['Bash']`) must hold regardless of the
+  // operator deny (daemon `deny: ['system.bash']`) must hold regardless of the
   // session's permission mode, exactly like a tool-level deny rule. The
   // `preserveMode` guard (unattended-policy.ts) keeps the mode at the user's
   // explicit bypassPermissions/plan/acceptEdits choice while still recording
-  // the policy, so without consulting the denylist here a --yolo session
+  // the policy, so without consulting the denylist here a --dangerously-bypass-approvals-and-sandbox session
   // (bypassPermissions) would sail past the mode gate and silently waive the
   // operator's denylist. Consulting it before the mode-scoped early return
   // closes that bypass. No denylist configured ⇒ resolve never returns "deny",
@@ -815,6 +815,7 @@ async function runAutoClassifierPipeline(
 
   // 5.6 — classifier call.
   const classifierResult = await classifyYoloAction({
+    session: context.session,
     messages: readClassifierTranscriptMessages(context.session),
     action: { toolName: tool.name, input },
     tools: [],
@@ -866,7 +867,9 @@ function handleClassifierResult(
     // Unavailable: fail closed iff the gate is closed, otherwise fall
     // through to an interactive ask.
     if (classifierResult.unavailable === true) {
-      const gateClosed = !isAutoModeGateEnabled();
+      const gateClosed = !isAutoModeGateEnabled(
+        context.session.providerService.environment(),
+      );
       if (gateClosed) {
         return {
           behavior: "deny" as const,

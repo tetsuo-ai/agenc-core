@@ -8,9 +8,9 @@ import {
   marketplaceInstalledPath,
   marketplaceIndexPath,
   marketplaceStoreRoot,
-  writeMarketplaceIndex,
   type FetchResponse,
 } from "../marketplace/marketplace.js";
+import { updateMarketplaceInventory } from "../marketplace/inventory.js";
 import {
   formatAgenCPluginCliHelpText,
   parseAgenCPluginCliArgs,
@@ -93,6 +93,7 @@ function options(
   return {
     agencHome,
     workspaceRoot,
+    env: {},
     io,
     now: () => new Date("2026-05-05T00:00:00.000Z"),
   };
@@ -186,6 +187,9 @@ describe("agenc plugin CLI", () => {
     expect(installExit).toBe(0);
     await expect(stat(join(agencHome, "plugins", "alpha", ".agenc-plugin", "plugin.json")))
       .resolves.toMatchObject({ size: expect.any(Number) });
+    expect(
+      parseToml(await readFile(join(agencHome, "config.toml"), "utf8")),
+    ).toMatchObject({ config_version: 2 });
 
     const listIo = createIo();
     const listExit = await runAgenCPluginCli({
@@ -229,11 +233,16 @@ describe("agenc plugin CLI", () => {
     const { agencHome, workspaceRoot, root } = await tempRuntime();
     const source = await writePlugin(root, "withmcp");
     await writeFile(
-      join(source, ".mcp.json"),
-      JSON.stringify({ mcpServers: { local: { command: "node", args: ["s.js"] } } }),
+      join(source, ".agenc-plugin", "plugin.json"),
+      JSON.stringify({
+        name: "withmcp",
+        version: "1.0.0",
+        description: "Test plugin",
+        commands: "./commands",
+        hooks: {},
+        mcpServers: { local: { command: "node", args: ["s.js"] } },
+      }, null, 2),
     );
-    await mkdir(join(source, "hooks"), { recursive: true });
-    await writeFile(join(source, "hooks", "hooks.json"), JSON.stringify({ hooks: {} }));
 
     const io = createIo();
     const exit = await runAgenCPluginCli({
@@ -261,10 +270,10 @@ describe("agenc plugin CLI", () => {
   it("adds, upgrades, lists, and removes a local marketplace", async () => {
     const { agencHome, workspaceRoot, root } = await tempRuntime();
     const marketplaceRoot = join(root, "marketplace");
-    await mkdir(marketplaceRoot, { recursive: true });
+    await mkdir(join(marketplaceRoot, ".agenc-plugin"), { recursive: true });
     await writePlugin(marketplaceRoot, "alpha");
     await writeFile(
-      join(marketplaceRoot, "marketplace.json"),
+      join(marketplaceRoot, ".agenc-plugin", "marketplace.json"),
       JSON.stringify({
         metadata: { name: "Team Marketplace" },
         plugins: [{ name: "alpha", source: "./alpha" }],
@@ -344,17 +353,17 @@ describe("agenc plugin CLI", () => {
     }, {
       ...options(agencHome, workspaceRoot, gitIo),
       runProcess: async (_command, args) => {
-        if (args[0] === "clone") {
+        if (args.includes("clone")) {
           cloneCalls.push([...args]);
           const target = args.at(-1);
           if (target === undefined) throw new Error("missing clone target");
-          await mkdir(target, { recursive: true });
+          await mkdir(join(target, ".agenc-plugin"), { recursive: true });
           await writeFile(
-            join(target, "marketplace.json"),
+            join(target, ".agenc-plugin", "marketplace.json"),
             JSON.stringify({ metadata: { name: "github-team" }, plugins: [] }),
           );
         }
-        if (args[0] === "rev-parse") return { stdout: "abc123\n", stderr: "" };
+        if (args.includes("rev-parse")) return { stdout: "abc123\n", stderr: "" };
         return { stdout: "", stderr: "" };
       },
     });
@@ -408,9 +417,9 @@ describe("agenc plugin CLI", () => {
   it("rejects unsafe marketplace names and sparse paths before mutating", async () => {
     const { agencHome, workspaceRoot, root } = await tempRuntime();
     const marketplaceRoot = join(root, "marketplace");
-    await mkdir(marketplaceRoot, { recursive: true });
+    await mkdir(join(marketplaceRoot, ".agenc-plugin"), { recursive: true });
     await writeFile(
-      join(marketplaceRoot, "marketplace.json"),
+      join(marketplaceRoot, ".agenc-plugin", "marketplace.json"),
       JSON.stringify({ metadata: { name: "bad/name" }, plugins: [] }),
     );
 
@@ -468,20 +477,20 @@ describe("agenc plugin CLI", () => {
     const hostilePath = join(root, "outside");
     await mkdir(installedPath, { recursive: true });
     await mkdir(hostilePath, { recursive: true });
-    await writeMarketplaceIndex({
-      version: 1,
-      marketplaces: {
+    await updateMarketplaceInventory(
+      { pluginsDirectory: join(agencHome, "plugins") },
+      () => ({
+        inventory: {
         team: {
-          name: "team",
-          source: "local",
-          sourceType: "local",
-          sourceDescriptor: { source: "local", path: installedPath },
-          installedPath: hostilePath,
-          manifestPath: join(hostilePath, "marketplace.json"),
-          updatedAt: "2026-05-05T00:00:00.000Z",
+          source: { source: "directory", path: installedPath },
+          installLocation: hostilePath,
+          manifestPath: join(hostilePath, ".agenc-plugin", "marketplace.json"),
+          lastUpdated: "2026-05-05T00:00:00.000Z",
         },
-      },
-    }, { agencHome });
+        },
+        result: undefined,
+      }),
+    );
 
     const removeExit = await runAgenCPluginCli({
       kind: "marketplace-remove",
@@ -491,7 +500,7 @@ describe("agenc plugin CLI", () => {
     expect((await stat(hostilePath)).isDirectory()).toBe(true);
     await expect(stat(installedPath)).rejects.toMatchObject({ code: "ENOENT" });
     expect(JSON.parse(await readFile(marketplaceIndexPath({ agencHome }), "utf8")))
-      .toEqual({ version: 1, marketplaces: {} });
+      .toEqual({});
   });
 
   it("redacts credential-bearing git failures", async () => {
@@ -501,6 +510,7 @@ describe("agenc plugin CLI", () => {
     ], {
       timeoutMs: 1_000,
       maxOutputBytes: 512,
+      environment: Object.freeze({ ...process.env }),
     })).rejects.toThrow("https://<redacted>@agenc.tech/repo?token=<redacted>");
   });
 });

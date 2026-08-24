@@ -1,9 +1,8 @@
 /**
  * Permission-mode finite state machine (I-3 primitive).
  *
- * Ports upstream `PermissionMode.ts`, `getNextPermissionMode.ts`, and the
- * transition helpers from `permissionSetup.ts` / `bootstrap/state.ts` into a
- * self-contained module with no global state. All session state that
+ * Owns mode cycling and transition behavior in a self-contained module with
+ * no global state. All session state that
  * AgenC stashes in `bootstrap/state.ts` lives on `ToolPermissionContext`
  * instead (`autoModeActive`, `prePlanMode`, `strippedDangerousRules`).
  * Plan-mode exit-reminder bookkeeping lives separately on
@@ -35,6 +34,12 @@ import {
   CROSS_PLATFORM_CODE_EXEC,
   DANGEROUS_BASH_PATTERNS,
 } from "./dangerous-patterns.js";
+import { parseRuleString } from "./rules.js";
+import {
+  ALL_PERMISSION_MODES,
+  CYCLABLE_PERMISSION_MODES,
+} from "../types/permissions.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
 
 // ---------------------------------------------------------------------------
 // Mode constants + predicates
@@ -47,29 +52,14 @@ import {
  * external-visible when the live classifier gate is enabled.
  */
 export const EXTERNAL_PERMISSION_MODES: readonly PermissionMode[] =
-  Object.freeze([
-    "default",
-    "acceptEdits",
-    "plan",
-    "bypassPermissions",
-    "auto",
-  ] as const);
+  CYCLABLE_PERMISSION_MODES;
 
 /**
  * Full internal superset including modes not exposed in the Shift+Tab cycle.
  * Used by validation / serialisation paths.
  */
 export const INTERNAL_PERMISSION_MODES: readonly PermissionMode[] =
-  Object.freeze([
-    "default",
-    "acceptEdits",
-    "plan",
-    "bypassPermissions",
-    "dontAsk",
-    "auto",
-    "unattended",
-    "bubble",
-  ] as const);
+  ALL_PERMISSION_MODES;
 
 /**
  * Type guard — true when `mode` is one of the Shift+Tab-visible external
@@ -85,8 +75,10 @@ export function isExternalPermissionMode(mode: PermissionMode): boolean {
 // Auto-mode gate
 // ---------------------------------------------------------------------------
 
-export function isAutoModeGateEnabled(): boolean {
-  return isClassifierAutoModeGateEnabled();
+export function isAutoModeGateEnabled(
+  environment?: ProviderEnvironment,
+): boolean {
+  return isClassifierAutoModeGateEnabled(environment);
 }
 
 /**
@@ -184,27 +176,14 @@ export function cyclePermissionMode(
 /**
  * Setting to drive whether plan mode should run with auto-mode semantics
  * active (classifier evaluates during plan). AgenC gates this behind
- * `getUseAutoModeDuringPlan()` + `hasAutoModeOptIn()`. For T11 Wave 1 we
+ * the canonical auto-mode acknowledgement. For T11 Wave 1 we
  * default to false; Wave-2 YOLO wiring can override this via
  * `prepareContextForPlanMode`'s `shouldUseAutoInPlan` option.
  */
 let planAutoModeResolver: (() => boolean) | null = null;
 
-function envBoolean(value: string | undefined): boolean {
-  if (value === undefined) return false;
-  const normalized = value.trim().toLowerCase();
-  return (
-    normalized === "1" ||
-    normalized === "true" ||
-    normalized === "yes" ||
-    normalized === "on"
-  );
-}
-
 export function shouldPlanUseAutoMode(): boolean {
-  const setting = planAutoModeResolver
-    ? planAutoModeResolver()
-    : envBoolean(process.env.AGENC_USE_AUTO_MODE_DURING_PLAN);
+  const setting = planAutoModeResolver?.() ?? false;
   return setting && isAutoModeGateEnabled();
 }
 
@@ -271,8 +250,7 @@ function isBypassConsentAccepted(
  * attaching `mode` to the returned context (this matches AgenC's
  * invariant that `transitionPermissionMode` never sets the mode itself).
  *
- * Throws if entering auto mode while the gate is disabled, mirroring
- * AgenC's hard error at permissionSetup.ts:629 — this is what makes the
+ * Throws if entering auto mode while the gate is disabled. This makes the
  * Shift+Tab handler's dual-check defensive (see `canCycleToAuto`).
  *
  * Bypass-consent gate:
@@ -458,22 +436,24 @@ export function prepareContextForPlanMode(
  */
 const DANGEROUS_TOOLS: readonly string[] = Object.freeze([
   "spawn_agent",
+  "Agent",
 ] as const);
 
 /**
  * Returns true if a Bash permission rule is dangerous for auto mode.
  *
- *   - `Bash` with no content (tool-level allow)
- *   - `Bash(*)`
- *   - `Bash(<pattern>)`, `Bash(<pattern>:*)`, `Bash(<pattern>*)`,
- *     `Bash(<pattern> *)`, `Bash(<pattern> -*)` for any pattern in
+ *   - `system.bash`/`exec_command` with no content (tool-level allow)
+ *   - `system.bash(*)`
+ *   - `system.bash(<pattern>)`, `system.bash(<pattern>:*)`,
+ *     `system.bash(<pattern>*)`, `system.bash(<pattern> *)`, or
+ *     `system.bash(<pattern> -*)` for any pattern in
  *     `DANGEROUS_BASH_PATTERNS`
  */
 export function isDangerousBashPermission(
   toolName: string,
   ruleContent: string | undefined,
 ): boolean {
-  if (toolName !== "Bash") return false;
+  if (toolName !== "system.bash" && toolName !== "exec_command") return false;
   if (ruleContent === undefined || ruleContent === "") return true;
   const content = ruleContent.trim().toLowerCase();
   if (content === "*") return true;
@@ -492,7 +472,7 @@ export function isDangerousBashPermission(
  * Similar detector for PowerShell allow rules. Uses the upstream
  * cross-platform code-exec list plus PowerShell-specific escape hatches.
  */
-function isDangerousPowerShellPermission(
+export function isDangerousPowerShellPermission(
   toolName: string,
   ruleContent: string | undefined,
 ): boolean {
@@ -561,27 +541,6 @@ function isDangerousPermission(
 }
 
 /**
- * Parses a raw allow-rule string into `{ toolName, ruleContent }`. Mirrors
- * AgenC's `permissionRuleValueFromString` for the subset of rule
- * shapes we need to introspect here. Format: `ToolName` or
- * `ToolName(content)`. Any unmatched closing paren yields an undefined
- * content (treated as "no content" = tool-level allow).
- */
-function parseRuleString(raw: string): {
-  toolName: string;
-  ruleContent: string | undefined;
-} {
-  const openIdx = raw.indexOf("(");
-  if (openIdx === -1) return { toolName: raw, ruleContent: undefined };
-  const closeIdx = raw.lastIndexOf(")");
-  if (closeIdx <= openIdx) return { toolName: raw, ruleContent: undefined };
-  return {
-    toolName: raw.slice(0, openIdx),
-    ruleContent: raw.slice(openIdx + 1, closeIdx),
-  };
-}
-
-/**
  * Removes dangerous allow rules from the context and stashes them on
  * `strippedDangerousRules` so `restoreDangerousPermissions` can replay them
  * when leaving auto mode.
@@ -614,7 +573,9 @@ export function stripDangerousPermissionsForAutoMode(
     const keep: string[] = [];
     const strip: string[] = [];
     for (const raw of rules) {
-      const { toolName, ruleContent } = parseRuleString(raw);
+      const parsed = parseRuleString(raw);
+      const toolName = parsed?.toolName ?? raw;
+      const ruleContent = parsed?.ruleContent;
       if (isDangerousPermission(toolName, ruleContent)) {
         strip.push(raw);
         changed = true;
@@ -678,6 +639,98 @@ export function restoreDangerousPermissions(
   };
 }
 
+/**
+ * Remove whole-shell allow rules without stashing them. This preserves the
+ * stricter operator profile that never treats `Bash(*)` or `PowerShell(*)` as
+ * a durable approval, while keeping parsing and bucket mutation under the
+ * canonical permission authority.
+ */
+export function removeOverlyBroadShellAllowRules(
+  ctx: ToolPermissionContext,
+): ToolPermissionContext {
+  type MutableRulesBySource = { [K in PermissionRuleSource]?: string[] };
+  const next: MutableRulesBySource = {};
+  let changed = false;
+
+  for (const source of Object.keys(
+    ctx.alwaysAllowRules,
+  ) as PermissionRuleSource[]) {
+    const rules = ctx.alwaysAllowRules[source] ?? [];
+    const filtered = rules.filter((raw) => {
+      const parsed = parseRuleString(raw);
+      const overlyBroad =
+        parsed !== null &&
+        (parsed.toolName === "system.bash" ||
+          parsed.toolName === "exec_command" ||
+          parsed.toolName === "PowerShell") &&
+        parsed.ruleContent === undefined;
+      changed ||= overlyBroad;
+      return !overlyBroad;
+    });
+    next[source] = filtered;
+  }
+
+  return changed
+    ? { ...ctx, alwaysAllowRules: next as ToolPermissionRulesBySource }
+    : ctx;
+}
+
+/** Disable bypass mode in a context, falling back to the default mode. */
+export function createDisabledBypassPermissionsContext(
+  ctx: ToolPermissionContext,
+): ToolPermissionContext {
+  return {
+    ...ctx,
+    mode: ctx.mode === "bypassPermissions" ? "default" : ctx.mode,
+    isBypassPermissionsModeAvailable: false,
+  };
+}
+
+/** Disable auto mode and restore any allow rules stashed by its classifier. */
+export function createDisabledAutoModeContext(
+  ctx: ToolPermissionContext,
+): ToolPermissionContext {
+  const restored =
+    ctx.autoModeActive === true || ctx.strippedDangerousRules !== undefined
+      ? restoreDangerousPermissions(ctx)
+      : ctx;
+  return {
+    ...restored,
+    mode: restored.mode === "auto" ? "default" : restored.mode,
+    prePlanMode:
+      restored.prePlanMode === "auto" ? "default" : restored.prePlanMode,
+    autoModeActive: false,
+    isAutoModeAvailable: false,
+  };
+}
+
+/**
+ * Reconcile auto semantics after a live settings reload while already in plan
+ * mode. The context field is authoritative; no process-global classifier mode
+ * flag participates in the decision.
+ */
+export function transitionPlanAutoMode(
+  ctx: ToolPermissionContext,
+  useAutoInPlan: boolean = shouldPlanUseAutoMode(),
+): ToolPermissionContext {
+  if (ctx.mode !== "plan" || ctx.prePlanMode === "bypassPermissions") {
+    return ctx;
+  }
+
+  if (useAutoInPlan) {
+    return {
+      ...stripDangerousPermissionsForAutoMode(ctx),
+      autoModeActive: true,
+    };
+  }
+
+  if (ctx.autoModeActive !== true) return ctx;
+  return {
+    ...restoreDangerousPermissions(ctx),
+    autoModeActive: false,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // I-3 subscription surface
 // ---------------------------------------------------------------------------
@@ -713,7 +766,7 @@ export type PermissionContextBeforeUpdateHook = (
  * Evaluator integration:
  *   `registry.current().bypassPermissionsAcceptedIn` exposes the session's
  *   accepted-in list for consultation alongside
- *   `config.bypassPermissionsModeAcceptedIn`.
+ *   the canonical user-state acceptance list.
  */
 export class PermissionModeRegistry {
   private ctx: ToolPermissionContext;

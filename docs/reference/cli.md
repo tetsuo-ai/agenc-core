@@ -6,10 +6,11 @@ Live help: `agenc help` and `agenc help <topic>`. Sources:
 `runtime/src/permissions/permission-cli.ts`, and top-level
 `formatCliHelpText()` in `runtime/src/bin/agenc.ts`.
 
-**Note:** top-level `formatCliHelpText()` is incomplete relative to real
-dispatch (for example `doctor`, `remote`, and the full `gateway` surface are
-wired and have topic help but may not appear in the top-level usage block).
-This page documents the **dispatched** surface.
+**Note:** top-level `formatCliHelpText()` in `runtime/src/bin/agenc-main.ts`
+is incomplete relative to real dispatch. `doctor` and `remote` have topic
+help but may not appear in the top-level usage block. `gateway`, `onboard`,
+`state`, `update`, `agent start`, and `mcp` usage lines in that block omit
+flags this page lists. This page documents the **dispatched** surface.
 
 Version: **0.17.0**. Default session provider **grok**, fresh-config session model
 **grok-4.6** (see [providers.md](providers.md)).
@@ -40,16 +41,16 @@ From `formatCliHelpText()`:
 | `--output-format <format>` | Print mode output: `text`, `json`, or `stream-json` |
 | `--input-format <format>` | Print mode input: `stream-json` |
 | `--no-tui` | Force one-shot CLI mode (no interactive TUI) |
+| `--bare` | Use reduced startup mode (skip hooks, LSP, plugin sync, skill discovery, and credential-store reads) |
 | `-c`, `--continue` | Continue the latest project session |
 | `-r`, `--resume <session-id>` | Resume a prior project session in the TUI |
+| `--config <path>` | Load an explicit schema-v2 `config.toml` layer for this invocation |
 | `--profile <name>` | Named config profile |
 | `--provider <name>` | Override provider for this session |
 | `--model <id\|provider:id>` | Override model for this session |
 | `--permission-mode <mode>` | Override startup permission mode: `default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto` (internal-only `unattended` / `bubble` are not CLI addressable) |
-| `--autonomous`, `--proactive` | Enable autonomous tick mode |
+| `--autonomous` | Enable autonomous tick mode |
 | `--dangerously-bypass-approvals-and-sandbox` | Bypass approvals and sandbox checks |
-| `--yolo` | Alias for approval/sandbox bypass |
-| `--allow-dangerously-skip-permissions` | Skip approval prompts |
 | `--image <file\|url\|data-url>` | Attach a startup image |
 
 ### Print-mode notes
@@ -115,7 +116,7 @@ agenc init [--force]
 
 Creates project-level files in the current directory:
 
-- `.agenc/config.json`
+- `.agenc/config.toml`
 - `AGENC.md`
 
 | Option | Meaning |
@@ -245,14 +246,14 @@ agenc gateway pairing revoke <channel> <peerId>
 | Subcommand | Meaning |
 | --- | --- |
 | `run` | Start the gateway (runs until Ctrl-C). `--stdio` local dev channel; `--webchat` loopback token-gated browser UI; `--heartbeat` proactive budget-bounded ticks (`HEARTBEAT.md`); `--hooks` webhook hooks. Telegram when `AGENC_TELEGRAM_BOT_TOKEN` is set (Discord/Slack via their bot tokens / gateway config). |
-| `install-service` | Install + start the always-on gateway user service (systemd or launchd; reads gateway/env) |
+| `install-service` | Install + start the always-on gateway user service (systemd or launchd; credentials come from the native vault) |
 | `status` | Channels, DM policies, bindings, paired-sender counts |
 | `pairing list` | Paired senders per channel |
 | `pairing pending` | Pending pairing requests (codes not yet approved) |
 | `pairing approve` | Approve a pending peer (`<channel> <peerId>`) |
 | `pairing revoke` | Remove a paired sender |
 
-Config: `<AGENC_HOME>/gateway/config.json` (fail-closed defaults when absent).
+Config: canonical `[gateway]` in `<AGENC_HOME>/config.toml` (fail-closed defaults when absent).
 
 Narrative guide: [`../gateway.md`](../gateway.md).
 
@@ -418,6 +419,9 @@ agenc config unset <dot.path>
 agenc config validate
 agenc config edit
 agenc config path
+agenc config migrate check [--confirm-retired-writers-stopped] [--retire-shared-native-vault] [--retired-vault-account <name>]
+agenc config migrate apply [--confirm-retired-writers-stopped] [--retire-shared-native-vault] [--retired-vault-account <name>]
+agenc config migrate rollback <journal-id>
 ```
 
 | Command | Meaning |
@@ -429,15 +433,43 @@ agenc config path
 | `validate` | Validate `config.toml` and schema blocks |
 | `edit` | Open `config.toml` in the configured editor |
 | `path` | Print the `config.toml` path |
+| `migrate check` | Plan the explicit schema-v2 migration and report conflicts without changing files |
+| `migrate apply` | Recheck and apply the reviewed migration transaction |
+| `migrate rollback` | Restore journaled non-secret file changes; never recreate removed plaintext credentials |
 
 Values parse as TOML when possible (`true`, `123`, `["a"]`, `{ enabled = true }`);
 unquoted single-line text is stored as a string.
 
 ```bash
-agenc config set permissions.default_mode never
+agenc config set approval_policy never
 agenc config set plugins.enabled true
 agenc config validate
 ```
+
+On macOS and Linux, migration copies an old native-vault record into the
+canonical home-bound namespace but retains the source by default: unscoped
+names may be shared across homes, and the historical scoped names used only a
+32-bit directory hash. Use
+`--retire-shared-native-vault` on the reviewed check and on apply only after
+stopping every older AgenC process and confirming that no default, relocated,
+or hash-colliding home owns that source. The bundled macOS and Linux helpers
+bind reads, updates, and deletes to one exact record and refuse ambiguous
+duplicates. Keep older processes stopped until an approved exact-record apply
+completes. See
+[config.md](config.md#migration-and-removed-surfaces) for the authority and
+rollback boundaries.
+
+Canonical vault identity uses POSIX numeric `uid:<uid>` or Windows
+`current-user` instead of shell `USER`. If migration must open a record written
+under an older account name, pass `--retired-vault-account <name>` to both
+check and apply. This flag selects only the retired record; it cannot alter
+ordinary runtime identity.
+
+Every apply that deletes or metadata-sanitizes a retired credential source
+also requires `--confirm-retired-writers-stopped`. Stop all older AgenC
+processes before the reviewed check and keep them stopped through apply; old
+binaries do not participate in the new migration locks and could otherwise
+recreate plaintext or stale-write the shared credential blob.
 
 ---
 
@@ -483,7 +515,7 @@ List, update permission rules, or resolve live permission requests.
 
 ```bash
 agenc permissions list
-agenc permissions approve --persist project 'Read(./src/**)'
+agenc permissions approve --persist project 'FileRead(./src/**)'
 agenc permissions approve --session session_123 call_456
 ```
 
@@ -497,12 +529,12 @@ agenc state import
 agenc state resolve-tool-call <session-id> <tool-call-id> <disposition> <evidence-ref> <evidence-sha256>
 agenc state recovery quarantine list [--limit N] [--cursor C] [--state active|repaired|abandoned|all] [--json]
 agenc state recovery quarantine show <quarantine-id> [--json]
-agenc state recovery quarantine rescan <quarantine-id> --confirm-source-sha256 <sha256>
-agenc state recovery quarantine abandon <quarantine-id> --confirm-run-id <run-id> --confirm-source-sha256 <sha256> --reason <text>
+agenc state recovery quarantine rescan <quarantine-id> --confirm-source-sha256 <sha256> [--actor <id>]
+agenc state recovery quarantine abandon <quarantine-id> --confirm-run-id <run-id> --confirm-source-sha256 <sha256> --reason <text> [--actor <id>]
 agenc state recovery deferred list [--limit N] [--cursor C] [--state active|resolved|abandoned|all] [--json]
 agenc state recovery deferred show <block-id> [--json]
-agenc state recovery deferred retry <block-id>
-agenc state recovery deferred abandon <block-id> --confirm-run-id <run-id> --confirm-source-sha256 <sha256> --reason <text>
+agenc state recovery deferred retry <block-id> [--actor <id>]
+agenc state recovery deferred abandon <block-id> --confirm-run-id <run-id> --confirm-source-sha256 <sha256> --reason <text> [--actor <id>]
 ```
 
 | Command | Meaning |
@@ -535,6 +567,20 @@ an operator-controlled receipt/report and the digest binds its exact bytes.
 Reviewer identity comes from `AGENC_REVIEWER_ID`, then `USER` / `USERNAME`, with
 `local_operator` as the final fallback. If the requested call is not found,
 the error lists any unresolved calls known for that session.
+
+Quarantine is source-integrity (corrupt or untrusted journal). Deferred is
+operational (time/byte/descriptor pressure). CP-0002 said "repair"; the verb
+is **`rescan`**. There is no TUI slash for these commands. Run them from the
+project directory; they open SQLite even when the daemon cannot start.
+`agenc state --help` may still say mutations fail closed; the CLI installs
+`createRecoveryMutationAdapter()`. Actor for mutations is `--actor`, else
+`AGENC_REVIEWER_ID`, else `USER`/`USERNAME`, else `local_operator`.
+
+Windows does not publish large artifacts without descriptor-relative paths
+(`ARTIFACT_SAFE_OPERATION_UNSUPPORTED`). That is fail-closed, not a recovery
+CLI.
+
+Related inspect: `agenc run status|result|replay|evidence <run-id>`.
 
 Recovery list and show commands expose only bounded, secret-redacted metadata;
 they never print a malformed source record or journal payload. Pages contain
@@ -632,15 +678,16 @@ agenc agent start --unattended-allow read,grep "audit imports"
 
 ```text
 agenc mcp serve [--transport <stdio|sse>]
-agenc mcp add …
+agenc mcp add <name> <command-or-url> [args...]
 agenc mcp list
-agenc mcp get
-agenc mcp remove
-agenc mcp add-json
+agenc mcp get <name>
+agenc mcp remove <name>
+agenc mcp add-json <name> <json>
 agenc mcp add-from-agenc-desktop
 agenc mcp reset-project-choices
-agenc mcp doctor
-agenc mcp xaa
+agenc mcp approve-project <name>
+agenc mcp doctor [name] [--config-only] [--json] [-s|--scope]
+agenc mcp xaa setup|login|show|clear
 ```
 
 | Command | Meaning |
@@ -653,8 +700,9 @@ agenc mcp xaa
 | `add-json` | Add an MCP server from JSON |
 | `add-from-agenc-desktop` | Import servers from AgenC Desktop config |
 | `reset-project-choices` | Reset project MCP approval choices |
+| `approve-project` | Approve a project-scoped MCP server |
 | `doctor` | Diagnose MCP configuration |
-| `xaa` | Manage XAA IdP authentication (SEP-990) |
+| `xaa setup\|login\|show\|clear` | XAA IdP (SEP-990). `setup` takes `--issuer`, `--client-id`, `--callback-port`, `--client-secret`. `login` takes `--id-token`, `--force` |
 
 | Option (selected) | Meaning |
 | --- | --- |
@@ -664,6 +712,9 @@ agenc mcp xaa
 | `-e, --env <KEY=value>` | Environment variable for stdio add |
 | `-H, --header <K: V>` | Header for HTTP/SSE add |
 | `--client-secret` | Prompt for remote MCP OAuth client secret |
+| `--client-id` | OAuth client id for `mcp add` |
+| `--callback-port` | OAuth callback port for `mcp add` |
+| `--xaa` | Mark the added server as XAA |
 
 ```bash
 agenc mcp serve --transport stdio

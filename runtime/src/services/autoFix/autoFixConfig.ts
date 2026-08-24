@@ -28,7 +28,16 @@ export interface AutoFixConfig {
   readonly timeout: number;
 }
 
-export const AutoFixConfigSchema = z.object({
+/** Strict canonical config.toml input before runtime defaults are applied. */
+export interface AutoFixInputConfig {
+  readonly enabled: boolean;
+  readonly lint?: string;
+  readonly test?: string;
+  readonly maxRetries?: number;
+  readonly timeout?: number;
+}
+
+export const AutoFixConfigSchema: z.ZodType<AutoFixInputConfig> = z.object({
   enabled: z.boolean(),
   lint: z.string().optional(),
   test: z.string().optional(),

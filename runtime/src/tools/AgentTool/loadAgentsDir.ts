@@ -46,6 +46,8 @@ import {
   loadPluginAgents,
 } from '../../plugins/registration/load-plugin-agents.js'
 import { isRecord } from '../../utils/record.js'
+import { getAgenCHomeDir, isBareMode } from '../../utils/envUtils.js'
+import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
 import { AGENT_COLORS, setAgentColor, type AgentColorName } from './agentColorManager.js'
 import { loadAgentMemoryPrompt } from './agentMemory.js'
 
@@ -487,11 +489,10 @@ function systemPromptWithMemory(
 }
 
 function isAutoMemoryEnabled(): boolean {
-  if (process.env.AGENC_DISABLE_AUTO_MEMORY === '1') return false
-  if (process.env.AGENC_SIMPLE === '1' || process.env.AGENC_SIMPLE === 'true') {
+  if (isBareMode()) {
     return false
   }
-  return true
+  return getExecutionAuthoritySettings().autoMemoryEnabled !== false
 }
 
 export function roleToAgentDefinition(
@@ -677,7 +678,7 @@ function projectAgentDirs(
     dirs.push({ dir: managed, source: 'policySettings' })
   }
   if (isSettingSourceEnabled('userSettings')) {
-    const userRoot = process.env.AGENC_CONFIG_DIR ?? join(homedir(), '.agenc')
+    const userRoot = getAgenCHomeDir()
     dirs.push({ dir: join(userRoot, 'agents'), source: 'userSettings' })
   }
 
@@ -1033,7 +1034,7 @@ async function loadAgentDefinitions(
   const workspace = createAgentRoleWorkspace(cwd)
   const builtInAgents = getBuiltInAgents()
   const registeredAgents = getRegisteredAgents(workspace)
-  if (process.env.AGENC_SIMPLE === '1' || process.env.AGENC_SIMPLE === 'true') {
+  if (isBareMode()) {
     // Simple mode skips disk/plugin discovery, but programmatic roles are
     // already explicit in-process configuration. Keep the same workspace
     // overrides that AgentControl resolves instead of silently falling back to
@@ -1140,7 +1141,7 @@ function getParseError(frontmatter: Record<string, unknown>): string {
 export const getAgentDefinitionsWithOverrides = memoize(
   async (cwd: string): Promise<WorkspaceAgentDefinitionsResult> =>
     loadAgentDefinitions(cwd),
-  cwd => cwd,
+  cwd => `${getAgenCHomeDir()}\u0000${resolve(cwd)}`,
 )
 
 /** Bypass the UI memoizer when validating a persisted role during resume. */

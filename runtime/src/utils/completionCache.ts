@@ -10,6 +10,7 @@ import { isENOENT } from './errors.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
 import { logError } from './log.js'
 import type { ThemeName } from './theme.js'
+import { getAgenCHomeDir } from './envUtils.js'
 
 const EOL = '\n'
 
@@ -24,7 +25,7 @@ type ShellInfo = {
 function detectShell(): ShellInfo | null {
   const shell = process.env.SHELL || ''
   const home = homedir()
-  const agencDir = join(home, '.agenc')
+  const agencDir = getAgenCHomeDir()
 
   if (shell.endsWith('/zsh') || shell.endsWith('/zsh.exe')) {
     const cacheFile = join(agencDir, 'completion.zsh')

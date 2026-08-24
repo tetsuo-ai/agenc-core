@@ -1,11 +1,30 @@
 import React from 'react'
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { beforeEach, describe, expect, test, vi } from 'vitest'
 
+import type { ProviderAuthReadContext } from '../../../src/utils/auth.js'
 import { renderToString } from '../../../src/utils/staticRender.js'
+import {
+  TEST_REMOTE_AUTH_ENVIRONMENT,
+  TEST_REMOTE_AUTH_SESSION_CONTEXT,
+} from '../remoteAuthSessionContext.fixture.js'
+
+function providerAuthContextWithEnvironment(
+  overrides: Partial<ProviderAuthReadContext['environment']>,
+): ProviderAuthReadContext {
+  return Object.freeze({
+    ...TEST_REMOTE_AUTH_SESSION_CONTEXT,
+    environment: Object.freeze({
+      ...TEST_REMOTE_AUTH_ENVIRONMENT,
+      ...overrides,
+    }),
+  })
+}
 
 type CapturedContext = {
   readonly agentDefinitions?: unknown
   readonly config: unknown
+  readonly homeContext: unknown
+  readonly providerAuthContext: ProviderAuthReadContext
   readonly daemonStatus: {
     readonly autostartDisabled: boolean
   }
@@ -47,7 +66,7 @@ const harness = vi.hoisted(() => ({
 }))
 
 vi.mock('../../../src/utils/config.js', () => ({
-  getGlobalConfig: () => harness.globalConfig,
+  getRuntimeState: () => harness.globalConfig,
 }))
 
 vi.mock('../../../src/utils/status.js', () => ({
@@ -62,16 +81,6 @@ vi.mock('../../../src/tui/startup/statusNoticeDefinitions.js', () => ({
   getActiveNotices: harness.getActiveNotices,
 }))
 
-const previousDaemonAutostart = process.env.AGENC_DAEMON_AUTOSTART
-
-function restoreDaemonAutostart(): void {
-  if (previousDaemonAutostart === undefined) {
-    delete process.env.AGENC_DAEMON_AUTOSTART
-  } else {
-    process.env.AGENC_DAEMON_AUTOSTART = previousDaemonAutostart
-  }
-}
-
 async function renderStatusNotices(
   props: Record<string, unknown> = {},
 ): Promise<string> {
@@ -80,7 +89,11 @@ async function renderStatusNotices(
   )
 
   return renderToString(
-    React.createElement(StatusNotices, props),
+    React.createElement(StatusNotices, {
+      homeContext: TEST_REMOTE_AUTH_SESSION_CONTEXT.home,
+      providerAuthContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
+      ...props,
+    }),
     { columns: 120 },
   )
 }
@@ -111,11 +124,6 @@ describe('StatusNotices coverage swarm row 197', () => {
         },
       ]
     })
-    restoreDaemonAutostart()
-  })
-
-  afterEach(() => {
-    restoreDaemonAutostart()
   })
 
   test.each([
@@ -123,12 +131,17 @@ describe('StatusNotices coverage swarm row 197', () => {
     [' false '],
     ['OFF'],
   ])('marks daemon autostart disabled for %s', async value => {
-    process.env.AGENC_DAEMON_AUTOSTART = value
+    const providerAuthContext = providerAuthContextWithEnvironment({
+      AGENC_DAEMON_AUTOSTART: value,
+    })
 
-    const output = await renderStatusNotices()
+    const output = await renderStatusNotices({ providerAuthContext })
 
     expect(output).toContain('disabled:true')
     expect(harness.contexts.at(-1)?.daemonStatus.autostartDisabled).toBe(true)
+    expect(harness.contexts.at(-1)?.providerAuthContext).toBe(
+      providerAuthContext,
+    )
   })
 
   test('returns no rendered output when no notices are active', async () => {
@@ -147,6 +160,7 @@ describe('StatusNotices coverage swarm row 197', () => {
       config: harness.globalConfig,
       daemonStatus: { autostartDisabled: false },
       memoryDiagnostics: [],
+      providerAuthContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
     })
   })
 
@@ -165,8 +179,14 @@ describe('StatusNotices coverage swarm row 197', () => {
 
     await renderToString(
       <>
-        <StatusNotices />
-        <StatusNotices />
+        <StatusNotices
+          homeContext={TEST_REMOTE_AUTH_SESSION_CONTEXT.home}
+          providerAuthContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
+        />
+        <StatusNotices
+          homeContext={TEST_REMOTE_AUTH_SESSION_CONTEXT.home}
+          providerAuthContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
+        />
       </>,
       { columns: 120 },
     )

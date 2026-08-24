@@ -50,6 +50,11 @@ import {
 import { encodeBoundedJsonLine } from "./transport/stdio.js";
 import { isRecord } from "../utils/record.js";
 import {
+  resolveAgentRuntimeOptions,
+  type AgentRuntimeOptions,
+} from "../session/runtime-options.js";
+import { collectDaemonClientEnvOverrides } from "./client-env-snapshot.js";
+import {
   AgentRoleWorkspaceError,
   createAgentRoleWorkspace,
   normalizeAgentRoleWorkspace,
@@ -117,12 +122,14 @@ export interface AgenCAgentAttachTuiContext {
   readonly agentId: string;
   readonly clientId: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly runtimeOptions?: AgentRuntimeOptions;
 }
 
 export interface AgenCAgentCliOptions {
   readonly client?: AgenCAgentCliDaemonClient;
   readonly cwd?: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly runtimeOptions?: AgentRuntimeOptions;
   readonly io?: AgenCAgentCliIo;
   readonly ensureDaemonReady?: () => Promise<void>;
   readonly clientId?: string;
@@ -174,103 +181,7 @@ const UNBOUNDED_DAEMON_METHODS: ReadonlySet<AgenCDaemonKnownMethod> = new Set([
   "session.rewindConversationToMessage",
 ]);
 
-/**
- * Client-env keys forwarded to the daemon as `agent.create` envOverrides.
- *
- * The daemon resolves providers/keys/proxies/PATH from the env frozen at
- * daemon start, so without this allowlist a rotated API key or a new
- * shell's venv/nvm PATH is invisible to daemon sessions until the daemon
- * is restarted (audit 2026-07-11 finding 4).
- *
- * Semantics: a key is forwarded only when set (non-empty) in the client
- * process env at agent.create time. Unset keys are NOT forwarded, so the
- * daemon's own values keep winning as the fallback — the merge on the
- * daemon side is `{...daemonEnv, ...envOverrides}`
- * (background-agent-runner.ts startAgent).
- *
- * AGENC_WORKSPACE is deliberately excluded: the workspace must come from
- * the `cwd` create param, not ambient env (audit finding 2).
- *
- * These values travel over the local daemon socket only (same trust
- * boundary as the existing AGENC_MCP_SERVERS override, which can already
- * carry credentials in server configs) and are not logged by the daemon
- * dispatcher or transports.
- */
-const DAEMON_CLIENT_ENV_OVERRIDE_KEYS = [
-  "AGENC_MCP_SERVERS",
-  // Model/provider selection (env beats config.toml per config/env.ts).
-  "AGENC_MODEL",
-  "AGENC_PROVIDER",
-  "AGENC_PROFILE",
-  // Provider API keys — cross-checked against config/env.ts EnvSnapshot
-  // and llm/discovery/provider-discovery.ts providerApiKeyEnvCandidates.
-  "XAI_API_KEY",
-  "GROK_API_KEY",
-  "AGENC_XAI_API_KEY",
-  "OPENAI_API_KEY",
-  "OPENAI_COMPATIBLE_API_KEY",
-  "ANTHROPIC_API_KEY",
-  "LMSTUDIO_API_KEY",
-  "OPENROUTER_API_KEY",
-  "GROQ_API_KEY",
-  "DEEPSEEK_API_KEY",
-  "GEMINI_API_KEY",
-  "GOOGLE_API_KEY",
-  "MISTRAL_API_KEY",
-  "NVIDIA_API_KEY",
-  "MINIMAX_API_KEY",
-  "GITHUB_TOKEN",
-  "GH_TOKEN",
-  "AWS_BEDROCK_ACCESS_KEY_ID",
-  "AWS_ACCESS_KEY_ID",
-  "AWS_BEDROCK_SECRET_ACCESS_KEY",
-  "AWS_SECRET_ACCESS_KEY",
-  "AWS_BEDROCK_SESSION_TOKEN",
-  "AWS_SESSION_TOKEN",
-  // Provider base URLs / regions / compatible-model overrides.
-  "OPENAI_BASE_URL",
-  "OPENAI_COMPATIBLE_BASE_URL",
-  "OPENAI_COMPATIBLE_MODEL",
-  "ANTHROPIC_BASE_URL",
-  "LMSTUDIO_BASE_URL",
-  "OPENROUTER_BASE_URL",
-  "GROQ_BASE_URL",
-  "DEEPSEEK_BASE_URL",
-  "GEMINI_BASE_URL",
-  "OLLAMA_BASE_URL",
-  "AWS_BEDROCK_BASE_URL",
-  "AWS_BEDROCK_MODEL",
-  "AWS_BEDROCK_REGION",
-  "AWS_REGION",
-  "AWS_DEFAULT_REGION",
-  // Proxy configuration (both spellings are honored by Node tooling).
-  "HTTP_PROXY",
-  "HTTPS_PROXY",
-  "NO_PROXY",
-  "http_proxy",
-  "https_proxy",
-  "no_proxy",
-  // Tool resolution for spawned processes (venv/nvm activation).
-  "PATH",
-] as const;
-
-/**
- * Collect the allowlisted client env values to forward with `agent.create`.
- * Only keys set (non-empty) in the given env are included; everything else
- * is left to the daemon's own environment.
- */
-export function collectDaemonClientEnvOverrides(
-  env: NodeJS.ProcessEnv,
-): Record<string, string> {
-  const overrides: Record<string, string> = {};
-  for (const key of DAEMON_CLIENT_ENV_OVERRIDE_KEYS) {
-    const value = env[key];
-    if (typeof value === "string" && value.trim().length > 0) {
-      overrides[key] = value;
-    }
-  }
-  return overrides;
-}
+export { collectDaemonClientEnvOverrides };
 
 export function formatAgenCAgentCliHelpText(): string {
   return [
@@ -815,14 +726,15 @@ async function startAgenCAgent(
   return runAgenCAgentCliOperation(io, options, async () => {
     const client = resolveAgenCAgentCliDaemonClient(options);
     const objective = command.objective;
-    const envOverrides = collectDaemonClientEnvOverrides(
-      options.env ?? process.env,
-    );
+    const env = options.env ?? process.env;
+    const envOverrides = collectDaemonClientEnvOverrides(env);
     const result = await client.createAgent({
       objective,
       instructions: objective,
       // DAE-02: absolute workspace identity from the CLI process (never omit).
       cwd: resolve(options.cwd ?? processCwd()),
+      runtimeOptions:
+        options.runtimeOptions ?? resolveAgentRuntimeOptions(env),
       metadata: { source: "agenc agent start" },
       ...(command.unattendedAllow.length > 0
         ? { unattendedAllow: command.unattendedAllow }
@@ -861,6 +773,9 @@ async function attachAgenCAgent(
         agentId: command.agentId,
         clientId,
         ...(options.env !== undefined ? { env: options.env } : {}),
+        ...(options.runtimeOptions !== undefined
+          ? { runtimeOptions: options.runtimeOptions }
+          : {}),
       });
     }
     const client = resolveAgenCAgentCliDaemonClient(options);

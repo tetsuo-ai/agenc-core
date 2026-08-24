@@ -154,9 +154,7 @@ export interface AgenCReviewOneShotRequest {
    *  the synthesized `exit_review_mode` event so UIs can render which
    *  review this result belongs to. */
   readonly request: ReviewRequest;
-  /** Optional reviewer-model override. Upstream reads this from
-   *  `config.review_model` / `parent_ctx.model_info.slug`. When
-   *  provided here, the delegate rebinds the review-scoped
+  /** Optional reviewer-model override. When provided here, the delegate rebinds the review-scoped
    *  `TurnContext.modelInfo.slug` before issuing the provider call. */
   readonly reviewerModel?: string;
   /** Optional model metadata for the reviewer model. When omitted,
@@ -322,8 +320,8 @@ export function buildGuardianReviewSessionConfig(
   const { features: _features, ...rest } = parentConfig;
   void _features;
   const cloned = structuredClone(rest) as Config;
-  // Graft the live features reference back so
-  // `features.appsEnabledForAuth` keeps working.
+  // Graft the live features reference back so its callable predicate remains
+  // available after the clone.
   (cloned as { features: Config["features"] }).features = parentConfig.features;
 
   const mutable = cloned as unknown as Record<string, unknown>;
@@ -355,8 +353,7 @@ export function buildGuardianReviewSessionConfig(
  * gut threads the overrides through `buildTurnContext` so the frozen-
  * config invariant + metadata state get the same treatment as every
  * other turn. The caller-visible difference: reviewer web/view-image
- * features are disabled (features call is inert because gut's
- * `ManagedFeatures` is functions-only — see RESERVED comment below),
+ * features are disabled (the fixed feature predicate is functions-only),
  * and the reviewer system prompt is applied at call-site (the
  * delegate prepends a system message before the user prompt).
  */
@@ -645,6 +642,10 @@ function buildChildServices(
   return {
     ...parent.services,
     provider,
+    // A delegate owns its provider binding. Reusing the parent's provider
+    // service would make the child ignore `provider` above and route review
+    // traffic through the parent's active model instead.
+    providerService: undefined,
     admissionRequired: parent.services.admissionRequired !== false,
     ...(parent.services.executionAdmission !== undefined
       ? {

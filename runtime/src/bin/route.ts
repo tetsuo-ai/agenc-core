@@ -1,9 +1,8 @@
 /**
- * CLI entry-point router for T12 Wave 5-B.
+ * CLI entry-point router.
  *
- * `bin/agenc.ts` has always been a single-shot CLI; Wave 5 introduces the
- * full Ink TUI alongside it. This module owns the routing decision so
- * both paths stay independently testable:
+ * `bin/agenc.ts` is a single-shot CLI; the Ink TUI is the other path.
+ * This module owns the routing decision so both stay independently testable:
  *
  *   1. **Piped stdin + argv**               -> daemon-backed one-shot path.
  *   2. **`--no-tui` flag**                  → force one-shot even in TTY.
@@ -23,6 +22,12 @@ import {
   STARTUP_VALUE_OPTIONS,
   tokenizeCliOptionRegion,
 } from "./cli-option-region.js";
+import {
+  AUTONOMOUS_FLAG,
+  DANGEROUS_BYPASS_FLAG,
+  findRetiredStartupFlag,
+  retiredStartupFlagError,
+} from "./startup-flags.js";
 
 /**
  * Parse a `--flag <value>` or `--flag=<value>` pair out of an argv
@@ -86,19 +91,17 @@ const STARTUP_BOOLEAN_FLAGS = Object.freeze([
   "--help",
   "-h",
   "--version",
-  "--yolo",
+  "--bare",
   "--continue",
   "-c",
   "-p",
   "--print",
-  "--autonomous",
-  "--proactive",
-  "--dangerously-bypass-approvals-and-sandbox",
-  "--allow-dangerously-skip-permissions",
+  AUTONOMOUS_FLAG,
+  DANGEROUS_BYPASS_FLAG,
 ] as const);
 
 // gaphunt3 #37: only list value flags that a downstream consumer actually
-// honors. --fork/--config/--sandbox/--approval-policy had no consumer
+// honors. --fork/--sandbox/--approval-policy had no consumer
 // anywhere (classifyCLI/readStartupCliFlags/bootstrap), so stripping them
 // here silently swallowed the flag AND its value, dropping the user's
 // intent with no behavior and no feedback. Removing them lets the flag
@@ -154,6 +157,7 @@ const STARTUP_SELECTION_VALUE_FLAGS = Object.freeze([
   "--provider",
   "--model",
   "--profile",
+  "--config",
   "--image",
 ] as const);
 
@@ -166,6 +170,7 @@ const STARTUP_SELECTION_FLAG_USAGE: Readonly<
   "--provider": "agenc --provider requires a value (usage: agenc --provider <name>)",
   "--model": "agenc --model requires a value (usage: agenc --model <id|provider:id>)",
   "--profile": "agenc --profile requires a value (usage: agenc --profile <name>)",
+  "--config": "agenc --config requires a value (usage: agenc --config <path>)",
   "--image": "agenc --image requires a value (usage: agenc --image <path|url>)",
 });
 
@@ -335,6 +340,15 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
   const prompt = stripRoutingFlags(userArgv).join(" ").trim();
   const startupImages = extractFlagValues(optionArgs, "--image");
 
+  const retiredStartupFlag = findRetiredStartupFlag(optionArgs);
+  if (retiredStartupFlag !== undefined) {
+    return {
+      kind: "errorAndExit",
+      message: `agenc: ${retiredStartupFlagError(retiredStartupFlag)}`,
+      exitCode: 2,
+    };
+  }
+
   // 0. A resume flag token was supplied but with no session id (bare
   //    `--resume`/`-r`, or the empty `--resume=`/`-r=` form). Resuming
   //    requires an id, so error instead of silently stripping the flag and
@@ -414,7 +428,7 @@ export function classifyCLI(opts: ClassifyCLIOptions): RouteCLIPlan {
   // 3. `-p` / `--print` is the documented headless print-mode flag. It
   //    must short-circuit BEFORE the TTY branches: in a TTY the user
   //    explicitly asked for non-TUI mode, and combinations like
-  //    `agenc --yolo -p "<prompt>"` were previously being routed into
+  //    `agenc --dangerously-bypass-approvals-and-sandbox -p "<prompt>"` were previously being routed into
   //    the Ink TUI (because -p was unrecognized and ended up baked into
   //    `prompt` text), which then exited 1 with no error.
   if (hasPrintFlag) {

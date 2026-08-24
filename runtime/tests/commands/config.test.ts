@@ -83,15 +83,9 @@ describe("config — getConfigPath", () => {
 
   it("walks nested paths", () => {
     const store = makeStore({
-      toolBudget: {
-        max_calls_per_turn: 42,
-        max_bytes_per_call: 1024,
-        max_bytes_per_turn: 2048,
-      },
+      tui: { ...defaultConfig().tui, theme: "light" },
     });
-    expect(getConfigPath(store.current(), "toolBudget.max_calls_per_turn")).toBe(
-      "42",
-    );
+    expect(getConfigPath(store.current(), "tui.theme")).toBe("light");
   });
 
   it("returns 'not set' for missing keys", () => {
@@ -166,8 +160,8 @@ describe("configCommand — execute show/default", () => {
     );
   });
 
-  it("keeps /settings as an alias for the config surface", () => {
-    expect(configCommand.aliases).toContain("settings");
+  it("does not retain the retired /settings command alias", () => {
+    expect(configCommand.aliases).toBeUndefined();
   });
 
   it("'show' is an explicit alias", async () => {
@@ -294,7 +288,7 @@ describe("configCommand — reload", () => {
   it("calls ConfigStore.reload and reports the new model", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
       const r = await configCommand.execute(
         stubCtx({ configStore: store, argsRaw: "reload", home: tmp }),
@@ -311,7 +305,7 @@ describe("configCommand — reload", () => {
   it("refreshes MCP after reload when the session service is wired", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
       const refreshFromConfig = vi.fn().mockResolvedValue({
         configuredServers: ["github"],
@@ -339,7 +333,7 @@ describe("configCommand — reload", () => {
   it("ignores array-shaped MCP manager services after reload", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
       const refreshFromConfig = vi.fn().mockResolvedValue({
         configuredServers: ["github"],
@@ -366,7 +360,7 @@ describe("configCommand — reload", () => {
   it("re-applies the reloaded config to the daemon and folds in its summary", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
       const applyDaemonConfig = vi.fn(async () => ({
         applied: true,
@@ -395,7 +389,7 @@ describe("configCommand — reload", () => {
   it("does NOT call the daemon forwarder on reload for the in-process path", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
       const applyDaemonConfig = vi.fn();
       // In-process session: no applyDaemonConfig forwarder.
@@ -414,7 +408,7 @@ describe("configCommand — reload", () => {
   it("returns an error when the daemon reload apply fails", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
       const applyDaemonConfig = vi.fn(async () => {
         throw new Error("socket closed");
@@ -441,7 +435,7 @@ describe("configCommand — reload", () => {
   it("reports MCP refresh failure after config reload", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "grok-4-reloaded"\n');
+      writeFileSync(join(tmp, "config.toml"), 'config_version = 2\nmodel = "grok-4-reloaded"\n');
       const store = new ConfigStore({ home: tmp });
       const refreshFromConfig = vi
         .fn()
@@ -465,12 +459,13 @@ describe("configCommand — reload", () => {
     }
   });
 
-  it("surfaces config validation warnings from reload", async () => {
+  it("rejects invalid canonical config during reload", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
       writeFileSync(
         join(tmp, "config.toml"),
-        `
+        `config_version = 2
+
 [auth.managedKeys]
 enabled = "yes"
         `,
@@ -479,9 +474,8 @@ enabled = "yes"
       const r = await configCommand.execute(
         stubCtx({ configStore: store, argsRaw: "reload", home: tmp }),
       );
-      if (r.kind !== "text") throw new Error(`expected text, got ${r.kind}`);
-      expect(r.text).toContain("warnings (1)");
-      expect(r.text).toContain("Invalid auth.managedKeys.enabled");
+      if (r.kind !== "error") throw new Error(`expected error, got ${r.kind}`);
+      expect(r.message).toContain("Invalid auth.managedKeys.enabled");
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -525,7 +519,7 @@ describe("configCommand — profile", () => {
   it("'profile <name>' stages pendingProviderSwitch with profile", async () => {
     const store = makeStore({
       profiles: {
-        dev: { model: "grok-dev", model_provider: "xai" },
+        dev: { model: "grok-dev", model_provider: "grok" },
       },
     });
     const session = stubSession();
@@ -543,7 +537,7 @@ describe("configCommand — profile", () => {
     }).pendingProviderSwitch;
     expect(staged.profile).toBe("dev");
     expect(staged.model).toBe("grok-dev");
-    expect(staged.provider).toBe("xai");
+    expect(staged.provider).toBe("grok");
   });
 
   it("'profile unknown' returns an error", async () => {
@@ -639,7 +633,10 @@ describe("configCommand — edit", () => {
   it("spawns the editor when config.toml exists and returns success", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), 'model = "x"\n');
+      writeFileSync(
+        join(tmp, "config.toml"),
+        'config_version = 2\nmodel = "grok-4.6"\n',
+      );
       const spawner = vi.fn().mockResolvedValue(0);
       const cmd = createConfigCommand({
         env: { EDITOR: "myedit" } as NodeJS.ProcessEnv,
@@ -652,14 +649,17 @@ describe("configCommand — edit", () => {
       if (r.kind !== "text") throw new Error("expected text");
       expect(spawner).toHaveBeenCalledTimes(1);
       expect(spawner.mock.calls[0]![0]).toBe("myedit");
-      expect(spawner.mock.calls[0]![1]).toEqual([join(tmp, "config.toml")]);
+      expect(spawner.mock.calls[0]![1]).toHaveLength(1);
+      expect(spawner.mock.calls[0]![1][0]).toMatch(
+        /\/\.agenc-config-edit-[^/]+\/config\.toml$/u,
+      );
       expect(r.text).toMatch(/reload to apply/);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
 
-  it("edit on missing config.toml returns a hint without spawning", async () => {
+  it("edit on missing config.toml uses a private canonical snapshot", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
       const spawner = vi.fn().mockResolvedValue(0);
@@ -672,8 +672,11 @@ describe("configCommand — edit", () => {
         stubCtx({ configStore: store, argsRaw: "edit", agencHome: tmp }),
       );
       if (r.kind !== "text") throw new Error("expected text");
-      expect(spawner).not.toHaveBeenCalled();
-      expect(r.text).toMatch(/does not exist/);
+      expect(spawner).toHaveBeenCalledOnce();
+      expect(spawner.mock.calls[0]![1][0]).toMatch(
+        /\/\.agenc-config-edit-[^/]+\/config\.toml$/u,
+      );
+      expect(r.text).toMatch(/reload to apply/);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -682,7 +685,7 @@ describe("configCommand — edit", () => {
   it("edit reports an error when the editor exits non-zero", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
     try {
-      writeFileSync(join(tmp, "config.toml"), "");
+      writeFileSync(join(tmp, "config.toml"), "config_version = 2\n");
       const spawner = vi.fn().mockResolvedValue(2);
       const cmd = createConfigCommand({
         env: { EDITOR: "broken" } as NodeJS.ProcessEnv,

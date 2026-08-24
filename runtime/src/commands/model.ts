@@ -26,7 +26,7 @@
 import type { Session } from "../session/session.js";
 import {
   buildProviderModelCatalog,
-  normalizeProviderSlug,
+  resolveProviderSlug,
   readProviderConfig,
   resolveProviderSettings,
   type ProviderSlug,
@@ -38,13 +38,17 @@ import {
 } from "../auth/session-state.js";
 import { resolveDisambiguatedModelSelection } from "../config/resolve-model.js";
 import { resolveProviderCapabilityEntry } from "../llm/capabilities.js";
-import { normalizeProviderName } from "../llm/provider.js";
+import { resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
 import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
 import {
   analyzeSessionHistoryRequirements,
   validateHistoryCompatibility,
 } from "../llm/shape-request.js";
-import { readCommandConfig } from "./config-context.js";
+import {
+  providerEnvironmentFromCommandContext,
+  readCommandConfig,
+  remoteAuthContextFromCommandContext,
+} from "./config-context.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -174,7 +178,7 @@ export async function applyModelSwitch(
   const normalizedTargetProvider =
     targetProvider === undefined
       ? undefined
-      : normalizeProviderName(targetProvider);
+      : resolveBuiltInProviderSlug(targetProvider);
   if (targetProvider !== undefined && normalizedTargetProvider === null) {
     return `Model switch to "${targetModel}" blocked: unknown provider "${targetProvider}"`;
   }
@@ -268,12 +272,12 @@ function resolveCommandSelection(
 } {
   const config = readCommandConfig(ctx);
   const currentProvider =
-    normalizeProviderSlug(readSessionSelection(ctx.session).provider) ??
-    normalizeProviderSlug(config?.model_provider);
+    resolveProviderSlug(readSessionSelection(ctx.session).provider) ??
+    resolveProviderSlug(config?.model_provider);
   const catalog = buildProviderModelCatalog(config);
   const explicitSeparator = target.indexOf(":");
   if (explicitSeparator > 0) {
-    const provider = normalizeProviderSlug(target.slice(0, explicitSeparator));
+    const provider = resolveProviderSlug(target.slice(0, explicitSeparator));
     if (provider !== undefined) {
       try {
         const resolved = resolveDisambiguatedModelSelection({
@@ -308,7 +312,7 @@ function resolveCommandSelection(
       config,
       catalog,
     });
-    const provider = normalizeProviderSlug(resolved.provider);
+    const provider = resolveProviderSlug(resolved.provider);
     if (provider === undefined) return { model: resolved.model };
     if (currentProvider !== undefined && provider === currentProvider) {
       return { model: resolved.model };
@@ -325,24 +329,26 @@ function modelSwitchAuthError(
   targetModel: string,
 ): string | undefined {
   const provider =
-    normalizeProviderSlug(targetProvider) ??
-    normalizeProviderSlug(readSessionSelection(ctx.session).provider);
+    resolveProviderSlug(targetProvider) ??
+    resolveProviderSlug(readSessionSelection(ctx.session).provider);
   if (provider === undefined) return undefined;
   const config = readCommandConfig(ctx);
   if (config?.auth?.managedKeys?.enabled !== true) return undefined;
   const info = resolveBuiltInProviderInfo(provider);
   if (info?.apiKeyEnvVar === undefined) return undefined;
-  const apiKey = resolveProviderSettings(provider, config, process.env)?.apiKey;
+  const environment = providerEnvironmentFromCommandContext(ctx);
+  const authContext = remoteAuthContextFromCommandContext(ctx);
+  const apiKey = resolveProviderSettings(provider, config, environment)?.apiKey;
   if (apiKey !== undefined && apiKey.trim().length > 0) return undefined;
   if (
     providerHasLiveSubscriptionRoute(provider) &&
-    hasEntitledRemoteAuthSessionSync(process.env)
+    hasEntitledRemoteAuthSessionSync(authContext)
   ) {
     return undefined;
   }
   if (
     providerHasLiveSubscriptionRoute(provider) &&
-    hasRemoteAuthSessionSync(process.env) &&
+    hasRemoteAuthSessionSync(authContext) &&
     isFreeSubscriptionManagedModel(provider, targetModel)
   ) {
     return undefined;
@@ -365,18 +371,20 @@ function subscriptionManagedModelError(
   targetModel: string,
 ): string | undefined {
   const provider =
-    normalizeProviderSlug(targetProvider) ??
-    normalizeProviderSlug(readSessionSelection(ctx.session).provider);
+    resolveProviderSlug(targetProvider) ??
+    resolveProviderSlug(readSessionSelection(ctx.session).provider);
   if (provider === undefined) return undefined;
   const config = readCommandConfig(ctx);
   if (config?.auth?.managedKeys?.enabled !== true) return undefined;
   const info = resolveBuiltInProviderInfo(provider);
   if (info?.apiKeyEnvVar === undefined) return undefined;
-  const apiKey = resolveProviderSettings(provider, config, process.env)?.apiKey;
+  const environment = providerEnvironmentFromCommandContext(ctx);
+  const authContext = remoteAuthContextFromCommandContext(ctx);
+  const apiKey = resolveProviderSettings(provider, config, environment)?.apiKey;
   if (apiKey !== undefined && apiKey.trim().length > 0) return undefined;
   if (!providerHasLiveSubscriptionRoute(provider)) return undefined;
   if (isSubscriptionManagedModel(provider, targetModel)) return undefined;
-  const tier = remoteAuthSessionSubscriptionTierSync(process.env);
+  const tier = remoteAuthSessionSubscriptionTierSync(authContext);
   const example =
     visibleSubscriptionManagedModelsForTier(provider, tier)[0] ??
     subscriptionManagedModels(provider)[0];

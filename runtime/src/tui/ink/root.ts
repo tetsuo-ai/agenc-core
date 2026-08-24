@@ -30,6 +30,9 @@ export type RenderOptions = {
    */
   exitOnCtrlC?: boolean
 
+  /** Captured startup choice for stdin event delivery. */
+  stdinMode?: 'readable' | 'data'
+
   /**
    * Patch console methods to ensure console output doesn't mix with Ink output.
    *
@@ -131,6 +134,7 @@ export async function createRoot({
   stdin = process.stdin,
   stderr = process.stderr,
   exitOnCtrlC = true,
+  stdinMode,
   patchConsole = true,
   onFrame,
 }: RenderOptions = {}): Promise<Root> {
@@ -141,6 +145,7 @@ export async function createRoot({
     stdin,
     stderr,
     exitOnCtrlC,
+    stdinMode,
     patchConsole,
     onFrame,
   })

@@ -6,13 +6,25 @@
  * to avoid circular dependencies.
  */
 
-import { feature } from 'bun:bundle'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
 
 // ============================================================================
 // Permission Modes
 // ============================================================================
 
+export const USER_ADDRESSABLE_PERMISSION_MODES = Object.freeze([
+  'default',
+  'acceptEdits',
+  'plan',
+  'bypassPermissions',
+  'dontAsk',
+  'auto',
+] as const)
+
+export type UserAddressablePermissionMode =
+  (typeof USER_ADDRESSABLE_PERMISSION_MODES)[number]
+
+/** Modes accepted by the SDK permission-update wire contract. */
 export const EXTERNAL_PERMISSION_MODES = [
   'acceptEdits',
   'bypassPermissions',
@@ -20,7 +32,6 @@ export const EXTERNAL_PERMISSION_MODES = [
   'dontAsk',
   'plan',
 ] as const
-
 export type ExternalPermissionMode = (typeof EXTERNAL_PERMISSION_MODES)[number]
 
 // Exhaustive mode union for typechecking. The user-addressable runtime set
@@ -30,20 +41,26 @@ export type ExternalPermissionMode = (typeof EXTERNAL_PERMISSION_MODES)[number]
 // wherever an agent's 'unattended' permissionMode met a context typed as
 // InternalPermissionMode (e.g. AgentTool → assembleToolPool).
 export type InternalPermissionMode =
-  | ExternalPermissionMode
-  | 'auto'
+  | UserAddressablePermissionMode
   | 'bubble'
   | 'unattended'
 export type PermissionMode = InternalPermissionMode
 
-// Runtime validation set: modes that are user-addressable (settings.json
-// defaultMode, --permission-mode CLI flag, conversation recovery).
-const INTERNAL_PERMISSION_MODES = [
-  ...EXTERNAL_PERMISSION_MODES,
-  ...(feature('TRANSCRIPT_CLASSIFIER') ? (['auto'] as const) : ([] as const)),
-] as const satisfies readonly PermissionMode[]
+export const ALL_PERMISSION_MODES = Object.freeze([
+  ...USER_ADDRESSABLE_PERMISSION_MODES,
+  'unattended',
+  'bubble',
+] as const satisfies readonly PermissionMode[])
 
-export const PERMISSION_MODES = INTERNAL_PERMISSION_MODES
+export const CYCLABLE_PERMISSION_MODES = Object.freeze([
+  'default',
+  'acceptEdits',
+  'plan',
+  'bypassPermissions',
+  'auto',
+] as const satisfies readonly PermissionMode[])
+
+export const PERMISSION_MODES = USER_ADDRESSABLE_PERMISSION_MODES
 
 // ============================================================================
 // Permission Behaviors

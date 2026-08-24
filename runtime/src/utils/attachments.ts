@@ -15,6 +15,7 @@ import { countCharInString } from './stringUtils.js'
 import { uniq } from './array.js'
 import { extractLegacyAgentMentions } from './agentMentions.js'
 import { extractMcpResourceMentions } from './mcpResourceMentions.js'
+import { getSelectedProviderEnvironment } from './model/providers.js'
 import { getFsImplementation } from './fsOperations.js'
 import { readdir, stat } from 'fs/promises'
 import type { IDESelection } from '../tui/hooks/useIdeSelection.js'
@@ -51,7 +52,7 @@ import {
   isValidImagePaste,
 } from 'src/types/textInputTypes.js'
 import { randomUUID, type UUID } from 'crypto'
-import { getSettings_DEPRECATED } from './settings/settings.js'
+import { getInitialSettings } from './settings/settings.js'
 import { getSnippetForTwoFileDiff } from 'src/tools/FileEditTool/utils.js'
 import type {
   ContentBlockParam,
@@ -68,6 +69,11 @@ import { getProjectRoot } from '../bootstrap/state.js'
 import { formatCommandsWithinBudget } from '../tools/SkillTool/prompt.js'
 import { getContextWindowForModel } from './context.js'
 import * as autoModeState from './permissions/autoModeState.js'
+import { resolveSecureStorageHome } from './secureStorage/home.js'
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 // Donor-purge: ../services/skillSearch/* was deleted; type aliased as opaque.
 type DiscoverySignal = any
 // Conditional require for DCE. All skill-search string literals that would
@@ -174,7 +180,7 @@ import {
   isThinkingMessage,
 } from './messages.js'
 import { isHumanTurn } from './messagePredicates.js'
-import { isEnvTruthy, getAgenCConfigHomeDir } from './envUtils.js'
+import { isBareMode, isEnvTruthy, getAgenCHomeDir } from './envUtils.js'
 import { feature } from 'bun:bundle'
 export { extractLegacyAgentMentions as extractAgentMentions } from './agentMentions.js'
 export { extractMcpResourceMentions } from './mcpResourceMentions.js'
@@ -720,7 +726,7 @@ export async function getAttachments(
 ): Promise<Attachment[]> {
   if (
     isEnvTruthy(process.env.AGENC_DISABLE_ATTACHMENTS) ||
-    isEnvTruthy(process.env.AGENC_SIMPLE)
+    isBareMode()
   ) {
     // query.ts:removeFromQueue dequeues these unconditionally after
     // getAttachmentMessages runs — returning [] here silently drops them.
@@ -1484,7 +1490,7 @@ export function getAgentListingDeltaAttachment(
       addedLines: added.map(formatAgentLine),
       removedTypes: removed,
       isInitial: announced.size === 0,
-      showConcurrencyNote: getSubscriptionType() !== 'pro',
+      showConcurrencyNote: getSubscriptionType(credentialHome()) !== 'pro',
     },
   ]
 }
@@ -1529,7 +1535,7 @@ function getCriticalSystemReminderAttachment(
 }
 
 function getOutputStyleAttachment(): Attachment[] {
-  const settings = getSettings_DEPRECATED()
+  const settings = getInitialSettings()
   const outputStyle = settings?.outputStyle || 'default'
 
   // Only show for non-default styles
@@ -3573,7 +3579,7 @@ function getTeamContextAttachment(messages: Message[]): Attachment[] {
     return []
   }
 
-  const configDir = getAgenCConfigHomeDir()
+  const configDir = getAgenCHomeDir()
   const teamConfigPath = `${configDir}/teams/${teamName}/config.json`
   const taskListPath = `${configDir}/tasks/${teamName}/`
 
@@ -3593,7 +3599,11 @@ function getTokenUsageAttachment(
   messages: Message[],
   model: string,
 ): Attachment[] {
-  if (!isEnvTruthy(process.env.AGENC_ENABLE_TOKEN_USAGE_ATTACHMENT)) {
+  if (
+    !isEnvTruthy(
+      getSelectedProviderEnvironment().AGENC_ENABLE_TOKEN_USAGE_ATTACHMENT,
+    )
+  ) {
     return []
   }
 

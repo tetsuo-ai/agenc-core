@@ -80,7 +80,6 @@ describe("remote AuthBackend bootstrap key vending", () => {
           AGENC_MODEL: "x-ai/grok-4.3",
           AGENC_PROVIDER: "openrouter",
           AGENC_WORKSPACE: workspace,
-          AGENC_XAI_API_KEY: "",
           GROK_API_KEY: "",
           HOME: agencHome,
           OPENROUTER_API_KEY: "",

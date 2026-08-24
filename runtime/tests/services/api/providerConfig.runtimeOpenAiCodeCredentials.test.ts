@@ -16,7 +16,7 @@ function makeJwt(payload: Record<string, unknown>): string {
   return `${header}.${body}.signature`
 }
 
-test('runtime credential resolution honors explicit auth.json over stored secure-storage tokens', () => {
+test('runtime credential resolution honors explicit env over stored secure-storage tokens', () => {
   const tempDir = mkdtempSync(join(tmpdir(), 'agenc-providerCode-explicit-auth-'))
   const authPath = join(tempDir, 'auth.json')
 
@@ -35,6 +35,11 @@ test('runtime credential resolution honors explicit auth.json over stored secure
   try {
     const credentials = resolveRuntimeOpenAiCodeCredentials({
       env: {
+        PROVIDER_CODE_API_KEY: makeJwt({
+          'https://api.openai.com/auth': {
+            chatgpt_account_id: 'acct_explicit_env',
+          },
+        }),
         PROVIDER_CODE_AUTH_JSON_PATH: authPath,
       } as NodeJS.ProcessEnv,
       storedCredentials: {
@@ -44,15 +49,15 @@ test('runtime credential resolution honors explicit auth.json over stored secure
       },
     })
 
-    expect(credentials.source).toBe('auth.json')
-    expect(credentials.accountId).toBe('acct_explicit_auth_json')
+    expect(credentials.source).toBe('env')
+    expect(credentials.accountId).toBe('acct_explicit_env')
     expect(credentials.apiKey).not.toBe('stored-api-key')
   } finally {
     rmSync(tempDir, { force: true, recursive: true })
   }
 })
 
-test('runtime credential resolution preserves an explicit auth.json path even when it is missing', () => {
+test('runtime credential resolution ignores retired auth.json path inputs', () => {
   const tempDir = mkdtempSync(join(tmpdir(), 'agenc-providerCode-missing-auth-'))
   const authPath = join(tempDir, 'missing-auth.json')
 
@@ -68,9 +73,9 @@ test('runtime credential resolution preserves an explicit auth.json path even wh
       },
     })
 
-    expect(credentials.source).toBe('none')
-    expect(credentials.authPath).toBe(authPath)
-    expect(credentials.apiKey).toBe('')
+    expect(credentials.source).toBe('secure-storage')
+    expect(credentials.apiKey).toBe('stored-api-key')
+    expect(credentials.accountId).toBe('acct_stored')
   } finally {
     rmSync(tempDir, { force: true, recursive: true })
   }

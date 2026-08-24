@@ -45,6 +45,7 @@ export interface BootTUIOptions {
   readonly stdin?: NodeJS.ReadStream;
   readonly stdout?: NodeJS.WriteStream;
   readonly stderr?: NodeJS.WriteStream;
+  readonly stdinMode?: "readable" | "data";
   readonly model?: AgenCTuiProps["model"];
   readonly initialPrompt?: string;
   readonly initialUserMessages?: AgenCTuiProps["initialUserMessages"];
@@ -237,6 +238,7 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
         stderr,
         patchConsole: true,
         exitOnCtrlC: false,
+        stdinMode: options.stdinMode,
         onFrame: (event) => {
           fpsTracker.record(event.durationMs);
           if (event.durationMs >= RENDER_BACKPRESSURE_THRESHOLD_MS) {

@@ -45,13 +45,14 @@ import {
   renderToolUseRejectedMessage,
 } from './UI.js'
 import * as autoModeState from '../../utils/permissions/autoModeState.js'
-import * as permissionSetup from '../../utils/permissions/permissionSetup.js'
+import {
+  isAutoModeGateEnabled,
+  restoreDangerousPermissions,
+  stripDangerousPermissionsForAutoMode,
+} from '../../permissions/permission-mode.js'
 
 const autoModeStateModule = feature('TRANSCRIPT_CLASSIFIER')
   ? autoModeState
-  : null
-const permissionSetupModule = feature('TRANSCRIPT_CLASSIFIER')
-  ? permissionSetup
   : null
 
 /**
@@ -60,7 +61,7 @@ const permissionSetupModule = feature('TRANSCRIPT_CLASSIFIER')
  */
 const allowedPromptSchema = lazySchema(() =>
   z.object({
-    tool: z.enum(['Bash']).describe('The tool this prompt applies to'),
+    tool: z.enum(['system.bash']).describe('The tool this prompt applies to'),
     prompt: z
       .string()
       .describe(
@@ -320,14 +321,11 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
       const prePlanRaw = appState.toolPermissionContext.prePlanMode ?? 'default'
       if (
         prePlanRaw === 'auto' &&
-        !(permissionSetupModule?.isAutoModeGateEnabled() ?? false)
+        !isAutoModeGateEnabled()
       ) {
-        const reason =
-          permissionSetupModule?.getAutoModeUnavailableReason() ??
-          'circuit-breaker'
+        const reason = 'classifier-unavailable'
         gateFallbackNotification =
-          permissionSetupModule?.getAutoModeUnavailableNotification(reason) ??
-          'auto mode unavailable'
+          'auto mode is unavailable because the classifier gate is closed'
         logForDebugging(
           `[auto-mode gate @ ExitPlanModeV2Tool] prePlanMode=${prePlanRaw} ` +
             `but gate is off (reason=${reason}) — falling back to default on plan exit`,
@@ -353,7 +351,7 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
       if (feature('TRANSCRIPT_CLASSIFIER')) {
         if (
           restoreMode === 'auto' &&
-          !(permissionSetupModule?.isAutoModeGateEnabled() ?? false)
+          !isAutoModeGateEnabled()
         ) {
           restoreMode = 'default'
         }
@@ -374,14 +372,9 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
       const restoringToAuto = restoreMode === 'auto'
       let baseContext = prev.toolPermissionContext
       if (restoringToAuto) {
-        baseContext =
-          permissionSetupModule?.stripDangerousPermissionsForAutoMode(
-            baseContext,
-          ) ?? baseContext
+        baseContext = stripDangerousPermissionsForAutoMode(baseContext)
       } else if (prev.toolPermissionContext.strippedDangerousRules) {
-        baseContext =
-          permissionSetupModule?.restoreDangerousPermissions(baseContext) ??
-          baseContext
+        baseContext = restoreDangerousPermissions(baseContext)
       }
       return {
         ...prev,

@@ -5,6 +5,7 @@
  */
 
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
+import { normalizeProviderIdentity } from "../provider-identity.js";
 import { AgenCProvider } from "./providers/agenc/index.js";
 import { GrokProvider } from "./providers/grok/adapter.js";
 import {
@@ -46,16 +47,15 @@ import { OpenAICompatibleProvider } from "./providers/openai-compatible/index.js
 import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
 import {
   builtInProviderIds,
-  normalizeBuiltInProviderSlug,
+  resolveBuiltInProviderSlug,
   resolveBuiltInProviderInfo,
   type BuiltInProviderInfo,
   type BuiltInProviderSlug,
 } from "./registry/provider-info.js";
-import { getGeminiAuthMode, getGeminiProjectIdHint } from "../utils/geminiAuth.js";
+export { resolveBuiltInProviderSlug } from "./registry/provider-info.js";
 import {
   forceRefreshXaiOauthCredentials,
   isXaiOauthBearer,
-  readXaiOauthAccessToken,
   xaiOauthRequiresRelogin,
 } from "../utils/xaiOauthCredentials.js";
 import {
@@ -65,10 +65,13 @@ import {
 } from "../utils/openAiOauthCredentials.js";
 import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
+import type { HomeContext } from "../config/home.js";
 
 export type ProviderName = BuiltInProviderSlug;
 
 export interface ProviderFactoryOptions {
+  /** Home-bound native credential authority captured at provider ingress. */
+  readonly credentialHome?: HomeContext;
   readonly apiKey?: string;
   readonly baseURL?: string;
   readonly model?: string;
@@ -107,6 +110,10 @@ export type ProviderRuntimeExtra = Partial<
   readonly store?: boolean;
   readonly authMode?: "api_key" | "oauth";
   readonly oauth?: Record<string, unknown>;
+  readonly accessToken?: string;
+  readonly location?: string;
+  readonly geminiLocation?: string;
+  readonly resolveCredential?: GeminiProviderConfig["resolveCredential"];
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   readonly fetchImpl?: typeof fetch;
   readonly accessKeyId?: string;
@@ -155,6 +162,10 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "store",
   "authMode",
   "oauth",
+  "accessToken",
+  "location",
+  "geminiLocation",
+  "resolveCredential",
   "defaultHeaders",
   "fetchImpl",
   "accessKeyId",
@@ -196,13 +207,13 @@ export function readProviderIdentity(
   fallbackProvider?: string,
 ): ProviderName | null {
   if (!provider) {
-    return normalizeProviderName(fallbackProvider);
+    return resolveBuiltInProviderSlug(fallbackProvider) ?? null;
   }
   const storedState = (provider as FactoryMarkedProvider)[FACTORY_PROVIDER_STATE];
   if (storedState) {
     return storedState.provider;
   }
-  return normalizeProviderName(fallbackProvider ?? provider.name);
+  return resolveBuiltInProviderSlug(fallbackProvider ?? provider.name) ?? null;
 }
 
 export function readProviderFactoryOptions(
@@ -255,7 +266,7 @@ export function normalizeManagedGatewayModel(
   model: string,
 ): string {
   const trimmed = model.trim();
-  const normalizedProvider = normalizeProviderName(provider);
+  const normalizedProvider = resolveBuiltInProviderSlug(provider);
   if (trimmed.length === 0) return trimmed;
   if (normalizedProvider === "openrouter") {
     return trimmed.startsWith("openrouter/") ? trimmed : `openrouter/${trimmed}`;
@@ -341,14 +352,12 @@ function apiKeyEnvVarFor(provider: ProviderName): string {
 function requireModel(
   provider: ProviderName,
   explicitModel: string | undefined,
-  envModel: string | undefined,
-  envVarName: string,
   fallbackModel?: string,
 ): string {
-  const model = firstNonEmpty(explicitModel, envModel, fallbackModel);
+  const model = firstNonEmpty(explicitModel, fallbackModel);
   if (!model) {
     throw new Error(
-      `${provider} provider requires model — set ${envVarName} or pass model in factory options`,
+      `${provider} provider requires a canonical model in factory options`,
     );
   }
   return model;
@@ -615,6 +624,9 @@ function stripConcreteProviderAuthOptions(
 ): ProviderFactoryOptions {
   const extra = stripConcreteProviderAuthExtra(opts.extra);
   return {
+    ...(opts.credentialHome !== undefined
+      ? { credentialHome: opts.credentialHome }
+      : {}),
     ...(opts.apiKey !== undefined ? { apiKey: opts.apiKey } : {}),
     ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
     ...(opts.model !== undefined ? { model: opts.model } : {}),
@@ -646,43 +658,7 @@ function resolveAuthVendedProviderModel(
   provider: ProviderName,
   explicitModel: string | undefined,
 ): string {
-  switch (provider) {
-    case "grok":
-      return firstNonEmpty(explicitModel, process.env.AGENC_MODEL) ??
-        defaultModelFor(provider);
-    case "openai":
-      return firstNonEmpty(explicitModel, process.env.OPENAI_MODEL) ??
-        defaultModelFor(provider);
-    case "anthropic":
-      return firstNonEmpty(explicitModel, process.env.ANTHROPIC_MODEL) ??
-        defaultModelFor(provider);
-    case "lmstudio":
-      return firstNonEmpty(explicitModel, process.env.LMSTUDIO_MODEL) ??
-        defaultModelFor(provider);
-    case "openai-compatible":
-      return firstNonEmpty(
-        explicitModel,
-        process.env.OPENAI_COMPATIBLE_MODEL,
-        process.env.OPENAI_MODEL,
-      ) ?? defaultModelFor(provider);
-    case "openrouter":
-      return firstNonEmpty(explicitModel, process.env.OPENROUTER_MODEL) ??
-        defaultModelFor(provider);
-    case "groq":
-      return firstNonEmpty(explicitModel, process.env.GROQ_MODEL) ??
-        defaultModelFor(provider);
-    case "deepseek":
-      return firstNonEmpty(explicitModel, process.env.DEEPSEEK_MODEL) ??
-        defaultModelFor(provider);
-    case "gemini":
-      return firstNonEmpty(explicitModel, process.env.GEMINI_MODEL) ??
-        defaultModelFor(provider);
-    case "amazon-bedrock":
-      return firstNonEmpty(explicitModel, process.env.AWS_BEDROCK_MODEL) ??
-        defaultModelFor(provider);
-    default:
-      return defaultModelFor(provider);
-  }
+  return firstNonEmpty(explicitModel) ?? defaultModelFor(provider);
 }
 
 function mergeAuthVendedProviderExtra(
@@ -759,9 +735,6 @@ function providerTargetsLocalEndpoint(
   if (provider !== "openai-compatible") return false;
   return isLocalBaseURL(
     normalizeBaseURL(opts.baseURL) ??
-      normalizeBaseURL(process.env.OPENAI_COMPATIBLE_BASE_URL) ??
-      normalizeBaseURL(process.env.OPENAI_BASE_URL) ??
-      normalizeBaseURL(process.env.OPENAI_API_BASE) ??
       defaultBaseURLFor("openai-compatible"),
   );
 }
@@ -838,6 +811,9 @@ function cloneProviderFactoryOptions(
   options: ProviderFactoryOptions,
 ): ProviderFactoryOptions {
   return {
+    ...(options.credentialHome !== undefined
+      ? { credentialHome: options.credentialHome }
+      : {}),
     ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}),
     ...(options.baseURL !== undefined ? { baseURL: options.baseURL } : {}),
     ...(options.model !== undefined ? { model: options.model } : {}),
@@ -1177,9 +1153,6 @@ function buildOpenAICompatibleProvider(
   >,
   opts: ProviderFactoryOptions,
   input: {
-    readonly envBaseURL?: string;
-    readonly envModel?: string;
-    readonly envModelLabel: string;
     readonly apiKeyMode: "required" | "optional";
     readonly useResponsesApi: boolean;
     readonly providerCtor?: new (config: OpenAIProviderConfig) => LLMProvider;
@@ -1190,8 +1163,6 @@ function buildOpenAICompatibleProvider(
   const model = requireModel(
     provider,
     opts.model,
-    input.envModel,
-    input.envModelLabel,
     defaultModelFor(provider),
   );
   const oauthConfig =
@@ -1214,7 +1185,6 @@ function buildOpenAICompatibleProvider(
     tools: opts.tools ? [...opts.tools] : undefined,
     baseURL:
       normalizeBaseURL(opts.baseURL) ??
-      normalizeBaseURL(input.envBaseURL) ??
       defaultBaseURLFor(provider),
     useResponsesApi: extra.useResponsesApi ?? input.useResponsesApi,
     ...(extra.store !== undefined ? { store: extra.store } : {}),
@@ -1237,6 +1207,7 @@ function buildOpenAICompatibleProvider(
   return markFactoryProvider(new ProviderCtor(cfg), {
     provider,
     options: {
+      ...(opts.credentialHome !== undefined ? { credentialHome: opts.credentialHome } : {}),
       ...(apiKey !== undefined ? { apiKey } : {}),
       baseURL: cfg.baseURL,
       model,
@@ -1244,12 +1215,6 @@ function buildOpenAICompatibleProvider(
       ...(providerExtra ? { extra: providerExtra } : {}),
     },
   });
-}
-
-export function normalizeProviderName(
-  provider: string | undefined,
-): ProviderName | null {
-  return normalizeBuiltInProviderSlug(provider) ?? null;
 }
 
 function buildManagedGatewayProvider(
@@ -1269,8 +1234,6 @@ function buildManagedGatewayProvider(
     requireModel(
       provider,
       opts.model,
-      undefined,
-      `${provider.toUpperCase()}_MODEL`,
       defaultModelFor(provider),
     ),
   );
@@ -1294,6 +1257,7 @@ function buildManagedGatewayProvider(
   return markFactoryProvider(providerInstance, {
     provider,
     options: {
+      ...(opts.credentialHome !== undefined ? { credentialHome: opts.credentialHome } : {}),
       apiKey,
       baseURL,
       model,
@@ -1317,6 +1281,9 @@ export function createProvider(
   name: ProviderName,
   opts: ProviderFactoryOptions,
 ): LLMProvider {
+  // Keep the runtime boundary fail-closed even when JavaScript or an unsafe
+  // cast bypasses the canonical ProviderName type.
+  normalizeProviderIdentity(String(name), "provider factory");
   const authVendedProvider = createAuthVendedProviderIfNeeded(name, opts);
   if (authVendedProvider !== undefined) return authVendedProvider;
   const extra = readRuntimeExtra(opts.extra);
@@ -1340,8 +1307,6 @@ export function createProvider(
       const model = requireModel(
         "agenc",
         opts.model,
-        process.env.AGENC_MODEL,
-        "AGENC_MODEL",
         defaultModelFor("agenc"),
       );
       const providerExtra = stripAgenCProviderRuntimeExtra(opts.extra);
@@ -1370,6 +1335,7 @@ export function createProvider(
         {
           provider: "agenc",
           options: {
+            ...(opts.credentialHome !== undefined ? { credentialHome: opts.credentialHome } : {}),
             ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
             model,
             ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
@@ -1380,8 +1346,7 @@ export function createProvider(
       return provider;
     }
     case "grok": {
-      const grokRequestedModel =
-        opts.model?.trim() || process.env.AGENC_MODEL?.trim() || undefined;
+      const grokRequestedModel = opts.model?.trim() || undefined;
       if (isGrokComposerModel(grokRequestedModel)) {
         // Per xAI: composer models are served ONLY through ACP (the Grok
         // Build CLI), never by direct inference calls. Auth belongs to the
@@ -1403,6 +1368,7 @@ export function createProvider(
         return markFactoryProvider(acpProvider, {
           provider: "grok",
           options: {
+            ...(opts.credentialHome !== undefined ? { credentialHome: opts.credentialHome } : {}),
             model: grokRequestedModel as string,
             ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
             ...(storedExtra !== undefined ? { extra: storedExtra } : {}),
@@ -1413,22 +1379,19 @@ export function createProvider(
       // X means subscription access; leftover XAI_API_KEY must not shadow it.
       // Bearer refreshes via the adapter's I-14 401-recovery hook.
       const factoryApiKey = resolveFactoryApiKey(opts);
-      const oauthBearer = readXaiOauthAccessToken();
-      const usesXaiOauth =
-        oauthBearer !== undefined || isXaiOauthBearer(factoryApiKey);
-      const apiKey =
-        oauthBearer ??
-        factoryApiKey ??
-        requireFactoryApiKey("grok", opts);
+      const usesXaiOauth = opts.credentialHome !== undefined &&
+        isXaiOauthBearer(opts.credentialHome, factoryApiKey);
+      const apiKey = factoryApiKey ?? requireFactoryApiKey("grok", opts);
       const model = requireModel(
         "grok",
         opts.model,
-        process.env.AGENC_MODEL,
-        "AGENC_MODEL",
         defaultModelFor("grok"),
       );
       const cfg: GrokProviderConfig = {
         ...buildCommonConfig(extra),
+        ...(opts.credentialHome !== undefined
+          ? { credentialHome: opts.credentialHome }
+          : {}),
         apiKey,
         model,
         tools: opts.tools ? [...opts.tools] : undefined,
@@ -1470,7 +1433,9 @@ export function createProvider(
         // swap the bearer on the live SDK client, and retry.
         grokProvider.withAuthRefreshCallbacks({
           refreshBearer: async () => {
-            const refreshed = await forceRefreshXaiOauthCredentials();
+            const refreshed = await forceRefreshXaiOauthCredentials(
+              opts.credentialHome!,
+            );
             if (refreshed === undefined) {
               // Honesty split: only claim the user is logged out when the
               // stored grant is genuinely dead (quarantined terminal
@@ -1478,7 +1443,7 @@ export function createProvider(
               // failure during refresh must not flap the TUI to
               // "Not logged in" while the grant is still viable — the next
               // 401/pre-flight retries the single-flight refresh.
-              if (xaiOauthRequiresRelogin()) {
+              if (xaiOauthRequiresRelogin(opts.credentialHome!)) {
                 return {
                   kind: "exhausted",
                   reason:
@@ -1502,6 +1467,7 @@ export function createProvider(
       return markFactoryProvider(grokProvider, {
         provider: "grok",
         options: {
+          ...(opts.credentialHome !== undefined ? { credentialHome: opts.credentialHome } : {}),
           apiKey,
           ...(cfg.baseURL !== undefined ? { baseURL: cfg.baseURL } : {}),
           model,
@@ -1517,8 +1483,6 @@ export function createProvider(
       const model = requireModel(
         "openai",
         opts.model,
-        process.env.OPENAI_MODEL,
-        "OPENAI_MODEL",
         defaultModelFor("openai"),
       );
       const oauthConfig =
@@ -1557,7 +1521,6 @@ export function createProvider(
             ? subscription.baseUrl
             : undefined) ??
           normalizeBaseURL(opts.baseURL) ??
-          normalizeBaseURL(process.env.OPENAI_BASE_URL) ??
           defaultBaseURLFor("openai"),
         useResponsesApi: extra.useResponsesApi ?? true,
         // That backend is stateless: it rejects store:true, and without
@@ -1589,21 +1552,14 @@ export function createProvider(
             }
           : {}),
         ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
-        ...(extra.organization
-          ? { organization: extra.organization }
-          : process.env.OPENAI_ORGANIZATION
-          ? { organization: process.env.OPENAI_ORGANIZATION }
-          : {}),
-        ...(extra.project
-          ? { project: extra.project }
-          : process.env.OPENAI_PROJECT
-          ? { project: process.env.OPENAI_PROJECT }
-          : {}),
+        ...(extra.organization ? { organization: extra.organization } : {}),
+        ...(extra.project ? { project: extra.project } : {}),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       };
       return markFactoryProvider(new OpenAIProvider(cfg), {
         provider: "openai",
         options: {
+          ...(opts.credentialHome !== undefined ? { credentialHome: opts.credentialHome } : {}),
           ...(apiKey !== undefined ? { apiKey } : {}),
           baseURL: cfg.baseURL,
           model,
@@ -1619,8 +1575,6 @@ export function createProvider(
       const model = requireModel(
         "anthropic",
         opts.model,
-        process.env.ANTHROPIC_MODEL,
-        "ANTHROPIC_MODEL",
         defaultModelFor("anthropic"),
       );
       const cfg: AnthropicProviderConfig = {
@@ -1630,7 +1584,6 @@ export function createProvider(
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL:
           normalizeBaseURL(opts.baseURL) ??
-          normalizeBaseURL(process.env.ANTHROPIC_BASE_URL) ??
           defaultBaseURLFor("anthropic"),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
         ...(extra.anthropicVersion
@@ -1646,6 +1599,7 @@ export function createProvider(
       return markFactoryProvider(new AnthropicProvider(cfg), {
         provider: "anthropic",
         options: {
+          ...(opts.credentialHome !== undefined ? { credentialHome: opts.credentialHome } : {}),
           apiKey,
           ...(cfg.baseURL !== undefined ? { baseURL: cfg.baseURL } : {}),
           model,
@@ -1663,14 +1617,11 @@ export function createProvider(
         model: requireModel(
           "ollama",
           opts.model,
-          process.env.OLLAMA_MODEL,
-          "OLLAMA_MODEL",
           defaultModelFor("ollama"),
         ),
         tools: opts.tools ? [...opts.tools] : undefined,
         host:
           normalizeOllamaHost(opts.baseURL) ??
-          normalizeOllamaHost(process.env.OLLAMA_BASE_URL) ??
           normalizeOllamaHost(defaultBaseURLFor("ollama")),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
         ...(extra.keepAlive ? { keepAlive: extra.keepAlive } : {}),
@@ -1680,6 +1631,7 @@ export function createProvider(
       return markFactoryProvider(new OllamaProvider(cfg), {
         provider: "ollama",
         options: {
+          ...(opts.credentialHome !== undefined ? { credentialHome: opts.credentialHome } : {}),
           ...(cfg.host !== undefined ? { baseURL: cfg.host } : {}),
           model: cfg.model,
           ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
@@ -1691,125 +1643,77 @@ export function createProvider(
     }
     case "lmstudio":
       return buildOpenAICompatibleProvider("lmstudio", opts, {
-        envBaseURL: process.env.LMSTUDIO_BASE_URL,
-        envModel: process.env.LMSTUDIO_MODEL,
-        envModelLabel: "LMSTUDIO_MODEL",
         apiKeyMode: "optional",
         useResponsesApi: false,
         providerCtor: LMStudioProvider,
       });
     case "openai-compatible":
       return buildOpenAICompatibleProvider("openai-compatible", opts, {
-        envBaseURL:
-          process.env.OPENAI_COMPATIBLE_BASE_URL ??
-          process.env.OPENAI_BASE_URL ??
-          process.env.OPENAI_API_BASE,
-        envModel:
-          process.env.OPENAI_COMPATIBLE_MODEL ?? process.env.OPENAI_MODEL,
-        envModelLabel: "OPENAI_COMPATIBLE_MODEL",
         apiKeyMode: "optional",
         useResponsesApi: false,
         providerCtor: OpenAICompatibleProvider,
       });
     case "openrouter":
       return buildOpenAICompatibleProvider("openrouter", opts, {
-        envBaseURL: process.env.OPENROUTER_BASE_URL,
-        envModel: process.env.OPENROUTER_MODEL,
-        envModelLabel: "OPENROUTER_MODEL",
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: OpenRouterProvider,
       });
     case "groq":
       return buildOpenAICompatibleProvider("groq", opts, {
-        envBaseURL: process.env.GROQ_BASE_URL,
-        envModel: process.env.GROQ_MODEL,
-        envModelLabel: "GROQ_MODEL",
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: GroqProvider,
       });
     case "deepseek":
       return buildOpenAICompatibleProvider("deepseek", opts, {
-        envBaseURL: process.env.DEEPSEEK_BASE_URL,
-        envModel: process.env.DEEPSEEK_MODEL,
-        envModelLabel: "DEEPSEEK_MODEL",
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: DeepSeekProvider,
       });
     case "mistral":
       return buildOpenAICompatibleProvider("mistral", opts, {
-        envBaseURL: process.env.MISTRAL_BASE_URL,
-        envModel: process.env.MISTRAL_MODEL,
-        envModelLabel: "MISTRAL_MODEL",
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: MistralProvider,
       });
     case "nvidia-nim":
       return buildOpenAICompatibleProvider("nvidia-nim", opts, {
-        envBaseURL: process.env.NVIDIA_BASE_URL,
-        envModel: process.env.NVIDIA_MODEL,
-        envModelLabel: "NVIDIA_MODEL",
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: NvidiaNimProvider,
       });
     case "minimax":
       return buildOpenAICompatibleProvider("minimax", opts, {
-        envBaseURL: process.env.MINIMAX_BASE_URL,
-        envModel: process.env.MINIMAX_MODEL,
-        envModelLabel: "MINIMAX_MODEL",
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: MiniMaxProvider,
       });
     case "github":
       return buildOpenAICompatibleProvider("github", opts, {
-        envBaseURL: process.env.GITHUB_BASE_URL,
-        envModel: process.env.GITHUB_MODEL,
-        envModelLabel: "GITHUB_MODEL",
         apiKeyMode: "required",
         useResponsesApi: false,
         providerCtor: GitHubProvider,
       });
     case "gemini": {
       const apiKeyEnvLabel = apiKeyEnvVarFor("gemini");
-      const geminiAuthMode = getGeminiAuthMode();
-      const shouldUseApiKey =
-        geminiAuthMode !== "access-token" && geminiAuthMode !== "adc";
-      const apiKey = shouldUseApiKey
-        ? resolveFactoryApiKey(
-            opts,
-            firstNonEmpty(process.env.GEMINI_API_KEY, process.env.GOOGLE_API_KEY),
-          )
-        : undefined;
+      const apiKey = resolveFactoryApiKey(opts);
       const model = requireModel(
         "gemini",
         opts.model,
-        process.env.GEMINI_MODEL,
-        "GEMINI_MODEL",
         defaultModelFor("gemini"),
       );
-      const project = firstNonEmpty(extra.project, getGeminiProjectIdHint());
+      const project = firstNonEmpty(extra.project);
       const location = firstNonEmpty(
         readString(opts.extra, "location"),
         readString(opts.extra, "geminiLocation"),
         extra.region,
-        process.env.GEMINI_VERTEX_LOCATION,
-        process.env.GOOGLE_CLOUD_LOCATION,
-        process.env.GOOGLE_CLOUD_REGION,
-        process.env.CLOUD_ML_REGION,
       );
       const explicitAccessToken = firstNonEmpty(
         readString(opts.extra, "accessToken"),
         readString(readRecord(opts.extra, "oauth"), "accessToken"),
-        process.env.GEMINI_ACCESS_TOKEN,
       );
-      const configuredBaseURL =
-        normalizeBaseURL(opts.baseURL) ??
-        normalizeBaseURL(process.env.GEMINI_BASE_URL);
+      const configuredBaseURL = normalizeBaseURL(opts.baseURL);
       const inferredVertexBaseURL = apiKey === undefined
         ? geminiVertexBaseURL(project, location)
         : undefined;
@@ -1822,18 +1726,20 @@ export function createProvider(
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL: configuredBaseURL ?? inferredVertexBaseURL ?? defaultBaseURLFor("gemini"),
         useResponsesApi: false,
-        ...(firstNonEmpty(process.env.GEMINI_CACHED_CONTENT)
-          ? { cachedContent: firstNonEmpty(process.env.GEMINI_CACHED_CONTENT) }
-          : {}),
+        ...(extra.cachedContent ? { cachedContent: extra.cachedContent } : {}),
         ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
         ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
         ...(project ? { project } : {}),
         ...(explicitAccessToken ? { accessToken: explicitAccessToken } : {}),
+        ...(extra.resolveCredential
+          ? { resolveCredential: extra.resolveCredential }
+          : {}),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       };
       return markFactoryProvider(new GeminiProvider(cfg), {
         provider: "gemini",
         options: {
+          ...(opts.credentialHome !== undefined ? { credentialHome: opts.credentialHome } : {}),
           ...(apiKey !== undefined ? { apiKey } : {}),
           baseURL: cfg.baseURL,
           model,
@@ -1845,12 +1751,7 @@ export function createProvider(
       });
     }
     case "amazon-bedrock": {
-      const region = firstNonEmpty(
-        extra.region,
-        process.env.AWS_BEDROCK_REGION,
-        process.env.AWS_REGION,
-        process.env.AWS_DEFAULT_REGION,
-      ) ?? "us-east-1";
+      const region = firstNonEmpty(extra.region) ?? "us-east-1";
       const accessKeyId = requireFactoryApiKey(
         "amazon-bedrock",
         opts,
@@ -1866,8 +1767,6 @@ export function createProvider(
       const model = requireModel(
         "amazon-bedrock",
         opts.model,
-        process.env.AWS_BEDROCK_MODEL,
-        "AWS_BEDROCK_MODEL",
         defaultModelFor("amazon-bedrock"),
       );
       const cfg: BedrockProviderConfig = {
@@ -1880,7 +1779,6 @@ export function createProvider(
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL:
           normalizeBaseURL(opts.baseURL) ??
-          normalizeBaseURL(process.env.AWS_BEDROCK_BASE_URL) ??
           bedrockBaseURLForRegion(region),
         ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
@@ -1891,6 +1789,7 @@ export function createProvider(
       return markFactoryProvider(new BedrockProvider(cfg), {
         provider: "amazon-bedrock",
         options: {
+          ...(opts.credentialHome !== undefined ? { credentialHome: opts.credentialHome } : {}),
           baseURL: cfg.baseURL,
           model,
           ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
@@ -1926,8 +1825,8 @@ export function prepareProviderSwitch(
   provider: string | undefined,
   opts: ProviderFactoryOptions,
 ): PreparedProviderSwitch {
-  const normalizedProvider = normalizeProviderName(provider);
-  if (normalizedProvider === null) {
+  const normalizedProvider = resolveBuiltInProviderSlug(provider);
+  if (normalizedProvider === undefined) {
     throw new Error(`unknown provider "${provider?.trim() ?? ""}"`);
   }
   const instance = createProvider(normalizedProvider, opts);
@@ -1936,13 +1835,4 @@ export function prepareProviderSwitch(
     model: readPreparedModel(instance, opts.model),
     instance,
   };
-}
-
-export function resolveProviderNameFromEnv(): ProviderName {
-  const raw = process.env.AGENC_PROVIDER ?? "grok";
-  const normalized = normalizeProviderName(raw);
-  if (normalized !== null) return normalized;
-  throw new Error(
-    `AGENC_PROVIDER="${raw.trim().toLowerCase()}" is not a known provider (accepted: ${KNOWN_PROVIDER_NAMES.join(", ")})`,
-  );
 }

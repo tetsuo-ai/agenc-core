@@ -8,7 +8,7 @@ import type { AutoUpdaterResult } from "../../../src/utils/autoUpdater.js";
 
 const harness = vi.hoisted(() => ({
   getCurrentInstallationType: vi.fn(),
-  getGlobalConfig: vi.fn(),
+  getRuntimeState: vi.fn(),
   getInitialSettings: vi.fn(),
   getLatestVersion: vi.fn(),
   getMaxVersion: vi.fn(),
@@ -42,9 +42,9 @@ vi.mock("../../../src/utils/autoUpdater.js", () => ({
 }));
 
 vi.mock("../../../src/utils/config.js", () => ({
-  getGlobalConfig: harness.getGlobalConfig,
+  getRuntimeState: harness.getRuntimeState,
   isAutoUpdaterDisabled: harness.isAutoUpdaterDisabled,
-  saveGlobalConfig: vi.fn(),
+  updateRuntimeState: vi.fn(),
 }));
 
 vi.mock("../../../src/utils/debug.js", () => ({
@@ -119,7 +119,7 @@ type RenderedRoot = {
 
 function resetHarness(): void {
   harness.getCurrentInstallationType.mockReset().mockResolvedValue("npm-global");
-  harness.getGlobalConfig
+  harness.getRuntimeState
     .mockReset()
     .mockReturnValue({ installMethod: "global", theme: "dark" });
   harness.getInitialSettings
@@ -572,7 +572,7 @@ describe("AutoUpdater coverage swarm row 050", () => {
   });
 
   test("installs with the npm-global path and keeps native symlinks untouched", async () => {
-    harness.getGlobalConfig.mockReturnValue({
+    harness.getRuntimeState.mockReturnValue({
       installMethod: "native",
       theme: "dark",
     });
@@ -865,7 +865,7 @@ describe("AutoUpdater coverage swarm row 050", () => {
   });
 
   test("renders the local repair command for migrated fallback failures", async () => {
-    harness.getGlobalConfig.mockReturnValue({
+    harness.getRuntimeState.mockReturnValue({
       installMethod: "local",
       theme: "dark",
     });

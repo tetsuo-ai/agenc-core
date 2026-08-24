@@ -1,4 +1,4 @@
-import { getExecutionAuthoritySettings } from '../settings/settings.js'
+import { getSettingsForSource } from '../settings/settings.js'
 import { isModelAlias, isModelFamilyAlias } from './aliases.js'
 import { parseUserSpecifiedModel } from './model.js'
 import { resolveOverriddenModel } from './modelStrings.js'
@@ -98,8 +98,7 @@ function familyHasSpecificEntries(
  * 3. Full model IDs ("claude-opus-4-5-20251101") — exact match only
  */
 export function isModelAllowed(model: string): boolean {
-  const settings = getExecutionAuthoritySettings()
-  const { availableModels } = settings
+  const availableModels = getSettingsForSource('policySettings')?.availableModels
   if (!availableModels) {
     return true // No restrictions
   }

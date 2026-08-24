@@ -12,7 +12,9 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 
 import type { AgentDefinition } from '../../../src/tools/AgentTool/loadAgentsDir.js'
 import { createAgentRoleWorkspace } from '../../../src/agents/role.js'
+import { ConfigStore } from '../../../src/config/store.js'
 import { runWithCwdOverride } from '../../../src/utils/cwd.js'
+import { enterCanonicalSettingsAuthority } from '../../../src/utils/settings/canonicalAuthority.js'
 import {
   deleteAgentFromFile,
   getActualAgentFilePath,
@@ -37,6 +39,13 @@ function customAgent(
   }
 }
 
+function enterTestAuthority(cwd: string, home: string): void {
+  const environment = Object.freeze({ ...process.env, AGENC_HOME: home })
+  enterCanonicalSettingsAuthority(
+    new ConfigStore({ cwd, env: environment, home }),
+  )
+}
+
 describe('agentFileUtils coverage swarm row 108', () => {
   afterEach(() => {
     vi.unstubAllEnvs()
@@ -48,9 +57,8 @@ describe('agentFileUtils coverage swarm row 108', () => {
     const managedHome = join(cwd, 'managed-home')
     const roleWorkspace = createAgentRoleWorkspace(cwd)
 
-    vi.stubEnv('AGENC_CONFIG_DIR', configHome)
-    vi.stubEnv('USER_TYPE', 'ant')
-    vi.stubEnv('AGENC_MANAGED_SETTINGS_PATH', managedHome)
+    vi.stubEnv('AGENC_TEST_MANAGED_CONFIG_PATH', managedHome)
+    enterTestAuthority(cwd, configHome)
 
     try {
       await runWithCwdOverride(cwd, async () => {
@@ -125,7 +133,7 @@ describe('agentFileUtils coverage swarm row 108', () => {
     const roleWorkspace = createAgentRoleWorkspace(cwd)
     const authority = { roleWorkspace, catalogWorkspaceId: roleWorkspace.id }
 
-    vi.stubEnv('AGENC_CONFIG_DIR', configHome)
+    enterTestAuthority(cwd, configHome)
 
     try {
       await saveAgentToFile(

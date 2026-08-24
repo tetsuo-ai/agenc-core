@@ -1,7 +1,7 @@
 // `agenc gateway` CLI (TODO task 6): parse matrix + status/pairing against a
-// temp home with a real config.json + pairing store.
+// temp home with canonical config.toml + pairing store.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
@@ -11,6 +11,7 @@ import {
   parseAgenCGatewayCliArgs,
   runAgenCGatewayCli,
 } from "../../src/bin/gateway-cli.js";
+import { serializeConfigToml } from "../../src/config/serialize.js";
 import { PairingStore } from "../../src/gateway/pairing.js";
 
 describe("parseAgenCGatewayCliArgs", () => {
@@ -91,8 +92,10 @@ describe("gateway CLI against a temp home", () => {
   afterEach(() => rmSync(home, { recursive: true, force: true }));
 
   function writeConfig(config: unknown): void {
-    mkdirSync(join(home, "gateway"), { recursive: true });
-    writeFileSync(join(home, "gateway", "config.json"), JSON.stringify(config));
+    writeFileSync(
+      join(home, "config.toml"),
+      serializeConfigToml({ config_version: 2, gateway: config }),
+    );
   }
 
   test("status: no config → fail-closed summary", async () => {
@@ -113,7 +116,10 @@ describe("gateway CLI against a temp home", () => {
       bindings: [{ agent: "work", channelId: "tg", peerId: "alice" }],
       defaultAgent: "home",
     });
-    const store = new PairingStore({ agencHome: home, generateCode: () => "C" });
+    const store = new PairingStore({
+      agencHome: home,
+      generateCode: () => "C",
+    });
     store.challenge("tg", { peerId: "alice" });
     store.redeem("tg", { peerId: "alice" }, "C");
 
@@ -126,13 +132,18 @@ describe("gateway CLI against a temp home", () => {
     const report = JSON.parse(out.join("\n"));
     expect(report.defaultAgent).toBe("home");
     expect(report.bindingCount).toBe(1);
-    const tg = report.channels.find((c: { channelId: string }) => c.channelId === "tg");
+    const tg = report.channels.find(
+      (c: { channelId: string }) => c.channelId === "tg",
+    );
     expect(tg).toMatchObject({ dmPolicy: "pairing", pairedCount: 1 });
   });
 
   test("pairing list shows paired senders; revoke removes them", async () => {
     writeConfig({ channels: { tg: { dmPolicy: "pairing", allowlist: [] } } });
-    const store = new PairingStore({ agencHome: home, generateCode: () => "C" });
+    const store = new PairingStore({
+      agencHome: home,
+      generateCode: () => "C",
+    });
     store.challenge("tg", { peerId: "alice" });
     store.redeem("tg", { peerId: "alice" }, "C");
 
@@ -167,7 +178,7 @@ describe("gateway CLI against a temp home", () => {
     expect(err.join("\n")).toContain("not paired");
   });
 
-  test("malformed channel policy is dropped, not coerced permissive", async () => {
+  test("malformed channel policy rejects the canonical config", async () => {
     writeConfig({
       channels: {
         good: { dmPolicy: "allowlist", allowlist: ["x"] },
@@ -176,15 +187,13 @@ describe("gateway CLI against a temp home", () => {
     });
     const out: string[] = [];
     const warn: string[] = [];
-    await runAgenCGatewayCli(
+    const code = await runAgenCGatewayCli(
       { kind: "status", json: true },
       { env, stdout: (l) => out.push(l), stderr: (l) => warn.push(l) },
     );
-    const report = JSON.parse(out.join("\n"));
-    const ids = report.channels.map((c: { channelId: string }) => c.channelId);
-    expect(ids).toContain("good");
-    expect(ids).not.toContain("bad");
-    expect(warn.join("\n")).toContain("invalid dmPolicy");
+    expect(code).toBe(1);
+    expect(out).toEqual([]);
+    expect(warn.join("\n")).toMatch(/bad\.dmPolicy|wide-open/);
   });
 });
 

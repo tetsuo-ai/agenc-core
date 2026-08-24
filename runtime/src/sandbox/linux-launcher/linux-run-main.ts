@@ -74,11 +74,6 @@ async function runLinuxSandboxOptions(
   deps: LinuxSandboxRunDeps = {},
 ): Promise<number> {
   const hostCommandCwd = options.inheritedCwd ? "." : options.commandCwd;
-  if (options.useLegacyLandlock) {
-    throw new Error(
-      "legacy Landlock mode is unavailable in the TypeScript launcher; use bubblewrap mode",
-    );
-  }
   if (options.applySeccompThenExec) {
     const env = deps.env ?? process.env;
     if (env[ACTIVE_INNER_ENV] !== "1") {

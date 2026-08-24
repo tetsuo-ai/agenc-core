@@ -1,9 +1,10 @@
 import { asRecord } from '../../utils/record.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
+import { getProxyFetchOptions } from '../../utils/proxy.js'
 
 const PROVIDER_CODE_OAUTH_ISSUER = 'https://auth.openai.com'
 export const PROVIDER_CODE_REFRESH_URL = `${PROVIDER_CODE_OAUTH_ISSUER}/oauth/token`
 const DEFAULT_PROVIDER_CODE_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann'
-export const DEFAULT_PROVIDER_CODE_OAUTH_CALLBACK_PORT = 1455
 export const PROVIDER_CODE_OAUTH_SCOPE =
   'openid profile email offline_access api.connectors.read api.connectors.invoke'
 export const PROVIDER_CODE_OAUTH_ORIGINATOR = 'providerCode_cli_rs'
@@ -50,25 +51,12 @@ export async function readOAuthTokenJsonResponse(
 }
 
 export function getOpenAiCodeOAuthClientId(
-  env: NodeJS.ProcessEnv = process.env,
+  environment: ProviderEnvironment,
 ): string {
-  return asTrimmedString(env.PROVIDER_CODE_OAUTH_CLIENT_ID) ?? DEFAULT_PROVIDER_CODE_OAUTH_CLIENT_ID
-}
-
-export function getOpenAiCodeOAuthCallbackPort(
-  env: NodeJS.ProcessEnv = process.env,
-): number {
-  const rawPort = asTrimmedString(env.PROVIDER_CODE_OAUTH_CALLBACK_PORT)
-  if (!rawPort) {
-    return DEFAULT_PROVIDER_CODE_OAUTH_CALLBACK_PORT
-  }
-
-  const parsed = Number.parseInt(rawPort, 10)
-  if (Number.isInteger(parsed) && parsed > 0 && parsed <= 65535) {
-    return parsed
-  }
-
-  return DEFAULT_PROVIDER_CODE_OAUTH_CALLBACK_PORT
+  return (
+    asTrimmedString(environment.PROVIDER_CODE_OAUTH_CLIENT_ID) ??
+    DEFAULT_PROVIDER_CODE_OAUTH_CLIENT_ID
+  )
 }
 
 export function decodeJwtPayload(
@@ -132,10 +120,11 @@ export function escapeHtml(value: string): string {
 
 export async function exchangeProviderCodeIdTokenForApiKey(
   idToken: string,
+  environment: ProviderEnvironment,
 ): Promise<string> {
   const body = new URLSearchParams({
     grant_type: PROVIDER_CODE_TOKEN_EXCHANGE_GRANT,
-    client_id: getOpenAiCodeOAuthClientId(),
+    client_id: getOpenAiCodeOAuthClientId(environment),
     requested_token: PROVIDER_CODE_API_KEY_TOKEN_NAME,
     subject_token: idToken,
     subject_token_type: PROVIDER_CODE_ID_TOKEN_SUBJECT_TYPE,
@@ -148,6 +137,7 @@ export async function exchangeProviderCodeIdTokenForApiKey(
     },
     body,
     signal: AbortSignal.timeout(15_000),
+    ...getProxyFetchOptions({ environment }),
   })
 
   if (!response.ok) {

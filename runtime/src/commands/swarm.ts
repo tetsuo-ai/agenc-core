@@ -46,8 +46,8 @@ function agentCounts(ctx: SlashCommandContext): {
   };
 }
 
-function setSwarmMode(ctx: SlashCommandContext, on: boolean): void {
-  updateSettingsForSource("userSettings", { swarmMode: on });
+async function setSwarmMode(ctx: SlashCommandContext, on: boolean): Promise<void> {
+  await updateSettingsForSource("userSettings", { swarmMode: on });
   ctx.appState?.setAppState?.((prev: unknown) => ({
     ...(prev as Record<string, unknown>),
     swarmMode: on,
@@ -78,14 +78,14 @@ export const swarmCommand: SlashCommand = {
       }
 
       if (arg === "on") {
-        setSwarmMode(ctx, true);
+        await setSwarmMode(ctx, true);
         return {
           kind: "text",
           text: "swarm mode ON — adaptive routing stays sequential by default; qualifying parallel work requires an initial worker-spawn attempt and caps fan-out at four (spawns still follow approval policy).",
         };
       }
       if (arg === "off") {
-        setSwarmMode(ctx, false);
+        await setSwarmMode(ctx, false);
         return {
           kind: "text",
           text: "swarm mode OFF — the agent works sequentially unless a swarm is explicitly requested.",

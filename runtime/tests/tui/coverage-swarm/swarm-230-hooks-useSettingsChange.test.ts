@@ -16,6 +16,7 @@ vi.mock('../../../src/utils/settings/changeDetector.js', () => ({
 }))
 
 vi.mock('../../../src/utils/settings/settings.js', () => ({
+  getExecutionAuthoritySettings: () => ({}),
   getInitialSettings: fixture.getInitialSettings,
 }))
 
@@ -129,14 +130,14 @@ describe('useSettingsChange coverage swarm row 230', () => {
 
       fixture.currentSettings = {
         autoUpdatesChannel: 'stable',
-        cleanupPeriodDays: 14,
+        transcriptPersistenceEnabled: false,
       }
       subscribed?.('projectSettings')
 
       expect(fixture.getInitialSettings).toHaveBeenCalledTimes(1)
       expect(onChange).toHaveBeenCalledWith('projectSettings', {
         autoUpdatesChannel: 'stable',
-        cleanupPeriodDays: 14,
+        transcriptPersistenceEnabled: false,
       })
     } finally {
       await rendered.dispose()

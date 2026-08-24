@@ -20,12 +20,9 @@
  *
  * Built-in roles:
  *   - `netrunner` — unrestricted default agent; inherits parent config
- *   - `scanner`   — codebase queries; compatibility alias for the
- *                   internal `explorer` id and loads the upstream runtime's
- *                   built-in `explorer.toml` role layer
- *   - `runner`    — execution/production work; compatibility alias for
- *                   the internal `worker` id and inherits parent tool
- *                   catalog
+ *   - `scanner`   — read-only codebase reconnaissance; loads the embedded
+ *                   `scanner.toml` role layer
+ *   - `runner`    — execution/production work; inherits the parent tool catalog
  *
  * Programmatic user roles register via
  * `registerAgentRole(workspace, { name, config })` and override built-ins only
@@ -51,19 +48,20 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import yaml from "js-yaml";
 import type { AgentRegistry } from "./registry.js";
-import { normalizeAgenCKeyAliases, normalizeRawConfig } from "../config/schema.js";
+import { normalizeRawConfig } from "../config/schema.js";
 import { parseToml } from "../config/loader.js";
 import { resolveProfile } from "../config/profiles.js";
 import type { AgenCConfig } from "../config/schema.js";
 import { normalizeExternalText } from "./_deps/file-read.js";
 import { stableStringify } from "../utils/stableStringify.js";
+import { getAgenCHomeDir } from "../utils/envUtils.js";
 import {
   agentRolePresentation,
   canonicalAgentRoleName,
 } from "./role-presentation.js";
 import {
   BUILTIN_READONLY_DISALLOWLIST,
-  EXPLORE_SYSTEM_PROMPT,
+  SCANNER_SYSTEM_PROMPT,
   PLAN_SYSTEM_PROMPT,
   PLAN_WHEN_TO_USE,
   VERIFICATION_SYSTEM_PROMPT,
@@ -94,9 +92,6 @@ export interface AgentRoleConfig {
   /** Inline TOML role layer. Useful for tests and bootstrap-time
    *  in-memory role registration. */
   readonly configToml?: string;
-  /** Compatibility inline parsed config object. Prefer `configToml` or
-   *  `configFile` for AgenC behavior. */
-  readonly configBundle?: Record<string, unknown>;
   /** Candidate nicknames for this role; registry picks one on spawn. */
   readonly nicknameCandidates?: ReadonlyArray<string>;
   /** Runtime hint derived from the loaded role layer when possible. */
@@ -164,7 +159,7 @@ export function agentRoleFingerprint(role: AgentRole): string {
 }
 
 const BUILT_IN_ROLE_CONFIG_TOML = Object.freeze({
-  "explorer.toml": "",
+  "scanner.toml": "",
   // Upstream keeps awaiter temporarily removed from the built-in role set, but
   // still exposes the embedded role file for user-defined roles that reference
   // `awaiter.toml`. AgenC intentionally omits the historical one-hour terminal
@@ -173,7 +168,7 @@ const BUILT_IN_ROLE_CONFIG_TOML = Object.freeze({
   // `developer_instructions`; AgenC's TOML parser is escape-only
   // (no triple-quoted production), so the body is encoded with `\n`
   // escapes. The string value is identical post-parse.
-  "awaiter.toml": `model_reasoning_effort = "low"
+  "awaiter.toml": `reasoning_effort = "low"
 developer_instructions = "You are an awaiter.\\nYour role is to await the completion of a specific command or task and report its status only when it is finished.\\n\\nBehavior rules:\\n\\n1. When given a command or task identifier, you must:\\n   - Execute or await it using the appropriate tool\\n   - Continue awaiting until the task reaches a terminal state.\\n\\n2. You must NOT:\\n   - Modify the task.\\n   - Interpret or optimize the task.\\n   - Perform unrelated actions.\\n   - Stop awaiting unless explicitly instructed.\\n\\n3. Awaiting behavior:\\n   - If the task is still running, continue polling using tool calls.\\n   - Use repeated tool calls if necessary.\\n   - Do not hallucinate completion.\\n   - Use long timeouts when awaiting for something. If you need multiple awaits, increase the timeouts/yield times exponentially.\\n\\n4. If asked for status:\\n   - Return the current known status.\\n   - Immediately resume awaiting afterward.\\n\\n5. Termination:\\n   - Only exit awaiting when:\\n     - The task completes successfully, OR\\n     - The task fails, OR\\n     - You receive an explicit stop instruction.\\n\\nYou must behave deterministically and conservatively.\\n"`,
 } as const);
 
@@ -290,26 +285,22 @@ const DEFAULT_AGENT_NICKNAME_CANDIDATES = Object.freeze([
   "NewRoseHotel",
 ] as const);
 
-const EXPLORER_DESCRIPTION = `Use \`scanner\` for specific codebase reconnaissance.
+const SCANNER_DESCRIPTION = `Use \`scanner\` for specific codebase reconnaissance.
 Scanners are fast and authoritative.
 They must be used to ask specific, well-scoped questions on the codebase.
 Rules:
 - Avoid scanning the same problem that scanners have already covered. Typically, you should trust the scanner results without additional verification. You are still allowed to inspect the code yourself to gain the needed context.
 - Spawn multiple scanners in parallel when you have distinct codebase questions that can be answered independently. While waiting for scanner results, continue working on local tasks that do not depend on those results.
-- Reuse existing scanners for related questions.
+- Reuse existing scanners for related questions.`;
 
-Compatibility: \`explorer\` remains accepted as a legacy alias for \`scanner\`.`;
-
-const WORKER_DESCRIPTION = `Use \`runner\` for execution and production work.
+const RUNNER_DESCRIPTION = `Use \`runner\` for execution and production work.
 Typical tasks:
 - Implement part of a feature
 - Fix tests or bugs
 - Split large refactors into independent chunks
 Rules:
 - Explicitly assign ownership of the task (files / responsibility). When the subtask involves code changes, clearly specify which files or modules the runner owns. This avoids merge conflicts and makes accountability explicit.
-- Always tell runners they are not alone in the codebase. They should not revert edits made by others, and they should adjust their implementation to accommodate changes made by others.
-
-Compatibility: \`worker\` remains accepted as a legacy alias for \`runner\`.`;
+- Always tell runners they are not alone in the codebase. They should not revert edits made by others, and they should adjust their implementation to accommodate changes made by others.`;
 
 // ─────────────────────────────────────────────────────────────────────
 // Built-in roles
@@ -328,27 +319,26 @@ const DEFAULT_ROLE: AgentRole = freezeRole({
   },
 });
 
-// `explorer` (public name `scanner`) is the read-only codebase-reconnaissance
-// role. It now carries the Explore agent's system prompt + read-only denylist
-// (formerly the stranded EXPLORE_AGENT const). `model` is left undefined
+// `scanner` is the read-only codebase-reconnaissance role. It carries the
+// scanner system prompt + read-only denylist. `model` is left undefined
 // (inherit) — the const's `haiku` was a model alias the v2 spawn validator
 // rejects, and it never ran on the live path; see built-in-prompts.ts.
-const EXPLORER_ROLE: AgentRole = freezeRole({
-  name: "explorer",
+const SCANNER_ROLE: AgentRole = freezeRole({
+  name: "scanner",
   source: "built-in",
   config: {
-    description: EXPLORER_DESCRIPTION,
-    configFile: "explorer.toml",
-    systemPrompt: EXPLORE_SYSTEM_PROMPT,
+    description: SCANNER_DESCRIPTION,
+    configFile: "scanner.toml",
+    systemPrompt: SCANNER_SYSTEM_PROMPT,
     disallowlist: BUILTIN_READONLY_DISALLOWLIST,
   },
 });
 
-const WORKER_ROLE: AgentRole = freezeRole({
-  name: "worker",
+const RUNNER_ROLE: AgentRole = freezeRole({
+  name: "runner",
   source: "built-in",
   config: {
-    description: WORKER_DESCRIPTION,
+    description: RUNNER_DESCRIPTION,
   },
 });
 
@@ -382,8 +372,8 @@ const VERIFICATION_ROLE: AgentRole = freezeRole({
 
 const BUILT_INS: ReadonlyArray<AgentRole> = Object.freeze([
   DEFAULT_ROLE,
-  EXPLORER_ROLE,
-  WORKER_ROLE,
+  SCANNER_ROLE,
+  RUNNER_ROLE,
   PLAN_ROLE,
   VERIFICATION_ROLE,
 ]);
@@ -433,7 +423,7 @@ export function getAgentRole(
  * Resolve only the persisted role name, without public-name alias fallback.
  *
  * Durable role provenance must use this lookup: if a workspace override named
- * `scanner` disappears, reopening it as the built-in `explorer` alias would
+ * `scanner` disappears, reopening it through any presentation alias would
  * silently weaken the original prompt/tool policy.
  */
 export function getAgentRoleByExactName(
@@ -676,7 +666,7 @@ export function formatNicknameWithSuffix(
 //
 // Upstream runtime layers TOML documents: `base → role-layer → user-layer` with
 // config/profile resolution (`role.rs:155-270`). AgenC now loads role
-// TOML through the same config-parser aliases, strips role-only
+// TOML through the canonical config vocabulary, strips role-only
 // metadata, and merges the resulting config keys onto a plain object
 // blob so `control.ts spawn()` can keep the seam live before the child
 // session config source is wired.
@@ -714,7 +704,7 @@ export type OptionalRoleShapedConfig = {
 /**
  * Apply the role's loaded TOML layer onto a base config blob. Mirrors
  * upstream runtime `apply_role_to_config` (`role.rs:40`) at the config-loading
- * seam: role metadata is ignored, config aliases are normalized, and
+ * seam: role metadata is ignored, canonical config keys are validated, and
  * top-level `profile = "..."` selectors are resolved against the
  * merged config snapshot.
  */
@@ -754,8 +744,7 @@ function applyRoleToConfigInner<Base extends RoleShapedConfig>(
  *     layer is returned
  *
  * The returned object is TOML-shaped rather than fully normalized so
- * callers can still inspect AgenC-native keys like
- * `model_reasoning_effort` or `profile`.
+ * callers can still inspect role-control keys such as `profile`.
  */
 export function loadRoleLayerToml(role: AgentRole): Record<string, unknown> {
   const rawLayer = readRoleLayerSource(role);
@@ -831,9 +820,7 @@ function formatRole(role: AgentRole): string {
 
   const roleLayerToml = tryLoadRoleLayerToml(role);
   const model = asString(roleLayerToml?.model);
-  const reasoningEffort = asString(
-    roleLayerToml?.model_reasoning_effort ?? roleLayerToml?.reasoning_effort,
-  );
+  const reasoningEffort = asString(roleLayerToml?.reasoning_effort);
   const serviceTier = asString(roleLayerToml?.service_tier);
 
   let lockedSettingsNote = "";
@@ -922,7 +909,7 @@ function deriveRoleRuntimeHints(
   }
 
   if (config.maxDepth === undefined) {
-    const maxDepth = asPositiveInteger(normalizedLayer.agent_max_depth);
+    const maxDepth = asNonNegativeInteger(normalizedLayer.agent_max_depth);
     if (maxDepth !== undefined) {
       derived.maxDepth = maxDepth;
     }
@@ -1001,9 +988,7 @@ function readMarkdownAgentRoleFiles(cwd: string): MarkdownAgentRoleFile[] {
 
 function markdownAgentRoleDirs(cwd: string): MarkdownAgentRoleDirectory[] {
   const dirs: MarkdownAgentRoleDirectory[] = [];
-  const userRoot = resolve(
-    process.env.AGENC_CONFIG_DIR ?? join(homedir(), ".agenc"),
-  );
+  const userRoot = resolve(getAgenCHomeDir());
   dirs.push({
     dir: join(userRoot, "agents"),
     trustAnchor: userRoot,
@@ -1380,9 +1365,7 @@ function markdownAgentRoleFromFile(
   const reasoningEffort = repositoryControlled
     ? undefined
     : asAgentReasoningEffort(
-        file.frontmatter.effort ??
-          file.frontmatter.reasoning_effort ??
-          file.frontmatter.model_reasoning_effort,
+        file.frontmatter.reasoning_effort,
       );
   const background =
     !repositoryControlled &&
@@ -1415,10 +1398,6 @@ function parseMarkdownToolList(value: unknown): string[] | undefined {
 }
 
 function readRoleLayerSource(role: AgentRole): Record<string, unknown> {
-  if (role.config.configBundle) {
-    return cloneRecord(role.config.configBundle);
-  }
-
   if (role.config.configToml !== undefined) {
     return parseRoleLayerToml(role.config.configToml);
   }
@@ -1459,10 +1438,18 @@ function stripRoleDeclarationMetadata(
 function roleTomlToConfigLayer(
   roleLayerToml: Record<string, unknown>,
 ): Record<string, unknown> {
-  const aliased = normalizeAgenCKeyAliases(roleLayerToml);
+  const configFields = cloneRecord(roleLayerToml);
+  delete configFields.profile;
+  delete configFields.background_terminal_max_timeout;
   const normalized = cloneRecord(
-    normalizeRawConfig(aliased) as Record<string, unknown>,
+    normalizeRawConfig(configFields) as Record<string, unknown>,
   );
+  const unknown = normalized._unknown;
+  if (isPlainObject(unknown) && Object.keys(unknown).length > 0) {
+    throw new Error(
+      `role config contains unknown schema-v2 keys: ${Object.keys(unknown).sort().join(", ")}`,
+    );
+  }
   delete normalized._unknown;
   return normalized;
 }
@@ -1541,6 +1528,14 @@ function asPositiveInteger(value: unknown): number | undefined {
   }
   const normalized = Math.trunc(value);
   return normalized > 0 ? normalized : undefined;
+}
+
+function asNonNegativeInteger(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return undefined;
+  }
+  const normalized = Math.trunc(value);
+  return normalized >= 0 ? normalized : undefined;
 }
 
 function asAgentReasoningEffort(

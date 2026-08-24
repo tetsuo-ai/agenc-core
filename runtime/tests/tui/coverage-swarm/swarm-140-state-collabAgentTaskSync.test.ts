@@ -39,7 +39,7 @@ function localAgentTask(
     notified: false,
     agentId: id,
     prompt: "inspect",
-    agentType: "worker",
+    agentType: "runner",
     retrieved: false,
     lastReportedToolCount: 0,
     lastReportedTokenCount: 0,
@@ -102,7 +102,7 @@ describe("collabAgentTaskSync coverage swarm row 140", () => {
         "agent-140": localAgentTask("agent-140", {
           description: "original",
           prompt: "original prompt",
-          agentType: "worker",
+          agentType: "runner",
         }),
       },
     };

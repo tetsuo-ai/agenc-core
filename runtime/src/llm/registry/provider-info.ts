@@ -8,6 +8,7 @@
 
 import { deriveFlatCatalog } from "./model-catalog.js";
 import { OPENROUTER_FREE_MODEL_IDS } from "./openrouter-free-models.js";
+import { normalizeProviderIdentity } from "../../provider-identity.js";
 
 // Single source of truth: model lists for providers that have entries in
 // REGISTERED_MODEL_CATALOG are computed from it. model-catalog.ts does not
@@ -147,7 +148,6 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
     "anthropic/claude-haiku-4.5",
     "google/gemini-2.5-flash",
     "google/gemini-2.5-flash-lite",
-    "deepseek/deepseek-chat",
     "deepseek/deepseek-v4-flash",
     "deepseek/deepseek-v3.2",
     "qwen/qwen3-coder-30b-a3b-instruct",
@@ -230,7 +230,7 @@ export function builtInProviderIds(): readonly BuiltInProviderSlug[] {
 export function resolveBuiltInProviderInfo(
   provider: string | undefined,
 ): BuiltInProviderInfo | undefined {
-  const id = normalizeBuiltInProviderSlug(provider);
+  const id = resolveBuiltInProviderSlug(provider);
   if (id === undefined) return undefined;
   return {
     id,
@@ -255,17 +255,12 @@ export function listBuiltInProviderInfo(): readonly BuiltInProviderInfo[] {
   );
 }
 
-export function normalizeBuiltInProviderSlug(
+export function resolveBuiltInProviderSlug(
   provider: string | undefined,
 ): BuiltInProviderSlug | undefined {
-  const normalized = provider?.trim().toLowerCase();
+  const normalized = normalizeProviderIdentity(provider, "provider registry");
   if (!normalized) return undefined;
-  const slug = normalized === "xai"
-    ? "grok"
-    : normalized === "custom" || normalized === "openai_compatible"
-      ? "openai-compatible"
-      : normalized;
-  return slug in BUILT_IN_PROVIDER_DEFAULT_MODELS
-    ? (slug as BuiltInProviderSlug)
+  return normalized in BUILT_IN_PROVIDER_DEFAULT_MODELS
+    ? (normalized as BuiltInProviderSlug)
     : undefined;
 }

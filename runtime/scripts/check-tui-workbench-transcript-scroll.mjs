@@ -193,7 +193,7 @@ function sgrWheel(button, dimension) {
 
 async function runOne(dimension, lifecycle) {
   const session = new TuiSession({
-    args: ["--yolo"],
+    args: ["--dangerously-bypass-approvals-and-sandbox"],
     cols: dimension.cols,
     rows: dimension.rows,
     cwd: lifecycle.cwd,

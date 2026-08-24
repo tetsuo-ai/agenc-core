@@ -17,6 +17,12 @@ afterEach(() => {
 
 type OpenAiShimClient = ReturnType<typeof createOpenAiShimClient>
 
+const PROVIDER_ENVIRONMENT = Object.freeze({
+  AGENC_PROVIDER: 'openai-compatible',
+  AGENC_MODEL: 'kimi-thinking',
+  OPENAI_BASE_URL: 'http://example.test/v1',
+})
+
 function chunk(delta: unknown): string {
   return `data: ${JSON.stringify({
     id: 'c',
@@ -57,7 +63,11 @@ describe('openai shim — M-LLM-5 reasoning resumes after content', () => {
         'data: [DONE]\n\n',
       ])) as typeof fetch
 
-    const client = createOpenAiShimClient({}) as OpenAiShimClient
+    const client = createOpenAiShimClient({
+      selectedProvider: 'openai',
+      model: 'kimi-thinking',
+      providerEnvironment: PROVIDER_ENVIRONMENT,
+    }) as OpenAiShimClient
     const result = await client.beta.messages
       .create({
         model: 'kimi-thinking',

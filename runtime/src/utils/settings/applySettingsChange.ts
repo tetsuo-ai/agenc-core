@@ -2,14 +2,17 @@ import type { AppState } from '../../tui/state/AppState.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { updateHooksConfigSnapshot } from '../hooks/hooksConfigSnapshot.js'
 import {
+  createDisabledAutoModeContext,
   createDisabledBypassPermissionsContext,
-  findOverlyBroadBashPermissions,
-  isBypassPermissionsModeDisabled,
-  removeDangerousPermissions,
+  removeOverlyBroadShellAllowRules,
   transitionPlanAutoMode,
-} from '../permissions/permissionSetup.js'
-import { syncPermissionRulesFromDisk } from '../permissions/permissions.js'
-import { loadAllPermissionRulesFromDisk } from '../permissions/permissionsLoader.js'
+} from '../../permissions/permission-mode.js'
+import {
+  applyPermissionRulesSnapshot,
+  loadPermissionRulesSnapshot,
+} from '../../permissions/settings.js'
+import { errorMessage } from '../errors.js'
+import { reasoningEffortToEffortLevel } from '../effort.js'
 import type { SettingSource } from './constants.js'
 import {
   getExecutionAuthoritySettings,
@@ -21,7 +24,7 @@ import {
  * reloads permissions and hooks, and pushes the new state.
  *
  * Used by both the interactive path (AppState.tsx via useSettingsChange) and
- * the headless/SDK path (print.ts direct subscribe) so that managed-settings
+ * the headless/SDK path (print.ts direct subscribe) so that managed policy
  * / policy changes are fully applied in both modes.
  *
  * The settings cache is reset by the notifier (changeDetector.fanOut) before
@@ -41,65 +44,74 @@ export function applySettingsChange(
   const authoritySettings = getExecutionAuthoritySettings()
 
   logForDebugging(`Settings changed from ${source}, updating app state`)
-
-  const updatedRules = loadAllPermissionRulesFromDisk()
   updateHooksConfigSnapshot()
 
-  setAppState(prev => {
-    let newContext = syncPermissionRulesFromDisk(
-      prev.toolPermissionContext,
-      updatedRules,
-    )
+  void loadPermissionRulesSnapshot().then(snapshot => {
+    setAppState(prev => {
+      let newContext = applyPermissionRulesSnapshot(
+        prev.toolPermissionContext,
+        snapshot,
+      )
 
-    // Ant-only: re-strip overly broad Bash allow rules after settings sync
-    if (
-      process.env.USER_TYPE === 'ant' &&
-      process.env.AGENC_ENTRYPOINT !== 'local-agent'
-    ) {
-      const overlyBroad = findOverlyBroadBashPermissions(updatedRules, [])
-      if (overlyBroad.length > 0) {
-        newContext = removeDangerousPermissions(newContext, overlyBroad)
+      // Internal operator sessions never accept a whole-shell durable grant.
+      if (
+        process.env.USER_TYPE === 'ant' &&
+        process.env.AGENC_ENTRYPOINT !== 'local-agent'
+      ) {
+        newContext = removeOverlyBroadShellAllowRules(newContext)
       }
-    }
 
-    if (
-      newContext.isBypassPermissionsModeAvailable &&
-      isBypassPermissionsModeDisabled()
-    ) {
-      newContext = createDisabledBypassPermissionsContext(newContext)
-    }
+      if (
+        newContext.isBypassPermissionsModeAvailable &&
+        snapshot.bypassPermissionsModeDisabled
+      ) {
+        newContext = createDisabledBypassPermissionsContext(newContext)
+      }
 
-    newContext = transitionPlanAutoMode(newContext)
+      newContext = snapshot.disableAutoMode
+        ? createDisabledAutoModeContext(newContext)
+        : transitionPlanAutoMode(newContext)
 
-    // Sync effortLevel from settings to top-level AppState when it changes
-    // (e.g. via applyFlagSettings from IDE). Only propagate if the setting
-    // itself changed — otherwise unrelated settings churn (e.g. tips dismissal
-    // on startup) would clobber a --effort CLI flag value held in AppState.
-    const prevEffort = prev.settings.effortLevel
-    const newEffort = authoritySettings.effortLevel
-    const effortChanged = prevEffort !== newEffort
-    const prevSwarm = prev.settings.swarmMode
-    const newSwarm = authoritySettings.swarmMode
-    const swarmChanged = prevSwarm !== newSwarm
+      // Sync canonical reasoning_effort to top-level AppState when it changes
+      // (e.g. via applyFlagSettings from IDE). Only propagate if the setting
+      // itself changed — otherwise unrelated settings churn (e.g. tips
+      // dismissal on startup) would clobber a --effort CLI flag value held in
+      // AppState.
+      const prevEffort = reasoningEffortToEffortLevel(
+        prev.settings.reasoning_effort,
+      )
+      const newEffort = reasoningEffortToEffortLevel(
+        authoritySettings.reasoning_effort,
+      )
+      const effortChanged = prevEffort !== newEffort
+      const prevSwarm = prev.settings.swarmMode
+      const newSwarm = authoritySettings.swarmMode
+      const swarmChanged = prevSwarm !== newSwarm
 
-    return {
-      ...prev,
-      settings: newSettings,
-      toolPermissionContext: newContext,
-      // Only propagate a defined new value — when the disk key is absent
-      // (e.g. /effort max for non-ants writes undefined; --effort CLI flag),
-      // prev.settings.effortLevel can be stale (internal writes suppress the
-      // watcher that would resync AppState.settings), so effortChanged would
-      // be true and we'd wipe a session-scoped value held in effortValue.
-      ...(effortChanged && newEffort !== undefined
-        ? { effortValue: newEffort }
-        : {}),
-      // swarmMode follows the same settings → AppState channel as effortValue:
-      // /swarm writes the disk key, this mirrors it into top-level AppState for
-      // the status bar and the prompt attachment to read.
-      ...(swarmChanged && newSwarm !== undefined
-        ? { swarmMode: newSwarm }
-        : {}),
-    }
+      return {
+        ...prev,
+        settings: newSettings,
+        toolPermissionContext: newContext,
+        // Only propagate a defined new value — when the disk key is absent
+        // (e.g. /effort max for non-ants writes undefined; --effort CLI flag),
+        // prev.settings.reasoning_effort can be stale (internal writes suppress the
+        // watcher that would resync AppState.settings), so effortChanged would
+        // be true and we'd wipe a session-scoped value held in effortValue.
+        ...(effortChanged && newEffort !== undefined
+          ? { effortValue: newEffort }
+          : {}),
+        // swarmMode follows the same settings → AppState channel as
+        // effortValue: /swarm writes the disk key, this mirrors it into
+        // top-level AppState for the status bar and prompt attachment.
+        ...(swarmChanged && newSwarm !== undefined
+          ? { swarmMode: newSwarm }
+          : {}),
+      }
+    })
+  }).catch(error => {
+    logForDebugging(
+      `Failed to reload canonical permission policy: ${errorMessage(error)}`,
+      { level: 'error' },
+    )
   })
 }

@@ -34,6 +34,15 @@ describe('Z-PURGEC build resolution boundaries', () => {
     expect(__agencBuildConfigTest.isKnownMissingOptionalModule('@mendable/firecrawl-js')).toBe(true)
   })
 
+  it('bundles jsonc-parser so its extensionless internal imports never escape into dist', () => {
+    expect(__agencBuildConfigTest.isBundledBareImport('jsonc-parser')).toBe(true)
+    expect(
+      __agencBuildConfigTest.isBundledBareImport(
+        'jsonc-parser/lib/esm/main.js',
+      ),
+    ).toBe(true)
+  })
+
   it('inlines copied-tree feature gates before unresolved import resolution', () => {
     expect(__agencBuildConfigTest.featureFlagLiteral('HISTORY_SNIP')).toBe('false')
     expect(__agencBuildConfigTest.featureFlagLiteral('CONTEXT_COLLAPSE')).toBe('false')

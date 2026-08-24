@@ -15,6 +15,7 @@ import {
   type AgenCEnsureAgentControlFunction,
   managedTokenUsage,
 } from "./background-agent-runner.js";
+import { collectDaemonClientEnvOverrides } from "./agent-cli.js";
 import type { AgentStatus } from "../agents/status.js";
 import type { AuthBackend } from "../auth/backend.js";
 import type { AgentBudgetConfig } from "../config/schema.js";
@@ -27,6 +28,7 @@ import { JSON_RPC_VERSION } from "./protocol/index.js";
 import { requestApproval } from "../tools/orchestrator.js";
 import type { CsvAgentJobsRepositoryProvider } from "./csv-agent-jobs-authority.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 
 const backgroundAgentRunnerSourcePath = new URL(
   "../../src/app-server/background-agent-runner.ts",
@@ -294,8 +296,16 @@ function makeTopLevelRunner(opts: {
     },
     history: [] as unknown[],
   };
+  const providerEnvironment = Object.freeze({
+    XAI_API_KEY: opts.env?.XAI_API_KEY,
+    GROK_API_KEY: opts.env?.GROK_API_KEY,
+  });
+  const providerService = {
+    environment: () => providerEnvironment,
+  };
   const session = {
     conversationId: opts.conversationId,
+    providerService,
     permissionModeRegistry,
     get sessionConfiguration() {
       return sessionState.sessionConfiguration;
@@ -379,7 +389,7 @@ function makeTopLevelRunner(opts: {
       return stamped;
     }),
     rolloutStore,
-    services: { conversationThreadManager: stub },
+    services: { conversationThreadManager: stub, providerService },
   };
   if (opts.hydrateStateWith !== undefined) {
     Object.assign(session, { state: { with: opts.hydrateStateWith } });
@@ -461,6 +471,41 @@ function makeTopLevelRunner(opts: {
 }
 
 describe("AgenC delegate background-agent runner", () => {
+  it("clears stale daemon-start provider state with the client snapshot", async () => {
+    const { runner, bootstrap } = makeTopLevelRunner({
+      conversationId: "session-client-provider-snapshot",
+      env: {
+        AGENC_PROVIDER: "openai",
+        AGENC_MODEL: "stale-daemon-model",
+        OPENAI_BASE_URL: "https://stale-daemon.example/v1",
+        XAI_API_KEY: "stale-daemon-key",
+        AGENC_CREDENTIAL_DOCS_MCP: "stale-daemon-mcp-secret",
+        PATH: "/daemon/bin",
+      },
+    });
+
+    await runner.startAgent({
+      objective: "use the client provider snapshot",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+      runtimeOptions: resolveAgentRuntimeOptions({}),
+      envOverrides: collectDaemonClientEnvOverrides({
+        PATH: "/client/bin",
+      }),
+    });
+
+    expect(bootstrap).toHaveBeenCalledOnce();
+    expect(vi.mocked(bootstrap).mock.calls[0]?.[0].env).toMatchObject({
+      AGENC_PROVIDER: "",
+      AGENC_MODEL: "",
+      OPENAI_BASE_URL: "",
+      XAI_API_KEY: "",
+      AGENC_CREDENTIAL_DOCS_MCP: "",
+      PATH: "/client/bin",
+    });
+  });
+
   it("waits for the exact terminal generation cleanup before explicit restore", async () => {
     let releaseShutdown!: () => void;
     const shutdownBlocked = new Promise<void>((resolve) => {
@@ -762,7 +807,7 @@ describe("AgenC delegate background-agent runner", () => {
     );
 
     await harness.runner.startAgent({
-      objective: "honor explicit yolo",
+      objective: "honor explicit bypass",
       permissionMode: "bypassPermissions",
     });
 
@@ -2388,13 +2433,18 @@ describe("AgenC delegate background-agent runner", () => {
       status: "running",
     });
 
-    expect(bootstrap).toHaveBeenCalledWith({
-      env: { AGENC_HOME: "/tmp/agenc-home" },
+    expect(bootstrap).toHaveBeenCalledWith(expect.objectContaining({
+      env: expect.objectContaining({
+        AGENC_HOME: "/tmp/agenc-home",
+        AGENC_PROVIDER: "",
+        AGENC_MODEL: "",
+        XAI_API_KEY: "",
+      }),
       argv: ["/usr/bin/node", "/opt/agenc/bin/agenc.js", "--model", "grok-4"],
       cwd: "/workspace",
       executionAdmissionAutonomous: true,
       csvAgentJobsRepositories,
-    });
+    }));
     expect(permissionModeRegistry.update).toHaveBeenCalledTimes(1);
     expect(permissionUpdates[0]).toMatchObject({
       mode: "unattended",
@@ -2406,10 +2456,19 @@ describe("AgenC delegate background-agent runner", () => {
     expect(shutdown).not.toHaveBeenCalled();
   });
 
-  it("inserts generated bootstrap options before a positional daemon argv", async () => {
+  it("uses only structured agent configuration, never inherited daemon argv", async () => {
     const { runner, bootstrap } = makeTopLevelRunner({
       conversationId: "positional-bootstrap-session",
-      argv: ["node", "agenc", "daemon", "run"],
+      argv: [
+        "node",
+        "agenc",
+        "--provider",
+        "grok",
+        "--config",
+        "/daemon-launch-config.toml",
+        "daemon",
+        "status",
+      ],
     });
 
     await runner.startAgent({
@@ -2417,6 +2476,7 @@ describe("AgenC delegate background-agent runner", () => {
       provider: "openai",
       model: "gpt-5",
       profile: "fast",
+      configPath: "/workspace/explicit-config.toml",
       permissionMode: "plan",
       unattendedAllow: [],
       unattendedDeny: [],
@@ -2433,13 +2493,32 @@ describe("AgenC delegate background-agent runner", () => {
           "gpt-5",
           "--profile",
           "fast",
+          "--config",
+          "/workspace/explicit-config.toml",
           "--permission-mode",
           "plan",
-          "daemon",
-          "run",
         ],
       }),
     );
+  });
+
+  it("forwards only the canonical dangerous-bypass startup flag", async () => {
+    const { runner, bootstrap } = makeTopLevelRunner({
+      conversationId: "canonical-bypass-bootstrap-session",
+    });
+
+    await runner.startAgent({
+      objective: "compile without approval prompts",
+      permissionMode: "bypassPermissions",
+      unattendedAllow: [],
+      unattendedDeny: [],
+      runtimeOptions: resolveAgentRuntimeOptions({}),
+    });
+
+    const argv = vi.mocked(bootstrap).mock.calls[0]?.[0].argv ?? [];
+    expect(argv).toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(argv).not.toContain("--yolo");
+    expect(argv).not.toContain("--allow-dangerously-skip-permissions");
   });
 
   it("lets the shared admission kernel exclusively enforce agent budget caps", async () => {
@@ -2493,6 +2572,31 @@ describe("AgenC delegate background-agent runner", () => {
     expect(permissionUpdates[0]).toMatchObject({ mode: "plan" });
   });
 
+  it("setAgentPermissionMode resolves the auto gate inside the target session", async () => {
+    const { runner, permissionUpdates } = makeTopLevelRunner({
+      conversationId: "parent-session-auto",
+      argv: ["node", "agenc"],
+      env: { XAI_API_KEY: "session-auto-key" },
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+    permissionUpdates.length = 0;
+
+    const result = await runner.setAgentPermissionMode("parent-session-auto", {
+      sessionId: "session_1",
+      mode: "auto",
+    });
+
+    expect(result).toEqual({
+      applied: true,
+      previousMode: "default",
+      mode: "auto",
+    });
+    expect(permissionUpdates.at(-1)).toMatchObject({
+      mode: "auto",
+      autoModeActive: true,
+    });
+  });
+
   it("setAgentPermissionMode to bypass binds exact-workspace consent so canonical persistence accepts it", async () => {
     const { runner, permissionUpdates } = makeTopLevelRunner({
       conversationId: "parent-session",
@@ -2502,7 +2606,7 @@ describe("AgenC delegate background-agent runner", () => {
     await runner.startAgent({ objective: "work", cwd: "/workspace" });
     permissionUpdates.length = 0;
 
-    // The explicit RPC is the operator's authority, same as --yolo at
+    // The explicit RPC is the operator's authority, same as --dangerously-bypass-approvals-and-sandbox at
     // spawn: the runner binds consent for this exact workspace instead of
     // refusing with the workspace-consent persistence error.
     const result = await runner.setAgentPermissionMode("parent-session", {

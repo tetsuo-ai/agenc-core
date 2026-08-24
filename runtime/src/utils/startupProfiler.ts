@@ -10,7 +10,7 @@
 import { dirname, join } from 'path'
 import { getSessionId } from 'src/bootstrap/state.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
+import { getAgenCHomeDir, isEnvTruthy } from './envUtils.js'
 import { getFsImplementation } from './fsOperations.js'
 import { formatMs, formatTimelineLine, getPerformance } from './profilerBase.js'
 import { writeFileSync_DEPRECATED } from './slowOperations.js'
@@ -124,5 +124,5 @@ export function isDetailedProfilingEnabled(): boolean {
 }
 
 export function getStartupPerfLogPath(): string {
-  return join(getAgenCConfigHomeDir(), 'startup-perf', `${getSessionId()}.txt`)
+  return join(getAgenCHomeDir(), 'startup-perf', `${getSessionId()}.txt`)
 }

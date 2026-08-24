@@ -36,20 +36,17 @@ describe("PromptSuggestion speculation", () => {
   afterEach(async () => {
     runForkedAgentMock.mockReset();
     process.env.AGENC_CWD = originalCwd;
-    delete process.env.AGENC_SPECULATION_ENABLED;
     delete process.env.USER_TYPE;
     await Promise.all(tempDirs.map(dir => rm(dir, { recursive: true, force: true })));
     tempDirs.length = 0;
   });
 
-  it("honors persisted speculation settings with env override precedence", () => {
+  it("uses only the persisted speculation setting", () => {
     process.env.USER_TYPE = "ant";
 
     expect(isSpeculationEnabled(false)).toBe(false);
     expect(isSpeculationEnabled(true)).toBe(true);
 
-    process.env.AGENC_SPECULATION_ENABLED = "0";
-    expect(isSpeculationEnabled(true)).toBe(false);
   });
 
   it("keeps successful tool uses and strips pending or internal blocks", () => {
@@ -59,7 +56,7 @@ describe("PromptSuggestion speculation", () => {
         message: {
           content: [
             { type: "thinking", text: "hidden" },
-            { type: "tool_use", id: "ok", name: "Read" },
+            { type: "tool_use", id: "ok", name: "FileRead" },
             { type: "tool_use", id: "pending", name: "Write" },
             { type: "text", text: "visible" },
           ],
@@ -80,7 +77,7 @@ describe("PromptSuggestion speculation", () => {
 
     expect(cleaned).toHaveLength(2);
     expect(cleaned[0].message.content).toEqual([
-      { type: "tool_use", id: "ok", name: "Read" },
+      { type: "tool_use", id: "ok", name: "FileRead" },
       { type: "text", text: "visible" },
     ]);
     expect(cleaned[1].message.content).toEqual([
@@ -231,10 +228,10 @@ describe("PromptSuggestion speculation", () => {
     const decisions: Array<{ label: string; behavior: string; reason?: string }> = [];
     runForkedAgentMock.mockImplementationOnce(async params => {
       for (const [label, tool, input] of [
-        ["read", { name: "Read" }, { file_path: join(cwd, "notes.txt") }],
+        ["read", { name: "FileRead" }, { file_path: join(cwd, "notes.txt") }],
         ["write", { name: "Write" }, { file_path: join(cwd, "notes.txt") }],
-        ["bash", { name: "Bash" }, { command: "git branch -D stale" }],
-        ["unknown", { name: "WebFetch" }, { url: "urn:agenc:test-webfetch" }],
+        ["bash", { name: "system.bash" }, { command: "git branch -D stale" }],
+        ["unknown", { name: "web_fetch" }, { url: "urn:agenc:test-webfetch" }],
       ] as const) {
         const decision = await params.canUseTool(tool, input);
         decisions.push({
@@ -282,7 +279,7 @@ describe("PromptSuggestion speculation", () => {
       );
       writePath = String(write.updatedInput?.file_path ?? "");
       const read = await params.canUseTool(
-        { name: "Read" },
+        { name: "FileRead" },
         { file_path: join(cwd, "notes.txt") },
       );
       readPath = String(read.updatedInput?.file_path ?? "");

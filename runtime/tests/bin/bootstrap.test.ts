@@ -20,14 +20,12 @@ import {
   mergeConfigs,
   UnknownModelError,
 } from "../config/schema.js";
-import { parseToml } from "../config/loader.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
 import type { AuthBackend } from "../auth/backend.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
 import type { Tool } from "../tools/types.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import { RolloutStore } from "../session/rollout-store.js";
-import { FileThreadStore } from "../thread-store/store.js";
 import { Session } from "../session/session.js";
 import { buildAgenCToolUseContext } from "../session/agenc-tool-use-context.js";
 import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
@@ -39,7 +37,6 @@ import {
 import { findAgentDefinitionByType } from "../tools/AgentTool/loadAgentsDir.js";
 import { SidecarManager } from "../session/sidecar.js";
 import { getCurrentRuntimeSession } from "./_deps/current-session.js";
-import { PERSONALITY_MIGRATION_FILENAME } from "../personality/migration.js";
 import {
   isSandboxExecutionBrokerDisposed,
   registerSandboxExecutionLifecycleParticipant,
@@ -85,72 +82,6 @@ function trustWorkspaceForTest(agencHome: string, workspace: string): void {
     agencHome,
     cwd: workspace,
     env: { HOME: agencHome },
-  });
-}
-
-function withAgencHomeForThreadStore<T>(agencHome: string, fn: () => T): T {
-  const previous = process.env.AGENC_HOME;
-  process.env.AGENC_HOME = agencHome;
-  try {
-    return fn();
-  } finally {
-    if (previous === undefined) {
-      delete process.env.AGENC_HOME;
-    } else {
-      process.env.AGENC_HOME = previous;
-    }
-  }
-}
-
-function writeRecordedThreadForBootstrap(params: {
-  readonly agencHome: string;
-  readonly workspace: string;
-  readonly threadId: string;
-  readonly provider: string;
-}): void {
-  withAgencHomeForThreadStore(params.agencHome, () => {
-    const rolloutStore = new RolloutStore({
-      cwd: params.workspace,
-      sessionId: params.threadId,
-      agencVersion: "0.2.0",
-      autoStartScheduler: false,
-    });
-    rolloutStore.open({
-      sessionId: params.threadId,
-      timestamp: new Date().toISOString(),
-      cwd: params.workspace,
-      originator: "bootstrap-personality-migration-test",
-      agencVersion: "0.2.0",
-      model: "grok-4.3",
-      modelProvider: params.provider,
-    });
-    const threadStore = new FileThreadStore({
-      cwd: params.workspace,
-      agencHome: params.agencHome,
-      defaultModelProviderId: params.provider,
-    });
-    try {
-      threadStore.createThread({
-        threadId: params.threadId,
-        rolloutStore,
-        cwd: params.workspace,
-        model: "grok-4.3",
-        modelProvider: params.provider,
-      });
-      threadStore.appendItems({
-        threadId: params.threadId,
-        items: [
-          {
-            type: "response_item",
-            payload: { role: "user", content: "previous session" },
-          },
-        ],
-      });
-      threadStore.shutdownThread(params.threadId);
-    } finally {
-      threadStore.close();
-      rolloutStore.close();
-    }
   });
 }
 
@@ -372,102 +303,50 @@ describe("resolveStartupSelection", () => {
     expect(resolved.model).toBe("agenc");
   });
 
-  // branding-scan: allow real provider identifier in test title
-  it("uses compatible-provider model env ahead of generic OpenAI env", () => {
-    const resolved = resolveStartupSelection({
-      config: defaultConfig(),
-      env: {
-        AGENC_PROVIDER: "openai-compatible",
-        OPENAI_COMPATIBLE_MODEL: "self-hosted-coder",
-        OPENAI_MODEL: "generic-openai-model",
-      },
-      argv: ["node", "agenc"],
-    });
-
-    expect(resolved.provider).toBe("openai-compatible");
-    expect(resolved.model).toBe("self-hosted-coder");
-  });
-
-  // branding-scan: allow real provider identifier in test title
-  it("uses generic OpenAI model env as compatible-provider fallback", () => {
-    const resolved = resolveStartupSelection({
-      config: defaultConfig(),
-      env: {
-        AGENC_PROVIDER: "openai-compatible",
-        OPENAI_MODEL: "generic-openai-model",
-      },
-      argv: ["node", "agenc"],
-    });
-
-    expect(resolved.provider).toBe("openai-compatible");
-    expect(resolved.model).toBe("generic-openai-model");
-  });
-
-  it("uses compatible-provider model env when selected by config", () => {
-    const config = mergeConfigs(defaultConfig(), {
-      model_provider: "openai-compatible",
-    });
-
-    const resolved = resolveStartupSelection({
-      config,
-      env: {
-        OPENAI_COMPATIBLE_MODEL: "config-selected-coder",
-      },
-      argv: ["node", "agenc"],
-    });
-
-    expect(resolved.provider).toBe("openai-compatible");
-    expect(resolved.model).toBe("config-selected-coder");
-  });
+  it.each(["OPENAI_COMPATIBLE_MODEL", "OPENAI_MODEL"])(
+    "rejects retired provider-specific model selector %s",
+    (name) => {
+      expect(() =>
+        resolveStartupSelection({
+          config: defaultConfig(),
+          env: {
+            AGENC_PROVIDER: "openai-compatible",
+            [name]: "self-hosted-coder",
+          },
+          argv: ["node", "agenc"],
+        })
+      ).toThrow(/obsolete configuration environment variable/u);
+    },
+  );
 });
 
 describe("readStartupCliFlags", () => {
-  it("parses permission startup flags, including the yolo aliases", () => {
+  it("parses only the canonical permission and autonomy startup flags", () => {
     expect(
       readStartupCliFlags([
         "node",
         "agenc",
         "--permission-mode",
         "plan",
-        "--yolo",
+        "--dangerously-bypass-approvals-and-sandbox",
         "--autonomous",
       ]),
     ).toMatchObject({
       permissionMode: "plan",
-      allowDangerouslySkipPermissions: true,
+      dangerouslyBypassApprovalsAndSandbox: true,
       autonomousMode: true,
-    });
-
-    expect(
-      readStartupCliFlags([
-        "node",
-        "agenc",
-        "--dangerously-bypass-approvals-and-sandbox",
-      ]),
-    ).toMatchObject({
-      allowDangerouslySkipPermissions: true,
-    });
-
-    expect(
-      readStartupCliFlags([
-        "node",
-        "agenc",
-        "--allow-dangerously-skip-permissions",
-      ]),
-    ).toMatchObject({
-      allowDangerouslySkipPermissions: true,
     });
   });
 
-  it("ignores unattended as a startup permission mode", () => {
-    expect(
+  it("rejects internal modes at the startup permission surface", () => {
+    expect(() =>
       readStartupCliFlags([
         "node",
         "agenc",
         "--permission-mode",
         "unattended",
-      ]).permissionMode,
-    ).toBeUndefined();
+      ]),
+    ).toThrow("unknown permission mode 'unattended'. Expected one of:");
   });
 });
 
@@ -547,65 +426,6 @@ describe("bootstrapLocalRuntimeSession", () => {
       ).toMatchObject({ agentRoleFingerprint: expect.any(String) });
     } finally {
       await shutdown?.().catch(() => {});
-      await rm(home, { recursive: true, force: true });
-      await rm(workspace, { recursive: true, force: true });
-    }
-  });
-
-  it("runs personality migration before constructing the first turn context", async () => {
-    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
-    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
-    writeRecordedThreadForBootstrap({
-      agencHome: home,
-      workspace,
-      threadId: "personality-prior-thread",
-      provider: "grok",
-    });
-
-    const providerMod = await import("../llm/provider.js");
-    vi.spyOn(providerMod, "createProvider").mockImplementation(
-      () =>
-        ({
-          name: "stub",
-          chat: async () => ({
-            content: "ok",
-            toolCalls: [],
-            usage: {
-              promptTokens: 1,
-              completionTokens: 1,
-              totalTokens: 2,
-            },
-          }),
-        }) as never,
-    );
-    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
-
-    let shutdown: (() => Promise<void>) | null = null;
-    try {
-      const boot = await bootstrapLocalRuntimeSession({
-        apiKey: "test-key",
-        env: {
-          ...process.env,
-          AGENC_HOME: home,
-          AGENC_WORKSPACE: workspace,
-          HOME: home,
-        },
-      });
-      shutdown = boot.shutdown;
-
-      expect(boot.config.personality).toBe("pragmatic");
-      expect(boot.ctx.config.personality).toBe("pragmatic");
-      await expect(
-        readFile(join(home, PERSONALITY_MIGRATION_FILENAME), "utf8"),
-      ).resolves.toBe("v1\n");
-      const persisted = parseToml(
-        await readFile(join(home, "config.toml"), "utf8"),
-      ) as Record<string, unknown>;
-      expect(persisted.personality).toBe("pragmatic");
-    } finally {
-      await shutdown?.().catch(() => {
-        /* best effort */
-      });
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
     }
@@ -721,7 +541,7 @@ describe("bootstrapLocalRuntimeSession", () => {
       ).toEqual(
         expect.arrayContaining([
           expect.objectContaining({
-            agentType: "explorer",
+            agentType: "scanner",
             source: "built-in",
             agentRoleFingerprint: expect.any(String),
             disallowedTools: expect.arrayContaining(["Write"]),
@@ -1980,19 +1800,9 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  it("builds runtime ManagedFeatures from config feature tables", async () => {
+  it("uses fixed runtime feature behavior without a config authority", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
-    await writeFile(
-      join(home, "config.toml"),
-      [
-        "[features]",
-        "apps = false",
-        "use_legacy_landlock = true",
-        "",
-      ].join("\n"),
-      "utf8",
-    );
 
     const providerMod = await import("../llm/provider.js");
     vi.spyOn(providerMod, "createProvider").mockImplementation(
@@ -2025,10 +1835,11 @@ describe("bootstrapLocalRuntimeSession", () => {
       });
       shutdown = boot.shutdown;
 
-      expect(boot.config.features.enabled?.("apps")).toBe(false);
-      expect(boot.config.features.appsEnabledForAuth(true)).toBe(false);
-      expect(boot.config.features.enabled?.("use_legacy_landlock")).toBe(true);
-      expect(boot.config.features.useLegacyLandlock()).toBe(true);
+      expect(boot.config.features.enabled?.("personality")).toBe(true);
+      expect(
+        boot.config.features.enabled?.("default_mode_request_user_input"),
+      ).toBe(false);
+      expect(boot.config.features.enabled?.("unknown-feature")).toBe(false);
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */
@@ -2183,7 +1994,7 @@ describe("bootstrapLocalRuntimeSession", () => {
           AGENC_HOME: home,
           AGENC_WORKSPACE: workspace,
           AGENC_PROVIDER: "openai-compatible",
-          OPENAI_COMPATIBLE_MODEL: "local-model",
+          AGENC_MODEL: "local-model",
           HOME: home,
           SHELL: "/bin/sh",
         },
@@ -2268,7 +2079,6 @@ describe("bootstrapLocalRuntimeSession", () => {
           AGENC_MODEL: "x-ai/grok-4.3",
           AGENC_PROVIDER: "openrouter",
           AGENC_WORKSPACE: workspace,
-          AGENC_XAI_API_KEY: "",
           HOME: home,
           GROK_API_KEY: "",
           OPENROUTER_API_KEY: "",
@@ -2332,7 +2142,6 @@ describe("bootstrapLocalRuntimeSession", () => {
             ...process.env,
             AGENC_HOME: home,
             AGENC_WORKSPACE: workspace,
-            AGENC_XAI_API_KEY: "",
             AGENC_AUTH_MANAGED_KEYS_ENABLED: "false",
             // OpenRouter is the only provider with a live managed route, so
             // it is the only one that can surface the managed-keys-disabled
@@ -2393,7 +2202,6 @@ describe("bootstrapLocalRuntimeSession", () => {
           AGENC_HOME: home,
           AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
           AGENC_WORKSPACE: workspace,
-          AGENC_XAI_API_KEY: "",
           HOME: home,
           GROK_API_KEY: "",
           XAI_API_KEY: "",
@@ -2471,7 +2279,6 @@ describe("bootstrapLocalRuntimeSession", () => {
           AGENC_HOME: home,
           AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
           AGENC_WORKSPACE: workspace,
-          AGENC_XAI_API_KEY: "",
           HOME: home,
           GROK_API_KEY: "",
           XAI_API_KEY: "",
@@ -2531,7 +2338,6 @@ describe("bootstrapLocalRuntimeSession", () => {
           ...process.env,
           AGENC_HOME: home,
           AGENC_WORKSPACE: workspace,
-          AGENC_XAI_API_KEY: "",
           HOME: home,
           GROK_API_KEY: "",
           XAI_API_KEY: "",
@@ -2556,7 +2362,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  it("asks AuthBackend to infer hosted AgenC model aliases before provider creation", async () => {
+  it("keeps the hosted model shortcut behind the AgenC provider boundary", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
     const calls: string[] = [];
@@ -2572,8 +2378,8 @@ describe("bootstrapLocalRuntimeSession", () => {
         calls.push(
           `inferAgencModel:${provider ?? ""}:${requestedModel ?? ""}:${subscriptionTier ?? ""}`,
         );
-        // Managed subscription vending is OpenRouter-only (e4a54ec1), so the
-        // hosted alias resolves to the OpenRouter route.
+        // The concrete route seeds capability metadata, while the live
+        // provider remains the single hosted routing boundary.
         return {
           provider: "openrouter",
           model: "x-ai/grok-4.3",
@@ -2618,7 +2424,6 @@ describe("bootstrapLocalRuntimeSession", () => {
           AGENC_HOME: home,
           AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
           AGENC_WORKSPACE: workspace,
-          AGENC_XAI_API_KEY: "",
           HOME: home,
           GROK_API_KEY: "",
           OPENROUTER_API_KEY: "",
@@ -2628,19 +2433,22 @@ describe("bootstrapLocalRuntimeSession", () => {
       shutdown = boot.shutdown;
 
       expect(boot.authSubscriptionTier).toBe("team");
-      expect(boot.resolvedProvider).toBe("openrouter");
+      expect(boot.resolvedProvider).toBe("agenc");
       expect(boot.model).toBe("x-ai/grok-4.3");
       expect(createProviderSpy).toHaveBeenCalledWith(
-        "openrouter",
+        "agenc",
         expect.objectContaining({
-          apiKey: "managed-key",
-          model: "x-ai/grok-4.3",
+          model: "agenc",
+          extra: expect.objectContaining({
+            authBackend,
+            sessionId: "conv-hosted",
+            subscriptionTier: "team",
+          }),
         }),
       );
       expect(calls).toEqual([
         "getSubscriptionTier:conv-hosted",
-        "inferAgencModel:grok:agenc:team",
-        "vendKey:openrouter:conv-hosted",
+        "inferAgencModel:agenc:agenc:team",
       ]);
     } finally {
       await shutdown?.().catch(() => {
@@ -2657,6 +2465,8 @@ describe("bootstrapLocalRuntimeSession", () => {
     await writeFile(
       join(home, "config.toml"),
       [
+        "config_version = 2",
+        "",
         "[providers.grok]",
         'base_url = "http://127.0.0.1:8000/v1"',
         "",
@@ -2719,7 +2529,6 @@ describe("bootstrapLocalRuntimeSession", () => {
           ...process.env,
           AGENC_HOME: home,
           AGENC_WORKSPACE: workspace,
-          AGENC_XAI_API_KEY: "",
           HOME: home,
           GROK_API_KEY: "",
           XAI_API_KEY: "",
@@ -2789,7 +2598,6 @@ describe("bootstrapLocalRuntimeSession", () => {
             ...process.env,
             AGENC_HOME: home,
             AGENC_WORKSPACE: workspace,
-            AGENC_XAI_API_KEY: "",
             HOME: home,
             GROK_API_KEY: "",
             XAI_API_KEY: "",
@@ -2802,21 +2610,27 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  it("hydrates the session permission registry from disk settings", async () => {
+  it("hydrates the session permission registry from canonical config", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
-    await mkdir(join(home, ".agenc"), { recursive: true });
     await writeFile(
-      join(home, ".agenc", "settings.json"),
-      JSON.stringify(
-        {
-          permissions: {
-            defaultMode: "acceptEdits",
-          },
-        },
-        null,
-        2,
-      ),
+      join(home, "config.toml"),
+      [
+        "config_version = 2",
+        "",
+        "[permissions]",
+        'defaultMode = "acceptEdits"',
+        "",
+        "[durableTurns.checkpoint]",
+        "enabled = false",
+        "minIntervalMs = 250",
+        "",
+        "[durableTurns.resume]",
+        "onRestart = false",
+        "requireLease = true",
+        "buildPinning = true",
+        "",
+      ].join("\n"),
       "utf8",
     );
 
@@ -2857,6 +2671,11 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(
         boot.session.sessionConfiguration.permissionContext?.mode,
       ).toBe("acceptEdits");
+      expect(boot.config.durableTurns).toEqual({
+        checkpoint: { enabled: false, minIntervalMs: 250 },
+        resume: { onRestart: false, requireLease: true, buildPinning: true },
+      });
+      expect(boot.ctx.config.durableTurns).toEqual(boot.config.durableTurns);
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */
@@ -2914,7 +2733,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  it("hydrates the live MCP manager from AGENC_MCP_SERVERS before session startup", async () => {
+  it("rejects the removed MCP JSON environment channel before session startup", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
 
@@ -2938,43 +2757,33 @@ describe("bootstrapLocalRuntimeSession", () => {
       .spyOn(Session.prototype, "startMcpManager")
       .mockResolvedValue(undefined);
 
-    let shutdown: (() => Promise<void>) | null = null;
     try {
-      const boot = await bootstrapLocalRuntimeSession({
-        apiKey: "test-key",
-        env: {
-          ...process.env,
-          AGENC_HOME: home,
-          AGENC_WORKSPACE: workspace,
-          AGENC_MCP_SERVERS: JSON.stringify([
-            { name: "github", command: "github-mcp" },
-          ]),
-          HOME: home,
-        },
-      });
-      shutdown = boot.shutdown;
-
-      expect(boot.mcpManager.getConfiguredServers()).toEqual([
-        expect.objectContaining({ name: "github", command: "github-mcp" }),
-      ]);
-      expect(startMcpSpy).toHaveBeenCalledWith(boot.mcpManager, {
-        signal: boot.session.services.mcpStartupCancellationToken.signal,
-      });
+      await expect(
+        bootstrapLocalRuntimeSession({
+          apiKey: "test-key",
+          env: {
+            AGENC_HOME: home,
+            AGENC_WORKSPACE: workspace,
+            AGENC_MCP_SERVERS: "[]",
+            HOME: home,
+          },
+        }),
+      ).rejects.toThrow(/obsolete.*AGENC_MCP_SERVERS/u);
+      expect(startMcpSpy).not.toHaveBeenCalled();
     } finally {
-      await shutdown?.().catch(() => {
-        /* best effort */
-      });
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
     }
   });
 
-  it("hydrates the live MCP manager from config.toml mcp_servers when no env override is set", async () => {
+  it("hydrates the live MCP manager from canonical config.toml mcp_servers", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
     await writeFile(
       join(home, "config.toml"),
       `
+config_version = 2
+
 [mcp_servers.github]
 command = "github-mcp"
 args = ["--stdio"]
@@ -3012,7 +2821,6 @@ required = true
           ...process.env,
           AGENC_HOME: home,
           AGENC_WORKSPACE: workspace,
-          AGENC_MCP_SERVERS: "",
           HOME: home,
         },
       });
@@ -3299,7 +3107,7 @@ required = true
     }
   });
 
-  it("boots in bypassPermissions when started with --yolo", async () => {
+  it("boots in bypassPermissions when started with --dangerously-bypass-approvals-and-sandbox", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
 
@@ -3331,7 +3139,7 @@ required = true
           AGENC_WORKSPACE: workspace,
           HOME: home,
         },
-        argv: ["node", "agenc", "--yolo"],
+        argv: ["node", "agenc", "--dangerously-bypass-approvals-and-sandbox"],
       });
       shutdown = boot.shutdown;
 
@@ -3357,7 +3165,7 @@ required = true
     }
   });
 
-  it("keeps untrusted project settings from relaxing bootstrap permissions", async () => {
+  it("keeps untrusted project config from relaxing bootstrap permissions", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
     // Pin this temporary directory as the project root. Test runners and local
@@ -3366,24 +3174,22 @@ required = true
     await writeFile(join(workspace, "package.json"), "{}\n", "utf8");
     await writeFile(
       join(home, "config.toml"),
-      'approval_policy = "never"\n',
+      'config_version = 2\napproval_policy = "never"\n',
       "utf8",
     );
     await mkdir(join(workspace, ".agenc"), { recursive: true });
     await writeFile(
-      join(workspace, ".agenc", "settings.json"),
-      JSON.stringify(
-        {
-          permissions: {
-            defaultMode: "bypassPermissions",
-            allow: ["Bash(*)"],
-            ask: ["Read"],
-            deny: ["Write"],
-          },
-        },
-        null,
-        2,
-      ),
+      join(workspace, ".agenc", "config.toml"),
+      [
+        "config_version = 2",
+        "",
+        "[permissions]",
+        'defaultMode = "bypassPermissions"',
+        'allow = ["system.bash(*)"]',
+        'ask = ["FileRead"]',
+        'deny = ["Write"]',
+        "",
+      ].join("\n"),
       "utf8",
     );
 
@@ -3424,7 +3230,7 @@ required = true
       );
       expect(permissions.mode).toBe("default");
       expect(permissions.alwaysAllowRules.projectSettings ?? []).toEqual([]);
-      expect(permissions.alwaysAskRules.projectSettings).toEqual(["Read"]);
+      expect(permissions.alwaysAskRules.projectSettings).toEqual(["FileRead"]);
       expect(permissions.alwaysDenyRules.projectSettings).toEqual(["Write"]);
     } finally {
       await shutdown?.().catch(() => {
@@ -3472,6 +3278,129 @@ required = true
       shutdown = boot.shutdown;
 
       expect(boot.session.permissionModeRegistry.current().mode).toBe("plan");
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("uses one immutable config/profile/CLI authority across bootstrap, session, tools, and reload subscribers", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-config-home-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "agenc-bootstrap-config-ws-"),
+    );
+    await writeFile(
+      join(workspace, "operator.toml"),
+      [
+        "config_version = 2",
+        'model_provider = "grok"',
+        'model = "grok-4.3"',
+        'approval_policy = "on-request"',
+        'sandbox_mode = "workspace-write"',
+        "[profiles.operator]",
+        'model = "grok-4.5"',
+        'approval_policy = "never"',
+        'sandbox_mode = "read-only"',
+        "[profiles.operator.tools_config]",
+        'disabled_tools = ["Write"]',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    trustWorkspaceForTest(home, workspace);
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          AGENC_MODEL: "grok-4.4",
+          HOME: home,
+        },
+        argv: [
+          "node",
+          "agenc",
+          "--config",
+          "operator.toml",
+          "--profile",
+          "operator",
+          "--provider",
+          "grok",
+          "--model",
+          "grok-4.6",
+        ],
+      });
+      shutdown = boot.shutdown;
+      const expectedConfig = {
+        model_provider: "grok",
+        model: "grok-4.6",
+        approval_policy: "never",
+        sandbox_mode: "read-only",
+        tools_config: { disabled_tools: ["Write"] },
+      };
+      const observed: unknown[] = [];
+      const unsubscribe = boot.configStore.subscribe((config) =>
+        observed.push(config),
+      );
+
+      const assertCanonicalBootstrap = (): void => {
+        expect(boot.configStore.current()).toMatchObject(expectedConfig);
+        expect(boot.resolvedProvider).toBe("grok");
+        expect(boot.model).toBe("grok-4.6");
+        expect(boot.config.model).toBe("grok-4.6");
+        expect(boot.session.services.configStore).toBe(boot.configStore);
+        expect(boot.session.sessionConfiguration).toMatchObject({
+          provider: { slug: "grok" },
+          collaborationMode: { model: "grok-4.6" },
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "read_only" },
+        });
+        expect(boot.registry.tools.some((tool) => tool.name === "FileRead")).toBe(
+          true,
+        );
+        expect(boot.registry.tools.some((tool) => tool.name === "Write")).toBe(
+          false,
+        );
+      };
+
+      assertCanonicalBootstrap();
+      await boot.configStore.reload();
+      assertCanonicalBootstrap();
+      expect(observed).toEqual([expect.objectContaining(expectedConfig)]);
+      expect(boot.configStore.provenance("model")?.scope).toBe("cli");
+      expect(boot.configStore.provenance("sandbox_mode")?.scope).toBe(
+        "profile",
+      );
+      expect(boot.configStore.sources("flag")).toEqual([
+        expect.objectContaining({
+          path: join(workspace, "operator.toml"),
+        }),
+      ]);
+      unsubscribe();
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */
@@ -3635,7 +3564,7 @@ required = true
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
     await writeFile(
       join(home, "config.toml"),
-      'approval_policy = "never"\n',
+      'config_version = 2\napproval_policy = "never"\n',
       "utf8",
     );
     trustWorkspaceForTest(home, workspace);

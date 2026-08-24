@@ -6,6 +6,7 @@
 
 import type { ModelOption } from './modelOptions.js'
 import { listOllamaModels } from '../providerDiscovery.js'
+import { getSelectedProviderEnvironment } from './providers.js'
 
 let cachedOllamaOptions: ModelOption[] | null = null
 let fetchPromise: Promise<ModelOption[]> | null = null
@@ -15,10 +16,11 @@ let fetchPromise: Promise<ModelOption[]> | null = null
  * Detects OLLAMA_BASE_URL presence, /v1 suffixed URLs, and the raw base URL.
  */
 export function isOllamaProvider(): boolean {
+  const environment = getSelectedProviderEnvironment()
   // Explicit OLLAMA_BASE_URL is always sufficient
-  if (process.env.OLLAMA_BASE_URL) return true
-  if (!process.env.OPENAI_BASE_URL) return false
-  const baseUrl = process.env.OPENAI_BASE_URL
+  if (environment.OLLAMA_BASE_URL) return true
+  if (!environment.OPENAI_BASE_URL) return false
+  const baseUrl = environment.OPENAI_BASE_URL
   // Match common Ollama port
   try {
     const parsed = new URL(baseUrl)
@@ -33,7 +35,8 @@ export function isOllamaProvider(): boolean {
  * Fetch models from the Ollama /api/tags endpoint.
  */
 export async function fetchOllamaModels(): Promise<ModelOption[]> {
-  const models = await listOllamaModels()
+  const environment = getSelectedProviderEnvironment()
+  const models = await listOllamaModels(undefined, environment)
   return models.map(model => {
     const paramSize = model.parameterSize ?? ''
     const quant = model.quantizationLevel ?? ''

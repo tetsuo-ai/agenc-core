@@ -17,6 +17,7 @@ import { dirname, join, sep } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { AGENC_DAEMON_INTERNAL_METHODS } from "../../src/app-server/protocol/index.js";
+import { ConfigStore } from "../../src/config/store.js";
 import { createApplyPatchTool } from "../../src/tools/apply-patch/tool.js";
 import { createFileEditTool } from "../../src/tools/system/file-edit.js";
 import { createFileReadTool } from "../../src/tools/system/file-read.js";
@@ -24,6 +25,7 @@ import { SESSION_ID_ARG } from "../../src/tools/system/filesystem.js";
 import { createFileWriteTool } from "../../src/tools/system/file-write.js";
 import { createNotebookEditTool } from "../../src/tools/system/notebook-edit.js";
 import { createFilesystemTools } from "../../src/tools/system/filesystem.js";
+import { enterCanonicalSettingsAuthority } from "../../src/utils/settings/canonicalAuthority.js";
 import {
   captureWorkspaceAuthoritativeDirtySnapshots,
   WorkspaceMutationCoordinator,
@@ -41,6 +43,21 @@ async function tempDirectory(prefix: string): Promise<string> {
   const path = await mkdtemp(join(tmpdir(), prefix));
   temporaryPaths.push(path);
   return path;
+}
+
+function enterWorkspaceMutationAuthority(
+  agencHome: string,
+  workspaceRoot: string,
+): void {
+  enterCanonicalSettingsAuthority(
+    new ConfigStore({
+      home: agencHome,
+      env: {},
+      cwd: workspaceRoot,
+      projectRoot: workspaceRoot,
+      projectTrusted: false,
+    }),
+  );
 }
 
 function workspaceMutationStatePath(
@@ -2868,7 +2885,8 @@ describe("WorkspaceMutationCoordinator", () => {
       const workspaceRoot = await tempDirectory("agenc-coherence-fenced-root-");
       const displacedRoot = `${workspaceRoot}-displaced`;
       temporaryPaths.push(displacedRoot);
-      const registry = new WorkspaceMutationCoordinatorRegistry();
+      const agencHome = await tempDirectory("agenc-coherence-renamed-home-");
+      const registry = new WorkspaceMutationCoordinatorRegistry({ agencHome });
       const operation = registry.beginReadToolOperation(
         workspaceRoot,
         "renamed-root-read",
@@ -7272,7 +7290,7 @@ describe("filesystem-tool editor coherence", () => {
   it("blocks a file mutation after daemon restart before editor reconnect", async () => {
     const workspaceRoot = await tempDirectory("agenc-coherence-workspace-");
     const agencHome = await tempDirectory("agenc-coherence-home-");
-    process.env.AGENC_HOME = agencHome;
+    enterWorkspaceMutationAuthority(agencHome, workspaceRoot);
     const path = join(workspaceRoot, "restart-before-editor.ts");
     const diskContent = "disk state\n";
     const editorContent = "unsaved editor state\n";
@@ -7432,7 +7450,7 @@ describe("filesystem-tool editor coherence", () => {
   it("reconciles every file after a multi-file patch reaches disk but ledger fsync fails", async () => {
     const workspaceRoot = await tempDirectory("agenc-coherence-workspace-");
     const agencHome = await tempDirectory("agenc-coherence-home-");
-    process.env.AGENC_HOME = agencHome;
+    enterWorkspaceMutationAuthority(agencHome, workspaceRoot);
     const firstPath = join(workspaceRoot, "first.ts");
     const secondPath = join(workspaceRoot, "second.ts");
     const firstBefore = "export const first = 1;\n";
@@ -7538,7 +7556,7 @@ describe("filesystem-tool editor coherence", () => {
   it("returns honest Write and NotebookEdit errors when bytes changed but auditing failed", async () => {
     const workspaceRoot = await tempDirectory("agenc-coherence-workspace-");
     const agencHome = await tempDirectory("agenc-coherence-home-");
-    process.env.AGENC_HOME = agencHome;
+    enterWorkspaceMutationAuthority(agencHome, workspaceRoot);
     const textPath = join(workspaceRoot, "write-audit.ts");
     const notebookPath = join(workspaceRoot, "notebook-audit.ipynb");
     const textBefore = "export const value = 1;\n";

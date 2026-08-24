@@ -1199,10 +1199,10 @@ export const SettingSourceSchema = lazySchema(() =>
   z
     .enum(['user', 'project', 'local'])
     .describe(
-      'Source for loading filesystem-based settings. ' +
-        "'user' - Global user settings (~/.agenc/settings.json). " +
-        "'project' - Project settings (.agenc/settings.json). " +
-        "'local' - Local settings (.agenc/settings.local.json).",
+      'Canonical configuration scope. ' +
+        "'user' - $AGENC_HOME/config.toml. " +
+        "'project' - .agenc/config.toml. " +
+        "'local' - .agenc/config.local.toml.",
     ),
 )
 

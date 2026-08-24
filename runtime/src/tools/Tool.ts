@@ -196,7 +196,7 @@ export type ToolUseContext = {
     querySource?: QuerySource;
     /** Optional callback to get the latest tools (e.g., after MCP servers connect mid-query) */
     refreshTools?: () => Tools;
-    /** Per-agent provider override from agentRouting config */
+    /** Explicit provider override for this agent invocation. */
     providerOverride?: { model: string; baseURL: string; apiKey: string };
   };
   abortController: AbortController;
@@ -269,11 +269,6 @@ export type ToolUseContext = {
   /** When true, canUseTool must always be called even when hooks auto-approve.
    *  Used by speculation for overlay file path rewriting. */
   requireCanUseTool?: boolean;
-  /**
-   * Optional callback used by hook-chain fallback actions that launch
-   * AgentTool from hook runtime paths.
-   */
-  hookChainsCanUseTool?: CanUseToolFn;
   messages: Message[];
   fileReadingLimits?: {
     maxTokens?: number;

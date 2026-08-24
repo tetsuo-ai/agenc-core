@@ -3,7 +3,7 @@ import { feature } from "bun:bundle";
 import { useMemo } from "react";
 import { useCommandQueue } from "../../hooks/useCommandQueue.js";
 import { useAppState } from "../../state/AppState.js";
-import { getGlobalConfig } from "../../../utils/config.js";
+import { getRuntimeState } from "../../../utils/config.js";
 import { getExampleCommandFromCache } from "../../../utils/exampleCommands.js";
 import {
   isQueuedCommandEditable,
@@ -64,7 +64,7 @@ export function usePromptInputPlaceholder({
     // are hidden from the prompt area (see PromptInputQueuedCommands).
     if (
       queuedCommands.some(isQueuedCommandEditable) &&
-      (getGlobalConfig().queuedCommandUpHintCount || 0) <
+      (getRuntimeState().queuedCommandUpHintCount || 0) <
         NUM_TIMES_QUEUE_HINT_SHOWN
     ) {
       return "Press up to edit queued messages";

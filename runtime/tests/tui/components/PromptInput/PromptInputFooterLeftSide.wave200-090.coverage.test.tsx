@@ -205,7 +205,7 @@ vi.mock("../../ink/hooks/use-selection.js", () => ({
 }));
 
 vi.mock("../../../utils/config.js", () => ({
-  getGlobalConfig: () => harness.config,
+  getRuntimeState: () => harness.config,
 }));
 
 vi.mock("../../../utils/platform.js", () => ({

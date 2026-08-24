@@ -34,6 +34,7 @@ import {
 } from "./agent-lifecycle.js";
 import { AgenCDaemonClientMultiplexer } from "./client-multiplexer.js";
 import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
+import { DAEMON_CLIENT_ENV_SNAPSHOT_KEYS } from "./client-env-snapshot.js";
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_DAEMON_METHOD_CAPABILITIES_KEY,
@@ -54,6 +55,7 @@ import type {
   AgenCBackgroundAgentStartParams,
 } from "./background-agent-runner.js";
 import { AgenCBackgroundAgentSuspensionShutdownError } from "./background-agent-runner.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
@@ -105,7 +107,7 @@ function openRollout(
     ...(source !== null ? { source } : {}),
     agencVersion: "0.2.0",
     model: "grok-4",
-    modelProvider: "xai",
+    modelProvider: "grok",
   });
   return rollout;
 }
@@ -334,7 +336,7 @@ function canonicalRuntimeSettings(
     bypassPermissionsWorkspace:
       permissionMode === "bypassPermissions" ? cwd : null,
     model: "grok-5",
-    provider: "xai",
+    provider: "grok",
     profile: null,
     reasoningEffort: null,
     modelVerbosity: null,
@@ -342,6 +344,27 @@ function canonicalRuntimeSettings(
     hooksDisabled: false,
     ...overrides,
   };
+}
+
+const TEST_AGENT_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
+
+type TestAgentCreateParams = Omit<
+  Parameters<AgenCDaemonAgentManager["createAgent"]>[0],
+  "runtimeOptions"
+> & {
+  readonly runtimeOptions?: Parameters<
+    AgenCDaemonAgentManager["createAgent"]
+  >[0]["runtimeOptions"];
+};
+
+function createTestAgent(
+  agents: AgenCDaemonAgentManager,
+  params: TestAgentCreateParams,
+) {
+  return agents.createAgent({
+    ...params,
+    runtimeOptions: params.runtimeOptions ?? TEST_AGENT_RUNTIME_OPTIONS,
+  });
 }
 
 afterEach(() => {
@@ -1026,7 +1049,7 @@ describe("AgenC background agent lifecycle", () => {
               completionTokens: 12,
               totalTokens: 42,
               model: "grok-4",
-              provider: "xai",
+              provider: "grok",
             },
           },
         },
@@ -1050,7 +1073,7 @@ describe("AgenC background agent lifecycle", () => {
         payload: {
           turnId: "turn-1",
           model: "grok-4",
-          provider: "xai",
+          provider: "grok",
         },
       } as RolloutItem);
       threadStore.shutdownThread("stored-agent-full-log");
@@ -1068,7 +1091,7 @@ describe("AgenC background agent lifecycle", () => {
       expect(result.transcript).toContain("event:request_permissions");
       expect(result.transcript).toContain('"permissions":');
       expect(result.transcript).toContain("rollout:turn_context");
-      expect(result.transcript).toContain('"provider": "xai"');
+      expect(result.transcript).toContain('"provider": "grok"');
     } finally {
       threadStore.close();
       rollout.close();
@@ -1943,7 +1966,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         cwd: process.cwd(),
         objective: "inspect live termination",
       }),
@@ -2001,7 +2024,7 @@ describe("AgenC background agent lifecycle", () => {
     });
     agentsRef = agents;
 
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "reentrant stop",
     });
@@ -2226,7 +2249,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         cwd: process.cwd(),
         objective: "  build the parser  ",
         metadata: { ticket: "F-06a" },
@@ -2245,6 +2268,7 @@ describe("AgenC background agent lifecycle", () => {
         ticket: "F-06a",
         unattendedAllow: [],
         unattendedDeny: [],
+        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
       sessionId: "session_1",
     });
@@ -2256,9 +2280,11 @@ describe("AgenC background agent lifecycle", () => {
           ticket: "F-06a",
           unattendedAllow: [],
           unattendedDeny: [],
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
         },
         unattendedAllow: [],
         unattendedDeny: [],
+        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
     ]);
     await expect(sessions.getSession("session_1")).resolves.toEqual({
@@ -2273,6 +2299,7 @@ describe("AgenC background agent lifecycle", () => {
         source: "agent.start",
         unattendedAllow: [],
         unattendedDeny: [],
+        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
     });
     await expect(agents.listAgents()).resolves.toEqual({
@@ -2291,6 +2318,7 @@ describe("AgenC background agent lifecycle", () => {
             ticket: "F-06a",
             unattendedAllow: [],
             unattendedDeny: [],
+            runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           },
         },
       ],
@@ -2315,6 +2343,7 @@ describe("AgenC background agent lifecycle", () => {
             source: "agent.start",
             unattendedAllow: [],
             unattendedDeny: [],
+            runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           },
           activeAttachmentIds: ["attachment_1"],
         },
@@ -2344,7 +2373,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: "conv-retained1",
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2386,6 +2415,7 @@ describe("AgenC background agent lifecycle", () => {
         permissionMode: "acceptEdits",
         unattendedAllow: [],
         unattendedDeny: [],
+        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
       restoreAttemptId: expect.any(String),
       reopenTerminalRun: true,
@@ -2394,6 +2424,7 @@ describe("AgenC background agent lifecycle", () => {
       provider: "grok",
       permissionMode: "acceptEdits",
       envOverrides: { AGENC_MODEL: "grok-4.3" },
+      runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
     });
     await expect(sessions.getSession("session_resumed")).resolves.toMatchObject(
       {
@@ -2412,7 +2443,7 @@ describe("AgenC background agent lifecycle", () => {
         canonicalRuntimeSettings("plan", cwd, {
           prePlanMode: "acceptEdits",
           model: "grok-5-fast",
-          provider: "xai",
+          provider: "grok",
           profile: "deep-work",
           reasoningEffort: "high",
           modelVerbosity: "low",
@@ -2423,7 +2454,7 @@ describe("AgenC background agent lifecycle", () => {
     const expectedSettings = canonicalRuntimeSettings("plan", fixture.cwd, {
       prePlanMode: "acceptEdits",
       model: "grok-5-fast",
-      provider: "xai",
+      provider: "grok",
       profile: "deep-work",
       reasoningEffort: "high",
       modelVerbosity: "low",
@@ -2459,7 +2490,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: "conv-runtime-overlay1",
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2468,7 +2499,7 @@ describe("AgenC background agent lifecycle", () => {
     ).resolves.toMatchObject({
       metadata: {
         model: "grok-5-fast",
-        provider: "xai",
+        provider: "grok",
         profile: "deep-work",
         permissionMode: "plan",
       },
@@ -2476,7 +2507,7 @@ describe("AgenC background agent lifecycle", () => {
     expect(restoreRuntime).toHaveBeenCalledWith(
       expect.objectContaining({
         model: "grok-5-fast",
-        provider: "xai",
+        provider: "grok",
         profile: "deep-work",
         permissionMode: "plan",
         runtimeSettings: expectedSettings,
@@ -2510,7 +2541,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2546,7 +2577,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2593,7 +2624,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2621,7 +2652,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2672,7 +2703,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2723,7 +2754,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2759,7 +2790,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: "conv-homealias-server1",
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2806,7 +2837,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: "conv-cwdalias-server1",
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: sourceProof,
@@ -2832,7 +2863,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: "conv-longobjective1",
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -2883,7 +2914,7 @@ describe("AgenC background agent lifecycle", () => {
       });
 
       await expect(
-        agents.createAgent({
+        createTestAgent(agents, {
           resumeSessionId: sessionId,
           resumeRolloutPath: fixture.rolloutPath,
           resumeSourceProof: fixture.sourceProof,
@@ -2911,7 +2942,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         objective: "replace retained work",
         resumeSessionId: "conv-objective-lock1",
         resumeRolloutPath: fixture.rolloutPath,
@@ -2941,7 +2972,7 @@ describe("AgenC background agent lifecycle", () => {
       { unattendedDeny: ["Edit(*)"] },
     ] as const) {
       await expect(
-        agents.createAgent({
+        createTestAgent(agents, {
           resumeSessionId: "conv-policy-lock1",
           resumeRolloutPath: fixture.rolloutPath,
           resumeSourceProof: fixture.sourceProof,
@@ -2972,7 +3003,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: "conv-child-source1",
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -3000,7 +3031,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -3031,7 +3062,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -3060,7 +3091,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: "conv-cancel-request1",
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -3101,7 +3132,7 @@ describe("AgenC background agent lifecycle", () => {
       });
 
       await expect(
-        agents.createAgent({
+        createTestAgent(agents, {
           resumeSessionId: sessionId,
           resumeRolloutPath: rolloutPath,
           resumeSourceProof: fixture.sourceProof,
@@ -3215,7 +3246,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -3244,7 +3275,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -3276,9 +3307,9 @@ describe("AgenC background agent lifecycle", () => {
       cwd: fixture.cwd,
     } as const;
 
-    const first = agents.createAgent(params);
+    const first = createTestAgent(agents, params);
     await vi.waitFor(() => expect(restoreAgent).toHaveBeenCalledOnce());
-    await expect(agents.createAgent(params)).rejects.toThrow(
+    await expect(createTestAgent(agents, params)).rejects.toThrow(
       "canonical session conv-concurrent1 is already being resumed",
     );
     expect(restoreAgent).toHaveBeenCalledOnce();
@@ -3330,7 +3361,7 @@ describe("AgenC background agent lifecycle", () => {
         cwd: fixture.cwd,
       } as const;
 
-      const failure = await agents.createAgent(params).then(
+      const failure = await createTestAgent(agents, params).then(
         () => null,
         (error: unknown) => error,
       );
@@ -3348,7 +3379,7 @@ describe("AgenC background agent lifecycle", () => {
       expect(restoreAgent).not.toHaveBeenCalled();
 
       __setAgentLifecycleResumeSourceTestHooksForTest();
-      await expect(agents.createAgent(params)).rejects.toThrow(
+      await expect(createTestAgent(agents, params)).rejects.toThrow(
         "is unattended and cannot be resumed",
       );
       await expect(
@@ -3387,7 +3418,7 @@ describe("AgenC background agent lifecycle", () => {
         suspendIdleAgentForDaemonShutdown,
       },
     });
-    const create = agents.createAgent({
+    const create = createTestAgent(agents, {
       resumeSessionId: "conv-shutdown-race1",
       resumeRolloutPath: fixture.rolloutPath,
       resumeSourceProof: fixture.sourceProof,
@@ -3460,7 +3491,7 @@ describe("AgenC background agent lifecycle", () => {
       metadata: {
         agentPath: "/root",
         model: "grok-4",
-        provider: "xai",
+        provider: "grok",
       },
     });
     const params = {
@@ -3470,7 +3501,7 @@ describe("AgenC background agent lifecycle", () => {
       cwd: fixture.cwd,
     } as const;
 
-    await expect(agents.createAgent(params)).rejects.toThrow(
+    await expect(createTestAgent(agents, params)).rejects.toThrow(
       "agent run publication failed",
     );
     expect(rollbackRestoredAgent).toHaveBeenCalledWith(
@@ -3485,7 +3516,7 @@ describe("AgenC background agent lifecycle", () => {
       sessions.getSession("session_historical_closed"),
     ).resolves.toMatchObject({ status: "closed" });
 
-    await expect(agents.createAgent(params)).resolves.toMatchObject({
+    await expect(createTestAgent(agents, params)).resolves.toMatchObject({
       agentId: sessionId,
       status: "running",
     });
@@ -3518,7 +3549,7 @@ describe("AgenC background agent lifecycle", () => {
 
     let failure: unknown;
     try {
-      await agents.createAgent({
+      await createTestAgent(agents, {
         resumeSessionId: sessionId,
         resumeRolloutPath: fixture.rolloutPath,
         resumeSourceProof: fixture.sourceProof,
@@ -3575,7 +3606,7 @@ describe("AgenC background agent lifecycle", () => {
         },
       });
 
-      await agents.createAgent({ objective: "persist me", cwd });
+      await createTestAgent(agents, { objective: "persist me", cwd });
       expect(agentRunRow(driver, "agent_run_live")).toMatchObject({
         id: "agent_run_live",
         objective: "persist me",
@@ -3660,7 +3691,7 @@ describe("AgenC background agent lifecycle", () => {
         },
       });
 
-      await agents.createAgent({ objective: "persist terminal replay", cwd });
+      await createTestAgent(agents, { objective: "persist terminal replay", cwd });
 
       expect(agentRunRow(driver, "agent_replayed_terminal")).toMatchObject({
         id: "agent_replayed_terminal",
@@ -3716,7 +3747,7 @@ describe("AgenC background agent lifecycle", () => {
       });
 
       await expect(
-        agents.createAgent({ objective: "rollback attach failure", cwd }),
+        createTestAgent(agents, { objective: "rollback attach failure", cwd }),
       ).rejects.toThrow("attach failed");
       expect(stopAgent).toHaveBeenCalledWith(
         "agent_rollback",
@@ -3759,7 +3790,7 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
     });
 
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "build the parser",
     });
@@ -3786,6 +3817,7 @@ describe("AgenC background agent lifecycle", () => {
       metadata: {
         unattendedAllow: [],
         unattendedDeny: [],
+        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
     });
     const stoppedSession = await sessions.getSession("session_1");
@@ -3837,8 +3869,8 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
     });
 
-    await agents.createAgent({ cwd: process.cwd(), objective: "one" });
-    await agents.createAgent({ cwd: process.cwd(), objective: "two" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "one" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "two" });
 
     await expect(agents.stopAll("daemon_shutdown")).resolves.toBe(2);
 
@@ -3893,7 +3925,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
 
-    await agents.createAgent({ cwd: process.cwd(), objective: "resume later" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "resume later" });
     await expect(
       agents.stopAll("daemon_shutdown", { disposition: "suspend_idle" }),
     ).resolves.toBe(1);
@@ -3950,7 +3982,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
 
-    await agents.createAgent({ cwd: process.cwd(), objective: "resume later" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "resume later" });
     await expect(
       agents.stopAll("daemon_shutdown", { disposition: "suspend_idle" }),
     ).rejects.toThrow(
@@ -4002,8 +4034,8 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
     });
 
-    await agents.createAgent({ cwd: process.cwd(), objective: "one" });
-    await agents.createAgent({ cwd: process.cwd(), objective: "two" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "one" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "two" });
 
     await expect(agents.stopAll("daemon_shutdown")).rejects.toThrow(
       "AgenC daemon cleanup failed for 1 agent(s): agent_one",
@@ -4047,7 +4079,7 @@ describe("AgenC background agent lifecycle", () => {
       runner,
     });
 
-    const create = agents.createAgent({
+    const create = createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "late create",
     });
@@ -4067,7 +4099,7 @@ describe("AgenC background agent lifecycle", () => {
     expect(stopAgent).toHaveBeenCalledWith("agent_late", "daemon_shutdown");
     await expect(agents.listAgents()).resolves.toEqual({ agents: [] });
     await expect(
-      agents.createAgent({ cwd: process.cwd(), objective: "after shutdown" }),
+      createTestAgent(agents, { cwd: process.cwd(), objective: "after shutdown" }),
     ).rejects.toMatchObject({
       code: "INVALID_ARGUMENT",
       message: "agent.start rejected because the daemon is shutting down",
@@ -4097,7 +4129,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
 
-    await agents.createAgent({ cwd: process.cwd(), objective: "snapshot me" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "snapshot me" });
     await agents.stopAll("daemon_shutdown");
 
     await expect(agents.flushSnapshots("daemon_shutdown")).resolves.toBe(1);
@@ -4117,6 +4149,7 @@ describe("AgenC background agent lifecycle", () => {
             metadata: {
               unattendedAllow: [],
               unattendedDeny: [],
+              runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
             },
           },
         ],
@@ -4158,7 +4191,7 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
     });
 
-    await agents.createAgent({ cwd: process.cwd(), objective: "race stop" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "race stop" });
     const stop = agents.stopAgent({ agentId: "agent_race" });
     await stopStarted.promise;
 
@@ -4210,7 +4243,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
 
-    await agents.createAgent({ cwd: process.cwd(), objective: "fail stop" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "fail stop" });
     await expect(
       agents.stopAgent({ agentId: "agent_fail_stop" }),
     ).rejects.toThrow("shutdown failed");
@@ -4273,11 +4306,11 @@ describe("AgenC background agent lifecycle", () => {
       runner,
     });
 
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "watch active work",
     });
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "finish quickly",
     });
@@ -4300,6 +4333,7 @@ describe("AgenC background agent lifecycle", () => {
           metadata: {
             unattendedAllow: [],
             unattendedDeny: [],
+            runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           },
         },
         {
@@ -4313,6 +4347,7 @@ describe("AgenC background agent lifecycle", () => {
           metadata: {
             unattendedAllow: [],
             unattendedDeny: [],
+            runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           },
         },
       ],
@@ -4354,9 +4389,9 @@ describe("AgenC background agent lifecycle", () => {
       runner,
     });
 
-    await agents.createAgent({ cwd: process.cwd(), objective: "first" });
-    await agents.createAgent({ cwd: process.cwd(), objective: "second" });
-    await agents.createAgent({ cwd: process.cwd(), objective: "third" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "first" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "second" });
+    await createTestAgent(agents, { cwd: process.cwd(), objective: "third" });
 
     await expect(agents.listAgents({ limit: 2 })).resolves.toMatchObject({
       agents: [
@@ -4416,7 +4451,7 @@ describe("AgenC background agent lifecycle", () => {
     };
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         cwd: process.cwd(),
         objective: "describe this",
         initialContent: [
@@ -4476,7 +4511,7 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "inspect image",
     });
@@ -4556,7 +4591,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
 
-    await agents.createAgent({ objective: "snapshot policy", cwd });
+    await createTestAgent(agents, { objective: "snapshot policy", cwd });
     await agents.streamAgentMessage({
       sessionId: "session_snapshot",
       content: "continue",
@@ -4671,7 +4706,7 @@ describe("AgenC background agent lifecycle", () => {
         },
       });
 
-      await agents.createAgent({ objective: "dedupe snapshots", cwd });
+      await createTestAgent(agents, { objective: "dedupe snapshots", cwd });
       await agents.streamAgentMessage({
         sessionId: "session_combined_snapshot",
         content: "continue",
@@ -4735,7 +4770,7 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
 
-    await agents.createAgent({ cwd, objective: "watch status" });
+    await createTestAgent(agents, { cwd, objective: "watch status" });
     currentSnapshot = {
       status: "idle",
       lastActiveAt: "2026-05-01T12:00:02.000Z",
@@ -4808,7 +4843,7 @@ describe("AgenC background agent lifecycle", () => {
         },
       });
 
-      await agents.createAgent({
+      await createTestAgent(agents, {
         cwd: process.cwd(),
         objective: "watch budget status",
       });
@@ -4879,7 +4914,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({
+      createTestAgent(agents, {
         cwd: process.cwd(),
         objective: "snapshot failures should not block",
       }),
@@ -4942,7 +4977,7 @@ describe("AgenC background agent lifecycle", () => {
       agents.attachAgent({ agentId: "agent_missing" }),
     ).rejects.toMatchObject({ code: "AGENT_NOT_FOUND" });
 
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "closed session",
     });
@@ -4955,7 +4990,7 @@ describe("AgenC background agent lifecycle", () => {
     ).rejects.toMatchObject({ code: "AGENT_NOT_FOUND" });
 
     active = false;
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "inactive before attach",
     });
@@ -4973,7 +5008,7 @@ describe("AgenC background agent lifecycle", () => {
     const agents = new AgenCDaemonAgentManager();
 
     await expect(
-      agents.createAgent({ cwd: process.cwd(), objective: "build the parser" }),
+      createTestAgent(agents, { cwd: process.cwd(), objective: "build the parser" }),
     ).rejects.toMatchObject({
       code: "BACKGROUND_RUNNER_UNAVAILABLE",
     });
@@ -5126,7 +5161,7 @@ describe("AgenC background agent lifecycle", () => {
     });
 
     await expect(
-      agents.createAgent({ cwd: process.cwd(), objective: "build the parser" }),
+      createTestAgent(agents, { cwd: process.cwd(), objective: "build the parser" }),
     ).rejects.toThrow("session store unavailable");
     expect(stopAgent).toHaveBeenCalledWith(
       "agent_orphan",
@@ -5144,17 +5179,18 @@ describe("AgenC background agent lifecycle", () => {
       },
     });
     await expect(
-      agents.createAgent({ cwd: process.cwd(), objective: "   " }),
+      createTestAgent(agents, { cwd: process.cwd(), objective: "   " }),
     ).rejects.toBeInstanceOf(AgenCDaemonAgentLifecycleError);
   });
 
   it("requires initialize before agent.create on a daemon JSON-RPC connection", async () => {
+    const startAgent = vi.fn(async () => ({
+      agentId: "agent_rpc",
+      startedAt: "2026-05-01T12:00:00.500Z",
+      status: "running" as const,
+    }));
     const runner: AgenCBackgroundAgentRunner = {
-      startAgent: async () => ({
-        agentId: "agent_rpc",
-        startedAt: "2026-05-01T12:00:00.500Z",
-        status: "running",
-      }),
+      startAgent,
       stopAgent: vi.fn(async () => {}),
     };
     const agents = new AgenCDaemonAgentManager({
@@ -5265,13 +5301,16 @@ describe("AgenC background agent lifecycle", () => {
         data: { code: "CONNECTION_AUTHENTICATION_FAILED" },
       },
     });
-
     await expect(
       connection.dispatch({
         jsonrpc: JSON_RPC_VERSION,
         id: 1,
         method: "agent.create",
-        params: { objective: "ship a daemon task", cwd: process.cwd() },
+        params: {
+          objective: "ship a daemon task",
+          cwd: process.cwd(),
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+        },
       }),
     ).resolves.toEqual({
       jsonrpc: JSON_RPC_VERSION,
@@ -5353,7 +5392,11 @@ describe("AgenC background agent lifecycle", () => {
         jsonrpc: JSON_RPC_VERSION,
         id: 2,
         method: "agent.create",
-        params: { objective: "ship a daemon task", cwd: process.cwd() },
+        params: {
+          objective: "ship a daemon task",
+          cwd: process.cwd(),
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+        },
       }),
     ).resolves.toEqual({
       jsonrpc: JSON_RPC_VERSION,
@@ -5369,8 +5412,21 @@ describe("AgenC background agent lifecycle", () => {
         metadata: {
           unattendedAllow: [],
           unattendedDeny: [],
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
         },
       },
+    });
+
+    const rawCreateParams = startAgent.mock.calls[0]?.[0];
+    expect(Object.keys(rawCreateParams?.envOverrides ?? {}).sort()).toEqual(
+      [...DAEMON_CLIENT_ENV_SNAPSHOT_KEYS].sort(),
+    );
+    expect(rawCreateParams?.envOverrides).toMatchObject({
+      AGENC_PROVIDER: "",
+      AGENC_MODEL: "",
+      OPENAI_API_KEY: "",
+      FIRECRAWL_API_KEY: "",
+      WEB_SEARCH_PROVIDER: "",
     });
 
     await expect(
@@ -5396,6 +5452,7 @@ describe("AgenC background agent lifecycle", () => {
             metadata: {
               unattendedAllow: [],
               unattendedDeny: [],
+              runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
             },
           },
         ],
@@ -5487,6 +5544,27 @@ describe("AgenC background agent lifecycle", () => {
       error: {
         code: -32602,
         message: "daemon request params must be an object",
+        data: { code: "INVALID_ARGUMENT" },
+      },
+    });
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "relative-config",
+        method: "agent.create",
+        params: {
+          cwd: process.cwd(),
+          objective: "ship",
+          configPath: "operator.toml",
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "relative-config",
+      error: {
+        code: -32602,
+        message:
+          "agent.create param 'configPath' must be a non-empty absolute path",
         data: { code: "INVALID_ARGUMENT" },
       },
     });
@@ -5635,7 +5713,7 @@ describe("AgenC background agent lifecycle", () => {
         params: {
           cwd: process.cwd(),
           objective: "ship",
-          envOverrides: { AGENC_MCP_SERVERS: [] },
+          envOverrides: { XAI_API_KEY: [] },
         },
       }),
     ).resolves.toEqual({
@@ -5644,10 +5722,54 @@ describe("AgenC background agent lifecycle", () => {
       error: {
         code: -32602,
         message:
-          "agent.create param 'envOverrides.AGENC_MCP_SERVERS' must be a string",
+          "agent.create param 'envOverrides.XAI_API_KEY' must be a string",
         data: { code: "INVALID_ARGUMENT" },
       },
     });
+    for (const [id, envOverrides, message] of [
+      [
+        "unknown-env-override",
+        { RANDOM_SECRET: "secret" },
+        /envOverrides.*unsupported key.*RANDOM_SECRET/i,
+      ],
+      [
+        "home-env-override",
+        { AGENC_HOME: "/redirected" },
+        /envOverrides.*unsupported key.*AGENC_HOME/i,
+      ],
+      [
+        "workspace-env-override",
+        { AGENC_WORKSPACE: "/redirected" },
+        /envOverrides.*unsupported key.*AGENC_WORKSPACE/i,
+      ],
+      [
+        "retired-model-env-override",
+        { OPENAI_MODEL: "retired" },
+        /envOverrides.*obsolete configuration environment variable.*OPENAI_MODEL/i,
+      ],
+      [
+        "retired-provider-env-override",
+        { AGENC_USE_OPENAI: "0" },
+        /envOverrides.*obsolete provider selector.*AGENC_USE_OPENAI/i,
+      ],
+    ] as const) {
+      await expect(
+        connection.dispatch({
+          jsonrpc: JSON_RPC_VERSION,
+          id,
+          method: "agent.create",
+          params: { cwd: process.cwd(), objective: "ship", envOverrides },
+        }),
+      ).resolves.toMatchObject({
+        jsonrpc: JSON_RPC_VERSION,
+        id,
+        error: {
+          code: -32602,
+          message: expect.stringMatching(message),
+          data: { code: "INVALID_ARGUMENT" },
+        },
+      });
+    }
     expect(startAgent).not.toHaveBeenCalled();
   });
 
@@ -5699,7 +5821,11 @@ describe("AgenC background agent lifecycle", () => {
         jsonrpc: JSON_RPC_VERSION,
         id: "create",
         method: "agent.create",
-        params: { cwd: process.cwd(), objective: "answer from the portal" },
+        params: {
+          cwd: process.cwd(),
+          objective: "answer from the portal",
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+        },
       }),
     ).resolves.toMatchObject({
       result: {
@@ -5836,6 +5962,7 @@ describe("AgenC background agent lifecycle", () => {
           {
             objective: "  index queued work  ",
             cwd: process.cwd(),
+            runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
             unattendedAllow: ["FileRead"],
             metadata: { source: "portal.dashboard" },
           },
@@ -5856,6 +5983,7 @@ describe("AgenC background agent lifecycle", () => {
           source: "portal.dashboard",
           unattendedAllow: ["FileRead"],
           unattendedDeny: [],
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
         },
       },
     });
@@ -5863,15 +5991,24 @@ describe("AgenC background agent lifecycle", () => {
       {
         objective: "index queued work",
         cwd: process.cwd(),
+        envOverrides: expect.any(Object),
         metadata: {
           source: "portal.dashboard",
           unattendedAllow: ["FileRead"],
           unattendedDeny: [],
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
         },
         unattendedAllow: ["FileRead"],
         unattendedDeny: [],
+        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       },
     ]);
+    expect(starts[0]?.envOverrides).toMatchObject({
+      AGENC_PROVIDER: "",
+      AGENC_MODEL: "",
+      XAI_API_KEY: "",
+      OPENAI_API_KEY: "",
+    });
     await expect(
       connection.dispatch(
         createAgenCPortalAgentListRequest({ limit: 5 }, "list-background"),
@@ -5961,7 +6098,11 @@ describe("AgenC background agent lifecycle", () => {
       jsonrpc: JSON_RPC_VERSION,
       id: "create",
       method: "agent.create",
-      params: { cwd: process.cwd(), objective: "validate portal actions" },
+      params: {
+        cwd: process.cwd(),
+        objective: "validate portal actions",
+        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+      },
     });
 
     await expect(
@@ -6566,7 +6707,7 @@ describe("AgenC background agent lifecycle", () => {
       runner,
       permissionAuditLogger: auditLogger,
     });
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "wait for approval",
     });
@@ -6688,7 +6829,7 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "wait for all-tool approval",
     });
@@ -6734,7 +6875,7 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "stale approval",
     });
@@ -6771,7 +6912,7 @@ describe("AgenC background agent lifecycle", () => {
       },
       onPermissionAuditError,
     });
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "wait for approval",
     });
@@ -6811,7 +6952,7 @@ describe("AgenC background agent lifecycle", () => {
       sessionManager: sessions,
       runner,
     });
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "list permissions",
     });
@@ -6955,7 +7096,11 @@ describe("AgenC background agent lifecycle", () => {
         jsonrpc: JSON_RPC_VERSION,
         id: "create",
         method: "agent.create",
-        params: { cwd: process.cwd(), objective: "run background work" },
+        params: {
+          cwd: process.cwd(),
+          objective: "run background work",
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+        },
       }),
     ).resolves.toMatchObject({
       result: { agentId: "agent_dup", sessionId: "session_1" },
@@ -7116,7 +7261,7 @@ describe("AgenC background agent lifecycle", () => {
       agents.handleRunnerTerminated(id, snapshot),
     );
 
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "do work then end",
     });
@@ -7189,7 +7334,7 @@ describe("AgenC background agent lifecycle", () => {
       agents.handleRunnerTerminated(id, snapshot),
     );
 
-    await agents.createAgent({
+    await createTestAgent(agents, {
       cwd: process.cwd(),
       objective: "finish immediately",
     });

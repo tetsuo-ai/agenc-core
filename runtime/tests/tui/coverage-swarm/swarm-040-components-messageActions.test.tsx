@@ -186,7 +186,7 @@ describe('swarm 040 message action helpers', () => {
 
   test('classifies less common actionable and filtered message shapes', () => {
     expect(isNavigableMessage(assistantText('No response requested.'))).toBe(false)
-    expect(isNavigableMessage(assistantTool('Read', { file_path: 123 }))).toBe(true)
+    expect(isNavigableMessage(assistantTool('FileRead', { file_path: 123 }))).toBe(true)
     expect(isNavigableMessage(assistantTool('Unknown', { file_path: 'x' }))).toBe(false)
 
     expect(isNavigableMessage(userText('No response requested.'))).toBe(false)
@@ -247,8 +247,8 @@ describe('swarm 040 message action helpers', () => {
     expect(copyTextOf({ type: 'user', message: { content: [{ type: 'image' }] } } as never)).toBe('')
     expect(copyTextOf(assistantTool('Edit', { file_path: 'edited.ts' }))).toBe('edited.ts')
     expect(copyTextOf(assistantTool('Write', { file_path: 'written.ts' }))).toBe('written.ts')
-    expect(copyTextOf(assistantTool('Task', { prompt: 'summarize' }))).toBe('summarize')
-    expect(copyTextOf(assistantTool('Read', { file_path: 99 }))).toBe('')
+    expect(copyTextOf(assistantTool('Agent', { prompt: 'summarize' }))).toBe('summarize')
+    expect(copyTextOf(assistantTool('FileRead', { file_path: 99 }))).toBe('')
 
     expect(
       copyTextOf({
@@ -459,7 +459,7 @@ describe('swarm 040 useMessageActions', () => {
       capture.current?.setCursor({
         expanded: false,
         msgType: 'assistant',
-        toolName: 'Bash',
+        toolName: 'system.bash',
         uuid: 'primary-without-tool-call',
       })
       await sleep()
@@ -468,11 +468,11 @@ describe('swarm 040 useMessageActions', () => {
       expect(caps.copy).not.toHaveBeenCalled()
       expect(capture.current?.cursor).toBeNull()
 
-      nav.current = navWithSelected(assistantTool('Read', { file_path: 42 }))
+      nav.current = navWithSelected(assistantTool('FileRead', { file_path: 42 }))
       capture.current?.setCursor({
         expanded: false,
         msgType: 'assistant',
-        toolName: 'Read',
+        toolName: 'FileRead',
         uuid: 'primary-empty-value',
       })
       await sleep()

@@ -6,6 +6,7 @@ import {
   dirname,
   isAbsolute,
   join,
+  resolve,
   sep as pathSep,
   relative,
 } from 'path'
@@ -26,7 +27,7 @@ import {
   parseEffortValue,
 } from '../utils/effort.js'
 import {
-  getAgenCConfigHomeDir,
+  getAgenCHomeDir,
   isBareMode,
   isEnvTruthy,
 } from '../utils/envUtils.js'
@@ -55,7 +56,7 @@ import type { SettingSource } from '../utils/settings/constants.js'
 import { isSettingSourceEnabled } from '../utils/settings/constants.js'
 import { getManagedFilePath } from '../utils/settings/managedPath.js'
 import { isRestrictedToPluginOnly } from '../utils/settings/pluginOnlyPolicy.js'
-import { HooksSchema, type HooksSettings } from '../utils/settings/types.js'
+import { HooksSchema, type HooksSettings } from '../schemas/hooks.js'
 import { createSignal } from '../utils/signal.js'
 import { registerMCPSkillBuilders } from './mcpSkillBuilders.js'
 import { frameUntrustedMcpSkillContent } from './untrustedMcpSkillFraming.js'
@@ -83,7 +84,7 @@ export function getSkillsPath(
     case 'policySettings':
       return join(getManagedFilePath(), '.agenc', dir)
     case 'userSettings':
-      return join(getAgenCConfigHomeDir(), dir)
+      return join(getAgenCHomeDir(), dir)
     case 'projectSettings':
       return `.agenc/${dir}`
     case 'plugin':
@@ -735,7 +736,7 @@ async function loadSkillsFromCommandsDir(
  */
 export const getSkillDirCommands = memoize(
   async (cwd: string): Promise<Command[]> => {
-    const userSkillsDir = join(getAgenCConfigHomeDir(), 'skills')
+    const userSkillsDir = join(getAgenCHomeDir(), 'skills')
     const managedSkillsDir = join(getManagedFilePath(), '.agenc', 'skills')
     const projectSkillsDirs = getProjectDirsUpToHome('skills', cwd)
 
@@ -899,6 +900,7 @@ export const getSkillDirCommands = memoize(
 
     return unconditionalSkills
   },
+  (cwd: string) => `${resolve(cwd)}\u0000${getAgenCHomeDir()}`,
 )
 
 export function clearSkillCaches() {

@@ -60,7 +60,7 @@ Schema-validated command hook (`HookCommand`):
 
 ```toml
 [[hooks.PreToolUse]]
-matcher = "Bash"
+matcher = "system.bash"
 enabled = true
 hooks = [
   { type = "command", command = "/path/to/check-bash.sh", timeout_ms = 5000, statusMessage = "pre-bash hook" },
@@ -112,8 +112,8 @@ Plugin hooks merge via `plugins/registration/load-plugin-hooks.ts`.
 ```
 
 - No args / interactive: menu (`hooks-menu.tsx`) when runtime available
-- Against daemon: `test` and `clear-diagnostics` may report deferred;
-  `enable`/`disable` need daemon RPC support
+- Against daemon: `enable`/`disable` use `session.hooks.setDisabled`.
+  `test` and `clear-diagnostics` may still report deferred.
 - Description: “Inspect and test AgenC hook configuration”
 
 ---

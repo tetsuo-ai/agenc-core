@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
+import { snapshotProviderEnvironment } from '../../src/llm/provider-options.js'
+import type { ProviderAuthReadContext } from '../../src/utils/auth.js'
 
 const originalEnv = { ...process.env }
 const axiosModulePath = 'axios'
@@ -35,6 +37,16 @@ async function importFreshFastModeModule() {
   return import('../../src/utils/fastMode.ts')
 }
 
+function fastModeContext(
+  environment: Readonly<Record<string, string | undefined>> = Object.freeze({}),
+): ProviderAuthReadContext {
+  return Object.freeze({
+    home: Object.freeze({ path: '/tmp/agenc-fast-mode-test-home' }) as never,
+    environment,
+    provider: 'anthropic',
+  })
+}
+
 function installCommonMocks(options?: {
   cachedEnabled?: boolean
   apiKey?: string | null
@@ -42,18 +54,23 @@ function installCommonMocks(options?: {
   hasProfileScope?: boolean
   axiosReject?: boolean
 }) {
+  const axiosClient = {
+    defaults: {},
+    get: options?.axiosReject
+      ? async () => {
+          throw new Error('network fail')
+        }
+      : async () => ({ data: { enabled: false, disabled_reason: 'preference' } }),
+  }
   vi.doMock(axiosModulePath, () => ({
     default: {
-      get: options?.axiosReject
-        ? async () => {
-            throw new Error('network fail')
-          }
-        : async () => ({ data: { enabled: false, disabled_reason: 'preference' } }),
+      create: () => axiosClient,
       isAxiosError: () => false,
     },
   }))
 
   vi.doMock(oauthModulePath, () => ({
+    fileSuffixForOauthConfig: () => '',
     getOauthConfig: () => ({ BASE_API_URL: 'https://api.anthropic.com' }),
     OAUTH_BETA_HEADER: 'test-beta',
   }))
@@ -65,7 +82,10 @@ function installCommonMocks(options?: {
   }))
 
   vi.doMock(authModulePath, () => ({
-    getAnthropicApiKey: () => options?.apiKey ?? null,
+    getAnthropicApiKeyWithSourceForContext: () => ({
+      key: options?.apiKey ?? null,
+      source: options?.apiKey ? 'ANTHROPIC_API_KEY' : 'none',
+    }),
     getAgenCAIOAuthTokens: () =>
       options?.oauthToken ? { accessToken: options.oauthToken } : null,
     handleOAuth401Error: async () => {},
@@ -77,10 +97,10 @@ function installCommonMocks(options?: {
   }))
 
   vi.doMock(configModulePath, () => ({
-    getGlobalConfig: () => ({
+    getRuntimeState: () => ({
       penguinModeOrgEnabled: options?.cachedEnabled === true,
     }),
-    saveGlobalConfig: (updater: (current: Record<string, unknown>) => Record<string, unknown>) =>
+    updateRuntimeState: (updater: (current: Record<string, unknown>) => Record<string, unknown>) =>
       updater({ penguinModeOrgEnabled: options?.cachedEnabled === true }),
   }))
 
@@ -88,7 +108,8 @@ function installCommonMocks(options?: {
     logForDebugging: () => {},
   }))
 
-  vi.doMock(envUtilsModulePath, () => ({
+  vi.doMock(envUtilsModulePath, async importOriginal => ({
+    ...(await importOriginal<typeof import('../../src/utils/envUtils.js')>()),
     isEnvTruthy: (value: string | undefined) =>
       !!value && value !== '0' && value.toLowerCase() !== 'false',
   }))
@@ -101,6 +122,8 @@ function installCommonMocks(options?: {
 
   vi.doMock(providersModulePath, () => ({
     getAPIProvider: () => 'firstParty',
+    getSelectedProviderEnvironment: () => Object.freeze({}),
+    getSelectedProviderName: () => 'anthropic',
   }))
 
   vi.doMock(privacyLevelModulePath, () => ({
@@ -108,6 +131,7 @@ function installCommonMocks(options?: {
   }))
 
   vi.doMock(settingsModulePath, () => ({
+    getExecutionAuthoritySettings: () => ({ fastMode: true }),
     getInitialSettings: () => ({ fastMode: true }),
     getSettingsForSource: () => ({}),
     updateSettingsForSource: () => {},
@@ -138,12 +162,13 @@ describe('fastMode ant-only fallback cleanup', () => {
 
     const {
       resolveFastModeStatusFromCache,
-      getFastModeUnavailableReason,
+      getFastModeUnavailableReasonForContext,
     } = await importFreshFastModeModule()
+    const context = fastModeContext()
 
-    resolveFastModeStatusFromCache()
+    resolveFastModeStatusFromCache(context)
 
-    expect(getFastModeUnavailableReason()).toBe(
+    expect(getFastModeUnavailableReasonForContext(context)).toBe(
       'Fast mode is currently unavailable',
     )
   })
@@ -154,12 +179,13 @@ describe('fastMode ant-only fallback cleanup', () => {
 
     const {
       prefetchFastModeStatus,
-      getFastModeUnavailableReason,
+      getFastModeUnavailableReasonForContext,
     } = await importFreshFastModeModule()
+    const context = fastModeContext()
 
-    await prefetchFastModeStatus()
+    await prefetchFastModeStatus(context)
 
-    expect(getFastModeUnavailableReason()).toBe(
+    expect(getFastModeUnavailableReasonForContext(context)).toBe(
       'Fast mode has been disabled by your organization',
     )
   })
@@ -174,13 +200,34 @@ describe('fastMode ant-only fallback cleanup', () => {
 
     const {
       prefetchFastModeStatus,
-      getFastModeUnavailableReason,
+      getFastModeUnavailableReasonForContext,
     } = await importFreshFastModeModule()
+    const context = fastModeContext()
 
-    await prefetchFastModeStatus()
+    await prefetchFastModeStatus(context)
 
-    expect(getFastModeUnavailableReason()).toBe(
+    expect(getFastModeUnavailableReasonForContext(context)).toBe(
       'Fast mode unavailable due to network connectivity issues',
     )
+  })
+
+  test('uses the captured fast-mode flags after the source and process environments mutate', async () => {
+    installCommonMocks()
+    const sourceEnvironment: Record<string, string | undefined> = {
+      AGENC_DISABLE_FAST_MODE: '0',
+      AGENC_SKIP_FAST_MODE_NETWORK_ERRORS: '1',
+    }
+    const capturedEnvironment = snapshotProviderEnvironment(sourceEnvironment)
+    const context = fastModeContext(capturedEnvironment)
+    const { isFastModeEnabledForContext } = await importFreshFastModeModule()
+
+    sourceEnvironment.AGENC_DISABLE_FAST_MODE = '1'
+    process.env.AGENC_DISABLE_FAST_MODE = '1'
+
+    expect(capturedEnvironment).toMatchObject({
+      AGENC_DISABLE_FAST_MODE: '0',
+      AGENC_SKIP_FAST_MODE_NETWORK_ERRORS: '1',
+    })
+    expect(isFastModeEnabledForContext(context)).toBe(true)
   })
 })

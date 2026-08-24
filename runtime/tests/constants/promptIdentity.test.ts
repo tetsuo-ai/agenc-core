@@ -18,14 +18,16 @@ import {
   createAgentRoleWorkspace,
   requireAgentRole,
 } from '../../src/agents/role.ts'
+import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from '../../src/session/runtime-options.ts'
 
 const ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd())
 
-const originalSimpleEnv = process.env.AGENC_SIMPLE
 const originalMcpInstructionsDeltaEnv = process.env.AGENC_MCP_INSTR_DELTA
 
 afterEach(() => {
-  process.env.AGENC_SIMPLE = originalSimpleEnv
   process.env.AGENC_MCP_INSTR_DELTA = originalMcpInstructionsDeltaEnv
   clearSystemPromptSections()
 })
@@ -41,16 +43,16 @@ test('CLI identity prefixes describe AgenC', () => {
 })
 
 test('simple mode identity describes AgenC', async () => {
-  process.env.AGENC_SIMPLE = '1'
-
-  const prompt = await getSystemPrompt([], 'gpt-4o')
+  const prompt = await runWithAgentRuntimeOptions(
+    resolveAgentRuntimeOptions({}, { simpleMode: true }),
+    () => getSystemPrompt([], 'gpt-4o'),
+  )
 
   expect(prompt[0]).toContain('AgenC')
   expect(prompt[0]).not.toContain("provider's official CLI for AgenC")
 })
 
 test('system prompt model identity updates when model changes mid-session', async () => {
-  delete process.env.AGENC_SIMPLE
   clearSystemPromptSections()
 
   const firstPrompt = await getSystemPrompt([], 'old-test-model')
@@ -65,7 +67,6 @@ test('system prompt model identity updates when model changes mid-session', asyn
 })
 
 test('legacy system prompt MCP instructions are isolated as untrusted blocks', async () => {
-  delete process.env.AGENC_SIMPLE
   process.env.AGENC_MCP_INSTR_DELTA = 'false'
   clearSystemPromptSections()
 

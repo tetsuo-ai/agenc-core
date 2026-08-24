@@ -772,7 +772,7 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
   },
   {
     provider: "deepseek",
-    model: "deepseek-reasoner",
+    model: "deepseek-v4-pro",
     apiKey: "deepseek-test",
     env: { DEEPSEEK_API_KEY: undefined },
     createHarness: (parityCase) =>
@@ -780,11 +780,11 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
         factory: (fetchImpl) =>
           new DeepSeekProvider({
             apiKey: "deepseek-test",
-            model: "deepseek-reasoner",
+            model: "deepseek-v4-pro",
             tools: parityCase.tools ? [...parityCase.tools] : [],
             fetchImpl,
           }),
-        payload: buildChatCompletionsPayload("deepseek-reasoner", parityCase),
+        payload: buildChatCompletionsPayload("deepseek-v4-pro", parityCase),
       }),
   },
   {
@@ -806,7 +806,7 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
   },
   {
     provider: "mistral",
-    model: "devstral-latest",
+    model: "mistral-medium-latest",
     apiKey: "mistral-test",
     env: { MISTRAL_API_KEY: undefined },
     createHarness: (parityCase) =>
@@ -814,11 +814,11 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
         factory: (fetchImpl) =>
           new MistralProvider({
             apiKey: "mistral-test",
-            model: "devstral-latest",
+            model: "mistral-medium-latest",
             tools: parityCase.tools ? [...parityCase.tools] : [],
             fetchImpl,
           }),
-        payload: buildChatCompletionsPayload("devstral-latest", parityCase),
+        payload: buildChatCompletionsPayload("mistral-medium-latest", parityCase),
       }),
   },
   {

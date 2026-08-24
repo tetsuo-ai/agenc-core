@@ -65,6 +65,11 @@ import {
   type SessionSubmitOptions,
 } from "../session/autonomous-mode.js";
 import type { TurnContext } from "../session/turn-context.js";
+import {
+  assertNoRemovedSimpleModeEnvironment,
+  resolveAgentRuntimeOptions,
+  type AgentRuntimeOptions,
+} from "../session/runtime-options.js";
 import { runTurn } from "../session/run-turn.js";
 import { editorInteractionSystemPrompt } from "../session/editor-interaction.js";
 import { seedFileMentionSessionReads } from "../session/file-mention-session-reads.js";
@@ -81,6 +86,7 @@ import {
   resolveAgencHome,
   resolveWorkspace as resolveWorkspaceFromEnv,
 } from "../config/env.js";
+import { resolveHomeContext } from "../config/home.js";
 import {
   recentOomSnapshotNotice,
   startHeapWatchdog,
@@ -101,7 +107,6 @@ import { getOutputStyleConfig } from "../constants/outputStyles.js";
 import { renderHookAdditionalContextSection } from "../prompts/hook-context-framing.js";
 import { loadSessionMcpServerInstructions } from "../prompts/mcp-server-instructions.js";
 import { clearSystemPromptSections } from "../prompts/sections.js";
-import { enableConfigs } from "../config/init.js";
 import {
   resolveLatestSessionId,
   resolveResumeSessionId,
@@ -113,6 +118,7 @@ import {
   runAgenCDaemonCli,
 } from "../app-server/daemon-cli.js";
 import {
+  captureRemoteCliRuntimeContext,
   formatAgenCRemoteCliHelpText,
   parseAgenCRemoteCliArgs,
   runAgenCRemoteCli,
@@ -252,19 +258,23 @@ import {
 } from "../hooks/configured-hooks.js";
 import {
   readStartupCliFlags,
-  resolveStartupSelection,
+  resolveCanonicalStartupSelection,
+  resolvedStartupProfileName,
+  startupConfigLayerOptions,
+  type StartupCliFlags,
 } from "./startup-selection.js";
 import {
   isProjectTrustedSync,
-  resolveProjectTrustRootSync,
   trustProject,
 } from "../permissions/trust/project-trust.js";
 import {
   formatProjectTrustSources,
   summarizeProjectTrustSources,
 } from "../permissions/trust/trust-sources.js";
-import { runStartupConfigMigrations } from "../state/migrations/config-migrations.js";
-import { setSessionTrustAccepted } from "../bootstrap/state.js";
+import {
+  setIsRemoteMode,
+  setSessionTrustAccepted,
+} from "../bootstrap/state.js";
 import { installGlobalErrorNet } from "../utils/gracefulShutdown.js";
 import { isRecord } from "../utils/record.js";
 import type { AgenCTuiBridgeSession } from "../tui/daemon-session.js";
@@ -282,7 +292,10 @@ type AgenCDaemonCliDeps = {
    * `resumeTUIEntry`; injectable so the `/resume` relaunch wiring can be
    * contract-tested without spinning a real daemon attach.
    */
-  readonly resumeTui: (args: ResumeTUIArgs) => Promise<number>;
+  readonly resumeTui: (
+    args: ResumeTUIArgs,
+    startupCliFlags?: StartupCliFlags,
+  ) => Promise<number>;
 };
 
 const DEFAULT_DAEMON_CLI_DEPS: AgenCDaemonCliDeps = {
@@ -293,7 +306,8 @@ const DEFAULT_DAEMON_CLI_DEPS: AgenCDaemonCliDeps = {
   findAgentBySessionId: findAgenCDaemonAgentBySessionId,
   createTuiContext: createAgenCDaemonOnlyTuiContext,
   ensureDaemonReady: defaultEnsureDaemonReady,
-  resumeTui: (args: ResumeTUIArgs) => resumeTUIEntry(args),
+  resumeTui: (args: ResumeTUIArgs, startupCliFlags?: StartupCliFlags) =>
+    resumeTUIEntry(args, startupCliFlags),
 };
 
 let daemonCliDepsForTest: Partial<AgenCDaemonCliDeps> | null = null;
@@ -315,8 +329,8 @@ export function __setDaemonCliDepsForTest(
 export {
   PROVIDER_MODEL_CATALOG,
   resolveModelOrThrow,
-  sessionConfigurationFromAgenCConfig,
 } from "./bootstrap.js";
+export { sessionConfigurationFromAgenCConfig } from "../session/configuration.js";
 
 /**
  * Detect whether one of the boolean short-circuit flags (`--help`, `-h`,
@@ -378,7 +392,7 @@ export function formatCliHelpText(): string {
     "  gateway                                 Inspect/operate the channel gateway (pairing)",
     "  budget                                  Inspect/operate cost-bounded autonomy",
     "  run                                     Start, inspect, replay, export, or cancel a durable run",
-    "  init                                    Create .agenc/config.json and AGENC.md",
+    "  init                                    Create .agenc/config.toml and AGENC.md",
     "  login | logout | whoami                  Manage the configured auth session",
     "  providers                               Check provider readiness and local health",
     "  config                                  Show, mutate, validate, or edit config.toml",
@@ -398,17 +412,17 @@ export function formatCliHelpText(): string {
     "  --output-format <format>                 Print mode output: text, json, or stream-json",
     "  --input-format <format>                  Print mode input: stream-json",
     "  --no-tui                                 Force one-shot CLI mode",
+    "  --bare                                   Run with the reduced startup surface",
     "  -c, --continue                           Continue the latest project session",
     "  -r, --resume <session-id>                Resume a prior project session in the TUI",
     "  --profile <name>                         Use a named config profile",
+    "  --config <path>                          Load an explicit config.toml layer",
     "  --provider <name>                        Override provider for this session",
     "  --model <id|provider:id>                 Override model for this session",
     "  --permission-mode <mode>                 Override the startup permission mode",
-    "  --autonomous, --proactive                Enable autonomous tick mode",
+    "  --autonomous                             Enable autonomous tick mode",
     "  --dangerously-bypass-approvals-and-sandbox",
     "                                           Bypass approvals and sandbox checks",
-    "  --yolo                                   Alias for approval/sandbox bypass",
-    "  --allow-dangerously-skip-permissions     Skip approval prompts",
     "  --image <file|url|data-url>              Attach a startup image",
     "",
     "Examples:",
@@ -749,18 +763,14 @@ export function validateAgencHome(
   env: NodeJS.ProcessEnv = process.env,
   mkdir: typeof mkdirSync = mkdirSync,
 ): string {
-  const explicit = env.AGENC_HOME;
-  const home =
-    explicit && explicit.length > 0
-      ? explicit
-      : env.HOME && env.HOME.length > 0
-        ? `${env.HOME}/.agenc`
-        : "";
-  if (!home) {
+  if (!(env.AGENC_HOME?.trim() || env.HOME?.trim())) {
     throw new Error(
       "HOME unset and AGENC_HOME unset — set AGENC_HOME to a writable dir",
     );
   }
+  const home = resolveHomeContext(env, {
+    ...(env.HOME?.trim() ? { platformHome: env.HOME.trim() } : {}),
+  }).path;
   try {
     mkdir(home, { recursive: true });
   } catch (error) {
@@ -1425,13 +1435,14 @@ async function prepareOneShotPromptForDaemon(params: {
   readonly env: NodeJS.ProcessEnv;
   readonly signal: AbortSignal;
   readonly stderr: Pick<NodeJS.WriteStream, "write">;
+  readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
 }): Promise<
   | { readonly blocked: false; readonly prompt: string }
   | { readonly blocked: true; readonly blockMessage: string }
 > {
   const target = createOneShotHookTarget();
   const explicitDanger =
-    readStartupCliFlags(process.argv).allowDangerouslySkipPermissions === true;
+    params.dangerouslyBypassApprovalsAndSandbox === true;
   const configuredSandbox = params.configStore.current().sandbox_mode;
   const sandboxExecutionBroker = new SandboxExecutionBroker({
     mode: explicitDanger
@@ -1717,7 +1728,7 @@ function installTuiSessionContract(params: {
         if (!isAutonomousTick) return true;
         if (lastTurnToolNames.has("Sleep")) return true;
         const activeToolNames = [...lastTurnToolNames].filter(
-          (name) => name !== "Brief" && name !== "SendUserMessage",
+          (name) => name !== "SendUserMessage",
         );
         return activeToolNames.length > 0;
       };
@@ -2061,11 +2072,13 @@ async function runDaemonOneShotPrompt(params: {
   readonly deps: AgenCDaemonCliDeps;
   readonly prompt: string;
   readonly env: NodeJS.ProcessEnv;
+  readonly runtimeOptions: AgentRuntimeOptions;
   readonly cwd: string;
   readonly outputFormat?: OneShotOutputFormat;
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  readonly configPath?: string;
   readonly initialContent?: string | readonly MessageContentBlock[];
   readonly permissionMode?: AgentCreateParams["permissionMode"];
 }): Promise<number> {
@@ -2089,9 +2102,13 @@ async function runDaemonOneShotPrompt(params: {
       objective: params.prompt,
       instructions: params.prompt,
       cwd: params.cwd,
+      runtimeOptions: params.runtimeOptions,
       ...(params.model !== undefined ? { model: params.model } : {}),
       ...(params.provider !== undefined ? { provider: params.provider } : {}),
       ...(params.profile !== undefined ? { profile: params.profile } : {}),
+      ...(params.configPath !== undefined
+        ? { configPath: params.configPath }
+        : {}),
       ...(params.initialContent !== undefined
         ? { initialContent: params.initialContent }
         : {}),
@@ -2322,6 +2339,7 @@ async function runDaemonOneShotPrompt(params: {
 export async function oneShotCLI(
   userMessage: string | null = null,
   startupImages: readonly string[] = [],
+  parsedStartupCliFlags?: StartupCliFlags,
 ): Promise<number> {
   const initAbort = new AbortController();
   const uninstallInitSignals = installInitSignalHandlers(initAbort);
@@ -2335,11 +2353,17 @@ export async function oneShotCLI(
   };
 
   try {
+    assertNoRemovedSimpleModeEnvironment(process.env);
+    const startupCliFlags =
+      parsedStartupCliFlags ?? readStartupCliFlags(process.argv);
+    const sessionEnv = process.env;
+    const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
+      simpleMode: startupCliFlags.simpleMode === true,
+    });
     validateAgencHome();
     throwIfAborted("validateAgencHome");
-    const agencHome = resolveAgencHome(process.env);
+    const agencHome = resolveAgencHome(sessionEnv);
     const oneShotArgv = process.argv.slice(2);
-    const startupCliFlags = readStartupCliFlags(process.argv);
     const outputFormat = readOneShotOutputFormat(oneShotArgv);
     readOneShotInputFormat(oneShotArgv);
 
@@ -2349,15 +2373,16 @@ export async function oneShotCLI(
         : await resolveUserMessage(initAbort.signal);
     throwIfAborted("resolveUserMessage");
 
-    const cliCwd = resolveCliCwdForStartup(process.env);
+    const cliCwd = resolveCliCwdForStartup(sessionEnv);
     if (!cliCwd.ok) {
       process.stderr.write(`agenc: ${cliCwd.message}\n`);
       return 1;
     }
     if (
       !(await requireProjectTrustForTui({
-        env: process.env,
+        env: sessionEnv,
         argv: process.argv,
+        startupCliFlags,
         cwd: cliCwd.cwd,
       }))
     ) {
@@ -2366,16 +2391,24 @@ export async function oneShotCLI(
     throwIfAborted("requireProjectTrustForTui");
 
     const daemonCwd = cliCwd.cwd;
+    const startupLayers = startupConfigLayerOptions({
+      cli: startupCliFlags,
+      env: sessionEnv,
+      cwd: daemonCwd,
+    });
     const configStore = new ConfigStore({
       home: agencHome,
-      env: process.env,
+      env: sessionEnv,
+      cwd: daemonCwd,
+      ...startupLayers,
       onWarn: (message) => process.stderr.write(`${message}\n`),
     });
-    await configStore.reload();
-    const startup = resolveStartupSelection({
-      config: configStore.current(),
-      env: process.env,
-      argv: process.argv,
+    const config = await configStore.reload();
+    const profileName = resolvedStartupProfileName(startupCliFlags, sessionEnv);
+    const startup = resolveCanonicalStartupSelection({
+      config,
+      env: sessionEnv,
+      ...(profileName !== undefined ? { profileName } : {}),
     });
     const promptPreparation = await prepareOneShotPromptForDaemon({
       prompt: resolvedUserMessage,
@@ -2385,6 +2418,8 @@ export async function oneShotCLI(
       env: process.env,
       signal: initAbort.signal,
       stderr: process.stderr,
+      dangerouslyBypassApprovalsAndSandbox:
+        startupCliFlags.dangerouslyBypassApprovalsAndSandbox === true,
     });
     throwIfAborted("prepareOneShotPromptForDaemon");
     if (promptPreparation.blocked) {
@@ -2400,7 +2435,7 @@ export async function oneShotCLI(
       preparedUserMessage,
       resolvedStartupImages,
       daemonCwd,
-      process.env.HOME,
+      sessionEnv.HOME,
     );
     const daemonPrompt =
       preparedUserMessage.trim().length > 0
@@ -2408,17 +2443,17 @@ export async function oneShotCLI(
         : initialContent !== undefined
           ? "Multimodal AgenC startup"
           : preparedUserMessage;
-    // Forward --yolo / dangerously-skip flags to the daemon so the
-    // print-mode oneShot agent runs under bypassPermissions, matching
+    // Forward the canonical dangerous-bypass selection to the daemon so the
+    // print-mode one-shot agent runs under bypassPermissions, matching
     // the bootTUI path. See GAP-PE-GUARDIAN-YOLO-LEAK.
     // Honor a validated `--permission-mode <value>` in the print path. Without
-    // this, only --yolo/bypass propagated and acceptEdits/plan/default were
+    // this, only bypassPermissions propagated and acceptEdits/plan/default were
     // silently dropped. readStartupCliFlags already validated the flag (throwing
     // on a typo so a less-restrictive session can't boot silently). The daemon's
     // forced --autonomous does NOT override a forwarded acceptEdits/plan:
     // applyUnattendedPermissionPolicyToContext explicitly preserves the user's
     // explicit mode (only default → unattended), so forwarding takes effect
-    // without weakening the unattended/security posture. --yolo still wins:
+    // without weakening the unattended/security posture. Explicit bypass still wins:
     // bypassPermissions takes precedence over any other forwarded mode. Narrow
     // to the daemon-accepted subset (agent.create rejects dontAsk/auto); other
     // user-addressable modes fall back to the unattended default as before.
@@ -2426,13 +2461,17 @@ export async function oneShotCLI(
     return await runDaemonOneShotPrompt({
       deps: daemonCliDeps(),
       prompt: daemonPrompt,
-      env: process.env,
+      env: sessionEnv,
+      runtimeOptions,
       cwd: daemonCwd,
       outputFormat,
       model: startup.model,
       provider: startup.provider,
       ...(startup.profileName !== undefined
         ? { profile: startup.profileName }
+        : {}),
+      ...(startupLayers.flagConfigPath !== undefined
+        ? { configPath: startupLayers.flagConfigPath }
         : {}),
       ...(initialContent !== undefined ? { initialContent } : {}),
       ...(oneShotPermissionMode !== undefined
@@ -2459,7 +2498,7 @@ export async function oneShotCLI(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// T12 Wave 5-B — TUI entry adapters
+// TUI entry adapters
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -2475,6 +2514,7 @@ async function loadBootTUI(): Promise<
     initialPrompt?: string;
     initialComposerText?: string;
     initialUserMessages?: readonly LLMMessage[];
+    stdinMode?: "readable" | "data";
   }) => Promise<{ unmount: () => void; waitUntilExit: () => Promise<void> }>
 > {
   // The path is relative to the *compiled* output layout (both
@@ -2495,6 +2535,7 @@ async function loadBootTUI(): Promise<
       initialPrompt?: string;
       initialComposerText?: string;
       initialUserMessages?: readonly LLMMessage[];
+      stdinMode?: "readable" | "data";
     }) => Promise<{
       unmount: () => void;
       waitUntilExit: () => Promise<void>;
@@ -2526,10 +2567,13 @@ async function consumePendingResumeSessionId(): Promise<string | null> {
  * bridge). Runs only after `waitUntilExit()` + teardown, so the prior
  * session is cleanly detached first. Returns the exit code to surface.
  */
-export async function exitOrResumeAfterTui(exitCode: number): Promise<number> {
+export async function exitOrResumeAfterTui(
+  exitCode: number,
+  startupCliFlags?: StartupCliFlags,
+): Promise<number> {
   const resumeId = await consumePendingResumeSessionId();
   if (resumeId === null) return exitCode;
-  return daemonCliDeps().resumeTui({ resumeId });
+  return daemonCliDeps().resumeTui({ resumeId }, startupCliFlags);
 }
 
 async function loadProjectTrustPrompt(): Promise<
@@ -2563,6 +2607,7 @@ async function markLegacySessionTrustAccepted(): Promise<void> {
 export interface ProjectTrustPreflightOptions {
   readonly env?: NodeJS.ProcessEnv;
   readonly argv?: readonly string[];
+  readonly startupCliFlags?: StartupCliFlags;
   readonly cwd?: string;
   readonly stdin?: NodeJS.ReadStream;
   readonly stdout?: NodeJS.WriteStream;
@@ -2593,30 +2638,34 @@ export async function runProjectTrustPreflightForTui(
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const agencHome = resolveAgencHome(env);
-  const configStore = new ConfigStore({ home: agencHome, env });
-  await configStore.reload();
-  const startup = resolveStartupSelection({
-    config: configStore.current(),
-    env,
-    argv: options.argv ?? process.argv,
-  });
-  const startupCliFlags = readStartupCliFlags(options.argv ?? process.argv);
+  const startupCliFlags =
+    options.startupCliFlags ??
+    readStartupCliFlags(options.argv ?? process.argv);
   const rawWorkspace =
     options.useEnvWorkspace === false
       ? (options.cwd ?? process.cwd())
       : (resolveWorkspaceFromEnv(env) ?? options.cwd ?? process.cwd());
-  const projectRoot = resolveProjectTrustRootSync({
-    cwd: rawWorkspace,
-    projectRootMarkers: startup.config.project_root_markers,
-  });
-  const configMigrations = await runStartupConfigMigrations({
+  const configStore = new ConfigStore({
     home: agencHome,
-    cwd: projectRoot,
-    configStore,
+    env,
+    cwd: rawWorkspace,
+    ...startupConfigLayerOptions({
+      cli: startupCliFlags,
+      env,
+      cwd: rawWorkspace,
+    }),
   });
-  if (configMigrations.wrote) {
-    await configStore.reload();
-  }
+  const config = await configStore.reload();
+  const profileName = resolvedStartupProfileName(startupCliFlags, env);
+  const startup = resolveCanonicalStartupSelection({
+    config,
+    env,
+    ...(profileName !== undefined ? { profileName } : {}),
+  });
+  // ConfigStore's repository discovery is the sole project-root authority.
+  // Re-running marker discovery after later layers would let configuration
+  // come from one root while trust authorizes another.
+  const projectRoot = configStore.projectRoot;
   if (
     isProjectTrustedSync({
       agencHome,
@@ -2641,7 +2690,6 @@ export async function runProjectTrustPreflightForTui(
   const riskSources = formatProjectTrustSources(
     await summarizeProjectTrustSources({
       cwd: projectRoot,
-      home: agencHome,
       configStore,
     }),
   );
@@ -2651,7 +2699,7 @@ export async function runProjectTrustPreflightForTui(
     workspaceRoot: projectRoot,
     riskSources,
     bypassPermissionsRequested:
-      startupCliFlags.allowDangerouslySkipPermissions === true ||
+      startupCliFlags.dangerouslyBypassApprovalsAndSandbox === true ||
       startupCliFlags.permissionMode === "bypassPermissions",
     stdin,
     stdout,
@@ -2914,11 +2962,13 @@ async function createDeferredDaemonPromptTuiSession(params: {
   readonly deps: AgenCDaemonCliDeps;
   readonly agencHome: string;
   readonly env: NodeJS.ProcessEnv;
+  readonly runtimeOptions: AgentRuntimeOptions;
   readonly cwd: string;
   readonly clientId: string;
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  readonly configPath?: string;
   readonly preparePrompt?: typeof prepareDaemonTuiPrompt;
   readonly permissionMode?: AgentCreateParams["permissionMode"];
 }): Promise<{
@@ -3252,23 +3302,25 @@ async function createDeferredDaemonPromptTuiSession(params: {
           ? preparedFirstMessage
           : "Multimodal AgenC startup";
       let startedAgentId: string | null = null;
-      // Propagate --yolo from the user's argv into the daemon-spawned
+      // Propagate --dangerously-bypass-approvals-and-sandbox from the user's argv into the daemon-spawned
       // agent's session config so the deferred TUI mirrors the bootTUI
       // path. See GAP-PE-GUARDIAN-YOLO-LEAK.
-      const isYoloDeferred =
-        readStartupCliFlags(process.argv).allowDangerouslySkipPermissions ===
-        true;
+      const isBypassDeferred = params.permissionMode === "bypassPermissions";
       let startupClient: ConnectedDaemonTuiClient | null = null;
       try {
         const started = await params.deps.startPromptAgent({
           prompt,
-          env: envWithBridgeMcpServers(params.baseSession, params.env),
+          env: params.env,
+          runtimeOptions: params.runtimeOptions,
           cwd: params.cwd,
           ...(pendingModel !== undefined ? { model: pendingModel } : {}),
           ...(pendingProvider !== undefined
             ? { provider: pendingProvider }
             : {}),
           ...(pendingProfile !== undefined ? { profile: pendingProfile } : {}),
+          ...(params.configPath !== undefined
+            ? { configPath: params.configPath }
+            : {}),
           ...(deferInitialTurn
             ? { deferInitialTurn: true }
             : {
@@ -3289,9 +3341,9 @@ async function createDeferredDaemonPromptTuiSession(params: {
               }
             : {}),
           // Pre-first-turn `/permissions mode` / `/plan` stage their choice in
-          // `pendingPermissionMode`; an explicit `--yolo` argv still wins so the
+          // `pendingPermissionMode`; an explicit `--dangerously-bypass-approvals-and-sandbox` argv still wins so the
           // bootTUI-parity bypass behavior is preserved.
-          ...(isYoloDeferred
+          ...(isBypassDeferred
             ? { permissionMode: "bypassPermissions" as const }
             : pendingPermissionMode !== undefined
               ? { permissionMode: pendingPermissionMode }
@@ -4298,27 +4350,6 @@ function isDaemonSessionGoneError(error: unknown): boolean {
   return isRecord(data) && data.code === "AGENT_NOT_FOUND";
 }
 
-function envWithBridgeMcpServers(
-  baseSession: unknown,
-  env: NodeJS.ProcessEnv,
-): NodeJS.ProcessEnv {
-  const manager = (
-    baseSession as {
-      readonly services?: {
-        readonly mcpManager?: {
-          readonly getConfiguredServers?: () => readonly unknown[];
-        };
-      };
-    }
-  ).services?.mcpManager;
-  const configs = manager?.getConfiguredServers?.();
-  if (!Array.isArray(configs) || configs.length === 0) return env;
-  return {
-    ...env,
-    AGENC_MCP_SERVERS: JSON.stringify(configs),
-  };
-}
-
 async function prepareDaemonTuiPrompt(params: {
   readonly message: string;
   readonly configStore: Pick<ConfigStore, "current">;
@@ -4376,7 +4407,7 @@ function wrapDaemonTuiSessionWithPromptPreparation<
       // wrapped as untrusted data. Most importantly, their read_only /
       // proposal_only policy begins at daemon admission. Running local slash
       // commands, @ expansion, or UserPromptSubmit hooks here would create a
-      // mutating pre-policy side channel (especially under --yolo), so submit
+      // mutating pre-policy side channel (especially under --dangerously-bypass-approvals-and-sandbox), so submit
       // the exact prompt directly and let the daemon validate the interaction.
       if (opts?.editorInteraction !== undefined) {
         await originalSubmit(message, opts);
@@ -4437,8 +4468,18 @@ type BootTUIEntryArgs = BootTUIArgs & { readonly resumeId?: string };
 async function resumeColdDaemonSession(params: {
   readonly deps: AgenCDaemonCliDeps;
   readonly descriptor: ResolvedResumeSession;
+  readonly startupCliFlags: StartupCliFlags;
 }): Promise<AgentSummary> {
-  const startupFlags = readStartupCliFlags(process.argv);
+  const startupFlags = params.startupCliFlags;
+  const sessionEnv = process.env;
+  const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
+    simpleMode: startupFlags.simpleMode === true,
+  });
+  const startupLayers = startupConfigLayerOptions({
+    cli: startupFlags,
+    env: sessionEnv,
+    cwd: params.descriptor.cwd,
+  });
   const permissionMode = startupPermissionMode(startupFlags);
   return params.deps.resumePromptAgent({
     sessionId: params.descriptor.sessionId,
@@ -4452,13 +4493,17 @@ async function resumeColdDaemonSession(params: {
       cwdIno: params.descriptor.cwdIno,
     },
     cwd: params.descriptor.cwd,
-    env: process.env,
+    env: sessionEnv,
+    runtimeOptions,
     ...(startupFlags.model !== undefined ? { model: startupFlags.model } : {}),
     ...(startupFlags.provider !== undefined
       ? { provider: startupFlags.provider }
       : {}),
     ...(startupFlags.profile !== undefined
       ? { profile: startupFlags.profile }
+      : {}),
+    ...(startupLayers.flagConfigPath !== undefined
+      ? { configPath: startupLayers.flagConfigPath }
       : {}),
     ...(permissionMode !== undefined ? { permissionMode } : {}),
   });
@@ -4467,28 +4512,40 @@ async function resumeColdDaemonSession(params: {
 function startupPermissionMode(
   flags: ReturnType<typeof readStartupCliFlags>,
 ): AgentCreateParams["permissionMode"] {
-  if (flags.allowDangerouslySkipPermissions === true) {
+  if (flags.dangerouslyBypassApprovalsAndSandbox === true) {
     return "bypassPermissions";
   }
   return flags.permissionMode !== undefined &&
-    USER_ADDRESSABLE_PERMISSION_MODES.includes(flags.permissionMode)
+    (USER_ADDRESSABLE_PERMISSION_MODES as readonly string[]).includes(
+      flags.permissionMode,
+    )
     ? (flags.permissionMode as AgentCreateParams["permissionMode"])
     : undefined;
 }
 
 /** Boot the TUI, preserving argv prompts and any pre-Ink typed draft text. */
-export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
-  const startupCliFlags = readStartupCliFlags(process.argv);
-  const cliCwd = resolveCliCwdForStartup(process.env);
+export async function bootTUIEntry(
+  args: BootTUIEntryArgs,
+  parsedStartupCliFlags?: StartupCliFlags,
+): Promise<number> {
+  const startupCliFlags =
+    parsedStartupCliFlags ?? readStartupCliFlags(process.argv);
+  const sessionEnv = process.env;
+  const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
+    simpleMode: startupCliFlags.simpleMode === true,
+  });
+  setIsRemoteMode(runtimeOptions.remoteMode);
+  const cliCwd = resolveCliCwdForStartup(sessionEnv);
   if (!cliCwd.ok) {
     return writeUnavailableCliCwd();
   }
   if (
     args.resumeId === undefined &&
     !(await requireProjectTrustForTui({
-      env: process.env,
-      argv: process.argv,
-      cwd: cliCwd.cwd,
+        env: sessionEnv,
+        argv: process.argv,
+        startupCliFlags,
+        cwd: cliCwd.cwd,
     }))
   ) {
     return 1;
@@ -4502,17 +4559,24 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
   };
   try {
     validateAgencHome();
+    const startupAgencHome = resolveAgencHome(sessionEnv);
     // OOM self-diagnosis: sample heap pressure and auto-capture a snapshot
     // near the limit; point at a fresh capture from a previous crash.
-    startHeapWatchdog({ agencHome: resolveAgencHome(process.env) });
-    const oomNotice = recentOomSnapshotNotice(resolveAgencHome(process.env));
+    startHeapWatchdog({ agencHome: startupAgencHome });
+    const oomNotice = recentOomSnapshotNotice(startupAgencHome);
     if (oomNotice !== null) {
       process.stderr.write(`${oomNotice}\n`);
     }
     if (args.resumeId !== undefined) {
-      const resolved = resolveResumeSessionId(cliCwd.cwd, args.resumeId);
+      const resolved = resolveResumeSessionId(
+        cliCwd.cwd,
+        args.resumeId,
+        startupAgencHome,
+      );
       if (resolved.kind === "ok") {
         return resumeResolvedTUIEntry(resolved, args.resumeId, {
+          agencHome: startupAgencHome,
+          startupCliFlags,
           initialComposerText: consumeEarlyInput(),
           ...(args.startupImages !== undefined
             ? { startupImages: args.startupImages }
@@ -4535,6 +4599,11 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
     const capturedEarlyInput = consumeEarlyInput();
     const initialPrompt = args.initialPrompt?.trim();
     const daemonCwd = cliCwd.cwd;
+    const startupLayers = startupConfigLayerOptions({
+      cli: startupCliFlags,
+      env: sessionEnv,
+      cwd: daemonCwd,
+    });
     const startupImages = args.startupImages ?? [];
     if (
       (initialPrompt === undefined || initialPrompt.length === 0) &&
@@ -4549,7 +4618,8 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
         model,
         close: closeTuiContext = async () => undefined,
       } = await deps.createTuiContext({
-        env: process.env,
+        env: sessionEnv,
+        runtimeOptions,
         cwd: daemonCwd,
         conversationId: `agenc-tui-idle-${process.pid}`,
         ...(startupCliFlags.provider !== undefined
@@ -4561,6 +4631,9 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
         ...(startupCliFlags.profile !== undefined
           ? { profile: startupCliFlags.profile }
           : {}),
+        ...(startupLayers.flagConfigPath !== undefined
+          ? { configPath: startupLayers.flagConfigPath }
+          : {}),
         ...(idlePermissionMode !== undefined
           ? { permissionMode: idlePermissionMode }
           : {}),
@@ -4571,8 +4644,9 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
         deps,
         agencHome:
           (configStore as { readonly agencHome?: string }).agencHome ??
-          resolveAgencHome(process.env),
-        env: process.env,
+          resolveAgencHome(sessionEnv),
+        env: sessionEnv,
+        runtimeOptions,
         cwd: workspaceRoot,
         clientId: `agenc-tui-${process.pid}`,
         ...(startupCliFlags.provider !== undefined
@@ -4584,8 +4658,11 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
         ...(startupCliFlags.profile !== undefined
           ? { profile: startupCliFlags.profile }
           : {}),
+        ...(startupLayers.flagConfigPath !== undefined
+          ? { configPath: startupLayers.flagConfigPath }
+          : {}),
         // Seed the deferred bootstrap permission mode the same way the daemon
-        // createTuiContext above does: an explicit `--yolo` forces bypass,
+        // createTuiContext above does: an explicit `--dangerously-bypass-approvals-and-sandbox` forces bypass,
         // otherwise honor the startup `--permission-mode` flag. Pre-first-turn
         // `/permissions mode` / `/plan` then overwrite this staged value.
         ...(idlePermissionMode !== undefined
@@ -4598,6 +4675,7 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
           session: deferred.session,
           configStore,
           model,
+          stdinMode: runtimeOptions.stdinDataMode === true ? "data" : "readable",
           ...(capturedEarlyInput.length > 0
             ? { initialComposerText: capturedEarlyInput }
             : {}),
@@ -4611,23 +4689,26 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       }
       // Teardown is complete (prior session detached): honor a pending
       // /resume picker selection by relaunching into that session.
-      return exitOrResumeAfterTui(0);
+      return exitOrResumeAfterTui(0, startupCliFlags);
     }
     const objective =
       initialPrompt !== undefined && initialPrompt.length > 0
         ? initialPrompt
         : "Multimodal AgenC startup";
-    const agencHome = resolveAgencHome(process.env);
+    const agencHome = resolveAgencHome(sessionEnv);
     const configStore = new ConfigStore({
       home: agencHome,
-      env: process.env,
+      env: sessionEnv,
+      cwd: daemonCwd,
+      ...startupLayers,
       onWarn: (message) => process.stderr.write(`${message}\n`),
     });
-    await configStore.reload();
-    const startup = resolveStartupSelection({
-      config: configStore.current(),
-      env: process.env,
-      argv: process.argv,
+    const config = await configStore.reload();
+    const profileName = resolvedStartupProfileName(startupCliFlags, sessionEnv);
+    const startup = resolveCanonicalStartupSelection({
+      config,
+      env: sessionEnv,
+      ...(profileName !== undefined ? { profileName } : {}),
     });
     const promptPreparation =
       initialPrompt !== undefined && initialPrompt.length > 0
@@ -4636,9 +4717,11 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
             configStore,
             agencHome,
             cwd: daemonCwd,
-            env: process.env,
+            env: sessionEnv,
             signal: new AbortController().signal,
             stderr: process.stderr,
+            dangerouslyBypassApprovalsAndSandbox:
+              startupCliFlags.dangerouslyBypassApprovalsAndSandbox === true,
           })
         : { blocked: false as const, prompt: objective };
     if (promptPreparation.blocked) {
@@ -4650,23 +4733,27 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       preparedObjective,
       startupImages,
       daemonCwd,
-      process.env.HOME,
+      sessionEnv.HOME,
     );
     const deps = daemonCliDeps();
-    // Propagate --yolo (and the deprecated aliases) to the daemon so the
+    // Propagate the canonical dangerous-bypass selection to the daemon so the
     // spawned agent's session resolves approvalPolicy correctly. Without
-    // this, --yolo only affected the local CLI bootstrap and dropped on
+    // this, bypass only affected the local CLI bootstrap and dropped on
     // the wire — see GAP-PE-GUARDIAN-YOLO-LEAK and the daemon-side
     // forwarding in background-agent-runner.buildBootstrapArgv.
     const promptPermissionMode = startupPermissionMode(startupCliFlags);
     const started = await deps.startPromptAgent({
       prompt: preparedObjective,
-      env: process.env,
+      env: sessionEnv,
+      runtimeOptions,
       cwd: daemonCwd,
       model: startup.model,
       provider: startup.provider,
       ...(startup.profileName !== undefined
         ? { profile: startup.profileName }
+        : {}),
+      ...(startupLayers.flagConfigPath !== undefined
+        ? { configPath: startupLayers.flagConfigPath }
         : {}),
       ...(initialContent !== undefined ? { initialContent } : {}),
       ...(promptPermissionMode !== undefined
@@ -4678,6 +4765,8 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
       const exitCode = await attachAgentTuiEntry({
         agentId: started.agentId,
         clientId: `agenc-tui-${process.pid}`,
+        startupCliFlags,
+        runtimeOptions,
         initialComposerText:
           args.initialPrompt === undefined ? capturedEarlyInput : "",
       });
@@ -4690,11 +4779,11 @@ export async function bootTUIEntry(args: BootTUIEntryArgs): Promise<number> {
         });
       }
       // Honor a pending /resume picker selection (prior session detached).
-      return exitOrResumeAfterTui(exitCode);
+      return exitOrResumeAfterTui(exitCode, startupCliFlags);
     } catch (error) {
       await stopDaemonAgentBestEffort({
         deps,
-        env: process.env,
+        env: sessionEnv,
         agentId: started.agentId,
         reason: "tui_startup_failed",
       });
@@ -4719,6 +4808,9 @@ export interface AttachAgentTuiEntryArgs {
   readonly initialComposerText?: string;
   readonly startupImages?: readonly string[];
   readonly env?: NodeJS.ProcessEnv;
+  readonly runtimeOptions?: AgentRuntimeOptions;
+  /** Startup selection parsed once by the owning CLI route. */
+  readonly startupCliFlags?: StartupCliFlags;
   readonly daemonClient?: Awaited<
     ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
   >;
@@ -4729,6 +4821,11 @@ export async function attachAgentTuiEntry(
   args: AttachAgentTuiEntryArgs,
 ): Promise<number> {
   const env = args.env ?? process.env;
+  const startupCliFlags =
+    args.startupCliFlags ?? readStartupCliFlags(process.argv);
+  const runtimeOptions =
+    args.runtimeOptions ?? resolveAgentRuntimeOptions(env);
+  setIsRemoteMode(runtimeOptions.remoteMode);
   let daemonClient: Awaited<
     ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
   > | null = null;
@@ -4747,6 +4844,7 @@ export async function attachAgentTuiEntry(
       !(await requireProjectTrustForTui({
         env,
         argv: process.argv,
+        startupCliFlags,
         cwd: targetCwd,
         useEnvWorkspace: false,
       }))
@@ -4773,6 +4871,7 @@ export async function attachAgentTuiEntry(
       !(await requireProjectTrustForTui({
         env,
         argv: process.argv,
+        startupCliFlags,
         cwd: roleWorkspace.cwd,
         useEnvWorkspace: false,
       }))
@@ -4780,9 +4879,43 @@ export async function attachAgentTuiEntry(
       return 1;
     }
     const bootstrapEnv = envForAttachBootstrap(env, bootstrapCwd);
-    const isYoloAttach =
-      readStartupCliFlags(process.argv).allowDangerouslySkipPermissions ===
-      true;
+    const startupLayers = startupConfigLayerOptions({
+      cli: startupCliFlags,
+      env: bootstrapEnv,
+      cwd: bootstrapCwd,
+    });
+    const attachedMetadata =
+      attachment.sessions?.find(
+        (attachedSession) => attachedSession.sessionId === sessionId,
+      )?.metadata ?? attachment.sessions?.[0]?.metadata;
+    const metadataString = (key: string): string | undefined => {
+      const value = attachedMetadata?.[key];
+      return typeof value === "string" && value.trim().length > 0
+        ? value.trim()
+        : undefined;
+    };
+    const retainedConfigPath = metadataString("configPath");
+    if (retainedConfigPath !== undefined && !isAbsolute(retainedConfigPath)) {
+      throw new Error("daemon session metadata configPath must be absolute");
+    }
+    const attachProvider =
+      startupCliFlags.provider ??
+      metadataString("provider") ??
+      metadataString("modelProvider");
+    const attachModel = startupCliFlags.model ?? metadataString("model");
+    const attachProfile = startupCliFlags.profile ?? metadataString("profile");
+    const attachConfigPath =
+      startupLayers.flagConfigPath ?? retainedConfigPath;
+    const retainedPermissionMode = metadataString("permissionMode");
+    const retainedUserPermissionMode =
+      retainedPermissionMode !== undefined &&
+      (USER_ADDRESSABLE_PERMISSION_MODES as readonly string[]).includes(
+        retainedPermissionMode,
+      )
+        ? (retainedPermissionMode as AgentCreateParams["permissionMode"])
+        : undefined;
+    const attachPermissionMode =
+      startupPermissionMode(startupCliFlags) ?? retainedUserPermissionMode;
     const {
       configStore,
       workspaceRoot,
@@ -4791,10 +4924,19 @@ export async function attachAgentTuiEntry(
       close: closeTuiContext = async () => undefined,
     } = await daemonCliDeps().createTuiContext({
       env: bootstrapEnv,
+      runtimeOptions,
       cwd: bootstrapCwd,
       roleWorkspace,
       conversationId: runtimeSessionId,
-      ...(isYoloAttach ? { permissionMode: "bypassPermissions" as const } : {}),
+      ...(attachProvider !== undefined ? { provider: attachProvider } : {}),
+      ...(attachModel !== undefined ? { model: attachModel } : {}),
+      ...(attachProfile !== undefined ? { profile: attachProfile } : {}),
+      ...(attachConfigPath !== undefined
+        ? { configPath: attachConfigPath }
+        : {}),
+      ...(attachPermissionMode !== undefined
+        ? { permissionMode: attachPermissionMode }
+        : {}),
     });
     const createDaemonTuiSession = await loadCreateDaemonTuiSession();
     const daemonSession = await createDaemonTuiSession({
@@ -4836,6 +4978,7 @@ export async function attachAgentTuiEntry(
         session: preparedDaemonSession,
         configStore,
         model,
+        stdinMode: runtimeOptions.stdinDataMode === true ? "data" : "readable",
         ...(args.initialComposerText !== undefined &&
         args.initialComposerText.length > 0
           ? { initialComposerText: args.initialComposerText }
@@ -4872,16 +5015,27 @@ export async function attachAgentTuiEntry(
 }
 
 /** Resume a daemon-owned session through the TUI. */
-export async function resumeTUIEntry(args: ResumeTUIArgs): Promise<number> {
+export async function resumeTUIEntry(
+  args: ResumeTUIArgs,
+  startupCliFlags: StartupCliFlags = readStartupCliFlags(process.argv),
+): Promise<number> {
   const cliCwd = resolveCliCwdForStartup(process.env);
   if (!cliCwd.ok) {
     return writeUnavailableCliCwd();
   }
   const workspaceRoot = cliCwd.cwd;
-  const resolved = resolveResumeSessionId(workspaceRoot, args.resumeId);
+  const agencHome = resolveAgencHome(process.env);
+  const resolved = resolveResumeSessionId(
+    workspaceRoot,
+    args.resumeId,
+    agencHome,
+  );
   switch (resolved.kind) {
     case "ok":
-      return resumeResolvedTUIEntry(resolved, args.resumeId);
+      return resumeResolvedTUIEntry(resolved, args.resumeId, {
+        agencHome,
+        startupCliFlags,
+      });
     case "ambiguous":
       process.stderr.write(
         `agenc: ambiguous session id '${resolved.input}' matches: ${resolved.matches.join(", ")}\n`,
@@ -4920,8 +5074,13 @@ function sameResumeDescriptor(
 
 function reproveResumeDescriptor(
   expected: ResolvedResumeSession,
+  agencHome: string,
 ): ResolvedResumeSession {
-  const observed = resolveResumeSessionId(expected.cwd, expected.sessionId);
+  const observed = resolveResumeSessionId(
+    expected.cwd,
+    expected.sessionId,
+    agencHome,
+  );
   if (observed.kind !== "ok" || !sameResumeDescriptor(expected, observed)) {
     throw new Error(
       `canonical resume source for ${expected.sessionId} changed during authorization`,
@@ -5024,10 +5183,14 @@ async function resumeResolvedTUIEntry(
   descriptor: ResolvedResumeSession,
   displayId: string,
   options: {
+    readonly agencHome: string;
+    readonly startupCliFlags?: StartupCliFlags;
     readonly initialComposerText?: string;
     readonly startupImages?: readonly string[];
-  } = {},
+  },
 ): Promise<number> {
+  const startupCliFlags =
+    options.startupCliFlags ?? readStartupCliFlags(process.argv);
   let cwdProof: ResumeCwdProof;
   try {
     cwdProof = openResumeCwdProof(descriptor.cwd);
@@ -5044,6 +5207,7 @@ async function resumeResolvedTUIEntry(
       !(await requireProjectTrustForTui({
         env: process.env,
         argv: process.argv,
+        startupCliFlags,
         cwd: descriptor.cwd,
         useEnvWorkspace: false,
       }))
@@ -5053,7 +5217,7 @@ async function resumeResolvedTUIEntry(
     let authoritative: ResolvedResumeSession;
     try {
       assertResumeCwdProof(descriptor.cwd, cwdProof);
-      authoritative = reproveResumeDescriptor(descriptor);
+      authoritative = reproveResumeDescriptor(descriptor, options.agencHome);
     } catch (error) {
       process.stderr.write(
         `agenc: unable to resume session '${displayId}': ${
@@ -5084,11 +5248,15 @@ async function resumeResolvedTUIEntry(
           authoritative.sessionId,
         );
         if (live === null) {
-          authoritative = reproveResumeDescriptor(authoritative);
+          authoritative = reproveResumeDescriptor(
+            authoritative,
+            options.agencHome,
+          );
           assertResumeCwdProof(authoritative.cwd, cwdProof);
           agent = await resumeColdDaemonSession({
             deps,
             descriptor: authoritative,
+            startupCliFlags,
           });
         } else {
           agent = live;
@@ -5108,6 +5276,7 @@ async function resumeResolvedTUIEntry(
         agentId: agent.agentId,
         clientId: `agenc-tui-${process.pid}`,
         daemonClient,
+        startupCliFlags,
         ...(options.initialComposerText !== undefined
           ? { initialComposerText: options.initialComposerText }
           : {}),
@@ -5115,7 +5284,7 @@ async function resumeResolvedTUIEntry(
           ? { startupImages: options.startupImages }
           : {}),
       });
-      return exitOrResumeAfterTui(code);
+      return exitOrResumeAfterTui(code, startupCliFlags);
     } finally {
       if (!transferred) {
         await daemonClient.close().catch(() => {
@@ -5131,13 +5300,15 @@ async function resumeResolvedTUIEntry(
 /** Continue the newest prior session for the current project. */
 export async function continueTUIEntry(
   _args: ContinueTUIArgs,
+  startupCliFlags: StartupCliFlags = readStartupCliFlags(process.argv),
 ): Promise<number> {
   const cliCwd = resolveCliCwdForStartup(process.env);
   if (!cliCwd.ok) {
     return writeUnavailableCliCwd();
   }
   const workspaceRoot = cliCwd.cwd;
-  const resolved = resolveLatestSessionId(workspaceRoot);
+  const agencHome = resolveAgencHome(process.env);
+  const resolved = resolveLatestSessionId(workspaceRoot, agencHome);
   if (resolved.kind === "search_incomplete") {
     process.stderr.write(
       `agenc: session search stopped at its ${resolved.reason.replaceAll("_", " ")} safety limit; retry with an exact session id\n`,
@@ -5148,14 +5319,16 @@ export async function continueTUIEntry(
     process.stderr.write("agenc: no previous session found for this project\n");
     return 1;
   }
-  return resumeResolvedTUIEntry(resolved, resolved.sessionId);
+  return resumeResolvedTUIEntry(resolved, resolved.sessionId, {
+    agencHome,
+    startupCliFlags,
+  });
 }
 
 /**
- * AgenC-style CLI startup gate: config reads must be enabled before any
- * downstream path can touch global settings (auto-compact, theme, provider
- * profiles, etc.). AgenC routes both the one-shot and Ink console through this
- * same entrypoint, so the gate belongs here rather than in individual phases.
+ * Apply process hardening before CLI routing. Configuration and runtime-state
+ * access is owned by each explicit ConfigStore/RuntimeStateRepository; there
+ * is deliberately no process-global "enabled" latch.
  */
 export function initializeCliRuntime(): void {
   // Apply pre-main process hardening before any I/O or subprocess spawn:
@@ -5164,7 +5337,6 @@ export function initializeCliRuntime(): void {
   // PT_DENY_ATTACH on macOS. Best-effort — failures are non-fatal so the
   // CLI still starts on platforms where the native binding is unavailable.
   applyBestEffortPreMainProcessHardening();
-  enableConfigs();
 }
 
 async function loadMcpCliConfig(): Promise<AgenCConfig | undefined> {
@@ -5172,6 +5344,7 @@ async function loadMcpCliConfig(): Promise<AgenCConfig | undefined> {
     const store = new ConfigStore({
       home: resolveAgencHome(process.env),
       env: process.env,
+      cwd: resolveWorkspaceFromEnv(process.env) ?? process.cwd(),
       onWarn: (message) => process.stderr.write(`${message}\n`),
     });
     return await store.reload();
@@ -5209,7 +5382,7 @@ export function shouldLoadMcpCliConfig(argv: readonly string[]): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// main — Wave 5-B routing entrypoint
+// main routing entrypoint
 // ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -5218,6 +5391,14 @@ export function shouldLoadMcpCliConfig(argv: readonly string[]): boolean {
  * for the routing table.
  */
 export async function main(): Promise<number> {
+  try {
+    assertNoRemovedSimpleModeEnvironment(process.env);
+  } catch (error) {
+    process.stderr.write(
+      `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    return 2;
+  }
   initializeCliRuntime();
   const argv = process.argv.slice(2);
   const initCommand = parseAgenCInitCliArgs(argv);
@@ -5249,7 +5430,10 @@ export async function main(): Promise<number> {
   }
   const remoteCommand = parseAgenCRemoteCliArgs(argv);
   if (remoteCommand !== null) {
-    return runAgenCRemoteCli(remoteCommand);
+    return runAgenCRemoteCli(
+      remoteCommand,
+      captureRemoteCliRuntimeContext(process.env),
+    );
   }
   const agentCommand = parseAgenCAgentCliArgs(argv);
   if (agentCommand !== null) {
@@ -5380,7 +5564,11 @@ export async function main(): Promise<number> {
   }
   const pluginCommand = parseAgenCPluginCliArgs(argv);
   if (pluginCommand !== null) {
-    return runAgenCPluginCli(pluginCommand);
+    const pluginEnvironment = Object.freeze({ ...process.env });
+    return runAgenCPluginCli(pluginCommand, {
+      env: pluginEnvironment,
+      workspaceRoot: process.cwd(),
+    });
   }
   const permissionsCommand = parseAgenCPermissionsCliArgs(argv);
   if (permissionsCommand !== null) {
@@ -5425,6 +5613,10 @@ async function runDefaultAgenCCliRoute(
     isTTY: Boolean(process.stdin.isTTY),
     isStdoutTTY: Boolean(process.stdout.isTTY),
   });
+  const startupCliFlags: StartupCliFlags =
+    routePlan.kind === "errorAndExit"
+      ? Object.freeze({})
+      : readStartupCliFlags(argv);
   const targetResumeRoute =
     routePlan.kind === "resumeTUI" || routePlan.kind === "continueTUI";
   const routeNeedsToolTrust =
@@ -5444,6 +5636,7 @@ async function runDefaultAgenCCliRoute(
       !(await requireProjectTrustForTui({
         env: process.env,
         argv,
+        startupCliFlags,
         cwd: routeCwd.cwd,
       }))
     ) {
@@ -5483,14 +5676,17 @@ async function runDefaultAgenCCliRoute(
     argv,
     isTTY: Boolean(process.stdin.isTTY),
     isStdoutTTY: Boolean(process.stdout.isTTY),
-    bootTUI: (args: BootTUIArgs) => bootTUIEntry(args),
+    bootTUI: (args: BootTUIArgs) => bootTUIEntry(args, startupCliFlags),
     oneShotCLI: (userMessage: string, startupImages?: readonly string[]) =>
       oneShotCLI(
         userMessage.length > 0 ? userMessage : null,
         startupImages ?? [],
+        startupCliFlags,
       ),
-    resumeTUI: (args: ResumeTUIArgs) => resumeTUIEntry(args),
-    continueTUI: (args: ContinueTUIArgs) => continueTUIEntry(args),
+    resumeTUI: (args: ResumeTUIArgs) =>
+      resumeTUIEntry(args, startupCliFlags),
+    continueTUI: (args: ContinueTUIArgs) =>
+      continueTUIEntry(args, startupCliFlags),
   });
 }
 

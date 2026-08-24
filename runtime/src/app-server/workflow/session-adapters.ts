@@ -38,6 +38,10 @@ import {
   insertProcessCliOptionsBeforePrompt,
   tokenizeCliOptionRegion,
 } from "../../bin/cli-option-region.js";
+import {
+  assertNoRetiredStartupFlags,
+  DANGEROUS_BYPASS_FLAG,
+} from "../../bin/startup-flags.js";
 import { ensureAgentControl } from "../../bin/delegate-tool.js";
 import { delegate } from "../../agents/delegate.js";
 import type { AgentPath } from "../../agents/registry.js";
@@ -312,8 +316,8 @@ export function workflowChildAdmissionUsage(
 /**
  * Bootstrap argv for the spec's frozen permission mode — the exact
  * background-agent-runner mechanism (`buildBootstrapArgv`):
- * `bypassPermissions` rides `--yolo` (startup-selection wires the full
- * bypass semantics off that flag); every other mode rides
+ * `bypassPermissions` rides the canonical dangerous-bypass flag
+ * (startup-selection wires the full bypass semantics off that flag); every other mode rides
  * `--permission-mode <mode>`. Duplicate flags already present on the
  * daemon's argv are never doubled.
  */
@@ -322,14 +326,13 @@ export function workflowPermissionModeArgv(
   baseArgv: readonly string[] = process.argv,
 ): readonly string[] {
   const optionArgs = tokenizeCliOptionRegion(baseArgv.slice(2)).optionArgs;
+  assertNoRetiredStartupFlags(optionArgs);
   const generatedOptions: string[] = [];
   if (
     permissionMode === "bypassPermissions" &&
-    !optionArgs.includes("--yolo") &&
-    !optionArgs.includes("--dangerously-bypass-approvals-and-sandbox") &&
-    !optionArgs.includes("--allow-dangerously-skip-permissions")
+    !optionArgs.includes(DANGEROUS_BYPASS_FLAG)
   ) {
-    generatedOptions.push("--yolo");
+    generatedOptions.push(DANGEROUS_BYPASS_FLAG);
   }
   if (
     permissionMode !== "bypassPermissions" &&

@@ -75,6 +75,7 @@ export interface AgencSubprocessOptions {
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  readonly configPath?: string;
   readonly permissionMode?:
     | "default"
     | "plan"
@@ -117,6 +118,9 @@ export function promptViaSubprocess(
     ...(options.model !== undefined ? ["--model", options.model] : []),
     ...(options.provider !== undefined ? ["--provider", options.provider] : []),
     ...(options.profile !== undefined ? ["--profile", options.profile] : []),
+    ...(options.configPath !== undefined
+      ? ["--config", options.configPath]
+      : []),
     ...(options.permissionMode !== undefined
       ? ["--permission-mode", options.permissionMode]
       : []),

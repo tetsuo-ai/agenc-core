@@ -121,7 +121,6 @@ export type CommandExecSandboxManager = Pick<
 export interface AgenCCommandExecServiceOptions {
   readonly sandboxManager?: CommandExecSandboxManager;
   readonly agencLinuxSandboxExe?: string;
-  readonly useLegacyLandlock?: boolean;
   readonly windowsSandboxLevel?: WindowsSandboxLevel;
   readonly windowsSandboxPrivateDesktop?: boolean;
   /** Opt-in GPU compute inside the sandbox (config `sandbox.allow_gpu`). */
@@ -203,7 +202,6 @@ export class AgenCCommandExecService implements AgenCCommandExec {
   readonly #keysByConnection = new Map<string, Set<string>>();
   readonly #sandboxManager: CommandExecSandboxManager;
   readonly #agencLinuxSandboxExe: string | undefined;
-  readonly #useLegacyLandlock: boolean;
   readonly #windowsSandboxLevel: WindowsSandboxLevel;
   readonly #windowsSandboxPrivateDesktop: boolean;
   readonly #allowGpu: boolean;
@@ -213,7 +211,6 @@ export class AgenCCommandExecService implements AgenCCommandExec {
   constructor(options: AgenCCommandExecServiceOptions = {}) {
     this.#sandboxManager = options.sandboxManager ?? new SandboxManager();
     this.#agencLinuxSandboxExe = options.agencLinuxSandboxExe;
-    this.#useLegacyLandlock = options.useLegacyLandlock ?? false;
     this.#windowsSandboxLevel = options.windowsSandboxLevel ?? "disabled";
     this.#windowsSandboxPrivateDesktop =
       options.windowsSandboxPrivateDesktop ?? false;
@@ -566,7 +563,6 @@ export class AgenCCommandExecService implements AgenCCommandExec {
       ...(linuxSandboxExe !== undefined
         ? { agencLinuxSandboxExe: linuxSandboxExe }
         : {}),
-      useLegacyLandlock: this.#useLegacyLandlock,
       windowsSandboxLevel: this.#windowsSandboxLevel,
       windowsSandboxPrivateDesktop: this.#windowsSandboxPrivateDesktop,
       ...(this.#allowGpu ? { allowGpu: true } : {}),

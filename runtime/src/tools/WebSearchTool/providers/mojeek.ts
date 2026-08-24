@@ -5,6 +5,8 @@
  */
 
 import type { SearchInput, SearchProvider } from './types.js'
+import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
+import { getProxyFetchOptions } from '../../../utils/proxy.js'
 import {
   applyDomainFilters,
   arrayField,
@@ -19,11 +21,12 @@ export const mojeekProvider: SearchProvider = {
   name: 'mojeek',
 
   isConfigured() {
-    return Boolean(process.env.MOJEEK_API_KEY)
+    return Boolean(getSelectedProviderEnvironment().MOJEEK_API_KEY)
   },
 
   async search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput> {
     const start = performance.now()
+    const environment = getSelectedProviderEnvironment()
 
     const url = new URL('https://www.mojeek.com/search')
     url.searchParams.set('q', input.query)
@@ -33,11 +36,16 @@ export const mojeekProvider: SearchProvider = {
     const headers: Record<string, string> = {
       'Accept': 'application/json',
     }
-    if (process.env.MOJEEK_API_KEY) {
-      headers['Authorization'] = `Bearer ${process.env.MOJEEK_API_KEY}`
+    const apiKey = environment.MOJEEK_API_KEY
+    if (apiKey) {
+      headers['Authorization'] = `Bearer ${apiKey}`
     }
 
-    const res = await fetch(url.toString(), { headers, signal })
+    const res = await fetch(url.toString(), {
+      headers,
+      signal,
+      ...getProxyFetchOptions({ environment }),
+    })
 
     if (!res.ok) {
       throw new Error(`Mojeek search error ${res.status}: ${await res.text().catch(() => '')}`)

@@ -1,0 +1,951 @@
+import {
+  chmodSync,
+  existsSync,
+  linkSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { afterEach, describe, expect, test } from "vitest";
+
+import {
+  assertNoObsoleteProviderSelectors,
+} from "./env.js";
+import {
+  RetiredConfigDirError,
+  resolveHomeContext,
+  resolveMigrationHomeContext,
+} from "./home.js";
+import { classifyRetiredField } from "./retired-field-manifest.js";
+import {
+  applyConfigV2Migration,
+  checkConfigV2Migration,
+  ConfigMigrationError,
+  rollbackConfigV2Migration,
+} from "./migration.js";
+import {
+  ConfigRepositoryError,
+  loadLayeredConfig,
+  readStrictConfigLayer,
+} from "./repository.js";
+import { ConfigStore } from "./store.js";
+
+const temporaryDirectories: string[] = [];
+
+function temp(prefix: string): string {
+  const path = mkdtempSync(join(tmpdir(), `${prefix}-`));
+  temporaryDirectories.push(path);
+  return path;
+}
+
+function write(path: string, content: string, mode = 0o600): void {
+  mkdirSync(join(path, ".."), { recursive: true });
+  writeFileSync(path, content, { mode });
+  chmodSync(path, mode);
+}
+
+afterEach(() => {
+  for (const path of temporaryDirectories.splice(0)) {
+    rmSync(path, { recursive: true, force: true });
+  }
+});
+
+describe("HomeContext", () => {
+  test("uses AGENC_HOME as the sole normal authority", () => {
+    const platformHome = temp("agenc-platform-home");
+    const configured = join(platformHome, "custom");
+    expect(resolveHomeContext({ AGENC_HOME: configured }, { platformHome }).path)
+      .toBe(configured);
+    expect(() => resolveHomeContext({
+      AGENC_HOME: configured,
+      AGENC_CONFIG_DIR: configured,
+    }, { platformHome })).toThrow(RetiredConfigDirError);
+  });
+
+  test("gives implicit and explicit default homes the same identity", () => {
+    const platformHome = temp("agenc-default-home");
+    const defaultPath = join(platformHome, ".agenc");
+
+    expect(resolveHomeContext({}, { platformHome })).toMatchObject({
+      path: defaultPath,
+      isDefault: true,
+    });
+    expect(resolveHomeContext(
+      { AGENC_HOME: defaultPath },
+      { platformHome },
+    )).toMatchObject({ path: defaultPath, isDefault: true });
+  });
+
+  test("rejects relative homes instead of binding identity to process cwd", () => {
+    const platformHome = temp("agenc-relative-platform-home");
+
+    expect(() => resolveHomeContext(
+      { AGENC_HOME: "relative-home" },
+      { platformHome },
+    )).toThrow(/must be an absolute path/u);
+  });
+
+  test("allows legacy config dir only for migration and rejects split roots", () => {
+    const platformHome = temp("agenc-migration-home");
+    const legacy = join(platformHome, "legacy");
+    expect(resolveMigrationHomeContext({ AGENC_CONFIG_DIR: legacy }, { platformHome }).path)
+      .toBe(legacy);
+    expect(() => resolveMigrationHomeContext({
+      AGENC_HOME: join(platformHome, "one"),
+      AGENC_CONFIG_DIR: join(platformHome, "two"),
+    }, { platformHome })).toThrow(/refuses to guess/u);
+  });
+});
+
+describe("obsolete provider selectors", () => {
+  test("rejects every defined selector, including empty and false-like values", () => {
+    expect(() => assertNoObsoleteProviderSelectors({
+      AGENC_USE_OPENAI: "false",
+      AGENC_USE_BEDROCK: "0",
+      AGENC_USE_VERTEX: "1",
+      NVIDIA_NIM: "",
+    })).toThrow(/AGENC_PROVIDER=openai.*AGENC_PROVIDER=amazon-bedrock.*no canonical provider adapter/su);
+  });
+});
+
+describe("strict layered repository", () => {
+  test("uses explicit-config root markers before loading project config and applying a profile", async () => {
+    const root = temp("agenc-explicit-root-markers");
+    const home = join(root, "home");
+    const projectRoot = join(root, "project");
+    const cwd = join(projectRoot, "packages", "worker");
+    const flagPath = join(root, "operator.toml");
+    const projectPath = join(projectRoot, ".agenc", "config.toml");
+    mkdirSync(cwd, { recursive: true });
+    write(join(projectRoot, ".operator-root"), "");
+    write(projectPath, [
+      "config_version = 2",
+      'model = "grok-4.3"',
+      "",
+    ].join("\n"));
+    write(flagPath, [
+      "config_version = 2",
+      'project_root_markers = [".operator-root"]',
+      "[profiles.operator]",
+      'model = "grok-4.5"',
+      "",
+    ].join("\n"));
+
+    const loaded = await loadLayeredConfig({
+      env: { AGENC_HOME: home, HOME: root },
+      cwd,
+      flagConfigPath: flagPath,
+      profileName: "operator",
+      projectTrusted: true,
+      managedConfigPath: join(root, "missing-managed.toml"),
+      managedDropInDir: join(root, "missing-drop-ins"),
+    });
+
+    expect(loaded.projectRoot).toBe(projectRoot);
+    expect(loaded.config).toMatchObject({
+      project_root_markers: [".operator-root"],
+      model: "grok-4.5",
+    });
+    expect(loaded.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scope: "project", path: projectPath }),
+      expect.objectContaining({ scope: "flag", path: flagPath }),
+      expect.objectContaining({ scope: "profile", label: "profile operator" }),
+    ]));
+  });
+
+  test("rejects a late synthetic CLI root-marker authority", async () => {
+    const root = temp("agenc-late-cli-root-markers");
+    const cwd = join(root, "project", "nested");
+    mkdirSync(cwd, { recursive: true });
+
+    await expect(loadLayeredConfig({
+      env: { AGENC_HOME: join(root, "home"), HOME: root },
+      cwd,
+      cliOverrides: { project_root_markers: [".late-root"] },
+      managedConfigPath: join(root, "missing-managed.toml"),
+      managedDropInDir: join(root, "missing-drop-ins"),
+    })).rejects.toMatchObject({
+      code: "invalid-source",
+      message: expect.stringMatching(/command-line.*project_root_markers.*root discovery/iu),
+    } satisfies Partial<ConfigRepositoryError>);
+  });
+
+  test("rejects one path serving as both user and project configuration", async () => {
+    const root = temp("agenc-config-scope-path-collision");
+    const projectRoot = join(root, "project");
+    const home = join(projectRoot, ".agenc");
+    write(
+      join(home, "config.toml"),
+      'config_version = 2\nmodel = "grok-4.6"\n',
+    );
+
+    await expect(loadLayeredConfig({
+      env: { AGENC_HOME: home },
+      projectRoot,
+      managedConfigPath: join(root, "missing-managed.toml"),
+      managedDropInDir: join(root, "missing-drop-ins"),
+    })).rejects.toMatchObject({
+      code: "invalid-source",
+      message: expect.stringMatching(/user.*project.*same physical file/iu),
+    } satisfies Partial<ConfigRepositoryError>);
+  });
+
+  test("rejects hard-linked files serving as user and flag configuration", async () => {
+    const root = temp("agenc-config-scope-inode-collision");
+    const home = join(root, "home");
+    const userPath = join(home, "config.toml");
+    const flagPath = join(root, "explicit.toml");
+    write(userPath, 'config_version = 2\nmodel = "grok-4.6"\n');
+    linkSync(userPath, flagPath);
+
+    await expect(loadLayeredConfig({
+      env: { AGENC_HOME: home },
+      projectRoot: join(root, "project"),
+      flagConfigPath: flagPath,
+      managedConfigPath: join(root, "missing-managed.toml"),
+      managedDropInDir: join(root, "missing-drop-ins"),
+    })).rejects.toMatchObject({
+      code: "invalid-source",
+      message: expect.stringMatching(/user.*flag.*same physical file/iu),
+    } satisfies Partial<ConfigRepositoryError>);
+  });
+
+  test("requires schema v2 and rejects unknown top-level keys", async () => {
+    const root = temp("agenc-strict-config");
+    const path = join(root, "config.toml");
+    write(path, "model = \"grok-4.6\"\n");
+    await expect(readStrictConfigLayer(path, "user")).rejects.toMatchObject({
+      code: "invalid-version",
+    } satisfies Partial<ConfigRepositoryError>);
+    write(path, "config_version = 2\nunknown_operator_key = true\n");
+    await expect(readStrictConfigLayer(path, "user")).rejects.toMatchObject({
+      code: "unknown-key",
+    } satisfies Partial<ConfigRepositoryError>);
+  });
+
+  test("fails closed when a managed drop-in is a symbolic link", async () => {
+    const root = temp("agenc-managed-drop-in-symlink");
+    const target = join(root, "policy-target.toml");
+    const dropInDir = join(root, "config.d");
+    write(target, "config_version = 2\ndisableAllHooks = true\n");
+    mkdirSync(dropInDir, { recursive: true });
+    symlinkSync(target, join(dropInDir, "10-policy.toml"));
+
+    await expect(loadLayeredConfig({
+      env: { AGENC_HOME: join(root, "home") },
+      managedConfigPath: join(root, "missing-managed.toml"),
+      managedDropInDir: dropInDir,
+    })).rejects.toMatchObject({
+      code: "invalid-source",
+      message: expect.stringMatching(/managed configuration may not be a symbolic link/u),
+    } satisfies Partial<ConfigRepositoryError>);
+  });
+
+  test("fails closed when a managed drop-in is not a regular file", async () => {
+    const root = temp("agenc-managed-drop-in-directory");
+    const dropInDir = join(root, "config.d");
+    mkdirSync(join(dropInDir, "10-policy.toml"), { recursive: true });
+
+    await expect(loadLayeredConfig({
+      env: { AGENC_HOME: join(root, "home") },
+      managedConfigPath: join(root, "missing-managed.toml"),
+      managedDropInDir: dropInDir,
+    })).rejects.toMatchObject({
+      code: "invalid-source",
+      message: expect.stringMatching(/not a regular file/u),
+    } satisfies Partial<ConfigRepositoryError>);
+  });
+
+  test("rejects obsolete duplicate keys inside schema-v2 profiles", async () => {
+    const root = temp("agenc-strict-profile-config");
+    const path = join(root, "config.toml");
+    write(path, [
+      "config_version = 2",
+      "[profiles.dev]",
+      "web_search = true",
+      "[profiles.dev.tools]",
+      "view_image = true",
+      "",
+    ].join("\n"));
+    await expect(readStrictConfigLayer(path, "user")).rejects.toMatchObject({
+      code: "invalid-config",
+      message: expect.stringMatching(/profiles\.dev\.(?:web_search|tools).*unknown field/u),
+    } satisfies Partial<ConfigRepositoryError>);
+  });
+
+  test("tracks provenance and prevents untrusted repository grants", async () => {
+    const root = temp("agenc-layered-config");
+    const home = join(root, "home");
+    const project = join(root, "project");
+    const managed = join(root, "managed.toml");
+    write(join(home, "config.toml"), [
+      "config_version = 2",
+      "model = \"user-model\"",
+      "[permissions]",
+      "allow = [\"system.bash(user:*)\"]",
+      "",
+    ].join("\n"));
+    write(join(project, ".agenc", "config.toml"), [
+      "config_version = 2",
+      "model = \"project-model\"",
+      "sandbox_mode = \"danger-full-access\"",
+      "[permissions]",
+      "allow = [\"system.bash(project:*)\"]",
+      "deny = [\"system.bash(rm:*)\"]",
+      "[hooks]",
+      'PreToolUse = [{ matcher = "system.bash", hooks = [{ type = "command", command = "check-project-hook" }] }]',
+      "[sandbox]",
+      "allow_gpu = true",
+      "network_access = true",
+      "allowUnsandboxedCommands = true",
+      "autoAllowBashIfSandboxed = true",
+      "enableWeakerNestedSandbox = true",
+      "enableWeakerNetworkIsolation = true",
+      "excludedCommands = [\"dangerous-helper\"]",
+      "[sandbox.filesystem]",
+      "allowWrite = [\"/\"]",
+      "[sandbox.network]",
+      "allowedDomains = [\"*\"]",
+      "[sandbox.ripgrep]",
+      'command = "project-rg"',
+      'args = ["--unsafe"]',
+      "[tools_config]",
+      'enabled_tools = ["WebSearch"]',
+      "[browser]",
+      "allow_private_network = true",
+      "no_sandbox = true",
+      "",
+    ].join("\n"));
+    write(managed, "config_version = 2\nmodel = \"managed-model\"\n");
+
+    const resolved = await loadLayeredConfig({
+      env: { AGENC_HOME: home, AGENC_MODEL: "env-model" },
+      projectRoot: project,
+      managedConfigPath: managed,
+      managedDropInDir: join(root, "missing-drop-ins"),
+      projectTrusted: false,
+    });
+    expect(resolved.config.model).toBe("managed-model");
+    expect(resolved.config.permissions?.allow).toEqual(["system.bash(user:*)"]);
+    expect(resolved.config.permissions?.deny).toEqual(["system.bash(rm:*)"]);
+    expect(resolved.config.sandbox_mode).toBe("workspace-write");
+    expect(resolved.config.hooks).toBeUndefined();
+    expect(resolved.config.tools_config).toBeUndefined();
+    expect(resolved.config.browser).toBeUndefined();
+    expect(resolved.config.sandbox?.allow_gpu).toBeUndefined();
+    expect(resolved.config.sandbox?.allowUnsandboxedCommands).toBeUndefined();
+    expect(resolved.config.sandbox?.network).toBeUndefined();
+    expect(resolved.config.sandbox?.network_access).toBeUndefined();
+    expect(resolved.config.sandbox?.filesystem).toBeUndefined();
+    expect(resolved.config.sandbox?.ripgrep).toBeUndefined();
+    const projectedProject = resolved.sources.find(
+      (layer) => layer.scope === "project",
+    )?.config;
+    expect(projectedProject?.model).toBeUndefined();
+    expect(projectedProject?.hooks).toBeUndefined();
+    expect(projectedProject?.tools_config).toBeUndefined();
+    expect(projectedProject?.browser).toBeUndefined();
+    expect(projectedProject?.permissions?.allow).toBeUndefined();
+    expect(projectedProject?.permissions?.deny).toEqual(["system.bash(rm:*)"]);
+    expect(projectedProject?.sandbox?.allow_gpu).toBeUndefined();
+    expect(projectedProject?.sandbox?.network_access).toBeUndefined();
+    expect(projectedProject?.sandbox?.ripgrep).toBeUndefined();
+    expect(resolved.provenance.model?.scope).toBe("managed");
+    expect(resolved.ignored.map((item) => item.key)).toEqual(
+      expect.arrayContaining([
+        "permissions.allow",
+        "model",
+        "hooks",
+        "tools_config",
+        "browser",
+        "sandbox_mode",
+        "sandbox.allow_gpu",
+        "sandbox.allowUnsandboxedCommands",
+        "sandbox.autoAllowBashIfSandboxed",
+        "sandbox.enableWeakerNestedSandbox",
+        "sandbox.enableWeakerNetworkIsolation",
+        "sandbox.excludedCommands",
+        "sandbox.filesystem",
+        "sandbox.network",
+        "sandbox.network_access",
+        "sandbox.ripgrep",
+      ]),
+    );
+  });
+
+  test("trusted repository config cannot choose a sandbox executable", async () => {
+    const root = temp("agenc-trusted-repository-sandbox-command");
+    const home = join(root, "home");
+    const project = join(root, "project");
+    write(join(project, ".agenc", "config.toml"), [
+      "config_version = 2",
+      "[sandbox.ripgrep]",
+      'command = "project-rg"',
+      'args = ["--unsafe"]',
+      "",
+    ].join("\n"));
+
+    const resolved = await loadLayeredConfig({
+      env: { AGENC_HOME: home },
+      projectRoot: project,
+      projectTrusted: true,
+      managedConfigPath: join(root, "missing-managed.toml"),
+      managedDropInDir: join(root, "missing-drop-ins"),
+    });
+
+    expect(resolved.config.sandbox?.ripgrep).toBeUndefined();
+    expect(
+      resolved.sources.find((layer) => layer.scope === "project")?.config
+        .sandbox?.ripgrep,
+    ).toBeUndefined();
+    expect(resolved.ignored).toEqual([
+      expect.objectContaining({
+        scope: "project",
+        key: "sandbox.ripgrep",
+      }),
+    ]);
+  });
+});
+
+describe("explicit v2 migration", () => {
+  test("rejects duplicate keys in canonical state before parsing", async () => {
+    const root = temp("agenc-migration-duplicate-state");
+    const home = join(root, "home");
+    write(
+      join(home, "state.json"),
+      '{"state_version":1,"state":{"global":{},"global":{}}}\n',
+    );
+
+    const plan = await checkConfigV2Migration({
+      env: {},
+      home,
+      projectRoot: join(root, "project"),
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath: join(root, "missing-global.json"),
+      id: "duplicate-canonical-state",
+      scope: "all",
+    });
+
+    expect(plan.conflicts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sourcePath: join(home, "state.json"),
+        reason: expect.stringMatching(/duplicate object key/u),
+      }),
+    ]));
+    expect(plan.writes).toEqual([]);
+  });
+
+  test("refuses one file as both user and project migration target", async () => {
+    const root = temp("agenc-migration-scope-path-collision");
+    const projectRoot = join(root, "project");
+    const home = join(projectRoot, ".agenc");
+    write(
+      join(home, "config.toml"),
+      'configVersion = 1\nmodel = "grok-4.6"\n',
+    );
+
+    const plan = await checkConfigV2Migration({
+      env: {},
+      home,
+      projectRoot,
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath: join(root, "missing-global.json"),
+      id: "scope-path-collision",
+      scope: "all",
+    });
+
+    expect(plan.conflicts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        reason: expect.stringMatching(/user.*project.*same physical file/iu),
+      }),
+    ]));
+    expect(plan.writes).toEqual([]);
+  });
+
+  test("refuses hard-linked retired inputs from different scopes", async () => {
+    const root = temp("agenc-migration-source-inode-collision");
+    const home = join(root, "home");
+    const projectRoot = join(root, "project");
+    const userSettings = join(home, "settings.json");
+    const projectSettings = join(projectRoot, ".agenc", "settings.json");
+    write(userSettings, '{"theme":"dark"}\n');
+    mkdirSync(join(projectRoot, ".agenc"), { recursive: true });
+    linkSync(userSettings, projectSettings);
+
+    const plan = await checkConfigV2Migration({
+      env: {},
+      home,
+      projectRoot,
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath: join(root, "missing-global.json"),
+      id: "source-inode-collision",
+      scope: "all",
+    });
+
+    expect(plan.conflicts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        reason: expect.stringMatching(/retired input.*same physical file.*inode/iu),
+      }),
+    ]));
+    expect(plan.writes).toEqual([]);
+  });
+
+  test("maps the retired editor toggle into tui.vimMode", async () => {
+    const root = temp("agenc-v2-editor-mode");
+    const home = join(root, "home");
+    write(
+      join(home, "config.toml"),
+      'configVersion = 1\neditorMode = "vim"\n',
+    );
+
+    const plan = await checkConfigV2Migration({
+      env: {},
+      home,
+      projectRoot: join(root, "project"),
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath: join(root, "missing-global.json"),
+      id: "editor-mode",
+    });
+
+    expect(plan.conflicts).toEqual([]);
+    const configWrite = plan.writes.find(write => write.kind === "config");
+    expect(configWrite?.content).toMatch(/"?vimMode"?\s*=\s*true/u);
+    expect(configWrite?.content).not.toContain("editorMode");
+  });
+
+  test("refuses conflicting editorMode and tui.vimMode values", async () => {
+    const root = temp("agenc-v2-editor-conflict");
+    const home = join(root, "home");
+    write(
+      join(home, "config.toml"),
+      [
+        "configVersion = 1",
+        'editorMode = "vim"',
+        "[tui]",
+        "vimMode = false",
+        "",
+      ].join("\n"),
+    );
+
+    const plan = await checkConfigV2Migration({
+      env: {},
+      home,
+      projectRoot: join(root, "project"),
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath: join(root, "missing-global.json"),
+      id: "editor-conflict",
+    });
+
+    expect(plan.conflicts).toEqual([
+      expect.objectContaining({ field: "tui.vimMode" }),
+    ]);
+  });
+
+  test("consolidates legacy effort and sandbox policy into canonical fields", async () => {
+    const root = temp("agenc-v2-effort-sandbox");
+    const home = join(root, "home");
+    write(
+      join(home, "config.toml"),
+      [
+        "configVersion = 1",
+        'effortLevel = "max"',
+        "[sandbox_policy]",
+        'mode = "workspace-write"',
+        "network_access = true",
+        'writable_roots = ["./cache"]',
+        "",
+      ].join("\n"),
+    );
+
+    const plan = await checkConfigV2Migration({
+      env: {},
+      home,
+      projectRoot: join(root, "project"),
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath: join(root, "missing-global.json"),
+      id: "effort-sandbox",
+    });
+
+    expect(plan.conflicts).toEqual([]);
+    const configWrite = plan.writes.find(write => write.kind === "config");
+    expect(configWrite?.content).toContain('"reasoning_effort" = "xhigh"');
+    expect(configWrite?.content).toContain('"sandbox_mode" = "workspace-write"');
+    expect(configWrite?.content).toContain('"network_access" = true');
+    expect(configWrite?.content).toContain('"allowWrite" = ["./cache"]');
+    expect(configWrite?.content).not.toContain('"writable_roots"');
+    expect(configWrite?.content).not.toContain("effortLevel");
+    expect(configWrite?.content).not.toContain("sandbox_policy");
+  });
+
+  test("migrates duplicate v1 profile tool selectors to canonical list authority", async () => {
+    const root = temp("agenc-v2-profile-tools");
+    const home = join(root, "home");
+    write(
+      join(home, "config.toml"),
+      [
+        "configVersion = 1",
+        "[profiles.dev]",
+        "web_search = false",
+        "[profiles.dev.tools]",
+        "view_image = true",
+        "",
+      ].join("\n"),
+    );
+    const plan = await checkConfigV2Migration({
+      env: {},
+      home,
+      projectRoot: join(root, "project"),
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath: join(root, "missing-global.json"),
+      id: "profile-tools",
+    });
+    expect(plan.conflicts).toEqual([]);
+    const content = plan.writes.find(write => write.kind === "config")?.content;
+    expect(content).toContain('["profiles"."dev"."tools_config"]');
+    expect(content).toContain('"disabled_tools" = ["WebSearch"]');
+    expect(content).not.toContain('"web_search"');
+    expect(content).not.toContain('"view_image"');
+    expect(content).not.toContain('["profiles"."dev"."tools"]');
+  });
+
+  test("refuses conflicting canonical and legacy effort values", async () => {
+    const root = temp("agenc-v2-effort-conflict");
+    const home = join(root, "home");
+    write(
+      join(home, "config.toml"),
+      [
+        "configVersion = 1",
+        'reasoning_effort = "low"',
+        'effortLevel = "max"',
+        "",
+      ].join("\n"),
+    );
+
+    const plan = await checkConfigV2Migration({
+      env: {},
+      home,
+      projectRoot: join(root, "project"),
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath: join(root, "missing-global.json"),
+      id: "effort-conflict",
+    });
+    expect(plan.conflicts).toEqual([
+      expect.objectContaining({ field: "reasoning_effort" }),
+    ]);
+  });
+
+  test("moves legacy global environment injection into shell_environment_policy", async () => {
+    const root = temp("agenc-v2-global-env");
+    const home = join(root, "home");
+    const globalStatePath = join(root, "global.json");
+    write(globalStatePath, JSON.stringify({
+      env: { AGENC_TEST_VALUE: "legacy" },
+    }));
+
+    const plan = await checkConfigV2Migration({
+      env: {},
+      home,
+      globalStatePath,
+      id: "global-env",
+    });
+
+    expect(plan.conflicts).toEqual([]);
+    const configWrite = plan.writes.find(write => write.kind === "config");
+    expect(configWrite?.content).toContain('"shell_environment_policy"');
+    expect(configWrite?.content).toContain('"AGENC_TEST_VALUE" = "legacy"');
+  });
+
+  test("retains only runtime project facts from legacy global state", async () => {
+    const root = temp("agenc-v2-project-runtime-state");
+    const home = join(root, "home");
+    const globalStatePath = join(root, "global.json");
+    write(globalStatePath, JSON.stringify({
+      projects: {
+        "/repo": {
+          lastAPIDuration: 42,
+          lastSessionId: "session-1",
+          projectOnboardingSeenCount: 1,
+          activeWorktreeSession: {
+            originalCwd: "/repo",
+            worktreePath: "/tmp/repo-worktree",
+            worktreeName: "feature",
+            sessionId: "session-1",
+          },
+        },
+      },
+    }));
+
+    const plan = await checkConfigV2Migration({
+      env: {},
+      home,
+      projectRoot: join(root, "project"),
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath,
+      id: "project-runtime-state",
+    });
+
+    expect(plan.conflicts).toEqual([]);
+    expect(plan.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        field: "projects./repo.projectOnboardingSeenCount",
+        action: "drop",
+      }),
+    ]));
+    const stateWrite = plan.writes.find(write => write.kind === "state");
+    const migratedState = JSON.parse(stateWrite?.content ?? "null");
+    expect(migratedState).toMatchObject({
+      state_version: 1,
+      state: {
+        global: {
+          projects: {
+            "/repo": {
+              lastAPIDuration: 42,
+              lastSessionId: "session-1",
+            },
+          },
+        },
+      },
+    });
+    expect(
+      migratedState.state.global.projects["/repo"],
+    ).not.toHaveProperty("projectOnboardingSeenCount");
+  });
+
+  test("blocks project trust and executable policy from legacy global state", async () => {
+    const root = temp("agenc-v2-project-authority-state");
+    const home = join(root, "home");
+    const globalStatePath = join(root, "global.json");
+    write(globalStatePath, JSON.stringify({
+      projects: {
+        "/repo": {
+          lastAPIDuration: 42,
+          hasTrustDialogAccepted: true,
+          allowedTools: ["Bash"],
+        },
+      },
+    }));
+
+    const plan = await checkConfigV2Migration({
+      env: {},
+      home,
+      projectRoot: join(root, "project"),
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath,
+      id: "project-authority-state",
+    });
+
+    expect(plan.conflicts).toEqual([
+      expect.objectContaining({
+        scope: "state",
+        reason: expect.stringMatching(/project trust decisions.*trusted-projects\.json/u),
+      }),
+    ]);
+    expect(plan.writes.some(write => write.kind === "state")).toBe(false);
+  });
+
+  test("refuses conflicting canonical and legacy global environment values", async () => {
+    const root = temp("agenc-v2-global-env-conflict");
+    const home = join(root, "home");
+    const globalStatePath = join(root, "global.json");
+    write(
+      join(home, "config.toml"),
+      [
+        "config_version = 2",
+        "[shell_environment_policy.set]",
+        'AGENC_TEST_VALUE = "canonical"',
+        "",
+      ].join("\n"),
+    );
+    write(globalStatePath, JSON.stringify({ env: { AGENC_TEST_VALUE: "legacy" } }));
+
+    const plan = await checkConfigV2Migration({
+      env: {},
+      home,
+      globalStatePath,
+      id: "global-env-conflict",
+    });
+
+    expect(plan.conflicts).toEqual([
+      expect.objectContaining({ field: "shell_environment_policy.set.AGENC_TEST_VALUE" }),
+    ]);
+  });
+
+  test("checks, applies, archives legacy JSON, and rolls back", async () => {
+    const root = temp("agenc-v2-migration");
+    const home = join(root, "home");
+    const project = join(root, "project");
+    const managed = join(root, "managed", "config.toml");
+    const original = "configVersion = 1\nmodel = \"legacy-model\"\n";
+    write(join(home, "config.toml"), original);
+    write(join(home, "settings.json"), "{\"spinnerTipsEnabled\":false}\n");
+
+    const options = {
+      env: {},
+      home,
+      projectRoot: project,
+      managedConfigPath: managed,
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath: join(root, "missing-global.json"),
+      id: "test-migration",
+    } as const;
+    const plan = await checkConfigV2Migration(options);
+    expect(plan.conflicts).toEqual([]);
+    expect(plan.writes.map((item) => item.kind)).toEqual(["config"]);
+    expect(readFileSync(join(home, "config.toml"), "utf8")).toBe(original);
+
+    const applied = await applyConfigV2Migration(plan);
+    expect(applied.id).toBe("test-migration");
+    expect(readFileSync(join(home, "config.toml"), "utf8")).toContain(
+      '"config_version" = 2',
+    );
+    expect(readFileSync(join(home, "config.toml"), "utf8")).toContain(
+      '"spinnerTipsEnabled" = false',
+    );
+    expect(existsSync(join(home, "settings.json"))).toBe(false);
+    expect(existsSync(`${join(home, "settings.json")}.migrated-v2-test-migration`)).toBe(true);
+    expect(existsSync(join(home, "state.json"))).toBe(false);
+
+    const rolledBack = await rollbackConfigV2Migration("test-migration", { home, env: {} });
+    expect(rolledBack.restored).toBeGreaterThan(0);
+    expect(readFileSync(join(home, "config.toml"), "utf8")).toBe(original);
+    expect(existsSync(join(home, "settings.json"))).toBe(true);
+    expect(existsSync(join(home, "state.json"))).toBe(false);
+  });
+
+  test("blocks credentials and unknown passthrough fields without writes", async () => {
+    const root = temp("agenc-v2-conflict");
+    const home = join(root, "home");
+    write(join(home, "settings.json"), JSON.stringify({
+      agentModels: { custom: { base_url: "https://example.test", api_key: "secret" } },
+      futurePassthrough: true,
+    }));
+    const plan = await checkConfigV2Migration({
+      env: {},
+      home,
+      projectRoot: join(root, "project"),
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath: join(root, "missing-global.json"),
+      id: "blocked",
+    });
+    expect(plan.conflicts.map((item) => item.field)).toEqual(
+      expect.arrayContaining(["agentModels", "futurePassthrough"]),
+    );
+    await expect(applyConfigV2Migration(plan)).rejects.toBeInstanceOf(ConfigMigrationError);
+    expect(existsSync(join(home, "config.toml"))).toBe(false);
+  });
+
+  test("migration is the only path that accepts removed per-tool permission aliases", async () => {
+    const root = temp("agenc-v2-per-tool-alias");
+    const home = join(root, "home");
+    write(join(home, "config.toml"), [
+      "configVersion = 1",
+      "[tools_config.Edit]",
+      'defaultPermissionMode = "never"',
+      "[tools_config.Write]",
+      'approval_mode = "prompt"',
+      "",
+    ].join("\n"));
+
+    const plan = await checkConfigV2Migration({
+      env: {},
+      home,
+      projectRoot: join(root, "project"),
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath: join(root, "missing-global.json"),
+      id: "per-tool-alias",
+    });
+    expect(plan.conflicts).toEqual([]);
+    const content = plan.writes.find((item) => item.kind === "config")?.content;
+    expect(content).toContain('"default_permission_mode" = "never"');
+    expect(content).toContain('"default_permission_mode" = "untrusted"');
+    expect(content).not.toContain("defaultPermissionMode");
+    expect(content).not.toContain("approval_mode");
+  });
+});
+
+describe("runtime v2 cutover", () => {
+  test("ConfigStore uses strict layered config and never falls back on errors", async () => {
+    const root = temp("agenc-v2-runtime-store");
+    const home = join(root, "home");
+    const project = join(root, "project");
+    write(join(home, "config.toml"), [
+      "config_version = 2",
+      'model = "canonical-at-startup"',
+      "",
+    ].join("\n"));
+
+    const store = new ConfigStore({
+      home,
+      cwd: project,
+      projectRoot: project,
+      projectTrusted: false,
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedDropInDir: join(root, "managed", "config.d"),
+      env: { HOME: root },
+    });
+    await expect(store.reload()).resolves.toMatchObject({
+      configVersion: 2,
+      model: "canonical-at-startup",
+    });
+
+    write(join(home, "config.toml"), [
+      "config_version = 2",
+      "unknown_runtime_authority = true",
+      "",
+    ].join("\n"));
+    await expect(store.reload()).rejects.toMatchObject({
+      code: "unknown-key",
+      path: join(home, "config.toml"),
+      message: expect.stringContaining("unknown schema-v2 key"),
+    } satisfies Partial<ConfigRepositoryError>);
+    expect(store.current().model).toBe("canonical-at-startup");
+  });
+});
+
+describe("retired-field migration manifest", () => {
+  test("classifies reviewed and passthrough fields exhaustively", () => {
+    expect(classifyRetiredField("settings-json", "agentModels").authority).toBe("credential");
+    expect(classifyRetiredField("global-state", "numStartups")).toMatchObject({
+      authority: "removed",
+      action: "drop",
+    });
+    expect(classifyRetiredField("settings-json", "effortLevel")).toMatchObject({
+      action: "transform",
+      target: "reasoning_effort",
+    });
+    expect(classifyRetiredField("config-toml-v1", "sandbox_policy")).toMatchObject({
+      action: "transform",
+      target: "sandbox_mode,sandbox",
+    });
+    expect(classifyRetiredField("global-state", "providerProfiles")).toMatchObject({
+      authority: "credential",
+      action: "block",
+    });
+    expect(classifyRetiredField("global-state", "cachedChangelog")).toMatchObject({
+      authority: "removed",
+      action: "drop",
+    });
+    expect(classifyRetiredField("settings-json", "future-key")).toMatchObject({
+      authority: "unclassified",
+      action: "block",
+    });
+  });
+});

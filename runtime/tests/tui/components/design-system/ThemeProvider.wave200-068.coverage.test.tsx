@@ -1,7 +1,7 @@
 import { PassThrough } from "node:stream";
 
 import React from "react";
-import { describe, expect, test, vi } from "vitest";
+import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { createRoot } from "../../ink/root.js";
 import { Text } from "../../ink.js";
@@ -13,40 +13,37 @@ import {
 } from "./ThemeProvider.js";
 
 const mocks = vi.hoisted(() => {
-  const configReadsEnabled = vi.fn(() => true);
-  const feature = vi.fn(() => false);
-  const getGlobalConfig = vi.fn(() => ({ theme: "auto" }));
+  const getCanonicalSettingsAuthority = vi.fn(() => ({}));
+  const getExecutionAuthoritySettings = vi.fn(() => ({ tui: { theme: "auto" } }));
   const logError = vi.fn();
   const savedConfigs: unknown[] = [];
-  const saveGlobalConfig = vi.fn((update: (current: unknown) => unknown) => {
-    savedConfigs.push(update({ retained: true, theme: "dark" }));
+  const updateSettingsForSource = vi.fn(async (_source: string, update: unknown) => {
+    savedConfigs.push(update);
+    return { error: null };
   });
   const getSystemThemeName = vi.fn(() => "light");
-  const watchSystemTheme = vi.fn(() => () => {});
+  const stopWatchingSystemTheme = vi.fn();
+  const watchSystemTheme = vi.fn(() => stopWatchingSystemTheme);
 
   return {
-    configReadsEnabled,
-    feature,
-    getGlobalConfig,
+    getCanonicalSettingsAuthority,
+    getExecutionAuthoritySettings,
     getSystemThemeName,
     logError,
     savedConfigs,
-    saveGlobalConfig,
+    updateSettingsForSource,
+    stopWatchingSystemTheme,
     watchSystemTheme,
   };
 });
 
-vi.mock("../../../config/init.js", () => ({
-  configReadsEnabled: mocks.configReadsEnabled,
+vi.mock("../../../utils/settings/canonicalAuthority.js", () => ({
+  getCanonicalSettingsAuthority: mocks.getCanonicalSettingsAuthority,
 }));
 
-vi.mock("bun:bundle", () => ({
-  feature: mocks.feature,
-}));
-
-vi.mock("../../../utils/config.js", () => ({
-  getGlobalConfig: mocks.getGlobalConfig,
-  saveGlobalConfig: mocks.saveGlobalConfig,
+vi.mock("../../../utils/settings/settings.js", () => ({
+  getExecutionAuthoritySettings: mocks.getExecutionAuthoritySettings,
+  updateSettingsForSource: mocks.updateSettingsForSource,
 }));
 
 vi.mock("../../../utils/systemTheme.js", () => ({
@@ -119,8 +116,19 @@ async function waitFor(
 }
 
 describe("ThemeProvider", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.savedConfigs.length = 0;
+    mocks.getCanonicalSettingsAuthority.mockReturnValue({});
+    mocks.getExecutionAuthoritySettings.mockReturnValue({ tui: { theme: "auto" } });
+    mocks.getSystemThemeName.mockReturnValue("light");
+    mocks.watchSystemTheme.mockImplementation(
+      () => mocks.stopWatchingSystemTheme,
+    );
+  });
+
   test("uses a dark fallback before config reads are enabled", async () => {
-    mocks.configReadsEnabled.mockReturnValueOnce(false);
+    mocks.getCanonicalSettingsAuthority.mockReturnValueOnce(null);
     const snapshots: ThemeSnapshot[] = [];
     const { stderr, stdin, stdout } = createTestStreams();
     const root = await createRoot({
@@ -152,7 +160,7 @@ describe("ThemeProvider", () => {
         () => snapshots.some(snapshot => snapshot.setting === "dark" && snapshot.theme === "dark"),
         "dark fallback theme was not used",
       );
-      expect(mocks.getGlobalConfig).not.toHaveBeenCalled();
+      expect(mocks.getExecutionAuthoritySettings).not.toHaveBeenCalled();
     } finally {
       root.unmount();
       stdin.end();
@@ -197,13 +205,16 @@ describe("ThemeProvider", () => {
         "auto theme did not resolve from the cached system theme",
       );
 
-      expect(mocks.getGlobalConfig).toHaveBeenCalledTimes(1);
+      expect(mocks.getExecutionAuthoritySettings).toHaveBeenCalledTimes(1);
       expect(mocks.getSystemThemeName).toHaveBeenCalled();
-      expect(mocks.feature).toHaveBeenCalledWith("AUTO_THEME");
+      await waitFor(
+        () => mocks.watchSystemTheme.mock.calls.length > 0,
+        "auto theme watcher did not start",
+      );
 
       controls?.preview.savePreview();
       controls?.preview.cancelPreview();
-      expect(mocks.saveGlobalConfig).not.toHaveBeenCalled();
+      expect(mocks.updateSettingsForSource).not.toHaveBeenCalled();
 
       controls?.preview.setPreviewTheme("dark");
       await waitFor(
@@ -217,8 +228,8 @@ describe("ThemeProvider", () => {
         "preview was not saved as the persisted theme setting",
       );
 
-      expect(mocks.saveGlobalConfig).toHaveBeenCalledTimes(1);
-      expect(mocks.savedConfigs).toContainEqual({ retained: true, theme: "dark" });
+      expect(mocks.updateSettingsForSource).toHaveBeenCalledTimes(1);
+      expect(mocks.savedConfigs).toContainEqual({ tui: { theme: "dark" } });
 
       controls?.preview.setPreviewTheme("auto");
       await waitFor(
@@ -238,8 +249,8 @@ describe("ThemeProvider", () => {
         "explicit auto setting did not resolve from the cached system theme",
       );
 
-      expect(mocks.saveGlobalConfig).toHaveBeenCalledTimes(2);
-      expect(mocks.savedConfigs).toContainEqual({ retained: true, theme: "auto" });
+      expect(mocks.updateSettingsForSource).toHaveBeenCalledTimes(2);
+      expect(mocks.savedConfigs).toContainEqual({ tui: { theme: "auto" } });
     } finally {
       root.unmount();
       stdin.end();
@@ -249,7 +260,6 @@ describe("ThemeProvider", () => {
   });
 
   test("logs auto-theme watcher startup failures without unmounting the provider", async () => {
-    mocks.feature.mockReturnValue(true);
     const watcherError = new Error("theme watcher startup failed");
     mocks.watchSystemTheme.mockImplementationOnce(() => {
       throw watcherError;
@@ -297,5 +307,34 @@ describe("ThemeProvider", () => {
       stdout.end();
       stderr.end();
     }
+  });
+
+  test("cleans up the OSC 11 watcher when the provider unmounts", async () => {
+    const { stderr, stdin, stdout } = createTestStreams();
+    const root = await createRoot({
+      stderr: stderr as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      patchConsole: false,
+    });
+
+    try {
+      root.render(
+        <ThemeProvider initialState="auto" onThemeSave={vi.fn()}>
+          <Text>auto</Text>
+        </ThemeProvider>,
+      );
+
+      await waitFor(
+        () => mocks.watchSystemTheme.mock.calls.length === 1,
+        "auto theme watcher did not start",
+      );
+    } finally {
+      root.unmount();
+      stdin.end();
+      stdout.end();
+      stderr.end();
+    }
+    expect(mocks.stopWatchingSystemTheme).toHaveBeenCalledTimes(1);
   });
 });

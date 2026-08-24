@@ -7,7 +7,6 @@ const UNTRUSTED_TOOL_RESULT_BOUNDARY =
 
 const WEB_TOOL_NAMES = new Set([
   "web_fetch",
-  "WebFetch",
   "WebSearch",
   "web_search",
 ]);

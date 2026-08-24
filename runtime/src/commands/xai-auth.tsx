@@ -32,6 +32,18 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
+import type { HomeContext } from "../config/home.js";
+
+function commandCredentialHome(ctx: SlashCommandContext): HomeContext {
+  const home = ctx.session.services?.configStore?.homeContext ??
+    ctx.configStore?.homeContext;
+  if (home === undefined) {
+    throw new Error(
+      "xAI auth requires the session's canonical ConfigStore home authority",
+    );
+  }
+  return home;
+}
 
 export const grokLoginCommand: SlashCommand = {
   name: "grok-login",
@@ -48,13 +60,14 @@ export const grokLogoutCommand: SlashCommand = {
   description: "Sign out of the X / xAI account used for Grok",
   immediate: true,
   supportsNonInteractive: true,
-  execute: async () =>
+  execute: async (ctx) =>
     safeExecute(async () => {
-      const existing = readXaiOauthCredentials();
+      const home = commandCredentialHome(ctx);
+      const existing = readXaiOauthCredentials(home);
       if (existing === undefined) {
         return { kind: "text", text: "No xAI sign-in stored." };
       }
-      const result = clearXaiOauthCredentials();
+      const result = clearXaiOauthCredentials(home);
       if (!result.success) {
         return {
           kind: "error",
@@ -78,6 +91,7 @@ async function executeGrokLogin(
   ctx: SlashCommandContext,
 ): Promise<SlashCommandResult> {
   return safeExecute(async () => {
+    const home = commandCredentialHome(ctx);
     const arg = ctx.argsRaw.trim().toLowerCase();
     if (arg !== "" && arg !== "device") {
       return {
@@ -98,7 +112,7 @@ async function executeGrokLogin(
     const blob = xaiOauthTokensToBlob(login.tokens, {
       tokenEndpoint: login.tokenEndpoint,
     });
-    const saved = saveXaiOauthCredentials(blob);
+    const saved = saveXaiOauthCredentials(home, blob);
     if (!saved.success) {
       return {
         kind: "error",

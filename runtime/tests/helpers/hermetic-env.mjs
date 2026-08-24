@@ -45,8 +45,9 @@ const HERMETIC_RUNTIME_MARKER_VERSION =
  * src/llm/registry/provider-info.ts (one env var per built-in provider slug,
  * including github -> GITHUB_TOKEN and amazon-bedrock -> AWS_ACCESS_KEY_ID),
  * unioned with the alias/companion names the codebase also resolves:
- *   - grok aliases: GROK_API_KEY, AGENC_XAI_API_KEY (src/config/env.ts
- *     resolveApiKey precedence XAI_API_KEY -> GROK_API_KEY -> AGENC_XAI_API_KEY)
+ *   - grok alias GROK_API_KEY plus retired AGENC_XAI_API_KEY, which remains in
+ *     this scrub list only so a developer's ambient obsolete value cannot
+ *     contaminate rejection tests
  *   - SECRET_ENV_KEYS (src/utils/providerSecrets.ts): OPENAI_AUTH_HEADER_VALUE,
  *     AGENC_API_KEY, GOOGLE_API_KEY, BNKR_API_KEY, ...
  *   - the subprocess scrub precedent (src/utils/subprocessEnv.ts):
@@ -165,12 +166,12 @@ export const HERMETIC_RUNTIME_AUTH_ENV_VARS = Object.freeze([
  * AgenC developer-state env vars: hosted-auth/session credentials plus the
  * config-behavior overrides documented at the top of src/config/env.ts. Any
  * of these, exported in a developer's shell, silently reconfigures tests
- * (e.g. AGENC_MODEL flips default-model expectations, AGENC_USE_OPENAI flips
+ * (e.g. AGENC_MODEL flips default-model expectations, provider credentials flip
  * provider validation, AGENC_ENV_FILE injects arbitrary env).
  *
  * Deliberately NOT stripped:
- *   - AGENC_HOME / AGENC_CONFIG_DIR / AGENC_AUTH_BACKEND: not stripped but
- *     FORCED to hermetic values below.
+ *   - AGENC_HOME / AGENC_AUTH_BACKEND: not stripped but FORCED to hermetic
+ *     values below.
  *   - Test-harness vars tests themselves set after setup runs
  *     (AGENC_TRAJECTORY_*, AGENC_DAEMON_* timeout overrides, etc.).
  */
@@ -206,9 +207,6 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_DISABLE_STRICT_TOOLS',
   'AGENC_ADDITIONAL_PROTECTION',
   'AGENC_SUBPROCESS_ENV_NO_SCRUB',
-  'AGENC_SUBPROCESS_ENV_SCRUB',
-  'AGENC_PROVIDER_PROFILE_ENV_APPLIED',
-  'AGENC_PROVIDER_PROFILE_ENV_APPLIED_ID',
   'USER_TYPE',
   // endpoints and subprocess/service activation
   'AGENC_BACKEND_URL',
@@ -221,22 +219,10 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'BEDROCK_BASE_URL',
   'VERTEX_BASE_URL',
   'AGENC_REMOTE_SEND_KEEPALIVES',
-  'AGENC_ENABLE_PROMPT_SUGGESTION',
-  'AGENC_PROMPT_SUGGESTION_ENABLED',
   'AGENC_AUTO_BACKGROUND_TASKS',
-  'AGENC_SYNC_PLUGIN_INSTALL',
-  'AGENC_USE_COWORK_PLUGINS',
   'FORCE_VCR',
   'VCR_RECORD',
   // provider-family toggles (providerValidation.ts / provider profiles)
-  'AGENC_USE_OPENAI',
-  'AGENC_USE_GEMINI',
-  'AGENC_USE_MISTRAL',
-  'AGENC_USE_GITHUB',
-  'AGENC_USE_BEDROCK',
-  'AGENC_USE_VERTEX',
-  'AGENC_USE_FOUNDRY',
-  'AGENC_USE_MINIMAX',
   'AGENC_PROVIDER_MANAGED_BY_HOST',
   'AGENC_SKIP_BEDROCK_AUTH',
   'AGENC_SKIP_VERTEX_AUTH',
@@ -288,7 +274,6 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'GITHUB_MODEL',
   'AWS_BEDROCK_MODEL',
   'BANKR_MODEL',
-  'NVIDIA_NIM',
   'GEMINI_AUTH_MODE',
   'GEMINI_CACHED_CONTENT',
   'CHATGPT_ACCOUNT_ID',
@@ -311,8 +296,6 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'GOOGLE_CLOUD_REGION',
   'CLOUD_ML_REGION',
   'GOOGLE_CLOUD_PROJECT',
-  'GCLOUD_PROJECT',
-  'GOOGLE_PROJECT_ID',
   'ANTHROPIC_VERTEX_PROJECT_ID',
   'ANTHROPIC_FOUNDRY_RESOURCE',
   // web-search selection and custom routing
@@ -400,12 +383,9 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_SLACK_GROUP_ADDRESSING',
   'AGENC_HEARTBEAT',
   'AGENC_HEARTBEAT_ACTIVE_HOURS',
-  'AGENC_HEARTBEAT_AGENT',
   'AGENC_HEARTBEAT_INTERVAL',
-  'AGENC_HEARTBEAT_MODEL',
   'AGENC_HEARTBEAT_TARGET',
   // alternate persistent-state and output paths
-  'AGENC_MANAGED_SETTINGS_PATH',
   'AGENC_MANAGED_INSTRUCTIONS',
   'AGENC_MANAGED_AGENTS_DIR',
   'AGENC_REMOTE_MEMORY_DIR',
@@ -422,7 +402,6 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_JSONL_TRANSCRIPT',
   'AGENC_DIAGNOSTICS_FILE',
   'AGENC_DEBUG_LOGS_DIR',
-  'AGENC_ENABLE_LEGACY_WINDOWS_PASSWORDVAULT',
   // proxy routing can redirect a nominal public request through an allowed
   // loopback endpoint, so default workers must not inherit it
   'HTTP_PROXY',
@@ -623,8 +602,8 @@ export const HERMETIC_STRIPPED_ENV_VARS = Object.freeze([
 export const HERMETIC_MARKER_ENV_VAR = 'AGENC_TEST_HERMETIC_ENV'
 
 /** Test-only managed-policy root, honored only by a marked Vitest worker. */
-export const HERMETIC_MANAGED_SETTINGS_ENV_VAR =
-  'AGENC_TEST_MANAGED_SETTINGS_PATH'
+export const HERMETIC_MANAGED_CONFIG_ENV_VAR =
+  'AGENC_TEST_MANAGED_CONFIG_PATH'
 
 /** Mint once per worker; never reuse an environment-provided path. */
 function lockedHermeticRuntimeMarker() {
@@ -675,9 +654,9 @@ export function getOrCreateHermeticTestHome() {
  * Sanitize `env` in place for hermetic test runs.
  *
  * - Deletes every var in HERMETIC_STRIPPED_ENV_VARS.
- * - Forces AGENC_HOME and AGENC_CONFIG_DIR to `agencHome` (a per-run temp
- *   dir), scopes native secure-storage service names to that unique config
- *   dir, and redirects OS/XDG home roots there. This isolates AgenC auth,
+ * - Forces AGENC_HOME to `agencHome` (a per-run temp dir), scopes native
+ *   secure-storage service names to that unique home, and redirects OS/XDG
+ *   home roots there. This isolates AgenC auth,
  *   native vaults, gcloud ADC, ProviderCode auth, plugins, user-level managed
  *   settings, platform managed policy, and generic homedir-derived state.
  *   Tests that need another home set it explicitly inside the test, after
@@ -703,6 +682,9 @@ export function sanitizeHermeticEnv(env, agencHome, options = {}) {
   for (const name of HERMETIC_STRIPPED_ENV_VARS) {
     if (!preserved.has(name)) delete env[name]
   }
+  // Removed runtime authorities must never leak in from the developer shell.
+  // Individual rejection tests may set them explicitly after setup.
+  delete env.AGENC_CONFIG_DIR
   if (typeof marker?.runRoot === 'string') {
     env.AGENC_TEST_HERMETIC_RUN_ROOT = marker.runRoot
   }
@@ -710,10 +692,8 @@ export function sanitizeHermeticEnv(env, agencHome, options = {}) {
     env.AGENC_TEST_NETWORK_ATTEMPT_LEDGER = marker.attemptLedger
   }
   env.AGENC_HOME = agencHome
-  env.AGENC_CONFIG_DIR = agencHome
   env.AGENC_MANAGED_HOME = join(agencHome, 'managed-home')
-  env.AGENC_MANAGED_SETTINGS = join(agencHome, 'managed-settings.json')
-  env[HERMETIC_MANAGED_SETTINGS_ENV_VAR] = join(
+  env[HERMETIC_MANAGED_CONFIG_ENV_VAR] = join(
     agencHome,
     'managed-policy',
   )

@@ -371,7 +371,7 @@ interface LLMChatToolRoutingOptions {
 type LLMReasoningEffort = "low" | "medium" | "high" | "xhigh";
 type LLMReasoningSummary = "auto" | "concise" | "detailed" | "none";
 type LLMModelVerbosity = "low" | "medium" | "high";
-type LLMServiceTier = "fast" | "priority" | "flex";
+type LLMServiceTier = "priority" | "flex";
 
 export type LLMProviderNativeServerToolType =
   | "web_search"

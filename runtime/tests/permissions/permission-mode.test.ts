@@ -10,6 +10,7 @@ import {
   __setAutoModeGateResolverForTesting,
   __setPlanAutoModeResolverForTesting,
   canCycleToAuto,
+  createDisabledAutoModeContext,
   cyclePermissionMode,
   getNextPermissionMode,
   isAutoModeGateEnabled,
@@ -224,15 +225,15 @@ describe("transitionPermissionMode — plan enter/exit", () => {
       mode: "plan",
       prePlanMode: "default",
       autoModeActive: true,
-      alwaysAllowRules: { userSettings: ["Read(src/**)"] },
-      strippedDangerousRules: { userSettings: ["Bash(*)"] },
+      alwaysAllowRules: { userSettings: ["FileRead(src/**)"] },
+      strippedDangerousRules: { userSettings: ["system.bash(*)"] },
     });
     const exited = transitionPermissionMode("plan", "default", inPlan);
     expect(exited.autoModeActive).toBe(false);
     expect(exited.prePlanMode).toBeUndefined();
     expect(exited.alwaysAllowRules.userSettings).toEqual([
-      "Read(src/**)",
-      "Bash(*)",
+      "FileRead(src/**)",
+      "system.bash(*)",
     ]);
   });
 
@@ -258,15 +259,15 @@ describe("transitionPermissionMode — auto enter/leave", () => {
     const ctx = baseCtx({
       isAutoModeAvailable: true,
       alwaysAllowRules: {
-        userSettings: ["Bash(python:*)", "Read(src/**)"],
+        userSettings: ["system.bash(python:*)", "FileRead(src/**)"],
       },
     });
     withGateEnabled(true, () => {
       const next = transitionPermissionMode("default", "auto", ctx);
       expect(next.autoModeActive).toBe(true);
-      expect(next.alwaysAllowRules.userSettings).toEqual(["Read(src/**)"]);
+      expect(next.alwaysAllowRules.userSettings).toEqual(["FileRead(src/**)"]);
       expect(next.strippedDangerousRules?.userSettings).toEqual([
-        "Bash(python:*)",
+        "system.bash(python:*)",
       ]);
     });
   });
@@ -275,14 +276,14 @@ describe("transitionPermissionMode — auto enter/leave", () => {
     const ctx = baseCtx({
       mode: "auto",
       autoModeActive: true,
-      alwaysAllowRules: { userSettings: ["Read(src/**)"] },
-      strippedDangerousRules: { userSettings: ["Bash(python:*)"] },
+      alwaysAllowRules: { userSettings: ["FileRead(src/**)"] },
+      strippedDangerousRules: { userSettings: ["system.bash(python:*)"] },
     });
     const next = transitionPermissionMode("auto", "default", ctx);
     expect(next.autoModeActive).toBe(false);
     expect(next.alwaysAllowRules.userSettings).toEqual([
-      "Read(src/**)",
-      "Bash(python:*)",
+      "FileRead(src/**)",
+      "system.bash(python:*)",
     ]);
     expect(next.strippedDangerousRules).toBeUndefined();
   });
@@ -300,23 +301,23 @@ describe("prepareContextForPlanMode", () => {
     const ctx = baseCtx({
       mode: "default",
       alwaysAllowRules: {
-        userSettings: ["Bash(*)"],
+        userSettings: ["system.bash(*)"],
       },
     });
     const next = prepareContextForPlanMode(ctx, { shouldUseAutoInPlan: true });
     expect(next.prePlanMode).toBe("default");
     expect(next.autoModeActive).toBe(true);
-    expect(next.strippedDangerousRules?.userSettings).toEqual(["Bash(*)"]);
+    expect(next.strippedDangerousRules?.userSettings).toEqual(["system.bash(*)"]);
     expect(next.alwaysAllowRules.userSettings).toBeUndefined();
   });
 
   it("does not strip dangerous rules entering plan from bypass", () => {
     const ctx = baseCtx({
       mode: "bypassPermissions",
-      alwaysAllowRules: { userSettings: ["Bash(*)"] },
+      alwaysAllowRules: { userSettings: ["system.bash(*)"] },
     });
     const next = prepareContextForPlanMode(ctx, { shouldUseAutoInPlan: true });
-    expect(next.alwaysAllowRules.userSettings).toEqual(["Bash(*)"]);
+    expect(next.alwaysAllowRules.userSettings).toEqual(["system.bash(*)"]);
     expect(next.autoModeActive).toBeUndefined();
     expect(next.strippedDangerousRules).toBeUndefined();
   });
@@ -330,12 +331,12 @@ describe("prepareContextForPlanMode", () => {
     const ctx = baseCtx({
       mode: "auto",
       autoModeActive: true,
-      alwaysAllowRules: { userSettings: ["Read(src/**)"] },
+      alwaysAllowRules: { userSettings: ["FileRead(src/**)"] },
     });
     const next = prepareContextForPlanMode(ctx, { shouldUseAutoInPlan: true });
     expect(next.prePlanMode).toBe("auto");
     expect(next.autoModeActive).toBe(true);
-    expect(next.alwaysAllowRules.userSettings).toEqual(["Read(src/**)"]);
+    expect(next.alwaysAllowRules.userSettings).toEqual(["FileRead(src/**)"]);
   });
 
   it("uses auto semantics in plan only when both the setting and auto gate are enabled", () => {
@@ -356,13 +357,13 @@ describe("prepareContextForPlanMode", () => {
           "default",
           "plan",
           baseCtx({
-            alwaysAllowRules: { userSettings: ["Bash(*)", "Read(src/**)"] },
+            alwaysAllowRules: { userSettings: ["system.bash(*)", "FileRead(src/**)"] },
           }),
         );
         expect("error" in next).toBe(false);
         if ("error" in next) return;
         expect(next.autoModeActive).toBe(true);
-        expect(next.alwaysAllowRules.userSettings).toEqual(["Read(src/**)"]);
+        expect(next.alwaysAllowRules.userSettings).toEqual(["FileRead(src/**)"]);
       } finally {
         restore();
       }
@@ -374,73 +375,97 @@ describe("stripDangerousPermissionsForAutoMode / restoreDangerousPermissions", (
   it("round-trips: strip then restore reproduces the original allow set", () => {
     const original = baseCtx({
       alwaysAllowRules: {
-        userSettings: ["Bash(python:*)", "Read(src/**)", "spawn_agent(worker)"],
-        projectSettings: ["Bash(*)", "Write(/tmp/**)"],
+        userSettings: ["system.bash(python:*)", "FileRead(src/**)", "spawn_agent(worker)"],
+        projectSettings: ["system.bash(*)", "Write(/tmp/**)"],
       },
     });
     const stripped = stripDangerousPermissionsForAutoMode(original);
-    expect(stripped.alwaysAllowRules.userSettings).toEqual(["Read(src/**)"]);
+    expect(stripped.alwaysAllowRules.userSettings).toEqual(["FileRead(src/**)"]);
     expect(stripped.alwaysAllowRules.projectSettings).toEqual(["Write(/tmp/**)"]);
     expect(stripped.strippedDangerousRules?.userSettings?.sort()).toEqual(
-      ["spawn_agent(worker)", "Bash(python:*)"].sort(),
+      ["spawn_agent(worker)", "system.bash(python:*)"].sort(),
     );
-    expect(stripped.strippedDangerousRules?.projectSettings).toEqual(["Bash(*)"]);
+    expect(stripped.strippedDangerousRules?.projectSettings).toEqual(["system.bash(*)"]);
 
     const restored = restoreDangerousPermissions(stripped);
     expect(restored.strippedDangerousRules).toBeUndefined();
     const us = [...(restored.alwaysAllowRules.userSettings ?? [])].sort();
     const ps = [...(restored.alwaysAllowRules.projectSettings ?? [])].sort();
     expect(us).toEqual(
-      ["Bash(python:*)", "Read(src/**)", "spawn_agent(worker)"].sort(),
+      ["system.bash(python:*)", "FileRead(src/**)", "spawn_agent(worker)"].sort(),
     );
-    expect(ps).toEqual(["Bash(*)", "Write(/tmp/**)"].sort());
+    expect(ps).toEqual(["system.bash(*)", "Write(/tmp/**)"].sort());
   });
 
   it("restoreDangerousPermissions is a no-op when stash is absent", () => {
-    const ctx = baseCtx({ alwaysAllowRules: { userSettings: ["Read(*)"] } });
+    const ctx = baseCtx({ alwaysAllowRules: { userSettings: ["FileRead(*)"] } });
     expect(restoreDangerousPermissions(ctx)).toBe(ctx);
   });
 
   it("strip sets an empty stash when no dangerous rules exist", () => {
-    const ctx = baseCtx({ alwaysAllowRules: { userSettings: ["Read(src/**)"] } });
+    const ctx = baseCtx({ alwaysAllowRules: { userSettings: ["FileRead(src/**)"] } });
     const next = stripDangerousPermissionsForAutoMode(ctx);
     expect(next.strippedDangerousRules).toEqual({});
     expect(next.alwaysAllowRules).toBe(ctx.alwaysAllowRules);
+  });
+
+  it("settings disable restores stashed rules and exits auto mode", () => {
+    const active = {
+      ...stripDangerousPermissionsForAutoMode(
+        baseCtx({
+          mode: "auto",
+          alwaysAllowRules: { userSettings: ["system.bash(python:*)", "FileRead"] },
+        }),
+      ),
+      mode: "auto" as const,
+      autoModeActive: true,
+      isAutoModeAvailable: true,
+    };
+
+    const disabled = createDisabledAutoModeContext(active);
+    expect(disabled.mode).toBe("default");
+    expect(disabled.autoModeActive).toBe(false);
+    expect(disabled.isAutoModeAvailable).toBe(false);
+    expect(disabled.strippedDangerousRules).toBeUndefined();
+    expect(disabled.alwaysAllowRules.userSettings).toEqual([
+      "FileRead",
+      "system.bash(python:*)",
+    ]);
   });
 });
 
 describe("isDangerousBashPermission", () => {
   it("flags tool-level allow (Bash with no content)", () => {
-    expect(isDangerousBashPermission("Bash", undefined)).toBe(true);
-    expect(isDangerousBashPermission("Bash", "")).toBe(true);
+    expect(isDangerousBashPermission("system.bash", undefined)).toBe(true);
+    expect(isDangerousBashPermission("system.bash", "")).toBe(true);
   });
 
-  it("flags Bash(*)", () => {
-    expect(isDangerousBashPermission("Bash", "*")).toBe(true);
+  it("flags system.bash(*)", () => {
+    expect(isDangerousBashPermission("system.bash", "*")).toBe(true);
   });
 
   it("flags interpreter prefix rules", () => {
-    expect(isDangerousBashPermission("Bash", "python:*")).toBe(true);
-    expect(isDangerousBashPermission("Bash", "node*")).toBe(true);
-    expect(isDangerousBashPermission("Bash", "npm run:*")).toBe(true);
-    expect(isDangerousBashPermission("Bash", "python -c*")).toBe(true);
+    expect(isDangerousBashPermission("system.bash", "python:*")).toBe(true);
+    expect(isDangerousBashPermission("system.bash", "node*")).toBe(true);
+    expect(isDangerousBashPermission("system.bash", "npm run:*")).toBe(true);
+    expect(isDangerousBashPermission("system.bash", "python -c*")).toBe(true);
   });
 
   it("uses the live upstream Bash pattern list instead of the old subset", () => {
     if (process.env.USER_TYPE === "ant") {
-      expect(isDangerousBashPermission("Bash", "gh api:*")).toBe(true);
+      expect(isDangerousBashPermission("system.bash", "gh api:*")).toBe(true);
     } else {
-      expect(isDangerousBashPermission("Bash", "gh api:*")).toBe(false);
+      expect(isDangerousBashPermission("system.bash", "gh api:*")).toBe(false);
     }
   });
 
   it("ignores non-Bash tools", () => {
-    expect(isDangerousBashPermission("Read", "*")).toBe(false);
+    expect(isDangerousBashPermission("FileRead", "*")).toBe(false);
   });
 
   it("allows narrow Bash rules", () => {
-    expect(isDangerousBashPermission("Bash", "ls -la")).toBe(false);
-    expect(isDangerousBashPermission("Bash", "git status")).toBe(false);
+    expect(isDangerousBashPermission("system.bash", "ls -la")).toBe(false);
+    expect(isDangerousBashPermission("system.bash", "git status")).toBe(false);
   });
 });
 
@@ -448,11 +473,11 @@ describe("PowerShell dangerous permission parity", () => {
   it("strips PowerShell rules for cross-platform interpreters", () => {
     const ctx = baseCtx({
       alwaysAllowRules: {
-        userSettings: ["PowerShell(python:*)", "Read(src/**)"],
+        userSettings: ["PowerShell(python:*)", "FileRead(src/**)"],
       },
     });
     const stripped = stripDangerousPermissionsForAutoMode(ctx);
-    expect(stripped.alwaysAllowRules.userSettings).toEqual(["Read(src/**)"]);
+    expect(stripped.alwaysAllowRules.userSettings).toEqual(["FileRead(src/**)"]);
     expect(stripped.strippedDangerousRules?.userSettings).toEqual([
       "PowerShell(python:*)",
     ]);
@@ -461,11 +486,11 @@ describe("PowerShell dangerous permission parity", () => {
   it("strips PowerShell .exe forms derived from shared patterns", () => {
     const ctx = baseCtx({
       alwaysAllowRules: {
-        userSettings: ["PowerShell(npm.exe run:*)", "Read(src/**)"],
+        userSettings: ["PowerShell(npm.exe run:*)", "FileRead(src/**)"],
       },
     });
     const stripped = stripDangerousPermissionsForAutoMode(ctx);
-    expect(stripped.alwaysAllowRules.userSettings).toEqual(["Read(src/**)"]);
+    expect(stripped.alwaysAllowRules.userSettings).toEqual(["FileRead(src/**)"]);
     expect(stripped.strippedDangerousRules?.userSettings).toEqual([
       "PowerShell(npm.exe run:*)",
     ]);

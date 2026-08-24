@@ -10,6 +10,7 @@ import {
 } from "../llm/token-accounting.js";
 import type { LLMMessage } from "../llm/types.js";
 import { compressImageBlock } from "./imageResizer.js";
+import { getSelectedProviderEnvironment } from "./model/providers.js";
 
 export const MCP_TOKEN_COUNT_THRESHOLD_FACTOR = 0.5;
 const DEFAULT_MAX_MCP_OUTPUT_TOKENS = 25000;
@@ -24,7 +25,7 @@ const BASE64_ENCODED_BYTES_PER_SOURCE_BYTE = 4 / 3;
  *   3. Hardcoded default
  */
 export function getMaxMcpOutputTokens(): number {
-  const envValue = process.env.MAX_MCP_OUTPUT_TOKENS;
+  const envValue = getSelectedProviderEnvironment().MAX_MCP_OUTPUT_TOKENS;
   if (envValue) {
     const parsed = parseInt(envValue, 10);
     if (Number.isFinite(parsed) && parsed > 0) {

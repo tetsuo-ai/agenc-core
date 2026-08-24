@@ -45,8 +45,8 @@ defaults to `https://id.agenc.ag` (`AGENC_BACKEND_URL`).
 
 ```bash
 agenc remote on        # pair (first run shows code + QR) and keep the host reachable
-agenc remote status    # linked or not
-agenc remote off       # forget this machine's pairing locally
+agenc remote status    # pair.json fields only; does not probe a live bridge
+agenc remote off       # delete pair.json; does not stop a running `on` process
 ```
 
 ## Device pairing flow
@@ -114,7 +114,8 @@ Inside `agenc`:
 - `/remote on` — pairing code + QR on a persistent surface that auto-closes on
   connect; starts the bridge. Reuses an existing pairing if already linked.
 - `/remote status` — whether a phone is linked.
-- `/remote off` — stop the bridge / forget local pairing.
+- `/remote off` — delete `pair.json`. The silent TUI bridge keeps running
+  until the session ends.
 
 The bridge runs **silent** inside the TUI (raw stdout would corrupt Ink) and
 never calls `process.exit` (that would kill the session).

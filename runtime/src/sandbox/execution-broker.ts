@@ -213,7 +213,6 @@ export interface SandboxExecutionBrokerOptions {
   readonly cwd: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly agencLinuxSandboxExe?: string;
-  readonly useLegacyLandlock?: boolean;
   readonly windowsSandboxLevel?: UnifiedExecRuntimeSandbox["windowsSandboxLevel"];
   readonly windowsSandboxPrivateDesktop?: boolean;
   readonly allowGpu?: boolean;
@@ -244,7 +243,6 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   readonly #platform: NodeJS.Platform;
   readonly #sandboxManager: SandboxExecutionManager;
   readonly #explicitLinuxHelper: string | undefined;
-  readonly #useLegacyLandlock: boolean;
   readonly #windowsSandboxLevel: NonNullable<
     UnifiedExecRuntimeSandbox["windowsSandboxLevel"]
   >;
@@ -265,7 +263,6 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     this.#platform = options.platform ?? process.platform;
     this.#sandboxManager = options.sandboxManager ?? defaultSandboxManager;
     this.#explicitLinuxHelper = options.agencLinuxSandboxExe;
-    this.#useLegacyLandlock = options.useLegacyLandlock ?? false;
     this.#windowsSandboxLevel = options.windowsSandboxLevel ?? "disabled";
     this.#windowsSandboxPrivateDesktop =
       options.windowsSandboxPrivateDesktop ?? false;
@@ -294,7 +291,6 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       ...(this.#explicitLinuxHelper !== undefined
         ? { agencLinuxSandboxExe: this.#explicitLinuxHelper }
         : {}),
-      useLegacyLandlock: this.#useLegacyLandlock,
       windowsSandboxLevel: this.#windowsSandboxLevel,
       windowsSandboxPrivateDesktop: this.#windowsSandboxPrivateDesktop,
       allowGpu: this.#allowGpu,
@@ -339,7 +335,6 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       ...(status.helperPath !== undefined
         ? { agencLinuxSandboxExe: status.helperPath }
         : {}),
-      useLegacyLandlock: this.#useLegacyLandlock,
       windowsSandboxLevel: this.#windowsSandboxLevel,
       windowsSandboxPrivateDesktop: this.#windowsSandboxPrivateDesktop,
       ...(this.#allowGpu ? { allowGpu: true } : {}),
@@ -926,7 +921,6 @@ export function transformSandboxedCommand(params: SandboxSpawnCommand & {
       ...(params.runtimeSandbox.agencLinuxSandboxExe !== undefined
         ? { agencLinuxSandboxExe: params.runtimeSandbox.agencLinuxSandboxExe }
         : {}),
-      useLegacyLandlock: params.runtimeSandbox.useLegacyLandlock ?? false,
       windowsSandboxLevel,
       windowsSandboxPrivateDesktop:
         params.runtimeSandbox.windowsSandboxPrivateDesktop ?? false,

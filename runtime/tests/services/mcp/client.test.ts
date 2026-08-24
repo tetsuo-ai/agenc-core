@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -18,6 +19,8 @@ import {
 } from '../../../src/bootstrap/state.js'
 import { runWithCurrentRuntimeSession } from '../../../src/session/current-session.js'
 import type { Session } from '../../../src/session/session.js'
+import { resolveHomeContext } from '../../../src/config/home.js'
+import { nativeVaultIdentityKey } from '../../../src/utils/secureStorage/home.js'
 import { createTestEffectJournal } from '../../helpers/test-effect-journal.js'
 import { resetProjectForTesting } from '../../../src/utils/sessionStorage.js'
 import { getToolResultsDir } from '../../../src/utils/toolResultStorage.js'
@@ -26,6 +29,7 @@ import {
   McpToolCallError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
   callMCPToolWithUrlElicitationRetry,
   callIdeRpc,
+  bindMcpConnectionAuthority,
   clearServerCache,
   cleanupFailedConnection,
   connectToServer,
@@ -40,13 +44,13 @@ import {
 } from './client.js'
 import type { ConnectedMCPServer, MCPServerConnection } from './types.js'
 
-const originalBatchSize = process.env.MCP_SERVER_CONNECTION_BATCH_SIZE
-const originalNoPrefix = process.env.AGENC_AGENT_SDK_MCP_NO_PREFIX
-const originalToolTimeout = process.env.MCP_TOOL_TIMEOUT
-const originalConfigDir = process.env.AGENC_CONFIG_DIR
 const originalAgenCHome = process.env.AGENC_HOME
 const tempDirs: string[] = []
 const isolatedSessionId = '00000000-0000-4000-8000-000000000321'
+const TEST_HOME = resolveHomeContext(
+  { AGENC_HOME: '/tmp/agenc-mcp-client-test' },
+  { platformHome: '/tmp' },
+)
 const UNTRUSTED_MCP_PROMPT_BOUNDARY =
   '===== AGENC UNTRUSTED MCP PROMPT CONTENT ====='
 
@@ -66,10 +70,6 @@ function restoreOptionalEnv(name: string, value: string | undefined): void {
 }
 
 afterEach(async () => {
-  restoreOptionalEnv('MCP_SERVER_CONNECTION_BATCH_SIZE', originalBatchSize)
-  restoreOptionalEnv('AGENC_AGENT_SDK_MCP_NO_PREFIX', originalNoPrefix)
-  restoreOptionalEnv('MCP_TOOL_TIMEOUT', originalToolTimeout)
-  restoreOptionalEnv('AGENC_CONFIG_DIR', originalConfigDir)
   restoreOptionalEnv('AGENC_HOME', originalAgenCHome)
   resetProjectForTesting()
   resetStateForTests()
@@ -84,9 +84,10 @@ afterEach(async () => {
 function connectedClient(
   overrides: Partial<ConnectedMCPServer> & {
     request?: (input: unknown) => Promise<unknown>
+    environment?: Readonly<Record<string, string | undefined>>
   } = {},
 ): ConnectedMCPServer {
-  return {
+  const connection = {
     name: overrides.name ?? 'demo',
     type: 'connected',
     capabilities: overrides.capabilities ?? {},
@@ -97,6 +98,13 @@ function connectedClient(
       callTool: async () => ({ content: [{ type: 'text', text: 'ok' }] }),
     } as never),
   } as ConnectedMCPServer
+  return overrides.environment === undefined
+    ? connection
+    : bindMcpConnectionAuthority(
+        connection,
+        overrides.environment,
+        undefined,
+      )
 }
 
 function promptAdmissionSession() {
@@ -220,8 +228,9 @@ function seedConnectionCache(
   name: string,
   config: MCPServerConnection['config'],
   connection: MCPServerConnection,
+  home?: ReturnType<typeof resolveHomeContext>,
 ): void {
-  const key = `${name}-${JSON.stringify(config)}`
+  const key = `${name}-${JSON.stringify(config)}${home ? `-vault-${nativeVaultIdentityKey(home)}` : ''}`
   ;(
     connectToServer.cache as {
       set: (key: string, value: Promise<MCPServerConnection>) => unknown
@@ -241,14 +250,13 @@ async function waitFor(
 }
 
 async function configureIsolatedSession(): Promise<{ toolResultsDir: string }> {
-  const configDir = await mkdtemp(join(tmpdir(), 'agenc-mcp-client-'))
-  tempDirs.push(configDir)
-  process.env.AGENC_CONFIG_DIR = configDir
-  delete process.env.AGENC_HOME
+  const agencHome = await mkdtemp(join(tmpdir(), 'agenc-mcp-client-'))
+  tempDirs.push(agencHome)
+  process.env.AGENC_HOME = agencHome
   resetProjectForTesting()
   resetStateForTests()
 
-  const cwd = join(configDir, 'workspace', 'mcp project')
+  const cwd = join(agencHome, 'workspace', 'mcp project')
   setOriginalCwd(cwd)
   switchSession(isolatedSessionId as never, null)
 
@@ -314,15 +322,14 @@ test('MCP exported error classes preserve server and metadata details', () => {
   assert.deepEqual(toolError.mcpMeta, { _meta: { requestId: 'req-1' } })
 })
 
-test('MCP server connection batch size reads valid env overrides and falls back', () => {
-  delete process.env.MCP_SERVER_CONNECTION_BATCH_SIZE
-  assert.equal(getMcpServerConnectionBatchSize(), 3)
-
-  process.env.MCP_SERVER_CONNECTION_BATCH_SIZE = '7'
-  assert.equal(getMcpServerConnectionBatchSize(), 7)
-
-  process.env.MCP_SERVER_CONNECTION_BATCH_SIZE = 'invalid'
-  assert.equal(getMcpServerConnectionBatchSize(), 3)
+test('MCP server connection batch size reads its captured environment', () => {
+  assert.equal(getMcpServerConnectionBatchSize({}), 3)
+  assert.equal(getMcpServerConnectionBatchSize({
+    MCP_SERVER_CONNECTION_BATCH_SIZE: '7',
+  }), 7)
+  assert.equal(getMcpServerConnectionBatchSize({
+    MCP_SERVER_CONNECTION_BATCH_SIZE: 'invalid',
+  }), 3)
 })
 
 test('fetchToolsForClient returns no tools for disconnected clients or missing capabilities', async () => {
@@ -535,12 +542,12 @@ test('fetchToolsForClient falls back when sanitized SDK MCP schemas stay large',
 })
 
 test('fetchToolsForClient supports SDK no-prefix mode and filters IDE tools', async () => {
-  process.env.AGENC_AGENT_SDK_MCP_NO_PREFIX = '1'
   const sdkTools = await fetchToolsForClient(
     connectedClient({
       name: 'sdk-server',
       capabilities: { tools: {} },
       config: { type: 'sdk', name: 'sdk-server', scope: 'local' },
+      environment: { AGENC_AGENT_SDK_MCP_NO_PREFIX: '1' },
       request: async () => ({
         tools: [{ name: 'override', inputSchema: { type: 'object' } }],
       }),
@@ -568,6 +575,32 @@ test('fetchToolsForClient supports SDK no-prefix mode and filters IDE tools', as
   assert.deepEqual(
     ideTools.map(tool => tool.name),
     ['mcp__ide__executeCode', 'mcp__ide__getDiagnostics'],
+  )
+})
+
+test('MCP tool catalogs are cached by connection identity, not server name', async () => {
+  const first = connectedClient({
+    name: 'same-name',
+    capabilities: { tools: {} },
+    request: async () => ({
+      tools: [{ name: 'first', inputSchema: { type: 'object' } }],
+    }),
+  })
+  const second = connectedClient({
+    name: 'same-name',
+    capabilities: { tools: {} },
+    request: async () => ({
+      tools: [{ name: 'second', inputSchema: { type: 'object' } }],
+    }),
+  })
+
+  assert.deepEqual(
+    (await fetchToolsForClient(first)).map(tool => tool.mcpInfo?.toolName),
+    ['first'],
+  )
+  assert.deepEqual(
+    (await fetchToolsForClient(second)).map(tool => tool.mcpInfo?.toolName),
+    ['second'],
   )
 })
 
@@ -650,6 +683,31 @@ test('clearServerCache cleans up a cached connected server and invalidates its c
   assert.equal(connectToServer.cache.has(`${'cached'}-${JSON.stringify(config)}`), false)
 })
 
+test('connection cache keeps distinct empty session environment authorities isolated', async () => {
+  const config = {
+    type: 'sdk',
+    name: 'session-isolation',
+    scope: 'local',
+  } as const
+  const environmentA = Object.freeze({})
+  const environmentB = Object.freeze({})
+
+  const first = connectToServer('session-isolation', config, undefined, {
+    environment: environmentA,
+  })
+  const sameSession = connectToServer('session-isolation', config, undefined, {
+    environment: environmentA,
+  })
+  const second = connectToServer('session-isolation', config, undefined, {
+    environment: environmentB,
+  })
+
+  assert.equal(first, sameSession)
+  assert.notEqual(first, second)
+  assert.deepEqual((await first).type, 'failed')
+  assert.deepEqual((await second).type, 'failed')
+})
+
 test('ensureConnectedClient throws when cached reconnect result is not connected', async () => {
   const config = { type: 'stdio', command: 'missing', args: [], scope: 'local' } as const
   const client = connectedClient({
@@ -726,7 +784,7 @@ test('prefetchAllMcpResources collects cached tools, commands, clients, and reso
   })
   seedConnectionCache('prefetch', config, client)
 
-  const result = await prefetchAllMcpResources({ prefetch: config })
+  const result = await prefetchAllMcpResources(TEST_HOME, { prefetch: config })
 
   assert.deepEqual(
     result.clients.map(server => `${server.name}:${server.type}`),
@@ -841,7 +899,7 @@ test('MCP prompt commands rethrow getPrompt failures', async () => {
   })
   seedConnectionCache('prompt-fail', config, client)
 
-  const result = await prefetchAllMcpResources({ 'prompt-fail': config })
+  const result = await prefetchAllMcpResources(TEST_HOME, { 'prompt-fail': config })
 
   assert.deepEqual(
     result.commands.map(command => command.name),
@@ -893,7 +951,7 @@ test('prefetchAllMcpResources handles missing and failed prompt lists', async ()
     }),
   )
 
-  const result = await prefetchAllMcpResources({
+  const result = await prefetchAllMcpResources(TEST_HOME, {
     'prompt-missing': missingConfig,
     'prompt-failed': failedConfig,
   })
@@ -908,7 +966,7 @@ test('prefetchAllMcpResources handles missing and failed prompt lists', async ()
 test('reconnectMcpServerImpl returns failed non-connected reconnects without tools', async () => {
   const config = { type: 'sdk', name: 'direct-sdk', scope: 'local' } as const
 
-  const result = await reconnectMcpServerImpl('direct-sdk', config)
+  const result = await reconnectMcpServerImpl(TEST_HOME, 'direct-sdk', config)
 
   assert.deepEqual(result, {
     client: {
@@ -1134,11 +1192,11 @@ test('MCP tool call retries once after HTTP session expiry clears the connection
 })
 
 test('MCP tool call timeout uses MCP_TOOL_TIMEOUT and reports a log-safe timeout', async () => {
-  process.env.MCP_TOOL_TIMEOUT = '1'
   const client = connectedClient({
     name: 'slow-sdk',
     capabilities: { tools: {} },
     config: { type: 'sdk', name: 'slow-sdk', scope: 'local' },
+    environment: { MCP_TOOL_TIMEOUT: '1' },
     client: {
       request: async () => ({
         tools: [{ name: 'slow', inputSchema: { type: 'object' } }],
@@ -1174,7 +1232,6 @@ test('MCP tool call timeout uses MCP_TOOL_TIMEOUT and reports a log-safe timeout
 })
 
 test('MCP tool calls have no implicit five-minute deadline', async () => {
-  delete process.env.MCP_TOOL_TIMEOUT
   vi.useFakeTimers()
   try {
     const rawResult = Promise.withResolvers<{
@@ -1226,13 +1283,13 @@ test('MCP tool calls have no implicit five-minute deadline', async () => {
 })
 
 test('MCP tool calls log progress while waiting before timing out', async () => {
-  process.env.MCP_TOOL_TIMEOUT = '31000'
   vi.useFakeTimers()
   try {
     const client = connectedClient({
       name: 'slow-progress-sdk',
       capabilities: { tools: {} },
       config: { type: 'sdk', name: 'slow-progress-sdk', scope: 'local' },
+      environment: { MCP_TOOL_TIMEOUT: '31000' },
       client: {
         request: async () => ({
           tools: [{ name: 'slow-progress', inputSchema: { type: 'object' } }],
@@ -1655,7 +1712,7 @@ test('ensureConnectedClient returns SDK clients without reconnecting', async () 
 })
 
 test('prefetchAllMcpResources resolves empty config without connecting', async () => {
-  assert.deepEqual(await prefetchAllMcpResources({}), {
+  assert.deepEqual(await prefetchAllMcpResources(TEST_HOME, {}), {
     clients: [],
     tools: [],
     commands: [],
@@ -1663,18 +1720,24 @@ test('prefetchAllMcpResources resolves empty config without connecting', async (
 })
 
 test('prefetchAllMcpResources emits auth tools for cached remote auth failures', async () => {
-  const configDir = await mkdtemp(join(tmpdir(), 'agenc-mcp-auth-prefetch-'))
-  tempDirs.push(configDir)
-  process.env.AGENC_CONFIG_DIR = configDir
-  delete process.env.AGENC_HOME
+  const agencHome = await mkdtemp(join(tmpdir(), 'agenc-mcp-auth-prefetch-'))
+  tempDirs.push(agencHome)
+  const home = resolveHomeContext(
+    { AGENC_HOME: agencHome },
+    { platformHome: '/tmp' },
+  )
+  const vaultHash = createHash('sha256')
+    .update(nativeVaultIdentityKey(home))
+    .digest('hex')
+    .slice(0, 16)
   await writeFile(
-    join(configDir, 'mcp-needs-auth-cache.json'),
+    join(agencHome, `mcp-needs-auth-cache-${vaultHash}.json`),
     JSON.stringify({
       cached: { timestamp: Date.now() },
     }),
   )
 
-  const result = await prefetchAllMcpResources({
+  const result = await prefetchAllMcpResources(home, {
     cached: {
       type: 'http',
       url: 'https://example.test/cached-mcp',
@@ -1694,10 +1757,12 @@ test('prefetchAllMcpResources emits auth tools for cached remote auth failures',
 })
 
 test('prefetchAllMcpResources reports failed remote clients after auth cache misses', async () => {
-  const configDir = await mkdtemp(join(tmpdir(), 'agenc-mcp-auth-miss-'))
-  tempDirs.push(configDir)
-  process.env.AGENC_CONFIG_DIR = configDir
-  delete process.env.AGENC_HOME
+  const agencHome = await mkdtemp(join(tmpdir(), 'agenc-mcp-auth-miss-'))
+  tempDirs.push(agencHome)
+  const home = resolveHomeContext(
+    { AGENC_HOME: agencHome },
+    { platformHome: '/tmp' },
+  )
   const config = {
     type: 'http',
     url: 'https://example.test/uncached-mcp',
@@ -1708,9 +1773,9 @@ test('prefetchAllMcpResources reports failed remote clients after auth cache mis
     type: 'failed',
     config,
     error: 'connection refused',
-  })
+  }, home)
 
-  const result = await prefetchAllMcpResources({ uncached: config })
+  const result = await prefetchAllMcpResources(home, { uncached: config })
 
   assert.deepEqual(result.clients, [
     {
@@ -1811,7 +1876,6 @@ test('MCP tool cancellation retains the admitted call until the raw RPC settles'
 })
 
 test('MCP tool timeout actively aborts without releasing before raw settlement', async () => {
-  process.env.MCP_TOOL_TIMEOUT = '25'
   vi.useFakeTimers()
   try {
     const rawResult = Promise.withResolvers<{
@@ -1820,6 +1884,7 @@ test('MCP tool timeout actively aborts without releasing before raw settlement',
     let rpcSignal: AbortSignal | undefined
     const client = connectedClient({
       name: 'ide',
+      environment: { MCP_TOOL_TIMEOUT: '25' },
       client: {
         callTool: async (
           _params: unknown,

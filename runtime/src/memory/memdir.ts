@@ -24,6 +24,7 @@ import { logForDebugging } from '../utils/debug.js'
 import { hasEmbeddedSearchTools } from '../utils/embeddedTools.js'
 import { formatFileSize } from '../utils/format.js'
 import { getProjectDir } from '../utils/sessionStorage.js'
+import { getSessionCoworkMemoryExtraGuidelines } from '../session/runtime-options.js'
 import {
   MEMORY_FRONTMATTER_EXAMPLE,
   TRUSTING_RECALL_SECTION,
@@ -420,8 +421,7 @@ export async function loadMemoryPrompt(): Promise<string | null> {
   }
 
   // Cowork injects memory-policy text via env var; thread into all builders.
-  const coworkExtraGuidelines =
-    process.env.AGENC_COWORK_MEMORY_EXTRA_GUIDELINES
+  const coworkExtraGuidelines = getSessionCoworkMemoryExtraGuidelines()
   const extraGuidelines =
     coworkExtraGuidelines && coworkExtraGuidelines.trim().length > 0
       ? [coworkExtraGuidelines]

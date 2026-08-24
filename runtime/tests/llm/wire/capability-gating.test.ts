@@ -96,14 +96,14 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
       ).toBe(false);
     });
 
-    test("xai slug normalizes to grok", () => {
+    test("rejects the retired xai provider selector", () => {
       // branding-scan: allow real model identifiers used as test fixtures
       expect(
-        chatCompletionsCapabilityHintsForProvider(
+        () => chatCompletionsCapabilityHintsForProvider(
           "xai",
           "grok-4.20-multi-agent",
-        ).acceptsReasoningEffort,
-      ).toBe(true);
+        ),
+      ).toThrow(/retired provider selector/);
     });
 
     test("non-openai non-grok providers never accept reasoning_effort", () => {
@@ -149,7 +149,6 @@ describe("chatCompletionsCapabilityHintsForProvider", () => {
         "groq",
         "mistral",
         "grok",
-        "xai",
         "anthropic",
         "gemini",
       ];

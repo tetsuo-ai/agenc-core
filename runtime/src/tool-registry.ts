@@ -32,7 +32,7 @@ import type {
   ToolRecoveryCategory,
 } from "./tools/types.js";
 import { safeStringify } from "./tools/types.js";
-import type { ToolsConfig } from "./config/schema.js";
+import type { BrowserConfig, ToolsConfig } from "./config/schema.js";
 import { createFilesystemTools } from "./tools/system/filesystem.js";
 import {
   createCodingTools,
@@ -98,7 +98,6 @@ import {
 } from "./tools/concurrency.js";
 import { ToolRouter, type ConfiguredToolSpec } from "./tools/router.js";
 import { resolvePerToolConfig, toolConfigAllowsTool } from "./tools/config.js";
-import { canonicalModelToolName } from "./tools/model-tool-aliases.js";
 import {
   attachSandboxExecutionBroker,
   type SandboxExecutionBrokerLike,
@@ -523,6 +522,10 @@ export function isResumeReplaySafe(tool: ResumeReplaySafetyView): boolean {
 
 export interface BuildToolRegistryOptions {
   readonly workspaceRoot: string;
+  /** Canonical state home used by the browser lifecycle. */
+  readonly agencHome?: string;
+  /** Already-layered canonical `[browser]` snapshot for this session. */
+  readonly browserConfig?: BrowserConfig;
   /** Live session used to admit direct registry/code-mode dispatches. */
   readonly getSession?: () => Session | null;
   /** Fail closed when direct dispatch has no live admission session. */
@@ -563,7 +566,7 @@ export interface BuildToolRegistryOptions {
   readonly discoverableTools?: ToolListInput;
   /**
    * Product/model-facing tools owned by the registry surface. Bootstrap
-   * wires web_fetch/WebFetch, agent, task, skill, notebook, and workflow tools here
+   * wires web_fetch, agent, task, skill, notebook, and workflow tools here
    * so `tool-registry.ts` remains the single place that combines the
    * runtime-visible tool catalog.
    */
@@ -581,16 +584,15 @@ export interface BuildToolRegistryOptions {
   /** Upstream-style JavaScript code-mode service for exec/wait. */
   readonly codeModeService?: CodeModeService;
   /**
-   * Config-driven tool policy. Boolean entries are enable/disable
-   * shorthands; object entries can set `enabled` and
-   * `default_permission_mode` per tool.
+   * Config-driven tool policy. `enabled_tools` / `disabled_tools` are the
+   * only enablement authority; exact-name objects set approval defaults.
    */
   readonly toolsConfig?: ToolsConfig;
   /**
-   * `[llm.xai]` Grok capability profile. Passed through to model-facing
+   * `[providers.grok]` capability profile. Passed through to model-facing
    * LIVE tools (XSearch) so Pattern A one-shots can gate on config.
    */
-  readonly llmXai?: import("./config/schema.js").LlmXaiConfig;
+  readonly grokCapabilities?: import("./config/schema.js").GrokCapabilityConfig;
   /** Session provider slug for catalog-gating xAI-only LIVE tools. */
   readonly sessionProvider?: string;
   /** Session inference base URL for direct-xAI host checks. */
@@ -737,7 +739,16 @@ export function buildToolRegistry(
   // Browser tool (task 18). Registered deferred (metadata.deferred=true) so it
   // is discovered on demand via system.searchTools, keeping the default
   // per-turn catalog small. The manager launches Chromium lazily on first use.
-  const browserTools = [createBrowserTool()] as const;
+  const browserTools = [
+    createBrowserTool({
+      ...(options.agencHome !== undefined
+        ? { agencHome: options.agencHome }
+        : {}),
+      ...(options.browserConfig !== undefined
+        ? { config: options.browserConfig }
+        : {}),
+    }),
+  ] as const;
   const requestedModelFacingTools = readToolList(options.modelFacingTools);
   const registryModelFacingTools = [
     ...requestedModelFacingTools.filter(
@@ -754,7 +765,6 @@ export function buildToolRegistry(
   ];
   const modelFacingProviderNativeSurface = {
     webFetch: "web_fetch",
-    legacyWebFetch: "WebFetch",
     webSearch: "WebSearch",
     xSearch: "XSearch",
     webSearchNativeTool: "web_search",
@@ -779,7 +789,6 @@ export function buildToolRegistry(
   const skillToolInvocationName = "Skill";
   const modelFacingStringArgumentFieldCandidates = {
     [modelFacingProviderNativeSurface.webFetch]: "url",
-    [modelFacingProviderNativeSurface.legacyWebFetch]: "url",
     [modelFacingProviderNativeSurface.webSearch]: "query",
     [modelFacingProviderNativeSurface.xSearch]: "query",
     [spawnToolName]: "message",
@@ -966,7 +975,7 @@ export function buildToolRegistry(
   // Tools without explicit metadata get sensible defaults:
   //   - readFile/listDir/stat/glob/grep → SharedRead + isReadOnly
   //   - writeFile/editFile/delete/move    → Exclusive (never parallel)
-  //   - web_fetch/WebFetch/WebSearch      → SharedRead (network reads)
+  //   - web_fetch/WebSearch               → SharedRead (network reads)
   //   - bash                              → BackgroundTerminal (subprocess)
   function currentMcpTools(): readonly Tool[] {
     return configuredTools(
@@ -1152,10 +1161,7 @@ export function buildToolRegistry(
     },
     async dispatch(toolCall: LLMToolCall): Promise<ToolDispatchResult> {
       const router = buildRouter();
-      const toolName = canonicalModelToolName(toolCall.name);
-      const routedToolCall =
-        toolName === toolCall.name ? toolCall : { ...toolCall, name: toolName };
-      const spec = router.findSpec(toolName);
+      const spec = router.findSpec(toolCall.name);
       if (!spec) {
         return {
           content: safeStringify({
@@ -1166,7 +1172,7 @@ export function buildToolRegistry(
       }
       try {
         const parseResult = parseToolCallArguments(
-          routedToolCall,
+          toolCall,
           builtinSurface.stringArgumentFields,
         );
         if (!parseResult.ok) {

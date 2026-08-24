@@ -8,6 +8,8 @@
 
 import { describe, expect, it } from "vitest";
 import { createAgentRoleWorkspace } from "../agents/role.js";
+import { ConfigStore } from "../config/store.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import { AsyncQueue } from "../utils/async-queue.js";
 import {
   MAILBOX_SOURCE_IDLE_INPUT,
@@ -37,6 +39,21 @@ function buildSession(mailboxLimits?: SessionOpts["mailboxLimits"]): Session {
       cancel: () => {},
       isCancelled: () => false,
     },
+    provider: {
+      name: "idle-input-test",
+      chat: async () => {
+        throw new Error("idle-input test provider must not be called");
+      },
+      chatStream: async () => {
+        throw new Error("idle-input test provider must not be called");
+      },
+      healthCheck: async () => true,
+    },
+    configStore: new ConfigStore({
+      home: "/tmp/agenc-idle-input-test-home",
+      cwd: ROLE_WORKSPACE.cwd,
+    }),
+    runtimeOptions: resolveAgentRuntimeOptions({}),
   } as unknown as SessionOpts["services"];
   const opts: SessionOpts = {
     conversationId: "conv-test",

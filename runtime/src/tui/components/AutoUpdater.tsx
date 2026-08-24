@@ -4,7 +4,7 @@ import { useInterval } from 'usehooks-ts';
 import { useUpdateNotification } from '../hooks/useUpdateNotification.js';
 import { Box, Text } from '../ink.js';
 import { type AutoUpdaterResult, getLatestVersion, getMaxVersion, type InstallStatus, installGlobalPackage, shouldSkipVersion } from '../../utils/autoUpdater.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { getGlobalConfig, isAutoUpdaterDisabled } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getRuntimeState, isAutoUpdaterDisabled } from '../../utils/config.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { logForDebugging } from 'src/utils/debug.js';
 import { logError } from '../../utils/log.js';
 import { getCurrentInstallationType } from '../../utils/doctorDiagnostic.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -110,7 +110,7 @@ export function AutoUpdater({
 
         // Remove native installer symlink since we're using JS-based updates
         // But only if user hasn't migrated to native installation
-        const config = getGlobalConfig();
+        const config = getRuntimeState();
         if (config.installMethod !== 'native') {
           await removeInstalledSymlink();
         }

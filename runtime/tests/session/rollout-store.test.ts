@@ -1244,7 +1244,7 @@ describe("RolloutStore thread-spawn edges", () => {
             parentPath: "/root",
             metadata: {
               ...baseMetadata,
-              agentRole: "worker",
+              agentRole: "runner",
               agentRoleFingerprint: "worker-role-fingerprint",
             },
             status: "open",

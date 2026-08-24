@@ -11,7 +11,7 @@ CLI: `agenc providers` · `agenc login` · `agenc config` · `/provider` and
 
 | Setting | Value |
 | --- | --- |
-| Default provider | `grok` (xAI; alias `xai` normalizes to `grok`) |
+| Default provider | `grok` (xAI) |
 | Fresh-config session model | `grok-4.6` (`defaultConfig().model`) |
 | Provider-map fallback (`BUILT_IN_PROVIDER_DEFAULT_MODELS.grok`) | `grok-4.6` |
 | Managed OpenRouter paid default | `x-ai/grok-4.5` |
@@ -23,6 +23,28 @@ Bare interactive startup with a fresh install uses the **config** default
 explicit model, the registry also uses **`grok-4.6`**. Managed OpenRouter is a
 separate provider route and its paid default remains **`x-ai/grok-4.5`**.
 
+## Single provider authority
+
+Startup provider selection is explicit and layered: `--provider` wins over
+`AGENC_PROVIDER`, which wins over `model_provider` in the selected profile or
+`config.toml`; the final fallback is `grok`. A provider-qualified `--model`
+selection is resolved as one provider/model pair. API keys, OAuth tokens, base
+URLs, and local endpoint availability never choose a provider.
+
+The client captures this selection once and binds it to a session-owned
+provider service before daemon work begins. `/provider` replaces that binding
+for only the current session. It does not stamp `process.env`, change the
+daemon default, or affect concurrent sessions. The removed `AGENC_USE_*` and
+`NVIDIA_NIM` selectors are rejected rather than assigned secondary
+precedence; see [env.md](env.md#removed-and-rejected-names).
+
+Live provider selection accepts canonical slugs only. The retired selector
+spellings `xai`, `custom`, and `openai_compatible` are rejected at strict-v2
+config, environment, CLI, session-switch, and factory boundaries with their
+replacement. The explicit v1 migration path translates them to `grok` and
+`openai-compatible` and refuses conflicts. Unknown configured provider slugs
+are rejected; provider tables use the same canonical built-in registry.
+
 Grok credential resolution:
 
 1. **Stored `/grok-login` OAuth token** (always wins while present — env API
@@ -30,7 +52,6 @@ Grok credential resolution:
 2. Explicit session/API key when no OAuth token
 3. `XAI_API_KEY`
 4. `GROK_API_KEY`
-5. `AGENC_XAI_API_KEY`
 
 ### Grok defaults and catalog entries
 
@@ -80,21 +101,14 @@ they run only through the Grok Build CLI ACP path. See
 | `openai-compatible` | OpenAI-compatible | `local-model` | `http://localhost:8000/v1` | `OPENAI_COMPATIBLE_API_KEY` |
 | `openrouter` | OpenRouter | `x-ai/grok-4.5` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
 | `groq` | Groq | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` |
-| `deepseek` | DeepSeek | `deepseek-reasoner` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
+| `deepseek` | DeepSeek | `deepseek-v4-flash` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
 | `gemini` | Gemini | `gemini-2.5-pro` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` |
-| `mistral` | Mistral | `devstral-latest` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` |
+| `mistral` | Mistral | `mistral-medium-latest` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` |
 | `nvidia-nim` | NVIDIA NIM | `nvidia/llama-3.1-nemotron-70b-instruct` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` |
 | `minimax` | MiniMax | `MiniMax-M2.5` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` |
 | `github` | GitHub Copilot | `gpt-4o` | `https://api.githubcopilot.com` | `GITHUB_TOKEN` |
 | `amazon-bedrock` | Amazon Bedrock | `amazon.nova-pro-v1:0` | `https://bedrock-runtime.us-east-1.amazonaws.com` | `AWS_ACCESS_KEY_ID` (or Bedrock-specific) |
 | `agenc` | AgenC | `agenc` | `https://id.agenc.ag/v1` | managed auth (`requiresManagedAuth`) |
-
-Slug aliases accepted on normalize:
-
-| Input | Resolves to |
-| --- | --- |
-| `xai` | `grok` |
-| `custom`, `openai_compatible` | `openai-compatible` |
 
 ## Auth model
 
@@ -102,13 +116,35 @@ Provider credentials are owned by the **auth backend** / BYOK config, not by
 the provider registry. The registry stores **request and catalog metadata**
 only (base URL, default model, retry/timeouts, catalog lists).
 
-- **Local BYOK** — env keys and `auth.json` entries selected at startup.
+- **Local BYOK** — explicit provider environment keys are transient inputs;
+  keys saved through AgenC live only in the home-scoped native credential
+  vault. `auth.json` contains non-secret identity/timestamp metadata only.
 - **Remote / managed** — `auth.backend = "remote"` with managed keys
-  (`agenc` provider requires managed auth).
+  (`agenc` provider requires managed auth). The stored bearer is native-vault
+  state. An explicit constructor token wins over `AGENC_REMOTE_AUTH_TOKEN`,
+  which wins over the stored bearer; explicit overrides are not copied into
+  `auth.json`.
+- **ProviderCode OAuth** — explicit ProviderCode credential environment values
+  win over the home-scoped native `agenc` credential namespace. The runtime
+  never reads `~/.providerCode/auth.json`, `PROVIDER_CODE_AUTH_JSON_PATH`, or
+  `PROVIDER_CODE_HOME`; those paths are eligible only for an explicit one-way
+  migration. OAuth reads, refreshes, profile linkage, and clears stay bound to
+  the `HomeContext` captured by the client; a refresh cannot overwrite a newer
+  login that lands while its network request is in flight.
+- **Provider-native tokens** — Gemini, GitHub Models, xAI OAuth, and AgenC AI
+  subscription OAuth persist only in the home-scoped native `gemini`,
+  `githubModels`, `xaiOauth`, and `agencAiOauth` namespaces. Their production
+  APIs require an explicit `HomeContext`; cache/single-flight/refresh-lock
+  state is isolated by home, and refresh writes compare-and-swap the exact
+  credential version they exchanged so a newer login always wins.
 - **Discovery** — `agenc providers` reports readiness (key present, local
-  server health for Ollama/LM Studio/openai-compatible, subscription tier).
+  server health for Ollama/LM Studio/openai-compatible, subscription tier)
+  without changing the selected provider.
 
 See `runtime/src/auth/` and `runtime/src/llm/discovery/provider-discovery.ts`.
+`byok-keys.json`, bearer fields in `auth.json`, and `.agenc/remote` credential
+files, plus ProviderCode `auth.json`, are retired migration inputs, not
+compatibility fallbacks.
 
 ## Config & env
 
@@ -156,9 +192,30 @@ Default stream/request settings from the registry:
 
 - request max retries: **4**
 - stream max retries: **5**
-- stream idle timeout: **300_000** ms
+- stream idle timeout: **unset** (0). Silence does not end a turn unless you
+  set `stream_watchdog_timeout_ms` or `AGENC_STREAM_IDLE_TIMEOUT_MS`
 - websocket connect timeout: **15_000** ms
 - websockets supported: **`openai` only** in built-in info
+
+Retry policy (`runtime/src/llm/client-session.ts`):
+
+- **429 is not retried** (`retry429: false`). 5xx and transport (network/timeout)
+  are. Caller abort is not. One extra TLS-cert retry on attempt 0 only.
+- **Retry-After > 300s** aborts the retry.
+- Session backoff base is **200 ms**.
+- After budget admission, model calls set `singleWireAttempt: true`: **no HTTP
+  retry** on that lease. A retry needs a new reservation.
+- `AGENC_MAX_RETRIES` (default 10) applies only to the donor Anthropic helper
+  in `services/api/withRetry.ts`. It does **not** drive `llm/` providers.
+
+Grok OAuth: expired bearer is often **403**. Refresh on 401 and 403, two
+attempts, then quarantine a dead rotating refresh token. Admitted Grok turns
+do **not** in-band retry; they pre-flight refresh if the stored token is near
+expiry. See [grok-oauth.md](../grok-oauth.md).
+
+Grok server tools (`web_search`, `x_search`, `code_interpreter`, `file_search`,
+MCP) cannot be counted before the turn. Admission reserves the **full context
+window** for those tools so later usage does not trip `provider_overrun`.
 
 ## Related docs
 

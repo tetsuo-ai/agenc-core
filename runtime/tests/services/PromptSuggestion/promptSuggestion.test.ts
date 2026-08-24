@@ -43,7 +43,6 @@ describe("PromptSuggestion service", () => {
     isSpeculationEnabledMock.mockReset();
     isSpeculationEnabledMock.mockReturnValue(false);
     startSpeculationMock.mockReset();
-    delete process.env.AGENC_ENABLE_PROMPT_SUGGESTION;
     delete process.env.AGENC_INTERNAL_FC_OVERRIDES;
     delete process.env.USER_TYPE;
     clearDynamicTeamContext();
@@ -51,15 +50,17 @@ describe("PromptSuggestion service", () => {
     setPromptSuggestionLimitsForTests(null);
   });
 
-  it("honors the AgenC env override", () => {
-    process.env.AGENC_ENABLE_PROMPT_SUGGESTION = "0";
+  it("uses the canonical setting as its sole enablement authority", () => {
     expect(shouldEnablePromptSuggestion()).toBe(false);
-
-    process.env.AGENC_ENABLE_PROMPT_SUGGESTION = "1";
-    expect(shouldEnablePromptSuggestion()).toBe(true);
+    expect(shouldEnablePromptSuggestion({ promptSuggestionEnabled: false })).toBe(
+      false,
+    );
+    expect(shouldEnablePromptSuggestion({ promptSuggestionEnabled: true })).toBe(
+      true,
+    );
   });
 
-  it("honors persisted prompt-suggestion settings when the feature is enabled", () => {
+  it("honors persisted prompt-suggestion settings", () => {
     process.env.USER_TYPE = "ant";
     setIsInteractive(true);
 
@@ -69,7 +70,7 @@ describe("PromptSuggestion service", () => {
     expect(
       shouldEnablePromptSuggestion(liveSettings({ promptSuggestionEnabled: true })),
     ).toBe(true);
-    expect(shouldEnablePromptSuggestion(liveSettings({}))).toBe(true);
+    expect(shouldEnablePromptSuggestion(liveSettings({}))).toBe(false);
   });
 
   it("suppresses prompt suggestions through the live non-interactive bootstrap state", () => {
@@ -295,7 +296,6 @@ function assistantMessage(text: string) {
 
 function liveSettings(settings: { promptSuggestionEnabled?: boolean }) {
   return {
-    promptSuggestionFeatureEnabled: true,
     agentSwarmsEnabled: true,
     ...settings,
     isNonInteractiveSession: getBootstrapIsNonInteractiveSession(),

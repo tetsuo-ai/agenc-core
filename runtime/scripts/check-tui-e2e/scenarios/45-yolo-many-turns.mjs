@@ -1,14 +1,14 @@
 /**
  * Many-turns endurance scenario.
  *
- * Submits 4 short messages in one --yolo session. Catches: gradual
+ * Submits 4 short messages in one --dangerously-bypass-approvals-and-sandbox session. Catches: gradual
  * resource leaks (file descriptors, daemon memory, transcript bloat
  * over time, conversation-context-window misaccounting). Distinct from
  * 08 multi-turn (which is 2 turns) — this exercises the longer arc.
  */
 export const meta = {
-  description: "--yolo: 4 turns survive the agent-not-found race.",
-  args: ["--yolo"],
+  description: "--dangerously-bypass-approvals-and-sandbox: 4 turns survive the agent-not-found race.",
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   timeoutMs: 600_000,
   slimCwd: true,
 };

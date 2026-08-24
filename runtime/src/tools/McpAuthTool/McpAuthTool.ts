@@ -19,6 +19,9 @@ import { errorMessage } from '../../utils/errors.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { logMCPDebug, logMCPError } from '../../utils/log.js'
 import type { PermissionDecision } from '../../utils/permissions/PermissionResult.js'
+import type { HomeContext } from '../../config/home.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
+import type { AgentRuntimeOptions } from '../../session/runtime-options.js'
 
 const inputSchema = lazySchema(() => z.object({}))
 type InputSchema = ReturnType<typeof inputSchema>
@@ -45,8 +48,11 @@ function getConfigUrl(config: ScopedMcpServerConfig): string | undefined {
  * replace the mcp__<server>__* pseudo-tool entries.
  */
 export function createMcpAuthTool(
+  home: HomeContext,
+  environment: ProviderEnvironment,
   serverName: string,
   config: ScopedMcpServerConfig,
+  runtimeOptions?: AgentRuntimeOptions,
 ): Tool<InputSchema, McpAuthOutput> {
   const url = getConfigUrl(config)
   const transport = config.type ?? 'stdio'
@@ -122,6 +128,8 @@ export function createMcpAuthTool(
       const { setAppState } = context
 
       const oauthPromise = performMCPOAuthFlow(
+        home,
+        environment,
         serverName,
         sseOrHttpConfig,
         u => resolveAuthUrl?.(u),
@@ -134,8 +142,14 @@ export function createMcpAuthTool(
       // pseudo-tool since it shares the mcp__<server>__ prefix.
       void oauthPromise
         .then(async () => {
-          clearMcpAuthCache()
-          const result = await reconnectMcpServerImpl(serverName, config)
+          clearMcpAuthCache(home)
+          const result = await reconnectMcpServerImpl(
+            home,
+            serverName,
+            config,
+            environment,
+            runtimeOptions,
+          )
           const prefix = getMcpPrefix(serverName)
           setAppState(prev => ({
             ...prev,

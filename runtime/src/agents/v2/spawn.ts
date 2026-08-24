@@ -63,7 +63,7 @@ const SPAWN_AGENT_DELEGATION_DISCIPLINE = `
 - Do not duplicate work between the main rollout and delegated subtasks.
 - Avoid issuing multiple delegate calls on the same unresolved thread unless the new delegated task is genuinely different and necessary.
 - Narrow the delegated ask to the concrete output you need next.
-- For coding tasks, prefer delegating concrete code-change worker subtasks over read-only explorer analysis when the subagent can make a bounded patch in a clear write scope.
+- For coding tasks, prefer delegating concrete code-change runner subtasks over read-only scanner analysis when the subagent can make a bounded patch in a clear write scope.
 - When delegating coding work, instruct the submodel to edit files directly in its forked workspace and list the file paths it changed in the final answer.
 - For code-edit subtasks, decompose work so each delegated task has a disjoint write set.
 - For parallel code-edit subtasks, use \`isolation: "worktree"\`. Require the worker to commit its changes and report the commit, changed files, and verification it ran. Review and integrate one exact verified \`base_commit..integration_ref\` range at a time; never infer an integration target from a mutable worker branch or treat completion as merge approval. An intended deliverable under an ignored path must be explicitly unignored or force-added and committed.

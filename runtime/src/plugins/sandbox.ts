@@ -1,8 +1,4 @@
 /**
- * Ports OC `src/utils/plugins/mcpPluginIntegration.ts` and CX
- * `core-plugins/src/manager.rs` plugin MCP spawn-path behavior onto
- * AgenC's plugin registration model.
- *
  * Why this lives here:
  *   - Plugin MCP stdio servers are the only plugin surface that spawns
  *     child processes. Keeping cwd containment, reserved env injection,
@@ -20,8 +16,8 @@ import path from "node:path";
 
 import type {
   McpServerConfig,
-  PluginMcpSandboxMetadata,
 } from "../config/schema.js";
+import type { PluginMcpSandboxMetadata } from "../mcp-client/types.js";
 import { getPluginDataDir } from "./directories.js";
 import { pluginScopedServerIdentifier } from "./identifier-normalization.js";
 import type { LoadedPlugin } from "./loader.js";
@@ -47,7 +43,11 @@ export interface PluginMcpSandboxIssue {
 }
 
 export type PluginMcpSandboxResult =
-  | { readonly server: McpServerConfig }
+  | {
+      readonly server: McpServerConfig & {
+        readonly pluginSandbox?: PluginMcpSandboxMetadata;
+      };
+    }
   | { readonly issue: PluginMcpSandboxIssue };
 
 interface RealpathResult {
@@ -148,7 +148,6 @@ function isPluginMcpRemoteTransport(
   return server.transport === "http" ||
     server.transport === "sse" ||
     server.transport === "websocket" ||
-    server.transport === "ws" ||
     (
       server.transport === undefined &&
       server.command === undefined &&
@@ -185,8 +184,7 @@ function transportConfigIssue(
   if (
     (server.transport === "http" ||
       server.transport === "sse" ||
-      server.transport === "websocket" ||
-      server.transport === "ws") &&
+      server.transport === "websocket") &&
     server.endpoint === undefined
   ) {
     return {

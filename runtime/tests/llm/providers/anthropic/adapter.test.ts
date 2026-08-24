@@ -588,7 +588,7 @@ describe("AnthropicProvider", () => {
         projectInstructions: projectInstructions?.content,
         provider: "anthropic",
         enabledToolNames: new Set(["exec_command"]),
-        envForSimpleMode: {},
+        simpleMode: false,
       });
 
       await provider.chat([

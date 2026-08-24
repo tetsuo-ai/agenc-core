@@ -116,7 +116,6 @@ test("the built Windows CLI completes daemon start, status, SDK, reload, and sto
         HOME: root,
         USERPROFILE: root,
         AGENC_HOME: agencHome,
-        AGENC_CONFIG_DIR: agencHome,
         AGENC_AUTH_BACKEND: "local",
         AGENC_DAEMON_WEBSOCKET_HOST: "127.0.0.1",
         AGENC_DAEMON_WEBSOCKET_PORT: "0",

@@ -5,6 +5,7 @@ import stripAnsi from "strip-ansi";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Command } from "../../../commands.js";
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../../remoteAuthSessionContext.fixture.js";
 
 const keybindingMock = vi.hoisted(() => ({
   groups: [] as Array<{
@@ -43,8 +44,8 @@ vi.mock("../../keybindings/loadUserBindings.js", () => ({
 }));
 
 vi.mock("../../../utils/fastMode.js", () => ({
-  isFastModeAvailable: () => false,
-  isFastModeEnabled: () => false,
+  isFastModeAvailableForContext: () => false,
+  isFastModeEnabledForContext: () => false,
 }));
 
 vi.mock("../../../utils/platform.js", () => ({
@@ -148,7 +149,7 @@ async function renderHelp(commands: Command[]): Promise<{
   });
   const onClose = vi.fn();
 
-  root.render(<HelpV2 commands={commands} onClose={onClose} query="deploy" />);
+  root.render(<HelpV2 commands={commands} onClose={onClose} query="deploy" remoteAuthSessionContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />);
   await sleep();
 
   return {

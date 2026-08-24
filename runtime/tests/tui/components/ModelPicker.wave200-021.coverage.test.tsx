@@ -5,6 +5,7 @@ import stripAnsi from "strip-ansi";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import { createRoot } from "../ink/root.js";
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../remoteAuthSessionContext.fixture.js";
 import { ModelPicker } from "./ModelPicker.js";
 
 type AppState = {
@@ -77,13 +78,15 @@ vi.mock("../state/AppState.js", () => ({
 
 vi.mock("../../utils/fastMode.js", () => ({
   FAST_MODE_MODEL_DISPLAY: "fast-model",
-  isFastModeAvailable: () => fastModeMock.available,
-  isFastModeCooldown: () => fastModeMock.cooldown,
-  isFastModeEnabled: () => fastModeMock.enabled,
+  isFastModeAvailableForContext: () => fastModeMock.available,
+  isFastModeCooldownForContext: () => fastModeMock.cooldown,
+  isFastModeEnabledForContext: () => fastModeMock.enabled,
 }));
 
 vi.mock("../../utils/effort.js", () => ({
   convertEffortValueToLevel: (value: string | undefined) => value,
+  effortValueToReasoningEffort: (value: string | undefined) =>
+    value === "max" || value === "xhigh" ? "xhigh" : value,
   getAvailableEffortLevels: (model: string) =>
     model === "basic-mini"
       ? []
@@ -99,6 +102,8 @@ vi.mock("../../utils/effort.js", () => ({
   },
   modelSupportsEffort: (model: string) => model !== "basic-mini",
   modelSupportsMaxEffort: (model: string) => model === "max-model",
+  reasoningEffortToEffortLevel: (value: string | undefined) =>
+    value === "xhigh" ? "max" : value,
   resolvePickerEffortPersistence: (
     effort: string | undefined,
     defaultEffort: string,
@@ -141,7 +146,8 @@ vi.mock("../../utils/model/modelOptions.js", () => ({
 }));
 
 vi.mock("../../utils/settings/settings.js", () => ({
-  getSettingsForSource: () => ({ effortLevel: "medium" }),
+  getExecutionAuthoritySettings: () => ({}),
+  getSettingsForSource: () => ({ reasoning_effort: "medium" }),
   updateSettingsForSource: settingsMock.updateSettingsForSource,
 }));
 
@@ -211,6 +217,7 @@ describe("ModelPicker coverage worker 021", () => {
           initial="standard-model"
           isStandaloneCommand
           onSelect={onSelect}
+          remoteAuthSessionContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
         />,
       );
       await waitForRender();
@@ -225,7 +232,7 @@ describe("ModelPicker coverage worker 021", () => {
       expect(onSelect).toHaveBeenLastCalledWith("standard-model", "low");
       expect(settingsMock.updateSettingsForSource).toHaveBeenLastCalledWith(
         "userSettings",
-        { effortLevel: "low" },
+        { reasoning_effort: "low" },
       );
 
       selectPropsMock.current?.onFocus("max-model");
@@ -236,7 +243,7 @@ describe("ModelPicker coverage worker 021", () => {
       expect(onSelect).toHaveBeenLastCalledWith("max-model", "max");
       expect(settingsMock.updateSettingsForSource).toHaveBeenLastCalledWith(
         "userSettings",
-        { effortLevel: "max" },
+        { reasoning_effort: "xhigh" },
       );
 
       selectPropsMock.current?.onFocus("xhigh-model");
@@ -250,7 +257,7 @@ describe("ModelPicker coverage worker 021", () => {
       expect(onSelect).toHaveBeenLastCalledWith("xhigh-model", "xhigh");
       expect(settingsMock.updateSettingsForSource).toHaveBeenLastCalledWith(
         "userSettings",
-        { effortLevel: "max" },
+        { reasoning_effort: "xhigh" },
       );
 
       selectPropsMock.current?.onFocus("basic-mini");

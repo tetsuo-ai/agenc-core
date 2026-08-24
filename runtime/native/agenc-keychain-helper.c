@@ -1,0 +1,712 @@
+/*
+ * Exact-record macOS Keychain adapter for AgenC's shared credential blob.
+ *
+ * Usage:
+ *   agenc-keychain-helper read   <service> <account>
+ *   agenc-keychain-helper write  <service> <account>  # secret on stdin
+ *   agenc-keychain-helper delete <service> <account>
+ *
+ * Service and account are UTF-8 metadata. Credential bytes never appear in
+ * argv or diagnostics: writes read them from stdin and reads emit them only
+ * on stdout. Exit 2, with empty stderr, means exactly errSecItemNotFound.
+ */
+
+#include <CoreFoundation/CoreFoundation.h>
+#include <Security/Security.h>
+
+#include <errno.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <strings.h>
+
+#define SECRET_LIMIT_BYTES ((size_t)16U * 1024U * 1024U)
+#define INITIAL_SECRET_CAPACITY ((size_t)4096U)
+#define IDENTITY_LIMIT_BYTES ((size_t)4096U)
+
+enum helper_exit {
+  HELPER_OK = 0,
+  HELPER_ERROR = 1,
+  HELPER_NOT_FOUND = 2,
+  HELPER_USAGE = 64
+};
+
+enum unique_match_result {
+  UNIQUE_MATCH_ERROR = -1,
+  UNIQUE_MATCH_NONE = 0,
+  UNIQUE_MATCH_ONE = 1
+};
+
+enum exact_item_result {
+  EXACT_ITEM_ERROR = -1,
+  EXACT_ITEM_NOT_FOUND = 0,
+  EXACT_ITEM_FOUND = 1
+};
+
+struct secret_buffer {
+  unsigned char *data;
+  size_t length;
+};
+
+static int fail_message(const char *message) {
+  (void)fprintf(stderr, "agenc-keychain-helper: %s\n", message);
+  return HELPER_ERROR;
+}
+
+static int fail_errno(const char *operation) {
+  const int saved_errno = errno;
+  (void)fprintf(stderr, "agenc-keychain-helper: %s: %s\n", operation,
+                strerror(saved_errno));
+  return HELPER_ERROR;
+}
+
+static int fail_osstatus(const char *operation, OSStatus status) {
+  CFStringRef detail = SecCopyErrorMessageString(status, NULL);
+  char detail_utf8[512];
+
+  if ((detail != NULL) &&
+      CFStringGetCString(detail, detail_utf8, sizeof detail_utf8,
+                         kCFStringEncodingUTF8)) {
+    (void)fprintf(stderr,
+                  "agenc-keychain-helper: %s failed (OSStatus %ld: %s)\n",
+                  operation, (long)status, detail_utf8);
+  } else {
+    (void)fprintf(stderr, "agenc-keychain-helper: %s failed (OSStatus %ld)\n",
+                  operation, (long)status);
+  }
+
+  if (detail != NULL) {
+    CFRelease(detail);
+  }
+  return HELPER_ERROR;
+}
+
+static void secret_buffer_dispose(struct secret_buffer *secret) {
+  if (secret->data != NULL) {
+    if (secret->length > 0U) {
+      explicit_bzero(secret->data, secret->length);
+    }
+    free(secret->data);
+  }
+  secret->data = NULL;
+  secret->length = 0U;
+}
+
+/*
+ * Read a non-empty secret shorter than SECRET_LIMIT_BYTES. On failure,
+ * `secret` remains empty and owns no allocation.
+ */
+static int read_secret(struct secret_buffer *secret) {
+  unsigned char *buffer = NULL;
+  size_t capacity = INITIAL_SECRET_CAPACITY;
+  size_t length = 0U;
+  int result = HELPER_ERROR;
+
+  buffer = malloc(capacity);
+  if (buffer == NULL) {
+    return fail_errno("cannot allocate credential input buffer");
+  }
+
+  for (;;) {
+    const size_t available = capacity - length;
+    const size_t count = fread(buffer + length, 1U, available, stdin);
+    length += count;
+
+    if (length >= SECRET_LIMIT_BYTES) {
+      result =
+          fail_message("credential input must be shorter than 16777216 bytes");
+      goto cleanup;
+    }
+    if (count < available) {
+      if (ferror(stdin)) {
+        result = fail_errno("cannot read credential input");
+        goto cleanup;
+      }
+      if (feof(stdin)) {
+        break;
+      }
+      if (count == 0U) {
+        result = fail_message("credential input made no progress");
+        goto cleanup;
+      }
+      continue;
+    }
+
+    {
+      size_t next_capacity = capacity * 2U;
+      unsigned char *replacement;
+
+      if ((next_capacity < capacity) || (next_capacity > SECRET_LIMIT_BYTES)) {
+        next_capacity = SECRET_LIMIT_BYTES;
+      }
+      replacement = malloc(next_capacity);
+      if (replacement == NULL) {
+        result = fail_errno("cannot grow credential input buffer");
+        goto cleanup;
+      }
+      memcpy(replacement, buffer, length);
+      explicit_bzero(buffer, length);
+      free(buffer);
+      buffer = replacement;
+      capacity = next_capacity;
+    }
+  }
+
+  if (length == 0U) {
+    result = fail_message("credential input must not be empty");
+    goto cleanup;
+  }
+
+  secret->data = buffer;
+  secret->length = length;
+  return HELPER_OK;
+
+cleanup:
+  if (buffer != NULL) {
+    if (length > 0U) {
+      explicit_bzero(buffer, length);
+    }
+    free(buffer);
+  }
+  return result;
+}
+
+static CFStringRef create_identity(const char *value, const char *label) {
+  const size_t length = strlen(value);
+  CFStringRef identity;
+
+  if ((length == 0U) || (length >= IDENTITY_LIMIT_BYTES)) {
+    (void)fprintf(stderr,
+                  "agenc-keychain-helper: %s must contain 1 to 4095 UTF-8 "
+                  "bytes\n",
+                  label);
+    return NULL;
+  }
+
+  identity =
+      CFStringCreateWithBytes(kCFAllocatorDefault, (const UInt8 *)value,
+                              (CFIndex)length, kCFStringEncodingUTF8, false);
+  if (identity == NULL) {
+    (void)fprintf(stderr, "agenc-keychain-helper: %s is not valid UTF-8\n",
+                  label);
+  }
+  return identity;
+}
+
+static CFMutableDictionaryRef create_query(CFStringRef service,
+                                           CFStringRef account) {
+  CFMutableDictionaryRef query = CFDictionaryCreateMutable(
+      kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
+      &kCFTypeDictionaryValueCallBacks);
+  if (query == NULL) {
+    return NULL;
+  }
+
+  CFDictionarySetValue(query, kSecClass, kSecClassGenericPassword);
+  CFDictionarySetValue(query, kSecAttrService, service);
+  CFDictionarySetValue(query, kSecAttrAccount, account);
+  return query;
+}
+
+/*
+ * Enumerate every item visible for one service/account identity. A mutation
+ * is safe only when this returns one persistent reference; ambiguity fails
+ * closed instead of letting SecItemUpdate or SecItemDelete affect all matches.
+ */
+static enum unique_match_result
+copy_unique_persistent_ref(CFDictionaryRef identity_query,
+                           CFDataRef *persistent_ref_out) {
+  CFMutableDictionaryRef search = NULL;
+  CFTypeRef matches = NULL;
+  CFDataRef persistent_ref = NULL;
+  OSStatus status;
+  enum unique_match_result result = UNIQUE_MATCH_ERROR;
+
+  *persistent_ref_out = NULL;
+  search =
+      CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, identity_query);
+  if (search == NULL) {
+    (void)fail_message("cannot allocate Keychain enumeration query");
+    goto cleanup;
+  }
+  CFDictionarySetValue(search, kSecReturnPersistentRef, kCFBooleanTrue);
+  CFDictionarySetValue(search, kSecMatchLimit, kSecMatchLimitAll);
+
+  status = SecItemCopyMatching(search, &matches);
+  if (status == errSecItemNotFound) {
+    result = UNIQUE_MATCH_NONE;
+    goto cleanup;
+  }
+  if (status != errSecSuccess) {
+    (void)fail_osstatus("Keychain enumeration", status);
+    goto cleanup;
+  }
+
+  if ((matches != NULL) && (CFGetTypeID(matches) == CFDataGetTypeID())) {
+    /* Be defensive if a platform returns the sole match without an array. */
+    persistent_ref = (CFDataRef)matches;
+  } else if ((matches != NULL) &&
+             (CFGetTypeID(matches) == CFArrayGetTypeID())) {
+    CFArrayRef match_array = (CFArrayRef)matches;
+    const CFIndex count = CFArrayGetCount(match_array);
+    CFTypeRef candidate;
+
+    if (count != 1) {
+      (void)fail_message(
+          "multiple Keychain records match the exact service/account identity");
+      goto cleanup;
+    }
+    candidate = CFArrayGetValueAtIndex(match_array, 0);
+    if ((candidate == NULL) || (CFGetTypeID(candidate) != CFDataGetTypeID())) {
+      (void)fail_message(
+          "Keychain enumeration returned a non-data persistent reference");
+      goto cleanup;
+    }
+    persistent_ref = (CFDataRef)candidate;
+  } else {
+    (void)fail_message(
+        "Keychain enumeration returned an unexpected result type");
+    goto cleanup;
+  }
+
+  CFRetain(persistent_ref);
+  *persistent_ref_out = persistent_ref;
+  result = UNIQUE_MATCH_ONE;
+
+cleanup:
+  if (matches != NULL) {
+    CFRelease(matches);
+  }
+  if (search != NULL) {
+    CFRelease(search);
+  }
+  return result;
+}
+
+static CFMutableDictionaryRef
+create_persistent_ref_query(CFDataRef persistent_ref) {
+  CFMutableDictionaryRef query = CFDictionaryCreateMutable(
+      kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
+      &kCFTypeDictionaryValueCallBacks);
+  const void *item_values[] = {persistent_ref};
+  CFArrayRef item_list;
+
+  if (query == NULL) {
+    return NULL;
+  }
+  item_list = CFArrayCreate(kCFAllocatorDefault, item_values, 1,
+                            &kCFTypeArrayCallBacks);
+  if (item_list == NULL) {
+    CFRelease(query);
+    return NULL;
+  }
+  CFDictionarySetValue(query, kSecMatchItemList, item_list);
+  CFRelease(item_list);
+  return query;
+}
+
+static enum exact_item_result
+copy_data_by_persistent_ref(CFDataRef persistent_ref, CFDataRef *data_out) {
+  CFMutableDictionaryRef query = NULL;
+  CFTypeRef matched = NULL;
+  OSStatus status;
+  enum exact_item_result result = EXACT_ITEM_ERROR;
+
+  *data_out = NULL;
+  query = create_persistent_ref_query(persistent_ref);
+  if (query == NULL) {
+    (void)fail_message("cannot allocate exact Keychain read query");
+    goto cleanup;
+  }
+  CFDictionarySetValue(query, kSecReturnData, kCFBooleanTrue);
+  CFDictionarySetValue(query, kSecMatchLimit, kSecMatchLimitOne);
+
+  status = SecItemCopyMatching(query, &matched);
+  if (status == errSecItemNotFound) {
+    result = EXACT_ITEM_NOT_FOUND;
+    goto cleanup;
+  }
+  if (status != errSecSuccess) {
+    (void)fail_osstatus("Keychain exact read", status);
+    goto cleanup;
+  }
+  if ((matched == NULL) || (CFGetTypeID(matched) != CFDataGetTypeID())) {
+    (void)fail_message("Keychain exact read returned a non-data record");
+    goto cleanup;
+  }
+
+  *data_out = (CFDataRef)matched;
+  matched = NULL;
+  result = EXACT_ITEM_FOUND;
+
+cleanup:
+  if (matched != NULL) {
+    CFRelease(matched);
+  }
+  if (query != NULL) {
+    CFRelease(query);
+  }
+  return result;
+}
+
+static OSStatus update_by_persistent_ref(CFDataRef persistent_ref,
+                                         CFDictionaryRef values) {
+  CFMutableDictionaryRef query = create_persistent_ref_query(persistent_ref);
+  OSStatus status;
+
+  if (query == NULL) {
+    (void)fail_message("cannot allocate exact Keychain update query");
+    return errSecAllocate;
+  }
+  status = SecItemUpdate(query, values);
+  CFRelease(query);
+  return status;
+}
+
+static OSStatus delete_by_persistent_ref(CFDataRef persistent_ref) {
+  CFMutableDictionaryRef query = create_persistent_ref_query(persistent_ref);
+  OSStatus status;
+
+  if (query == NULL) {
+    (void)fail_message("cannot allocate exact Keychain delete query");
+    return errSecAllocate;
+  }
+  status = SecItemDelete(query);
+  CFRelease(query);
+  return status;
+}
+
+static bool verify_data_by_persistent_ref(CFDataRef persistent_ref,
+                                          CFDataRef expected) {
+  CFDataRef observed = NULL;
+  const enum exact_item_result found =
+      copy_data_by_persistent_ref(persistent_ref, &observed);
+  bool equal = false;
+
+  if (found == EXACT_ITEM_FOUND) {
+    equal = CFEqual(observed, expected);
+    if (!equal) {
+      (void)fail_message(
+          "Keychain post-write verification found different credential bytes");
+    }
+  } else if (found == EXACT_ITEM_NOT_FOUND) {
+    (void)fail_message(
+        "Keychain record disappeared during post-write verification");
+  }
+  if (observed != NULL) {
+    CFRelease(observed);
+  }
+  return equal;
+}
+
+static bool verify_unique_identity_ref(CFDictionaryRef identity_query,
+                                       CFDataRef expected_ref) {
+  CFDataRef observed_ref = NULL;
+  const enum unique_match_result found =
+      copy_unique_persistent_ref(identity_query, &observed_ref);
+  bool equal = false;
+
+  if (found == UNIQUE_MATCH_ONE) {
+    equal = CFEqual(observed_ref, expected_ref);
+    if (!equal) {
+      (void)fail_message("Keychain identity resolved to a different record "
+                         "during verification");
+    }
+  } else if (found == UNIQUE_MATCH_NONE) {
+    (void)fail_message("Keychain identity disappeared during verification");
+  }
+  if (observed_ref != NULL) {
+    CFRelease(observed_ref);
+  }
+  return equal;
+}
+
+static int write_all(const UInt8 *bytes, size_t length) {
+  size_t offset = 0U;
+
+  while (offset < length) {
+    const size_t count = fwrite(bytes + offset, 1U, length - offset, stdout);
+    if (count == 0U) {
+      return fail_errno("cannot write credential output");
+    }
+    offset += count;
+  }
+  if (fflush(stdout) != 0) {
+    return fail_errno("cannot flush credential output");
+  }
+  return HELPER_OK;
+}
+
+static int read_item(CFDictionaryRef identity_query) {
+  CFDataRef persistent_ref = NULL;
+  CFDataRef data = NULL;
+  CFIndex signed_length;
+  size_t length;
+  enum unique_match_result unique_match;
+  enum exact_item_result exact_item;
+  int result = HELPER_ERROR;
+
+  unique_match = copy_unique_persistent_ref(identity_query, &persistent_ref);
+  if (unique_match == UNIQUE_MATCH_NONE) {
+    return HELPER_NOT_FOUND;
+  }
+  if (unique_match != UNIQUE_MATCH_ONE) {
+    return HELPER_ERROR;
+  }
+
+  exact_item = copy_data_by_persistent_ref(persistent_ref, &data);
+  if (exact_item == EXACT_ITEM_NOT_FOUND) {
+    result = HELPER_NOT_FOUND;
+    goto cleanup;
+  }
+  if (exact_item != EXACT_ITEM_FOUND) {
+    goto cleanup;
+  }
+
+  signed_length = CFDataGetLength(data);
+  if (signed_length <= 0) {
+    result = fail_message("Keychain returned an empty credential record");
+    goto cleanup;
+  }
+  length = (size_t)signed_length;
+  if (length >= SECRET_LIMIT_BYTES) {
+    result = fail_message(
+        "Keychain credential record must be shorter than 16777216 bytes");
+    goto cleanup;
+  }
+  if (!verify_unique_identity_ref(identity_query, persistent_ref)) {
+    goto cleanup;
+  }
+
+  result = write_all(CFDataGetBytePtr(data), length);
+
+cleanup:
+  if (data != NULL) {
+    CFRelease(data);
+  }
+  if (persistent_ref != NULL) {
+    CFRelease(persistent_ref);
+  }
+  return result;
+}
+
+static int write_item(CFDictionaryRef identity_query) {
+  struct secret_buffer secret = {NULL, 0U};
+  CFDataRef secret_data = NULL;
+  CFMutableDictionaryRef values = NULL;
+  int result = HELPER_ERROR;
+  unsigned int attempt;
+
+  result = read_secret(&secret);
+  if (result != HELPER_OK) {
+    return result;
+  }
+
+  secret_data =
+      CFDataCreateWithBytesNoCopy(kCFAllocatorDefault, secret.data,
+                                  (CFIndex)secret.length, kCFAllocatorNull);
+  if (secret_data == NULL) {
+    result = fail_message("cannot create credential data");
+    goto cleanup;
+  }
+
+  values = CFDictionaryCreateMutable(kCFAllocatorDefault, 0,
+                                     &kCFTypeDictionaryKeyCallBacks,
+                                     &kCFTypeDictionaryValueCallBacks);
+  if (values == NULL) {
+    result = fail_message("cannot allocate Keychain update attributes");
+    goto cleanup;
+  }
+  CFDictionarySetValue(values, kSecValueData, secret_data);
+
+  /*
+   * Retry only bounded create/delete races. Every actual mutation is scoped
+   * by one persistent reference, never by the service/account query.
+   */
+  for (attempt = 0U; attempt < 3U; attempt++) {
+    CFDataRef persistent_ref = NULL;
+    const enum unique_match_result unique_match =
+        copy_unique_persistent_ref(identity_query, &persistent_ref);
+
+    if (unique_match == UNIQUE_MATCH_ERROR) {
+      goto cleanup;
+    }
+    if (unique_match == UNIQUE_MATCH_ONE) {
+      const OSStatus status = update_by_persistent_ref(persistent_ref, values);
+
+      if (status == errSecItemNotFound) {
+        CFRelease(persistent_ref);
+        continue;
+      }
+      if (status != errSecSuccess) {
+        result = fail_osstatus("Keychain exact write", status);
+        CFRelease(persistent_ref);
+        goto cleanup;
+      }
+      if (!verify_data_by_persistent_ref(persistent_ref, secret_data) ||
+          !verify_unique_identity_ref(identity_query, persistent_ref)) {
+        CFRelease(persistent_ref);
+        goto cleanup;
+      }
+      CFRelease(persistent_ref);
+      result = HELPER_OK;
+      goto cleanup;
+    }
+
+    {
+      CFMutableDictionaryRef item =
+          CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, identity_query);
+      CFTypeRef added = NULL;
+      OSStatus status;
+
+      if (item == NULL) {
+        result = fail_message("cannot allocate Keychain item attributes");
+        goto cleanup;
+      }
+      CFDictionarySetValue(item, kSecValueData, secret_data);
+      CFDictionarySetValue(item, kSecReturnPersistentRef, kCFBooleanTrue);
+      status = SecItemAdd(item, &added);
+      CFRelease(item);
+
+      if (status == errSecDuplicateItem) {
+        if (added != NULL) {
+          CFRelease(added);
+        }
+        continue;
+      }
+      if (status != errSecSuccess) {
+        if (added != NULL) {
+          CFRelease(added);
+        }
+        result = fail_osstatus("Keychain add", status);
+        goto cleanup;
+      }
+      if ((added == NULL) || (CFGetTypeID(added) != CFDataGetTypeID())) {
+        if (added != NULL) {
+          CFRelease(added);
+        }
+        result = fail_message(
+            "Keychain add returned a non-data persistent reference");
+        goto cleanup;
+      }
+
+      persistent_ref = (CFDataRef)added;
+      if (!verify_data_by_persistent_ref(persistent_ref, secret_data) ||
+          !verify_unique_identity_ref(identity_query, persistent_ref)) {
+        const OSStatus rollback_status =
+            delete_by_persistent_ref(persistent_ref);
+        if ((rollback_status != errSecSuccess) &&
+            (rollback_status != errSecItemNotFound)) {
+          (void)fail_osstatus("Keychain add rollback", rollback_status);
+        }
+        CFRelease(persistent_ref);
+        goto cleanup;
+      }
+      CFRelease(persistent_ref);
+      result = HELPER_OK;
+      goto cleanup;
+    }
+  }
+
+  result = fail_message(
+      "Keychain identity changed repeatedly during the bounded write retry");
+
+cleanup:
+  if (values != NULL) {
+    CFRelease(values);
+  }
+  if (secret_data != NULL) {
+    CFRelease(secret_data);
+  }
+  secret_buffer_dispose(&secret);
+  return result;
+}
+
+static int delete_item(CFDictionaryRef identity_query) {
+  CFDataRef persistent_ref = NULL;
+  enum unique_match_result unique_match;
+  OSStatus status;
+
+  unique_match = copy_unique_persistent_ref(identity_query, &persistent_ref);
+  if (unique_match == UNIQUE_MATCH_NONE) {
+    return HELPER_NOT_FOUND;
+  }
+  if (unique_match != UNIQUE_MATCH_ONE) {
+    return HELPER_ERROR;
+  }
+
+  status = delete_by_persistent_ref(persistent_ref);
+  CFRelease(persistent_ref);
+
+  if (status == errSecItemNotFound) {
+    return HELPER_NOT_FOUND;
+  }
+  if (status != errSecSuccess) {
+    return fail_osstatus("Keychain delete", status);
+  }
+  persistent_ref = NULL;
+  unique_match = copy_unique_persistent_ref(identity_query, &persistent_ref);
+  if (persistent_ref != NULL) {
+    CFRelease(persistent_ref);
+  }
+  if (unique_match == UNIQUE_MATCH_NONE) {
+    return HELPER_OK;
+  }
+  if (unique_match == UNIQUE_MATCH_ONE) {
+    return fail_message(
+        "Keychain identity still has a record after exact delete");
+  }
+  return HELPER_ERROR;
+}
+
+int main(int argc, char **argv) {
+  CFStringRef service = NULL;
+  CFStringRef account = NULL;
+  CFMutableDictionaryRef query = NULL;
+  int result = HELPER_USAGE;
+
+  if (argc != 4) {
+    (void)fprintf(stderr, "usage: agenc-keychain-helper "
+                          "read|write|delete <service> <account>\n");
+    return HELPER_USAGE;
+  }
+
+  service = create_identity(argv[2], "service");
+  account = create_identity(argv[3], "account");
+  if ((service == NULL) || (account == NULL)) {
+    result = HELPER_USAGE;
+    goto cleanup;
+  }
+
+  query = create_query(service, account);
+  if (query == NULL) {
+    result = fail_message("cannot allocate Keychain query");
+    goto cleanup;
+  }
+
+  if (strcmp(argv[1], "read") == 0) {
+    result = read_item(query);
+  } else if (strcmp(argv[1], "write") == 0) {
+    result = write_item(query);
+  } else if (strcmp(argv[1], "delete") == 0) {
+    result = delete_item(query);
+  } else {
+    (void)fprintf(stderr, "usage: agenc-keychain-helper "
+                          "read|write|delete <service> <account>\n");
+    result = HELPER_USAGE;
+  }
+
+cleanup:
+  if (query != NULL) {
+    CFRelease(query);
+  }
+  if (account != NULL) {
+    CFRelease(account);
+  }
+  if (service != NULL) {
+    CFRelease(service);
+  }
+  return result;
+}

@@ -30,7 +30,6 @@ import {
   detectStartupShortCircuit,
   formatUnavailableCliCwdMessage,
   formatCliHelpText,
-  initializeCliRuntime,
   installInitSignalHandlers,
   installSignalHandlers,
   isUnavailableCliCwdError,
@@ -54,7 +53,6 @@ import {
   defaultConfig,
   UnknownModelError,
 } from "../config/schema.js";
-import * as configUtils from "../config/init.js";
 import {
   assembleSystemPrompt,
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
@@ -127,8 +125,13 @@ function trustWorkspaceForTest(agencHome: string, workspace: string): void {
 async function writeResumeRolloutForTest(
   cwd: string,
   conversationId: string,
+  agencHome: string,
 ): Promise<string> {
-  const sessionDir = join(getProjectDir(cwd), "sessions", conversationId);
+  const sessionDir = join(
+    getProjectDir(cwd, undefined, agencHome),
+    "sessions",
+    conversationId,
+  );
   const rolloutPath = join(
     sessionDir,
     `rollout-2026-08-19T00-00-00-000Z-${conversationId}.jsonl`,
@@ -441,7 +444,7 @@ function installDaemonCliDepsForTest(
           current: () => ({
             ...defaultConfig(),
             model: "grok-4.3",
-            model_provider: "xai",
+            model_provider: "grok",
           }),
           subscribe: () => () => undefined,
           warnings: () => [],
@@ -582,7 +585,7 @@ describe("buildDelegateTool — system.agent.delegate", () => {
     });
     expect(delegateSpy).toHaveBeenCalledTimes(1);
     const args = delegateSpy.mock.calls[0]![0];
-    expect(args.role).toBe("explorer");
+    expect(args.role).toBe("scanner");
     expect(args.taskPrompt).toBe("scan the repo");
     expect(args.parentPath).toBe("/root");
     expect(result.isError).toBeUndefined();
@@ -647,21 +650,6 @@ describe("buildDelegateTool — system.agent.delegate", () => {
     const result = await tool.execute({ taskPrompt: "x" });
     expect(result.isError).toBe(true);
     expect(JSON.parse(result.content).error).toBe("boom");
-  });
-});
-
-describe("initializeCliRuntime", () => {
-  it("enables config reads before the CLI routes into turn logic", () => {
-    const enableSpy = vi
-      .spyOn(configUtils, "enableConfigs")
-      .mockImplementation(() => undefined);
-
-    try {
-      initializeCliRuntime();
-      expect(enableSpy).toHaveBeenCalledTimes(1);
-    } finally {
-      enableSpy.mockRestore();
-    }
   });
 });
 
@@ -796,6 +784,35 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     expect(sc.networkSandboxPolicy.enabled).toBe(true);
   });
 
+  it("applies canonical sandbox network and filesystem settings", () => {
+    const sc = sessionConfigurationFromAgenCConfig({
+      config: {
+        ...defaultConfig(),
+        sandbox_mode: "workspace-write" as const,
+        sandbox: {
+          network_access: true,
+          filesystem: {
+            allowWrite: ["./cache", "/var/tmp/agenc"],
+            denyWrite: ["./locked"],
+            allowRead: ["./inputs"],
+            denyRead: ["./secrets"],
+          },
+        },
+      },
+      workspaceRoot: "/tmp/ws",
+      model: "grok-4.3",
+    });
+    expect(sc.networkSandboxPolicy.enabled).toBe(true);
+    expect(sc.fileSystemSandboxPolicy.allowWrite).toEqual([
+      "/tmp/ws",
+      "/tmp/ws/cache",
+      "/var/tmp/agenc",
+    ]);
+    expect(sc.fileSystemSandboxPolicy.denyWrite).toEqual(["/tmp/ws/locked"]);
+    expect(sc.fileSystemSandboxPolicy.allowRead).toEqual(["/tmp/ws/inputs"]);
+    expect(sc.fileSystemSandboxPolicy.denyRead).toEqual(["/tmp/ws/secrets"]);
+  });
+
   it("on-failure → on_failure mapping", () => {
     const sc = sessionConfigurationFromAgenCConfig({
       config: { ...defaultConfig(), approval_policy: "on-failure" as const },
@@ -825,12 +842,11 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     expect(sc.approvalPolicy.value).toBe("never");
   });
 
-  it("propagates personality, reasoning_summary, and compact_prompt", () => {
+  it("propagates personality and reasoning_summary", () => {
     const cfg = {
       ...defaultConfig(),
       personality: "friendly" as const,
       reasoning_summary: "detailed" as const,
-      compact_prompt: "COMPACT: keep only the durable facts.",
     };
     const sc = sessionConfigurationFromAgenCConfig({
       config: cfg,
@@ -839,7 +855,6 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     });
     expect(sc.personality).toBe("friendly");
     expect(sc.modelReasoningSummary).toBe("detailed");
-    expect(sc.compactPrompt).toBe("COMPACT: keep only the durable facts.");
   });
 
   it("leaves propagated fields undefined when config omits them", () => {
@@ -849,7 +864,6 @@ describe("sessionConfigurationFromAgenCConfig", () => {
       ...cfg,
       personality: undefined,
       reasoning_summary: undefined,
-      compact_prompt: undefined,
     } as typeof cfg;
     const sc = sessionConfigurationFromAgenCConfig({
       config: override,
@@ -858,7 +872,6 @@ describe("sessionConfigurationFromAgenCConfig", () => {
     });
     expect(sc.personality).toBeUndefined();
     expect(sc.modelReasoningSummary).toBeUndefined();
-    expect(sc.compactPrompt).toBeUndefined();
   });
 });
 
@@ -2362,7 +2375,7 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI forwards --permission-mode acceptEdits to agent.create", async () => {
-    // PART A regression: the print path previously forwarded only --yolo/bypass
+    // PART A regression: the print path previously forwarded only --dangerously-bypass-approvals-and-sandbox/bypass
     // and silently dropped --permission-mode acceptEdits/plan/default. The
     // validated mode must reach agent.create so the daemon honors it (the
     // unattended policy preserves acceptEdits/plan rather than forcing
@@ -2425,7 +2438,7 @@ describe("main() smoke", () => {
   });
 
   it("oneShotCLI keeps bypassPermissions precedence over --permission-mode", async () => {
-    // --yolo must still win: when both --yolo and --permission-mode acceptEdits
+    // --dangerously-bypass-approvals-and-sandbox must still win: when both --dangerously-bypass-approvals-and-sandbox and --permission-mode acceptEdits
     // are present, the forwarded mode is bypassPermissions (no posture
     // weakening of the existing yolo path).
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-yolo-home-"));
@@ -2442,7 +2455,7 @@ describe("main() smoke", () => {
       "/usr/bin/node",
       "/opt/agenc/bin/agenc.js",
       "--print",
-      "--yolo",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--permission-mode",
       "acceptEdits",
       "do a thing",
@@ -2500,7 +2513,7 @@ describe("main() smoke", () => {
       "/usr/bin/node",
       "/opt/agenc/bin/agenc.js",
       "explain",
-      "--yolo",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--permission-mode",
       "bypassPermissions",
     ];
@@ -2517,7 +2530,7 @@ describe("main() smoke", () => {
     try {
       trustWorkspaceForTest(tmpHome, tmpCwd);
       await expect(
-        oneShotCLI("explain --yolo --permission-mode bypassPermissions"),
+        oneShotCLI("explain --dangerously-bypass-approvals-and-sandbox --permission-mode bypassPermissions"),
       ).resolves.toBe(0);
       const createCall = daemon.requests.find(
         (request) => request.method === "agent.create",
@@ -2612,18 +2625,20 @@ describe("main() smoke", () => {
     process.argv = [
       "node",
       "agenc",
+      "--config",
+      "ambient-missing.toml",
       "--provider",
-      "grok",
-      "--model",
-      "grok-4.3",
-      "--permission-mode",
-      "plan",
+      "openai",
     ];
     process.env.AGENC_HOME = tmpHome;
     process.env.AGENC_WORKSPACE = tmpCwd;
     process.env.XAI_API_KEY = "stub-key-for-test";
     process.env.AGENC_CLI_ENTRY_DISABLE = "1";
-    const sessionDir = join(getProjectDir(tmpCwd), "sessions", conversationId);
+    const sessionDir = join(
+      getProjectDir(tmpCwd, undefined, tmpHome),
+      "sessions",
+      conversationId,
+    );
     await mkdir(sessionDir, { recursive: true });
     await writeFile(
       join(
@@ -2664,9 +2679,14 @@ describe("main() smoke", () => {
 
     try {
       trustWorkspaceForTest(tmpHome, tmpCwd);
-      await expect(resumeTUIEntry({ resumeId: conversationId })).resolves.toBe(
-        0,
-      );
+      await expect(resumeTUIEntry(
+        { resumeId: conversationId },
+        {
+          provider: "grok",
+          model: "grok-4.3",
+          permissionMode: "plan",
+        },
+      )).resolves.toBe(0);
       expect(daemon.findAgentBySessionId).toHaveBeenCalledWith(
         daemon.client,
         conversationId,
@@ -2709,7 +2729,11 @@ describe("main() smoke", () => {
     process.env.AGENC_HOME = tmpHome;
     process.env.AGENC_WORKSPACE = tmpCwd;
     process.env.AGENC_CLI_ENTRY_DISABLE = "1";
-    const rolloutPath = await writeResumeRolloutForTest(tmpCwd, conversationId);
+    const rolloutPath = await writeResumeRolloutForTest(
+      tmpCwd,
+      conversationId,
+      tmpHome,
+    );
     const rolloutIdentity = await lstat(rolloutPath, { bigint: true });
     const daemon = installDaemonCliDepsForTest({
       agentId: conversationId,
@@ -2780,6 +2804,7 @@ describe("main() smoke", () => {
     const rolloutPath = await writeResumeRolloutForTest(
       targetCwd,
       conversationId,
+      tmpHome,
     );
     const rolloutIdentity = await lstat(rolloutPath, { bigint: true });
     trustWorkspaceForTest(tmpHome, targetCwd);
@@ -2865,7 +2890,11 @@ describe("main() smoke", () => {
     process.env.AGENC_HOME = tmpHome;
     process.env.AGENC_WORKSPACE = tmpCwd;
     process.env.AGENC_CLI_ENTRY_DISABLE = "1";
-    const rolloutPath = await writeResumeRolloutForTest(tmpCwd, conversationId);
+    const rolloutPath = await writeResumeRolloutForTest(
+      tmpCwd,
+      conversationId,
+      tmpHome,
+    );
     const daemon = installDaemonCliDepsForTest({
       agentId: conversationId,
       sessionId: conversationId,
@@ -2915,7 +2944,7 @@ describe("main() smoke", () => {
     process.env.AGENC_HOME = tmpHome;
     process.env.AGENC_WORKSPACE = tmpCwd;
     process.env.AGENC_CLI_ENTRY_DISABLE = "1";
-    await writeResumeRolloutForTest(tmpCwd, conversationId);
+    await writeResumeRolloutForTest(tmpCwd, conversationId, tmpHome);
     const daemon = installDaemonCliDepsForTest({
       agentId: conversationId,
       sessionId: conversationId,
@@ -3394,7 +3423,7 @@ describe("main() smoke", () => {
     }
   });
 
-  it("bootTUIEntry carries pre-start /mcp additions into the daemon prompt agent", async () => {
+  it("bootTUIEntry never serializes MCP configuration into daemon env", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-mcp-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-mcp-cwd-"));
     const prevArgv = process.argv;
@@ -3461,7 +3490,7 @@ describe("main() smoke", () => {
       expect(code).toBe(0);
       const env = daemon.startPromptAgent.mock.calls[0]?.[0].env as
         NodeJS.ProcessEnv | undefined;
-      expect(env?.AGENC_MCP_SERVERS).toBe(JSON.stringify([mcpConfig]));
+      expect(env).not.toHaveProperty("AGENC_MCP_SERVERS");
     } finally {
       vi.doUnmock("../tui/main.js");
       for (const key of Object.keys(process.env)) {
@@ -3568,7 +3597,7 @@ describe("main() smoke", () => {
       );
       const prevArgv = process.argv;
       const prevEnv = { ...process.env };
-      process.argv = ["node", "agenc", "--provider", "xai"];
+      process.argv = ["node", "agenc", "--provider", "grok"];
       process.env.HOME = tmpHome;
       process.env.USERPROFILE = tmpHome;
       process.env.AGENC_HOME = tmpHome;
@@ -3872,7 +3901,7 @@ describe("main() smoke", () => {
       label: "after the positional prompt begins",
       argv: [
         "literal prompt",
-        "--yolo",
+        "--dangerously-bypass-approvals-and-sandbox",
         "--permission-mode",
         "bypassPermissions",
         "--provider",
@@ -3883,14 +3912,14 @@ describe("main() smoke", () => {
         "--version",
       ],
       expectedPrompt:
-        "literal prompt --yolo --permission-mode bypassPermissions --provider openai --model gpt-5 --help --version",
+        "literal prompt --dangerously-bypass-approvals-and-sandbox --permission-mode bypassPermissions --provider openai --model gpt-5 --help --version",
     },
     {
       label: "after the end-of-options delimiter",
       argv: [
         "--",
         "literal prompt",
-        "--yolo",
+        "--dangerously-bypass-approvals-and-sandbox",
         "--permission-mode",
         "bypassPermissions",
         "--provider",
@@ -3901,7 +3930,7 @@ describe("main() smoke", () => {
         "--version",
       ],
       expectedPrompt:
-        "literal prompt --yolo --permission-mode bypassPermissions --provider openai --model gpt-5 --help --version",
+        "literal prompt --dangerously-bypass-approvals-and-sandbox --permission-mode bypassPermissions --provider openai --model gpt-5 --help --version",
     },
   ])(
     "main keeps startup-looking tokens literal $label",

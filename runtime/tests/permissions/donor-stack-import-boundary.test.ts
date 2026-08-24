@@ -5,14 +5,14 @@ import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 /**
- * Import boundary for the legacy `src/utils/permissions/` donor stack.
+ * Import boundary for the remaining `src/utils/permissions/` compatibility
+ * helpers.
  *
- * The runtime carries TWO permission stacks: the canonical `src/permissions/`
- * and a partially-migrated donor copy under `src/utils/permissions/`. A
- * security fix that lands in only one is a real hazard (the merged `--yolo`
- * deny-bypass fix touched this split surface). Until the consolidation is
- * finished, this test FREEZES the donor stack's importer set: it must only
- * SHRINK (as files migrate to `src/permissions/`), never GROW.
+ * Permission settings loading, persistence, mode transitions, and generic
+ * rule mutation are canonical under `src/permissions/`. Some older tool
+ * implementations still import presentation and tool-specific evaluation
+ * helpers from `src/utils/permissions/`. This test freezes that compatibility
+ * surface: its importer set must only shrink, never grow.
  *
  * If this fails because you ADDED an importer: import from `src/permissions/`
  * instead. If it fails because you REMOVED one (migration progress): delete
@@ -99,14 +99,14 @@ function currentDonorImporters(): string[] {
     .sort();
 }
 
-describe("legacy utils/permissions donor-stack import boundary", () => {
+describe("utils/permissions compatibility import boundary", () => {
   it("gains no new importers (the donor stack may only shrink)", () => {
     const current = currentDonorImporters();
     const baseline = new Set<string>(BASELINE);
     const added = current.filter((file) => !baseline.has(file));
     expect(
       added,
-      `New imports of the legacy src/utils/permissions/ stack are not allowed — ` +
+      `New imports of the src/utils/permissions compatibility helpers are not allowed — ` +
         `import from src/permissions/ instead, or finish the consolidation. New importers:\n` +
         added.map((f) => `  - src/${f}`).join("\n"),
     ).toEqual([]);

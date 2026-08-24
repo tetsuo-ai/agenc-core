@@ -24,6 +24,10 @@ import {
   resolveSpecialPath,
   unrestrictedFileSystemPolicy,
 } from "./index.js";
+import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from "../../../src/session/runtime-options.js";
 
 describe("sandbox permission profile transforms", () => {
   it("normalizes relative permission paths and rejects writable globs", () => {
@@ -254,29 +258,15 @@ describe("sandbox permission profile transforms", () => {
     );
   });
 
-  it("only resolves tmpdir special paths from an absolute TMPDIR", () => {
-    const previous = process.env["TMPDIR"];
-    try {
-      delete process.env["TMPDIR"];
-      expect(resolveSpecialPath({ kind: "tmpdir" }, "/repo")).toBeNull();
-
-      process.env["TMPDIR"] = "";
-      expect(resolveSpecialPath({ kind: "tmpdir" }, "/repo")).toBeNull();
-
-      process.env["TMPDIR"] = "relative-tmp";
-      expect(resolveSpecialPath({ kind: "tmpdir" }, "/repo")).toBeNull();
-
-      process.env["TMPDIR"] = "/tmp/agenc-special";
+  it("resolves tmpdir special paths from captured session authority", () => {
+    const options = resolveAgentRuntimeOptions({
+      AGENC_TMPDIR: "/tmp/agenc-special",
+    });
+    runWithAgentRuntimeOptions(options, () => {
       expect(resolveSpecialPath({ kind: "tmpdir" }, "/repo")).toBe(
         "/tmp/agenc-special",
       );
-    } finally {
-      if (previous === undefined) {
-        delete process.env["TMPDIR"];
-      } else {
-        process.env["TMPDIR"] = previous;
-      }
-    }
+    });
   });
 
   it("keeps project-root special subpaths inside the cwd", () => {

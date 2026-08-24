@@ -1,11 +1,11 @@
-import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
+import { getRuntimeState, updateRuntimeState } from '../../utils/config.js'
 
 export function hasAgenCAiMcpEverConnected(name: string): boolean {
-  return getGlobalConfig().agencAiMcpEverConnected?.includes(name) ?? false
+  return getRuntimeState().agencAiMcpEverConnected?.includes(name) ?? false
 }
 
 export function markAgenCAiMcpConnected(name: string): void {
-  saveGlobalConfig(current => {
+  updateRuntimeState(current => {
     const connected = current.agencAiMcpEverConnected ?? []
     if (connected.includes(name)) return current
     return {

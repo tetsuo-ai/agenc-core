@@ -6,8 +6,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { getAgenCConfigHomeDir } from "../../utils/envUtils.js";
-
 function getUpdatePromptTemplate(): string {
   return `IMPORTANT: This message and these instructions are NOT part of the actual user conversation. Do NOT include any references to "documentation updates", "magic docs", or these update instructions in the document content.
 
@@ -61,8 +59,11 @@ Use the Edit tool with file_path: {{docPath}}
 REMEMBER: Only update if there is substantial new information. The Magic Doc header (# MAGIC DOC: {{docTitle}}) must remain unchanged.`;
 }
 
-async function loadMagicDocsPrompt(): Promise<string> {
-  const promptPath = join(getAgenCConfigHomeDir(), "magic-docs", "prompt.md");
+async function loadMagicDocsPrompt(
+  configHomeDir: string | undefined,
+): Promise<string> {
+  if (configHomeDir === undefined) return getUpdatePromptTemplate();
+  const promptPath = join(configHomeDir, "magic-docs", "prompt.md");
   try {
     return await readFile(promptPath, "utf8");
   } catch {
@@ -86,8 +87,9 @@ export async function buildMagicDocsUpdatePrompt(
   docPath: string,
   docTitle: string,
   instructions?: string,
+  configHomeDir?: string,
 ): Promise<string> {
-  const promptTemplate = await loadMagicDocsPrompt();
+  const promptTemplate = await loadMagicDocsPrompt(configHomeDir);
   const customInstructions = instructions
     ? `
 

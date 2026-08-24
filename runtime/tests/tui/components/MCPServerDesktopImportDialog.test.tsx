@@ -12,6 +12,7 @@ import type {
 import { createRoot } from '../ink/root.js'
 import { renderToString } from '../../utils/staticRender.js'
 import { MCPServerDesktopImportDialog } from './MCPServerDesktopImportDialog.js'
+import type { CanonicalSettingsAuthority } from '../../utils/settings/canonicalAuthority.js'
 
 type SelectOption = {
   label: string
@@ -98,6 +99,8 @@ const DESKTOP_SERVERS = {
   filesystem: { type: 'stdio', command: 'node', args: ['fs-server.js'] },
   docs: { type: 'http', url: 'https://docs.example.test/mcp' },
 } satisfies Record<string, McpServerConfig>
+
+const AUTHORITY = {} as CanonicalSettingsAuthority
 
 function scoped(
   config: McpServerConfig,
@@ -186,6 +189,7 @@ async function renderDialog({
 
   root.render(
     <MCPServerDesktopImportDialog
+      authority={AUTHORITY}
       servers={servers}
       scope={scope}
       onDone={onDone}
@@ -326,12 +330,14 @@ describe('MCPServerDesktopImportDialog', () => {
         'docs_2',
         DESKTOP_SERVERS.docs,
         'project',
+        AUTHORITY,
       )
       expect(harness.addMcpConfig).toHaveBeenNthCalledWith(
         2,
         'filesystem',
         DESKTOP_SERVERS.filesystem,
         'project',
+        AUTHORITY,
       )
       expect(stripAnsi(harness.writeToStdout.mock.calls[0]?.[0] ?? '')).toContain(
         'Successfully imported 2 MCP servers to project config.',

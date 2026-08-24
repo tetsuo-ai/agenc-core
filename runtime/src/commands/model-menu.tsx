@@ -2,7 +2,7 @@ import React from "react";
 
 import {
   buildProviderModelCatalog,
-  normalizeProviderSlug,
+  resolveProviderSlug,
   resolveProviderSettings,
   type ProviderSlug,
 } from "../config/resolve-provider.js";
@@ -15,7 +15,11 @@ import type { AgenCConfig } from "../config/schema.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
-import { readCommandConfig } from "./config-context.js";
+import {
+  providerEnvironmentFromCommandContext,
+  readCommandConfig,
+  remoteAuthContextFromCommandContext,
+} from "./config-context.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import {
@@ -198,7 +202,7 @@ function providerOrder(
   preferredProvider?: ProviderSlug,
 ): readonly ProviderSlug[] {
   const ids = Object.keys(catalog)
-    .map(provider => normalizeProviderSlug(provider))
+    .map(provider => resolveProviderSlug(provider))
     .filter((provider): provider is ProviderSlug => provider !== undefined);
   const unique = [...new Set(ids)];
   return unique.sort((left, right) => {
@@ -290,8 +294,8 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
   const config = readCommandConfig(ctx);
   const sessionSelection = readSessionSelection(ctx);
   const provider =
-    normalizeProviderSlug(sessionSelection.provider) ??
-    normalizeProviderSlug(config?.model_provider) ??
+    resolveProviderSlug(sessionSelection.provider) ??
+    resolveProviderSlug(config?.model_provider) ??
     "grok";
   const defaultModel = defaultModelForProvider(provider);
   const currentModel =
@@ -303,11 +307,16 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
     config !== undefined ? configuredModelForProvider(config, provider) : undefined;
   const catalog = buildProviderModelCatalog(config);
   const managedKeysEnabled = config?.auth?.managedKeys?.enabled === true;
-  const managedSubscriptionAvailable = hasHostedManagedAccess(config, process.env);
-  const managedSubscriptionTier = hostedManagedSubscriptionTier(process.env);
+  const environment = providerEnvironmentFromCommandContext(ctx);
+  const authContext = remoteAuthContextFromCommandContext(ctx);
+  const managedSubscriptionAvailable = hasHostedManagedAccess(
+    config,
+    authContext,
+  );
+  const managedSubscriptionTier = hostedManagedSubscriptionTier(authContext);
   const providerApiKey = (catalogProvider: ProviderSlug): string | undefined =>
     config !== undefined
-      ? resolveProviderSettings(catalogProvider, config, process.env)?.apiKey
+      ? resolveProviderSettings(catalogProvider, config, environment)?.apiKey
       : undefined;
   const providerHasByok = (catalogProvider: ProviderSlug): boolean => {
     const apiKey = providerApiKey(catalogProvider);

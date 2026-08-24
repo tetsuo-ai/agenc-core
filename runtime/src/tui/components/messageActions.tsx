@@ -72,7 +72,7 @@ type PrimaryInput = {
 };
 const str = (k: string) => (i: Record<string, unknown>) => typeof i[k] === 'string' ? i[k] : undefined;
 const PRIMARY_INPUT: Record<string, PrimaryInput> = {
-  Read: {
+  FileRead: {
     label: 'path',
     extract: str('file_path')
   },
@@ -88,7 +88,7 @@ const PRIMARY_INPUT: Record<string, PrimaryInput> = {
     label: 'path',
     extract: str('notebook_path')
   },
-  Bash: {
+  'system.bash': {
     label: 'command',
     extract: str('command')
   },
@@ -100,7 +100,7 @@ const PRIMARY_INPUT: Record<string, PrimaryInput> = {
     label: 'pattern',
     extract: str('pattern')
   },
-  WebFetch: {
+  web_fetch: {
     label: 'url',
     extract: str('url')
   },
@@ -108,7 +108,7 @@ const PRIMARY_INPUT: Record<string, PrimaryInput> = {
     label: 'query',
     extract: str('query')
   },
-  Task: {
+  spawn_agent: {
     label: 'prompt',
     extract: str('prompt')
   },

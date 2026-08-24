@@ -52,8 +52,8 @@ import { executePromptSuggestion } from "../services/PromptSuggestion/promptSugg
 import { executeAutoDream } from "../services/autoDream/autoDream.js";
 import type { ToolUseContext } from "../tools/Tool.js";
 import type { Message } from "../types/message.js";
-import { getGlobalConfig } from "../utils/config.js";
-import { isBareMode, isEnvDefinedFalsy } from "../utils/envUtils.js";
+import { isBareMode } from "../utils/envUtils.js";
+import { getExecutionAuthoritySettings } from "../utils/settings/settings.js";
 import {
   createCacheSafeParams,
   saveCacheSafeParams,
@@ -377,15 +377,12 @@ function launchTerminalBackgroundHooks(
 
   if (isBareMode()) return;
 
-  if (
-    isMainThreadQuerySource(querySource) &&
-    !isEnvDefinedFalsy(process.env.AGENC_ENABLE_PROMPT_SUGGESTION)
-  ) {
+  if (isMainThreadQuerySource(querySource)) {
     void executePromptSuggestion(
       hookContext as unknown as Parameters<typeof executePromptSuggestion>[0],
       {
         cwd: ctx.cwd,
-        speculationEnabled: getGlobalConfig().speculationEnabled,
+        speculationEnabled: getExecutionAuthoritySettings().speculationEnabled,
       },
     ).catch(() => {});
   }

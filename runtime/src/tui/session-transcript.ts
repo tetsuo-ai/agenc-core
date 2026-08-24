@@ -2359,7 +2359,7 @@ export function adaptTranscriptEvents(
           typeof payload.toolName === "string"
             ? payload.toolName
             : event.type === "exec_command_begin"
-              ? "Bash"
+              ? "exec_command"
               : "MCP";
         // Collab v2 agent tools emit their own
         // `collab_agent_spawn_*`, `collab_agent_interaction_*`,
@@ -2560,7 +2560,7 @@ export function adaptTranscriptEvents(
         const toolName =
           runningToolNames.get(callId) ??
           (event.type === "exec_command_end"
-            ? "Bash"
+            ? "exec_command"
             : event.type === "mcp_tool_call_end"
               ? "MCP"
               : "tool");

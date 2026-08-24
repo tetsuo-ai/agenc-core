@@ -105,11 +105,8 @@ async function tempRuntime(): Promise<{
   const workspaceRoot = join(root, "workspace");
   await mkdir(agencHome, { recursive: true });
   await mkdir(workspaceRoot, { recursive: true });
-  // Model the real-world state: config.toml exists and is already migrated.
-  // A fresh, unversioned config gets canonically rewritten by loadConfig's
-  // file migration, which strips the managed plugin block markers and would
-  // leave uninstall unable to remove its config entry.
-  await writeFile(join(agencHome, "config.toml"), "configVersion = 1\n");
+  // Model the supported runtime state: config.toml is already canonical v2.
+  await writeFile(join(agencHome, "config.toml"), "config_version = 2\n");
   return { root, agencHome, workspaceRoot };
 }
 
@@ -310,10 +307,10 @@ describe("interactive /plugins menu", () => {
   it("i browses a local marketplace and installs a plugin through installPluginOp", async () => {
     const { root, agencHome, workspaceRoot } = await tempRuntime();
     const marketplaceRoot = join(root, "marketplace");
-    await mkdir(marketplaceRoot, { recursive: true });
+    await mkdir(join(marketplaceRoot, ".agenc-plugin"), { recursive: true });
     await writePlugin(marketplaceRoot, "gamma");
     await writeFile(
-      join(marketplaceRoot, "marketplace.json"),
+      join(marketplaceRoot, ".agenc-plugin", "marketplace.json"),
       JSON.stringify({
         metadata: { name: "team" },
         plugins: [{ name: "gamma", source: "./gamma" }],

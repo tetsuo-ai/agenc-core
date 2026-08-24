@@ -6,6 +6,20 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+const memoryAuthority = vi.hoisted(() => ({ enabled: true }));
+
+vi.mock("../../utils/settings/settings.js", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("../../utils/settings/settings.js")
+  >();
+  return {
+    ...actual,
+    getExecutionAuthoritySettings: () => ({
+      autoMemoryEnabled: memoryAuthority.enabled,
+    }),
+  };
+});
+
 import { getAttachmentTrackingState } from "../../session/attachment-state.js";
 import type {
   AdmittedMemorySelector,
@@ -19,7 +33,6 @@ let root: string;
 let cwd: string;
 let agencHome: string;
 let savedAgencHome: string | undefined;
-let savedDisableAutoMemory: string | undefined;
 let selectedMemoryTitle = "";
 const selectorCall = vi.fn(async (request: MemorySelectorRequest) => ({
   kind: "selected" as const,
@@ -38,9 +51,8 @@ beforeEach(() => {
   mkdirSync(join(agencHome, "memory"), { recursive: true });
   mkdirSync(join(cwd, ".agenc", "memory"), { recursive: true });
   savedAgencHome = process.env.AGENC_HOME;
-  savedDisableAutoMemory = process.env.AGENC_DISABLE_AUTO_MEMORY;
   process.env.AGENC_HOME = agencHome;
-  delete process.env.AGENC_DISABLE_AUTO_MEMORY;
+  memoryAuthority.enabled = true;
   selectedMemoryTitle = "";
   selectorCall.mockClear();
 });
@@ -51,11 +63,6 @@ afterEach(() => {
     delete process.env.AGENC_HOME;
   } else {
     process.env.AGENC_HOME = savedAgencHome;
-  }
-  if (savedDisableAutoMemory === undefined) {
-    delete process.env.AGENC_DISABLE_AUTO_MEMORY;
-  } else {
-    process.env.AGENC_DISABLE_AUTO_MEMORY = savedDisableAutoMemory;
   }
   rmSync(root, { recursive: true, force: true });
 });
@@ -138,7 +145,7 @@ describe("relevantMemoriesProducer", () => {
   });
 
   test("skips when auto-memory is disabled", async () => {
-    process.env.AGENC_DISABLE_AUTO_MEMORY = "1";
+    memoryAuthority.enabled = false;
     const trackingState = getAttachmentTrackingState({});
     const out = await relevantMemoriesProducer(makeOpts(), trackingState);
     expect(out).toEqual([]);

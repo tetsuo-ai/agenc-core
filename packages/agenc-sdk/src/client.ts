@@ -65,6 +65,13 @@ import type {
   CsvJobReviewShowResult,
 } from "./csv-jobs.js";
 
+const SAFE_SDK_RUNTIME_OPTIONS = Object.freeze({
+  simpleMode: false,
+  stdinDataMode: false,
+  remoteMode: false,
+  allowUntrustedHooks: false,
+});
+
 /**
  * Minimal transport contract. The runtime's
  * `AgenCInProcessDaemonTransport` (exported from `@tetsuo-ai/runtime`)
@@ -77,6 +84,7 @@ export interface AgencTransport {
   close?(): Promise<void>;
 }
 
+/** JSON-RPC error object returned by the daemon. */
 export class AgencRpcError extends Error {
   readonly code: number;
   readonly data?: unknown;
@@ -97,6 +105,7 @@ export class AgencRpcError extends Error {
   }
 }
 
+/** Daemon response body is not a valid result for the requested method. */
 export class AgencMalformedResponseError extends Error {
   readonly response: unknown;
 
@@ -107,6 +116,7 @@ export class AgencMalformedResponseError extends Error {
   }
 }
 
+/** A second prompt() on a session that already has an active run. */
 export class AgencPromptRunInProgressError extends Error {
   readonly sessionId: string;
   readonly clientMessageId: string;
@@ -119,6 +129,7 @@ export class AgencPromptRunInProgressError extends Error {
   }
 }
 
+/** Reused clientMessageId whose prior submit has no durable terminal outcome. */
 export class AgencDuplicateSubmissionIncompleteError extends Error {
   readonly sessionId: string;
   readonly clientMessageId: string;
@@ -133,6 +144,7 @@ export class AgencDuplicateSubmissionIncompleteError extends Error {
   }
 }
 
+/** Caller required a protocol capability the negotiated daemon does not have. */
 export class AgencCapabilityUnavailableError extends Error {
   readonly capability: string;
   readonly negotiatedProtocolVersion?: string;
@@ -391,6 +403,7 @@ export interface AgencPromptRun extends AsyncIterable<AgencPromptEvent> {
   cancel(reason?: string): Promise<void>;
 }
 
+/** One daemon session. Prompt, transcript, snapshot, cancel, terminate. */
 export class AgencSession {
   readonly sessionId: string;
   readonly agentId: string | undefined;
@@ -410,24 +423,28 @@ export class AgencSession {
     return this.#client.runPrompt(this.sessionId, content, options);
   }
 
+  /** Canonical transcript (`session.transcript`). */
   transcript(): Promise<SessionTranscriptResult> {
     return this.#client.request("session.transcript", {
       sessionId: this.sessionId,
     });
   }
 
+  /** Identity-bearing transcript (`session.transcript.v2`). Requires protocol 1.2. */
   transcriptV2(): Promise<SessionTranscriptV2Result> {
     return this.#client.request("session.transcript.v2", {
       sessionId: this.sessionId,
     });
   }
 
+  /** Live turn count, token usage, and cache stats (`session.snapshot`). */
   snapshot(): Promise<SessionSnapshotResult> {
     return this.#client.request("session.snapshot", {
       sessionId: this.sessionId,
     });
   }
 
+  /** Interrupt the active turn. Protocol 1.2 can scope this with `expectedTurnId`. */
   async cancelTurn(reason?: string, expectedTurnId?: string): Promise<void> {
     await this.#client.request("session.cancelTurn", {
       sessionId: this.sessionId,
@@ -436,6 +453,7 @@ export class AgencSession {
     });
   }
 
+  /** Close the session on the daemon (`session.terminate`). */
   async terminate(reason?: string): Promise<void> {
     await this.#client.request("session.terminate", {
       sessionId: this.sessionId,
@@ -743,6 +761,7 @@ class ClientRunAttachment implements AgencRunAttachment {
   }
 }
 
+/** Typed JSON-RPC client for the 53 public daemon methods. */
 export class AgencClient {
   readonly #transport: AgencTransport;
   readonly #createRequestId: () => RequestId;
@@ -775,22 +794,27 @@ export class AgencClient {
     this.#onElicitationRequest = options.onElicitationRequest;
   }
 
+  /** Client id sent on `session.attach` / `agent.attach`. */
   get clientId(): string {
     return this.#clientId;
   }
 
+  /** True after a successful `initialize` handshake. */
   get initialized(): boolean {
     return this.#initialized;
   }
 
+  /** Protocol version this client negotiated (may be older than the server). */
   get negotiatedProtocolVersion(): string | undefined {
     return this.#negotiatedClientProtocolVersion;
   }
 
+  /** Protocol version reported by the daemon. */
   get serverProtocolVersion(): string | undefined {
     return this.#initializeResult?.protocol.version;
   }
 
+  /** Capability object from `initialize`, including `daemon.methods`. */
   get serverCapabilities(): InitializeResult["capabilities"] | undefined {
     return this.#initializeResult?.capabilities;
   }
@@ -923,6 +947,7 @@ export class AgencClient {
             : "Interactive session",
         cwd,
         initialContent: [],
+        runtimeOptions: SAFE_SDK_RUNTIME_OPTIONS,
       } as AgentCreateParams);
       const attached = await this.attachAgent(agent.agentId);
       if (attached.session !== null) {
@@ -1436,6 +1461,7 @@ export class AgencClient {
   }
 }
 
+/** Build a client around an already-open transport (in-process tests, custom sockets). */
 export function createAgencClient(options: AgencClientOptions): AgencClient {
   return new AgencClient(options);
 }

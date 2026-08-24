@@ -96,6 +96,11 @@ describe("classify + defaultConcurrencyClassFor", () => {
     expect(isWriteFilesystemTool("Write")).toBe(true);
   });
 
+  test("only the canonical web fetch name is a shared network read", () => {
+    expect(defaultConcurrencyClassFor("web_fetch").kind).toBe("shared_read");
+    expect(defaultConcurrencyClassFor("WebFetch").kind).toBe("exclusive");
+  });
+
   test("bash → BackgroundTerminal", () => {
     expect(defaultConcurrencyClassFor("system.bash").kind).toBe(
       "background_terminal",

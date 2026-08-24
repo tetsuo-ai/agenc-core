@@ -625,6 +625,7 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
         sessionBaseUrl:
           "https://api.example.test/v1/code/sessions/cse_session_123",
         headers: { Authorization: "Bearer worker-jwt" },
+        environment: Object.freeze({}),
       }),
     ).resolves.toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(1);
@@ -643,6 +644,7 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
         sessionBaseUrl:
           "https://api.example.test/v1/code/sessions/cse_session_123",
         headers: { Authorization: "Bearer worker-jwt" },
+        environment: Object.freeze({}),
       }),
     ).resolves.toBeNull();
   });
@@ -669,6 +671,7 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
         sessionBaseUrl:
           "https://api.example.test/v1/code/sessions/cse_session_123",
         headers: { Authorization: "Bearer worker-jwt" },
+        environment: Object.freeze({}),
       }),
     ).resolves.toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(2);

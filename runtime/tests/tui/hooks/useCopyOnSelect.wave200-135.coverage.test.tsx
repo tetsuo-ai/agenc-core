@@ -32,7 +32,13 @@ vi.mock('../components/design-system/ThemeProvider', () => ({
 }))
 
 vi.mock('../../utils/config.js', () => ({
-  getGlobalConfig: () => harness.config,
+  getRuntimeState: () => harness.config,
+}))
+
+vi.mock('../../utils/settings/settings.js', () => ({
+  getExecutionAuthoritySettings: () => ({
+    tui: { copyOnSelect: harness.config.copyOnSelect },
+  }),
 }))
 
 vi.mock('../../utils/theme.js', () => ({

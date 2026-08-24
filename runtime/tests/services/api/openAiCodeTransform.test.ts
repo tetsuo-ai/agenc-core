@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from 'bun:test'
+import { afterEach, describe, expect, test } from 'bun:test'
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -12,26 +12,8 @@ import {
 import { __test as webSearchToolTest } from '../../../src/tools/WebSearchTool/WebSearchTool.ts'
 
 const tempDirs: string[] = []
-const originalEnv = {
-  OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
-  OPENAI_API_BASE: process.env.OPENAI_API_BASE,
-  AGENC_USE_GITHUB: process.env.AGENC_USE_GITHUB,
-  OPENAI_MODEL: process.env.OPENAI_MODEL,
-}
 
 afterEach(() => {
-  if (originalEnv.OPENAI_BASE_URL === undefined) delete process.env.OPENAI_BASE_URL
-  else process.env.OPENAI_BASE_URL = originalEnv.OPENAI_BASE_URL
-
-  if (originalEnv.OPENAI_API_BASE === undefined) delete process.env.OPENAI_API_BASE
-  else process.env.OPENAI_API_BASE = originalEnv.OPENAI_API_BASE
-
-  if (originalEnv.AGENC_USE_GITHUB === undefined) delete process.env.AGENC_USE_GITHUB
-  else process.env.AGENC_USE_GITHUB = originalEnv.AGENC_USE_GITHUB
-
-  if (originalEnv.OPENAI_MODEL === undefined) delete process.env.OPENAI_MODEL
-  else process.env.OPENAI_MODEL = originalEnv.OPENAI_MODEL
-
   while (tempDirs.length > 0) {
     const dir = tempDirs.pop()
     if (dir) rmSync(dir, { recursive: true, force: true })
@@ -76,29 +58,24 @@ async function importFreshProviderConfigModule() {
   return import(`../../../src/services/api/providerConfig.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
+function providerEnvironment(
+  overrides: Readonly<Record<string, string | undefined>> = {},
+): Readonly<Record<string, string | undefined>> {
+  return Object.freeze({
+    AGENC_PROVIDER: 'openai',
+    ...overrides,
+  })
+}
+
 describe('ProviderCode provider config', () => {
-  const originalOpenaiBaseUrl = process.env.OPENAI_BASE_URL
-  const originalOpenaiApiBase = process.env.OPENAI_API_BASE
-
-  beforeEach(() => {
-    delete process.env.OPENAI_BASE_URL
-    delete process.env.OPENAI_API_BASE
-  })
-
-  afterEach(() => {
-    if (originalOpenaiBaseUrl === undefined) delete process.env.OPENAI_BASE_URL
-    else process.env.OPENAI_BASE_URL = originalOpenaiBaseUrl
-    if (originalOpenaiApiBase === undefined) delete process.env.OPENAI_API_BASE
-    else process.env.OPENAI_API_BASE = originalOpenaiApiBase
-  })
-
   test('resolves providerCodeplan alias to ProviderCode transport with reasoning', async () => {
     const { resolveProviderRequest } = await importFreshProviderConfigModule()
-    delete process.env.OPENAI_BASE_URL
-    delete process.env.OPENAI_API_BASE
-    delete process.env.AGENC_USE_GITHUB
 
-    const resolved = resolveProviderRequest({ model: 'providerCodeplan' })
+    const resolved = resolveProviderRequest({
+      provider: 'openai',
+      model: 'providerCodeplan',
+      environment: providerEnvironment(),
+    })
     expect(resolved.transport).toBe('providerCode_responses')
     expect(resolved.resolvedModel).toBe('gpt-5.5')
     expect(resolved.reasoning).toEqual({ effort: 'high' })
@@ -107,11 +84,12 @@ describe('ProviderCode provider config', () => {
 
   test('resolves providerCodespark alias to ProviderCode transport with ProviderCode base URL', async () => {
     const { resolveProviderRequest } = await importFreshProviderConfigModule()
-    delete process.env.OPENAI_BASE_URL
-    delete process.env.OPENAI_API_BASE
-    delete process.env.AGENC_USE_GITHUB
 
-    const resolved = resolveProviderRequest({ model: 'providerCodespark' })
+    const resolved = resolveProviderRequest({
+      provider: 'openai',
+      model: 'providerCodespark',
+      environment: providerEnvironment(),
+    })
     expect(resolved.transport).toBe('providerCode_responses')
     expect(resolved.resolvedModel).toBe('gpt-5.3-providerCode-spark')
     expect(resolved.baseUrl).toBe('https://chatgpt.com/backend-api/providerCode')
@@ -120,8 +98,10 @@ describe('ProviderCode provider config', () => {
   test('does not force ProviderCode transport when a local non-ProviderCode base URL is explicit', async () => {
     const { resolveProviderRequest } = await importFreshProviderConfigModule()
     const resolved = resolveProviderRequest({
+      provider: 'openai',
       model: 'providerCodeplan',
       baseUrl: 'http://127.0.0.1:8080/v1',
+      environment: providerEnvironment(),
     })
 
     expect(resolved.transport).toBe('chat_completions')
@@ -133,44 +113,54 @@ describe('ProviderCode provider config', () => {
     const { resolveProviderRequest } = await importFreshProviderConfigModule()
     // On Windows, env vars can leak as the literal string "undefined" instead of
     // the JS value undefined when not properly unset (issue #336).
-    process.env.OPENAI_BASE_URL = 'undefined'
-    const resolved = resolveProviderRequest({ model: 'providerCodeplan' })
+    const resolved = resolveProviderRequest({
+      provider: 'openai',
+      model: 'providerCodeplan',
+      environment: providerEnvironment({ OPENAI_BASE_URL: 'undefined' }),
+    })
     expect(resolved.transport).toBe('providerCode_responses')
   })
 
   test('resolves providerCodeplan to ProviderCode transport even when OPENAI_BASE_URL is an empty string', async () => {
     const { resolveProviderRequest } = await importFreshProviderConfigModule()
-    process.env.OPENAI_BASE_URL = ''
-    const resolved = resolveProviderRequest({ model: 'providerCodeplan' })
+    const resolved = resolveProviderRequest({
+      provider: 'openai',
+      model: 'providerCodeplan',
+      environment: providerEnvironment({ OPENAI_BASE_URL: '' }),
+    })
     expect(resolved.transport).toBe('providerCode_responses')
   })
 
   test('prefers explicit baseUrl option over env var', async () => {
     const { resolveProviderRequest } = await importFreshProviderConfigModule()
-    process.env.OPENAI_BASE_URL = 'https://example.com/v1'
-    const resolved = resolveProviderRequest({ model: 'providerCodeplan', baseUrl: 'https://chatgpt.com/backend-api/providerCode' })
+    const resolved = resolveProviderRequest({
+      provider: 'openai',
+      model: 'providerCodeplan',
+      baseUrl: 'https://chatgpt.com/backend-api/providerCode',
+      environment: providerEnvironment({ OPENAI_BASE_URL: 'https://example.com/v1' }),
+    })
     expect(resolved.transport).toBe('providerCode_responses')
     expect(resolved.baseUrl).toBe('https://chatgpt.com/backend-api/providerCode')
   })
 
   test('default gpt-4o uses OpenAi base URL (no regression)', async () => {
     const { resolveProviderRequest } = await importFreshProviderConfigModule()
-    delete process.env.OPENAI_BASE_URL
-    delete process.env.AGENC_USE_GITHUB
-
-    const resolved = resolveProviderRequest({ model: 'gpt-4o' })
+    const resolved = resolveProviderRequest({
+      provider: 'openai',
+      model: 'gpt-4o',
+      environment: providerEnvironment(),
+    })
     expect(resolved.transport).toBe('chat_completions')
     expect(resolved.baseUrl).toBe('https://api.openai.com/v1')
     expect(resolved.resolvedModel).toBe('gpt-4o')
   })
 
-  test('resolves providerCodeplan from env var OPENAI_MODEL to ProviderCode endpoint', async () => {
+  test('resolves providerCodeplan from canonical AGENC_MODEL to ProviderCode endpoint', async () => {
     const { resolveProviderRequest } = await importFreshProviderConfigModule()
-    process.env.OPENAI_MODEL = 'providerCodeplan'
-    delete process.env.OPENAI_BASE_URL
-    delete process.env.AGENC_USE_GITHUB
 
-    const resolved = resolveProviderRequest()
+    const resolved = resolveProviderRequest({
+      environment: providerEnvironment({ AGENC_MODEL: 'providerCodeplan' }),
+    })
     expect(resolved.transport).toBe('providerCode_responses')
     expect(resolved.baseUrl).toBe('https://chatgpt.com/backend-api/providerCode')
     expect(resolved.resolvedModel).toBe('gpt-5.5')
@@ -178,17 +168,19 @@ describe('ProviderCode provider config', () => {
 
   test('does not override custom base URL for providerCodeplan (e.g., local provider)', async () => {
     const { resolveProviderRequest } = await importFreshProviderConfigModule()
-    process.env.OPENAI_MODEL = 'providerCodeplan'
-    process.env.OPENAI_BASE_URL = 'http://localhost:11434/v1'
-    delete process.env.AGENC_USE_GITHUB
 
-    const resolved = resolveProviderRequest()
+    const resolved = resolveProviderRequest({
+      environment: providerEnvironment({
+        AGENC_MODEL: 'providerCodeplan',
+        OPENAI_BASE_URL: 'http://localhost:11434/v1',
+      }),
+    })
     expect(resolved.transport).toBe('chat_completions')
     expect(resolved.baseUrl).toBe('http://localhost:11434/v1')
   })
 
-  test('loads ProviderCode credentials from auth.json fallback', async () => {
-    const { resolveProviderCodeApiCredentials } = await importFreshProviderConfigModule()
+  test('does not load ProviderCode credentials from auth.json', async () => {
+    const { resolveRuntimeOpenAiCodeCredentials } = await importFreshProviderConfigModule()
     const authPath = createTempAuthJson({
       tokens: {
         access_token: 'header.payload.signature',
@@ -196,17 +188,18 @@ describe('ProviderCode provider config', () => {
       },
     })
 
-    const credentials = resolveProviderCodeApiCredentials({
-      PROVIDER_CODE_AUTH_JSON_PATH: authPath,
-    } as NodeJS.ProcessEnv)
+    const credentials = resolveRuntimeOpenAiCodeCredentials({
+      env: { PROVIDER_CODE_AUTH_JSON_PATH: authPath } as NodeJS.ProcessEnv,
+      storedCredentials: undefined,
+    })
 
-    expect(credentials.apiKey).toBe('header.payload.signature')
-    expect(credentials.accountId).toBe('acct_test')
-    expect(credentials.source).toBe('auth.json')
+    expect(credentials.apiKey).toBe('')
+    expect(credentials.accountId).toBeUndefined()
+    expect(credentials.source).toBe('none')
   })
 
-  test('does not treat auth.json id_token as a ProviderCode bearer credential', async () => {
-    const { resolveProviderCodeApiCredentials } = await importFreshProviderConfigModule()
+  test('does not treat auth.json id_token as ProviderCode identity metadata', async () => {
+    const { resolveRuntimeOpenAiCodeCredentials } = await importFreshProviderConfigModule()
     const idTokenPayload = Buffer.from(
       JSON.stringify({
         'https://api.openai.com/auth': {
@@ -221,12 +214,13 @@ describe('ProviderCode provider config', () => {
       },
     })
 
-    const credentials = resolveProviderCodeApiCredentials({
-      PROVIDER_CODE_AUTH_JSON_PATH: authPath,
-    } as NodeJS.ProcessEnv)
+    const credentials = resolveRuntimeOpenAiCodeCredentials({
+      env: { PROVIDER_CODE_AUTH_JSON_PATH: authPath } as NodeJS.ProcessEnv,
+      storedCredentials: undefined,
+    })
 
     expect(credentials.apiKey).toBe('')
-    expect(credentials.accountId).toBe('acct_from_id_token')
+    expect(credentials.accountId).toBeUndefined()
     expect(credentials.source).toBe('none')
   })
 })

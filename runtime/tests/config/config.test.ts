@@ -14,7 +14,6 @@ import {
   defaultConfig,
   mergeConfigs,
   normalizeRawConfig,
-  normalizeAgenCKeyAliases,
   AgenCConfig,
   resolveModelDisambiguated,
   AmbiguousModelError,
@@ -43,17 +42,15 @@ import {
   validateStatusLineConfig,
   validateTuiConfig,
   validateBrowserConfig,
-  validateOutputStyleConfig,
   KNOWN_CONFIG_KEYS,
-  DEFERRED_SETTINGS_KEYS,
-} from "./schema.js";
-import { parseToml, loadConfig, TomlParseError } from "./loader.js";
-import { CURRENT_CONFIG_FILE_VERSION } from "./migrate.js";
+} from "../../src/config/schema.js";
+import { parseToml, TomlParseError } from "../../src/config/loader.js";
+import { CANONICAL_CONFIG_VERSION } from "../../src/config/repository.js";
 import {
   resolveProfile,
   listProfiles,
   UnknownProfileError,
-} from "./profiles.js";
+} from "../../src/config/profiles.js";
 import {
   resolveAgencHome,
   resolveApiKey,
@@ -63,19 +60,18 @@ import {
   resolveProviderBaseURL,
   resolveModel,
   resolveWorkspace,
-  resolveSimpleMode,
   applyEnvOverrides,
-} from "./env.js";
+} from "../../src/config/env.js";
 import {
   buildProviderModelCatalog,
   resolveProviderSelection,
   resolveProviderSettings,
-} from "./resolve-provider.js";
+} from "../../src/config/resolve-provider.js";
 import {
   configuredModelForProvider,
   resolveModelSelection,
-} from "./resolve-model.js";
-import { ConfigStore } from "./store.js";
+} from "../../src/config/resolve-model.js";
+import { ConfigStore } from "../../src/config/store.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // schema
@@ -84,14 +80,13 @@ import { ConfigStore } from "./store.js";
 describe("schema: defaultConfig", () => {
   test("returns frozen snapshot with sane defaults", () => {
     const cfg = defaultConfig();
-    expect(cfg.configVersion).toBe(CURRENT_CONFIG_FILE_VERSION);
+    expect(cfg.configVersion).toBe(CANONICAL_CONFIG_VERSION);
     expect(cfg.model).toBe("grok-4.6");
     expect(cfg.model_provider).toBe("grok");
     expect(resolveProviderSelection({ config: cfg })).toBe("grok");
     expect(cfg.approval_policy).toBe("on-request");
     expect(cfg.approvals_reviewer).toBe("user");
     expect(cfg.sandbox_mode).toBe("workspace-write");
-    expect(cfg.sandbox?.mode).toBe("workspace-write");
     expect(cfg.max_turns).toBeUndefined();
     expect(cfg.agent_max_threads).toBeUndefined();
     expect(cfg.agent_max_depth).toBe(1);
@@ -104,12 +99,10 @@ describe("schema: defaultConfig", () => {
       enabled: false,
       transport: "stdio",
     });
-    expect(cfg.daemon?.transport).toBe("unix");
     expect(cfg.daemon?.autostart).toBe(true);
-    expect(cfg.permissions?.default_mode).toBe("on-request");
-    expect(cfg.editorMode).toBe("default");
-    expect(cfg.tui).toBeUndefined();
-    expect(cfg.tuiLayout?.mode).toBe("single");
+    expect(cfg.daemon?.autostart).toBe(true);
+    expect(cfg.permissions?.defaultMode).toBeUndefined();
+    expect(cfg.tui?.theme).toBe("dark");
     expect(cfg.agent?.budget).toEqual({});
     expect(cfg.agent?.retention).toEqual({
       completed_days: 30,
@@ -130,16 +123,13 @@ describe("schema: mergeConfigs", () => {
     expect(out.approval_policy).toBe(base.approval_policy);
   });
 
-  test("deep merges nested tool budgets", () => {
+  test("deep merges nested TUI preferences", () => {
     const base = defaultConfig();
     const out = mergeConfigs(base, {
-      toolBudget: { max_calls_per_turn: 4 },
+      tui: { theme: "light" },
     });
-    expect(out.toolBudget?.max_calls_per_turn).toBe(4);
-    // untouched nested key preserved from base
-    expect(out.toolBudget?.max_bytes_per_call).toBe(
-      base.toolBudget?.max_bytes_per_call,
-    );
+    expect(out.tui?.theme).toBe("light");
+    expect(out.tui?.showTurnDuration).toBe(true);
   });
 
   test("deep merges nested mcp.server config", () => {
@@ -162,10 +152,10 @@ describe("schema: mergeConfigs", () => {
 
   test("result is deeply frozen", () => {
     const out = mergeConfigs(defaultConfig(), {
-      toolBudget: { max_calls_per_turn: 1 },
+      tui: { theme: "light" },
     });
     expect(Object.isFrozen(out)).toBe(true);
-    expect(Object.isFrozen(out.toolBudget)).toBe(true);
+    expect(Object.isFrozen(out.tui)).toBe(true);
   });
 });
 
@@ -184,15 +174,13 @@ describe("schema: normalizeRawConfig", () => {
     expect(out._unknown).toBeUndefined();
   });
 
-  test("preserves T13 provider config + model knobs on the typed path", () => {
+  test("preserves T13 provider config + active model knobs on the typed path", () => {
     const out = normalizeRawConfig({
-      review_model: "gpt-5",
       approvals_reviewer: "auto_review",
       model_verbosity: "high",
       service_tier: "flex",
       providers: {
         openrouter: {
-          api_key_env: "OPENROUTER_TOKEN",
           base_url: "https://router.example/v1",
           default_model: "openai/gpt-5-mini",
           context_window_tokens: 400_000,
@@ -204,12 +192,10 @@ describe("schema: normalizeRawConfig", () => {
       },
     });
 
-    expect(out.review_model).toBe("gpt-5");
     expect(out.approvals_reviewer).toBe("auto_review");
     expect(out.model_verbosity).toBe("high");
     expect(out.service_tier).toBe("flex");
     expect(out.providers?.openrouter).toEqual({
-      api_key_env: "OPENROUTER_TOKEN",
       base_url: "https://router.example/v1",
       default_model: "openai/gpt-5-mini",
       context_window_tokens: 400_000,
@@ -235,12 +221,10 @@ describe("schema: normalizeRawConfig", () => {
     const out = normalizeRawConfig({
       providers: {
         grok: {
-          fallback_models: ["grok-4"],
           fallback: {
             targets: [
               { provider: "openai", model: "gpt-5", reason: "burst" },
             ],
-            models: ["grok-3"],
             max_failures: 2,
             statuses: [429, 529],
           },
@@ -249,12 +233,10 @@ describe("schema: normalizeRawConfig", () => {
     });
 
     expect(out.providers?.grok).toEqual({
-      fallback_models: ["grok-4"],
       fallback: {
         targets: [
           { provider: "openai", model: "gpt-5", reason: "burst" },
         ],
-        models: ["grok-3"],
         max_failures: 2,
         statuses: [429, 529],
       },
@@ -264,21 +246,15 @@ describe("schema: normalizeRawConfig", () => {
 
   test("preserves runtime/TUI feature config on the typed path", () => {
     const out = normalizeRawConfig({
-      editorMode: "vim",
       tui: { vimMode: true },
       agent_max_threads: 12,
       agent_max_depth: 2,
-      tuiLayout: { mode: "multi-pane", sidePane: "context", minColumns: 100 },
+      ideConnector: { autoInstallExtension: false },
     });
-    expect(out.editorMode).toBe("vim");
     expect(out.tui).toEqual({ vimMode: true });
     expect(out.agent_max_threads).toBe(12);
     expect(out.agent_max_depth).toBe(2);
-    expect(out.tuiLayout).toEqual({
-      mode: "multi-pane",
-      sidePane: "context",
-      minColumns: 100,
-    });
+    expect(out.ideConnector).toEqual({ autoInstallExtension: false });
     expect(out._unknown).toBeUndefined();
   });
 
@@ -316,9 +292,9 @@ describe("schema: normalizeRawConfig", () => {
 
   test("preserves configVersion on the typed path", () => {
     const out = normalizeRawConfig({
-      configVersion: CURRENT_CONFIG_FILE_VERSION,
+      configVersion: CANONICAL_CONFIG_VERSION,
     });
-    expect(out.configVersion).toBe(CURRENT_CONFIG_FILE_VERSION);
+    expect(out.configVersion).toBe(CANONICAL_CONFIG_VERSION);
     expect(out._unknown).toBeUndefined();
     expect(KNOWN_CONFIG_KEYS.includes("configVersion")).toBe(true);
   });
@@ -408,11 +384,11 @@ describe("schema: normalizeRawConfig", () => {
     expect(KNOWN_CONFIG_KEYS.includes("mcp")).toBe(true);
   });
 
-  test("preserves daemon.transport config on the typed path", () => {
+  test("preserves daemon.autostart config on the typed path", () => {
     const out = normalizeRawConfig({
-      daemon: { transport: "stdio", autostart: false },
+      daemon: { autostart: false },
     });
-    expect(out.daemon).toEqual({ transport: "stdio", autostart: false });
+    expect(out.daemon).toEqual({ autostart: false });
     expect(out._unknown).toBeUndefined();
     expect(KNOWN_CONFIG_KEYS.includes("daemon")).toBe(true);
   });
@@ -472,16 +448,16 @@ describe("schema: normalizeRawConfig", () => {
     const out = normalizeRawConfig({
       tools_config: {
         exec_command: {
-          enabled: false,
           default_permission_mode: "never",
         },
+        disabled_tools: ["exec_command"],
       },
     });
     expect(out.tools_config).toEqual({
       exec_command: {
-        enabled: false,
         default_permission_mode: "never",
       },
+      disabled_tools: ["exec_command"],
     });
     expect(out._unknown).toBeUndefined();
   });
@@ -495,70 +471,10 @@ describe("schema: defaultConfig independence", () => {
     expect(a).not.toBe(b);
     // Nested readonly structures are distinct too.
     expect(a.project_root_markers).not.toBe(b.project_root_markers);
-    expect(a.toolBudget).not.toBe(b.toolBudget);
+    expect(a.tui).not.toBe(b.tui);
     // Values are equal, though.
     expect(a.project_root_markers).toEqual(b.project_root_markers);
-    expect(a.toolBudget).toEqual(b.toolBudget);
-  });
-});
-
-describe("schema: normalizeAgenCKeyAliases", () => {
-  test("tools → tools_config", () => {
-    const out = normalizeAgenCKeyAliases({
-      tools: { web_search: true },
-    });
-    expect(out.tools_config).toEqual({ web_search: true });
-    expect(out.tools).toBeUndefined();
-  });
-
-  test("model_reasoning_effort → reasoning_effort", () => {
-    const out = normalizeAgenCKeyAliases({
-      model_reasoning_effort: "high",
-    });
-    expect(out.reasoning_effort).toBe("high");
-    expect(out.model_reasoning_effort).toBeUndefined();
-  });
-
-  test("model_reasoning_summary → reasoning_summary", () => {
-    const out = normalizeAgenCKeyAliases({
-      model_reasoning_summary: "detailed",
-    });
-    expect(out.reasoning_summary).toBe("detailed");
-    expect(out.model_reasoning_summary).toBeUndefined();
-  });
-
-  test("agents.max_depth → agent_max_depth", () => {
-    const out = normalizeAgenCKeyAliases({
-      agents: { max_depth: 3 },
-    });
-    expect(out.agent_max_depth).toBe(3);
-    expect(out.agents).toBeUndefined();
-  });
-
-  test("agents.max_threads → agent_max_threads", () => {
-    const out = normalizeAgenCKeyAliases({
-      agents: { max_threads: 10000 },
-    });
-    expect(out.agent_max_threads).toBe(10000);
-    expect(out.agents).toBeUndefined();
-  });
-
-  test("preserves unknown agents keys after known aliases are lifted", () => {
-    const out = normalizeAgenCKeyAliases({
-      agents: { max_threads: 30, max_depth: 2, future_mode: "burst" },
-    });
-    expect(out.agent_max_threads).toBe(30);
-    expect(out.agent_max_depth).toBe(2);
-    expect(out.agents).toEqual({ future_mode: "burst" });
-  });
-
-  test("canonical key wins when both alias and canonical present", () => {
-    const out = normalizeAgenCKeyAliases({
-      tools: { web_search: true },
-      tools_config: { web_search: false },
-    });
-    expect(out.tools_config).toEqual({ web_search: false });
-    expect(out.tools).toBeUndefined();
+    expect(a.tui).toEqual(b.tui);
   });
 });
 
@@ -567,7 +483,6 @@ describe("provider resolution (T13)", () => {
     const config = mergeConfigs(defaultConfig(), {
       providers: {
         openrouter: {
-          api_key_env: "CUSTOM_OPENROUTER_KEY",
           base_url: "https://router.example/v1",
           default_model: "openai/gpt-5-mini",
           context_window_tokens: 400_000,
@@ -577,13 +492,12 @@ describe("provider resolution (T13)", () => {
     });
 
     const settings = resolveProviderSettings("openrouter", config, {
-      CUSTOM_OPENROUTER_KEY: "or-custom",
+      OPENROUTER_API_KEY: "or-canonical",
     });
 
     expect(settings).toMatchObject({
       provider: "openrouter",
-      apiKeyEnvVar: "CUSTOM_OPENROUTER_KEY",
-      apiKey: "or-custom",
+      apiKey: "or-canonical",
       baseURL: "https://router.example/v1",
       defaultModel: "openai/gpt-5-mini",
       contextWindowTokens: 400_000,
@@ -629,42 +543,37 @@ describe("provider resolution (T13)", () => {
     });
   });
 
-  test("resolveProviderSettings honors custom Bedrock access-key env", () => {
+  test("resolveProviderSettings uses the canonical Bedrock access-key env", () => {
     const config = mergeConfigs(defaultConfig(), {
       providers: {
         "amazon-bedrock": {
-          api_key_env: "CUSTOM_BEDROCK_ACCESS_KEY_ID",
           default_model: "amazon.nova-lite-v1:0",
         },
       },
     });
 
     const settings = resolveProviderSettings("amazon-bedrock", config, {
-      CUSTOM_BEDROCK_ACCESS_KEY_ID: "custom-bedrock-access-key",
       AWS_ACCESS_KEY_ID: "default-bedrock-access-key",
     });
 
     expect(settings).toMatchObject({
       provider: "amazon-bedrock",
-      apiKeyEnvVar: "CUSTOM_BEDROCK_ACCESS_KEY_ID",
-      apiKey: "custom-bedrock-access-key",
+      apiKey: "default-bedrock-access-key",
       defaultModel: "amazon.nova-lite-v1:0",
     });
   });
 
-  test("resolveProviderSettings normalizes provider fallback targets", () => {
+  test("resolveProviderSettings canonicalizes provider fallback targets", () => {
     const config = mergeConfigs(defaultConfig(), {
       providers: {
         grok: {
-          fallback_models: ["grok-2", "grok-2"],
           fallback: {
             targets: [
               // branding-scan: allow provider normalization fixture
               { provider: " OpenAI ", model: " gpt-5 ", reason: " burst " },
               { provider: "openai", model: "gpt-5" },
-              { provider: " XAI ", model: "grok-3" },
+              { provider: " grok ", model: "grok-3" },
             ],
-            models: ["grok-3"],
             max_failures: 2,
             statuses: [529, 429, 429],
           },
@@ -677,7 +586,6 @@ describe("provider resolution (T13)", () => {
     expect(settings?.fallbackTargets).toEqual([
       { provider: "openai", model: "gpt-5", reason: "burst" },
       { provider: "grok", model: "grok-3" },
-      { provider: "grok", model: "grok-2" },
     ]);
     expect(settings?.fallbackMaxFailures).toBe(2);
     expect(settings?.fallbackStatuses).toEqual([529, 429]);
@@ -735,7 +643,7 @@ describe("provider resolution (T13)", () => {
       "openai",
     );
     expect(
-      resolveProviderSelection({ config, env: { AGENC_PROVIDER: "xai" } }),
+      resolveProviderSelection({ config, env: { AGENC_PROVIDER: "grok" } }),
     ).toBe("grok");
     expect(resolveModelSelection({ config })).toBe("agenc");
     expect(resolveModelSelection({ config, provider: "agenc" })).toBe("agenc");
@@ -770,13 +678,12 @@ describe("provider resolution (T13)", () => {
     });
   });
 
-  test("buildProviderModelCatalog routes built-in Groq Llama and Mixtral models", () => {
+  test("buildProviderModelCatalog omits retired Groq Mixtral models", () => {
     const catalog = buildProviderModelCatalog(defaultConfig());
 
     expect(catalog.groq).toEqual([
       "llama-3.3-70b-versatile",
       "llama-3.1-8b-instant",
-      "mixtral-8x7b-32768",
     ]);
     expect(
       resolveModelDisambiguated("llama-3.1-8b-instant", catalog),
@@ -784,12 +691,9 @@ describe("provider resolution (T13)", () => {
       provider: "groq",
       model: "llama-3.1-8b-instant",
     });
-    expect(
-      resolveModelDisambiguated("mixtral-8x7b-32768", catalog),
-    ).toEqual({
-      provider: "groq",
-      model: "mixtral-8x7b-32768",
-    });
+    expect(() =>
+      resolveModelDisambiguated("mixtral-8x7b-32768", catalog)
+    ).toThrow(/unknown model/u);
   });
 });
 
@@ -800,20 +704,19 @@ describe("provider resolution (T13)", () => {
 describe("schema: permissions block (T11)", () => {
   test("permissions is registered as a known key (no longer deferred)", () => {
     expect(KNOWN_CONFIG_KEYS.includes("permissions")).toBe(true);
-    expect(DEFERRED_SETTINGS_KEYS.includes("permissions")).toBe(false);
   });
 
   test("normalizeRawConfig preserves permissions on the typed path, not _unknown", () => {
     const out = normalizeRawConfig({
       model: "grok-4.3",
       permissions: {
-        allow: ["Read(*)"],
-        deny: ["Bash(rm -rf *)"],
+        allow: ["FileRead(*)"],
+        deny: ["system.bash(rm -rf *)"],
       },
     });
     expect(out.permissions).toEqual({
-      allow: ["Read(*)"],
-      deny: ["Bash(rm -rf *)"],
+      allow: ["FileRead(*)"],
+      deny: ["system.bash(rm -rf *)"],
     });
     expect(out._unknown).toBeUndefined();
   });
@@ -821,37 +724,35 @@ describe("schema: permissions block (T11)", () => {
   test("mergeConfigs deep-merges a permissions overlay onto the base config", () => {
     const base: AgenCConfig = {
       permissions: {
-        allow: ["Read(*)"],
+        allow: ["FileRead(*)"],
         defaultMode: "default",
       },
     };
     const out = mergeConfigs(base, {
       permissions: {
-        allow: ["Read(*)", "Edit(src/**)"],
+        allow: ["FileRead(*)", "Edit(src/**)"],
         defaultMode: "acceptEdits",
       },
     });
     // Arrays replace (right-biased), defaultMode flips to the override.
-    expect(out.permissions?.allow).toEqual(["Read(*)", "Edit(src/**)"]);
+    expect(out.permissions?.allow).toEqual(["FileRead(*)", "Edit(src/**)"]);
     expect(out.permissions?.defaultMode).toBe("acceptEdits");
     expect(Object.isFrozen(out.permissions)).toBe(true);
   });
 
   test("validatePermissionsConfig accepts a full well-formed block", () => {
     const out = validatePermissionsConfig({
-      allow: ["Read(*)"],
-      deny: ["Bash(rm *)"],
+      allow: ["FileRead(*)"],
+      deny: ["system.bash(rm *)"],
       ask: ["Edit(*)"],
       additionalDirectories: ["/tmp/sandbox"],
-      default_mode: "on-request",
       defaultMode: "plan",
     });
     expect(out).toBeDefined();
-    expect(out?.allow).toEqual(["Read(*)"]);
-    expect(out?.deny).toEqual(["Bash(rm *)"]);
+    expect(out?.allow).toEqual(["FileRead(*)"]);
+    expect(out?.deny).toEqual(["system.bash(rm *)"]);
     expect(out?.ask).toEqual(["Edit(*)"]);
     expect(out?.additionalDirectories).toEqual(["/tmp/sandbox"]);
-    expect(out?.default_mode).toBe("on-request");
     expect(out?.defaultMode).toBe("plan");
     expect(Object.isFrozen(out)).toBe(true);
   });
@@ -877,15 +778,9 @@ describe("schema: permissions block (T11)", () => {
     ).toThrow(InvalidPermissionsConfigError);
   });
 
-  test("validatePermissionsConfig rejects an invalid default_mode", () => {
-    expect(() =>
-      validatePermissionsConfig({ default_mode: "nonsense" }),
-    ).toThrow(InvalidPermissionsConfigError);
-  });
-
   test("validatePermissionsConfig rejects a non-array allow field", () => {
     expect(() =>
-      validatePermissionsConfig({ allow: "Read(*)" as unknown }),
+      validatePermissionsConfig({ allow: "FileRead(*)" as unknown }),
     ).toThrow(InvalidPermissionsConfigError);
   });
 
@@ -903,11 +798,11 @@ describe("schema: permissions block (T11)", () => {
       "bypassPermissions",
       "dontAsk",
       "auto",
-      "bubble",
     ]) {
       expect(isValidPermissionMode(m)).toBe(true);
     }
     expect(isValidPermissionMode("unattended")).toBe(false);
+    expect(isValidPermissionMode("bubble")).toBe(false);
     expect(isValidPermissionMode("nonsense")).toBe(false);
     expect(isValidPermissionMode(null)).toBe(false);
     expect(isValidPermissionMode(42)).toBe(false);
@@ -927,28 +822,37 @@ describe("schema: permissions block (T11)", () => {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("schema: statusLine / outputStyle block (T12)", () => {
-  test("validateStatusLineConfig accepts a well-formed items array", () => {
-    const out = validateStatusLineConfig({ items: ["model", "mode"] });
-    expect(out).toBeDefined();
-    expect(out?.items).toEqual(["model", "mode"]);
+  test("validateStatusLineConfig accepts one explicit command", () => {
+    const out = validateStatusLineConfig({
+      type: "command",
+      command: "agenc-status",
+      padding: 1,
+    });
+    expect(out).toEqual({
+      type: "command",
+      command: "agenc-status",
+      padding: 1,
+    });
     expect(Object.isFrozen(out)).toBe(true);
   });
 
-  test("validateStatusLineConfig rejects non-array items", () => {
+  test("validateStatusLineConfig rejects removed item arrays", () => {
     expect(() =>
-      validateStatusLineConfig({ items: 123 as unknown as string[] }),
+      validateStatusLineConfig({ items: ["model", "mode"] }),
     ).toThrow(InvalidStatusLineConfigError);
   });
 
-  test("validateOutputStyleConfig accepts a theme string", () => {
-    const out = validateOutputStyleConfig({ theme: "dark" });
-    expect(out).toBeDefined();
-    expect(out?.theme).toBe("dark");
+  test("validates outputStyle as a response-style name", () => {
+    expect(validateAgenCConfigBlocks({ outputStyle: "concise" }).outputStyle).toBe(
+      "concise",
+    );
+    expect(() =>
+      validateAgenCConfigBlocks({ outputStyle: { theme: "dark" } as never }),
+    ).toThrow("Invalid outputStyle: expected string");
   });
 
   test("statusLine is registered as a known key, not deferred", () => {
     expect(KNOWN_CONFIG_KEYS.includes("statusLine")).toBe(true);
-    expect(DEFERRED_SETTINGS_KEYS.includes("statusLine")).toBe(false);
   });
 });
 
@@ -980,7 +884,6 @@ describe("schema: closed config block validators (CF-13)", () => {
   test("validateProviderConfig accepts provider fallbacks and capabilities", () => {
     const out = validateProviderConfig({
       grok: {
-        api_key_env: "XAI_API_KEY",
         default_model: "grok-4.3",
         context_window_tokens: 256_000,
         max_output_tokens: 32_000,
@@ -988,12 +891,10 @@ describe("schema: closed config block validators (CF-13)", () => {
           supportsToolUse: true,
           acceptsReasoningEffort: true,
         },
-        fallback_models: ["grok-3"],
         fallback: {
           targets: [
             { provider: "openai", model: "gpt-5", reason: "burst" },
           ],
-          models: ["grok-2"],
           max_failures: 2,
           statuses: [429, 529],
         },
@@ -1063,7 +964,7 @@ describe("schema: closed config block validators (CF-13)", () => {
     );
   });
 
-  test("validatePluginsConfig accepts current and staged plugin block shapes", () => {
+  test("validatePluginsConfig accepts the canonical plugin block", () => {
     const out = validatePluginsConfig({
       dirs: ["/workspace/plugins"],
       enabled: true,
@@ -1078,47 +979,41 @@ describe("schema: closed config block validators (CF-13)", () => {
               enabled_tools: ["read"],
               tools: {
                 read: {
-                  enabled: true,
                   default_permission_mode: "on-request",
                 },
               },
             },
           },
         },
-        remote: false,
+        remote: { enabled: false },
       },
     });
     expect(out?.dirs).toEqual(["/workspace/plugins"]);
     expect(out?.enabled).toBe(true);
     expect(out?.allowlist).toEqual(["local"]);
-    expect(out?.plugins?.remote).toBe(false);
+    expect(out?.plugins?.remote).toEqual({ enabled: false });
     const local = out?.plugins?.local;
-    if (typeof local === "boolean" || local === undefined) {
+    if (local === undefined) {
       throw new Error("expected plugin entry config");
     }
-    expect(local.mcp_servers?.tools?.tools?.read?.enabled).toBe(true);
+    expect(local.mcp_servers?.tools?.tools?.read?.default_permission_mode).toBe(
+      "on-request",
+    );
 
-    const legacy = validatePluginsConfig({
-      enabled: {
-        legacy: false,
-      },
-    });
-    expect(legacy?.enabled).toBeUndefined();
-    expect(legacy?.plugins?.legacy).toBe(false);
   });
 
   test("validatePluginsConfig rejects plugin entry typos", () => {
     let caught: unknown;
     try {
       validatePluginsConfig({
-        enabled: { local: { enabled: true, unexpected: "nope" } },
+        plugins: { local: { enabled: true, unexpected: "nope" } },
       });
     } catch (error) {
       caught = error;
     }
     expect(caught).toBeInstanceOf(InvalidPluginsConfigError);
     expect((caught as InvalidPluginsConfigError).field).toBe(
-      "enabled.local.unexpected",
+      "plugins.local.unexpected",
     );
   });
 
@@ -1192,14 +1087,14 @@ describe("schema: closed config block validators (CF-13)", () => {
         auth: { backend: "local" },
         agent: { retention: { completed_days: 7 } },
         providers: { grok: { default_model: "grok-4.5" } },
-        plugins: { enabled: { local: true } },
+        plugins: { plugins: { local: { enabled: true } } },
         mcp: { server: { enabled: true, transport: "sse", port: 4444 } },
       }),
     );
     expect(out.auth?.backend).toBe("local");
     expect(out.agent?.retention?.completed_days).toBe(7);
     expect(out.providers?.grok?.default_model).toBe("grok-4.5");
-    expect(out.plugins?.plugins?.local).toBe(true);
+    expect(out.plugins?.plugins?.local).toEqual({ enabled: true });
     expect(out.mcp?.server).toEqual({
       enabled: true,
       transport: "sse",
@@ -1236,12 +1131,27 @@ describe("schema: closed config block validators (CF-13)", () => {
       ),
     ).toThrow("Invalid configVersion");
   });
+
+  test.each(["defaultPermissionMode", "approval_mode"])(
+    "validateAgenCConfigBlocks rejects removed nested alias %s",
+    (alias) => {
+      expect(() =>
+        validateAgenCConfigBlocks(
+          normalizeRawConfig({
+            tools_config: {
+              Edit: { [alias]: alias === "approval_mode" ? "approve" : "never" },
+            },
+          }),
+        )
+      ).toThrow(/removed alias; use default_permission_mode/);
+    },
+  );
 });
 
 describe("schema: hooks block", () => {
-  test("validateHooksConfig accepts command hooks and normalizes event aliases", () => {
+  test("validateHooksConfig accepts canonical command hooks", () => {
     const out = validateHooksConfig({
-      preToolUse: [
+      PreToolUse: [
         {
           matcher: "Read|Grep",
           hooks: [
@@ -1259,6 +1169,12 @@ describe("schema: hooks block", () => {
     expect(out?.PreToolUse?.[0]?.matcher).toBe("Read|Grep");
     expect(out?.PreToolUse?.[0]?.hooks[0]?.command).toBe("node hook.js");
     expect(Object.isFrozen(out)).toBe(true);
+  });
+
+  test("validateHooksConfig rejects removed event-name aliases", () => {
+    expect(() => validateHooksConfig({ preToolUse: [] })).toThrow(
+      /unsupported event/,
+    );
   });
 
   test("validateHooksConfig rejects unsupported hook types", () => {
@@ -1288,7 +1204,7 @@ describe("schema: hooks block", () => {
 
 describe("schema: resolveModelDisambiguated (I-60)", () => {
   const catalog: Record<string, readonly string[]> = {
-    xai: ["grok-4.3", "grok-3"],
+    "vendor-a": ["grok-4.3", "grok-3"],
     openrouter: ["grok-4.3", "gpt-4o"],
     openai: ["gpt-4o", "o1"],
     "amazon-bedrock": ["amazon.nova-pro-v1:0"],
@@ -1296,7 +1212,7 @@ describe("schema: resolveModelDisambiguated (I-60)", () => {
 
   test("unique slug resolves to single provider", () => {
     const out = resolveModelDisambiguated("grok-3", catalog);
-    expect(out).toEqual({ provider: "xai", model: "grok-3" });
+    expect(out).toEqual({ provider: "vendor-a", model: "grok-3" });
   });
 
   test("ambiguous slug throws AmbiguousModelError with candidates", () => {
@@ -1311,9 +1227,9 @@ describe("schema: resolveModelDisambiguated (I-60)", () => {
     expect(err.candidates.length).toBe(2);
     expect(err.candidates.map((c) => c.provider).sort()).toEqual([
       "openrouter",
-      "xai",
+      "vendor-a",
     ]);
-    expect(err.message).toContain("xai:grok-4.3");
+    expect(err.message).toContain("vendor-a:grok-4.3");
     expect(err.message).toContain("openrouter:grok-4.3");
   });
 
@@ -1324,8 +1240,8 @@ describe("schema: resolveModelDisambiguated (I-60)", () => {
   });
 
   test("provider:model form short-circuits", () => {
-    const out = resolveModelDisambiguated("xai:grok-4.3", catalog);
-    expect(out).toEqual({ provider: "xai", model: "grok-4.3" });
+    const out = resolveModelDisambiguated("vendor-a:grok-4.3", catalog);
+    expect(out).toEqual({ provider: "vendor-a", model: "grok-4.3" });
   });
 
   test("provider model IDs may contain colons", () => {
@@ -1355,7 +1271,7 @@ describe("schema: resolveModelDisambiguated (I-60)", () => {
       "amazon-bedrock",
       "openai",
       "openrouter",
-      "xai",
+      "vendor-a",
     ]);
     // providers array is frozen — mutating attempts are rejected in
     // strict mode (TypeScript already forbids push on readonly; guard
@@ -1385,7 +1301,7 @@ describe("schema: resolveModelDisambiguated (I-60)", () => {
 // loader / parseToml
 // ─────────────────────────────────────────────────────────────────────
 
-describe("loader: parseToml", () => {
+describe("TOML migration parser: parseToml", () => {
   test("parses basic tables + strings + numbers + bools", () => {
     const out = parseToml(
       `
@@ -1464,13 +1380,13 @@ approval_policy = "never"
     expect(() => parseToml(`model =`)).toThrow(TomlParseError);
   });
 
-  test("duplicate key assignment warns + keeps last-write-wins", () => {
+  test("duplicate key assignment reports values for strict rejection", () => {
     const warnings: Array<{
       key: string;
       previousValue: unknown;
       newValue: unknown;
     }> = [];
-    const out = parseToml(
+    parseToml(
       `model = "first"\nmodel = "second"\n`,
       {
         onDuplicateKey: (w) => {
@@ -1482,7 +1398,6 @@ approval_policy = "never"
         },
       },
     );
-    expect(out.model).toBe("second");
     expect(warnings).toEqual([
       { key: "model", previousValue: "first", newValue: "second" },
     ]);
@@ -1490,7 +1405,7 @@ approval_policy = "never"
 
   test("duplicate key fires with fully-qualified dotted path under [table]", () => {
     const warnings: string[] = [];
-    const out = parseToml(
+    parseToml(
       `
 [mcp_servers.github]
 command = "gh-a"
@@ -1498,14 +1413,12 @@ command = "gh-b"
       `,
       { onDuplicateKey: (w) => warnings.push(w.key) },
     );
-    const servers = out.mcp_servers as Record<string, Record<string, unknown>>;
-    expect(servers.github?.command).toBe("gh-b");
     expect(warnings).toEqual(["mcp_servers.github.command"]);
   });
 
-  test("table redefinition [foo] twice warns without throwing", () => {
+  test("table redefinition reports the table for strict rejection", () => {
     const warnings: string[] = [];
-    const out = parseToml(
+    parseToml(
       `
 [foo]
 a = 1
@@ -1515,512 +1428,7 @@ b = 2
       `,
       { onDuplicateKey: (w) => warnings.push(w.key) },
     );
-    const foo = out.foo as Record<string, unknown>;
-    expect(foo.a).toBe(1);
-    expect(foo.b).toBe(2);
     expect(warnings).toEqual(["foo"]);
-  });
-
-  test("default onDuplicateKey handler is a no-op (no throw)", () => {
-    expect(() =>
-      parseToml(`model = "a"\nmodel = "b"\n`),
-    ).not.toThrow();
-  });
-});
-
-describe("loader: loadConfig", () => {
-  let dir: string;
-  beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "agenc-cfg-"));
-  });
-  afterEach(() => {
-    rmSync(dir, { recursive: true, force: true });
-  });
-
-  test("missing file returns defaults with exists:false", async () => {
-    const out = await loadConfig({ home: dir });
-    expect(out.exists).toBe(false);
-    expect(out.config.model).toBe("grok-4.6");
-  });
-
-  test("corrupt TOML warns + falls back to defaults with parseError set", async () => {
-    writeFileSync(join(dir, "config.toml"), "this is not = = valid");
-    const warnings: string[] = [];
-    const out = await loadConfig({ home: dir, onWarn: (m) => warnings.push(m) });
-    expect(out.exists).toBe(true);
-    expect(out.parseError).toBeTruthy();
-    expect(warnings.length).toBeGreaterThan(0);
-    expect(out.config.model).toBe("grok-4.6"); // defaulted
-  });
-
-  test("valid TOML merges onto defaults", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-model = "grok-3"
-max_turns = 7
-experimental_realtime_start_instructions = "custom realtime handoff"
-experimental_realtime_ws_backend_prompt = "custom realtime backend"
-
-[profiles.fast]
-model = "grok-4.5"
-      `,
-    );
-    const out = await loadConfig({ home: dir });
-    expect(out.config.model).toBe("grok-3");
-    expect(out.config.max_turns).toBe(7);
-    expect(out.config.experimental_realtime_start_instructions).toBe(
-      "custom realtime handoff",
-    );
-    expect(out.config.experimental_realtime_ws_backend_prompt).toBe(
-      "custom realtime backend",
-    );
-    expect(KNOWN_CONFIG_KEYS.includes("experimental_realtime_start_instructions"))
-      .toBe(true);
-    expect(KNOWN_CONFIG_KEYS.includes("experimental_realtime_ws_backend_prompt"))
-      .toBe(true);
-    expect(out.config.profiles?.fast?.model).toBe("grok-4.5");
-  });
-
-  test("migrates config.json before loading config.toml", async () => {
-    writeFileSync(
-      join(dir, "config.json"),
-      JSON.stringify({
-        provider: "xai",
-        max_turns: 9,
-      }),
-      "utf8",
-    );
-
-    const out = await loadConfig({ home: dir });
-
-    expect(out.exists).toBe(true);
-    expect(out.path).toBe(join(dir, "config.toml"));
-    expect(out.config.model_provider).toBe("grok");
-    expect(out.config.max_turns).toBe(9);
-    expect(out.config.configVersion).toBe(CURRENT_CONFIG_FILE_VERSION);
-    expect(existsSync(join(dir, "config.json.bak-cf12"))).toBe(true);
-    expect(readFileSync(join(dir, "config.toml"), "utf8")).toContain(
-      `"configVersion" = ${CURRENT_CONFIG_FILE_VERSION}`,
-    );
-  });
-
-  test("versions older TOML before the normal loader parse", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-provider = "xai"
-max_turns = 8
-      `,
-    );
-
-    const out = await loadConfig({ home: dir });
-
-    expect(out.config.model_provider).toBe("grok");
-    expect(out.config.max_turns).toBe(8);
-    expect(out.config.configVersion).toBe(CURRENT_CONFIG_FILE_VERSION);
-    expect(existsSync(join(dir, "config.toml.bak-cf12"))).toBe(true);
-  });
-
-  test("applies read-only config migrations before normalization", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-provider = "xai"
-replBridgeEnabled = true
-
-[profiles.fast]
-provider = "xai"
-
-[providers.xai]
-default_model = "grok-4.5"
-      `,
-    );
-
-    const out = await loadConfig({ home: dir });
-    expect(out.config.model_provider).toBe("grok");
-    expect(out.config.remoteControlAtStartup).toBe(true);
-    expect(out.config.profiles?.fast?.model_provider).toBe("grok");
-    expect(out.config.providers).toEqual({
-      grok: { default_model: "grok-4.5" },
-    });
-    expect(out.config._unknown?.provider).toBeUndefined();
-    expect(out.config._unknown?.replBridgeEnabled).toBeUndefined();
-  });
-
-  test("auth TOML overrides the local managed-keys defaults", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-[auth]
-backend = "remote"
-
-[auth.managedKeys]
-enabled = true
-      `,
-    );
-    const out = await loadConfig({ home: dir });
-    expect(out.exists).toBe(true);
-    expect(out.config.auth?.backend).toBe("remote");
-    expect(out.config.auth?.managedKeys?.enabled).toBe(true);
-    expect(out.config._unknown?.auth).toBeUndefined();
-  });
-
-  test("plugins TOML overrides the disabled plugin defaults", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-[plugins]
-enabled = true
-allowlist = ["alpha", "beta@team"]
-
-[plugins.plugins."alpha@team"]
-enabled = true
-path = "vendor/alpha"
-
-[plugins.plugins."alpha@team".mcp_servers.api]
-enabled = true
-enabled_tools = ["read"]
-disabled_tools = ["write"]
-      `,
-    );
-    const out = await loadConfig({ home: dir });
-    expect(out.exists).toBe(true);
-    expect(out.config.plugins).toEqual({
-      enabled: true,
-      allowlist: ["alpha", "beta@team"],
-      plugins: {
-        "alpha@team": {
-          enabled: true,
-          path: "vendor/alpha",
-          mcp_servers: {
-            api: {
-              enabled: true,
-              enabled_tools: ["read"],
-              disabled_tools: ["write"],
-            },
-          },
-        },
-      },
-    });
-    expect(out.config._unknown?.plugins).toBeUndefined();
-  });
-
-  test("sandbox.mode TOML overrides the workspace-write default", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-[sandbox]
-mode = "read-only"
-      `,
-    );
-    const out = await loadConfig({ home: dir });
-    expect(out.exists).toBe(true);
-    expect(out.config.sandbox?.mode).toBe("read-only");
-    expect(out.config._unknown?.sandbox).toBeUndefined();
-  });
-
-  test("daemon.transport TOML overrides the unix default", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-[daemon]
-transport = "stdio"
-      `,
-    );
-    const out = await loadConfig({ home: dir });
-    expect(out.exists).toBe(true);
-    expect(out.config.daemon?.transport).toBe("stdio");
-    expect(out.config._unknown?.daemon).toBeUndefined();
-  });
-
-  test("daemon.autostart TOML overrides the true default", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-[daemon]
-autostart = false
-      `,
-    );
-    const out = await loadConfig({ home: dir });
-    expect(out.exists).toBe(true);
-    expect(out.config.daemon?.autostart).toBe(false);
-    expect(out.config.daemon?.transport).toBe("unix");
-    expect(out.config._unknown?.daemon).toBeUndefined();
-  });
-
-  test("mcp.server TOML overrides the disabled stdio defaults", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-[mcp.server]
-enabled = true
-transport = "sse"
-host = "localhost"
-port = 4444
-workspace = ${JSON.stringify(dir)}
-      `,
-    );
-    const out = await loadConfig({ home: dir });
-    expect(out.exists).toBe(true);
-    expect(out.config.mcp?.server).toEqual({
-      enabled: true,
-      transport: "sse",
-      host: "localhost",
-      port: 4444,
-      workspace: dir,
-    });
-    expect(out.config._unknown?.mcp).toBeUndefined();
-  });
-
-  test("agent.budget TOML overrides the default caps", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-[agent.budget]
-token_cap = 10000
-dollar_cap = 5
-wall_clock_seconds = 3600
-      `,
-    );
-    const out = await loadConfig({ home: dir });
-    expect(out.exists).toBe(true);
-    expect(out.config.agent?.budget).toEqual({
-      token_cap: 10_000,
-      dollar_cap: 5,
-      wall_clock_seconds: 3_600,
-    });
-    expect(out.config._unknown?.agent).toBeUndefined();
-  });
-
-  test("agent.retention TOML overrides the default pruning windows", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-[agent.retention]
-completed_days = 3
-failed_days = 14
-snapshot_days = 2
-snapshot_max_count = 100
-snapshot_max_bytes = 1048576
-      `,
-    );
-    const out = await loadConfig({ home: dir });
-    expect(out.exists).toBe(true);
-    expect(out.config.agent?.retention).toEqual({
-      completed_days: 3,
-      failed_days: 14,
-      snapshot_days: 2,
-      snapshot_max_count: 100,
-      snapshot_max_bytes: 1_048_576,
-    });
-    expect(out.config._unknown?.agent).toBeUndefined();
-  });
-
-  test("invalid closed config block warns and falls back to defaults", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-[auth]
-backend = "remote"
-extra = true
-      `,
-    );
-    const warnings: string[] = [];
-    const out = await loadConfig({
-      home: dir,
-      onWarn: (message) => warnings.push(message),
-    });
-    expect(out.exists).toBe(true);
-    expect(out.parseError).toContain("Invalid auth.extra");
-    expect(out.config.auth?.backend).toBe("remote");
-    expect(
-      warnings.some((warning) => warning.includes("Invalid auth.extra")),
-    ).toBe(true);
-  });
-
-  test("loader accepts scalar plugins.enabled as the global plugin gate", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-[plugins]
-enabled = true
-      `,
-    );
-    const warnings: string[] = [];
-    const out = await loadConfig({
-      home: dir,
-      onWarn: (message) => warnings.push(message),
-    });
-    expect(out.parseError).toBeUndefined();
-    expect(warnings.join("\n")).not.toContain("Invalid plugins.enabled");
-    expect(out.config.plugins?.enabled).toBe(true);
-  });
-
-  test("loader validates provider, plugins, agent, and mcp.server blocks", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-[providers.grok]
-fallback = { statuses = [99] }
-
-[plugins]
-allowlist = ["local"]
-
-[plugins.enabled.local]
-enabled = true
-
-[agent.retention]
-snapshot_max_bytes = 0
-
-[mcp.server]
-transport = "tcp"
-      `,
-    );
-    const warnings: string[] = [];
-    const out = await loadConfig({
-      home: dir,
-      onWarn: (message) => warnings.push(message),
-    });
-    expect(out.parseError).toMatch(
-      /Invalid providers\.grok\.fallback\.statuses/,
-    );
-    expect(out.config).toEqual(defaultConfig());
-    expect(warnings.join("\n")).toContain("invalid config");
-  });
-
-  test("permissions.default_mode TOML overrides the on-request default", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-[permissions]
-default_mode = "never"
-      `,
-    );
-    const out = await loadConfig({ home: dir });
-    expect(out.exists).toBe(true);
-    expect(out.config.permissions?.default_mode).toBe("never");
-    expect(out.config._unknown?.permissions).toBeUndefined();
-  });
-
-  test("unknown keys preserved in _unknown forward-compat table", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-mystery_key = 42
-      `,
-    );
-    const out = await loadConfig({ home: dir });
-    expect(out.config._unknown?.mystery_key).toBe(42);
-  });
-
-  test("mcp_servers loaded from TOML [mcp_servers.<name>] tables", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-[mcp_servers.github]
-command = "gh-mcp"
-args = ["--stdio"]
-transport = "stdio"
-enabled = true
-
-[mcp_servers.docs]
-transport = "http"
-endpoint = "https://docs.example.com/mcp"
-required = false
-      `,
-    );
-    const out = await loadConfig({ home: dir });
-    const servers = out.config.mcp_servers;
-    expect(servers).toBeDefined();
-    expect(servers?.github?.command).toBe("gh-mcp");
-    expect(servers?.github?.args).toEqual(["--stdio"]);
-    expect(servers?.github?.transport).toBe("stdio");
-    expect(servers?.github?.enabled).toBe(true);
-    expect(servers?.docs?.endpoint).toBe("https://docs.example.com/mcp");
-    expect(servers?.docs?.transport).toBe("http");
-    expect(servers?.docs?.required).toBe(false);
-  });
-
-  test("valid mcp.server is validated on the typed path", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-[mcp.server]
-enabled = true
-transport = "sse"
-host = "127.0.0.1"
-port = 4444
-      `,
-    );
-    const out = await loadConfig({ home: dir });
-    expect(out.parseError).toBeUndefined();
-    expect(out.config.mcp?.server).toEqual({
-      enabled: true,
-      transport: "sse",
-      host: "127.0.0.1",
-      port: 4444,
-    });
-    expect(out.config._unknown?.mcp).toBeUndefined();
-  });
-
-  test("AgenC key aliases: tools → tools_config via loader", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `
-[tools]
-web_search = true
-      `,
-    );
-    const out = await loadConfig({ home: dir });
-    expect(out.config.tools_config?.web_search).toBe(true);
-    // The AgenC-style `tools` key should not leak into _unknown.
-    expect(out.config._unknown?.tools).toBeUndefined();
-  });
-
-  test("AgenC key aliases: model_reasoning_effort → reasoning_effort via loader", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `model_reasoning_effort = "high"\n`,
-    );
-    const out = await loadConfig({ home: dir });
-    expect(out.config.reasoning_effort).toBe("high");
-    expect(out.config._unknown?.model_reasoning_effort).toBeUndefined();
-  });
-
-  test("duplicate key warns via onWarn, keeps last-write-wins", async () => {
-    writeFileSync(
-      join(dir, "config.toml"),
-      `model = "grok-3"\nmodel = "grok-4.5"\n`,
-    );
-    const warnings: string[] = [];
-    const out = await loadConfig({
-      home: dir,
-      onWarn: (m) => warnings.push(m),
-    });
-    expect(out.exists).toBe(true);
-    expect(out.parseError).toBeUndefined();
-    expect(out.config.model).toBe("grok-4.5");
-    expect(
-      warnings.some(
-        (w) => w.includes("duplicate key") && w.includes(`"model"`),
-      ),
-    ).toBe(true);
-  });
-
-  test("UTF-8 BOM-prefixed config.toml parses cleanly (I-81)", async () => {
-    // Windows editors often save config.toml with a UTF-8 BOM. The
-    // loader must route through readTextFile so the BOM is stripped
-    // before parseToml sees the bytes.
-    writeFileSync(
-      join(dir, "config.toml"),
-      `\uFEFFmodel = "grok-3"\nmax_turns = 12\n`,
-      "utf8",
-    );
-    const out = await loadConfig({ home: dir });
-    expect(out.parseError).toBeUndefined();
-    expect(out.config.model).toBe("grok-3");
-    expect(out.config.max_turns).toBe(12);
   });
 });
 
@@ -2037,7 +1445,7 @@ describe("profiles: resolveProfile", () => {
           approval_policy: "never",
           reasoning_effort: "low",
           personality: "friendly",
-          web_search: true,
+          tools_config: { disabled_tools: ["WebSearch"] },
         },
         strict: {
           approval_policy: "untrusted",
@@ -2059,7 +1467,7 @@ describe("profiles: resolveProfile", () => {
     expect(out.approval_policy).toBe("never");
     expect(out.reasoning_effort).toBe("low");
     expect(out.personality).toBe("friendly");
-    expect(out.tools_config?.web_search).toBe(true);
+    expect(out.tools_config?.disabled_tools).toEqual(["WebSearch"]);
   });
 
   test("profile with sandbox_mode + approval_policy only", () => {
@@ -2097,15 +1505,11 @@ describe("profiles: resolveProfile", () => {
     expect(out.model_provider).toBe("openrouter");
   });
 
-  test("non-whitelisted profile keys are silently dropped", () => {
-    // compact_prompt is a valid AgenCConfig field but NOT overridable via
-    // profile — it must be dropped rather than propagated.
+  test("resolveProfile does not apply fields outside the profile contract", () => {
     const cfg = mergeConfigs(defaultConfig(), {
-      compact_prompt: "base-compact",
       profiles: {
         weird: {
-          // cast through unknown to bypass the ProfileOverride compile check
-          ...(({ compact_prompt: "profile-compact" }) as unknown as Record<
+          ...(({ retired_field: "ignored" }) as unknown as Record<
             string,
             unknown
           >),
@@ -2115,8 +1519,7 @@ describe("profiles: resolveProfile", () => {
     });
     const out = resolveProfile(cfg, "weird");
     expect(out.model).toBe("grok-3");
-    // compact_prompt on the result should come from the base, not the profile.
-    expect(out.compact_prompt).toBe("base-compact");
+    expect(out).not.toHaveProperty("retired_field");
   });
 });
 
@@ -2135,28 +1538,31 @@ describe("env: resolvers", () => {
     expect(resolveAgencHome({ HOME: "/home/user" })).toBe("/home/user/.agenc");
   });
 
-  test("resolveAgencHome throws when both unset", () => {
-    expect(() => resolveAgencHome({})).toThrow(/AGENC_HOME/);
-  });
-
-  test("resolveApiKey prefers XAI_API_KEY over aliases", () => {
+  test("resolveApiKey prefers XAI_API_KEY over the documented GROK alias", () => {
     expect(
       resolveApiKey({
         XAI_API_KEY: "xai",
         GROK_API_KEY: "grok",
-        AGENC_XAI_API_KEY: "agenc",
       }),
     ).toBe("xai");
   });
 
-  test("resolveApiKey falls back to GROK_API_KEY then AGENC_XAI_API_KEY", () => {
+  test("resolveApiKey falls back to GROK_API_KEY only", () => {
     expect(resolveApiKey({ GROK_API_KEY: "g" })).toBe("g");
-    expect(resolveApiKey({ AGENC_XAI_API_KEY: "a" })).toBe("a");
+    expect(resolveApiKey({ AGENC_XAI_API_KEY: "retired" })).toBeUndefined();
     expect(resolveApiKey({})).toBeUndefined();
   });
 
-  test("resolveProvider / resolveProfileName / resolveModel / resolveWorkspace / resolveSimpleMode", () => {
-    expect(resolveProvider({ AGENC_PROVIDER: "xai" })).toBe("grok");
+  test("resolveProvider / resolveProfileName / resolveModel / resolveWorkspace", () => {
+    expect(() => resolveProvider({ AGENC_PROVIDER: "xai" })).toThrow(
+      'use "grok" instead',
+    );
+    expect(() => resolveProvider({ AGENC_PROVIDER: "custom" })).toThrow(
+      'use "openai-compatible" instead',
+    );
+    expect(() =>
+      resolveProvider({ AGENC_PROVIDER: "openai_compatible" })
+    ).toThrow('use "openai-compatible" instead');
     // branding-scan: allow provider normalization fixture
     expect(resolveProvider({ AGENC_PROVIDER: "  OpenAI  " })).toBe("openai");
     expect(resolveProvider({})).toBeUndefined();
@@ -2168,10 +1574,6 @@ describe("env: resolvers", () => {
     expect(resolveModel("grok-4.3", {})).toBe("grok-4.3");
     expect(resolveWorkspace({ AGENC_WORKSPACE: "/work" })).toBe("/work");
     expect(resolveWorkspace({})).toBeUndefined();
-    expect(resolveSimpleMode({ AGENC_SIMPLE: "1" })).toBe(true);
-    expect(resolveSimpleMode({ AGENC_SIMPLE: "true" })).toBe(true);
-    expect(resolveSimpleMode({ AGENC_SIMPLE: "no" })).toBe(false);
-    expect(resolveSimpleMode({})).toBe(false);
   });
 
   test("applyEnvOverrides — AGENC_MODEL wins over TOML model", () => {
@@ -2185,6 +1587,26 @@ describe("env: resolvers", () => {
     const out = applyEnvOverrides(base, { AGENC_PROVIDER: "openai" });
     expect(out.model_provider).toBe("openai");
   });
+
+  test("applyEnvOverrides captures only canonical AGENC_EFFORT_LEVEL values", () => {
+    const base = mergeConfigs(defaultConfig(), { reasoning_effort: "low" });
+    expect(
+      applyEnvOverrides(base, { AGENC_EFFORT_LEVEL: "xhigh" }).reasoning_effort,
+    ).toBe("xhigh");
+    expect(
+      applyEnvOverrides(base, { AGENC_EFFORT_LEVEL: "none" }).reasoning_effort,
+    ).toBe("none");
+  });
+
+  test.each(["minimal", "max", "auto", "unset", "warp", ""])(
+    "applyEnvOverrides rejects non-canonical AGENC_EFFORT_LEVEL=%j",
+    (value) => {
+      expect(() => applyEnvOverrides(
+        mergeConfigs(defaultConfig(), { reasoning_effort: "low" }),
+        { AGENC_EFFORT_LEVEL: value },
+      )).toThrow(/invalid AGENC_EFFORT_LEVEL.*low, medium, high, xhigh, or none/u);
+    },
+  );
 
   test("applyEnvOverrides — AGENC_AUTH_MANAGED_KEYS_ENABLED wins over TOML auth flag", () => {
     const base = mergeConfigs(defaultConfig(), {
@@ -2231,15 +1653,13 @@ describe("env: resolvers", () => {
     expect(out.model).toBe(base.model);
   });
 
-  test("applyEnvOverrides propagates AGENC_WORKSPACE, AGENC_SIMPLE, and AGENC_AUTONOMOUS", () => {
+  test("applyEnvOverrides keeps AGENC_WORKSPACE out of config and propagates AGENC_AUTONOMOUS", () => {
     const base = defaultConfig();
     const out = applyEnvOverrides(base, {
       AGENC_WORKSPACE: "/work/project",
-      AGENC_SIMPLE: "true",
       AGENC_AUTONOMOUS: "true",
     });
-    expect(out.workspace).toBe("/work/project");
-    expect(out.simpleMode).toBe(true);
+    expect(out).not.toHaveProperty("workspace");
     expect(out.autonomous_mode).toBe(true);
   });
 
@@ -2259,6 +1679,80 @@ describe("env: resolvers", () => {
     });
     expect(out.max_output_tokens).toBe(60_000);
     expect(out.capped_default_max_output_tokens).toBe(true);
+  });
+
+  test("applyEnvOverrides captures loop, coordinator, and watchdog policy once", () => {
+    const out = applyEnvOverrides(defaultConfig(), {
+      AGENC_MAX_TURNS: "42",
+      AGENC_COORDINATOR_MODE: "off",
+      AGENC_STREAM_IDLE_TIMEOUT_MS: "15_000",
+    });
+    expect(out.max_turns).toBe(42);
+    expect(out.coordinator_mode).toBe(false);
+    expect(out.stream_watchdog_timeout_ms).toBe(15_000);
+
+    const disabled = applyEnvOverrides(out, {
+      AGENC_COORDINATOR_MODE: "yes",
+      AGENC_STREAM_IDLE_TIMEOUT_MS: "0",
+    });
+    expect(disabled.coordinator_mode).toBe(true);
+    expect(disabled.stream_watchdog_timeout_ms).toBe(0);
+  });
+
+  test("applyEnvOverrides diagnoses invalid loop, coordinator, and watchdog values", () => {
+    const warnings: string[] = [];
+    const out = applyEnvOverrides(
+      defaultConfig(),
+      {
+        AGENC_MAX_TURNS: "0",
+        AGENC_COORDINATOR_MODE: "sometimes",
+        AGENC_STREAM_IDLE_TIMEOUT_MS: "-1",
+      },
+      (message) => warnings.push(message),
+    );
+    expect(out.max_turns).toBeUndefined();
+    expect(out.coordinator_mode).toBeUndefined();
+    expect(out.stream_watchdog_timeout_ms).toBeUndefined();
+    expect(warnings).toEqual([
+      '[agenc:config] invalid AGENC_MAX_TURNS="0"; expected a positive integer',
+      '[agenc:config] invalid AGENC_COORDINATOR_MODE="sometimes"; expected boolean-like value',
+      '[agenc:config] invalid AGENC_STREAM_IDLE_TIMEOUT_MS="-1"; expected a non-negative integer',
+    ]);
+  });
+
+  test.each([
+    "DISABLE_AUTO_COMPACT",
+    "DISABLE_COMPACT",
+    "DISABLE_TOOL_HISTORY_COMPRESSION",
+    "AGENC_DISABLE_STREAM_WATCHDOG",
+    "AGENC_ENABLE_STREAM_WATCHDOG",
+    "AGENC_ALWAYS_ENABLE_EFFORT",
+    "AGENC_HEARTBEAT_MODEL",
+    "AGENC_HEARTBEAT_AGENT",
+    "AGENC_GATEWAY_HOOKS_TOKEN",
+    "AGENC_SPECULATION_ENABLED",
+    "AGENC_DISABLE_GIT_INSTRUCTIONS",
+    "AGENC_DISABLE_AUTO_MEMORY",
+    "AGENC_DISABLE_FILE_CHECKPOINTING",
+    "AGENC_ENABLE_SDK_FILE_CHECKPOINTING",
+    "AGENC_USE_READABLE_STDIN",
+    "AGENC_USE_POWERSHELL_TOOL",
+    "OPENAI_MODEL",
+    "OPENAI_COMPATIBLE_MODEL",
+    "ANTHROPIC_MODEL",
+    "GEMINI_MODEL",
+    "MISTRAL_MODEL",
+    "NVIDIA_MODEL",
+    "MINIMAX_MODEL",
+    "GITHUB_MODEL",
+    "AWS_BEDROCK_MODEL",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL",
+    "ANTHROPIC_SMALL_FAST_MODEL",
+    "ANTHROPIC_CUSTOM_MODEL_OPTION",
+  ] as const)("rejects removed environment authority %s", (name) => {
+    expect(() => applyEnvOverrides(defaultConfig(), { [name]: "0" })).toThrow(
+      /obsolete configuration environment variable/,
+    );
   });
 
   test("applyEnvOverrides ignores invalid output-token env knobs with diagnostics", () => {
@@ -2282,24 +1776,19 @@ describe("env: resolvers", () => {
     ]);
   });
 
-  test("applyEnvOverrides: AGENC_SIMPLE=false yields simpleMode=false", () => {
-    const base = defaultConfig();
-    const out = applyEnvOverrides(base, { AGENC_SIMPLE: "no" });
-    expect(out.simpleMode).toBe(false);
-  });
-
   test("applyEnvOverrides does NOT leak API keys into config snapshot", () => {
     const base = defaultConfig();
     const out = applyEnvOverrides(base, {
       XAI_API_KEY: "secret-xai",
       GROK_API_KEY: "secret-grok",
-      AGENC_XAI_API_KEY: "secret-agenc",
     });
     // No api-key field should appear anywhere in the merged snapshot.
     const json = JSON.stringify(out);
     expect(json).not.toContain("secret-xai");
     expect(json).not.toContain("secret-grok");
-    expect(json).not.toContain("secret-agenc");
+    expect(() =>
+      applyEnvOverrides(base, { AGENC_XAI_API_KEY: "retired" }),
+    ).toThrow(/obsolete configuration environment variable.*AGENC_XAI_API_KEY/u);
   });
 
   test("resolveProviderApiKey returns provider-specific keys", () => {
@@ -2383,11 +1872,66 @@ describe("ConfigStore", () => {
     expect(store.current().model).toBe("grok-3");
   });
 
+  test("reload() uses an immutable snapshot of a caller-supplied environment", async () => {
+    writeFileSync(
+      join(dir, "config.toml"),
+      'config_version = 2\nmodel = "disk-model"\n',
+    );
+    const env: NodeJS.ProcessEnv = {
+      AGENC_HOME: dir,
+      HOME: dir,
+      AGENC_MODEL: "captured-model",
+    };
+    const previousAmbientModel = process.env.AGENC_MODEL;
+    const store = new ConfigStore({
+      home: dir,
+      env,
+      cwd: dir,
+      managedConfigPath: join(dir, "missing-managed.toml"),
+      managedDropInDir: join(dir, "missing-managed.d"),
+    });
+
+    try {
+      env.AGENC_MODEL = "mutated-caller-model";
+      process.env.AGENC_MODEL = "mutated-ambient-model";
+
+      expect((await store.reload()).model).toBe("captured-model");
+      expect(store.current().model).toBe("captured-model");
+    } finally {
+      if (previousAmbientModel === undefined) delete process.env.AGENC_MODEL;
+      else process.env.AGENC_MODEL = previousAmbientModel;
+    }
+  });
+
+  test("reload() snapshots process.env when no environment is supplied", async () => {
+    const previousAmbientModel = process.env.AGENC_MODEL;
+    try {
+      writeFileSync(
+        join(dir, "config.toml"),
+        'config_version = 2\nmodel = "disk-model"\n',
+      );
+      process.env.AGENC_MODEL = "captured-ambient-model";
+      const store = new ConfigStore({
+        home: dir,
+        cwd: dir,
+        managedConfigPath: join(dir, "missing-managed.toml"),
+        managedDropInDir: join(dir, "missing-managed.d"),
+      });
+      process.env.AGENC_MODEL = "mutated-ambient-model";
+
+      expect((await store.reload()).model).toBe("captured-ambient-model");
+      expect(store.current().model).toBe("captured-ambient-model");
+    } finally {
+      if (previousAmbientModel === undefined) delete process.env.AGENC_MODEL;
+      else process.env.AGENC_MODEL = previousAmbientModel;
+    }
+  });
+
   test("reload() re-reads disk and fires subscribers", async () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       join(dir, "config.toml"),
-      `model = "grok-3"\nmax_turns = 5\n`,
+      `config_version = 2\nmodel = "grok-3"\nmax_turns = 5\n`,
     );
 
     const store = new ConfigStore({ home: dir, env: {} });
@@ -2403,11 +1947,12 @@ describe("ConfigStore", () => {
     expect(store.subscriberCount()).toBe(0);
   });
 
-  test("reload() captures schema validation warnings from loadConfig", async () => {
+  test("reload() rejects invalid canonical config without fallback", async () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(
       join(dir, "config.toml"),
       `
+config_version = 2
 [agent.retention]
 snapshot_max_count = 0
       `,
@@ -2419,27 +1964,24 @@ snapshot_max_count = 0
       onWarn: (message) => warnings.push(message),
     });
 
-    const next = await store.reload();
-
-    expect(next.agent?.retention?.snapshot_max_count).toBe(10_000);
-    expect(store.warnings().join("\n")).toContain(
+    await expect(store.reload()).rejects.toThrow(
       "Invalid agent.retention.snapshot_max_count",
     );
-    expect(warnings.join("\n")).toContain(
-      "Invalid agent.retention.snapshot_max_count",
-    );
+    expect(store.current().agent?.retention?.snapshot_max_count).toBe(10_000);
+    expect(store.warnings()).toEqual([]);
+    expect(warnings).toEqual([]);
   });
 
   test("reload() observes file changes between calls", async () => {
     mkdirSync(dir, { recursive: true });
     const path = join(dir, "config.toml");
-    writeFileSync(path, `model = "a"\n`);
+    writeFileSync(path, `config_version = 2\nmodel = "a"\n`);
 
     const store = new ConfigStore({ home: dir, env: {} });
     const first = await store.reload();
     expect(first.model).toBe("a");
 
-    writeFileSync(path, `model = "b"\n`);
+    writeFileSync(path, `config_version = 2\nmodel = "b"\n`);
     const second = await store.reload();
     expect(second.model).toBe("b");
   });
@@ -2475,7 +2017,7 @@ snapshot_max_count = 0
   test("concurrent reload() calls both resolve, last-finisher snapshot wins", async () => {
     mkdirSync(dir, { recursive: true });
     const path = join(dir, "config.toml");
-    writeFileSync(path, `model = "first"\n`);
+    writeFileSync(path, `config_version = 2\nmodel = "first"\n`);
 
     const store = new ConfigStore({ home: dir, env: {} });
 
@@ -2484,7 +2026,7 @@ snapshot_max_count = 0
     // the file lazily inside the promise, so the second reload observes
     // the updated content.
     const first = store.reload();
-    writeFileSync(path, `model = "second"\n`);
+    writeFileSync(path, `config_version = 2\nmodel = "second"\n`);
     const second = store.reload();
 
     // Neither promise rejects.

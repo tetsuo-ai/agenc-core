@@ -101,7 +101,6 @@ import {
 import { canonicalAgentRoleName } from "src/agents/role-presentation.js";
 import {
   AGENT_TOOL_NAME,
-  LEGACY_AGENT_TOOL_NAME,
   ONE_SHOT_BUILTIN_AGENT_TYPES,
 } from "src/tools/AgentTool/constants.js";
 import {
@@ -406,16 +405,11 @@ export const AgentTool = buildTool({
       AGENT_TOOL_NAME,
     );
 
-    // Use inline env check instead of coordinatorModule to avoid circular
-    // dependency issues during test module loading.
-    const isCoordinator = feature("COORDINATOR_MODE")
-      ? isEnvTruthy(process.env.AGENC_COORDINATOR_MODE)
-      : false;
+    const isCoordinator = isCoordinatorMode();
     return await getPrompt(filteredAgents, isCoordinator, allowedAgentTypes);
   },
   name: AGENT_TOOL_NAME,
   searchHint: "delegate work to a subagent",
-  aliases: [LEGACY_AGENT_TOOL_NAME],
   maxResultSizeChars: 100_000,
   async description() {
     return "Launch a new agent";
@@ -801,11 +795,7 @@ export const AgentTool = buildTool({
         !isBackgroundTasksDisabled,
     };
 
-    // Use inline env check instead of coordinatorModule to avoid circular
-    // dependency issues during test module loading.
-    const isCoordinator = feature("COORDINATOR_MODE")
-      ? isEnvTruthy(process.env.AGENC_COORDINATOR_MODE)
-      : false;
+    const isCoordinator = isCoordinatorMode();
 
     // Fork subagent experiment: force ALL spawns async for a unified
     // <task-notification> interaction model (not just fork spawns — all of them).
@@ -1004,7 +994,6 @@ export const AgentTool = buildTool({
         }),
         worktreePath: worktreeInfo?.worktreePath,
         description,
-        agentName: name,
         agentMetadataAlreadyPersisted: true,
         spawnAdmission,
       };
@@ -1916,9 +1905,9 @@ The agent is now running and will receive instructions via mailbox.`,
                 text: "(Subagent completed but returned no output.)",
               },
             ];
-      // One-shot built-ins (Explore, Plan) are never continued via SendMessage
+      // One-shot built-ins (scanner, Plan) are never continued via SendMessage
       // — the agentId hint and <usage> block are dead weight (~135 chars ×
-      // 34M Explore runs/week ≈ 1-2 Gtok/week). The trailer is only useful for
+      // 34M scanner runs/week ≈ 1-2 Gtok/week). The trailer is only useful for
       // resumable agents, so dropping it here is safe.
       // agentType is optional for resume compat — missing means show trailer.
       if (

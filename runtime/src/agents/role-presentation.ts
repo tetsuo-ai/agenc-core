@@ -1,9 +1,9 @@
 /**
  * Public presentation and aliasing for agent roles.
  *
- * Internal role ids stay stable for compatibility with existing metadata,
- * permissions, and restored sessions. Model/TUI copy can use the cyberpunk
- * labels exposed here without rewriting the runtime role contract.
+ * Built-in registry ids and public names share one canonical spelling.
+ * Presentation metadata only supplies display labels and intentional semantic
+ * shortcuts; retired built-in ids are not aliases.
  *
  * @module
  */
@@ -22,17 +22,17 @@ const ROLE_PRESENTATION: Readonly<Record<string, AgentRolePresentation>> = {
     label: "Netrunner",
     aliases: ["default", "netrunner", "general-purpose"],
   },
-  explorer: {
-    canonicalName: "explorer",
+  scanner: {
+    canonicalName: "scanner",
     publicName: "scanner",
     label: "Scanner",
-    aliases: ["explorer", "explore", "research", "researcher", "scanner"],
+    aliases: ["explore", "research", "researcher", "scanner"],
   },
-  worker: {
-    canonicalName: "worker",
+  runner: {
+    canonicalName: "runner",
     publicName: "runner",
     label: "Runner",
-    aliases: ["worker", "coding", "implement", "implementation", "runner"],
+    aliases: ["coding", "implement", "implementation", "runner"],
   },
   Plan: {
     canonicalName: "Plan",

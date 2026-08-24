@@ -89,7 +89,7 @@ export interface GuardianClassifyToolOptions {
   readonly granular?: GranularApprovalConfig;
   /**
    * Set when the session-wide permission mode is `bypassPermissions`
-   * (the `--yolo` flag). Short-circuits the arbiter to `skip` for every
+   * (the `--dangerously-bypass-approvals-and-sandbox` flag). Short-circuits the arbiter to `skip` for every
    * tool — the user opted out of approval gating and approvalPolicy
    * being `untrusted` shouldn't override that. Mirrors the bypass
    * short-circuits in permissions/bash.ts and the filesystem helpers.
@@ -114,7 +114,7 @@ export function classifyToolApproval(
   if (opts.toolAllowlist?.has(name)) {
     return { kind: "skip", bypassSandbox: false };
   }
-  // Permission-mode bypass: under `--yolo` (mode === bypassPermissions)
+  // Permission-mode bypass: under `--dangerously-bypass-approvals-and-sandbox` (mode === bypassPermissions)
   // every approval gate should skip, regardless of approvalPolicy.
   // Without this, approvalPolicy="untrusted" surfaces a "approve every
   // call" overlay even though the user opted out at the mode level.
@@ -933,7 +933,7 @@ export async function arbitratePermissionMode(
     };
   }
   if (decision.behavior === "ask") {
-    // bypassPermissions mode override: --yolo opts the user out of approval
+    // bypassPermissions mode override: --dangerously-bypass-approvals-and-sandbox opts the user out of approval
     // gating. The evaluator's per-tool checkPermissions may return "ask"
     // for non-rule, non-safetyCheck reasons (e.g. working-dir prompts that
     // didn't reach the mode bypass at evaluator.ts:389 because of the
@@ -1274,7 +1274,6 @@ function buildApprovalCacheKeys(
   if (
     tool.name === "exec_command" ||
     tool.name === "system.bash" ||
-    tool.name === "Bash" ||
     invocation.payload.kind === "local_shell"
   ) {
     const command = Array.isArray(args.args)

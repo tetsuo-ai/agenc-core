@@ -39,6 +39,6 @@ describe("onboarding theme tip", () => {
     themeState.name = "light";
     const tip = themeTip();
     expect(tip).toContain("looks light");
-    expect(tip).toContain('"light" or "system"');
+    expect(tip).toContain('"light" or "auto"');
   });
 });

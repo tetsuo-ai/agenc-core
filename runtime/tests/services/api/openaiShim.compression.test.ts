@@ -7,8 +7,7 @@ const originalFetch = globalThis.fetch
 const originalEnv = {
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
-  OPENAI_MODEL: process.env.OPENAI_MODEL,
-  DISABLE_TOOL_HISTORY_COMPRESSION: process.env.DISABLE_TOOL_HISTORY_COMPRESSION,
+  AGENC_MODEL: process.env.AGENC_MODEL,
   AGENC_DISABLE_TOOL_HISTORY_COMPRESSION:
     process.env.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION,
   AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW:
@@ -86,8 +85,7 @@ function makeFakeResponse(): Response {
 beforeEach(() => {
   process.env.OPENAI_BASE_URL = 'http://example.test/v1'
   process.env.OPENAI_API_KEY = 'test-key'
-  delete process.env.OPENAI_MODEL
-  delete process.env.DISABLE_TOOL_HISTORY_COMPRESSION
+  delete process.env.AGENC_MODEL
   delete process.env.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION
   delete process.env.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW
 })
@@ -97,14 +95,8 @@ afterEach(() => {
   else process.env.OPENAI_BASE_URL = originalEnv.OPENAI_BASE_URL
   if (originalEnv.OPENAI_API_KEY === undefined) delete process.env.OPENAI_API_KEY
   else process.env.OPENAI_API_KEY = originalEnv.OPENAI_API_KEY
-  if (originalEnv.OPENAI_MODEL === undefined) delete process.env.OPENAI_MODEL
-  else process.env.OPENAI_MODEL = originalEnv.OPENAI_MODEL
-  if (originalEnv.DISABLE_TOOL_HISTORY_COMPRESSION === undefined) {
-    delete process.env.DISABLE_TOOL_HISTORY_COMPRESSION
-  } else {
-    process.env.DISABLE_TOOL_HISTORY_COMPRESSION =
-      originalEnv.DISABLE_TOOL_HISTORY_COMPRESSION
-  }
+  if (originalEnv.AGENC_MODEL === undefined) delete process.env.AGENC_MODEL
+  else process.env.AGENC_MODEL = originalEnv.AGENC_MODEL
   if (originalEnv.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION === undefined) {
     delete process.env.AGENC_DISABLE_TOOL_HISTORY_COMPRESSION
   } else {
@@ -131,7 +123,16 @@ async function captureRequestBody(
     return makeFakeResponse()
   }) as FetchType
 
-  const client = createOpenAiShimClient({}) as OpenAiShimClient
+  const providerEnvironment = Object.freeze({
+    ...process.env,
+    AGENC_PROVIDER: 'openai-compatible',
+    AGENC_MODEL: model,
+  })
+  const client = createOpenAiShimClient({
+    selectedProvider: 'openai',
+    model,
+    providerEnvironment,
+  }) as OpenAiShimClient
   await client.beta.messages.create({
     model,
     system: 'system prompt',

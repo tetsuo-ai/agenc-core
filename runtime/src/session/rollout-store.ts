@@ -66,7 +66,6 @@ import { ThreadSpawnEdgeRepository } from "../state/spawn-edges.js";
 import { StateRunDurabilityRepository } from "../state/run-durability.js";
 import { recordInFlightToolCallUnknownOutcome } from "../state/tool-output-rotation.js";
 import { resolveUnknownOutcomeEffect } from "../state/unknown-outcome-gate.js";
-import { getAgenCConfigHomeDir } from "../utils/envUtils.js";
 import { sanitizePath } from "../utils/path.js";
 import { isRecord } from "../utils/record.js";
 import {
@@ -787,6 +786,7 @@ export class RolloutStore {
     );
     this.stateDriver = openStateDatabases({
       cwd: opts.cwd,
+      agencHome: this.store.agencHome,
       projectRootMarkers: opts.projectRootMarkers,
     });
     this.threadSpawnEdgeRepo = new ThreadSpawnEdgeRepository(this.stateDriver);
@@ -1897,6 +1897,7 @@ export class RolloutStore {
       cwd: this.store.cwd,
       sessionId: rollback.target_session_id,
       agencVersion: this.store.agencVersion,
+      agencHome: this.store.agencHome,
       resume: true,
       projectRootMarkers: this.projectRootMarkers,
     });
@@ -3683,7 +3684,11 @@ export class RolloutStore {
       return true;
     }
 
-    const projectDir = getProjectDir(this.store.cwd, this.projectRootMarkers);
+    const projectDir = getProjectDir(
+      this.store.cwd,
+      this.projectRootMarkers,
+      this.store.agencHome,
+    );
     for (const binding of this.runDurabilityRepo.listJournalBindings(
       runId,
       epoch,
@@ -4293,7 +4298,7 @@ export class RolloutStore {
       const artifactRoot = trustedArtifactRoot(payload.targetPath, [
         resolve(this.store.sessionDir, "tool-results"),
         resolve(
-          getAgenCConfigHomeDir(),
+          this.store.agencHome,
           "projects",
           sanitizePath(this.store.cwd),
           this.sessionId,

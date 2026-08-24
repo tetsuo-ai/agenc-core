@@ -1,4 +1,4 @@
-process.env.AGENC_CONFIG_DIR = '/home/paul/.agenc'
+process.env.AGENC_HOME = '/home/paul/.agenc'
 process.env.AGENC_TASK_LIST_ID = 'bridge-live'
 
 import { describe, expect, it, vi } from 'vitest'

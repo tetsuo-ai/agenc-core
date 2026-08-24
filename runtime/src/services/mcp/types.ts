@@ -4,6 +4,7 @@ import type {
   ServerCapabilities,
 } from '@modelcontextprotocol/sdk/types.js'
 import { z } from 'zod/v4'
+import type { HomeContext } from '../../config/home.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 
 // Configuration schemas and types
@@ -33,11 +34,8 @@ const NonEmptyStringSchema = lazySchema(() => z.string().min(1))
 
 const PerToolConfigSchema = lazySchema(() =>
   z.object({
-    enabled: z.boolean().optional(),
     default_permission_mode: PermissionDefaultModeSchema().optional(),
-    defaultPermissionMode: PermissionDefaultModeSchema().optional(),
-    approval_mode: z.enum(['auto', 'prompt', 'approve']).optional(),
-  }),
+  }).strict(),
 )
 
 const McpToolCatalogPolicyConfigSchema = lazySchema(() =>
@@ -70,7 +68,7 @@ export const McpStdioServerConfigSchema = lazySchema(() =>
 )
 
 // Cross-App Access (XAA / SEP-990): just a per-server flag. IdP connection
-// details (issuer, clientId, callbackPort) come from settings.xaaIdp — configured
+// details (issuer, client_id, callback_port) come from canonical xaa_idp TOML — configured
 // once, shared across all XAA-enabled servers. clientId/clientSecret (parent
 // oauth config + keychain slot) are for the MCP server's AS.
 const McpXaaConfigSchema = lazySchema(() => z.boolean())
@@ -232,6 +230,8 @@ export type ConnectedMCPServer = {
   instructions?: string
   config: ScopedMcpServerConfig
   cleanup: () => Promise<void>
+  /** Captured credential authority for reconnects; set for remote OAuth servers. */
+  homeContext?: HomeContext
 }
 
 export type FailedMCPServer = {
@@ -245,6 +245,8 @@ export type NeedsAuthMCPServer = {
   name: string
   type: 'needs-auth'
   config: ScopedMcpServerConfig
+  /** Present for live remote connections; synthetic UI projections omit it. */
+  homeContext?: HomeContext
 }
 
 export type PendingMCPServer = {

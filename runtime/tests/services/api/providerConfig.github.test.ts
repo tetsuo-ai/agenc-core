@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from 'bun:test'
+import { expect, test } from 'bun:test'
 
 import {
   DEFAULT_GITHUB_MODELS_API_MODEL,
@@ -6,15 +6,15 @@ import {
   resolveProviderRequest,
 } from '../../../src/services/api/providerConfig.ts'
 
-const originalUseGithub = process.env.AGENC_USE_GITHUB
-
-afterEach(() => {
-  if (originalUseGithub === undefined) {
-    delete process.env.AGENC_USE_GITHUB
-  } else {
-    process.env.AGENC_USE_GITHUB = originalUseGithub
-  }
-})
+function providerEnvironment(
+  provider: string,
+  model: string,
+): Readonly<Record<string, string>> {
+  return Object.freeze({
+    AGENC_PROVIDER: provider,
+    AGENC_MODEL: model,
+  })
+}
 
 test.each([
   ['copilot', DEFAULT_GITHUB_MODELS_API_MODEL],
@@ -30,29 +30,41 @@ test.each([
   expect(normalizeGithubModelsApiModel(input)).toBe(expected)
 })
 
-test('resolveProviderRequest applies GitHub normalization when AGENC_USE_GITHUB=1', () => {
-  process.env.AGENC_USE_GITHUB = '1'
-  const r = resolveProviderRequest({ model: 'github:gpt-4o' })
+test('resolveProviderRequest applies GitHub normalization for the GitHub provider', () => {
+  const r = resolveProviderRequest({
+    provider: 'github',
+    model: 'github:gpt-4o',
+    environment: providerEnvironment('github', 'github:gpt-4o'),
+  })
   expect(r.resolvedModel).toBe('gpt-4o')
   expect(r.transport).toBe('chat_completions')
 })
 
 test('resolveProviderRequest routes GitHub GPT-5 providerCode models to responses transport', () => {
-  process.env.AGENC_USE_GITHUB = '1'
-  const r = resolveProviderRequest({ model: 'gpt-5.3-providerCode' })
+  const r = resolveProviderRequest({
+    provider: 'github',
+    model: 'gpt-5.3-providerCode',
+    environment: providerEnvironment('github', 'gpt-5.3-providerCode'),
+  })
   expect(r.resolvedModel).toBe('gpt-5.3-providerCode')
   expect(r.transport).toBe('providerCode_responses')
 })
 
 test('resolveProviderRequest keeps gpt-5-mini on chat_completions for GitHub', () => {
-  process.env.AGENC_USE_GITHUB = '1'
-  const r = resolveProviderRequest({ model: 'gpt-5-mini' })
+  const r = resolveProviderRequest({
+    provider: 'github',
+    model: 'gpt-5-mini',
+    environment: providerEnvironment('github', 'gpt-5-mini'),
+  })
   expect(r.resolvedModel).toBe('gpt-5-mini')
   expect(r.transport).toBe('chat_completions')
 })
 
 test('resolveProviderRequest leaves model unchanged without GitHub flag', () => {
-  delete process.env.AGENC_USE_GITHUB
-  const r = resolveProviderRequest({ model: 'github:gpt-4o' })
+  const r = resolveProviderRequest({
+    provider: 'openai',
+    model: 'github:gpt-4o',
+    environment: providerEnvironment('openai', 'github:gpt-4o'),
+  })
   expect(r.resolvedModel).toBe('github:gpt-4o')
 })

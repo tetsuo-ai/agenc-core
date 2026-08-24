@@ -25,9 +25,7 @@ const USER_MESSAGE = "continue after automatic compaction";
 const COMPACTION_ENVIRONMENT_KEYS = [
   "AGENC_AUTO_COMPACT_WINDOW",
   "AGENC_AUTOCOMPACT_PCT_OVERRIDE",
-  "DISABLE_COMPACT",
   "AGENC_DISABLE_COMPACT",
-  "DISABLE_AUTO_COMPACT",
   "AGENC_DISABLE_AUTO_COMPACT",
 ] as const;
 
@@ -333,9 +331,7 @@ function saveCompactionEnvironment(): ReadonlyMap<string, string | undefined> {
 function enableAutomaticCompaction(): void {
   process.env.AGENC_AUTO_COMPACT_WINDOW = "1000";
   process.env.AGENC_AUTOCOMPACT_PCT_OVERRIDE = "50";
-  delete process.env.DISABLE_COMPACT;
   delete process.env.AGENC_DISABLE_COMPACT;
-  delete process.env.DISABLE_AUTO_COMPACT;
   delete process.env.AGENC_DISABLE_AUTO_COMPACT;
 }
 

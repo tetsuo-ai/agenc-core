@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { parseToml } from "../config/loader.js";
+import { ConfigStore } from "../config/store.js";
 import {
   DEFAULT_OUTPUT_STYLE_NAME,
   clearAllOutputStylesCache,
@@ -15,7 +17,7 @@ import {
 import type { Session } from "../session/session.js";
 import { outputStyleCommand, outputStyleNewCommand } from "./output-style.js";
 import type { SlashCommandContext } from "./types.js";
-import { resetSettingsCache } from "../utils/settings/settingsCache.js";
+import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 
 function stubSession(): Session {
   return {
@@ -41,17 +43,16 @@ function stubCtx(
 
 describe("output-style commands", () => {
   const originalCwd = getOriginalCwd();
-  const originalConfigDir = process.env.AGENC_CONFIG_DIR;
+  const originalAgencHome = process.env.AGENC_HOME;
   const tempDirs: string[] = [];
 
   afterEach(() => {
     setOriginalCwd(originalCwd);
-    if (originalConfigDir === undefined) {
-      delete process.env.AGENC_CONFIG_DIR;
+    if (originalAgencHome === undefined) {
+      delete process.env.AGENC_HOME;
     } else {
-      process.env.AGENC_CONFIG_DIR = originalConfigDir;
+      process.env.AGENC_HOME = originalAgencHome;
     }
-    resetSettingsCache();
     clearAllOutputStylesCache();
     for (const dir of tempDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
@@ -62,8 +63,7 @@ describe("output-style commands", () => {
     const dir = mkdtempSync(join(tmpdir(), "agenc-output-style-"));
     tempDirs.push(dir);
     setOriginalCwd(dir);
-    process.env.AGENC_CONFIG_DIR = join(dir, "agenc-home");
-    resetSettingsCache();
+    process.env.AGENC_HOME = join(dir, "agenc-home");
     return dir;
   }
 
@@ -99,29 +99,42 @@ describe("output-style commands", () => {
 
   it("persists the active style through trusted user settings and survives cache reset", async () => {
     const cwd = tempProject();
+    const agencHome = join(cwd, "agenc-home");
+    const configStore = new ConfigStore({
+      home: agencHome,
+      env: {},
+      cwd,
+      projectRoot: cwd,
+      projectTrusted: false,
+    });
+    await configStore.reload();
     let appState: unknown = { settings: {} };
     const setAppState = vi.fn((updater: (prev: unknown) => unknown) => {
       appState = updater(appState);
     });
 
-    const result = await outputStyleCommand.execute(
-      stubCtx(cwd, "explanatory", { setAppState }),
+    const result = await runWithCanonicalSettingsAuthority(
+      configStore,
+      () => outputStyleCommand.execute(
+        stubCtx(cwd, "explanatory", { setAppState }),
+      ),
     );
 
     expect(result).toEqual({
       kind: "text",
       text: 'Output style switched to "Explanatory".',
     });
-    const settings = JSON.parse(
-      readFileSync(join(cwd, "agenc-home", "settings.json"), "utf8"),
-    ) as { outputStyle?: string };
-    expect(settings.outputStyle).toBe("Explanatory");
+    const config = parseToml(
+      readFileSync(join(agencHome, "config.toml"), "utf8"),
+    );
+    expect(config.outputStyle).toBe("Explanatory");
     expect(appState).toEqual({ settings: { outputStyle: "Explanatory" } });
-    resetSettingsCache();
     clearAllOutputStylesCache();
-    await expect(getOutputStyleConfig()).resolves.toMatchObject({
-      name: "Explanatory",
-    });
+    await expect(
+      runWithCanonicalSettingsAuthority(configStore, () =>
+        getOutputStyleConfig(),
+      ),
+    ).resolves.toMatchObject({ name: "Explanatory" });
   });
 
   it("returns a clear error for unknown styles", async () => {

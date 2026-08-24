@@ -18,7 +18,7 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export const meta = {
   description:
     "First-use prediction consent persists and reloads the daemon, then a tool-free provider call paints and accepts Neovim ghost text.",
-  args: ["--yolo"],
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   firstUsePredictionConsent: true,
   timeoutMs: 90_000,
   env: {

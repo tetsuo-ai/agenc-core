@@ -1406,7 +1406,6 @@ const WRITE_CAPABLE_TOOL_NAMES: ReadonlySet<string> = new Set([
   "Write",
   "Edit",
   "system.delete",
-  "Bash",
   "write_file",
   "edit_file",
 ]);

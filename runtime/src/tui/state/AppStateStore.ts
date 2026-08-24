@@ -34,10 +34,14 @@ import type { DenialTrackingState } from '../../utils/permissions/denialTracking
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import type { WorkbenchState } from '../workbench/types.js'
 import { getDefaultWorkbenchState } from '../workbench/reducer.js'
-import { getInitialSettings } from '../../utils/settings/settings.js'
-import type { SettingsJson } from '../../utils/settings/types.js'
+import {
+  getInitialSettings,
+  type RuntimeSettingsSnapshot,
+} from '../../utils/settings/settings.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { shouldEnableThinkingByDefault } from '../../utils/thinking.js'
+import { getSelectedProviderEnvironment } from '../../utils/model/providers.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
 import { isPlanModeRequired, isTeammate } from '../../utils/teammate.js'
 import type { Store } from './store.js'
 
@@ -91,7 +95,7 @@ export type FooterItem =
   | 'teams'
 
 export type AppState = DeepImmutable<{
-  settings: SettingsJson
+  settings: RuntimeSettingsSnapshot
   verbose: boolean
   mainLoopModel: ModelSetting
   mainLoopModelForSession: ModelSetting
@@ -388,6 +392,19 @@ export type AppState = DeepImmutable<{
 export type AppStateStore = Store<AppState>
 
 export function getDefaultAppState(): AppState {
+  return getDefaultAppStateForProviderEnvironment(
+    getSelectedProviderEnvironment(),
+  )
+}
+
+/**
+ * Construct initial TUI state from the immutable provider environment already
+ * captured by startup/session ingress. Interactive App startup uses this path
+ * so React render timing never determines provider authority.
+ */
+export function getDefaultAppStateForProviderEnvironment(
+  providerEnvironment: ProviderEnvironment,
+): AppState {
   const initialSettings = getInitialSettings()
   const initialMode: PermissionMode =
     isTeammate() && isPlanModeRequired()
@@ -465,10 +482,12 @@ export function getDefaultAppState(): AppState {
     elicitation: {
       queue: [],
     },
-    thinkingEnabled: shouldEnableThinkingByDefault(),
+    thinkingEnabled: shouldEnableThinkingByDefault({
+      environment: providerEnvironment,
+      alwaysThinkingEnabled: initialSettings.alwaysThinkingEnabled,
+    }),
     promptSuggestionEnabled: shouldEnablePromptSuggestion({
       ...initialSettings,
-      promptSuggestionFeatureEnabled: false,
       agentSwarmsEnabled: isAgentSwarmsEnabled(),
       isNonInteractiveSession: getIsNonInteractiveSession(),
       isTeammateSession: isTeammate(),

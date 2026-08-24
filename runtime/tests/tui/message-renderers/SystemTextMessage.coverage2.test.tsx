@@ -26,7 +26,7 @@ vi.mock('bun:bundle', () => ({
 }))
 
 vi.mock('../../utils/config.js', () => ({
-  getGlobalConfig: () => ({ showTurnDuration: true }),
+  getRuntimeState: () => ({ showTurnDuration: true }),
 }))
 
 vi.mock('../../utils/browser.js', () => ({

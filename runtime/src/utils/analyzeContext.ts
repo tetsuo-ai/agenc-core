@@ -50,7 +50,7 @@ import { filterInjectedMemoryFiles, getMemoryFiles } from '../memory/index.js'
 import { getContextWindowForModel } from './context.js'
 import { getCwd } from './cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isEnvTruthy } from './envUtils.js'
+import { isBareMode } from './envUtils.js'
 import { errorMessage, toError } from './errors.js'
 import { logError } from './log.js'
 import { normalizeMessagesForAPI } from './messages.js'
@@ -321,7 +321,7 @@ async function countMemoryFileTokens(): Promise<{
   agencMdTokens: number
 }> {
   // Simple mode disables AGENC.md loading, so don't report tokens for them
-  if (isEnvTruthy(process.env.AGENC_SIMPLE)) {
+  if (isBareMode()) {
     return { memoryFileDetails: [], agencMdTokens: 0 }
   }
 

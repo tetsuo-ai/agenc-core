@@ -104,7 +104,7 @@ describe("StaticModelsManager", () => {
     );
   });
 
-  it("lists built-in Groq Llama and Mixtral routes", async () => {
+  it("lists only the canonical built-in Groq routes", async () => {
     const manager = new StaticModelsManager({
       config: defaultConfig(),
       fallbackProvider: "groq",
@@ -115,8 +115,10 @@ describe("StaticModelsManager", () => {
       expect.arrayContaining([
         "llama-3.3-70b-versatile",
         "llama-3.1-8b-instant",
-        "mixtral-8x7b-32768",
       ]),
+    );
+    expect(listed.map((entry) => entry.slug)).not.toContain(
+      "mixtral-8x7b-32768",
     );
   });
 
@@ -327,7 +329,6 @@ describe("StaticModelsManager", () => {
         model: "qwen3-coder-next-fp8",
         providers: {
           "openai-compatible": {
-            api_key_env: "OPENAI_COMPATIBLE_API_KEY",
             base_url: "http://127.0.0.1:8001/v1",
             default_model: "qwen3-coder-next-fp8",
             context_window_tokens: 131_072,

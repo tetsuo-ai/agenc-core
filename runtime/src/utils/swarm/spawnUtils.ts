@@ -4,7 +4,6 @@
 
 import {
   getChromeFlagOverride,
-  getFlagSettingsPath,
   getInlinePlugins,
   getMainLoopModelOverride,
   getSessionBypassPermissionsMode,
@@ -14,6 +13,9 @@ import { isInBundledMode } from '../bundledMode.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { getTeammateModeFromSnapshot } from './backends/teammateModeSnapshot.js'
 import { TEAMMATE_COMMAND_ENV_VAR } from './constants.js'
+import { getActiveAgentRuntimeOptions } from '../../session/runtime-options.js'
+import { getAgenCHomeDir } from '../envUtils.js'
+import { getSelectedProviderSelection } from '../model/providers.js'
 
 /**
  * Gets the command to use for spawning teammate processes.
@@ -67,12 +69,6 @@ export function buildInheritedCliFlags(options?: {
     flags.push(`--model ${quote([modelOverride])}`)
   }
 
-  // Propagate --settings if set via CLI
-  const settingsPath = getFlagSettingsPath()
-  if (settingsPath) {
-    flags.push(`--settings ${quote([settingsPath])}`)
-  }
-
   // Propagate --plugin-dir for each inline plugin
   const inlinePlugins = getInlinePlugins()
   for (const pluginDir of inlinePlugins) {
@@ -95,44 +91,23 @@ export function buildInheritedCliFlags(options?: {
 }
 
 /**
- * Environment variables that must be explicitly forwarded to tmux-spawned
- * teammates. Tmux may start a new login shell that doesn't inherit the
- * parent's env, so we forward any that are set in the current process.
+ * Captured session-environment variables that must be explicitly forwarded to
+ * tmux-spawned teammates. Tmux may start a new login shell that doesn't inherit
+ * the client's environment, so these values come from the session-owned
+ * provider authority rather than the daemon process environment.
  */
 const TEAMMATE_ENV_VARS = [
-  // API provider selection — without these, teammates default to firstParty
-  // and send requests to the wrong endpoint (GitHub issue #23561)
-  'AGENC_USE_BEDROCK',
-  'AGENC_USE_VERTEX',
-  'AGENC_USE_FOUNDRY',
-  'AGENC_USE_GITHUB',
-  'AGENC_USE_GEMINI',
-  'AGENC_USE_MISTRAL',
-  'AGENC_USE_OPENAI',
   'GITHUB_TOKEN',
   'GH_TOKEN',
   'OPENAI_API_KEY',
   'OPENAI_BASE_URL',
-  'OPENAI_MODEL',
   'GEMINI_API_KEY',
   'GEMINI_BASE_URL',
-  'GEMINI_MODEL',
   'GOOGLE_API_KEY',
   'MISTRAL_API_KEY',
-  'MISTRAL_MODEL',
   'MISTRAL_BASE_URL',
   // Custom API endpoint
   'ANTHROPIC_BASE_URL',
-  // Config directory override
-  'AGENC_CONFIG_DIR',
-  // CCR marker — teammates need this for CCR-aware code paths. Auth finds
-  // its own way via $HOME/.agenc/remote/.oauth_token regardless;
-  'AGENC_REMOTE',
-  'AGENC_REMOTE_TOKEN_DIR',
-  // Auto-memory gate (memdir/paths.ts) checks REMOTE && !MEMORY_DIR to
-  // disable memory on ephemeral CCR filesystems. Forwarding REMOTE alone
-  // would flip teammates to memory-off when the parent has it on.
-  'AGENC_REMOTE_MEMORY_DIR',
   // Upstream proxy — the parent's MITM relay is reachable from teammates
   // (same container network). Forward the proxy vars so teammates route
   // customer-configured upstream traffic through the relay for credential
@@ -155,19 +130,41 @@ const TEAMMATE_ENV_VARS = [
 /**
  * Builds the `env KEY=VALUE ...` string for teammate spawn commands.
  * Always includes AGENCCODE=1 and AGENC_EXPERIMENTAL_AGENT_TEAMS=1,
- * plus any provider/config env vars that are set in the current process.
+ * plus the provider, home, and subprocess inputs captured for this session.
  */
 export function buildInheritedEnvVars(): string {
+  const selection = getSelectedProviderSelection()
+  const environment = selection.environment
   const envVars = [
     'AGENCCODE=1',
     'AGENC_EXPERIMENTAL_AGENT_TEAMS=1',
     // Teammates should inherit the leader-selected provider route instead of
-    // replaying persisted ~/.agenc or settings.env provider defaults.
+    // replaying persisted config provider defaults.
     'AGENC_PROVIDER_MANAGED_BY_HOST=1',
+    `AGENC_PROVIDER=${quote([selection.provider])}`,
+    `AGENC_HOME=${quote([getAgenCHomeDir()])}`,
   ]
 
+  const runtimeOptions = getActiveAgentRuntimeOptions()
+  if (runtimeOptions?.remoteMode) envVars.push('AGENC_REMOTE=1')
+  if (runtimeOptions?.remoteMemoryRoot !== undefined) {
+    envVars.push(
+      `AGENC_REMOTE_MEMORY_DIR=${quote([runtimeOptions.remoteMemoryRoot])}`,
+    )
+  }
+  if (runtimeOptions?.coworkMemoryPathOverride !== undefined) {
+    envVars.push(
+      `AGENC_COWORK_MEMORY_PATH_OVERRIDE=${quote([runtimeOptions.coworkMemoryPathOverride])}`,
+    )
+  }
+  if (runtimeOptions?.coworkMemoryExtraGuidelines !== undefined) {
+    envVars.push(
+      `AGENC_COWORK_MEMORY_EXTRA_GUIDELINES=${quote([runtimeOptions.coworkMemoryExtraGuidelines])}`,
+    )
+  }
+
   for (const key of TEAMMATE_ENV_VARS) {
-    const value = process.env[key]
+    const value = environment[key]
     if (value !== undefined && value !== '') {
       envVars.push(`${key}=${quote([value])}`)
     }

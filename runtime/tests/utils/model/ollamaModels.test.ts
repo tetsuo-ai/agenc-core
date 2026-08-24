@@ -2,7 +2,23 @@ import { afterEach, expect, test, vi } from 'vitest'
 
 async function loadOllamaModelsModule() {
   vi.resetModules()
-  return import('../../../src/utils/model/ollamaModels.ts')
+  const [ollama, providers] = await Promise.all([
+    import('../../../src/utils/model/ollamaModels.ts'),
+    import('../../../src/utils/model/providers.ts'),
+  ])
+  return { ...ollama, runWithStartupProviderSelection: providers.runWithStartupProviderSelection }
+}
+
+function withOllamaAuthority<T>(
+  runWithStartupProviderSelection: Awaited<
+    ReturnType<typeof loadOllamaModelsModule>
+  >['runWithStartupProviderSelection'],
+  operation: () => T,
+): T {
+  return runWithStartupProviderSelection(
+    { provider: 'ollama', model: 'test-model', environment: {} },
+    operation,
+  )
 }
 
 const originalFetch = globalThis.fetch
@@ -25,7 +41,8 @@ afterEach(() => {
 })
 
 test('fetchOllamaModels maps normalized Ollama tags into model picker options', async () => {
-  const { fetchOllamaModels } = await loadOllamaModelsModule()
+  const { fetchOllamaModels, runWithStartupProviderSelection } =
+    await loadOllamaModelsModule()
   const requestedUrls: string[] = []
 
   globalThis.fetch = vi.fn(input => {
@@ -53,7 +70,10 @@ test('fetchOllamaModels maps normalized Ollama tags into model picker options', 
     )
   }) as typeof globalThis.fetch
 
-  await expect(fetchOllamaModels()).resolves.toEqual([
+  await expect(withOllamaAuthority(
+    runWithStartupProviderSelection,
+    () => fetchOllamaModels(),
+  )).resolves.toEqual([
     {
       value: 'qwen2.5-coder:7b',
       label: 'qwen2.5-coder:7b',
@@ -64,7 +84,8 @@ test('fetchOllamaModels maps normalized Ollama tags into model picker options', 
 })
 
 test('fetchOllamaModels ignores malformed Ollama tag entries', async () => {
-  const { fetchOllamaModels } = await loadOllamaModelsModule()
+  const { fetchOllamaModels, runWithStartupProviderSelection } =
+    await loadOllamaModelsModule()
 
   globalThis.fetch = vi.fn(() =>
     Promise.resolve(
@@ -93,7 +114,10 @@ test('fetchOllamaModels ignores malformed Ollama tag entries', async () => {
     ),
   ) as typeof globalThis.fetch
 
-  await expect(fetchOllamaModels()).resolves.toEqual([
+  await expect(withOllamaAuthority(
+    runWithStartupProviderSelection,
+    () => fetchOllamaModels(),
+  )).resolves.toEqual([
     {
       value: 'llama3.3:latest',
       label: 'llama3.3:latest',
@@ -103,7 +127,8 @@ test('fetchOllamaModels ignores malformed Ollama tag entries', async () => {
 })
 
 test('fetchOllamaModels treats malformed Ollama tag payloads as empty', async () => {
-  const { fetchOllamaModels } = await loadOllamaModelsModule()
+  const { fetchOllamaModels, runWithStartupProviderSelection } =
+    await loadOllamaModelsModule()
 
   globalThis.fetch = vi.fn(() =>
     Promise.resolve(
@@ -114,5 +139,8 @@ test('fetchOllamaModels treats malformed Ollama tag payloads as empty', async ()
     ),
   ) as typeof globalThis.fetch
 
-  await expect(fetchOllamaModels()).resolves.toEqual([])
+  await expect(withOllamaAuthority(
+    runWithStartupProviderSelection,
+    () => fetchOllamaModels(),
+  )).resolves.toEqual([])
 })

@@ -8,7 +8,7 @@ import {
   getPersonaMemoryFiles,
 } from "../memory/persona.js";
 import {
-  getAgenCConfigHomeDir,
+  getAgenCHomeDir,
   isBareMode,
   isEnvTruthy,
 } from "../utils/envUtils.js";
@@ -159,9 +159,8 @@ export async function resolveLiveInstructionEnvelope(input: {
         ...(isSettingSourceEnabled("projectSettings") ? ["project" as const] : []),
         ...(isSettingSourceEnabled("localSettings") ? ["local" as const] : []),
       ];
-  const configuredHome = process.env.AGENC_CONFIG_DIR
-    ? getAgenCConfigHomeDir()
-    : input.session.services.configStore?.agencHome ?? getAgenCConfigHomeDir();
+  const configuredHome =
+    input.session.services.configStore?.agencHome ?? getAgenCHomeDir();
   let tiers = await loadTieredInstructions({
     cwd: input.ctx.cwd,
     configHomeDir: configuredHome,

@@ -124,6 +124,9 @@ import {
   shutdownLspServerManager,
   waitForInitialization,
 } from "../services/lsp/manager.js";
+import { ConfigStore } from "../config/store.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import { enterCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Helpers
@@ -131,8 +134,6 @@ import {
 
 function mkFeatures(): ManagedFeatures {
   return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
   };
 }
 
@@ -235,6 +236,16 @@ function makeStubSession(
       }),
     history: [],
   };
+  const config = opts.config ?? mkConfig();
+  const configStore =
+    opts.services?.configStore ??
+    new ConfigStore({
+      home:
+        process.env.AGENC_HOME ??
+        join(tmpdir(), "agenc-run-agent-test-home"),
+      cwd: config.cwd,
+    });
+  enterCanonicalSettingsAuthority(configStore);
   const session = new Session({
     conversationId: opts.conversationId ?? "conv-parent",
     ...(opts.roleWorkspace !== undefined
@@ -261,10 +272,12 @@ function makeStubSession(
         executeStop: async () => ({}),
       },
       admissionRequired: false,
+      configStore,
+      runtimeOptions: resolveAgentRuntimeOptions({}),
       ...(opts.services ?? {}),
     } as unknown as SessionServices,
     jsRepl: { id: "repl-test" },
-    config: opts.config ?? mkConfig(),
+    config,
     modelInfo: opts.modelInfo ?? mkModelInfo(),
     eventQueue: new AsyncQueue<Event>(),
   });
@@ -638,12 +651,8 @@ describe("runAgent", () => {
 
   it("forks the LSP manager into the child authority and stops it before provider disposal", async () => {
     const lspEnv = {
-      AGENC_SIMPLE: process.env.AGENC_SIMPLE,
-      AGENC_BARE: process.env.AGENC_BARE,
       AGENC_DISABLE_LSP: process.env.AGENC_DISABLE_LSP,
     };
-    delete process.env.AGENC_SIMPLE;
-    delete process.env.AGENC_BARE;
     delete process.env.AGENC_DISABLE_LSP;
     const cleanupOrder: string[] = [];
     const openedUris: string[] = [];
@@ -770,12 +779,8 @@ describe("runAgent", () => {
 
   it("cleans child broker participants when Session construction fails", async () => {
     const lspEnv = {
-      AGENC_SIMPLE: process.env.AGENC_SIMPLE,
-      AGENC_BARE: process.env.AGENC_BARE,
       AGENC_DISABLE_LSP: process.env.AGENC_DISABLE_LSP,
     };
-    delete process.env.AGENC_SIMPLE;
-    delete process.env.AGENC_BARE;
     delete process.env.AGENC_DISABLE_LSP;
     const parentBroker = new SandboxExecutionBroker({
       mode: "danger_full_access",
@@ -1264,9 +1269,10 @@ describe("runAgent", () => {
       const session = makeStubSession({
         services: {
           provider,
-          configStore: {
-            current: () => ({}),
-          } as SessionServices["configStore"],
+          configStore: new ConfigStore({
+            home: join(workspace, ".agenc"),
+            cwd: workspace,
+          }),
         },
         roleWorkspace: createAgentRoleWorkspace(workspace),
         config: { ...mkConfig(), cwd: workspace },
@@ -1623,7 +1629,7 @@ describe("runAgent", () => {
         description: "Review quickly.",
         configToml: [
           'model = "gpt-5.4"',
-          'model_reasoning_effort = "high"',
+          'reasoning_effort = "high"',
           'service_tier = "priority"',
         ].join("\n"),
       },
@@ -3705,7 +3711,6 @@ describe("runAgent", () => {
       "TaskList",
       "TaskOutput",
       "TaskStop",
-      "Brief",
       "SendUserMessage",
       "VerifyPlanExecution",
       "CronCreate",
@@ -4207,12 +4212,10 @@ describe("runAgent", () => {
   });
 
   it("keeps root spawn evidence and child model evidence in their canonical run journals", async () => {
-    const previousConfigDir = process.env.AGENC_CONFIG_DIR;
     const previousAgencHome = process.env.AGENC_HOME;
     const home = mkdtempSync(join(tmpdir(), "agenc-child-journal-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "agenc-child-journal-workspace-"));
     mkdirSync(join(cwd, ".git"));
-    process.env.AGENC_CONFIG_DIR = home;
     process.env.AGENC_HOME = home;
     const kernel = new ExecutionAdmissionKernel({
       agencHome: home,
@@ -4410,8 +4413,6 @@ describe("runAgent", () => {
     } finally {
       await session.shutdown();
       kernel.close();
-      if (previousConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR;
-      else process.env.AGENC_CONFIG_DIR = previousConfigDir;
       if (previousAgencHome === undefined) delete process.env.AGENC_HOME;
       else process.env.AGENC_HOME = previousAgencHome;
       rmSync(home, { recursive: true, force: true });

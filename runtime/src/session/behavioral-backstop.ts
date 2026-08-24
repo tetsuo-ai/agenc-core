@@ -178,55 +178,25 @@ export function stepResultHash(
     .join(JOIN);
 }
 
-export function resolveBehavioralConfig(ctx: {
-  readonly config?: Record<string, unknown>;
-}): BehavioralConfig {
-  // precedence (mirrors resolveMaxTurns): ctx.config.* > env > default
-  const num = (cfgKey: string, env: string, def: number): number => {
-    const c = ctx.config?.[cfgKey];
-    if (typeof c === "number" && Number.isFinite(c)) return c;
-    const e = process.env[env];
-    if (e !== undefined && e !== "") {
-      const n = Number(e);
-      if (Number.isFinite(n)) return n;
-    }
-    return def;
-  };
-  const bool = (cfgKey: string, env: string, def: boolean): boolean => {
-    const c = ctx.config?.[cfgKey];
-    if (typeof c === "boolean") return c;
-    const e = process.env[env];
-    if (e !== undefined)
-      return !["0", "false", "no", "off"].includes(e.trim().toLowerCase());
-    return def;
-  };
-  const tools = (process.env.AGENC_NOPROGRESS_IGNORE_TOOLS ?? "Sleep")
-    .split(",")
-    .map((t) => t.trim())
-    .filter(Boolean);
+export function resolveBehavioralConfig(): BehavioralConfig {
+  // These are internal detector constants, not a second operator settings
+  // surface. The canonical `max_turns` setting already owns the configurable
+  // whole-turn cap; the additional deadline fields remain disabled.
   return {
-    enabled: bool("behavioralBackstop", "AGENC_BEHAVIORAL_BACKSTOP", true),
-    repeatSoft: num("progressRepeatSoft", "AGENC_NOPROGRESS_WARN", 3),
-    repeatHard: num("progressRepeatHard", "AGENC_NOPROGRESS_TERMINATE", 8),
-    ababCycles: num("progressAbabCycles", "AGENC_ABAB_TERMINATE", 3),
-    lowGainStreak: num("progressLowGainStreak", "AGENC_LOWGAIN_TERMINATE", 6),
-    window: num("progressWindow", "AGENC_PROGRESS_WINDOW", 16),
-    maxTurnMs: num("progressMaxTurnMs", "AGENC_TURN_DEADLINE_MS", 0), // OFF by default
-    maxTurnTokens: num("progressMaxTurnTokens", "AGENC_TURN_TOKEN_CAP", 0), // OFF by default
-    maxTurnSteps: num("progressMaxTurnSteps", "AGENC_TURN_STEP_CAP", 0), // OFF by default
-    observerEnabled: bool("progressObserver", "AGENC_BEHAVIORAL_OBSERVER", false),
-    observerEveryK: num("progressObserverEvery", "AGENC_BEHAVIORAL_OBSERVER_K", 5),
-    ignoreTools: new Set(tools),
-    resultHashPrefixBytes: num(
-      "progressResultPrefix",
-      "AGENC_PROGRESS_RESULT_PREFIX",
-      64 * 1024,
-    ),
-    normalizeVolatile: bool(
-      "progressNormalizeVolatile",
-      "AGENC_PROGRESS_NORMALIZE_VOLATILE",
-      false,
-    ), // OFF
+    enabled: true,
+    repeatSoft: 3,
+    repeatHard: 8,
+    ababCycles: 3,
+    lowGainStreak: 6,
+    window: 16,
+    maxTurnMs: 0,
+    maxTurnTokens: 0,
+    maxTurnSteps: 0,
+    observerEnabled: false,
+    observerEveryK: 5,
+    ignoreTools: new Set(["Sleep"]),
+    resultHashPrefixBytes: 64 * 1024,
+    normalizeVolatile: false,
   };
 }
 

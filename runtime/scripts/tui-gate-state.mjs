@@ -34,7 +34,7 @@ const PROJECT_FIXTURE_FILES = Object.freeze({
   "package.json": '{"private":true}\n',
 });
 const DEFAULT_CONFIG = [
-  "configVersion = 1",
+  "config_version = 2",
   "",
   "[buffer.prediction]",
   'enabled = "off"',
@@ -125,7 +125,6 @@ function isolationEnvironment(home) {
     HOME: resolvedHome,
     USERPROFILE: resolvedHome,
     AGENC_HOME: agencHome,
-    AGENC_CONFIG_DIR: agencHome,
     APPDATA: path.join(resolvedHome, "AppData", "Roaming"),
     LOCALAPPDATA: path.join(resolvedHome, "AppData", "Local"),
     XDG_CACHE_HOME: path.join(resolvedHome, ".cache"),
@@ -164,11 +163,13 @@ export function tuiGateEnvironment(
   baseEnv = process.env,
   injectedEnv = {},
 ) {
-  return {
+  const environment = {
     ...systemEnvironment(baseEnv),
     ...injectedEnv,
     ...isolationEnvironment(home),
   };
+  delete environment.AGENC_CONFIG_DIR;
+  return environment;
 }
 
 async function makePrivateDirectories(env) {
@@ -472,8 +473,7 @@ async function assertOwnedState(state) {
     state.home !== state.root ||
     state.agencHome !== expectedAgencHome ||
     state.env.HOME !== state.root ||
-    state.env.AGENC_HOME !== expectedAgencHome ||
-    state.env.AGENC_CONFIG_DIR !== expectedAgencHome
+    state.env.AGENC_HOME !== expectedAgencHome
   ) {
     throw new Error(`TUI gate state paths changed: ${state.root}`);
   }

@@ -32,7 +32,7 @@ import { formatDuration } from '../../../utils/format.js';
 import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js';
 import { isXtermJs } from '../../ink/terminal.js';
 import { useHasSelection, useSelection } from '../../ink/hooks/use-selection.js';
-import { getGlobalConfig } from '../../../utils/config.js';
+import { getExecutionAuthoritySettings } from '../../../utils/settings/settings.js';
 import { getPlatform } from '../../../utils/platform.js';
 import { PrBadge } from '../PrBadge.js';
 import {
@@ -369,7 +369,8 @@ function ModeIndicator({
       </Text>);
   }
 
-  const copyOnSelect = getGlobalConfig().copyOnSelect ?? true;
+  const copyOnSelect =
+    getExecutionAuthoritySettings().tui?.copyOnSelect ?? true;
   const selectionHintHasContent = hasSelection && (!copyOnSelect || isXtermJs());
 
   if (isFullscreenEnvEnabled() && selectionHintHasContent) {
@@ -455,5 +456,5 @@ function getSpinnerHintParts(isLoading: boolean, todosShortcut: string, killAgen
           </Text>] : [])];
 }
 function isPrStatusEnabled(): boolean {
-  return getGlobalConfig().prStatusFooterEnabled ?? true;
+  return getExecutionAuthoritySettings().tui?.prStatusFooterEnabled ?? true;
 }

@@ -24,6 +24,11 @@ import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
 import { isValidPermissionDefaultMode } from "../config/schema.js";
 import { MCPTransportCleanupError } from "./transports/connect-with-cleanup.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
+import {
+  EMPTY_MCP_REQUEST_ENVIRONMENT,
+  snapshotMcpRequestEnvironment,
+} from "./environment.js";
 
 /**
  * Derive the tool catalog policy (allow/deny filter, I-74 SHA-256 catalog
@@ -37,15 +42,17 @@ import { MCPTransportCleanupError } from "./transports/connect-with-cleanup.js";
  * or access controls (#6). Keeping one implementation means a new security
  * field added to the policy derivation lands on both paths at once.
  *
- * The policy fields live alongside `MCPServerConfig` but are not part of its
- * public surface, so they are read through a widened cast.
+ * Supply-chain and risk-control fields live alongside `MCPServerConfig` but
+ * are not part of its public surface, so only those internal fields are read
+ * through a widened cast. Tool lists come exclusively from the canonical
+ * snake-case config fields.
  */
 export function toToolCatalogPolicyConfig(
   config: MCPServerConfig,
 ): MCPToolCatalogPolicyConfig | undefined {
   const typed = config as MCPServerConfig & MCPToolCatalogPolicyConfig;
-  const allowedTools = typed.allowedTools ?? config.enabled_tools;
-  const deniedTools = typed.deniedTools ?? config.disabled_tools;
+  const allowedTools = config.enabled_tools;
+  const deniedTools = config.disabled_tools;
   const defaultToolsApprovalMode = isValidPermissionDefaultMode(
     config.default_tools_approval_mode,
   )
@@ -162,6 +169,8 @@ interface ResilientMCPBridgeOptions {
   /** Session-provided MCP sampling handler, re-registered on reconnect. */
   readonly samplingHandlers?: McpSamplingHandlers;
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+  /** Immutable transport authority reused by every automatic reconnect. */
+  readonly environment?: ProviderEnvironment;
 }
 
 /**
@@ -212,7 +221,14 @@ export class ResilientMCPBridge implements MCPToolBridge {
     this.catalogPolicy = toToolCatalogPolicyConfig(config);
     this.inner = initialBridge;
     this.logger = logger;
-    this.options = options;
+    this.options = {
+      ...options,
+      ...(options.environment !== undefined
+        ? {
+            environment: snapshotMcpRequestEnvironment(options.environment),
+          }
+        : {}),
+    };
     this.serverName = initialBridge.serverName;
 
     // Build stable proxy tools that delegate to the current inner bridge
@@ -375,6 +391,7 @@ export class ResilientMCPBridge implements MCPToolBridge {
         this.options.elicitationHandlers,
         this.options.samplingHandlers,
         this.options.sandboxExecutionBroker,
+        this.options.environment ?? EMPTY_MCP_REQUEST_ENVIRONMENT,
       );
       if (!this.isReconnectCurrent(epoch)) {
         await closeClientForAbandonedReconnect(client, this.serverName);

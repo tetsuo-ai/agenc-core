@@ -18,7 +18,7 @@ type Props = {
   onScroll?: (sticky: boolean, handle: ScrollBoxHandle) => void;
   /** Enables modal pager keys (g/G, ctrl+u/d/b/f). Only safe when there
    *  is no text input competing for those characters — i.e. transcript
-   *  mode. Defaults to false. When true, G works regardless of editorMode
+   *  mode. Defaults to false. When true, G works regardless of Vim input mode
    *  and sticky state; ctrl+u/d/b/f don't conflict with kill-line/exit/
    *  task:background/kill-agents (none are mounted, or they mount after
    *  this component so stopImmediatePropagation wins). */

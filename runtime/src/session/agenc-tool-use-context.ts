@@ -1,6 +1,5 @@
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 import { assertAgentRoleWorkspaceMatches } from "../agents/role-workspace.js";
-import { readProviderFactoryOptions } from "../llm/provider.js";
 import type { LLMProvider, LLMTool } from "../llm/types.js";
 import {
   createEmptyToolPermissionContext,
@@ -33,12 +32,8 @@ export interface AgenCToolUseContext {
     readonly mcpClients: readonly unknown[];
     readonly contextWindowTokens: number;
     readonly maxOutputTokens?: number;
+    readonly maxBudgetUsd?: number;
     readonly systemPrompt?: string;
-    readonly providerOverride?: {
-      readonly model: string;
-      readonly baseURL: string;
-      readonly apiKey: string;
-    };
     readonly querySource?: string;
     readonly agentDefinitions: {
       readonly agentRoleWorkspaceId?: string;
@@ -175,7 +170,6 @@ export function buildAgenCToolUseContext(
     session.rolloutStore !== undefined &&
     session.isRolloutPersistenceSuspended?.() !== true;
   const model = toAgenCModelContext(ctx);
-  const providerOverride = buildProviderOverride(session, model.model);
   const surface = readSessionSurface(session);
   const agentDefinitions = resolveAgentDefinitionsForContext(
     session,
@@ -212,8 +206,10 @@ export function buildAgenCToolUseContext(
       ...(model.maxOutputTokens !== undefined
         ? { maxOutputTokens: model.maxOutputTokens }
         : {}),
+      ...(session.config.maxBudgetUsd !== undefined
+        ? { maxBudgetUsd: session.config.maxBudgetUsd }
+        : {}),
       ...(systemPrompt.length > 0 ? { systemPrompt } : {}),
-      ...(providerOverride !== undefined ? { providerOverride } : {}),
       ...(opts.querySource !== undefined
         ? { querySource: opts.querySource }
         : {}),
@@ -275,34 +271,6 @@ function toAgenCRuntimeTools(tools: readonly LLMTool[]): AgenCRuntimeTool[] {
       maxResultSizeChars: DEFAULT_MAX_RESULT_SIZE_CHARS,
     };
   });
-}
-
-function buildProviderOverride(
-  session: Session,
-  fallbackModel: string,
-): AgenCToolUseContext["options"]["providerOverride"] | undefined {
-  const provider = session.services.provider;
-  if (!provider) return undefined;
-  const options = readProviderFactoryOptions(provider);
-  const model = firstNonEmpty(options.model, fallbackModel);
-  const baseURL = firstNonEmpty(options.baseURL);
-  if (!model || !baseURL) return undefined;
-  return {
-    model,
-    baseURL,
-    apiKey: options.apiKey ?? "",
-  };
-}
-
-function firstNonEmpty(
-  ...values: Array<string | undefined>
-): string | undefined {
-  for (const value of values) {
-    if (typeof value === "string" && value.trim().length > 0) {
-      return value.trim();
-    }
-  }
-  return undefined;
 }
 
 function normalizeAgentDefinitions(

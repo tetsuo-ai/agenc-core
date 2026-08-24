@@ -3,7 +3,7 @@
  *
  * Programmatic registration surface — the gut runtime wires hooks at
  * boot (or in tests) by calling `register*Hook(...)`. There is no
- * settings.json scanner or plugin loader; that scope belongs upstream.
+ * config snapshot or plugin loader; that scope belongs upstream.
  *
  * Two layers:
  *  - `LifecycleHookRegistry` — instantiable container, used in tests.

@@ -8,21 +8,20 @@
  * Supports: OpenAi, Azure OpenAi, Ollama, LM Studio, OpenRouter,
  * Together, Groq, Fireworks, DeepSeek, Mistral, and any provider-compatible API.
  *
- * Environment variables:
- *   AGENC_USE_OPENAI=1          — enable this provider
+ * Environment variables (provider selection is canonical `AGENC_PROVIDER`):
  *   OPENAI_API_KEY=sk-...             — API key (optional for local models)
  *   OPENAI_AUTH_HEADER=api-key        — optional custom auth header name
  *   OPENAI_AUTH_HEADER_VALUE=...      — optional custom auth header value
  *   OPENAI_AUTH_SCHEME=bearer|raw     — auth scheme for Authorization/custom header handling
  *   OPENAI_API_FORMAT=chat_completions|responses — request format for compatible APIs
  *   OPENAI_BASE_URL=http://...        — base URL (default: https://api.openai.com/v1)
- *   OPENAI_MODEL=gpt-4o              — default model override
- *   PROVIDER_CODE_API_KEY / ~/.providerCode/auth.json — ProviderCode auth for providerCodeplan/providerCodespark
+ *   AGENC_MODEL=gpt-4o               — canonical model selection
+ *   PROVIDER_CODE_API_KEY or native-vault OAuth — ProviderCode auth for providerCodeplan/providerCodespark
  *
  * GitHub Copilot API (api.githubcopilot.com), provider-compatible:
- *   AGENC_USE_GITHUB=1         — enable GitHub inference (no need for USE_OPENAI)
+ *   AGENC_PROVIDER=github            — enable GitHub inference
  *   GITHUB_TOKEN or GH_TOKEN         — Copilot API token (mapped to Bearer auth)
- *   OPENAI_MODEL                     — optional; use github:copilot or openai/gpt-4.1 style IDs
+ *   AGENC_MODEL                      — use github:copilot or openai/gpt-4.1 style IDs
  */
 import { APIError } from '@anthropic-ai/sdk'
 import {
@@ -32,8 +31,8 @@ import {
 import { logForDebugging } from 'src/utils/debug.js'
 import { isBareMode, isEnvTruthy } from '../../utils/envUtils.js'
 import { resolveGeminiCredential } from '../../utils/geminiAuth.js'
-import { hydrateGeminiAccessTokenFromSecureStorage } from '../../utils/geminiCredentials.js'
-import { hydrateGithubModelsTokenFromSecureStorage } from '../../utils/githubModelsCredentials.js'
+import { readGeminiAccessToken } from '../../utils/geminiCredentials.js'
+import { readGithubModelsToken } from '../../utils/githubModelsCredentials.js'
 import {
   createThinkTagFilter,
   stripThinkTags,
@@ -67,7 +66,7 @@ import {
 } from './openaiErrorClassification.js'
 import { sanitizeSchemaForOpenAiCompat } from '../../utils/schemaSanitizer.js'
 import { normalizeToolParamSchema } from '../../utils/toolParamSchema.js'
-import { redactSecretValueForDisplay } from '../../utils/providerProfile.js'
+import { redactSecretValueForDisplay } from '../../utils/providerSecrets.js'
 import { isZaiBaseUrl } from '../../utils/zaiProvider.js'
 import {
   normalizeToolArguments,
@@ -80,6 +79,13 @@ import {
   getStreamStats,
 } from '../../utils/streamingOptimizer.js'
 import { stableStringify } from '../../utils/stableStringify.js'
+import {
+  getSelectedProviderEnvironment,
+  getSelectedProviderModel,
+  getSelectedProviderName,
+} from '../../utils/model/providers.js'
+import type { HomeContext } from '../../config/home.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
 
 type SecretValueSource = Partial<{
   OPENAI_API_KEY: string
@@ -113,7 +119,6 @@ const GITHUB_429_MAX_DELAY_SEC = 32
 // Ceiling on how long a server-provided Retry-After can hold a 429 retry, so a
 // pathological or hostile header value cannot stall the request indefinitely.
 const GITHUB_429_RETRY_AFTER_CAP_MS = 60_000
-const GEMINI_API_HOST = 'generativelanguage.googleapis.com'
 const MOONSHOT_API_HOSTS = new Set([
   'api.moonshot.ai',
   'api.moonshot.cn',
@@ -165,33 +170,18 @@ function malformedJsonResponseError(response: Response): APIError {
   )
 }
 
-function isGithubModelsMode(): boolean {
-  return isEnvTruthy(process.env.AGENC_USE_GITHUB)
+function selectedProviderName(): string {
+  return getSelectedProviderName()
+}
+
+function isGithubModelsMode(provider: string): boolean {
+  return provider === 'github'
 }
 
 function firstProviderEnvString(value: string | undefined): string | undefined {
   if (typeof value !== 'string') return undefined
   const trimmed = value.trim()
   return trimmed.length > 0 ? trimmed : undefined
-}
-
-function hasNonMiniMaxProviderSelection(): boolean {
-  return (
-    isEnvTruthy(process.env.AGENC_USE_GEMINI) ||
-    isEnvTruthy(process.env.AGENC_USE_MISTRAL) ||
-    isEnvTruthy(process.env.AGENC_USE_GITHUB) ||
-    isEnvTruthy(process.env.AGENC_USE_OPENAI) ||
-    isEnvTruthy(process.env.NVIDIA_NIM) ||
-    firstProviderEnvString(process.env.XAI_API_KEY) !== undefined
-  )
-}
-
-function hasOpenAiCompatibleProviderSelection(): boolean {
-  return (
-    isEnvTruthy(process.env.AGENC_USE_GEMINI) ||
-    isEnvTruthy(process.env.AGENC_USE_OPENAI) ||
-    firstProviderEnvString(process.env.XAI_API_KEY) !== undefined
-  )
 }
 
 function requireSelectedProviderApiKey(
@@ -203,137 +193,148 @@ function requireSelectedProviderApiKey(
   throw new Error(`${envLabel} is required for ${providerName} provider`)
 }
 
-function buildMistralProviderOverride(): {
+function buildMistralProviderOverride(
+  environment: ProviderEnvironment,
+  selectedModel: string,
+): {
   model: string
   baseURL: string
   apiKey: string
 } {
   return {
     model:
-      firstProviderEnvString(process.env.MISTRAL_MODEL) ??
-      DEFAULT_MISTRAL_MODEL,
+      firstProviderEnvString(selectedModel) ?? DEFAULT_MISTRAL_MODEL,
     baseURL:
-      firstProviderEnvString(process.env.MISTRAL_BASE_URL) ??
+      firstProviderEnvString(environment.MISTRAL_BASE_URL) ??
       'https://api.mistral.ai/v1',
     apiKey: requireSelectedProviderApiKey(
       'Mistral',
       'MISTRAL_API_KEY',
-      firstProviderEnvString(process.env.MISTRAL_API_KEY),
+      firstProviderEnvString(environment.MISTRAL_API_KEY),
     ),
   }
 }
 
-function buildNvidiaNimProviderOverride(): {
+function buildNvidiaNimProviderOverride(
+  environment: ProviderEnvironment,
+  selectedModel: string,
+): {
   model: string
   baseURL: string
   apiKey: string
 } {
   return {
     model:
-      firstProviderEnvString(process.env.NVIDIA_MODEL) ??
-      DEFAULT_NVIDIA_NIM_MODEL,
+      firstProviderEnvString(selectedModel) ?? DEFAULT_NVIDIA_NIM_MODEL,
     baseURL:
-      firstProviderEnvString(process.env.NVIDIA_BASE_URL) ??
+      firstProviderEnvString(environment.NVIDIA_BASE_URL) ??
       'https://integrate.api.nvidia.com/v1',
     apiKey: requireSelectedProviderApiKey(
       'NVIDIA NIM',
       'NVIDIA_API_KEY',
-      firstProviderEnvString(process.env.NVIDIA_API_KEY),
+      firstProviderEnvString(environment.NVIDIA_API_KEY),
     ),
   }
 }
 
-function buildMiniMaxProviderOverride(): {
+function buildMiniMaxProviderOverride(
+  environment: ProviderEnvironment,
+  selectedModel: string,
+): {
   model: string
   baseURL: string
   apiKey: string
 } {
   return {
     model:
-      firstProviderEnvString(process.env.MINIMAX_MODEL) ??
-      DEFAULT_MINIMAX_MODEL,
+      firstProviderEnvString(selectedModel) ?? DEFAULT_MINIMAX_MODEL,
     baseURL:
-      firstProviderEnvString(process.env.MINIMAX_BASE_URL) ??
+      firstProviderEnvString(environment.MINIMAX_BASE_URL) ??
       'https://api.minimax.io/v1',
     apiKey: requireSelectedProviderApiKey(
       'MiniMax',
       'MINIMAX_API_KEY',
-      firstProviderEnvString(process.env.MINIMAX_API_KEY),
+      firstProviderEnvString(environment.MINIMAX_API_KEY),
     ),
   }
 }
 
-function buildGithubProviderOverride(): {
+function buildGithubProviderOverride(
+  home: HomeContext,
+  environment: ProviderEnvironment,
+  selectedModel: string,
+): {
   model: string
   baseURL: string
   apiKey: string
 } {
   return {
     model:
-      firstProviderEnvString(process.env.GITHUB_MODEL) ??
-      DEFAULT_GITHUB_MODEL,
+      firstProviderEnvString(selectedModel) ?? DEFAULT_GITHUB_MODEL,
     baseURL:
-      firstProviderEnvString(process.env.GITHUB_BASE_URL) ??
+      firstProviderEnvString(environment.GITHUB_BASE_URL) ??
       GITHUB_COPILOT_BASE,
     apiKey:
       requireSelectedProviderApiKey(
         'GitHub',
         'GITHUB_TOKEN or GH_TOKEN',
-        firstProviderEnvString(process.env.GITHUB_TOKEN) ??
-          firstProviderEnvString(process.env.GH_TOKEN),
+        firstProviderEnvString(environment.GITHUB_TOKEN) ??
+          firstProviderEnvString(environment.GH_TOKEN) ??
+          readGithubModelsToken(home),
       ),
   }
 }
 
-function resolveSelectedProviderOverride(
-  selectedProvider?: SelectedShimProvider,
-): { model: string; baseURL: string; apiKey: string } | undefined {
-  if (selectedProvider) {
-    switch (selectedProvider) {
-      case 'mistral':
-        return buildMistralProviderOverride()
-      case 'nvidia-nim':
-        return buildNvidiaNimProviderOverride()
-      case 'minimax':
-        return buildMiniMaxProviderOverride()
-      case 'github':
-        return buildGithubProviderOverride()
-      default:
-        return undefined
-    }
+function buildGeminiProviderOverride(
+  home: HomeContext,
+  environment: ProviderEnvironment,
+  selectedModel: string,
+): {
+  model: string
+  baseURL: string
+  apiKey: string
+} {
+  return {
+    model:
+      firstProviderEnvString(selectedModel) ?? 'gemini-2.5-pro',
+    baseURL:
+      firstProviderEnvString(environment.GEMINI_BASE_URL) ??
+      'https://generativelanguage.googleapis.com/v1beta/openai',
+    apiKey: requireSelectedProviderApiKey(
+      'Gemini',
+      'GEMINI_API_KEY, GOOGLE_API_KEY, or GEMINI_ACCESS_TOKEN',
+      firstProviderEnvString(environment.GEMINI_API_KEY) ??
+        firstProviderEnvString(environment.GOOGLE_API_KEY) ??
+        firstProviderEnvString(environment.GEMINI_ACCESS_TOKEN) ??
+        readGeminiAccessToken(home),
+    ),
   }
-
-  if (isEnvTruthy(process.env.AGENC_USE_MISTRAL)) {
-    return buildMistralProviderOverride()
-  }
-
-  if (isEnvTruthy(process.env.AGENC_USE_GITHUB)) {
-    return buildGithubProviderOverride()
-  }
-
-  if (isEnvTruthy(process.env.AGENC_USE_MINIMAX)) {
-    return buildMiniMaxProviderOverride()
-  }
-
-  if (
-    isEnvTruthy(process.env.NVIDIA_NIM) &&
-    !hasOpenAiCompatibleProviderSelection()
-  ) {
-    return buildNvidiaNimProviderOverride()
-  }
-
-  if (
-    firstProviderEnvString(process.env.MINIMAX_API_KEY) &&
-    !hasNonMiniMaxProviderSelection()
-  ) {
-    return buildMiniMaxProviderOverride()
-  }
-
-  return undefined
 }
 
-function isMistralMode(): boolean {
-  return isEnvTruthy(process.env.AGENC_USE_MISTRAL)
+function resolveSelectedProviderOverride(
+  selectedProvider: string,
+  home: HomeContext,
+  environment: ProviderEnvironment,
+  selectedModel: string,
+): { model: string; baseURL: string; apiKey: string } | undefined {
+  switch (selectedProvider) {
+    case 'gemini':
+      return buildGeminiProviderOverride(home, environment, selectedModel)
+    case 'mistral':
+      return buildMistralProviderOverride(environment, selectedModel)
+    case 'nvidia-nim':
+      return buildNvidiaNimProviderOverride(environment, selectedModel)
+    case 'minimax':
+      return buildMiniMaxProviderOverride(environment, selectedModel)
+    case 'github':
+      return buildGithubProviderOverride(home, environment, selectedModel)
+    default:
+      return undefined
+  }
+}
+
+function isMistralMode(provider: string): boolean {
+  return provider === 'mistral'
 }
 
 function filterproviderHeaders(
@@ -360,16 +361,6 @@ function filterproviderHeaders(
   }
 
   return filtered
-}
-
-function hasGeminiApiHost(baseUrl: string | undefined): boolean {
-  if (!baseUrl) return false
-
-  try {
-    return new URL(baseUrl).hostname.toLowerCase() === GEMINI_API_HOST
-  } catch {
-    return false
-  }
 }
 
 function isMoonshotCompatibleBaseUrl(baseUrl: string | undefined): boolean {
@@ -452,7 +443,10 @@ function shouldRedactUrlQueryParam(name: string): boolean {
   return SENSITIVE_URL_QUERY_PARAM_NAMES.some(token => lower.includes(token))
 }
 
-function redactUrlForDiagnostics(url: string): string {
+function redactUrlForDiagnostics(
+  url: string,
+  environment: ProviderEnvironment,
+): string {
   try {
     const parsed = new URL(url)
     if (parsed.username) {
@@ -469,9 +463,9 @@ function redactUrlForDiagnostics(url: string): string {
     }
 
     const serialized = parsed.toString()
-    return redactSecretValueForDisplay(serialized, process.env as SecretValueSource) ?? serialized
+    return redactSecretValueForDisplay(serialized, environment as SecretValueSource) ?? serialized
   } catch {
-    return redactSecretValueForDisplay(url, process.env as SecretValueSource) ?? url
+    return redactSecretValueForDisplay(url, environment as SecretValueSource) ?? url
   }
 }
 
@@ -659,11 +653,8 @@ function convertContentBlocks(
   return parts
 }
 
-function isGeminiMode(): boolean {
-  return (
-    isEnvTruthy(process.env.AGENC_USE_GEMINI) ||
-    hasGeminiApiHost(process.env.OPENAI_BASE_URL)
-  )
+function isGeminiMode(provider: string): boolean {
+  return provider === 'gemini'
 }
 
 function convertMessages(
@@ -673,7 +664,7 @@ function convertMessages(
     content?: unknown
   }>,
   system: unknown,
-  options?: { preserveReasoningContent?: boolean },
+  options?: { preserveReasoningContent?: boolean; isGemini?: boolean },
 ): OpenAiMessage[] {
   const preserveReasoningContent = options?.preserveReasoningContent === true
   const result: OpenAiMessage[] = []
@@ -833,7 +824,7 @@ function convertMessages(
                 }
 
                 // Handle Gemini thought_signature
-                if (isGeminiMode()) {
+                if (options?.isGemini === true) {
                   // If the model provided a signature in the tool_use block itself (e.g. from a previous Turn/Step)
                   // Use thinkingBlock.signature for ALL tool calls in the same assistant turn if available.
                   // The API requires the same signature on every replayed function call part in a parallel set.
@@ -1025,9 +1016,9 @@ function normalizeSchemaForOpenAi(
 
 function convertTools(
   tools: Array<{ name: string; description?: string; input_schema?: Record<string, unknown> }>,
+  isGemini: boolean,
+  environment: ProviderEnvironment,
 ): OpenAiTool[] {
-  const isGemini = isGeminiMode()
-
   return tools
     .filter(t => t.name !== 'ToolSearchTool') // Not relevant for OpenAi
     .map(t => {
@@ -1054,7 +1045,7 @@ function convertTools(
       const strict =
         strictEligible &&
         !isGemini &&
-        !isEnvTruthy(process.env.AGENC_DISABLE_STRICT_TOOLS)
+        !isEnvTruthy(environment.AGENC_DISABLE_STRICT_TOOLS)
 
       return {
         type: 'function' as const,
@@ -1581,9 +1572,15 @@ class OpenAiShimMessages {
   private defaultHeaders: Record<string, string>
   private reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   private providerOverride?: { model: string; baseURL: string; apiKey: string }
+  private selectedProvider: string
+  private home: HomeContext
+  private environment: ProviderEnvironment
 
-  constructor(defaultHeaders: Record<string, string>, reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh', providerOverride?: { model: string; baseURL: string; apiKey: string }) {
+  constructor(defaultHeaders: Record<string, string>, selectedProvider: string, home: HomeContext, environment: ProviderEnvironment, reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh', providerOverride?: { model: string; baseURL: string; apiKey: string }) {
     this.defaultHeaders = filterproviderHeaders(defaultHeaders)
+    this.selectedProvider = selectedProvider
+    this.home = home
+    this.environment = environment
     this.reasoningEffort = reasoningEffort
     this.providerOverride = providerOverride
   }
@@ -1597,7 +1594,7 @@ class OpenAiShimMessages {
     let httpResponse: Response | undefined
 
     const promise = (async () => {
-      const request = resolveProviderRequest({ model: self.providerOverride?.model ?? params.model, baseUrl: self.providerOverride?.baseURL, reasoningEffortOverride: self.reasoningEffort })
+      const request = resolveProviderRequest({ provider: self.selectedProvider, model: self.providerOverride?.model ?? params.model, baseUrl: self.providerOverride?.baseURL, reasoningEffortOverride: self.reasoningEffort, environment: self.environment })
       const response = await self._doRequest(request, params, options)
       httpResponse = response
 
@@ -1626,7 +1623,7 @@ class OpenAiShimMessages {
       if (
         request.transport === 'responses' ||
         isResponsesNonStream ||
-        (request.transport === 'chat_completions' && isGithubModelsMode())
+        (request.transport === 'chat_completions' && isGithubModelsMode(self.selectedProvider))
       ) {
         const contentType = response.headers.get('content-type') ?? ''
         if (contentType.includes('application/json')) {
@@ -1683,11 +1680,11 @@ class OpenAiShimMessages {
     params: ShimCreateParams,
     options?: { signal?: AbortSignal; headers?: Record<string, string> },
   ): Promise<Response> {
-    const isGithubMode = isGithubModelsMode()
+    const isGithubMode = isGithubModelsMode(this.selectedProvider)
     const isGithubWithProviderCodeTransport = isGithubMode && request.transport === 'providerCode_responses'
 
     if (isGithubWithProviderCodeTransport) {
-      const apiKey = this.providerOverride?.apiKey ?? process.env.OPENAI_API_KEY ?? ''
+      const apiKey = this.providerOverride?.apiKey ?? this.environment.OPENAI_API_KEY ?? ''
       if (!apiKey) {
         throw new Error(
           'GitHub Copilot auth is required. Set GITHUB_TOKEN/GH_TOKEN or configure the github provider from /provider.',
@@ -1700,6 +1697,7 @@ class OpenAiShimMessages {
           apiKey,
           source: 'env',
         },
+        environment: this.environment,
         params,
         defaultHeaders: {
           ...this.defaultHeaders,
@@ -1711,7 +1709,10 @@ class OpenAiShimMessages {
     }
 
     if (request.transport === 'providerCode_responses' && !isGithubMode) {
-      const refreshResult = await refreshProviderCodeAccessTokenIfNeeded().catch(
+      const refreshResult = await refreshProviderCodeAccessTokenIfNeeded(
+        this.home,
+        this.environment,
+      ).catch(
         async error => {
           logForDebugging(
             `[providerCode] access token refresh failed before request: ${error instanceof Error ? error.message : String(error)}`,
@@ -1719,34 +1720,33 @@ class OpenAiShimMessages {
           )
           return {
             refreshed: false,
-            credentials: await readProviderCodeCredentialsAsync(),
+            credentials: await readProviderCodeCredentialsAsync(this.home),
           }
         },
       )
       const credentials = resolveRuntimeOpenAiCodeCredentials({
+        env: this.environment as NodeJS.ProcessEnv,
         storedCredentials: refreshResult.credentials,
       })
       if (!credentials.apiKey) {
         const oauthHint = isBareMode() ? '' : ', choose ProviderCode OAuth in /provider'
-        const authHint = credentials.authPath
-          ? `${oauthHint} or place a ProviderCode auth.json at ${credentials.authPath}`
-          : oauthHint
         const safeModel =
-          redactSecretValueForDisplay(request.requestedModel, process.env as SecretValueSource) ??
+          redactSecretValueForDisplay(request.requestedModel, this.environment as SecretValueSource) ??
           'the requested model'
         throw new Error(
-          `ProviderCode auth is required for ${safeModel}. Set PROVIDER_CODE_API_KEY${authHint}.`,
+          `ProviderCode auth is required for ${safeModel}. Set PROVIDER_CODE_API_KEY${oauthHint}.`,
         )
       }
       if (!credentials.accountId) {
         throw new Error(
-          'ProviderCode auth is missing chatgpt_account_id. Re-login with ProviderCode OAuth, the ProviderCode CLI, or set CHATGPT_ACCOUNT_ID/PROVIDER_CODE_ACCOUNT_ID.',
+          'ProviderCode auth is missing chatgpt_account_id. Re-login with ProviderCode OAuth or set CHATGPT_ACCOUNT_ID/PROVIDER_CODE_ACCOUNT_ID.',
         )
       }
 
       return performProviderCodeRequest({
         request,
         credentials,
+        environment: this.environment,
         params,
         defaultHeaders: {
           ...this.defaultHeaders,
@@ -1771,6 +1771,7 @@ class OpenAiShimMessages {
         content?: unknown
       }>,
       request.resolvedModel,
+      this.environment,
     )
     const openaiMessages = convertMessages(compressedMessages, params.system, {
       // Moonshot/Kimi Code requires every assistant tool-call message to carry
@@ -1781,6 +1782,7 @@ class OpenAiShimMessages {
         isMoonshotCompatibleBaseUrl(request.baseUrl) ||
         isDeepSeekBaseUrl(request.baseUrl) ||
         isZaiBaseUrl(request.baseUrl),
+      isGemini: isGeminiMode(this.selectedProvider),
     })
 
     const body: Record<string, unknown> = {
@@ -1809,8 +1811,9 @@ class OpenAiShimMessages {
       body.stream_options = { include_usage: true }
     }
 
-    const isGithub = isGithubModelsMode()
-    const isMistral = isMistralMode()
+    const isGithub = isGithubModelsMode(this.selectedProvider)
+    const isMistral = isMistralMode(this.selectedProvider)
+    const isGemini = isGeminiMode(this.selectedProvider)
     const isLocal = isLocalProviderUrl(request.baseUrl)
 
     const githubEndpointType = getGithubEndpointType(request.baseUrl)
@@ -1842,7 +1845,7 @@ class OpenAiShimMessages {
     // DeepSeek, and Z.AI have not published support for the parameter either;
     // strip it preemptively to avoid the same class of error on strict-parse
     // providers.
-    if (isMistral || isGeminiMode() || isMoonshot || isDeepSeek || isZai) {
+    if (isMistral || isGemini || isMoonshot || isDeepSeek || isZai) {
       delete body.store
     }
 
@@ -1888,6 +1891,8 @@ class OpenAiShimMessages {
           description?: string
           input_schema?: Record<string, unknown>
         }>,
+        isGemini,
+        this.environment,
       )
       if (converted.length > 0) {
         body.tools = converted
@@ -1924,7 +1929,7 @@ class OpenAiShimMessages {
         store: false,
       }
 
-      if (isMistral || isGeminiMode() || isMoonshot || isDeepSeek || isZai) {
+      if (isMistral || isGemini || isMoonshot || isDeepSeek || isZai) {
         delete responsesBody.store
       }
 
@@ -1974,13 +1979,12 @@ class OpenAiShimMessages {
       ...filterproviderHeaders(options?.headers),
     }
 
-    const isGemini = isGeminiMode()
     const apiKey =
       this.providerOverride?.apiKey ??
-      process.env.OPENAI_API_KEY ??
+      this.environment.OPENAI_API_KEY ??
       ''
-    const configuredAuthHeaderValue = process.env.OPENAI_AUTH_HEADER_VALUE?.trim()
-    const customAuthHeader = process.env.OPENAI_AUTH_HEADER?.trim()
+    const configuredAuthHeaderValue = this.environment.OPENAI_AUTH_HEADER_VALUE?.trim()
+    const customAuthHeader = this.environment.OPENAI_AUTH_HEADER?.trim()
     const hasCustomAuthHeader = Boolean(
       customAuthHeader &&
       /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(customAuthHeader),
@@ -1988,6 +1992,9 @@ class OpenAiShimMessages {
     const authValue = hasCustomAuthHeader
       ? configuredAuthHeaderValue || apiKey
       : apiKey
+    const geminiCredential = isGemini
+      ? await resolveGeminiCredential(this.environment)
+      : undefined
     // Detect Azure endpoints by hostname (not raw URL) to prevent bypass via
     // path segments like https://evil.com/cognitiveservices.azure.com/
     let isAzure = false
@@ -2002,14 +2009,22 @@ class OpenAiShimMessages {
       isBankr = request.baseUrl.toLowerCase().includes('bankr')
     } catch { /* malformed URL — not Bankr */ }
 
-    if (authValue) {
+    if (
+      geminiCredential?.kind === 'access-token' ||
+      geminiCredential?.kind === 'adc'
+    ) {
+      headers.Authorization = `Bearer ${geminiCredential.credential}`
+      if (geminiCredential.projectId) {
+        headers['x-goog-user-project'] = geminiCredential.projectId
+      }
+    } else if (authValue) {
       if (hasCustomAuthHeader && customAuthHeader) {
         const defaultCustomAuthScheme =
           customAuthHeader.toLowerCase() === 'authorization' ? 'bearer' : 'raw'
         const customAuthScheme =
-          process.env.OPENAI_AUTH_SCHEME === 'raw' ||
-          process.env.OPENAI_AUTH_SCHEME === 'bearer'
-            ? process.env.OPENAI_AUTH_SCHEME
+          this.environment.OPENAI_AUTH_SCHEME === 'raw' ||
+          this.environment.OPENAI_AUTH_SCHEME === 'bearer'
+            ? this.environment.OPENAI_AUTH_SCHEME
             : defaultCustomAuthScheme
         headers[customAuthHeader] =
           customAuthScheme === 'bearer'
@@ -2024,13 +2039,9 @@ class OpenAiShimMessages {
       } else {
         headers.Authorization = `Bearer ${authValue}`
       }
-    } else if (isGemini) {
-      const geminiCredential = await resolveGeminiCredential(process.env)
+    } else if (geminiCredential?.kind !== undefined) {
       if (geminiCredential.kind !== 'none') {
         headers.Authorization = `Bearer ${geminiCredential.credential}`
-        if (geminiCredential.kind !== 'api-key' && 'projectId' in geminiCredential && geminiCredential.projectId) {
-          headers['x-goog-user-project'] = geminiCredential.projectId
-        }
       }
     }
 
@@ -2045,8 +2056,8 @@ class OpenAiShimMessages {
       // Azure Cognitive Services / Azure OpenAi require a deployment-specific
       // path and an api-version query parameter.
       if (isAzure) {
-        const apiVersion = process.env.AZURE_OPENAI_API_VERSION ?? '2024-12-01-preview'
-        const deployment = request.resolvedModel ?? process.env.OPENAI_MODEL ?? 'gpt-4o'
+        const apiVersion = this.environment.AZURE_OPENAI_API_VERSION ?? '2024-12-01-preview'
+        const deployment = request.resolvedModel || 'gpt-4o'
 
         // If base URL already contains /deployments/, use it as-is with api-version.
         if (/\/deployments\//i.test(baseUrl)) {
@@ -2093,7 +2104,7 @@ class OpenAiShimMessages {
         requestUrl = buildRequestUrl(activeBaseUrl)
 
         logForDebugging(
-          `[OpenAiShim] self-heal retry reason=${reason} method=POST from=${redactUrlForDiagnostics(previousUrl)} to=${redactUrlForDiagnostics(requestUrl)} model=${request.resolvedModel}`,
+          `[OpenAiShim] self-heal retry reason=${reason} method=POST from=${redactUrlForDiagnostics(previousUrl, this.environment)} to=${redactUrlForDiagnostics(requestUrl, this.environment)} model=${request.resolvedModel}`,
           { level: 'warn' },
         )
 
@@ -2144,11 +2155,11 @@ class OpenAiShimMessages {
         classifyOpenAiNetworkFailure(error, {
           url: requestUrl,
         })
-      const redactedUrl = redactUrlForDiagnostics(requestUrl)
+      const redactedUrl = redactUrlForDiagnostics(requestUrl, this.environment)
       const safeMessage =
         redactSecretValueForDisplay(
           failure.message,
-          process.env as SecretValueSource,
+          this.environment as SecretValueSource,
         ) || 'Request failed'
 
       logForDebugging(
@@ -2182,7 +2193,7 @@ class OpenAiShimMessages {
           status,
           body: errorBody,
         })
-      const redactedUrl = redactUrlForDiagnostics(requestUrl)
+      const redactedUrl = redactUrlForDiagnostics(requestUrl, this.environment)
 
       logForDebugging(
         `[OpenAiShim] request failed category=${failure.category} retryable=${failure.retryable} status=${status} method=POST url=${redactedUrl} model=${request.resolvedModel}`,
@@ -2212,6 +2223,7 @@ class OpenAiShimMessages {
         response = await fetchWithProxyRetry(
           requestUrl,
           buildFetchInit(),
+          { environment: this.environment },
         )
       } catch (error) {
         const isAbortError =
@@ -2296,7 +2308,7 @@ class OpenAiShimMessages {
               headers,
               body: stableStringify(responsesBody),
               signal: options?.signal,
-            })
+            }, { environment: this.environment })
           } catch (error) {
             // `throw` is for CFA narrowing only — throwClassifiedTransportError
             // returns `never` and always throws first, so responsesResponse is
@@ -2359,7 +2371,7 @@ class OpenAiShimMessages {
         refreshSerializedBody()
 
         logForDebugging(
-          `[OpenAiShim] self-heal retry reason=tool_call_incompatible mode=toolless method=POST url=${redactUrlForDiagnostics(requestUrl)} model=${request.resolvedModel}`,
+          `[OpenAiShim] self-heal retry reason=tool_call_incompatible mode=toolless method=POST url=${redactUrlForDiagnostics(requestUrl, this.environment)} model=${request.resolvedModel}`,
           { level: 'warn' },
         )
         continue
@@ -2518,8 +2530,8 @@ class OpenAiShimBeta {
   messages: OpenAiShimMessages
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
 
-  constructor(defaultHeaders: Record<string, string>, reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh', providerOverride?: { model: string; baseURL: string; apiKey: string }) {
-    this.messages = new OpenAiShimMessages(defaultHeaders, reasoningEffort, providerOverride)
+  constructor(defaultHeaders: Record<string, string>, selectedProvider: string, home: HomeContext, environment: ProviderEnvironment, reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh', providerOverride?: { model: string; baseURL: string; apiKey: string }) {
+    this.messages = new OpenAiShimMessages(defaultHeaders, selectedProvider, home, environment, reasoningEffort, providerOverride)
     this.reasoningEffort = reasoningEffort
   }
 }
@@ -2531,45 +2543,23 @@ export function createOpenAiShimClient(options: {
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
   providerOverride?: { model: string; baseURL: string; apiKey: string }
   selectedProvider?: SelectedShimProvider
+  model?: string
+  providerEnvironment?: ProviderEnvironment
+  home: HomeContext
 }): unknown {
-  hydrateGeminiAccessTokenFromSecureStorage()
-  hydrateGithubModelsTokenFromSecureStorage()
+  const selectedProvider =
+    options.selectedProvider ?? selectedProviderName()
+  const environment =
+    options.providerEnvironment ?? getSelectedProviderEnvironment()
+  const selectedModel = options.model ?? getSelectedProviderModel()
+  const home = options.home
   const providerOverride =
     options.providerOverride ??
-    resolveSelectedProviderOverride(options.selectedProvider)
-
-  // When Gemini provider is active, map Gemini env vars to provider-compatible ones
-  // so the existing providerConfig.ts infrastructure picks them up correctly.
-  if (!providerOverride && isEnvTruthy(process.env.AGENC_USE_GEMINI)) {
-    process.env.OPENAI_BASE_URL ??=
-      process.env.GEMINI_BASE_URL ??
-      'https://generativelanguage.googleapis.com/v1beta/openai'
-    const geminiApiKey =
-      process.env.GEMINI_API_KEY ?? process.env.GOOGLE_API_KEY
-    if (geminiApiKey && !process.env.OPENAI_API_KEY) {
-      process.env.OPENAI_API_KEY = geminiApiKey
-    }
-    if (process.env.GEMINI_MODEL && !process.env.OPENAI_MODEL) {
-      process.env.OPENAI_MODEL = process.env.GEMINI_MODEL
-    }
-  }
-
-  // Map Bankr env vars to provider-compatible ones when present
-  if (!providerOverride) {
-    if (process.env.BNKR_API_KEY && !process.env.OPENAI_API_KEY) {
-      process.env.OPENAI_API_KEY = process.env.BNKR_API_KEY
-    }
-    if (process.env.BANKR_BASE_URL && !process.env.OPENAI_BASE_URL) {
-      process.env.OPENAI_BASE_URL = process.env.BANKR_BASE_URL
-    }
-    if (process.env.BANKR_MODEL && !process.env.OPENAI_MODEL) {
-      process.env.OPENAI_MODEL = process.env.BANKR_MODEL
-    }
-  }
+    resolveSelectedProviderOverride(selectedProvider, home, environment, selectedModel)
 
   const beta = new OpenAiShimBeta({
     ...(options.defaultHeaders ?? {}),
-  }, options.reasoningEffort, providerOverride)
+  }, selectedProvider, home, environment, options.reasoningEffort, providerOverride)
   return {
     beta,
     messages: beta.messages,

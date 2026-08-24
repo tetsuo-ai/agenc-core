@@ -1,3 +1,7 @@
+/**
+ * `agenc init` writes canonical `.agenc/config.toml` plus `AGENC.md`.
+ */
+
 import { cwd as processCwd } from "node:process";
 import {
   formatProjectInitResult,
@@ -24,7 +28,7 @@ export function formatAgenCInitCliHelpText(): string {
     "Usage: agenc init [--force]",
     "",
     "Creates project-level AgenC files in the current directory:",
-    "  .agenc/config.json",
+    "  .agenc/config.toml",
     "  AGENC.md",
     "",
     "Options:",

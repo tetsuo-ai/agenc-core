@@ -6,7 +6,7 @@
  *
  *   - `rules.ts`        — parseRuleString, serializeRuleValue,
  *                         applyPermissionUpdate
- *   - `settings.ts`     — addPermissionRulesToSettings, deletePermissionRule,
+ *   - `settings.ts`     — addPermissionRulesToConfig, deletePermissionRule,
  *                         recordBypassPermissionsAcceptance
  *   - `mode.ts`         — transitionPermissionMode, PermissionModeRegistry
  *
@@ -34,7 +34,7 @@
  *   - `session.services.permissionModeRegistry` is the source of truth.
  *   - `applyPermissionUpdate` on the session source is transient; the
  *     `--persist` flag (user/project/local) additionally routes to
- *     `addPermissionRulesToSettings` / `deletePermissionRule`.
+ *     `addPermissionRulesToConfig` / `deletePermissionRule`.
  *
  * @module
  */
@@ -57,7 +57,7 @@ import { applyPermissionUpdate } from "../permissions/rules.js";
 import { transitionPermissionMode } from "../permissions/permission-mode.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
-  addPermissionRulesToSettings,
+  addPermissionRulesToConfig,
   deletePermissionRule,
   recordBypassPermissionsAcceptance,
   type DiskEnv,
@@ -193,7 +193,7 @@ export function formatRuleList(ctx: ToolPermissionContext): string {
 
 /**
  * Serialize the current context as a JSON object shaped like the
- * `permissions` block in `settings.json`. Every source is flattened into
+ * `permissions` block in canonical config.toml. Every source is flattened into
  * one union; operators can split as needed before pasting into a file.
  */
 export function exportRules(ctx: ToolPermissionContext): string {
@@ -380,7 +380,7 @@ async function addRuleFromCommand(
       persistNote =
         " (session only — repository files cannot store permission approvals)";
     } else {
-      const wrote = await addPermissionRulesToSettings({
+      const wrote = await addPermissionRulesToConfig({
         destination: persistTo,
         behavior,
         rules: [ruleValue],

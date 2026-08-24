@@ -12,16 +12,13 @@
  * session boundary owns the attach/start ordering for the running
  * session.
  *
- * This module also ships `getMcpConfigFromEnv()` as an explicit
- * `AGENC_MCP_SERVERS` override. Normal startup reads the loaded
- * `~/.agenc/config.toml` snapshot (`mcp_servers`) first, then lets the
- * env override replace that list when set.
+ * Runtime MCP configuration comes only from the canonical ConfigStore
+ * snapshot plus enabled plugin declarations. Per-process JSON environment
+ * payloads are deliberately not a configuration authority.
  *
  * @module
  */
 
-import { readFileSync } from "node:fs";
-import { dirname, join, parse } from "node:path";
 import type {
   CreateMessageRequest,
   CreateMessageResult,
@@ -33,6 +30,7 @@ import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import { MCPManager as LiveMCPManager } from "../mcp-client/manager.js";
 import type { MCPToolBridgePermissionOptions } from "../mcp-client/tools.js";
 import type { MCPServerConfig } from "../mcp-client/types.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
 import type {
   LLMChatOptions,
   LLMContentPart,
@@ -47,7 +45,6 @@ import {
 } from "../llm/provider.js";
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 import type { AgenCConfig, McpServerConfig as AgenCMcpServerConfig } from "../config/schema.js";
-import { McpJsonConfigSchema, type McpServerConfig as ServiceMcpServerConfig } from "../services/mcp/types.js";
 import { loadPluginMcpServers } from "../plugins/registration/mcp-plugin-integration.js";
 import {
   createUnavailableSamplingResult,
@@ -84,7 +81,8 @@ export interface CreateSessionMcpServiceOptions {
 
 export interface ResolveSessionMcpConfigSourcesOptions {
   readonly cwd?: string;
-  readonly includeProjectMcpServers?: boolean;
+  /** Immutable parent environment owned by this session's MCP manager. */
+  readonly environment?: ProviderEnvironment;
   /**
    * Merge MCP servers declared by enabled (authority-controlled) plugins.
    * Default true: plugin MCP servers were historically loaded and sandboxed
@@ -188,10 +186,14 @@ export function createSessionMcpManager(
   configs: ReadonlyArray<MCPServerConfig>,
   options: Pick<
     ResolveSessionMcpConfigSourcesOptions,
-    "sandboxExecutionBroker"
+    "sandboxExecutionBroker" | "environment"
   > = {},
 ): MCPManager {
-  const manager = new LiveMCPManager([...configs]);
+  const manager = new LiveMCPManager(
+    [...configs],
+    undefined,
+    options.environment,
+  );
   manager.setSandboxExecutionBroker(options.sandboxExecutionBroker);
   return manager;
 }
@@ -605,59 +607,6 @@ function toRuntimeMcpServerConfig(
   } as MCPServerConfig;
 }
 
-function serviceMcpServerToRuntimeConfig(
-  name: string,
-  config: ServiceMcpServerConfig,
-): MCPServerConfig {
-  const raw = config as ServiceMcpServerConfig & Record<string, unknown>;
-  const type = raw.type;
-  if (type === "sse" || type === "http" || type === "ws") {
-    return {
-      ...raw,
-      name,
-      transport: type === "ws" ? "websocket" : type,
-      endpoint: typeof raw.url === "string" ? raw.url : undefined,
-    } as MCPServerConfig;
-  }
-  return {
-    ...raw,
-    name,
-    transport: "stdio",
-    ...(Array.isArray(raw.args) ? { args: [...raw.args] as string[] } : {}),
-    ...(raw.env !== undefined ? { env: cloneRecord(raw.env as Record<string, string>) } : {}),
-  } as MCPServerConfig;
-}
-
-function projectMcpJsonPaths(cwd: string): string[] {
-  const dirs: string[] = [];
-  let current = cwd;
-  for (;;) {
-    dirs.push(current);
-    const parent = dirname(current);
-    if (parent === current || current === parse(current).root) break;
-    current = parent;
-  }
-  return dirs.reverse().map((dir) => join(dir, ".mcp.json"));
-}
-
-function getProjectMcpConfigFromCwd(cwd: string): MCPServerConfig[] {
-  const merged = new Map<string, MCPServerConfig>();
-  for (const filePath of projectMcpJsonPaths(cwd)) {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(readFileSync(filePath, "utf8"));
-    } catch {
-      continue;
-    }
-    const result = McpJsonConfigSchema().safeParse(parsed);
-    if (!result.success) continue;
-    for (const [name, config] of Object.entries(result.data.mcpServers)) {
-      merged.set(name, serviceMcpServerToRuntimeConfig(name, config));
-    }
-  }
-  return [...merged.values()];
-}
-
 /**
  * Read `mcp_servers` from the loaded AgenC config snapshot and convert
  * keyed TOML tables (`[mcp_servers.github]`) into the runtime manager's
@@ -682,25 +631,10 @@ export function getMcpConfigFromConfig(
     .map(([name, value]) => toRuntimeMcpServerConfig(name, value));
 }
 
-function hasMcpEnvOverride(env: NodeJS.ProcessEnv): boolean {
-  return (
-    typeof env.AGENC_MCP_SERVERS === "string" &&
-    env.AGENC_MCP_SERVERS.trim().length > 0
-  );
-}
-
-/**
- * Resolve the effective MCP server list for session startup. Config is
- * the default source; `AGENC_MCP_SERVERS` remains a complete override
- * so ops/tests can replace the list without editing config.toml.
- */
+/** Resolve the canonical MCP server list for session startup. */
 export function resolveSessionMcpConfig(
   config: Pick<AgenCConfig, "mcp_servers"> | undefined,
-  env: NodeJS.ProcessEnv = process.env,
 ): MCPServerConfig[] {
-  if (hasMcpEnvOverride(env)) {
-    return getMcpConfigFromEnv(env);
-  }
   return getMcpConfigFromConfig(config);
 }
 
@@ -711,7 +645,7 @@ export function resolveSessionMcpConfig(
  * take the whole session's MCP startup down with it.
  */
 async function getPluginMcpConfig(
-  config: Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined,
+  config: Pick<AgenCConfig, "plugins"> | undefined,
   env: NodeJS.ProcessEnv,
   options: ResolveSessionMcpConfigSourcesOptions,
 ): Promise<MCPServerConfig[]> {
@@ -736,25 +670,17 @@ async function getPluginMcpConfig(
 
 export async function resolveSessionMcpConfigFromSources(
   config:
-    | Pick<AgenCConfig, "mcp_servers" | "plugins" | "enabledPlugins">
+    | Pick<AgenCConfig, "mcp_servers" | "plugins">
     | undefined,
   env: NodeJS.ProcessEnv = process.env,
   options: ResolveSessionMcpConfigSourcesOptions = {},
 ): Promise<MCPServerConfig[]> {
-  if (hasMcpEnvOverride(env)) {
-    return getMcpConfigFromEnv(env);
-  }
   const byName = new Map<string, MCPServerConfig>();
   for (const server of getMcpConfigFromConfig(config)) {
     byName.set(server.name, server);
   }
-  if (options.includeProjectMcpServers === true && options.cwd !== undefined) {
-    for (const server of getProjectMcpConfigFromCwd(options.cwd)) {
-      byName.set(server.name, server);
-    }
-  }
   if (options.includePluginMcpServers !== false) {
-    // Plugin-scoped names never clobber config/project entries: an explicit
+    // Plugin-scoped names never clobber canonical config entries: an explicit
     // config entry under the same scoped name is a deliberate override.
     for (const server of await getPluginMcpConfig(config, env, options)) {
       if (!byName.has(server.name)) {
@@ -765,48 +691,28 @@ export async function resolveSessionMcpConfigFromSources(
   return [...byName.values()];
 }
 
-/**
- * Config-backed manager construction for the local runtime path. The
- * env parameter is only the explicit `AGENC_MCP_SERVERS` override.
- */
+/** Config-backed manager construction for the local runtime path. */
 export function createSessionMcpManagerFromConfig(
   config: Pick<AgenCConfig, "mcp_servers"> | undefined,
-  env: NodeJS.ProcessEnv = process.env,
   options: Pick<
     ResolveSessionMcpConfigSourcesOptions,
-    "sandboxExecutionBroker"
+    "sandboxExecutionBroker" | "environment"
   > = {},
 ): MCPManager {
-  return createSessionMcpManager(resolveSessionMcpConfig(config, env), options);
+  return createSessionMcpManager(resolveSessionMcpConfig(config), options);
 }
 
 export async function createSessionMcpManagerFromSources(
   config:
-    | Pick<AgenCConfig, "mcp_servers" | "plugins" | "enabledPlugins">
+    | Pick<AgenCConfig, "mcp_servers" | "plugins">
     | undefined,
   env: NodeJS.ProcessEnv = process.env,
   options: ResolveSessionMcpConfigSourcesOptions = {},
 ): Promise<MCPManager> {
   return createSessionMcpManager(
     await resolveSessionMcpConfigFromSources(config, env, options),
-    options,
+    { ...options, environment: options.environment ?? env },
   );
-}
-
-/**
- * Back-compat env-backed manager construction for callers/tests that
- * have not yet threaded a ConfigStore snapshot. Prefer
- * `createSessionMcpManagerFromConfig` in live bootstrap paths.
- */
-export function createSessionMcpManagerFromEnv(
-  env: NodeJS.ProcessEnv = process.env,
-  config?: Pick<AgenCConfig, "mcp_servers">,
-  options: Pick<
-    ResolveSessionMcpConfigSourcesOptions,
-    "sandboxExecutionBroker"
-  > = {},
-): MCPManager {
-  return createSessionMcpManager(resolveSessionMcpConfig(config, env), options);
 }
 
 export function requiredMcpServerNames(
@@ -840,7 +746,7 @@ function withConfiguredRequiredServers(
 export async function refreshMcpManagerFromConfig(params: {
   readonly manager: MCPManager;
   readonly config:
-    | Pick<AgenCConfig, "mcp_servers" | "plugins" | "enabledPlugins">
+    | Pick<AgenCConfig, "mcp_servers" | "plugins">
     | undefined;
   readonly env?: NodeJS.ProcessEnv;
   readonly opts?: MCPManagerStartOpts;
@@ -1114,30 +1020,4 @@ export async function startMcpManagerForSession(
   };
   const configs = metadataManager.getConfiguredServers?.() ?? [];
   await manager.start(withConfiguredRequiredServers(configs, opts));
-}
-
-/**
- * Read `AGENC_MCP_SERVERS` and parse it as a JSON array of runtime
- * `MCPServerConfig` objects. Returns `[]` when the env var is unset,
- * empty, or malformed — the caller can still construct an
- * `MCPManager` with an empty config so the observer-attach site
- * remains live.
- */
-export function getMcpConfigFromEnv(
-  env: NodeJS.ProcessEnv = process.env,
-): MCPServerConfig[] {
-  const raw = env.AGENC_MCP_SERVERS;
-  if (!raw || raw.trim().length === 0) return [];
-  try {
-    const parsed = JSON.parse(raw);
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter(
-      (entry): entry is MCPServerConfig =>
-        entry !== null &&
-        typeof entry === "object" &&
-        typeof (entry as { name?: unknown }).name === "string",
-    );
-  } catch {
-    return [];
-  }
 }

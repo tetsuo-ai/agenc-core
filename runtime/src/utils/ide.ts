@@ -12,9 +12,8 @@ import type {
   ConnectedMCPServer,
   MCPServerConnection,
 } from '../services/mcp/types.js'
-import { getGlobalConfig, saveGlobalConfig } from './config.js'
 import { env } from './env.js'
-import { getAgenCConfigHomeDir, isEnvTruthy } from './envUtils.js'
+import { getAgenCHomeDir, isEnvTruthy } from './envUtils.js'
 import {
   execFileNoThrow,
   execFileNoThrowWithCwd,
@@ -44,6 +43,7 @@ import {
 } from './idePathConversion.js'
 import { sleep } from './sleep.js'
 import { jsonParse } from './slowOperations.js'
+import { getExecutionAuthoritySettings } from './settings/settings.js'
 
 function isProcessRunning(pid: number): boolean {
   try {
@@ -459,7 +459,7 @@ const getWindowsUserProfile = memoize(async (): Promise<string | undefined> => {
  * stat loop compounded startup latency.
  */
 export async function getIdeLockfilesPaths(): Promise<string[]> {
-  const paths: string[] = [join(getAgenCConfigHomeDir(), 'ide')]
+  const paths: string[] = [join(getAgenCHomeDir(), 'ide')]
 
   if (getPlatform() !== 'wsl') {
     return paths
@@ -593,11 +593,6 @@ export async function maybeInstallIDEExtension(
     // Install/update the extension
     const installedVersion = await installIDEExtension(ideType)
 
-    // Set diff tool config to auto if it has not been set already
-    const globalConfig = getGlobalConfig()
-    if (!globalConfig.diffTool) {
-      saveGlobalConfig(current => ({ ...current, diffTool: 'auto' }))
-    }
     return {
       installed: true,
       error: null,
@@ -1293,7 +1288,8 @@ export async function initializeIdeIntegration(
   // Don't await so we don't block startup, but return a promise that resolves with the status
   void findAvailableIDE().then(onIdeDetected)
 
-  const shouldAutoInstall = getGlobalConfig().autoInstallIdeExtension ?? true
+  const shouldAutoInstall =
+    getExecutionAuthoritySettings().ideConnector?.autoInstallExtension ?? true
   if (
     !isEnvTruthy(process.env.AGENC_IDE_SKIP_AUTO_INSTALL) &&
     shouldAutoInstall

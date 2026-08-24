@@ -20,45 +20,53 @@ in-tree README:
 | Layout                                          | When                                                   |
 | ----------------------------------------------- | ------------------------------------------------------ |
 | **Workbench** (`workbench/WorkbenchLayout.tsx`) | Default fullscreen when `isWorkbenchEnabled()` is true |
-| **Classic fullscreen** (`FullscreenLayout.tsx`) | `AGENC_TUI_WORKBENCH=0` or workbench disabled          |
+| **Classic fullscreen** (`FullscreenLayout.tsx`) | `AGENC_TUI_WORKBENCH=0` or `false`                     |
 
-Workbench panes (not mounted inside the transcript `ScrollBox`):
+`WorkbenchPane` is `explorer | surface | agents | composer | rail`. Approvals
+are an overlay (`ctrl+w d`), not a pane. Tasks live in the spinner board
+(above the composer) and the Agents rail.
+
+Workbench chrome (not mounted inside the transcript `ScrollBox`):
 
 - Explorer (interactive): file-type icons/colors; click to open, mouse wheel
   or arrows to scroll, file preview inside the TUI. A bound helper safely
   creates missing parent directories and supports file, symlink, and recursive
   directory deletion. Rename is no-clobber for regular files that stay in the
   same directory; cross-directory and non-file rename remains fail-closed with
-  an actionable prompt error.
-- Center work-surface (switches among transcript, preview, BUFFER, diff, test,
-  shell, search, and agent views)
-- Agents rail (visible at wide widths): live swarm panel with per-agent
-  progress, tokens, and duration while background agents run
+  an actionable prompt error. Hidden below 100 columns unless focused.
+- Center work-surface (transcript, preview, BUFFER, diff, test, shell, search,
+  agent)
+- Agents rail: only at `>= 130` columns, Agent tab, not maximized, and either
+  there are agent tasks or no review rail
 - Optional right-hand rail for file review, transcript, or change review
-- Approvals / tasks
 - BUFFER editor surface (embedded Neovim preferred — see
   [`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md))
+
+Workbench status bar shows `agenc / WORKBENCH`, activity, model, ctx, version.
+Permission-mode pill and `PlanModeBanner` are **classic fullscreen only**.
+Workbench layout is derived from the active viewport and session state; there
+is no inert operator layout setting.
 
 ## Operator surfaces added in 0.7.2
 
 - **Review rail** (`Alt+R` in embedded Neovim, `Ctrl+R` in the inline
   fallback) — moves the open file to a shiki-highlighted right-hand rail; chat
   keeps the center so you can review while prompting.
-- **Todo board** — pins itself below the composer while the agent has open
-  tasks and hides after completion. Backed by per-task JSON files shared with
-  the daemon under the conversation id; the TUI learns of daemon writes via
-  `fs.watch` plus an unconditional fallback poll.
+- **Todo board** — `TaskListV2` in the spinner, **above** the composer. Hides
+  ~5s after all tasks complete (`HIDE_DELAY_MS`). Backed by per-task JSON
+  files; `fs.watch` plus a 5s poll.
 - **Plan approval overlay** — clamped markdown plan (14 lines, `ctrl+o` to
-  expand) with approve / review / keep-planning options always on screen.
+  expand). On-screen choices: “yes, and auto-accept edits” / “yes, and
+  manually approve edits” / “no, keep planning”.
 - **`AskUserQuestion` picker** — numbered options, arrows, free-text Other;
   answers are recorded client-side and shipped with the `tool.approve` RPC
   (`askUserQuestionInput`) so the daemon-side tool resumes with them.
-- **Turn lifecycle** — `esc` always clears busy latches immediately; a 20s
-  submit-ack watchdog recovers turns the daemon never acknowledged, and a
-  60s daemon-stall watchdog closes turns that go fully silent.
-- **`/effort`** — show or set reasoning effort (`low`/`medium`/`high`) for
-  the current model, validated against the model catalog; `/effort default`
-  restores the model default.
+- **Turn lifecycle** — `esc` always clears busy latches immediately
+  (`handleTurnCancel`). A 20s submit-ack watchdog (`SUBMIT_ACK_WATCHDOG_MS`)
+  recovers turns the daemon never acknowledged. There is no 60s stall timer.
+- **`/effort`** — show or set reasoning effort (`low` / `medium` / `high` /
+  `xhigh` when the model catalog lists it) for the current model;
+  `/effort default` restores the model default.
 
 Classic fullscreen owns v2 top chrome and status bar (`BrandCells`,
 `TuiHeader`, `StatusBar`). Plan mode shows a `PlanModeBanner` above scrollback.
@@ -72,16 +80,42 @@ were removed; live transcript and permission rendering use v2 primitives.
 Theme roles: `runtime/src/utils/theme.ts` (+ design-system resolvers under
 `components/design-system/`).
 
+## Workbench chords and composer
+
+`?` toggles HelpV2. Footer when not in BUFFER: `/ commands`, `@ attach`,
+mode cycle, `ctrl+o` transcript, `? shortcuts`.
+
+| Keys | Action |
+| --- | --- |
+| `Ctrl+W H/L/J/K/W` | Explorer / surface / composer / up / next pane |
+| `Ctrl+W D` | Diff / full hunk review |
+| `Ctrl+W F` | Search surface |
+| `Ctrl+R` | File review rail (workbench / inline BUFFER). Neovim uses `Alt+R` |
+| `Alt+1` / `Alt+2` / `` Alt+` `` | Agent / Editor / cycle |
+| `Ctrl+C` | Interrupt |
+| `Ctrl+D` | Exit |
+| `Ctrl+T` | Todos |
+| `Shift+Tab` | Composer: cycle permission mode. BUFFER: focus composer |
+
+Composer vim: `tui.vimMode = true` in canonical `config.toml`. Esc in INSERT goes
+NORMAL instead of cancel. Mouse tracking is on unless `AGENC_DISABLE_MOUSE`.
+
 ## Important slash commands
 
 Interactive menus (via `MenuModal`) include:
 
 `/model`, **`/provider`**, `/hooks`, `/skills`, `/mcp`, `/plugins`,
-`/permissions`, `/memory`, `/resume`, `/config`, `/agents`, `/status`, `/diff`
+`/permissions`, `/memory`, `/resume`, `/config`, `/keybindings`, `/agents`, `/status`,
+`/diff`, `/help`, `/output-style`
+
+Full registry: [slash-commands.md](slash-commands.md).
 
 - Provider switch is **`/provider` only** — there is **no** `/model-provider`.
 - `/context` (alias `/ctx`) uses `ContextUsageModal` when the TUI bridge is
   available.
+- `/keybindings` creates a canonical `tui.keybindings` scaffold when needed,
+  opens `config.toml` through the locked validated editor workflow, and reloads
+  the ConfigStore snapshot. Explicit removals use each block's `unbind` array.
 - Protocol commands `/claim`, `/delegate`, `/proof`, `/settle`, `/stake` are
   registered from `commands/protocol.ts` with plugin-style attribution.
 
@@ -100,12 +134,11 @@ cannot replace or submit Agent-tab context.
 | `Alt+1`                | Open the Agent tab and restore its transcript, rail, focus, and composer draft        |
 | `Alt+2`                | Open the Editor tab and restore its Neovim workspace, rail, focus, and composer draft |
 | `Alt`+backtick         | Cycle between Agent and Editor                                                        |
-| `Shift+Tab` or `Alt+J` | Focus the composer without closing BUFFER                                             |
+| `Shift+Tab` or `Alt+J` | BUFFER-focused: composer. Composer-focused: cycle permission mode (`chat:cycleMode`)  |
 | `Alt+Q`                | Hide BUFFER; the Neovim workspace remains alive                                       |
 | `Alt+Z`                | Maximize or restore the center editor                                                 |
 | `Ctrl+S`               | Save the active buffer with AgenC's disk/agent conflict checks                        |
-| `Ctrl+R`               | Redo the last Neovim change natively                                                  |
-| `Alt+R`                | Move the current file to the review rail and return to chat                           |
+| `Alt+R`                | Neovim: review rail. Inline BUFFER: `Ctrl+R` is the review rail (`Ctrl+X Y` is redo) |
 | `Alt+H`                | Focus the project explorer, including from a fresh **No file selected** Editor        |
 | `Alt+L`                | Focus the open Editor AI/proposal panel; pass through to Neovim when no panel is open |
 | `Alt+E`                | Open the configured external editor, only when every Neovim buffer is confirmed clean |
@@ -122,8 +155,10 @@ existing `Ctrl+X H/J/L/Q/Z`, `Ctrl+X Y`, `Ctrl+R`, and
 `Ctrl+X Ctrl+E`/`Ctrl+G` host bindings. User keybinding overrides therefore
 target the `BufferHost` context for embedded Neovim and `Buffer` for inline.
 An Editor AI request focuses its panel as it opens, including when the panel is
-a compact overlay. Page Up / Page Down, Ctrl+Home / Ctrl+End, and the mouse
-wheel scroll it; `Ctrl+W H` returns to the editor.
+a compact overlay. Surface `pageup`/`pagedown` and `g`/`G` scroll the proposal
+chrome. `Ctrl+Home` / `Ctrl+End` work only while `ScrollKeybindingHandler` is
+active (Editor rail focused). `Ctrl+W H` from a focused rail returns to the
+editor.
 
 Ask/Explain run under a daemon-enforced read-only Editor policy; Fix/Edit/
 Refactor run under proposal-only policy and never apply model output directly

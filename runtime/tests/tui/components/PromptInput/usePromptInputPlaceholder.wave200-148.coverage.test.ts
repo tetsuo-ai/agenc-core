@@ -49,7 +49,7 @@ vi.mock('../../state/AppState.js', () => ({
 }))
 
 vi.mock('../../../utils/config.js', () => ({
-  getGlobalConfig: () => ({
+  getRuntimeState: () => ({
     queuedCommandUpHintCount: fixture.state.queuedCommandUpHintCount,
   }),
 }))

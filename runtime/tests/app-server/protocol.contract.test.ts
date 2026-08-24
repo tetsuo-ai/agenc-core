@@ -343,7 +343,7 @@ describe("AgenC daemon protocol surface", () => {
           unattendedAllow: ["FileRead", "Grep"],
           unattendedDeny: ["exec_command"],
           envOverrides: {
-            AGENC_MCP_SERVERS: "[]",
+            XAI_API_KEY: "test-key",
           },
         },
       },

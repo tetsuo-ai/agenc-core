@@ -122,6 +122,7 @@ import type {
   ToolDecisionResult,
   ToolDenyParams,
 } from "./protocol/index.js";
+import { validateAgentRuntimeOptions } from "../session/runtime-options.js";
 import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
 import {
   getAgencHomeDir,
@@ -224,6 +225,8 @@ export function __setAgentLifecycleResumeSourceTestHooksForTest(
 }
 
 export interface AgenCDaemonAgentManagerOptions {
+  /** Canonical daemon home captured at process ingress. */
+  readonly agencHome?: string;
   /**
    * @deprecated DAE-02: no longer used for agent.create (cwd is required).
    * Retained only for optional test/back-compat options objects.
@@ -423,6 +426,7 @@ function isEvidenceToolCallResolution(
 }
 
 export class AgenCDaemonAgentManager {
+  readonly #agencHome: string;
   readonly #now: () => string;
   readonly #runner: AgenCBackgroundAgentRunner | undefined;
   readonly #sessionManager: AgenCDaemonSessionManager | undefined;
@@ -488,6 +492,7 @@ export class AgenCDaemonAgentManager {
 
   constructor(options: AgenCDaemonAgentManagerOptions = {}) {
     void options.defaultCwd; // DAE-02: ignored — create requires absolute cwd
+    this.#agencHome = getAgencHomeDir(options.agencHome);
     this.#now = options.now ?? (() => new Date().toISOString());
     this.#runner = options.runner;
     this.#sessionManager = options.sessionManager;
@@ -632,6 +637,7 @@ export class AgenCDaemonAgentManager {
       }
       if (resumeRolloutPath !== undefined && resumeSessionId !== undefined) {
         resumeProof = assertAuthoritativeResumeSource({
+          agencHome: this.#agencHome,
           sessionId: resumeSessionId,
           rolloutPath: resumeRolloutPath,
           cwd,
@@ -697,6 +703,7 @@ export class AgenCDaemonAgentManager {
       const retainedProvider =
         metadataString(retainedMetadata, "provider") ??
         metadataString(retainedMetadata, "modelProvider");
+      const retainedConfigPath = metadataString(retainedMetadata, "configPath");
       const canonicalRuntimeSettings = resumeProof?.runtimeSettings;
       if (
         canonicalRuntimeSettings === undefined &&
@@ -743,6 +750,13 @@ export class AgenCDaemonAgentManager {
         (canonicalRuntimeSettings === undefined
           ? metadataString(retainedMetadata, "profile")
           : (canonicalRuntimeSettings.profile ?? undefined));
+      const configPath = params.configPath ?? retainedConfigPath;
+      if (configPath !== undefined && !isAbsolute(configPath)) {
+        throw new AgenCDaemonAgentLifecycleError(
+          "INVALID_ARGUMENT",
+          "agent.create configPath must be an absolute path",
+        );
+      }
       const permissionMode =
         params.permissionMode ??
         canonicalPermissionMode ??
@@ -772,9 +786,14 @@ export class AgenCDaemonAgentManager {
           : profile !== undefined
             ? { profile }
             : {}),
+        ...(configPath !== undefined ? { configPath } : {}),
         ...(permissionMode !== undefined ? { permissionMode } : {}),
         unattendedAllow,
         unattendedDeny,
+        // Session operator inputs are part of the durable run identity. A
+        // daemon restart must restore the exact values captured at create
+        // time, never reinterpret the daemon's current process environment.
+        runtimeOptions: validateAgentRuntimeOptions(params.runtimeOptions),
       };
       const resumeRestoreAttemptId =
         resumeSessionId === undefined ? undefined : randomUUID();
@@ -786,6 +805,7 @@ export class AgenCDaemonAgentManager {
               ...(model !== undefined ? { model } : {}),
               ...(provider !== undefined ? { provider } : {}),
               ...(profile !== undefined ? { profile } : {}),
+              ...(configPath !== undefined ? { configPath } : {}),
               ...(params.initialContent !== undefined
                 ? { initialContent: params.initialContent }
                 : {}),
@@ -805,6 +825,9 @@ export class AgenCDaemonAgentManager {
               metadata,
               unattendedAllow,
               unattendedDeny,
+              runtimeOptions: validateAgentRuntimeOptions(
+                params.runtimeOptions,
+              ),
               ...(permissionMode !== undefined ? { permissionMode } : {}),
               ...(params.envOverrides !== undefined
                 ? { envOverrides: params.envOverrides }
@@ -826,9 +849,11 @@ export class AgenCDaemonAgentManager {
               cwd,
               createdAt,
               metadata,
+              runtimeOptions: params.runtimeOptions,
               ...(model !== undefined ? { model } : {}),
               ...(provider !== undefined ? { provider } : {}),
               ...(profile !== undefined ? { profile } : {}),
+              ...(configPath !== undefined ? { configPath } : {}),
               ...(permissionMode !== undefined ? { permissionMode } : {}),
               ...(canonicalRuntimeSettings !== undefined
                 ? { runtimeSettings: canonicalRuntimeSettings }
@@ -1103,6 +1128,7 @@ export class AgenCDaemonAgentManager {
     readonly model?: string;
     readonly provider?: string;
     readonly profile?: string;
+    readonly configPath?: string;
     readonly permissionMode?:
       | "default"
       | "plan"
@@ -1111,6 +1137,7 @@ export class AgenCDaemonAgentManager {
       | "dontAsk"
       | "auto";
     readonly runtimeSettings?: RunRuntimeSettingsSnapshot;
+    readonly runtimeOptions: AgentCreateParams["runtimeOptions"];
     readonly envOverrides?: { readonly [key: string]: string };
     readonly metadata: JsonObject;
   }): Promise<AgenCBackgroundAgentStartResult> {
@@ -1155,12 +1182,16 @@ export class AgenCDaemonAgentManager {
       ...(params.model !== undefined ? { model: params.model } : {}),
       ...(params.provider !== undefined ? { provider: params.provider } : {}),
       ...(params.profile !== undefined ? { profile: params.profile } : {}),
+      ...(params.configPath !== undefined
+        ? { configPath: params.configPath }
+        : {}),
       ...(params.permissionMode !== undefined
         ? { permissionMode: params.permissionMode }
         : {}),
       ...(params.runtimeSettings !== undefined
         ? { runtimeSettings: params.runtimeSettings }
         : {}),
+      runtimeOptions: validateAgentRuntimeOptions(params.runtimeOptions),
       ...(params.envOverrides !== undefined
         ? { envOverrides: params.envOverrides }
         : {}),
@@ -3995,6 +4026,7 @@ export function retainedCreatedAtMatchesRollout(
 }
 
 function assertAuthoritativeResumeSource(params: {
+  readonly agencHome: string;
   readonly sessionId: string;
   readonly rolloutPath: string;
   readonly cwd: string;
@@ -4012,7 +4044,7 @@ function assertAuthoritativeResumeSource(params: {
   }
   const projectsRoot = (() => {
     try {
-      return realpathSync(resolve(getAgencHomeDir(), "projects"));
+      return realpathSync(resolve(params.agencHome, "projects"));
     } catch {
       return fail("agent.create daemon projects directory is unavailable");
     }

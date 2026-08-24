@@ -1,36 +1,56 @@
-import memoize from 'lodash-es/memoize.js'
-import { homedir } from 'os'
 import { join } from 'path'
-import { tokenizeCliOptionRegion } from '../bin/cli-option-region.js'
+import { isEnvTruthy } from './envBoolean.js'
+export { isEnvDefinedFalsy, isEnvTruthy } from './envBoolean.js'
+import {
+  resolveHomeContext,
+  type HomeContext,
+} from '../config/home.js'
+import {
+  getCurrentRuntimeSession,
+  peekAmbientRuntimeSession,
+} from '../session/current-session.js'
+import { peekAgentRuntimeOptions } from '../session/runtime-options.js'
+import { getCanonicalSettingsAuthority } from './settings/canonicalAuthority.js'
 
-export function resolveAgenCConfigHomeDir(options?: {
-  configDirEnv?: string
-  agencHomeEnv?: string
-  homeDir?: string
-}): string {
-  if (options?.configDirEnv) {
-    return options.configDirEnv.normalize('NFC')
+/**
+ * Resolve home from the session bound to this async execution chain.
+ *
+ * Never memoize this value: one daemon may host sessions with different
+ * homes, and a process-global cache would make the first caller authoritative
+ * for every later session. `getCurrentRuntimeSession()` also rejects an
+ * ambiguous multi-session fallback instead of guessing. Ambient environment
+ * resolution remains only for genuine pre-session process ingress.
+ */
+export function getAgenCHomeContext(): HomeContext {
+  let session: ReturnType<typeof getCurrentRuntimeSession>
+  try {
+    session = getCurrentRuntimeSession()
+  } catch (error) {
+    const authority = getCanonicalSettingsAuthority()
+    if (authority !== null) return authority.homeContext
+    throw error
   }
-  if (options?.agencHomeEnv) {
-    return options.agencHomeEnv.normalize('NFC')
+  if (session !== null) {
+    const store = session.services?.configStore
+    const boundHome = store?.homeContext
+    if (boundHome === undefined) {
+      throw new Error(
+        'Active runtime session has no canonical ConfigStore home authority',
+      )
+    }
+    return boundHome
   }
-
-  const homeDir = options?.homeDir ?? homedir()
-  return join(homeDir, '.agenc').normalize('NFC')
+  const authority = getCanonicalSettingsAuthority()
+  if (authority !== null) return authority.homeContext
+  return resolveHomeContext(process.env)
 }
 
-// Memoized: 150+ callers, many on hot paths. Keyed off AgenC config-home env
-// tests that change the env var get a fresh value without explicit cache.clear.
-export const getAgenCConfigHomeDir = memoize(
-  (): string => resolveAgenCConfigHomeDir({
-    configDirEnv: process.env.AGENC_CONFIG_DIR,
-    agencHomeEnv: process.env.AGENC_HOME,
-  }),
-  () => `${process.env.AGENC_CONFIG_DIR ?? ''}\0${process.env.AGENC_HOME ?? ''}`,
-)
+export function getAgenCHomeDir(): string {
+  return getAgenCHomeContext().path
+}
 
 export function getTeamsDir(): string {
-  return join(getAgenCConfigHomeDir(), 'teams')
+  return join(getAgenCHomeDir(), 'teams')
 }
 
 /**
@@ -45,39 +65,21 @@ export function hasNodeOption(flag: string): boolean {
   return nodeOptions.split(/\s+/).includes(flag)
 }
 
-export function isEnvTruthy(envVar: string | boolean | undefined): boolean {
-  if (!envVar) return false
-  if (typeof envVar === 'boolean') return envVar
-  const normalizedValue = envVar.toLowerCase().trim()
-  return ['1', 'true', 'yes', 'on'].includes(normalizedValue)
-}
-
-export function isEnvDefinedFalsy(
-  envVar: string | boolean | undefined,
-): boolean {
-  if (envVar === undefined) return false
-  if (typeof envVar === 'boolean') return !envVar
-  if (!envVar) return false
-  const normalizedValue = envVar.toLowerCase().trim()
-  return ['0', 'false', 'no', 'off'].includes(normalizedValue)
-}
-
 /**
- * --bare / AGENC_SIMPLE — skip hooks, LSP, plugin sync, skill dir-walk,
+ * --bare skips hooks, LSP, plugin sync, skill dir-walk,
  * attribution, background prefetches, and ALL keychain/credential reads.
- * Auth is strictly ANTHROPIC_API_KEY env or apiKeyHelper from --settings.
- * Explicit CLI flags (--plugin-dir, --add-dir, --mcp-config) still honored.
+ * Auth is strictly the provider API-key environment ingress.
+ * Explicit CLI flags such as --plugin-dir and --add-dir remain honored.
  * ~30 gates across the codebase.
  *
- * Checks argv directly (in addition to the env var) because several gates
- * run before main.tsx's action handler sets AGENC_SIMPLE=1 from --bare
- * — notably startKeychainPrefetch() at main.tsx top-level.
+ * Runtime consumers use the immutable options bound at the ingress boundary;
+ * they never rediscover mode from process-global environment or argv.
  */
 export function isBareMode(): boolean {
-  const { optionArgs } = tokenizeCliOptionRegion(process.argv.slice(2))
   return (
-    isEnvTruthy(process.env.AGENC_SIMPLE) ||
-    optionArgs.includes('--bare')
+    peekAmbientRuntimeSession()?.services?.runtimeOptions?.simpleMode ??
+    peekAgentRuntimeOptions()?.simpleMode ??
+    false
   )
 }
 
@@ -110,15 +112,19 @@ export function parseEnvVars(
  * Get the AWS region with fallback to default
  * Matches the provider Bedrock SDK's region behavior.
  */
-export function getAWSRegion(): string {
-  return process.env.AWS_REGION || process.env.AWS_DEFAULT_REGION || 'us-east-1'
+export function getAWSRegion(
+  env: Readonly<Record<string, string | undefined>>,
+): string {
+  return env.AWS_REGION || env.AWS_DEFAULT_REGION || 'us-east-1'
 }
 
 /**
  * Get the default Vertex AI region
  */
-export function getDefaultVertexRegion(): string {
-  return process.env.CLOUD_ML_REGION || 'us-east5'
+export function getDefaultVertexRegion(
+  env: Readonly<Record<string, string | undefined>>,
+): string {
+  return env.CLOUD_ML_REGION || 'us-east5'
 }
 
 /**
@@ -132,10 +138,12 @@ export function shouldMaintainProjectWorkingDir(): boolean {
 /**
  * Check if running on Homespace (ant-internal cloud environment)
  */
-export function isRunningOnHomespace(): boolean {
+export function isRunningOnHomespace(
+  env: Readonly<Record<string, string | undefined>>,
+): boolean {
   return (
-    process.env.USER_TYPE === 'ant' &&
-    isEnvTruthy(process.env.COO_RUNNING_ON_HOMESPACE)
+    env.USER_TYPE === 'ant' &&
+    isEnvTruthy(env.COO_RUNNING_ON_HOMESPACE)
   )
 }
 
@@ -181,14 +189,15 @@ const VERTEX_REGION_OVERRIDES: ReadonlyArray<[string, string]> = [
  */
 export function getVertexRegionForModel(
   model: string | undefined,
+  env: Readonly<Record<string, string | undefined>>,
 ): string | undefined {
   if (model) {
     const match = VERTEX_REGION_OVERRIDES.find(([prefix]) =>
       model.startsWith(prefix),
     )
     if (match) {
-      return process.env[match[1]] || getDefaultVertexRegion()
+      return env[match[1]] || getDefaultVertexRegion(env)
     }
   }
-  return getDefaultVertexRegion()
+  return getDefaultVertexRegion(env)
 }

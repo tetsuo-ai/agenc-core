@@ -24,7 +24,6 @@ import type { ToolUseContext } from '../Tool.js'
 import type { InProcessTeammateTaskState } from '../../tasks/InProcessTeammateTask/types.js'
 import { formatAgentId } from '../../utils/agentId.js'
 import { quote } from '../../utils/bash/shellQuote.js'
-import { getGlobalConfig } from '../../utils/config.js'
 import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from '../../utils/errors.js'
@@ -74,6 +73,7 @@ import {
   sendCommandToPane,
 } from '../../utils/swarm/teammateLayoutManager.js'
 import { getHardcodedTeammateModelFallback } from '../../utils/swarm/teammateModel.js'
+import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js'
 import { registerTask } from '../../utils/task/framework.js'
 import { writeToMailbox } from '../../utils/teammateMailbox.js'
 import {
@@ -85,8 +85,12 @@ import { setAgentColor } from 'src/tools/AgentTool/agentColorManager.js'
 import { AGENT_TOOL_NAME } from 'src/tools/AgentTool/constants.js'
 
 function getDefaultTeammateModel(leaderModel: string | null): string {
-  const configured = getGlobalConfig().teammateDefaultModel
-  if (configured !== null && configured !== undefined) {
+  const configured = getExecutionAuthoritySettings().teammates?.defaultModel
+  if (configured === 'inherit') {
+    // The canonical TOML sentinel follows the leader model.
+    return leaderModel ?? getHardcodedTeammateModelFallback()
+  }
+  if (configured !== undefined) {
     return parseUserSpecifiedModel(configured)
   }
   // Explicit "Default" pick (null) and never-configured (undefined)

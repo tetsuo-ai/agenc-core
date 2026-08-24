@@ -9,8 +9,8 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 
 export const meta = {
-  description: "--yolo: model uses Grep, matched line is recorded.",
-  args: ["--yolo"],
+  description: "--dangerously-bypass-approvals-and-sandbox: model uses Grep, matched line is recorded.",
+  args: ["--dangerously-bypass-approvals-and-sandbox"],
   timeoutMs: 90_000,
   slimCwd: true,
 };

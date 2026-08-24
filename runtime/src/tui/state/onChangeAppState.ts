@@ -1,15 +1,9 @@
 import { setMainLoopModelOverride } from '../../bootstrap/state.js'
 import { isAntEmployee } from '../../utils/buildConfig.js'
-import {
-  clearApiKeyHelperCache,
-  clearAwsCredentialsCache,
-  clearGcpCredentialsCache,
-} from '../../utils/auth.js'
-import { getGlobalConfig, saveGlobalConfig } from '../../utils/config.js'
+import { getRuntimeState, updateRuntimeState } from '../../utils/config.js'
 import { toError } from '../../utils/errors.js'
 import { logError } from '../../utils/log.js'
 import { applyConfigEnvironmentVariables } from '../../utils/managedEnv.js'
-import { persistActiveProviderProfileModel } from '../../utils/providerProfiles.js'
 import {
   permissionModeFromString,
   toExternalPermissionMode,
@@ -86,7 +80,7 @@ export function onChangeAppState({
     newState.mainLoopModel === null
   ) {
     // Remove from settings
-    updateSettingsForSource('userSettings', { model: undefined })
+    void updateSettingsForSource('userSettings', { model: undefined })
     setMainLoopModelOverride(null)
   }
 
@@ -96,14 +90,9 @@ export function onChangeAppState({
     newState.mainLoopModel !== null
   ) {
     // Save to settings
-    updateSettingsForSource('userSettings', { model: newState.mainLoopModel })
+    void updateSettingsForSource('userSettings', { model: newState.mainLoopModel })
     setMainLoopModelOverride(newState.mainLoopModel)
 
-    // Keep active provider profiles in sync with /model choices so restarts
-    // keep using the last selected model instead of the profile's old default.
-    if (process.env.AGENC_PROVIDER_PROFILE_ENV_APPLIED === '1') {
-      persistActiveProviderProfileModel(newState.mainLoopModel)
-    }
   }
 
   // expandedView → persist as showExpandedTodos + showSpinnerTree for backwards compat
@@ -111,10 +100,10 @@ export function onChangeAppState({
     const showExpandedTodos = newState.expandedView === 'tasks'
     const showSpinnerTree = newState.expandedView === 'teammates'
     if (
-      getGlobalConfig().showExpandedTodos !== showExpandedTodos ||
-      getGlobalConfig().showSpinnerTree !== showSpinnerTree
+      getRuntimeState().showExpandedTodos !== showExpandedTodos ||
+      getRuntimeState().showSpinnerTree !== showSpinnerTree
     ) {
-      saveGlobalConfig(current => ({
+      updateRuntimeState(current => ({
         ...current,
         showExpandedTodos,
         showSpinnerTree,
@@ -125,10 +114,10 @@ export function onChangeAppState({
   // verbose
   if (
     newState.verbose !== oldState.verbose &&
-    getGlobalConfig().verbose !== newState.verbose
+    getRuntimeState().verbose !== newState.verbose
   ) {
     const verbose = newState.verbose
-    saveGlobalConfig(current => ({
+    updateRuntimeState(current => ({
       ...current,
       verbose,
     }))
@@ -139,24 +128,21 @@ export function onChangeAppState({
     if (
       newState.tungstenPanelVisible !== oldState.tungstenPanelVisible &&
       newState.tungstenPanelVisible !== undefined &&
-      getGlobalConfig().tungstenPanelVisible !== newState.tungstenPanelVisible
+      getRuntimeState().tungstenPanelVisible !== newState.tungstenPanelVisible
     ) {
       const tungstenPanelVisible = newState.tungstenPanelVisible
-      saveGlobalConfig(current => ({ ...current, tungstenPanelVisible }))
+      updateRuntimeState(current => ({ ...current, tungstenPanelVisible }))
     }
   }
 
-  // settings: clear auth-related caches when settings change
-  // This ensures apiKeyHelper and AWS/GCP credential changes take effect immediately
+  // Re-apply the canonical shell environment when it changes.
   if (newState.settings !== oldState.settings) {
     try {
-      clearApiKeyHelperCache()
-      clearAwsCredentialsCache()
-      clearGcpCredentialsCache()
-
-      // Re-apply environment variables when settings.env changes
       // This is additive-only: new vars are added, existing may be overwritten, nothing is deleted
-      if (newState.settings.env !== oldState.settings.env) {
+      if (
+        newState.settings.shell_environment_policy !==
+        oldState.settings.shell_environment_policy
+      ) {
         applyConfigEnvironmentVariables()
       }
     } catch (error) {

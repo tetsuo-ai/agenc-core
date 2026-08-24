@@ -12,6 +12,7 @@ import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
+import { agencHomeFromCommandContext } from "./config-context.js";
 import {
   installPluginOp,
   listInstalledPlugins,
@@ -120,7 +121,7 @@ export function createPluginMenuActions(
 
 function pluginMenuActionsFromContext(ctx: SlashCommandContext): PluginMenuActions {
   return createPluginMenuActions({
-    agencHome: ctx.agencHome ?? join(ctx.home, ".agenc"),
+    agencHome: agencHomeFromCommandContext(ctx),
     workspaceRoot: ctx.cwd,
   });
 }

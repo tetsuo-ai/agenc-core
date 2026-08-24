@@ -11,19 +11,34 @@ import {
 import { createEmptyToolPermissionContext } from "./types.js";
 
 describe("unattended permission policy", () => {
-  test("normalizes aliases, trims entries, and removes duplicates", () => {
-    const removedGrepName = ["system", "grep"].join(".");
-    const removedGlobName = ["system", "glob"].join(".");
-
-    expect(normalizeUnattendedToolList([" read ", "FileRead", "", "grep", removedGrepName, removedGlobName, "Bash", "FileEdit", "FileWrite"])).toEqual([
+  test("normalizes canonical risk families, trims entries, and removes duplicates", () => {
+    expect(normalizeUnattendedToolList([
+      " FileRead ",
+      "FileRead",
+      "",
+      "Grep",
+      "Glob",
+      "system.bash",
+      "exec_command",
+      "Write",
+      "MultiEdit",
+    ])).toEqual([
       "FileRead",
       "Grep",
       "Glob",
       "system.bash",
       "Edit",
-      "Write",
     ]);
   });
+
+  test.each(["Read", "Bash", "FileEdit", "FileWrite", "system.grep", "system.glob"])(
+    "rejects removed unattended tool spelling %s",
+    (name) => {
+      expect(() => normalizeUnattendedToolList([name])).toThrow(
+        `removed unattended tool name '${name}'`,
+      );
+    },
+  );
 
   test("defaults to pausing every tool when no allowlist is provided", () => {
     const policy = createUnattendedPermissionPolicy();
@@ -41,7 +56,7 @@ describe("unattended permission policy", () => {
     const base = createEmptyToolPermissionContext({ mode: "default" });
     const next = applyUnattendedPermissionPolicyToContext(base, {
       allowlist: ["FileRead"],
-      denylist: ["Bash"],
+      denylist: ["system.bash"],
     });
 
     expect(next.mode).toBe("unattended");
@@ -84,16 +99,16 @@ describe("unattended permission policy", () => {
     const context = applyUnattendedPermissionPolicyToContext(
       createEmptyToolPermissionContext(),
       {
-        allowlist: ["FileRead", "Bash"],
-        denylist: ["Bash"],
+        allowlist: ["FileRead", "exec_command"],
+        denylist: ["system.bash"],
       },
     );
 
-    expect(resolveUnattendedPermissionDecision(context, "Bash")).toMatchObject({
+    expect(resolveUnattendedPermissionDecision(context, "exec_command")).toMatchObject({
       behavior: "deny",
       toolName: "system.bash",
     });
-    expect(resolveUnattendedPermissionDecision(context, "read")).toMatchObject({
+    expect(resolveUnattendedPermissionDecision(context, "FileRead")).toMatchObject({
       behavior: "allow",
       toolName: "FileRead",
     });

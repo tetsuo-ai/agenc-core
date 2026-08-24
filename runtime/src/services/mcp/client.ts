@@ -1,4 +1,5 @@
 import { feature } from 'bun:bundle'
+import { createHash } from 'node:crypto'
 import type {
   Base64ImageSource,
   ContentBlockParam,
@@ -40,6 +41,9 @@ import memoize from 'lodash-es/memoize.js'
 import zipObject from 'lodash-es/zipObject.js'
 import pMap from 'p-map'
 import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
+import type { HomeContext } from '../../config/home.js'
+import { nativeVaultIdentityKey } from '../../utils/secureStorage/home.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
 import type { Command } from '../../commands.js'
 import { getOauthConfig } from '../../constants/oauth.js'
 import { PRODUCT_URL } from '../../constants/product.js'
@@ -87,6 +91,7 @@ import {
 } from '../../utils/mcpValidation.js'
 import { WebSocketTransport } from '../../utils/mcpWebSocketTransport.js'
 import { memoizeWithLRU } from '../../utils/memoize.js'
+import type { AgentRuntimeOptions } from '../../session/runtime-options.js'
 import { getWebSocketTLSOptions } from '../../utils/mtls.js'
 import {
   getProxyFetchOptions,
@@ -123,7 +128,7 @@ import {
   wrapFetchWithStepUpDetection,
 } from './auth.js'
 import { markAgenCAiMcpConnected } from './agencai.js'
-import { getAllMcpConfigs, isMcpServerDisabled } from './config.js'
+import { isMcpServerDisabled } from './config.js'
 import { getMcpServerHeaders } from './headersHelper.js'
 import { SdkControlClientTransport } from './SdkControlTransport.js'
 import {
@@ -409,8 +414,10 @@ function sanitizeSdkMcpInputSchemaForModel(
  * Gets an explicit MCP tool-call timeout in milliseconds. Unset or invalid
  * values mean that AgenC does not impose a tool deadline.
  */
-function getMcpToolTimeoutMs(): number | undefined {
-  const parsed = Number.parseInt(process.env.MCP_TOOL_TIMEOUT || '', 10)
+function getMcpToolTimeoutMs(
+  environment: ProviderEnvironment,
+): number | undefined {
+  const parsed = Number.parseInt(environment.MCP_TOOL_TIMEOUT || '', 10)
   return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
 }
 
@@ -424,7 +431,6 @@ const agencInChromeToolRendering =
 
 import { mkdir, readFile, unlink, writeFile } from 'fs/promises'
 import { dirname, join } from 'path'
-import { getAgenCConfigHomeDir } from '../../utils/envUtils.js'
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
 
@@ -432,27 +438,37 @@ const MCP_AUTH_CACHE_TTL_MS = 15 * 60 * 1000 // 15 min
 
 type McpAuthCacheData = Record<string, { timestamp: number }>
 
-function getMcpAuthCachePath(): string {
-  return join(getAgenCConfigHomeDir(), 'mcp-needs-auth-cache.json')
+function getMcpAuthCachePath(home: HomeContext): string {
+  const vaultHash = createHash('sha256')
+    .update(nativeVaultIdentityKey(home))
+    .digest('hex')
+    .slice(0, 16)
+  return join(home.path, `mcp-needs-auth-cache-${vaultHash}.json`)
 }
 
 // Memoized so N concurrent isMcpAuthCached() calls during batched connection
 // share a single file read instead of N reads of the same file. Invalidated
 // on write (setMcpAuthCacheEntry) and clear (clearMcpAuthCache). Not using
 // lodash memoize because we need to null out the cache, not delete by key.
-let authCachePromise: Promise<McpAuthCacheData> | null = null
+const authCachePromises = new Map<string, Promise<McpAuthCacheData>>()
 
-function getMcpAuthCache(): Promise<McpAuthCacheData> {
-  if (!authCachePromise) {
-    authCachePromise = readFile(getMcpAuthCachePath(), 'utf-8')
+function getMcpAuthCache(home: HomeContext): Promise<McpAuthCacheData> {
+  const cachePath = getMcpAuthCachePath(home)
+  let pending = authCachePromises.get(cachePath)
+  if (pending === undefined) {
+    pending = readFile(cachePath, 'utf-8')
       .then(data => jsonParse(data) as McpAuthCacheData)
       .catch(() => ({}))
+    authCachePromises.set(cachePath, pending)
   }
-  return authCachePromise
+  return pending
 }
 
-async function isMcpAuthCached(serverId: string): Promise<boolean> {
-  const cache = await getMcpAuthCache()
+async function isMcpAuthCached(
+  home: HomeContext,
+  serverId: string,
+): Promise<boolean> {
+  const cache = await getMcpAuthCache(home)
   const entry = cache[serverId]
   if (!entry) {
     return false
@@ -464,27 +480,28 @@ async function isMcpAuthCached(serverId: string): Promise<boolean> {
 // read-modify-write races when multiple servers return 401 in the same batch
 let writeChain = Promise.resolve()
 
-function setMcpAuthCacheEntry(serverId: string): void {
+function setMcpAuthCacheEntry(home: HomeContext, serverId: string): void {
   writeChain = writeChain
     .then(async () => {
-      const cache = await getMcpAuthCache()
+      const cache = await getMcpAuthCache(home)
       cache[serverId] = { timestamp: Date.now() }
-      const cachePath = getMcpAuthCachePath()
+      const cachePath = getMcpAuthCachePath(home)
       await mkdir(dirname(cachePath), { recursive: true })
       await writeFile(cachePath, jsonStringify(cache))
       // Invalidate the read cache so subsequent reads see the new entry.
       // Safe because writeChain serializes writes: the next write's
       // getMcpAuthCache() call will re-read the file with this entry present.
-      authCachePromise = null
+      authCachePromises.delete(cachePath)
     })
     .catch(() => {
       // Best-effort cache write
     })
 }
 
-export function clearMcpAuthCache(): void {
-  authCachePromise = null
-  void unlink(getMcpAuthCachePath()).catch(() => {
+export function clearMcpAuthCache(home: HomeContext): void {
+  const cachePath = getMcpAuthCachePath(home)
+  authCachePromises.delete(cachePath)
+  void unlink(cachePath).catch(() => {
     // Cache file may not exist
   })
 }
@@ -495,6 +512,7 @@ export function clearMcpAuthCache(): void {
  * the needs-auth connection result.
  */
 function handleRemoteAuthFailure(
+  home: HomeContext,
   name: string,
   serverRef: ScopedMcpServerConfig,
   transportType: 'sse' | 'http' | 'agencai-proxy',
@@ -508,8 +526,8 @@ function handleRemoteAuthFailure(
     name,
     `Authentication required for ${label[transportType]} server`,
   )
-  setMcpAuthCacheEntry(name)
-  return { name, type: 'needs-auth', config: serverRef }
+  setMcpAuthCacheEntry(home, name)
+  return { name, type: 'needs-auth', config: serverRef, homeContext: home }
 }
 
 /**
@@ -521,11 +539,15 @@ function handleRemoteAuthFailure(
  * stale token mass-401s every agenc.tech connector and sticks them all in the
  * 15-min needs-auth cache.
  */
-function createAgenCAiProxyFetch(innerFetch: FetchLike): FetchLike {
+function createAgenCAiProxyFetch(
+  home: HomeContext,
+  environment: ProviderEnvironment,
+  innerFetch: FetchLike,
+): FetchLike {
   return async (url, init) => {
     const doRequest = async () => {
-      await checkAndRefreshOAuthTokenIfNeeded()
-      const currentTokens = getAgenCAIOAuthTokens()
+      await checkAndRefreshOAuthTokenIfNeeded(home, environment)
+      const currentTokens = getAgenCAIOAuthTokens(home, environment)
       if (!currentTokens) {
         throw new Error('No agenc.tech OAuth token available')
       }
@@ -551,10 +573,14 @@ function createAgenCAiProxyFetch(innerFetch: FetchLike): FetchLike {
     // that — otherwise we double round-trip time for every connector whose
     // downstream service genuinely needs auth (the common case: 30+ servers
     // with "MCP server requires authentication but no OAuth token configured").
-    const tokenChanged = await handleOAuth401Error(sentToken).catch(() => false)
+    const tokenChanged = await handleOAuth401Error(
+      home,
+      sentToken,
+      environment,
+    ).catch(() => false)
     if (!tokenChanged) {
       // ELOCKED contention: another connector may have won the lockfile and refreshed — check if token changed underneath us
-      const now = getAgenCAIOAuthTokens()?.accessToken
+      const now = getAgenCAIOAuthTokens(home, environment)?.accessToken
       if (!now || now === sentToken) {
         return response
       }
@@ -601,8 +627,8 @@ const IMAGE_MIME_TYPES = new Set([
   'image/webp',
 ])
 
-function getConnectionTimeoutMs(): number {
-  return parseInt(process.env.MCP_TIMEOUT || '', 10) || 30000
+function getConnectionTimeoutMs(environment: ProviderEnvironment): number {
+  return parseInt(environment.MCP_TIMEOUT || '', 10) || 30000
 }
 
 /**
@@ -656,13 +682,17 @@ export function wrapMcpTransportFetch(baseFetch: FetchLike): FetchLike {
   }
 }
 
-export function getMcpServerConnectionBatchSize(): number {
-  return parseInt(process.env.MCP_SERVER_CONNECTION_BATCH_SIZE || '', 10) || 3
+export function getMcpServerConnectionBatchSize(
+  environment: ProviderEnvironment = EMPTY_MCP_ENVIRONMENT,
+): number {
+  return parseInt(environment.MCP_SERVER_CONNECTION_BATCH_SIZE || '', 10) || 3
 }
 
-function getRemoteMcpServerConnectionBatchSize(): number {
+function getRemoteMcpServerConnectionBatchSize(
+  environment: ProviderEnvironment,
+): number {
   return (
-    parseInt(process.env.MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE || '', 10) ||
+    parseInt(environment.MCP_REMOTE_SERVER_CONNECTION_BATCH_SIZE || '', 10) ||
     20
   )
 }
@@ -708,15 +738,125 @@ function getServerCacheKey(
   options?: ConnectToServerOptions,
 ): string {
   const baseKey = `${name}-${jsonStringify(serverRef)}`
+  const usesCredentialHome =
+    serverRef.type === 'sse' ||
+    serverRef.type === 'http' ||
+    serverRef.type === 'agencai-proxy'
+  const homeKey =
+    !usesCredentialHome || options?.home === undefined
+      ? ''
+      : `-vault-${nativeVaultIdentityKey(options.home)}`
+  const environment = options?.environment ?? EMPTY_MCP_ENVIRONMENT
+  // The one module-owned empty sentinel represents process-ingress utilities
+  // with no bound session and keeps their historical deterministic cache key.
+  // Every real session snapshot, including an empty frozen snapshot, remains
+  // identity-keyed so two session authorities never share a live connection.
+  const environmentKey = environment === EMPTY_MCP_ENVIRONMENT
+    ? ''
+    : `-environment-${mcpEnvironmentIdentity(environment)}`
+  const commandWrapperKey = options?.runtimeOptions?.commandWrapperArgv === undefined
+    ? ''
+    : `-command-wrapper-${jsonStringify(options.runtimeOptions.commandWrapperArgv)}`
   if (options?.samplingHandlers === undefined) {
-    return baseKey
+    return `${baseKey}${homeKey}${environmentKey}${commandWrapperKey}`
   }
-  return `${baseKey}-sampling-${options.samplingCacheKey ?? 'anonymous'}`
+  return `${baseKey}${homeKey}${environmentKey}${commandWrapperKey}-sampling-${options.samplingCacheKey ?? 'anonymous'}`
 }
 
 interface ConnectToServerOptions {
+  readonly home?: HomeContext
+  readonly environment?: ProviderEnvironment
+  readonly runtimeOptions?: AgentRuntimeOptions
   readonly samplingHandlers?: McpSamplingHandlers
   readonly samplingCacheKey?: string
+}
+
+const EMPTY_MCP_ENVIRONMENT: ProviderEnvironment = Object.freeze({})
+interface McpConnectionAuthority {
+  readonly environment: ProviderEnvironment
+  readonly runtimeOptions?: AgentRuntimeOptions
+}
+
+const EMPTY_MCP_CONNECTION_AUTHORITY: McpConnectionAuthority = Object.freeze({
+  environment: EMPTY_MCP_ENVIRONMENT,
+})
+const MCP_CONNECTION_AUTHORITIES = new WeakMap<object, McpConnectionAuthority>()
+const MCP_ENVIRONMENT_IDENTITIES = new WeakMap<object, number>()
+let nextMcpEnvironmentIdentity = 1
+
+function mcpEnvironmentIdentity(environment: ProviderEnvironment): number {
+  const existing = MCP_ENVIRONMENT_IDENTITIES.get(environment)
+  if (existing !== undefined) return existing
+  const identity = nextMcpEnvironmentIdentity
+  nextMcpEnvironmentIdentity += 1
+  MCP_ENVIRONMENT_IDENTITIES.set(environment, identity)
+  return identity
+}
+
+/** Bind immutable construction authority to an in-process MCP connection. */
+export function bindMcpConnectionAuthority(
+  connection: ConnectedMCPServer,
+  environment: ProviderEnvironment,
+  runtimeOptions: AgentRuntimeOptions | undefined,
+): ConnectedMCPServer {
+  MCP_CONNECTION_AUTHORITIES.set(
+    connection,
+    Object.freeze({
+      environment,
+      ...(runtimeOptions !== undefined ? { runtimeOptions } : {}),
+    }),
+  )
+  return connection
+}
+
+function mcpConnectionAuthority(
+  connection: ConnectedMCPServer,
+): McpConnectionAuthority {
+  return MCP_CONNECTION_AUTHORITIES.get(connection) ??
+    EMPTY_MCP_CONNECTION_AUTHORITY
+}
+
+const MCP_FETCH_IDENTITIES = new WeakMap<object, number>()
+const MCP_FETCH_CACHE_KEYS_BY_SERVER = new Map<string, Set<string>>()
+let nextMcpFetchIdentity = 1
+
+function mcpFetchCacheKey(connection: MCPServerConnection): string {
+  const object = connection as object
+  let identity = MCP_FETCH_IDENTITIES.get(object)
+  if (identity === undefined) {
+    identity = nextMcpFetchIdentity
+    nextMcpFetchIdentity += 1
+    MCP_FETCH_IDENTITIES.set(object, identity)
+  }
+  const key = `${connection.name}-${identity}`
+  const serverKeys = MCP_FETCH_CACHE_KEYS_BY_SERVER.get(connection.name) ??
+    new Set<string>()
+  serverKeys.add(key)
+  MCP_FETCH_CACHE_KEYS_BY_SERVER.set(connection.name, serverKeys)
+  return key
+}
+
+function clearMcpFetchCachesForServer(name: string): void {
+  const keys = MCP_FETCH_CACHE_KEYS_BY_SERVER.get(name)
+  if (keys !== undefined) {
+    for (const key of keys) {
+      fetchToolsForClient.cache.delete(key)
+      fetchResourcesForClient.cache.delete(key)
+      fetchCommandsForClient.cache.delete(key)
+    }
+    MCP_FETCH_CACHE_KEYS_BY_SERVER.delete(name)
+  }
+}
+
+function createEnvironmentScopedFetch(
+  environment: ProviderEnvironment,
+  innerFetch: FetchLike = globalThis.fetch.bind(globalThis),
+): FetchLike {
+  const transportOptions = getProxyFetchOptions({ environment })
+  return (url, init) => innerFetch(url, {
+    ...init,
+    ...transportOptions,
+  })
 }
 
 /**
@@ -744,17 +884,50 @@ export const connectToServer = memoize(
     let inProcessServer: InProcessMcpServer | undefined
     try {
       let transport
+      const credentialHome =
+        serverRef.type === 'sse' ||
+        serverRef.type === 'http' ||
+        serverRef.type === 'agencai-proxy'
+          ? options?.home
+          : undefined
+      if (
+        (serverRef.type === 'sse' ||
+          serverRef.type === 'http' ||
+          serverRef.type === 'agencai-proxy') &&
+        credentialHome === undefined
+      ) {
+        throw new Error(
+          `MCP server ${JSON.stringify(name)} requires an explicit HomeContext`,
+        )
+      }
 
       // If we have the session ingress JWT, we will connect via the session ingress rather than
       // to remote MCP's directly.
-      const sessionIngressToken = getSessionIngressAuthToken()
+      const environment = options?.environment ?? EMPTY_MCP_ENVIRONMENT
+      const scopedFetch = createEnvironmentScopedFetch(environment)
+      const sessionIngressToken = credentialHome === undefined
+        ? undefined
+        : getSessionIngressAuthToken(credentialHome, environment)
 
       if (serverRef.type === 'sse') {
         // Create an auth provider for this server
-        const authProvider = new AgenCAuthProvider(name, serverRef)
+        const authProvider = new AgenCAuthProvider(
+          credentialHome!,
+          name,
+          serverRef,
+          undefined,
+          false,
+          undefined,
+          undefined,
+          environment,
+        )
 
         // Get combined headers (static + dynamic)
-        const combinedHeaders = await getMcpServerHeaders(name, serverRef)
+        const combinedHeaders = await getMcpServerHeaders(
+          name,
+          serverRef,
+          environment,
+        )
 
         // Use the auth provider with SSEClientTransport
         const transportOptions: SSEClientTransportOptions = {
@@ -762,7 +935,10 @@ export const connectToServer = memoize(
           // Step-up detection wraps innermost so the 403 is seen before the
           // SDK's handler calls auth() → tokens().
           fetch: wrapMcpTransportFetch(
-            wrapFetchWithStepUpDetection(createFetchWithInit(), authProvider),
+            wrapFetchWithStepUpDetection(
+              createFetchWithInit(scopedFetch),
+              authProvider,
+            ),
           ),
           requestInit: {
             headers: {
@@ -784,11 +960,8 @@ export const connectToServer = memoize(
               authHeaders.Authorization = `Bearer ${tokens.access_token}`
             }
 
-            const proxyOptions = getProxyFetchOptions()
-            // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-            return fetch(url, {
+            return scopedFetch(url, {
               ...init,
-              ...proxyOptions,
               headers: {
                 'User-Agent': getMCPUserAgent(),
                 ...authHeaders,
@@ -809,34 +982,26 @@ export const connectToServer = memoize(
         logMCPDebug(name, `Setting up SSE-IDE transport to ${serverRef.url}`)
         // IDE servers don't need authentication
         // Follow-up: Use the auth token provided in the lockfile
-        const proxyOptions = getProxyFetchOptions()
-        const transportOptions: SSEClientTransportOptions =
-          proxyOptions.dispatcher
-            ? {
-              eventSourceInit: {
-                fetch: async (url: string | URL, init?: RequestInit) => {
-                  // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-                  return fetch(url, {
-                    ...init,
-                    ...proxyOptions,
-                    headers: {
-                      'User-Agent': getMCPUserAgent(),
-                      ...init?.headers,
-                    },
-                  })
+        const transportOptions: SSEClientTransportOptions = {
+          fetch: scopedFetch,
+          eventSourceInit: {
+            fetch: async (url: string | URL, init?: RequestInit) =>
+              scopedFetch(url, {
+                ...init,
+                headers: {
+                  'User-Agent': getMCPUserAgent(),
+                  ...init?.headers,
                 },
-              },
-            }
-            : {}
+              }),
+          },
+        }
 
         transport = new SSEClientTransport(
           new URL(serverRef.url),
-          Object.keys(transportOptions).length > 0
-            ? transportOptions
-            : undefined,
+          transportOptions,
         )
       } else if (serverRef.type === 'ws-ide') {
-        const tlsOptions = getWebSocketTLSOptions()
+        const tlsOptions = getWebSocketTLSOptions(environment)
         const wsHeaders = {
           'User-Agent': getMCPUserAgent(),
           ...(serverRef.authToken && {
@@ -851,13 +1016,13 @@ export const connectToServer = memoize(
           wsClient = new globalThis.WebSocket(serverRef.url, {
             protocols: ['mcp'],
             headers: wsHeaders,
-            proxy: getWebSocketProxyUrl(serverRef.url),
+            proxy: getWebSocketProxyUrl(serverRef.url, environment),
             tls: tlsOptions || undefined,
           } as unknown as string[])
         } else {
           wsClient = await createNodeWsClient(serverRef.url, {
             headers: wsHeaders,
-            agent: getWebSocketProxyAgent(serverRef.url),
+            agent: getWebSocketProxyAgent(serverRef.url, environment),
             ...(tlsOptions || {}),
           })
         }
@@ -868,9 +1033,13 @@ export const connectToServer = memoize(
           `Initializing WebSocket transport to ${serverRef.url}`,
         )
 
-        const combinedHeaders = await getMcpServerHeaders(name, serverRef)
+        const combinedHeaders = await getMcpServerHeaders(
+          name,
+          serverRef,
+          environment,
+        )
 
-        const tlsOptions = getWebSocketTLSOptions()
+        const tlsOptions = getWebSocketTLSOptions(environment)
         const wsHeaders = {
           'User-Agent': getMCPUserAgent(),
           ...(sessionIngressToken && {
@@ -900,13 +1069,13 @@ export const connectToServer = memoize(
           wsClient = new globalThis.WebSocket(serverRef.url, {
             protocols: ['mcp'],
             headers: wsHeaders,
-            proxy: getWebSocketProxyUrl(serverRef.url),
+            proxy: getWebSocketProxyUrl(serverRef.url, environment),
             tls: tlsOptions || undefined,
           } as unknown as string[])
         } else {
           wsClient = await createNodeWsClient(serverRef.url, {
             headers: wsHeaders,
-            agent: getWebSocketProxyAgent(serverRef.url),
+            agent: getWebSocketProxyAgent(serverRef.url, environment),
             ...(tlsOptions || {}),
           })
         }
@@ -920,19 +1089,32 @@ export const connectToServer = memoize(
         logMCPDebug(
           name,
           `Environment: ${jsonStringify({
-            NODE_OPTIONS: process.env.NODE_OPTIONS || 'not set',
-            UV_THREADPOOL_SIZE: process.env.UV_THREADPOOL_SIZE || 'default',
-            HTTP_PROXY: process.env.HTTP_PROXY || 'not set',
-            HTTPS_PROXY: process.env.HTTPS_PROXY || 'not set',
-            NO_PROXY: process.env.NO_PROXY || 'not set',
+            NODE_OPTIONS: environment.NODE_OPTIONS || 'not set',
+            UV_THREADPOOL_SIZE: environment.UV_THREADPOOL_SIZE || 'default',
+            HTTP_PROXY: environment.HTTP_PROXY || 'not set',
+            HTTPS_PROXY: environment.HTTPS_PROXY || 'not set',
+            NO_PROXY: environment.NO_PROXY || 'not set',
           })}`,
         )
 
         // Create an auth provider for this server
-        const authProvider = new AgenCAuthProvider(name, serverRef)
+        const authProvider = new AgenCAuthProvider(
+          credentialHome!,
+          name,
+          serverRef,
+          undefined,
+          false,
+          undefined,
+          undefined,
+          environment,
+        )
 
         // Get combined headers (static + dynamic)
-        const combinedHeaders = await getMcpServerHeaders(name, serverRef)
+        const combinedHeaders = await getMcpServerHeaders(
+          name,
+          serverRef,
+          environment,
+        )
 
         // Check if this server has stored OAuth tokens. If so, the SDK's
         // authProvider will set Authorization — don't override with the
@@ -942,7 +1124,7 @@ export const connectToServer = memoize(
         const hasOAuthTokens = !!(await authProvider.tokens())
 
         // Use the auth provider with StreamableHTTPClientTransport
-        const proxyOptions = getProxyFetchOptions()
+        const proxyOptions = getProxyFetchOptions({ environment })
         logMCPDebug(
           name,
           `Proxy options: ${proxyOptions.dispatcher ? 'custom dispatcher' : 'default'}`,
@@ -953,7 +1135,10 @@ export const connectToServer = memoize(
           // Step-up detection wraps innermost so the 403 is seen before the
           // SDK's handler calls auth() → tokens().
           fetch: wrapMcpTransportFetch(
-            wrapFetchWithStepUpDetection(createFetchWithInit(), authProvider),
+            wrapFetchWithStepUpDetection(
+              createFetchWithInit(scopedFetch),
+              authProvider,
+            ),
           ),
           requestInit: {
             ...proxyOptions,
@@ -1000,7 +1185,7 @@ export const connectToServer = memoize(
           `Initializing agenc.tech proxy transport for server ${serverRef.id}`,
         )
 
-        const tokens = getAgenCAIOAuthTokens()
+        const tokens = getAgenCAIOAuthTokens(credentialHome!, environment)
         if (!tokens) {
           throw new Error('No agenc.tech OAuth token found')
         }
@@ -1011,9 +1196,13 @@ export const connectToServer = memoize(
         logMCPDebug(name, `Using agenc.tech proxy at ${proxyUrl}`)
 
         // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-        const fetchWithAuth = createAgenCAiProxyFetch(globalThis.fetch)
+        const fetchWithAuth = createAgenCAiProxyFetch(
+          credentialHome!,
+          environment,
+          scopedFetch,
+        )
 
-        const proxyOptions = getProxyFetchOptions()
+        const proxyOptions = getProxyFetchOptions({ environment })
         const transportOptions: StreamableHTTPClientTransportOptions = {
           fetch: wrapMcpTransportFetch(fetchWithAuth),
           requestInit: {
@@ -1044,7 +1233,11 @@ export const connectToServer = memoize(
         const { createLinkedTransportPair } = await import(
           './InProcessTransport.js'
         )
-        const context = createChromeContext(serverRef.env)
+        const context = createChromeContext(
+          environment,
+          serverRef.env,
+          options?.home,
+        )
         const chromeMcpServer = createAgenCForChromeMcpServer(context)
         inProcessServer = chromeMcpServer
         const [clientTransport, serverTransport] = createLinkedTransportPair()
@@ -1052,16 +1245,20 @@ export const connectToServer = memoize(
         transport = clientTransport
         logMCPDebug(name, `In-process Chrome MCP server started`)
       } else if (serverRef.type === 'stdio' || !serverRef.type) {
-        const finalCommand =
-          process.env.AGENC_SHELL_PREFIX || serverRef.command
-        const finalArgs = process.env.AGENC_SHELL_PREFIX
-          ? [formatMcpShellPrefixCommand(serverRef.command, serverRef.args)]
-          : serverRef.args
+        const commandWrapperArgv = options?.runtimeOptions?.commandWrapperArgv
+        const finalCommand = commandWrapperArgv?.[0] ?? serverRef.command
+        const finalArgs =
+          commandWrapperArgv !== undefined && commandWrapperArgv.length > 0
+            ? [
+                ...commandWrapperArgv.slice(1),
+                formatMcpShellPrefixCommand(serverRef.command, serverRef.args),
+              ]
+            : serverRef.args
         transport = new StdioClientTransport({
           command: finalCommand,
           args: finalArgs,
           env: {
-            ...subprocessEnv(),
+            ...subprocessEnv({ ...environment }),
             ...serverRef.env,
           } as Record<string, string>,
           stderr: 'pipe', // prevents error output from the MCP server from printing to the UI
@@ -1123,9 +1320,10 @@ export const connectToServer = memoize(
       })
 
       // Add a timeout to connection attempts to prevent tests from hanging indefinitely
+      const connectionTimeoutMs = getConnectionTimeoutMs(environment)
       logMCPDebug(
         name,
-        `Starting connection with timeout of ${getConnectionTimeoutMs()}ms`,
+        `Starting connection with timeout of ${connectionTimeoutMs}ms`,
       )
 
       // For HTTP transport, try a basic connectivity test first
@@ -1156,7 +1354,7 @@ export const connectToServer = memoize(
           const elapsed = Date.now() - connectStartTime
           logMCPDebug(
             name,
-            `Connection timeout triggered after ${elapsed}ms (limit: ${getConnectionTimeoutMs()}ms)`,
+            `Connection timeout triggered after ${elapsed}ms (limit: ${connectionTimeoutMs}ms)`,
           )
           if (inProcessServer) {
             inProcessServer.close().catch(() => { })
@@ -1164,11 +1362,11 @@ export const connectToServer = memoize(
           transport.close().catch(() => { })
           reject(
             new LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
-              `MCP server "${name}" connection timed out after ${getConnectionTimeoutMs()}ms`,
+              `MCP server "${name}" connection timed out after ${connectionTimeoutMs}ms`,
               'MCP connection timeout',
             ),
           )
-        }, getConnectionTimeoutMs())
+        }, connectionTimeoutMs)
 
         // Clean up timeout if connect resolves or rejects
         connectPromise.then(
@@ -1208,7 +1406,7 @@ export const connectToServer = memoize(
           logMCPError(name, error)
 
           if (error instanceof UnauthorizedError) {
-            return handleRemoteAuthFailure(name, serverRef, 'sse')
+            return handleRemoteAuthFailure(credentialHome!, name, serverRef, 'sse')
           }
         } else if (serverRef.type === 'http' && error instanceof Error) {
           const errorObj = error as Error & {
@@ -1224,7 +1422,7 @@ export const connectToServer = memoize(
           logMCPError(name, error)
 
           if (error instanceof UnauthorizedError) {
-            return handleRemoteAuthFailure(name, serverRef, 'http')
+            return handleRemoteAuthFailure(credentialHome!, name, serverRef, 'http')
           }
         } else if (
           serverRef.type === 'agencai-proxy' &&
@@ -1239,7 +1437,12 @@ export const connectToServer = memoize(
           // StreamableHTTPError has a `code` property with the HTTP status
           const errorCode = (error as Error & { code?: number }).code
           if (errorCode === 401) {
-            return handleRemoteAuthFailure(name, serverRef, 'agencai-proxy')
+            return handleRemoteAuthFailure(
+              credentialHome!,
+              name,
+              serverRef,
+              'agencai-proxy',
+            )
           }
         }
         if (inProcessServer) {
@@ -1478,9 +1681,7 @@ export const connectToServer = memoize(
         // Also clear fetch caches (keyed by server name). Reconnection
         // creates a new connection object; without clearing, the next
         // fetch would return stale tools/resources from the old connection.
-        fetchToolsForClient.cache.delete(name)
-        fetchResourcesForClient.cache.delete(name)
-        fetchCommandsForClient.cache.delete(name)
+        clearMcpFetchCachesForServer(name)
         clearMcpSkillsForClientCache(name)
 
         connectToServer.cache.delete(key)
@@ -1669,7 +1870,7 @@ export const connectToServer = memoize(
         await cleanup()
       }
 
-      return {
+      return bindMcpConnectionAuthority({
         name,
         client,
         type: 'connected' as const,
@@ -1677,8 +1878,9 @@ export const connectToServer = memoize(
         serverInfo: serverVersion,
         instructions,
         config: serverRef,
+        ...(credentialHome !== undefined ? { homeContext: credentialHome } : {}),
         cleanup: wrappedCleanup,
-      }
+      }, environment, options?.runtimeOptions)
     } catch (error) {
       const connectionDurationMs = Date.now() - connectStartTime
       logMCPDebug(
@@ -1709,13 +1911,25 @@ export const connectToServer = memoize(
 export async function clearServerCache(
   name: string,
   serverRef: ScopedMcpServerConfig,
+  home?: HomeContext,
+  environment: ProviderEnvironment = EMPTY_MCP_ENVIRONMENT,
+  runtimeOptions?: AgentRuntimeOptions,
 ): Promise<void> {
-  const key = getServerCacheKey(name, serverRef)
+  const connectOptions: ConnectToServerOptions = {
+    ...(home !== undefined ? { home } : {}),
+    environment,
+    ...(runtimeOptions !== undefined ? { runtimeOptions } : {}),
+  }
+  const key = getServerCacheKey(name, serverRef, undefined, connectOptions)
 
   try {
-    const wrappedClient = await connectToServer(name, serverRef)
+    const wrappedClient = await (
+      connectToServer.cache as {
+        get: (cacheKey: string) => Promise<MCPServerConnection> | undefined
+      }
+    ).get(key)
 
-    if (wrappedClient.type === 'connected') {
+    if (wrappedClient?.type === 'connected') {
       await wrappedClient.cleanup()
     }
   } catch {
@@ -1725,9 +1939,7 @@ export async function clearServerCache(
   // Clear from cache (both connection and fetch caches so reconnect
   // fetches fresh tools/resources/commands instead of stale ones)
   connectToServer.cache.delete(key)
-  fetchToolsForClient.cache.delete(name)
-  fetchResourcesForClient.cache.delete(name)
-  fetchCommandsForClient.cache.delete(name)
+  clearMcpFetchCachesForServer(name)
   clearMcpSkillsForClientCache(name)
 }
 
@@ -1751,8 +1963,20 @@ export async function ensureConnectedClient(
   if (client.config.type === 'sdk') {
     return client
   }
+  const authority = mcpConnectionAuthority(client)
 
-  const connectedClient = await connectToServer(client.name, client.config)
+  const connectedClient = await connectToServer(
+    client.name,
+    client.config,
+    undefined,
+    {
+      ...(client.homeContext !== undefined ? { home: client.homeContext } : {}),
+      environment: authority.environment,
+      ...(authority.runtimeOptions !== undefined
+        ? { runtimeOptions: authority.runtimeOptions }
+        : {}),
+    },
+  )
   if (connectedClient.type !== 'connected') {
     throw new LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS(
       `MCP server "${client.name}" is not connected`,
@@ -1823,7 +2047,10 @@ export const fetchToolsForClient = memoizeWithLRU(
       // Check if we should skip the mcp__ prefix for SDK MCP servers
       const skipPrefix =
         client.config.type === 'sdk' &&
-        isEnvTruthy(process.env.AGENC_AGENT_SDK_MCP_NO_PREFIX)
+        isEnvTruthy(
+          mcpConnectionAuthority(client).environment
+            .AGENC_AGENT_SDK_MCP_NO_PREFIX,
+        )
 
       // Convert MCP tools to our Tool format
       return toolsToProcess
@@ -2054,7 +2281,7 @@ export const fetchToolsForClient = memoizeWithLRU(
       return []
     }
   },
-  (client: MCPServerConnection) => client.name,
+  mcpFetchCacheKey,
   MCP_FETCH_CACHE_SIZE,
 )
 
@@ -2087,7 +2314,7 @@ export const fetchResourcesForClient = memoizeWithLRU(
       return []
     }
   },
-  (client: MCPServerConnection) => client.name,
+  mcpFetchCacheKey,
   MCP_FETCH_CACHE_SIZE,
 )
 
@@ -2189,7 +2416,7 @@ const fetchCommandsForClient = memoizeWithLRU(
       return []
     }
   },
-  (client: MCPServerConnection) => client.name,
+  mcpFetchCacheKey,
   MCP_FETCH_CACHE_SIZE,
 )
 
@@ -2287,8 +2514,11 @@ export async function callIdeRpc(
  * @returns Object containing the client connection and its resources
  */
 export async function reconnectMcpServerImpl(
+  home: HomeContext,
   name: string,
   config: ScopedMcpServerConfig,
+  environment: ProviderEnvironment = EMPTY_MCP_ENVIRONMENT,
+  runtimeOptions?: AgentRuntimeOptions,
 ): Promise<{
   client: MCPServerConnection
   tools: Tool[]
@@ -2303,8 +2533,12 @@ export async function reconnectMcpServerImpl(
     // use stale cached data and never notice the tokens were removed.
     clearKeychainCache()
 
-    await clearServerCache(name, config)
-    const client = await connectToServer(name, config)
+    await clearServerCache(name, config, home, environment, runtimeOptions)
+    const client = await connectToServer(name, config, undefined, {
+      home,
+      environment,
+      ...(runtimeOptions !== undefined ? { runtimeOptions } : {}),
+    })
 
     if (client.type !== 'connected') {
       return {
@@ -2376,25 +2610,26 @@ async function processBatched<T>(
 }
 
 async function getMcpToolsCommandsAndResources(
+  home: HomeContext,
+  environment: ProviderEnvironment,
+  runtimeOptions: AgentRuntimeOptions | undefined,
   onConnectionAttempt: (params: {
     client: MCPServerConnection
     tools: Tool[]
     commands: Command[]
     resources?: ServerResource[]
   }) => void,
-  mcpConfigs?: Record<string, ScopedMcpServerConfig>,
+  mcpConfigs: Record<string, ScopedMcpServerConfig>,
 ): Promise<void> {
   let resourceToolsAdded = false
 
-  const allConfigEntries = Object.entries(
-    mcpConfigs ?? (await getAllMcpConfigs()).servers,
-  )
+  const allConfigEntries = Object.entries(mcpConfigs)
 
   // Partition into disabled and active entries — disabled servers should
   // never generate HTTP connections or flow through batch processing
   const configEntries: typeof allConfigEntries = []
   for (const entry of allConfigEntries) {
-    if (isMcpServerDisabled(entry[0])) {
+    if (isMcpServerDisabled(entry[0], entry[1])) {
       onConnectionAttempt({
         client: { name: entry[0], type: 'disabled', config: entry[1] },
         tools: [],
@@ -2437,7 +2672,7 @@ async function getMcpToolsCommandsAndResources(
   ]): Promise<void> => {
     try {
       // Check if server is disabled - if so, just add it to state without connecting
-      if (isMcpServerDisabled(name)) {
+      if (isMcpServerDisabled(name, config)) {
         onConnectionAttempt({
           client: {
             name,
@@ -2460,27 +2695,52 @@ async function getMcpToolsCommandsAndResources(
         (config.type === 'agencai-proxy' ||
           config.type === 'http' ||
           config.type === 'sse') &&
-        ((await isMcpAuthCached(name)) ||
+        ((await isMcpAuthCached(home, name)) ||
           ((config.type === 'http' || config.type === 'sse') &&
-            hasMcpDiscoveryButNoToken(name, config)))
+            hasMcpDiscoveryButNoToken(
+              home,
+              environment,
+              name,
+              config,
+            )))
       ) {
         logMCPDebug(name, `Skipping connection (cached needs-auth)`)
         onConnectionAttempt({
-          client: { name, type: 'needs-auth' as const, config },
-          tools: [createMcpAuthTool(name, config)],
+          client: { name, type: 'needs-auth' as const, config, homeContext: home },
+          tools: [
+            createMcpAuthTool(
+              home,
+              environment,
+              name,
+              config,
+              runtimeOptions,
+            ),
+          ],
           commands: [],
         })
         return
       }
 
-      const client = await connectToServer(name, config, serverStats)
+      const client = await connectToServer(name, config, serverStats, {
+        home,
+        environment,
+        ...(runtimeOptions !== undefined ? { runtimeOptions } : {}),
+      })
 
       if (client.type !== 'connected') {
         onConnectionAttempt({
           client,
           tools:
             client.type === 'needs-auth'
-              ? [createMcpAuthTool(name, config)]
+              ? [
+                  createMcpAuthTool(
+                    home,
+                    environment,
+                    name,
+                    config,
+                    runtimeOptions,
+                  ),
+                ]
               : [],
           commands: [],
         })
@@ -2543,12 +2803,12 @@ async function getMcpToolsCommandsAndResources(
   await Promise.all([
     processBatched(
       localServers,
-      getMcpServerConnectionBatchSize(),
+      getMcpServerConnectionBatchSize(environment),
       processServer,
     ),
     processBatched(
       remoteServers,
-      getRemoteMcpServerConnectionBatchSize(),
+      getRemoteMcpServerConnectionBatchSize(environment),
       processServer,
     ),
   ])
@@ -2558,7 +2818,10 @@ async function getMcpToolsCommandsAndResources(
 // (connectToServer, fetch*ForClient) is already cached. Memoizing here by
 // mcpConfigs object ref leaked — main.tsx creates fresh config objects each call.
 export function prefetchAllMcpResources(
+  home: HomeContext,
   mcpConfigs: Record<string, ScopedMcpServerConfig>,
+  environment: ProviderEnvironment = EMPTY_MCP_ENVIRONMENT,
+  runtimeOptions?: AgentRuntimeOptions,
 ): Promise<{
   clients: MCPServerConnection[]
   tools: Tool[]
@@ -2583,7 +2846,7 @@ export function prefetchAllMcpResources(
     const tools: Tool[] = []
     const commands: Command[] = []
 
-    getMcpToolsCommandsAndResources(result => {
+    getMcpToolsCommandsAndResources(home, environment, runtimeOptions, result => {
       clients.push(result.client)
       tools.push(...result.tools)
       commands.push(...result.commands)
@@ -2862,6 +3125,7 @@ async function processMCPResult(
   result: unknown,
   tool: string, // Tool name for validation (e.g., "search")
   name: string, // Server name for IDE check and transformation (e.g., "slack")
+  environment: ProviderEnvironment,
 ): Promise<MCPToolResult> {
   const { content, type, schema } = await transformMCPResult(result, tool, name)
 
@@ -2877,7 +3141,7 @@ async function processMCPResult(
   }
 
   // If large output files feature is disabled, fall back to old truncation behavior
-  if (isEnvDefinedFalsy(process.env.ENABLE_MCP_LARGE_OUTPUT_FILES)) {
+  if (isEnvDefinedFalsy(environment.ENABLE_MCP_LARGE_OUTPUT_FILES)) {
     return await truncateMcpContentIfNeeded(content)
   }
 
@@ -3149,7 +3413,7 @@ export async function callMCPToolWithUrlElicitationRetry({
 }
 
 async function callMCPTool({
-  client: { client, name, config },
+  client: connectedServer,
   tool,
   args,
   meta,
@@ -3167,6 +3431,8 @@ async function callMCPTool({
   _meta?: Record<string, unknown>
   structuredContent?: Record<string, unknown>
 }> {
+  const { client, name, config, homeContext } = connectedServer
+  const { environment, runtimeOptions } = mcpConnectionAuthority(connectedServer)
   const toolStartTime = Date.now()
   let progressInterval: NodeJS.Timeout | undefined
 
@@ -3187,7 +3453,7 @@ async function callMCPTool({
       tool,
     )
 
-    const timeoutMs = getMcpToolTimeoutMs()
+    const timeoutMs = getMcpToolTimeoutMs(environment)
     signal.throwIfAborted()
     const effectController = new AbortController()
     const timeoutError =
@@ -3298,7 +3564,7 @@ async function callMCPTool({
 
     logMCPDebug(name, `Tool '${tool}' completed successfully in ${duration}`)
 
-    const content = await processMCPResult(result, tool, name)
+    const content = await processMCPResult(result, tool, name, environment)
     return {
       content,
       _meta: result._meta as Record<string, unknown> | undefined,
@@ -3354,7 +3620,13 @@ async function callMCPTool({
           name,
           `MCP session expired during tool call (${isSessionExpired ? '404/-32001' : 'connection closed'}), clearing connection cache for re-initialization`,
         )
-        await clearServerCache(name, config)
+        await clearServerCache(
+          name,
+          config,
+          homeContext,
+          environment,
+          runtimeOptions,
+        )
         throw new McpSessionExpiredError(name)
       }
     }
@@ -3402,6 +3674,7 @@ export async function setupSdkMcpClients(
   ) => Promise<JSONRPCMessage>,
   options: {
     readonly samplingHandlers?: McpSamplingHandlers
+    readonly environment?: ProviderEnvironment
   } = {},
 ): Promise<{
   clients: MCPServerConnection[]
@@ -3444,7 +3717,7 @@ export async function setupSdkMcpClients(
         const capabilities = client.getServerCapabilities()
 
         // Create the connected client object
-        const connectedClient: MCPServerConnection = {
+        const connectedClient = bindMcpConnectionAuthority({
           type: 'connected',
           name,
           capabilities: capabilities || {},
@@ -3453,7 +3726,7 @@ export async function setupSdkMcpClients(
           cleanup: async () => {
             await client.close()
           },
-        }
+        }, options.environment ?? EMPTY_MCP_ENVIRONMENT, undefined)
 
         // Fetch tools if the server has them
         const serverTools: Tool[] = []

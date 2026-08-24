@@ -17,8 +17,8 @@ Deep client notes: [`runtime/src/mcp-client/README.md`](../../runtime/src/mcp-cl
 | --- | --- | --- |
 | stdio (default) | `stdio` | `command` (+ optional `args`, `cwd`, `env` / `env_vars`) |
 | Streamable HTTP | `http` | `endpoint` |
-| SSE (legacy) | `sse` | `endpoint` |
-| WebSocket | `websocket` or `ws` | `endpoint` |
+| SSE (older MCP transport) | `sse` | `endpoint` |
+| WebSocket | `websocket` | `endpoint` |
 
 Optional bearer / custom headers apply on network transports. Stdio owns env
 allow-listing, process-group cleanup, and PID-tree teardown.
@@ -40,7 +40,6 @@ args = ["-y", "some-mcp-server"]
 # enabled_tools = ["search"]
 # disabled_tools = ["delete"]
 # container = "my-desktop-container"  # optional: stdio via desktop sandbox / docker exec
-# pluginSandbox = true                # optional plugin-scoped sandboxing
 ```
 
 Network example:
@@ -49,8 +48,16 @@ Network example:
 [mcp_servers.remote]
 transport = "http"
 endpoint = "https://mcp.example.com/mcp"
-# headers = { Authorization = "Bearer …" }
+# headers = { Authorization = "Bearer ${AGENC_CREDENTIAL_REMOTE_TOKEN}" }
 ```
+
+`${NAME}` and `${NAME:-default}` interpolation is resolved once from the
+creating client's captured environment. It never falls back to the daemon's
+startup environment. Use the reserved `AGENC_CREDENTIAL_*` namespace for MCP
+secrets that must cross a daemon session boundary. A configured
+`headersHelper` receives that same captured environment plus
+`AGENC_MCP_SERVER_NAME` and `AGENC_MCP_SERVER_URL`; reconnects retain the
+original environment and shell-wrapper authority.
 
 Also: daemon method `session.mcp.addServer` (and related enable/disable/reconnect
 paths on the dispatcher) for session-scoped server mutations. The public SDK
@@ -87,7 +94,7 @@ Built-in helpers that help the agent work with MCP resources:
 - `ListMcpResources` / `ListMcpResourcesTool`
 - `ReadMcpResource` / `ReadMcpResourceTool`
 
-(`McpAuthTool` exists as a donor-style OAuth helper in the tools tree; it is
+(`McpAuthTool` exists as an OAuth helper in the tools tree; it is
 not the primary LIVE bridge surface.)
 
 Slash: `/mcp` opens the MCP connection menu in the TUI.

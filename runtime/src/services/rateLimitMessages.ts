@@ -11,6 +11,11 @@ import {
 import { hasAgenCAiBillingAccess } from '../utils/billing.js'
 import { formatResetTime } from '../utils/format.js'
 import type { AgenCAILimits } from './agencAiLimits.js'
+import { resolveSecureStorageHome } from '../utils/secureStorage/home.js'
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 
 const FEEDBACK_CHANNEL_ANT = '#briarpatch-cc'
 
@@ -79,11 +84,11 @@ function getRateLimitMessage(
 
     // Don't warn non-billing Team/Enterprise users about approaching plan limits
     // if overages are enabled - they'll seamlessly roll into overage
-    const subscriptionType = getSubscriptionType()
+    const subscriptionType = getSubscriptionType(credentialHome())
     const isTeamOrEnterprise =
       subscriptionType === 'team' || subscriptionType === 'enterprise'
     const hasExtraUsageEnabled =
-      getOauthAccountInfo()?.hasExtraUsageEnabled === true
+      getOauthAccountInfo(credentialHome())?.hasExtraUsageEnabled === true
 
     if (
       isTeamOrEnterprise &&
@@ -173,7 +178,7 @@ function getLimitReachedText(limits: AgenCAILimits, model: string): string {
   }
 
   if (limits.rateLimitType === 'seven_day_sonnet') {
-    const subscriptionType = getSubscriptionType()
+    const subscriptionType = getSubscriptionType(credentialHome())
     const isProOrEnterprise =
       subscriptionType === 'pro' || subscriptionType === 'enterprise'
     // For pro and enterprise, Sonnet limit is the same as weekly
@@ -261,16 +266,16 @@ function getEarlyWarningText(limits: AgenCAILimits): string | null {
 function getWarningUpsellText(
   rateLimitType: AgenCAILimits['rateLimitType'],
 ): string | null {
-  const subscriptionType = getSubscriptionType()
+  const subscriptionType = getSubscriptionType(credentialHome())
   const hasExtraUsageEnabled =
-    getOauthAccountInfo()?.hasExtraUsageEnabled === true
+    getOauthAccountInfo(credentialHome())?.hasExtraUsageEnabled === true
 
   // 5-hour session limit warning
   if (rateLimitType === 'five_hour') {
     // Teams/Enterprise with overages disabled: prompt to request extra usage
     // Only show if overage provisioning is allowed for this org type (e.g., not AWS marketplace)
     if (subscriptionType === 'team' || subscriptionType === 'enterprise') {
-      if (!hasExtraUsageEnabled && isOverageProvisioningAllowed()) {
+      if (!hasExtraUsageEnabled && isOverageProvisioningAllowed(credentialHome())) {
         return '/extra-usage to request more'
       }
       // Teams/Enterprise with overages enabled or unsupported billing type don't need upsell
@@ -286,7 +291,7 @@ function getWarningUpsellText(
   // Overage warning (approaching spending limit)
   if (rateLimitType === 'overage') {
     if (subscriptionType === 'team' || subscriptionType === 'enterprise') {
-      if (!hasExtraUsageEnabled && isOverageProvisioningAllowed()) {
+      if (!hasExtraUsageEnabled && isOverageProvisioningAllowed(credentialHome())) {
         return '/extra-usage to request more'
       }
     }
@@ -313,7 +318,7 @@ export function getUsingOverageText(limits: AgenCAILimits): string {
   } else if (limits.rateLimitType === 'seven_day_opus') {
     limitName = 'Opus limit'
   } else if (limits.rateLimitType === 'seven_day_sonnet') {
-    const subscriptionType = getSubscriptionType()
+    const subscriptionType = getSubscriptionType(credentialHome())
     const isProOrEnterprise =
       subscriptionType === 'pro' || subscriptionType === 'enterprise'
     // For pro and enterprise, Sonnet limit is the same as weekly

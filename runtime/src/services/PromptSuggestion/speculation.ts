@@ -61,7 +61,7 @@ const MAX_SPECULATION_MESSAGES = 100
 
 const WRITE_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit'])
 const SAFE_READ_ONLY_TOOLS = new Set([
-  'Read',
+  'FileRead',
   'Glob',
   'Grep',
   'ToolSearch',
@@ -162,7 +162,7 @@ function getBoundaryTool(
   if (!boundary) return undefined
   switch (boundary.type) {
     case 'bash':
-      return 'Bash'
+      return 'system.bash'
     case 'edit':
     case 'denied_tool':
       return boundary.toolName
@@ -571,7 +571,7 @@ export async function startSpeculation(
         }
 
         // Stop at non-read-only bash commands
-        if (tool.name === 'Bash') {
+        if (tool.name === 'system.bash') {
           const command =
             'command' in input && typeof input.command === 'string'
               ? input.command

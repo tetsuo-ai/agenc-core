@@ -8,7 +8,7 @@ describe("DeepSeekProvider", () => {
       new Response(
         JSON.stringify({
           id: "chatcmpl_deepseek",
-          model: "deepseek-reasoner",
+          model: "deepseek-v4-pro",
           choices: [
             {
               message: {
@@ -34,7 +34,7 @@ describe("DeepSeekProvider", () => {
 
     const provider = new DeepSeekProvider({
       apiKey: "deepseek-test",
-      model: "deepseek-reasoner",
+      model: "deepseek-v4-pro",
       fetchImpl,
     });
 

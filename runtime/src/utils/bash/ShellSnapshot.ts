@@ -10,7 +10,7 @@ import {
   embeddedSearchToolsBinaryPath,
   hasEmbeddedSearchTools,
 } from '../embeddedTools.js'
-import { getAgenCConfigHomeDir } from '../envUtils.js'
+import { getAgenCHomeDir } from '../envUtils.js'
 import { pathExists } from '../file.js'
 import { getFsImplementation } from '../fsOperations.js'
 import { logError } from '../log.js'
@@ -435,7 +435,7 @@ export const createAndSaveSnapshot = async (
       // Create unique snapshot path with timestamp and random ID
       const timestamp = Date.now()
       const randomId = Math.random().toString(36).substring(2, 8)
-      const snapshotsDir = join(getAgenCConfigHomeDir(), 'shell-snapshots')
+      const snapshotsDir = join(getAgenCHomeDir(), 'shell-snapshots')
       logForDebugging(`Snapshots directory: ${snapshotsDir}`)
       const shellSnapshotPath = join(
         snapshotsDir,
@@ -484,7 +484,7 @@ export const createAndSaveSnapshot = async (
             logForDebugging(`  - Config file: ${getConfigFile(binShell)}`)
             logForDebugging(`  - Config file exists: ${configFileExists}`)
             logForDebugging(`  - Working directory: ${getCwd()}`)
-            logForDebugging(`  - AgenC home: ${getAgenCConfigHomeDir()}`)
+            logForDebugging(`  - AgenC home: ${getAgenCHomeDir()}`)
             logForDebugging(`Full snapshot script:\n${snapshotScript}`)
             if (stdout) {
               logForDebugging(

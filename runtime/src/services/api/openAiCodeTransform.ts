@@ -8,6 +8,7 @@ import type {
   ResolvedProviderCodeCredentials,
   ResolvedProviderRequest,
 } from './providerConfig.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
 import { sanitizeSchemaForOpenAiCompat } from '../../utils/schemaSanitizer.js'
 import { normalizeToolParamSchema } from '../../utils/toolParamSchema.js'
 import {
@@ -524,6 +525,7 @@ function convertToolChoice(toolChoice: unknown): unknown {
 export async function performProviderCodeRequest(options: {
   request: ResolvedProviderRequest
   credentials: ResolvedProviderCodeCredentials
+  environment: ProviderEnvironment
   params: ShimCreateParams
   defaultHeaders: Record<string, string>
   signal?: AbortSignal
@@ -535,6 +537,7 @@ export async function performProviderCodeRequest(options: {
       content?: unknown
     }>,
     options.request.resolvedModel,
+    options.environment,
   )
   const input = convertproviderMessagesToResponsesInput(compressedMessages)
   const body: Record<string, unknown> = {
@@ -615,6 +618,7 @@ export async function performProviderCodeRequest(options: {
       body: stableStringify(body),
       signal: options.signal,
     },
+    { environment: options.environment },
   )
 
   if (!response.ok) {

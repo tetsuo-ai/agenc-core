@@ -12,7 +12,7 @@ import {
 
 // OOM-fix regression: the per-session read map (which backs the read-before-write
 // gate) retained the full file content + rawContent for every unique path read.
-// A long-lived `agenc --yolo` session touching thousands of files pinned all of
+// A long-lived `agenc --dangerously-bypass-approvals-and-sandbox` session touching thousands of files pinned all of
 // it until the V8 heap was exhausted. The retained large-field bytes must now be
 // bounded — by STRIPPING content/rawContent from the oldest entries — WITHOUT
 // breaking the gate (presence + view-kind metadata must survive the eviction).

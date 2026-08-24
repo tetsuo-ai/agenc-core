@@ -11,18 +11,19 @@
  */
 
 import type { AuthBackend, AuthBackendKind, AuthSubscriptionTier } from "../../auth/backend.js";
-import { loadConfig } from "../../config/loader.js";
-import { resolveAgencHome } from "../../config/env.js";
+import { loadCanonicalConfig } from "../../config/repository.js";
 import { resolveProviderSettings } from "../../config/resolve-provider.js";
 import type { AgenCConfig } from "../../config/schema.js";
 import { readXaiOauthAccessToken } from "../../utils/xaiOauthCredentials.js";
+import type { HomeContext } from "../../config/home.js";
+import { captureSecureStorageIngress } from "../../utils/secureStorage/home.js";
 import {
   BUILT_IN_PROVIDER_API_KEY_ENVS,
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
 } from "../registry/provider-info.js";
 import {
-  normalizeProviderName,
+  resolveBuiltInProviderSlug,
   type ProviderName,
 } from "../provider.js";
 
@@ -120,9 +121,11 @@ interface SubscriptionContext {
 export async function collectProviderAvailability(
   options: CollectProviderAvailabilityOptions = {},
 ): Promise<ProviderAvailabilityReport> {
-  const env = options.env ?? process.env;
+  const ingress = captureSecureStorageIngress(options.env ?? process.env);
+  const env = ingress.environment;
+  const home = ingress.home;
   const config = options.config ??
-    (await loadConfig({ home: resolveAgencHome(env) })).config;
+    (await loadCanonicalConfig({ home, env })).config;
   const subscription = await resolveSubscriptionContext(options.authBackend);
   const entries = await Promise.all(
     (Object.keys(BUILT_IN_PROVIDER_DEFAULT_MODELS) as ProviderName[]).map(
@@ -131,6 +134,7 @@ export async function collectProviderAvailability(
           provider,
           authBackend: options.authBackend,
           config,
+          home,
           env,
           subscription,
           checkLocal: options.checkLocal !== false,
@@ -203,6 +207,7 @@ async function resolveProviderAvailabilityEntry(params: {
   readonly provider: ProviderName;
   readonly authBackend?: AuthBackend;
   readonly config: AgenCConfig;
+  readonly home: HomeContext;
   readonly env: NodeJS.ProcessEnv;
   readonly subscription: SubscriptionContext;
   readonly checkLocal: boolean;
@@ -219,6 +224,7 @@ async function resolveProviderAvailabilityEntry(params: {
   const credential = resolveProviderCredential({
     provider: params.provider,
     config: params.config,
+    home: params.home,
     env: params.env,
     settingsApiKey: settings?.apiKey,
   });
@@ -422,6 +428,7 @@ function localProviderKeyStatus(
 function resolveProviderCredential(params: {
   readonly provider: ProviderName;
   readonly config: AgenCConfig;
+  readonly home: HomeContext;
   readonly env: NodeJS.ProcessEnv;
   readonly settingsApiKey?: string;
 }): {
@@ -429,17 +436,6 @@ function resolveProviderCredential(params: {
   readonly sourceEnvVar?: string;
   readonly primaryEnvVar?: string;
 } {
-  const configuredEnvVar = readProviderApiKeyEnvVar(
-    params.config,
-    params.provider,
-  );
-  if (configuredEnvVar !== undefined && params.env[configuredEnvVar] !== undefined) {
-    const apiKey = firstNonEmptyString(params.env[configuredEnvVar]);
-    return {
-      ...(apiKey !== undefined ? { apiKey, sourceEnvVar: configuredEnvVar } : {}),
-      primaryEnvVar: configuredEnvVar,
-    };
-  }
   const candidates = providerApiKeyEnvCandidates(params.provider);
   for (const candidate of candidates) {
     const apiKey = firstNonEmptyString(params.env[candidate]);
@@ -447,7 +443,7 @@ function resolveProviderCredential(params: {
       return {
         apiKey,
         sourceEnvVar: candidate,
-        primaryEnvVar: configuredEnvVar ?? candidates[0],
+        primaryEnvVar: candidates[0],
       };
     }
   }
@@ -455,17 +451,17 @@ function resolveProviderCredential(params: {
   if (settingsApiKey === undefined && params.provider === "grok") {
     // Sign in with X / xAI OAuth: a stored subscription bearer counts as a
     // present credential so grok reports usable without XAI_API_KEY.
-    const oauthBearer = readXaiOauthAccessToken();
+    const oauthBearer = readXaiOauthAccessToken(params.home);
     if (oauthBearer !== undefined) {
       return {
         apiKey: oauthBearer,
-        primaryEnvVar: configuredEnvVar ?? candidates[0],
+        primaryEnvVar: candidates[0],
       };
     }
   }
   return {
     ...(settingsApiKey !== undefined ? { apiKey: settingsApiKey } : {}),
-    primaryEnvVar: configuredEnvVar ?? candidates[0] ??
+    primaryEnvVar: candidates[0] ??
       BUILT_IN_PROVIDER_API_KEY_ENVS[params.provider],
   };
 }
@@ -473,7 +469,7 @@ function resolveProviderCredential(params: {
 function providerApiKeyEnvCandidates(provider: ProviderName): readonly string[] {
   switch (provider) {
     case "grok":
-      return ["XAI_API_KEY", "GROK_API_KEY", "AGENC_XAI_API_KEY"];
+      return ["XAI_API_KEY", "GROK_API_KEY"];
     case "lmstudio":
       return ["LMSTUDIO_API_KEY", "OPENAI_API_KEY"];
     case "openai-compatible":
@@ -550,13 +546,6 @@ function resolveProviderBaseURLForDiscovery(params: {
     default:
       return params.settingsBaseURL ?? BUILT_IN_PROVIDER_BASE_URLS[params.provider];
   }
-}
-
-function readProviderApiKeyEnvVar(
-  config: AgenCConfig,
-  provider: ProviderName,
-): string | undefined {
-  return firstNonEmptyString(config.providers?.[provider]?.api_key_env);
 }
 
 function readProviderBaseURL(
@@ -724,9 +713,9 @@ async function verifyHostedAgencRoute(params: {
         ? { subscriptionTier: params.subscriptionTier }
         : {}),
     });
-    const provider = normalizeProviderName(inferred.provider);
+    const provider = resolveBuiltInProviderSlug(inferred.provider);
     const model = firstNonEmptyString(inferred.model);
-    if (provider === null) {
+    if (provider === undefined) {
       return {
         usable: false,
         detail:

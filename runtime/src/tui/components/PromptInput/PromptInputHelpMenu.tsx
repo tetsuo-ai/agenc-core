@@ -1,10 +1,11 @@
 import { c as _c } from "react-compiler-runtime";
 import { feature } from 'bun:bundle';
+import type { ProviderAuthReadContext } from '../../../utils/auth.js';
 import { Box, Text } from '../../ink.js';
 import { getPlatform } from '../../../utils/platform.js';
 import { isKeybindingCustomizationEnabled } from '../../keybindings/loadUserBindings.js';
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
-import { isFastModeAvailable, isFastModeEnabled } from '../../../utils/fastMode.js';
+import { isFastModeAvailableForContext, isFastModeEnabledForContext } from '../../../utils/fastMode.js';
 import { getNewlineInstructions } from './utils.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
 
@@ -24,6 +25,7 @@ type Props = {
   fixedWidth?: boolean;
   gap?: number;
   paddingX?: number;
+  remoteAuthSessionContext: ProviderAuthReadContext;
 };
 export function PromptInputHelpMenu(props: Props) {
   const $ = _c(99);
@@ -31,7 +33,8 @@ export function PromptInputHelpMenu(props: Props) {
     dimColor,
     fixedWidth,
     gap,
-    paddingX
+    paddingX,
+    remoteAuthSessionContext
   } = props;
   const {
     columns: terminalColumns
@@ -292,15 +295,7 @@ export function PromptInputHelpMenu(props: Props) {
   } else {
     t39 = $[72];
   }
-  let t40;
-  if ($[73] !== dimColor || $[74] !== fastModeShortcut) {
-    t40 = isFastModeEnabled() && isFastModeAvailable() && <Box><Text dimColor={dimColor}>{fastModeShortcut} to toggle fast mode</Text></Box>;
-    $[73] = dimColor;
-    $[74] = fastModeShortcut;
-    $[75] = t40;
-  } else {
-    t40 = $[75];
-  }
+  const t40 = isFastModeEnabledForContext(remoteAuthSessionContext) && isFastModeAvailableForContext(remoteAuthSessionContext) && <Box><Text dimColor={dimColor}>{fastModeShortcut} to toggle fast mode</Text></Box>;
   let t41;
   if ($[76] !== dimColor || $[77] !== stashShortcut) {
     t41 = <Box><Text dimColor={dimColor}>{stashShortcut} to stash prompt</Text></Box>;

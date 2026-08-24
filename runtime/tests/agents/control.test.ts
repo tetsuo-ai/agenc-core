@@ -313,7 +313,7 @@ describe("AgentControl", () => {
     ).toHaveLength(0);
   });
 
-  it("spawn() does not alias-fallback when an expected workspace role was removed", async () => {
+  it("spawn() rejects the built-in role when an expected workspace override was removed", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry });
@@ -335,7 +335,7 @@ describe("AgentControl", () => {
         roleName: "scanner",
         expectedRoleProvenance,
       }),
-    ).rejects.toThrow("cannot resume unknown agent role: scanner");
+    ).rejects.toThrow("cannot resume changed agent role: scanner");
     expect(registry.activeCount).toBe(0);
     expect(
       (session as unknown as { childInboxes: Map<string, unknown> })
@@ -839,6 +839,22 @@ describe("AgentControl", () => {
     expect(child.depth).toBe(2);
   });
 
+  it("treats canonical agent_max_depth zero as no subagent spawning", async () => {
+    const session = stubSession() as ReturnType<typeof stubSession> & {
+      config: { agent_max_depth: number };
+    };
+    session.config = { agent_max_depth: 0 };
+    const control = new AgentControl({
+      session,
+      registry: new AgentRegistry(),
+    });
+
+    await expect(control.spawn({ parentPath: "/root" })).rejects.toMatchObject({
+      cap: 0,
+      depth: 1,
+    });
+  });
+
   it("allows a per-call depth cap without changing the session cap", async () => {
     const session = stubSession();
     const registry = new AgentRegistry();
@@ -977,8 +993,8 @@ describe("AgentControl", () => {
       agentId: "thread-resume-1",
       agentPath: "/root/scout",
       agentNickname: "scout",
-      agentRole: "explorer",
-      ...roleProvenance(control, "explorer"),
+      agentRole: "scanner",
+      ...roleProvenance(control, "scanner"),
       depth: 1,
     };
     const live = await control.resume({ parentPath: "/root", metadata });
@@ -987,7 +1003,7 @@ describe("AgentControl", () => {
     expect(live!.agentPath).toBe("/root/scout");
     expect(live!.nickname).toBe("scout");
     expect(live!.depth).toBe(1);
-    expect(live!.role.name).toBe("explorer");
+    expect(live!.role.name).toBe("scanner");
     expect(registry.agentMetadataForThread("thread-resume-1")).toBeDefined();
     expect(registry.activeCount).toBe(1);
   });
@@ -1003,7 +1019,7 @@ describe("AgentControl", () => {
           agentId: "thread-legacy-role",
           agentPath: "/root/legacy_role",
           agentNickname: "legacy-role",
-          agentRole: "worker",
+          agentRole: "runner",
           depth: 1,
         },
       }),
@@ -1152,8 +1168,8 @@ describe("AgentControl", () => {
         parentPath: "/root",
         metadata: {
           ...base,
-          agentRole: "explorer",
-          ...roleProvenance(control, "explorer"),
+          agentRole: "scanner",
+          ...roleProvenance(control, "scanner"),
         },
       }),
     ).rejects.toThrow(/does not match registered metadata/);
@@ -1617,12 +1633,12 @@ describe("AgentControl", () => {
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry });
     // Don't register root — we want to assert the filter picks exactly
-    // the one explorer child, not the synthetic root entry.
-    await control.spawn({ parentPath: "/root", roleName: "explorer" });
-    await control.spawn({ parentPath: "/root", roleName: "worker" });
-    const explorers = control.listAgents({ roleName: "explorer" });
-    expect(explorers.every((a) => a.agentName !== "/root")).toBe(true);
-    expect(explorers.length).toBe(1);
+    // the one scanner child, not the synthetic root entry.
+    await control.spawn({ parentPath: "/root", roleName: "scanner" });
+    await control.spawn({ parentPath: "/root", roleName: "runner" });
+    const scanners = control.listAgents({ roleName: "scanner" });
+    expect(scanners.every((a) => a.agentName !== "/root")).toBe(true);
+    expect(scanners.length).toBe(1);
   });
 
   it("listAgents() applies pathPrefix filter", async () => {
@@ -1692,12 +1708,12 @@ describe("AgentControl", () => {
     const control = new AgentControl({ session, registry });
     const live = await control.spawn({
       parentPath: "/root",
-      roleName: "explorer",
+      roleName: "scanner",
     });
     const snap = control.getAgentConfigSnapshot(live.agentId);
     expect(snap).toBeDefined();
     expect(snap!.threadId).toBe(live.agentId);
-    expect(snap!.agentRole).toBe("explorer");
+    expect(snap!.agentRole).toBe("scanner");
     expect(snap!.depth).toBe(1);
   });
 
@@ -2129,11 +2145,11 @@ describe("AgentControl", () => {
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry });
     const live = await control.spawnAgentWithMetadata("/root", {
-      roleName: "worker",
+      roleName: "runner",
       threadId: "preset-thread-1",
     });
     expect(live.agentId).toBe("preset-thread-1");
-    expect(live.role.name).toBe("worker");
+    expect(live.role.name).toBe("runner");
   });
 
   it("spawnAgentWithMetadata() validates named metadata even with an explicit role", async () => {
@@ -2141,9 +2157,9 @@ describe("AgentControl", () => {
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry });
     const invalidMetadata = [
-      { agentRole: "worker" },
+      { agentRole: "runner" },
       {
-        agentRole: "worker",
+        agentRole: "runner",
         agentRoleWorkspaceId: createAgentRoleWorkspace(
           join(agencHome, "other-workspace"),
         ).id,
@@ -2153,7 +2169,7 @@ describe("AgentControl", () => {
     for (const metadata of invalidMetadata) {
       await expect(
         control.spawnAgentWithMetadata("/root", {
-          roleName: "worker",
+          roleName: "runner",
           metadata,
         }),
       ).rejects.toThrow(/workspace (provenance is missing|mismatch)/);

@@ -131,12 +131,6 @@ declare module "src/utils/settings/constants.js" {
     | "policySettings";
 }
 
-declare module "src/utils/settings/types.js" {
-  export type PluginHookMatcher = Record<string, unknown> & {
-    pluginRoot?: string;
-  };
-}
-
 declare module "src/services/mcp/types.js" {
   export type ConfigScope = string;
 }

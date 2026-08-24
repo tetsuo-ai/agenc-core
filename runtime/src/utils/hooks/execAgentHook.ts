@@ -35,7 +35,7 @@ import { createUserMessage } from '../messages.js'
 import { getSmallFastModel } from '../model/model.js'
 import { hasPermissionsToUseTool } from '../permissions/permissions.js'
 import { getAgentTranscriptPath, getTranscriptPath } from '../sessionStorage.js'
-import type { AgentHook } from '../settings/types.js'
+import type { AgentHook } from '../../schemas/hooks.js'
 import { jsonStringify } from '../slowOperations.js'
 import { asSystemPrompt } from '../systemPromptType.js'
 import {
@@ -284,6 +284,9 @@ When done, return your result using the ${SYNTHETIC_OUTPUT_TOOL_NAME} tool with:
           }
           if (event.stopReason === 'max_turns') {
             throw new Error(`Agent hook exceeded maxTurns (${MAX_AGENT_TURNS})`)
+          }
+          if (event.stopReason === 'max_budget_usd') {
+            throw new Error('Agent hook reached the canonical session cost cap')
           }
           if (event.stopReason === 'no_progress') {
             throw new Error(

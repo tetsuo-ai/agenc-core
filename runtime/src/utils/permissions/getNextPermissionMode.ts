@@ -1,32 +1,11 @@
 import { feature } from 'bun:bundle'
 import type { ToolPermissionContext } from '../../tools/Tool.js'
-import { logForDebugging } from 'src/utils/debug.js'
 import type { PermissionMode } from './PermissionMode.js'
 import {
-  getAutoModeUnavailableReason,
-  isAutoModeGateEnabled,
+  canCycleToAuto,
+  getNextPermissionMode as getCanonicalNextPermissionMode,
   transitionPermissionMode,
-} from './permissionSetup.js'
-
-// Checks both the cached isAutoModeAvailable (set at startup by
-// verifyAutoModeGateAccess) and the live isAutoModeGateEnabled() — these can
-// diverge if the circuit breaker or settings change mid-session. The
-// live check prevents transitionPermissionMode from throwing
-// (permissionSetup.ts:~559), which would silently crash the shift+tab handler
-// and leave the user stuck at the current mode.
-function canCycleToAuto(ctx: ToolPermissionContext): boolean {
-  if (feature('TRANSCRIPT_CLASSIFIER')) {
-    const gateEnabled = isAutoModeGateEnabled()
-    const can = !!ctx.isAutoModeAvailable && gateEnabled
-    if (!can) {
-      logForDebugging(
-        `[auto-mode] canCycleToAuto=false: ctx.isAutoModeAvailable=${ctx.isAutoModeAvailable} isAutoModeGateEnabled=${gateEnabled} reason=${getAutoModeUnavailableReason()}`,
-      )
-    }
-    return can
-  }
-  return false
-}
+} from '../../permissions/permission-mode.js'
 
 /**
  * Determines the next permission mode when cycling through modes with Shift+Tab.
@@ -35,47 +14,23 @@ export function getNextPermissionMode(
   toolPermissionContext: ToolPermissionContext,
   _teamContext?: { leadAgentId: string },
 ): PermissionMode {
-  switch (toolPermissionContext.mode) {
-    case 'default':
-      // Ants skip acceptEdits and plan — auto mode replaces them
-      if (process.env.USER_TYPE === 'ant') {
-        if (toolPermissionContext.isBypassPermissionsModeAvailable) {
-          return 'bypassPermissions'
-        }
-        if (canCycleToAuto(toolPermissionContext)) {
-          return 'auto'
-        }
-        return 'default'
-      }
-      return 'acceptEdits'
-
-    case 'acceptEdits':
-      return 'plan'
-
-    case 'plan':
-      if (toolPermissionContext.isBypassPermissionsModeAvailable) {
-        return 'bypassPermissions'
-      }
-      if (canCycleToAuto(toolPermissionContext)) {
-        return 'auto'
-      }
-      return 'default'
-
-    case 'bypassPermissions':
-      if (canCycleToAuto(toolPermissionContext)) {
-        return 'auto'
-      }
-      return 'default'
-
-    case 'dontAsk':
-      // Not exposed in UI cycle yet, but return default if somehow reached
-      return 'default'
-
-
-    default:
-      // Covers auto (when TRANSCRIPT_CLASSIFIER is enabled) and any future modes — always fall back to default
-      return 'default'
+  // Preserve the compact internal operator carousel, but delegate every
+  // ordinary transition to the canonical finite-state machine.
+  if (
+    feature('TRANSCRIPT_CLASSIFIER') &&
+    process.env.USER_TYPE === 'ant' &&
+    toolPermissionContext.mode === 'default'
+  ) {
+    if (toolPermissionContext.isBypassPermissionsModeAvailable) {
+      return 'bypassPermissions'
+    }
+    if (canCycleToAuto(toolPermissionContext)) return 'auto'
+    return 'default'
   }
+  return getCanonicalNextPermissionMode(
+    toolPermissionContext.mode,
+    toolPermissionContext,
+  )
 }
 
 /**

@@ -15,6 +15,7 @@ import {
 } from "./session-compact.js";
 import type { LLMMessage, LLMTool } from "../llm/types.js";
 import type { RuntimeMessage } from "../services/compact/types.js";
+import { runWithStartupProviderSelection } from "../utils/model/providers.js";
 
 function userMessage(content: string): RuntimeMessage {
   const message: LLMMessage = { role: "user", content };
@@ -281,20 +282,25 @@ describe("/context display: computeContextUsageBreakdown", () => {
   });
 
   test("auto-compact disabled flag flips compactionThreshold to the hard limit", () => {
-    // When DISABLE_COMPACT or AGENC_DISABLE_COMPACT is set, the
-    // compaction threshold should equal the hard limit (no
-    // separate threshold to display). The breakdown reports
-    // autoCompactEnabled:false so the renderer can show the
-    // appropriate message.
+    // When AGENC_DISABLE_COMPACT is set, the compaction threshold should equal
+    // the hard limit (no separate threshold to display). The breakdown reports
+    // autoCompactEnabled:false so the renderer can show the appropriate message.
     const original = process.env.AGENC_DISABLE_COMPACT;
     try {
       process.env.AGENC_DISABLE_COMPACT = "1";
-      const breakdown = computeContextUsageBreakdown({
-        messages: [],
-        tools: [],
-        contextWindowTokens: 200_000,
-        model: "qwen3:8b",
-      });
+      const breakdown = runWithStartupProviderSelection(
+        {
+          provider: "ollama",
+          model: "qwen3:8b",
+          environment: { ...process.env },
+        },
+        () => computeContextUsageBreakdown({
+          messages: [],
+          tools: [],
+          contextWindowTokens: 200_000,
+          model: "qwen3:8b",
+        }),
+      );
       expect(breakdown.autoCompactEnabled).toBe(false);
       expect(breakdown.compactionThreshold).toBe(breakdown.hardLimit);
     } finally {

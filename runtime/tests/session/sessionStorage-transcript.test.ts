@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "vitest";
+import { mkdtempSync } from "node:fs";
 import {
   chmod,
   mkdir,
@@ -9,7 +10,11 @@ import {
   stat,
   writeFile,
 } from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import {
+  createServer,
+  type IncomingMessage,
+  type ServerResponse,
+} from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -20,6 +25,13 @@ import {
   setOriginalCwd,
   switchSession,
 } from "../../src/bootstrap/state.js";
+import { defaultConfig, type AgenCConfig } from "../../src/config/schema.js";
+import { ConfigStore } from "../../src/config/store.js";
+import { runWithStartupProviderSelection } from "../../src/utils/model/providers.js";
+import {
+  enterCanonicalSettingsAuthority,
+  runWithCanonicalSettingsAuthority,
+} from "../../src/utils/settings/canonicalAuthority.js";
 import {
   __setAgentMetadataWritePhaseForTesting,
   buildConversationChain,
@@ -81,12 +93,8 @@ import {
 const tempDirs: string[] = [];
 const sessionId = "00000000-0000-4000-8000-000000000999";
 const ts = "2026-04-02T00:00:00.000Z";
-const originalConfigDir = process.env.AGENC_CONFIG_DIR;
-const originalAgenCHome = process.env.AGENC_HOME;
 const originalTestPersistence = process.env.TEST_ENABLE_SESSION_PERSISTENCE;
 const originalEnablePersistence = process.env.ENABLE_SESSION_PERSISTENCE;
-const originalSessionAccessToken = process.env.AGENC_SESSION_ACCESS_TOKEN;
-const originalAfterLastCompact = process.env.AGENC_AFTER_LAST_COMPACT;
 
 function id(n: number): string {
   return `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
@@ -210,11 +218,17 @@ async function writeJsonl(entries: unknown[]): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "agenc-session-storage-"));
   tempDirs.push(dir);
   const filePath = join(dir, "session.jsonl");
-  await writeFile(filePath, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
+  await writeFile(
+    filePath,
+    `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+  );
   return filePath;
 }
 
-async function writeTempFile(fileName: string, content: string): Promise<string> {
+async function writeTempFile(
+  fileName: string,
+  content: string,
+): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), "agenc-session-storage-"));
   tempDirs.push(dir);
   const filePath = join(dir, fileName);
@@ -222,7 +236,9 @@ async function writeTempFile(fileName: string, content: string): Promise<string>
   return filePath;
 }
 
-async function readJsonlEntries(filePath: string): Promise<Record<string, unknown>[]> {
+async function readJsonlEntries(
+  filePath: string,
+): Promise<Record<string, unknown>[]> {
   return (await readFile(filePath, "utf8"))
     .trim()
     .split("\n")
@@ -231,13 +247,7 @@ async function readJsonlEntries(filePath: string): Promise<Record<string, unknow
 }
 
 function restoreOptionalEnv(
-  name:
-    | "AGENC_CONFIG_DIR"
-    | "AGENC_HOME"
-    | "TEST_ENABLE_SESSION_PERSISTENCE"
-    | "ENABLE_SESSION_PERSISTENCE"
-    | "AGENC_SESSION_ACCESS_TOKEN"
-    | "AGENC_AFTER_LAST_COMPACT",
+  name: "TEST_ENABLE_SESSION_PERSISTENCE" | "ENABLE_SESSION_PERSISTENCE",
   value: string | undefined,
 ) {
   if (value === undefined) {
@@ -247,26 +257,37 @@ function restoreOptionalEnv(
   }
 }
 
-async function configureIsolatedSession(): Promise<{
-  configDir: string;
+function configureIsolatedSession(
+  options: {
+    readonly base?: AgenCConfig;
+  } = {},
+): {
+  agencHome: string;
   cwd: string;
   projectDir: string;
-}> {
-  const configDir = await mkdtemp(join(tmpdir(), "agenc-session-config-"));
-  tempDirs.push(configDir);
-  process.env.AGENC_CONFIG_DIR = configDir;
-  delete process.env.AGENC_HOME;
+  configStore: ConfigStore;
+} {
+  const agencHome = mkdtempSync(join(tmpdir(), "agenc-session-home-"));
+  tempDirs.push(agencHome);
   resetStateForTests();
   resetProjectForTesting();
 
-  const cwd = join(configDir, "workspace", "project one");
+  const cwd = join(agencHome, "workspace", "project one");
+  const configStore = new ConfigStore({
+    home: agencHome,
+    env: { AGENC_HOME: agencHome, HOME: agencHome },
+    cwd,
+    ...(options.base !== undefined ? { base: options.base } : {}),
+  });
+  enterCanonicalSettingsAuthority(configStore);
   setOriginalCwd(cwd);
   switchSession(sessionId as never, null);
 
   return {
-    configDir,
+    agencHome,
     cwd,
     projectDir: getProjectDir(cwd),
+    configStore,
   };
 }
 
@@ -274,12 +295,11 @@ afterEach(async () => {
   __setAgentMetadataWritePhaseForTesting(undefined);
   resetProjectForTesting();
   resetStateForTests();
-  restoreOptionalEnv("AGENC_CONFIG_DIR", originalConfigDir);
-  restoreOptionalEnv("AGENC_HOME", originalAgenCHome);
-  restoreOptionalEnv("TEST_ENABLE_SESSION_PERSISTENCE", originalTestPersistence);
+  restoreOptionalEnv(
+    "TEST_ENABLE_SESSION_PERSISTENCE",
+    originalTestPersistence,
+  );
   restoreOptionalEnv("ENABLE_SESSION_PERSISTENCE", originalEnablePersistence);
-  restoreOptionalEnv("AGENC_SESSION_ACCESS_TOKEN", originalSessionAccessToken);
-  restoreOptionalEnv("AGENC_AFTER_LAST_COMPACT", originalAfterLastCompact);
   clearSessionIngressState();
   await Promise.all(
     tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })),
@@ -311,8 +331,9 @@ test("uses isolated session paths for transcripts and agent metadata", async () 
   expect(getTranscriptPathForSession(sessionId)).toBe(
     join(projectDir, `${sessionId}.jsonl`),
   );
-  expect(getTranscriptPathForSession("00000000-0000-4000-8000-000000000111"))
-    .toBe(join(projectDir, "00000000-0000-4000-8000-000000000111.jsonl"));
+  expect(
+    getTranscriptPathForSession("00000000-0000-4000-8000-000000000111"),
+  ).toBe(join(projectDir, "00000000-0000-4000-8000-000000000111.jsonl"));
   expect(isCustomTitleEnabled()).toBe(true);
   expect(await readAgentMetadata(agentId)).toBeNull();
 
@@ -362,9 +383,9 @@ test("readAgentMetadata returns null for a corrupt sidecar instead of throwing",
   await writeFile(metaPath, "{");
 
   await expect(readAgentMetadata(agentId)).resolves.toBeNull();
-  await expect(
-    readAgentMetadata(agentId, { strict: true }),
-  ).rejects.toThrow("invalid agent metadata sidecar");
+  await expect(readAgentMetadata(agentId, { strict: true })).rejects.toThrow(
+    "invalid agent metadata sidecar",
+  );
 });
 
 test("agent metadata publication is atomic, durable, and preserves permissions", async () => {
@@ -413,9 +434,10 @@ test("agent metadata publication is atomic, durable, and preserves permissions",
     oldMetadata,
   );
   expect(
-    (await readdir(dirname(metadataPath))).filter((entry) =>
-      entry.startsWith(`${basename(metadataPath)}.`) &&
-      entry.endsWith(".tmp"),
+    (await readdir(dirname(metadataPath))).filter(
+      (entry) =>
+        entry.startsWith(`${basename(metadataPath)}.`) &&
+        entry.endsWith(".tmp"),
     ),
   ).toEqual([]);
 
@@ -498,28 +520,31 @@ test("persists and re-appends session metadata entries", async () => {
       "pr-link",
     ]),
   );
-  expect(entries.filter((entry) => entry.type === "custom-title").at(-1))
-    .toMatchObject({ customTitle: "Custom title", sessionId });
-  expect(entries.filter((entry) => entry.type === "tag").at(-1))
-    .toMatchObject({ tag: "coverage", sessionId });
-  expect(entries.filter((entry) => entry.type === "worktree-state").at(-1))
-    .toMatchObject({
-      worktreeSession: {
-        originalCwd: "/repo",
-        worktreePath: "/repo/.agenc-worktrees/feat",
-        worktreeName: "feat",
-        worktreeBranch: "worktree-feat",
-        originalBranch: "main",
-        originalHeadCommit: "abc123",
-        sessionId,
-        tmuxSessionName: "agenc-feat",
-        hookBased: true,
-      },
-    });
   expect(
-    entries
-      .filter((entry) => entry.type === "worktree-state")
-      .at(-1)?.worktreeSession,
+    entries.filter((entry) => entry.type === "custom-title").at(-1),
+  ).toMatchObject({ customTitle: "Custom title", sessionId });
+  expect(entries.filter((entry) => entry.type === "tag").at(-1)).toMatchObject({
+    tag: "coverage",
+    sessionId,
+  });
+  expect(
+    entries.filter((entry) => entry.type === "worktree-state").at(-1),
+  ).toMatchObject({
+    worktreeSession: {
+      originalCwd: "/repo",
+      worktreePath: "/repo/.agenc-worktrees/feat",
+      worktreeName: "feat",
+      worktreeBranch: "worktree-feat",
+      originalBranch: "main",
+      originalHeadCommit: "abc123",
+      sessionId,
+      tmuxSessionName: "agenc-feat",
+      hookBased: true,
+    },
+  });
+  expect(
+    entries.filter((entry) => entry.type === "worktree-state").at(-1)
+      ?.worktreeSession,
   ).not.toMatchObject({
     creationDurationMs: 999,
     usedSparsePaths: true,
@@ -717,7 +742,9 @@ test("loads JSON and JSONL transcripts through loadTranscriptFromFile", async ()
     "session.json",
     JSON.stringify({ messages: [prompt] }),
   );
-  expect((await loadTranscriptFromFile(jsonObjectPath)).messages).toHaveLength(1);
+  expect((await loadTranscriptFromFile(jsonObjectPath)).messages).toHaveLength(
+    1,
+  );
 
   const invalidPath = await writeTempFile("session.json", "{");
   await expect(loadTranscriptFromFile(invalidPath)).rejects.toThrow(
@@ -744,7 +771,9 @@ test("records transcript chains and queued session artifacts", async () => {
   });
 
   const prompt = runtimeMessage(user(id(401), null, "record this prompt"));
-  const response = runtimeMessage(assistant(id(402), null, "recorded response"));
+  const response = runtimeMessage(
+    assistant(id(402), null, "recorded response"),
+  );
   await expect(
     recordTranscript([prompt, response] as never, {
       teamName: "Runtime Team",
@@ -844,7 +873,11 @@ test("records transcript chains and queued session artifacts", async () => {
   const sidechainMessage = runtimeMessage(
     assistant(id(403), null, "sidechain response"),
   );
-  await recordSidechainTranscript([sidechainMessage] as never, "agent-side", id(402) as never);
+  await recordSidechainTranscript(
+    [sidechainMessage] as never,
+    "agent-side",
+    id(402) as never,
+  );
   await recordContentReplacement(
     [
       {
@@ -859,13 +892,16 @@ test("records transcript chains and queued session artifacts", async () => {
 
   const sidechainPath = getAgentTranscriptPath("agent-side" as never);
   const sidechainEntries = await readJsonlEntries(sidechainPath);
-  expect(sidechainEntries.find((entry) => entry.uuid === id(403))).toMatchObject({
+  expect(
+    sidechainEntries.find((entry) => entry.uuid === id(403)),
+  ).toMatchObject({
     isSidechain: true,
     agentId: "agent-side",
     parentUuid: id(402),
   });
-  expect(sidechainEntries.find((entry) => entry.type === "content-replacement"))
-    .toMatchObject({ agentId: "agent-side" });
+  expect(
+    sidechainEntries.find((entry) => entry.type === "content-replacement"),
+  ).toMatchObject({ agentId: "agent-side" });
 
   await removeTranscriptMessage(id(402) as never);
   await removeTranscriptMessage(id(499) as never);
@@ -873,10 +909,28 @@ test("records transcript chains and queued session artifacts", async () => {
   expect(entries.some((entry) => entry.uuid === id(402))).toBe(false);
 });
 
+test("canonical transcript persistence setting suppresses all transcript writes", async () => {
+  const { configStore, projectDir } = await configureIsolatedSession({
+    base: {
+      ...defaultConfig(),
+      transcriptPersistenceEnabled: false,
+    },
+  });
+  process.env.TEST_ENABLE_SESSION_PERSISTENCE = "1";
+  const transcriptPath = join(projectDir, `${sessionId}.jsonl`);
+
+  await runWithCanonicalSettingsAuthority(configStore, async () => {
+    await recordTranscript([
+      runtimeMessage(user(id(405), null, "do not persist this prompt")),
+    ] as never);
+    await flushSessionStorage();
+  });
+
+  await expect(stat(transcriptPath)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
 test("hydrates a remote session through session ingress", async () => {
   const { projectDir } = await configureIsolatedSession();
-  process.env.AGENC_SESSION_ACCESS_TOKEN = "session-token";
-  process.env.AGENC_AFTER_LAST_COMPACT = "1";
   const remoteEntries = [
     user(id(501), null, "remote prompt"),
     assistant(id(502), id(501), "remote response"),
@@ -897,7 +951,19 @@ test("hydrates a remote session through session ingress", async () => {
   });
 
   try {
-    await expect(hydrateRemoteSession(sessionId, server.url)).resolves.toBe(true);
+    await expect(
+      runWithStartupProviderSelection(
+        {
+          provider: "grok",
+          model: "test-model",
+          environment: {
+            AGENC_SESSION_ACCESS_TOKEN: "session-token",
+            AGENC_AFTER_LAST_COMPACT: "1",
+          },
+        },
+        () => hydrateRemoteSession(sessionId, server.url),
+      ),
+    ).resolves.toBe(true);
     expect(requests).toEqual([
       {
         method: "GET",
@@ -917,7 +983,6 @@ test("appends transcript messages to remote session ingress", async () => {
   await configureIsolatedSession();
   process.env.TEST_ENABLE_SESSION_PERSISTENCE = "1";
   process.env.ENABLE_SESSION_PERSISTENCE = "1";
-  process.env.AGENC_SESSION_ACCESS_TOKEN = "session-token";
   const putRequests: Array<{
     uuid: unknown;
     authorization: string | undefined;
@@ -929,7 +994,10 @@ test("appends transcript messages to remote session ingress", async () => {
       response.end();
       return;
     }
-    const body = JSON.parse(await readRequestBody(request)) as Record<string, unknown>;
+    const body = JSON.parse(await readRequestBody(request)) as Record<
+      string,
+      unknown
+    >;
     putRequests.push({
       uuid: body.uuid,
       authorization: request.headers.authorization,
@@ -942,9 +1010,20 @@ test("appends transcript messages to remote session ingress", async () => {
   try {
     setRemoteIngressUrlForTesting(server.url);
     const prompt = runtimeMessage(user(id(511), null, "remote append prompt"));
-    const response = runtimeMessage(assistant(id(512), null, "remote append response"));
-    await recordTranscript([prompt, response] as never);
-    await flushSessionStorage();
+    const response = runtimeMessage(
+      assistant(id(512), null, "remote append response"),
+    );
+    await runWithStartupProviderSelection(
+      {
+        provider: "grok",
+        model: "test-model",
+        environment: { AGENC_SESSION_ACCESS_TOKEN: "session-token" },
+      },
+      async () => {
+        await recordTranscript([prompt, response] as never);
+        await flushSessionStorage();
+      },
+    );
 
     expect(putRequests).toEqual([
       {
@@ -1131,16 +1210,17 @@ test("stripPersistedToolUseResultsFromJSONLBuffer drops raw toolUseResult while 
       },
     ],
   };
-  (persisted as typeof persisted & { toolUseResult?: unknown }).toolUseResult = {
-    stdout: "x".repeat(200_000),
-    stderr: "",
-  };
+  (persisted as typeof persisted & { toolUseResult?: unknown }).toolUseResult =
+    {
+      stdout: "x".repeat(200_000),
+      stderr: "",
+    };
 
   const raw = Buffer.from(`${JSON.stringify(persisted)}\n`);
   const sanitized = stripPersistedToolUseResultsFromJSONLBuffer(raw);
-  const [parsed] = JSON.parse(`[${sanitized.toString("utf8").trim()}]`) as Array<
-    typeof persisted & { toolUseResult?: unknown }
-  >;
+  const [parsed] = JSON.parse(
+    `[${sanitized.toString("utf8").trim()}]`,
+  ) as Array<typeof persisted & { toolUseResult?: unknown }>;
 
   expect(parsed?.toolUseResult).toBeUndefined();
   expect(
@@ -1161,16 +1241,16 @@ test("loadTranscriptFile omits raw toolUseResult for persisted-output transcript
       },
     ],
   };
-  (persisted as typeof persisted & { toolUseResult?: unknown }).toolUseResult = {
-    stdout: "y".repeat(200_000),
-    stderr: "",
-  };
+  (persisted as typeof persisted & { toolUseResult?: unknown }).toolUseResult =
+    {
+      stdout: "y".repeat(200_000),
+      stderr: "",
+    };
 
   const filePath = await writeJsonl([persisted]);
   const { messages } = await loadTranscriptFile(filePath);
   const loaded = messages.get(id(41)) as
-    | (typeof persisted & { toolUseResult?: unknown })
-    | undefined;
+    (typeof persisted & { toolUseResult?: unknown }) | undefined;
 
   expect(loaded).toBeDefined();
   expect(loaded?.toolUseResult).toBeUndefined();

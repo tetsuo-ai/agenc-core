@@ -5,7 +5,7 @@ import { join as nativeJoin } from 'path'
 import { join as posixJoin } from 'path/posix'
 import { rearrangePipeCommand } from '../bash/bashPipeCommand.js'
 import { createAndSaveSnapshot } from '../bash/ShellSnapshot.js'
-import { formatShellPrefixCommand } from '../bash/shellPrefix.js'
+import { formatShellWrapperCommand } from '../bash/shellPrefix.js'
 import { quote } from '../bash/shellQuote.js'
 import {
   quoteShellCommand,
@@ -36,10 +36,13 @@ import type { ShellProvider } from './shellProvider.js'
  *
  * When no shell prefix is set, we use the appropriate command for the detected shell.
  */
-function getDisableExtglobCommand(shellPath: string): string | null {
+function getDisableExtglobCommand(
+  shellPath: string,
+  hasCommandWrapper: boolean,
+): string | null {
   // When AGENC_SHELL_PREFIX is set, the wrapper may use a different shell
   // than shellPath, so we include both bash and zsh commands
-  if (process.env.AGENC_SHELL_PREFIX) {
+  if (hasCommandWrapper) {
     // Redirect both stdout and stderr because zsh's command_not_found_handler
     // writes to stdout instead of stderr
     return '{ shopt -u extglob || setopt NO_EXTENDED_GLOB; } >/dev/null 2>&1 || true'
@@ -57,7 +60,10 @@ function getDisableExtglobCommand(shellPath: string): string | null {
 
 export async function createBashShellProvider(
   shellPath: string,
-  options?: { skipSnapshot?: boolean },
+  options?: {
+    skipSnapshot?: boolean
+    commandWrapperArgv?: readonly string[]
+  },
 ): Promise<ShellProvider> {
   let currentSandboxTmpDir: string | undefined
   const snapshotPromise: Promise<string | undefined> = options?.skipSnapshot
@@ -173,7 +179,10 @@ export async function createBashShellProvider(
       }
 
       // Disable extended glob patterns for security (after sourcing user config to override)
-      const disableExtglobCmd = getDisableExtglobCommand(shellPath)
+      const disableExtglobCmd = getDisableExtglobCommand(
+        shellPath,
+        (options?.commandWrapperArgv?.length ?? 0) > 0,
+      )
       if (disableExtglobCmd) {
         commandParts.push(disableExtglobCmd)
       }
@@ -186,10 +195,9 @@ export async function createBashShellProvider(
       commandParts.push(`pwd -P >| ${quote([shellCwdFilePath])}`)
       let commandString = commandParts.join(' && ')
 
-      // Apply AGENC_SHELL_PREFIX if set
-      if (process.env.AGENC_SHELL_PREFIX) {
-        commandString = formatShellPrefixCommand(
-          process.env.AGENC_SHELL_PREFIX,
+      if ((options?.commandWrapperArgv?.length ?? 0) > 0) {
+        commandString = formatShellWrapperCommand(
+          options!.commandWrapperArgv!,
           commandString,
         )
       }

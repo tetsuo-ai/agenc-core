@@ -17,12 +17,7 @@ function makeError(headers: Record<string, string>): APIError {
 const originalEnv = { ...process.env }
 
 const envKeys = [
-  'AGENC_USE_OPENAI',
-  'AGENC_USE_GEMINI',
-  'AGENC_USE_GITHUB',
-  'AGENC_USE_BEDROCK',
-  'AGENC_USE_VERTEX',
-  'AGENC_USE_FOUNDRY',
+  'AGENC_PROVIDER',
   'OPENAI_MODEL',
   'OPENAI_BASE_URL',
   'OPENAI_API_BASE',
@@ -138,7 +133,6 @@ describe('getRateLimitResetDelayMs - provider (firstParty)', () => {
 
 describe('getRateLimitResetDelayMs - OpenAi provider', () => {
   test('reads x-ratelimit-reset-requests duration string', async () => {
-    process.env.AGENC_USE_OPENAI = '1'
     const { getRateLimitResetDelayMs } =
       await importFreshWithRetryModule('openai')
     const error = makeError({ 'x-ratelimit-reset-requests': '30s' })
@@ -147,7 +141,6 @@ describe('getRateLimitResetDelayMs - OpenAi provider', () => {
   })
 
   test('reads x-ratelimit-reset-tokens and picks the larger delay', async () => {
-    process.env.AGENC_USE_OPENAI = '1'
     const { getRateLimitResetDelayMs } =
       await importFreshWithRetryModule('openai')
     const error = makeError({
@@ -160,7 +153,6 @@ describe('getRateLimitResetDelayMs - OpenAi provider', () => {
   })
 
   test('returns null when no openai rate limit headers present', async () => {
-    process.env.AGENC_USE_OPENAI = '1'
     const { getRateLimitResetDelayMs } =
       await importFreshWithRetryModule('openai')
     const error = makeError({})
@@ -168,7 +160,6 @@ describe('getRateLimitResetDelayMs - OpenAi provider', () => {
   })
 
   test('works for github provider too', async () => {
-    process.env.AGENC_USE_GITHUB = '1'
     const { getRateLimitResetDelayMs } =
       await importFreshWithRetryModule('github')
     const error = makeError({ 'x-ratelimit-reset-requests': '5s' })
@@ -178,7 +169,6 @@ describe('getRateLimitResetDelayMs - OpenAi provider', () => {
 
 describe('getRateLimitResetDelayMs - providers without reset headers', () => {
   test('returns null for bedrock', async () => {
-    process.env.AGENC_USE_BEDROCK = '1'
     const { getRateLimitResetDelayMs } =
       await importFreshWithRetryModule('bedrock')
     const error = makeError({ 'anthropic-ratelimit-unified-reset': String(Math.floor(Date.now() / 1000) + 60) })
@@ -187,7 +177,6 @@ describe('getRateLimitResetDelayMs - providers without reset headers', () => {
   })
 
   test('returns null for vertex', async () => {
-    process.env.AGENC_USE_VERTEX = '1'
     const { getRateLimitResetDelayMs } =
       await importFreshWithRetryModule('vertex')
     const error = makeError({})

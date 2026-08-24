@@ -13,6 +13,7 @@
  */
 
 import { FallbackTriggeredError } from "../../recovery/api-errors.js";
+import { normalizeProviderIdentity } from "../../provider-identity.js";
 
 export interface ProviderFallbackTarget {
   readonly provider?: string;
@@ -51,12 +52,6 @@ const DEFAULT_FALLBACK_MAX_FAILURES = 3;
 const DEFAULT_FALLBACK_RETRY_BUDGET = 2;
 const DEFAULT_FALLBACK_STATUSES = Object.freeze([529] as const);
 
-function normalizeProviderKey(provider: string | undefined): string | undefined {
-  const normalized = provider?.trim().toLowerCase();
-  if (!normalized) return undefined;
-  return normalized === "xai" ? "grok" : normalized;
-}
-
 export function normalizeFallbackTargets(
   provider: string | undefined,
   model: string,
@@ -64,13 +59,17 @@ export function normalizeFallbackTargets(
 ): readonly ProviderFallbackTarget[] {
   const normalized: ProviderFallbackTarget[] = [];
   const seen = new Set<string>();
-  const sourceProvider = normalizeProviderKey(provider);
+  const sourceProvider = normalizeProviderIdentity(
+    provider,
+    "provider fallback source",
+  );
   const sourceModel = model.trim();
   for (const target of targets ?? []) {
     const targetModel = target.model.trim();
     if (!targetModel) continue;
     const targetProvider =
-      normalizeProviderKey(target.provider) ?? sourceProvider;
+      normalizeProviderIdentity(target.provider, "provider fallback target") ??
+      sourceProvider;
     if (targetModel === sourceModel && targetProvider === sourceProvider) {
       continue;
     }

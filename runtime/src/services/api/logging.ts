@@ -19,6 +19,7 @@ import type { PermissionMode } from 'src/utils/permissions/PermissionMode.js'
 import { tokenizeCliOptionRegion } from '../../bin/cli-option-region.js'
 import type { NonNullableUsage } from '../../entrypoints/sdk/sdkUtilityTypes.js'
 import { consumeInvokingRequestId } from '../../utils/agentContext.js'
+import { getSelectedProviderEnvironment } from '../../utils/model/providers.js'
 import { EMPTY_USAGE } from './emptyUsage.js'
 import { extractConnectionErrorDetails } from './errorUtils.js'
 export type { NonNullableUsage }
@@ -351,7 +352,7 @@ export function logAPISuccessAndDuration({
 }): void {
   const gateway = detectGateway({
     headers,
-    baseUrl: process.env.ANTHROPIC_BASE_URL,
+    baseUrl: getSelectedProviderEnvironment().ANTHROPIC_BASE_URL,
   })
 
   const durationMs = Date.now() - start

@@ -5,6 +5,8 @@
  */
 
 import type { SearchInput, SearchProvider } from './types.js'
+import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
+import { getProxyFetchOptions } from '../../../utils/proxy.js'
 import {
   applyDomainFilters,
   arrayField,
@@ -18,17 +20,18 @@ export const linkupProvider: SearchProvider = {
   name: 'linkup',
 
   isConfigured() {
-    return Boolean(process.env.LINKUP_API_KEY)
+    return Boolean(getSelectedProviderEnvironment().LINKUP_API_KEY)
   },
 
   async search(input: SearchInput, signal?: AbortSignal): Promise<ProviderOutput> {
     const start = performance.now()
+    const environment = getSelectedProviderEnvironment()
 
     const res = await fetch('https://api.linkup.so/v1/search', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${process.env.LINKUP_API_KEY}`,
+        Authorization: `Bearer ${environment.LINKUP_API_KEY}`,
       },
       body: JSON.stringify({
         q: input.query,
@@ -36,6 +39,7 @@ export const linkupProvider: SearchProvider = {
         depth: 'standard',
       }),
       signal,
+      ...getProxyFetchOptions({ environment }),
     })
 
     if (!res.ok) {

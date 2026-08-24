@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
-import { getAgenCConfigHomeDir } from "../../utils/envUtils.js";
+import { getAgenCHomeDir } from "../../utils/envUtils.js";
 import { ensureWorkbenchState, getDefaultWorkbenchState } from "./reducer.js";
 import type {
   AgentSurfaceMode,
@@ -38,7 +38,7 @@ type WorkbenchUiStateV1 = {
 export function workbenchUiStatePath(
   conversationId: string,
   workspaceCwd: string,
-  agencHome = getAgenCConfigHomeDir(),
+  agencHome = getAgenCHomeDir(),
 ): string {
   const identity = createHash("sha256")
     .update(conversationId)
@@ -51,7 +51,7 @@ export function workbenchUiStatePath(
 export function loadWorkbenchUiState(
   conversationId: string,
   workspaceCwd: string,
-  agencHome = getAgenCConfigHomeDir(),
+  agencHome = getAgenCHomeDir(),
 ): WorkbenchState {
   const fallback = getDefaultWorkbenchState();
   try {
@@ -111,7 +111,7 @@ export async function saveWorkbenchUiState(
   conversationId: string,
   workspaceCwd: string,
   state: WorkbenchState,
-  agencHome = getAgenCConfigHomeDir(),
+  agencHome = getAgenCHomeDir(),
 ): Promise<void> {
   const path = workbenchUiStatePath(conversationId, workspaceCwd, agencHome);
   const current = ensureWorkbenchState(state);

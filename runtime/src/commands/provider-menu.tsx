@@ -2,7 +2,7 @@ import React from "react";
 
 import {
   buildProviderModelCatalog,
-  normalizeProviderSlug,
+  resolveProviderSlug,
   readProviderConfig,
   type ProviderSlug,
 } from "../config/resolve-provider.js";
@@ -11,12 +11,19 @@ import {
   defaultModelForProvider,
 } from "../config/resolve-model.js";
 import type { AgenCConfig, ProviderConfig } from "../config/schema.js";
+import type { EnvSnapshot } from "../config/env.js";
 import { listBuiltInProviderInfo } from "../llm/registry/provider-info.js";
 import { readXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
+import type { HomeContext } from "../config/home.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
-import { readCommandConfig } from "./config-context.js";
+import {
+  providerEnvironmentFromCommandContext,
+  readCommandConfig,
+  remoteAuthContextFromCommandContext,
+  requireCommandConfigStore,
+} from "./config-context.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import {
@@ -181,12 +188,6 @@ function providerBaseURL(
   return config?.base_url?.trim() || infoBaseURL;
 }
 
-function providerConfigApiKeyEnv(
-  config: ProviderConfig | undefined,
-): string | undefined {
-  return config?.api_key_env?.trim() || undefined;
-}
-
 function isLocalProviderEndpoint(baseURL: string): boolean {
   try {
     const url = new URL(baseURL);
@@ -211,6 +212,8 @@ function baseURLError(baseURL: string): string | undefined {
 }
 
 function authState(params: {
+  readonly home: HomeContext;
+  readonly environment: EnvSnapshot;
   readonly provider: ProviderSlug;
   readonly requiresManagedAuth: boolean;
   readonly configuredEnvVar?: string;
@@ -237,7 +240,7 @@ function authState(params: {
   // who are fully signed in, making their OAuth account invisible in the
   // picker (and pushing them onto other providers such as OpenRouter).
   if (params.provider === "grok") {
-    const oauth = readXaiOauthCredentials();
+    const oauth = readXaiOauthCredentials(params.home);
     if (oauth !== undefined && oauth.quarantinedAt === undefined) {
       return {
         state: "ready",
@@ -256,7 +259,7 @@ function authState(params: {
     };
   }
 
-  const hasValue = (process.env[envVar]?.trim().length ?? 0) > 0;
+  const hasValue = (params.environment[envVar]?.trim().length ?? 0) > 0;
   if (hasValue) {
     return {
       state: "ready",
@@ -438,18 +441,21 @@ function sortProviderRows(
 }
 
 export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenuSnapshot {
+  const home = requireCommandConfigStore(ctx).homeContext;
+  const environment = providerEnvironmentFromCommandContext(ctx);
+  const authContext = remoteAuthContextFromCommandContext(ctx);
   const config = readCommandConfig(ctx);
   const sessionSelection = readSessionSelection(ctx);
   const diagnostics: string[] = [];
   if (
     sessionSelection.provider !== undefined &&
-    normalizeProviderSlug(sessionSelection.provider) === undefined
+    resolveProviderSlug(sessionSelection.provider) === undefined
   ) {
     diagnostics.push(`Unknown session provider: ${sessionSelection.provider}`);
   }
   const currentProvider =
-    normalizeProviderSlug(sessionSelection.provider) ??
-    normalizeProviderSlug(config?.model_provider) ??
+    resolveProviderSlug(sessionSelection.provider) ??
+    resolveProviderSlug(config?.model_provider) ??
     "grok";
   const currentModel =
     readAppStateModel(ctx) ??
@@ -458,19 +464,22 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     defaultModelForProvider(currentProvider);
   const modelCatalog = buildProviderModelCatalog(config);
   const managedKeysEnabled = config?.auth?.managedKeys?.enabled === true;
-  const managedSubscriptionAvailable = hasHostedManagedAccess(config, process.env);
-  const managedSubscriptionTier = hostedManagedSubscriptionTier(process.env);
+  const managedSubscriptionAvailable = hasHostedManagedAccess(
+    config,
+    authContext,
+  );
+  const managedSubscriptionTier = hostedManagedSubscriptionTier(authContext);
 
   const unsortedRows = listBuiltInProviderInfo().map((info): ProviderMenuRow => {
     const provider = info.id;
     const providerConfig = config ? readProviderConfig(config, provider) : undefined;
     const status = rowStatus({ config, provider, currentProvider });
     const baseURL = providerBaseURL(info.baseURL, providerConfig);
-    const configuredEnvVar = providerConfigApiKeyEnv(providerConfig);
     const auth = authState({
+      home,
+      environment,
       provider,
       requiresManagedAuth: info.requiresManagedAuth,
-      ...(configuredEnvVar ? { configuredEnvVar } : {}),
       ...(info.apiKeyEnvVar ? { defaultEnvVar: info.apiKeyEnvVar } : {}),
       baseURL,
       ...(config ? { config } : {}),
@@ -510,7 +519,7 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
       configured:
         providerConfig !== undefined ||
         (config?.model_provider !== undefined &&
-          normalizeProviderSlug(config.model_provider) === provider),
+          resolveProviderSlug(config.model_provider) === provider),
       supportsWebsockets: info.supportsWebsockets,
       detail: runtimeDetail({
         state: state.state,

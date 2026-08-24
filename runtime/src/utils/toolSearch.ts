@@ -30,6 +30,7 @@ import { logForDebugging } from 'src/utils/debug.js'
 import { isEnvDefinedFalsy, isEnvTruthy } from './envUtils.js'
 import {
   getAPIProvider,
+  getSelectedProviderEnvironment,
   isFirstPartyAnthropicBaseUrl,
 } from './model/providers.js'
 import { jsonStringify } from './slowOperations.js'
@@ -75,7 +76,7 @@ function isAutoToolSearchMode(value: string | undefined): boolean {
  * Get the auto-enable percentage from env var or default.
  */
 function getAutoToolSearchPercentage(): number {
-  const value = process.env.ENABLE_TOOL_SEARCH
+  const value = getSelectedProviderEnvironment().ENABLE_TOOL_SEARCH
   if (!value) return DEFAULT_AUTO_TOOL_SEARCH_PERCENTAGE
 
   if (value === 'auto') return DEFAULT_AUTO_TOOL_SEARCH_PERCENTAGE
@@ -172,11 +173,15 @@ export function getToolSearchMode(): ToolSearchMode {
   // explicit escape hatch for proxy gateways that the heuristic in
   // isToolSearchEnabledOptimistic doesn't cover.
   // github.com/tetsuo-ai/agenc-core/issues/20031
-  if (isEnvTruthy(process.env.AGENC_DISABLE_EXPERIMENTAL_BETAS)) {
+  if (
+    isEnvTruthy(
+      getSelectedProviderEnvironment().AGENC_DISABLE_EXPERIMENTAL_BETAS,
+    )
+  ) {
     return 'standard'
   }
 
-  const value = process.env.ENABLE_TOOL_SEARCH
+  const value = getSelectedProviderEnvironment().ENABLE_TOOL_SEARCH
 
   // Handle auto:N syntax - check edge cases first
   const autoPercent = value ? parseAutoPercentage(value) : null
@@ -187,7 +192,8 @@ export function getToolSearchMode(): ToolSearchMode {
   }
 
   if (isEnvTruthy(value)) return 'tst'
-  if (isEnvDefinedFalsy(process.env.ENABLE_TOOL_SEARCH)) return 'standard'
+  if (isEnvDefinedFalsy(getSelectedProviderEnvironment().ENABLE_TOOL_SEARCH))
+    return 'standard'
   return 'tst' // default: always defer MCP and shouldDefer tools
 }
 
@@ -256,7 +262,7 @@ export function isToolSearchEnabledOptimistic(): boolean {
     if (!loggedOptimistic) {
       loggedOptimistic = true
       logForDebugging(
-        `[ToolSearch:optimistic] mode=${mode}, ENABLE_TOOL_SEARCH=${process.env.ENABLE_TOOL_SEARCH}, result=false`,
+        `[ToolSearch:optimistic] mode=${mode}, ENABLE_TOOL_SEARCH=${getSelectedProviderEnvironment().ENABLE_TOOL_SEARCH}, result=false`,
       )
     }
     return false
@@ -280,14 +286,14 @@ export function isToolSearchEnabledOptimistic(): boolean {
   // setup supports it. The falsy check (rather than === undefined) aligns
   // with getToolSearchMode(), which also treats "" as unset.
   if (
-    !process.env.ENABLE_TOOL_SEARCH &&
+    !getSelectedProviderEnvironment().ENABLE_TOOL_SEARCH &&
     getAPIProvider() === 'firstParty' &&
     !isFirstPartyAnthropicBaseUrl()
   ) {
     if (!loggedOptimistic) {
       loggedOptimistic = true
       logForDebugging(
-        `[ToolSearch:optimistic] disabled: ANTHROPIC_BASE_URL=${process.env.ANTHROPIC_BASE_URL} is not a first-party provider host. Set ENABLE_TOOL_SEARCH=true (or auto / auto:N) if your proxy forwards tool_reference blocks.`,
+        `[ToolSearch:optimistic] disabled: ANTHROPIC_BASE_URL=${getSelectedProviderEnvironment().ANTHROPIC_BASE_URL} is not a first-party provider host. Set ENABLE_TOOL_SEARCH=true (or auto / auto:N) if your proxy forwards tool_reference blocks.`,
       )
     }
     return false
@@ -296,7 +302,7 @@ export function isToolSearchEnabledOptimistic(): boolean {
   if (!loggedOptimistic) {
     loggedOptimistic = true
     logForDebugging(
-      `[ToolSearch:optimistic] mode=${mode}, ENABLE_TOOL_SEARCH=${process.env.ENABLE_TOOL_SEARCH}, result=true`,
+      `[ToolSearch:optimistic] mode=${mode}, ENABLE_TOOL_SEARCH=${getSelectedProviderEnvironment().ENABLE_TOOL_SEARCH}, result=true`,
     )
   }
   return true
@@ -578,7 +584,7 @@ export type DeferredToolsDeltaScanContext = {
  * header prepend (the attachment does not fire).
  */
 export function isDeferredToolsDeltaEnabled(): boolean {
-  return process.env.USER_TYPE === 'ant' || false
+  return getSelectedProviderEnvironment().USER_TYPE === 'ant' || false
 }
 
 /**

@@ -435,7 +435,7 @@ Remember: DO NOT write or edit any files except the plan file.`,
           items: {
             type: "object",
             properties: {
-              tool: { type: "string", enum: ["Bash"] },
+              tool: { type: "string", enum: ["system.bash"] },
               prompt: { type: "string" },
             },
             required: ["tool", "prompt"],

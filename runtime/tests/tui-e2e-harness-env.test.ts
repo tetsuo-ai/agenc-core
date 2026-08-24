@@ -86,7 +86,7 @@ describe("TUI E2E harness state isolation", () => {
     );
   });
 
-  it("replaces ambient state roots and drops unrelated operator values", () => {
+  it("replaces ambient state roots and removes the obsolete config-home alias", () => {
     const home = "/private/scenario-home";
     const env = isolatedHomeEnv(home, {
       AGENC_CONFIG_DIR: "/ambient/config",
@@ -96,7 +96,6 @@ describe("TUI E2E harness state isolation", () => {
     });
 
     expect(env).toMatchObject({
-      AGENC_CONFIG_DIR: join(home, ".agenc"),
       AGENC_HOME: join(home, ".agenc"),
       HOME: home,
       USERPROFILE: home,
@@ -104,13 +103,13 @@ describe("TUI E2E harness state isolation", () => {
       AGENC_DAEMON_WEBSOCKET_PORT: "0",
       TMPDIR: join(home, "tmp"),
     });
+    expect(env.AGENC_CONFIG_DIR).toBeUndefined();
     expect(env.SENTINEL).toBeUndefined();
   });
 
   it("always requests an ephemeral daemon port", () => {
     const home = "/private/scenario-home";
     const env = tempDaemonEnv(home, 19_876, {
-      AGENC_CONFIG_DIR: "/ambient/config",
       AGENC_DAEMON_WEBSOCKET_PORT: "7766",
       AGENC_HOME: "/ambient/state",
       HOME: "/ambient/home",
@@ -118,7 +117,6 @@ describe("TUI E2E harness state isolation", () => {
     });
 
     expect(env).toMatchObject({
-      AGENC_CONFIG_DIR: join(home, ".agenc"),
       AGENC_DAEMON_WEBSOCKET_PORT: "0",
       AGENC_HOME: join(home, ".agenc"),
       HOME: home,
@@ -253,7 +251,7 @@ describe("TUI E2E harness state isolation", () => {
     expect(source).toContain('args: ["--permission-mode", "default"]');
     expect(source).toContain("slimCwd: true");
     expect(source).not.toContain("mkdtemp");
-    expect(source).not.toContain('args: ["--yolo"]');
+    expect(source).not.toContain('args: ["--dangerously-bypass-approvals-and-sandbox"]');
   });
 
   it("configures a scenario-only sandbox override before starting its temp daemon", () => {

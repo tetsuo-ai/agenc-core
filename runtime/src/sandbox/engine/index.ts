@@ -12,6 +12,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { resolveSessionTempRoot } from "../../session/runtime-options.js";
 
 export const AGENC_LINUX_SANDBOX_ARG0 = "agenc-linux-sandbox";
 export const PROTECTED_METADATA_PATH_NAMES = [".git", ".agenc", ".agents"] as const;
@@ -123,7 +124,6 @@ export interface SandboxTransformRequest {
   readonly blockedRequestObserver?: BlockedRequestObserver;
   readonly sandboxPolicyCwd: string;
   readonly agencLinuxSandboxExe?: string;
-  readonly useLegacyLandlock: boolean;
   readonly windowsSandboxLevel: WindowsSandboxLevel;
   readonly windowsSandboxPrivateDesktop: boolean;
   readonly platform?: NodeJS.Platform;
@@ -296,12 +296,7 @@ export function resolveSpecialPath(
         ? resolveProjectRootSubpath(target.subpath, cwd)
         : normalizePathForPolicy(cwd);
     case "tmpdir": {
-      const tmpdir = process.env["TMPDIR"];
-      return typeof tmpdir === "string" &&
-        tmpdir.length > 0 &&
-        path.isAbsolute(tmpdir)
-        ? normalizePathForPolicy(tmpdir)
-        : null;
+      return normalizePathForPolicy(resolveSessionTempRoot());
     }
     case "slash_tmp": {
       try {

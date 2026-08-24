@@ -1,13 +1,12 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import { hasRemoteAuthSessionSync } from '../../auth/session-state.js'
 import { verifyApiKey } from '../../services/api/anthropic.js' // branding-scan: allow upstream mirror import path pending purge
 import {
-  getAnthropicApiKeyWithSource,
-  getApiKeyFromApiKeyHelper,
-  isAnthropicAuthEnabled,
-  isAgenCAISubscriber,
+  getAnthropicApiKeyWithSourceForContext,
+  isAnthropicAuthEnabledForContext,
+  isAgenCAISubscriberForContext,
+  type ProviderAuthReadContext,
 } from '../../utils/auth.js' // upstream-import: keep target is owned by another Z-PURGE item
 
 export type VerificationStatus =
@@ -23,53 +22,56 @@ export type ApiKeyVerificationResult = {
   error: Error | null
 }
 
-type ApiKeySourceResult = ReturnType<typeof getAnthropicApiKeyWithSource>
+type ApiKeySourceResult = ReturnType<
+  typeof getAnthropicApiKeyWithSourceForContext
+>
 
 function readApiKeyWithSource(
-  opts?: Parameters<typeof getAnthropicApiKeyWithSource>[0],
+  context: ProviderAuthReadContext,
 ): ApiKeySourceResult {
   try {
-    return opts === undefined
-      ? getAnthropicApiKeyWithSource()
-      : getAnthropicApiKeyWithSource(opts)
+    return getAnthropicApiKeyWithSourceForContext(context)
   } catch {
     return { key: null, source: 'none' }
   }
 }
 
-function getInitialVerificationStatus(): VerificationStatus {
-  if (hasRemoteAuthSessionSync()) {
+function getInitialVerificationStatus(
+  context: ProviderAuthReadContext,
+): VerificationStatus {
+  if (hasRemoteAuthSessionSync(context)) {
     return 'valid'
   }
-  if (!isAnthropicAuthEnabled() || isAgenCAISubscriber()) {
+  if (
+    !isAnthropicAuthEnabledForContext(context) ||
+    isAgenCAISubscriberForContext(context)
+  ) {
     return 'valid'
   }
-  // Use skipRetrievingKeyFromApiKeyHelper to avoid executing apiKeyHelper
-  // before trust dialog is shown (security: prevents RCE via settings.json)
-  const { key, source } = readApiKeyWithSource({
-    skipRetrievingKeyFromApiKeyHelper: true,
-  })
-  // If apiKeyHelper is configured, we have a key source even though we
-  // haven't executed it yet - return 'loading' to indicate we'll verify later
-  if (key || source === 'apiKeyHelper') {
+  const { key } = readApiKeyWithSource(context)
+  if (key) {
     return 'loading'
   }
   return 'missing'
 }
 
-export function useApiKeyVerification(): ApiKeyVerificationResult {
+export function useApiKeyVerification(
+  context: ProviderAuthReadContext,
+): ApiKeyVerificationResult {
   const [status, setStatus] = useState<VerificationStatus>(
-    getInitialVerificationStatus,
+    () => getInitialVerificationStatus(context),
   )
   const [error, setError] = useState<Error | null>(null)
   const verificationRequestIdRef = useRef(0)
   const anthropicVerificationEnabled =
-    isAnthropicAuthEnabled() && !isAgenCAISubscriber() && !hasRemoteAuthSessionSync()
+    isAnthropicAuthEnabledForContext(context) &&
+    !isAgenCAISubscriberForContext(context) &&
+    !hasRemoteAuthSessionSync(context)
 
   useEffect(() => {
     verificationRequestIdRef.current += 1
     const nextStatus = anthropicVerificationEnabled
-      ? getInitialVerificationStatus()
+      ? getInitialVerificationStatus(context)
       : 'valid'
 
     setStatus(currentStatus =>
@@ -78,7 +80,7 @@ export function useApiKeyVerification(): ApiKeyVerificationResult {
     if (nextStatus !== 'error') {
       setError(null)
     }
-  }, [anthropicVerificationEnabled])
+  }, [anthropicVerificationEnabled, context])
 
   useEffect(() => {
     return () => {
@@ -92,25 +94,17 @@ export function useApiKeyVerification(): ApiKeyVerificationResult {
     const isCurrentRequest = () =>
       requestId === verificationRequestIdRef.current
 
-    if (!isAnthropicAuthEnabled() || isAgenCAISubscriber() || hasRemoteAuthSessionSync()) {
+    if (
+      !isAnthropicAuthEnabledForContext(context) ||
+      isAgenCAISubscriberForContext(context) ||
+      hasRemoteAuthSessionSync(context)
+    ) {
       setError(null)
       setStatus('valid')
       return
     }
-    // Warm the apiKeyHelper cache (no-op if not configured), then read from
-    // all sources. getAnthropicApiKeyWithSource() reads the now-warm cache.
-    await getApiKeyFromApiKeyHelper(getIsNonInteractiveSession())
-    if (!isCurrentRequest()) {
-      return
-    }
-
-    const { key: apiKey, source } = readApiKeyWithSource()
+    const { key: apiKey } = readApiKeyWithSource(context)
     if (!apiKey) {
-      if (source === 'apiKeyHelper') {
-        setStatus('error')
-        setError(new Error('API key helper did not return a valid key'))
-        return
-      }
       const newStatus = 'missing'
       setError(null)
       setStatus(newStatus)
@@ -140,7 +134,7 @@ export function useApiKeyVerification(): ApiKeyVerificationResult {
       setStatus(newStatus)
       return
     }
-  }, [])
+  }, [context])
 
   return {
     status,

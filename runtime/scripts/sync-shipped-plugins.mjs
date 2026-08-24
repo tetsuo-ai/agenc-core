@@ -40,9 +40,15 @@ for (const entry of await readdir(source, { withFileTypes: true })) {
   names.push(entry.name);
 }
 
-// A plugin that ships without its SKILL.md registers as an empty entry in
-// /plugin, so fail the build rather than publish one.
+// Shipped packages use the same required manifest authority as installed
+// packages. Full parsing happens in the runtime's canonical manifest loader;
+// this packaging gate only prevents an incomplete copy from being published.
 for (const name of names) {
+  const manifest = join(target, name, ".agenc-plugin", "plugin.json");
+  if (!existsSync(manifest)) {
+    console.error(`[shipped plugins] ${name}: missing .agenc-plugin/plugin.json`);
+    process.exit(1);
+  }
   const skill = join(target, name, "skills", name, "SKILL.md");
   if (!existsSync(skill)) continue;
   const info = await stat(skill);

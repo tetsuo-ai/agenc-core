@@ -4,7 +4,7 @@ import { resolveProviderSettings } from "../config/resolve-provider.js";
 import type { AgenCConfig } from "../config/schema.js";
 import {
   BUILT_IN_PROVIDER_BASE_URLS,
-  normalizeBuiltInProviderSlug,
+  resolveBuiltInProviderSlug,
   type BuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
 import type { OnboardingEnv } from "./projectOnboardingState.js";
@@ -79,7 +79,7 @@ export async function verifyApiKey(
   if (/\s/.test(apiKey)) {
     return { status: "invalid", error: "API keys must not contain whitespace." };
   }
-  const provider = normalizeBuiltInProviderSlug(params.provider);
+  const provider = resolveBuiltInProviderSlug(params.provider);
   if (provider === undefined) {
     return { status: "error", error: `Unknown provider: ${params.provider}` };
   }

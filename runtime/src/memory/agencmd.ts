@@ -63,7 +63,6 @@ import {
 } from './paths.js'
 import * as teamMemPathsModule from '../memdir/teamMemPaths.js'
 import {
-  getCurrentProjectConfig,
   getManagedAgenCRulesDir,
   getMemoryPath,
   getUserAgenCRulesDir,
@@ -94,7 +93,7 @@ import {
   isProjectInstructionFileName,
 } from '../utils/projectInstructions.js'
 import { isSettingSourceEnabled } from '../utils/settings/constants.js'
-import { getExecutionAuthoritySettings } from '../utils/settings/settings.js'
+import { getSettingsForSource } from '../utils/settings/settings.js'
 import { readInstructionFileSnapshot } from '../prompts/secure-instruction-file.js'
 import { discoverInstructionRules } from '../prompts/rules/discovery.js'
 
@@ -576,7 +575,7 @@ function isAgenCMdExcluded(filePath: string, type: MemoryType): boolean {
     return false
   }
 
-  const patterns = getExecutionAuthoritySettings().agencMdExcludes
+  const patterns = getSettingsForSource('policySettings')?.agencMdExcludes
   if (!patterns || patterns.length === 0) {
     return false
   }
@@ -605,7 +604,7 @@ function isAgenCMdExcluded(filePath: string, type: MemoryType): boolean {
  * existing directory prefix via realpathSync and adds the resolved version.
  * Glob patterns (containing *) have their static prefix resolved.
  */
-function resolveExcludePatterns(patterns: string[]): string[] {
+function resolveExcludePatterns(patterns: readonly string[]): string[] {
   const fs = getFsImplementation()
   const expanded: string[] = patterns.map(p => p.replaceAll('\\', '/'))
 
@@ -1501,11 +1500,6 @@ export function hasExternalAgenCMdIncludes(files: MemoryFileInfo[]): boolean {
 }
 
 export async function shouldShowAgenCMdExternalIncludesWarning(): Promise<boolean> {
-  const config = getCurrentProjectConfig()
-  if (config.hasAgenCMdExternalIncludesWarningShown) {
-    return false
-  }
-
   return hasExternalAgenCMdIncludes(await getMemoryFiles(false))
 }
 

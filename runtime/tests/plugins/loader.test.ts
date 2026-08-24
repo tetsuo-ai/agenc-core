@@ -8,7 +8,6 @@ import {
   deletePluginDataDir,
   getPluginDataDir,
   getPluginDataDirSize,
-  getPluginSeedDirs,
   getPluginsDirectory,
   sanitizePluginId,
 } from "./directories.js";
@@ -30,12 +29,9 @@ import {
 import { validateManifest, validatePluginContents } from "./validation.js";
 
 describe("plugin manifest", () => {
-  test("prefers canonical manifests and normalizes interface prompts", async () => {
+  test("loads the canonical manifest and normalizes interface prompts", async () => {
     await withTempDir(async (root) => {
       const pluginRoot = join(root, "plugins", "alpha");
-      await writeJson(join(pluginRoot, "plugin.json"), {
-        name: "root-name",
-      });
       await writeJson(join(pluginRoot, PLUGIN_MANIFEST_RELATIVE_PATH), {
         name: "canonical-name",
         version: " 1.2.3 ",
@@ -62,6 +58,20 @@ describe("plugin manifest", () => {
     });
   });
 
+  test("rejects a retired root manifest even when the canonical manifest exists", async () => {
+    await withTempDir(async (root) => {
+      const pluginRoot = join(root, "plugins", "alpha");
+      await writeJson(join(pluginRoot, "plugin.json"), { name: "retired" });
+      await writeJson(join(pluginRoot, PLUGIN_MANIFEST_RELATIVE_PATH), {
+        name: "canonical",
+      });
+
+      await expect(loadPluginManifest(pluginRoot)).rejects.toThrow(
+        "Retired root plugin manifest detected",
+      );
+    });
+  });
+
   test("rejects paths that are not normalized beneath the plugin root", async () => {
     await withTempDir(async (root) => {
       expect(() =>
@@ -76,7 +86,7 @@ describe("plugin manifest", () => {
     });
   });
 
-  test("validates root plugin manifests as local plugin roots", async () => {
+  test("fails validation for retired root plugin manifests with migration guidance", async () => {
     await withTempDir(async (root) => {
       const pluginRoot = join(root, "local-plugin");
       await writeJson(join(pluginRoot, "plugin.json"), {
@@ -87,8 +97,11 @@ describe("plugin manifest", () => {
 
       const result = await validateManifest(pluginRoot);
 
-      expect(result.success).toBe(true);
+      expect(result.success).toBe(false);
       expect(result.fileType).toBe("plugin");
+      expect(result.errors[0]?.message).toContain(
+        "move the manifest there and remove the root file, or reinstall the plugin",
+      );
     });
   });
 });
@@ -406,6 +419,9 @@ describe("plugin manifest schema", () => {
 
   test("rejects invalid names, homepage URLs, and manifest paths", async () => {
     await withTempDir(async (root) => {
+      const missingNameIssues = manifestIssuePaths(() =>
+        normalizePluginManifest({}, root),
+      );
       const emptyNameIssues = manifestIssuePaths(() =>
         normalizePluginManifest({ name: "   " }, root),
       );
@@ -437,6 +453,7 @@ describe("plugin manifest schema", () => {
         ),
       );
 
+      expect(missingNameIssues).toContain("name");
       expect(emptyNameIssues).toContain("name");
       expect(bundleIssues).toEqual(
         expect.arrayContaining(["mcpServers[0]", "mcpServers[1]"]),
@@ -454,6 +471,14 @@ describe("plugin manifest schema", () => {
           "lspServers",
         ]),
       );
+    });
+  });
+
+  test("rejects unknown top-level manifest fields", async () => {
+    await withTempDir(async (root) => {
+      expect(manifestIssuePaths(() =>
+        normalizePluginManifest({ name: "closed", extra: true }, root),
+      )).toContain("extra");
     });
   });
 
@@ -784,7 +809,7 @@ describe("plugin loader", () => {
     });
   });
 
-  test("falls back to enabledPlugins entries when plugins.plugins has unrelated entries", async () => {
+  test("uses only canonical plugins.plugins entries for enablement overrides", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
       const workspaceRoot = join(root, "workspace");
@@ -795,24 +820,21 @@ describe("plugin loader", () => {
         agencHome,
         workspaceRoot,
         config: {
-          enabledPlugins: {
-            beta: false,
-          },
           plugins: {
             enabled: true,
             plugins: {
-              alpha: true,
+              alpha: { enabled: true },
             },
           },
         },
       });
 
-      expect(result.enabled.map((plugin) => plugin.name)).toEqual(["alpha"]);
-      expect(result.disabled.map((plugin) => plugin.name)).toEqual(["beta"]);
+      expect(result.enabled.map((plugin) => plugin.name)).toEqual(["alpha", "beta"]);
+      expect(result.disabled).toEqual([]);
     });
   });
 
-  test("loads default components and server declarations from local plugins", async () => {
+  test("loads components and uses manifest.settings as the sole package-default authority", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
       const workspaceRoot = join(root, "workspace");
@@ -821,6 +843,15 @@ describe("plugin loader", () => {
         name: "toolbox",
         version: "1.0.0",
         apps: "./config/apps.json",
+        hooks: "./hooks/hooks.json",
+        mcpServers: {
+          local: {
+            command: "node",
+            args: ["server.js"],
+            cwd: "bin",
+          },
+        },
+        lspServers: "./.lsp.json",
         settings: { options: { fromManifest: true }, unsupported: true },
       });
       await writeFileAt(join(pluginRoot, "skills", "planner", "SKILL.md"), "---\nname: planner\n---\n");
@@ -830,15 +861,6 @@ describe("plugin loader", () => {
       await writeJson(join(pluginRoot, "hooks", "hooks.json"), {
         hooks: {
           Stop: [{ matcher: "done", hooks: [{ type: "command", command: "true" }] }],
-        },
-      });
-      await writeJson(join(pluginRoot, ".mcp.json"), {
-        mcpServers: {
-          local: {
-            command: "node",
-            args: ["server.js"],
-            cwd: "bin",
-          },
         },
       });
       await writeJson(join(pluginRoot, ".lsp.json"), {
@@ -854,11 +876,6 @@ describe("plugin loader", () => {
         apps: {
           calendar: { id: "calendar" },
         },
-      });
-      await writeJson(join(pluginRoot, "settings.json"), {
-        options: { fromFile: true },
-        metadata: { owner: "team" },
-        unsupported: true,
       });
 
       const result = await loadPlugins({
@@ -879,8 +896,7 @@ describe("plugin loader", () => {
       expect(plugin?.lspServers.ts?.workspaceFolder).toBe(join(pluginRoot, "workspace"));
       expect(plugin?.appConnectorIds).toEqual(["calendar"]);
       expect(plugin?.settings).toEqual({
-        options: { fromFile: true },
-        metadata: { owner: "team" },
+        options: { fromManifest: true },
       });
     });
   });
@@ -980,7 +996,7 @@ describe("plugin loader", () => {
         endpoint: "ws://127.0.0.1:4100/mcp",
       });
       expect(plugin?.mcpServers.alias).toMatchObject({
-        transport: "ws",
+        transport: "websocket",
         endpoint: "ws://127.0.0.1:4101/mcp",
       });
       expect(plugin?.mcpServers.inferredWebsocket).toMatchObject({
@@ -1016,7 +1032,7 @@ describe("plugin loader", () => {
     });
   });
 
-  test("filters manifest settings and reports invalid settings files", async () => {
+  test("filters manifest settings and rejects a root settings.json", async () => {
     await withTempDir(async (root) => {
       const manifestOnly = join(root, "plugins", "manifest-settings");
       await writePluginManifest(manifestOnly, {
@@ -1033,20 +1049,19 @@ describe("plugin loader", () => {
       const manifestResult = await createPluginFromPath(manifestOnly, {
         source: "test",
         enabled: true,
-        fallbackName: "manifest-settings",
       });
       const badResult = await createPluginFromPath(badSettings, {
         source: "test",
         enabled: true,
-        fallbackName: "bad-settings",
       });
 
-      expect(manifestResult.plugin.settings).toEqual({
+      expect(manifestResult.plugin?.settings).toEqual({
         options: { enabled: true },
       });
-      expect(badResult.plugin.settings).toBeUndefined();
-      expect(badResult.errors).toMatchObject([
-        { type: "settings", path: join(badSettings, "settings.json") },
+      expect(badResult.plugin?.enabled).toBe(false);
+      expect(badResult.plugin?.settings).toBeUndefined();
+      expect(badResult.errors.map((error) => error.message)).toEqual([
+        expect.stringContaining("Retired plugin settings file detected"),
       ]);
     });
   });
@@ -1064,11 +1079,10 @@ describe("plugin loader", () => {
       const { plugin, errors } = await createPluginFromPath(pluginRoot, {
         source: "test",
         enabled: true,
-        fallbackName: "broken",
       });
 
-      expect(plugin.name).toBe("broken");
-      expect(plugin.enabled).toBe(true);
+      expect(plugin?.name).toBe("broken");
+      expect(plugin?.enabled).toBe(true);
       expect(errors.map((error) => error.type).sort()).toEqual([
         "hooks",
         "mcp",
@@ -1077,22 +1091,26 @@ describe("plugin loader", () => {
     });
   });
 
-  test("keeps malformed manifests disabled and reports the real manifest path", async () => {
+  test("rejects malformed canonical manifests and reports the real manifest path", async () => {
     await withTempDir(async (root) => {
       const pluginRoot = join(root, "plugins", "bad-json");
-      await writeFileAt(join(pluginRoot, "plugin.json"), "{ invalid json");
+      await writeFileAt(
+        join(pluginRoot, PLUGIN_MANIFEST_RELATIVE_PATH),
+        "{ invalid json",
+      );
       await writeFileAt(join(pluginRoot, "commands", "ghost.md"), "# ghost\n");
 
       const { plugin, errors } = await createPluginFromPath(pluginRoot, {
         source: "test",
         enabled: true,
-        fallbackName: "bad-json",
       });
 
-      expect(plugin.enabled).toBe(false);
-      expect(plugin.commands).toEqual([]);
+      expect(plugin).toBeNull();
       expect(errors).toMatchObject([
-        { type: "manifest", path: join(pluginRoot, "plugin.json") },
+        {
+          type: "manifest",
+          path: join(pluginRoot, PLUGIN_MANIFEST_RELATIVE_PATH),
+        },
       ]);
     });
   });
@@ -1115,7 +1133,7 @@ describe("plugin loader", () => {
       });
 
       expect(result.enabled).toEqual([]);
-      expect(result.disabled.map((plugin) => plugin.name)).toEqual(["missing"]);
+      expect(result.disabled).toEqual([]);
       expect(result.errors).toMatchObject([
         { type: "path-not-found", plugin: "missing" },
       ]);
@@ -1155,9 +1173,13 @@ describe("plugin loader", () => {
       const agencHome = join(root, "home");
       const workspaceRoot = join(root, "workspace");
       const pluginRoot = join(agencHome, "plugins", "server-safety");
-      await writePluginManifest(pluginRoot, { name: "server-safety" });
+      await writePluginManifest(pluginRoot, {
+        name: "server-safety",
+        mcpServers: "./config/mcp.json",
+        lspServers: "./.lsp.json",
+      });
       await writeFileAt(
-        join(pluginRoot, ".mcp.json"),
+        join(pluginRoot, "config", "mcp.json"),
         `{
   "mcpServers": {
     "__proto__": { "command": "node" },
@@ -1227,7 +1249,7 @@ describe("plugin loader", () => {
           plugins: {
             enabled: true,
             plugins: {
-              "manifest-name": false,
+              "manifest-name": { enabled: false },
             },
           },
         },
@@ -1254,14 +1276,13 @@ describe("plugin loader", () => {
       const { plugin, errors } = await createPluginFromPath(pluginRoot, {
         source: "test",
         enabled: true,
-        fallbackName: "mapped-commands",
       });
 
       expect(errors).toEqual([]);
-      expect(plugin.commands.map((command) => command.name)).toEqual(["file", "inline"]);
-      expect(plugin.commands.find((command) => command.name === "inline")?.content)
+      expect(plugin?.commands.map((command) => command.name)).toEqual(["file", "inline"]);
+      expect(plugin?.commands.find((command) => command.name === "inline")?.content)
         .toBe("Inline command");
-      expect(plugin.commands.find((command) => command.name === "file")?.metadata.argumentHint)
+      expect(plugin?.commands.find((command) => command.name === "file")?.metadata.argumentHint)
         .toBe("<topic>");
     });
   });
@@ -1289,10 +1310,9 @@ describe("plugin loader", () => {
       const { plugin, errors } = await createPluginFromPath(pluginRoot, {
         source: "test",
         enabled: true,
-        fallbackName: "unsafe-manifest",
       });
 
-      expect(plugin.enabled).toBe(false);
+      expect(plugin).toBeNull();
       expect(errors.map((error) => error.message)).toContain(
         "Plugin manifest failed validation",
       );
@@ -1302,7 +1322,10 @@ describe("plugin loader", () => {
   test("rejects unsafe hook event keys", async () => {
     await withTempDir(async (root) => {
       const pluginRoot = join(root, "plugins", "hook-safety");
-      await writePluginManifest(pluginRoot, { name: "hook-safety" });
+      await writePluginManifest(pluginRoot, {
+        name: "hook-safety",
+        hooks: "./hooks/hooks.json",
+      });
       await writeFileAt(
         join(pluginRoot, "hooks", "hooks.json"),
         `{
@@ -1316,11 +1339,10 @@ describe("plugin loader", () => {
       const { plugin, errors } = await createPluginFromPath(pluginRoot, {
         source: "test",
         enabled: true,
-        fallbackName: "hook-safety",
       });
 
-      expect(Object.getPrototypeOf(plugin.hookSources)).toBe(Array.prototype);
-      expect(plugin.hookSources).toEqual([]);
+      expect(Object.getPrototypeOf(plugin?.hookSources)).toBe(Array.prototype);
+      expect(plugin?.hookSources).toEqual([]);
       expect(errors.map((error) => error.message)).toContain(
         "Hook map contains an unsafe key or invalid matcher list",
       );
@@ -1340,20 +1362,19 @@ describe("plugin loader", () => {
       const { plugin, errors } = await createPluginFromPath(pluginRoot, {
         source: "test",
         enabled: true,
-        fallbackName: "bad-hooks",
       });
 
-      expect(plugin.hookSources).toEqual([]);
+      expect(plugin).toBeNull();
       expect(errors.map((error) => error.message)).toContain(
         "Plugin manifest failed validation",
       );
     });
   });
 
-  test("uses the real manifest path for inline hook diagnostics", async () => {
+  test("uses the canonical manifest path for inline hook diagnostics", async () => {
     await withTempDir(async (root) => {
       const pluginRoot = join(root, "plugins", "root-hooks");
-      await writeJson(join(pluginRoot, "plugin.json"), {
+      await writeJson(join(pluginRoot, PLUGIN_MANIFEST_RELATIVE_PATH), {
         name: "root-hooks",
         hooks: {
           Stop: [{ hooks: [{ type: "command", command: "true" }] }],
@@ -1363,11 +1384,14 @@ describe("plugin loader", () => {
       const { plugin } = await createPluginFromPath(pluginRoot, {
         source: "test",
         enabled: true,
-        fallbackName: "root-hooks",
       });
 
-      expect(plugin.hookSources[0]?.sourcePath).toBe(join(pluginRoot, "plugin.json"));
-      expect(plugin.hookSources[0]?.sourceRelativePath).toBe("plugin.json#hooks[0]");
+      expect(plugin?.hookSources[0]?.sourcePath).toBe(
+        join(pluginRoot, PLUGIN_MANIFEST_RELATIVE_PATH),
+      );
+      expect(plugin?.hookSources[0]?.sourceRelativePath).toBe(
+        `${PLUGIN_MANIFEST_RELATIVE_PATH}#hooks[0]`,
+      );
     });
   });
 
@@ -1386,11 +1410,10 @@ describe("plugin loader", () => {
       const { plugin } = await createPluginFromPath(pluginRoot, {
         source: "test",
         enabled: true,
-        fallbackName: "many-commands",
       });
 
-      expect(plugin.commands).toHaveLength(512);
-      expect(plugin.commands.map((command) => command.name)).not.toContain("deep");
+      expect(plugin?.commands).toHaveLength(512);
+      expect(plugin?.commands.map((command) => command.name)).not.toContain("deep");
     });
   });
 
@@ -1513,12 +1536,17 @@ describe("plugin loader", () => {
     });
   });
 
-  test("discovers manifestless app-only and output-style-only plugins", async () => {
+  test("discovers plugins only when each has a canonical manifest", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
       const workspaceRoot = join(root, "workspace");
       const appPlugin = join(workspaceRoot, ".agents", "plugins", "app-only");
       const stylePlugin = join(agencHome, "plugins", "style-only");
+      await writePluginManifest(appPlugin, {
+        name: "app-only",
+        apps: "./.app.json",
+      });
+      await writePluginManifest(stylePlugin, { name: "style-only" });
       await writeJson(join(appPlugin, ".app.json"), {
         apps: { calendar: { id: "calendar" } },
       });
@@ -1545,18 +1573,23 @@ describe("plugin loader", () => {
 });
 
 describe("plugin directories", () => {
+  test("uses the canonical AgenC home plugin root without a cache override", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "agenc-home");
+
+      expect(getPluginsDirectory({ AGENC_HOME: agencHome }, root)).toBe(
+        join(agencHome, "plugins"),
+      );
+    });
+  });
+
   test("uses AgenC directory environment and data-dir sanitation", async () => {
     await withTempDir(async (root) => {
       const env = {
-        AGENC_PLUGIN_CACHE_DIR: "~/plugin-cache",
-        AGENC_PLUGIN_SEED_DIR: `~/seed-a${process.platform === "win32" ? ";" : ":"}${join(root, "seed-b")}`,
+        AGENC_PLUGIN_CACHE_DIR: join(root, "plugin-cache"),
       };
 
       expect(getPluginsDirectory(env, root)).toBe(join(root, "plugin-cache"));
-      expect(getPluginSeedDirs(env, root)).toEqual([
-        join(root, "seed-a"),
-        join(root, "seed-b"),
-      ]);
       expect(sanitizePluginId("team/plugin@1")).toBe("team-plugin-1");
 
       const dataDir = getPluginDataDir("team/plugin@1", env, root);

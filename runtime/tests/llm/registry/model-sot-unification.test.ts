@@ -20,34 +20,36 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { defaultConfig } from "../../../src/config/schema.js";
+import { ConfigStore } from "../../../src/config/store.js";
 import { StaticModelsManager } from "../../../src/llm/models-manager.js";
 import {
   deriveFlatCatalog,
   listRegisteredModelCatalogEntries,
   resolveModelCatalogMetadata,
 } from "../../../src/llm/registry/model-catalog.js";
-import { BUILT_IN_PROVIDER_MODEL_CATALOG } from "../../../src/llm/registry/provider-info.js";
+import {
+  BUILT_IN_PROVIDER_DEFAULT_MODELS,
+  BUILT_IN_PROVIDER_MODEL_CATALOG,
+} from "../../../src/llm/registry/provider-info.js";
 import { resolveContextWindowProfile } from "../../../src/llm/_deps/context-window.js";
 import { getContextWindowForModel } from "../../../src/utils/context.js";
 import { getModelOptions } from "../../../src/utils/model/modelOptions.js";
+import { getCachedMiniMaxModelOptions } from "../../../src/utils/model/minimaxModels.js";
+import { runWithStartupProviderSelection } from "../../../src/utils/model/providers.js";
 import {
   resetModelStringsForTestingOnly,
   setInitialMainLoopModel,
   setMainLoopModelOverride,
 } from "../../../src/bootstrap/state.js";
-import { resetSettingsCache } from "../../../src/utils/settings/settingsCache.js";
+import { runWithCanonicalSettingsAuthority } from "../../../src/utils/settings/canonicalAuthority.js";
 
 const NEW_MODEL = "grok-build-0.1";
 const GROK_45 = "grok-4.5";
 const ONE_MILLION = 1_000_000;
 
 const TOUCHED_ENV_KEYS = [
-  "AGENC_CONFIG_DIR",
   "AGENC_HOME",
-  "AGENC_USE_OPENAI",
-  "AGENC_USE_GEMINI",
-  "AGENC_USE_GITHUB",
-  "AGENC_USE_MISTRAL",
+  "AGENC_PROVIDER",
   "AGENC_MAX_CONTEXT_TOKENS",
   "USER_TYPE",
   "XAI_API_KEY",
@@ -60,11 +62,11 @@ beforeEach(() => {
     ORIGINAL_ENV[key] = process.env[key];
     delete process.env[key];
   }
+  process.env.AGENC_PROVIDER = "grok";
   process.env.XAI_API_KEY = "xai-test-key";
   setInitialMainLoopModel(null);
   setMainLoopModelOverride(undefined);
   resetModelStringsForTestingOnly();
-  resetSettingsCache();
 });
 
 afterEach(() => {
@@ -79,7 +81,6 @@ afterEach(() => {
   setInitialMainLoopModel(null);
   setMainLoopModelOverride(undefined);
   resetModelStringsForTestingOnly();
-  resetSettingsCache();
 });
 
 describe("model SoT: one catalog entry surfaces everywhere", () => {
@@ -132,7 +133,17 @@ describe("model SoT: one catalog entry surfaces everywhere", () => {
   });
 
   it("(c) shows grok-build-0.1 in the /model picker for xai", () => {
-    const options = getModelOptions(false).map((option) => option.value);
+    const store = new ConfigStore({
+      home: "/tmp/agenc-model-sot-unification",
+      env: {},
+      base: defaultConfig(),
+    });
+    const options = runWithCanonicalSettingsAuthority(store, () =>
+      runWithStartupProviderSelection(
+        { provider: "grok", model: NEW_MODEL, environment: { ...process.env } },
+        () => getModelOptions(false).map((option) => option.value),
+      ),
+    );
     expect(options).toContain(NEW_MODEL);
   });
 
@@ -143,6 +154,44 @@ describe("model SoT: one catalog entry surfaces everywhere", () => {
     });
     expect(adapter?.contextWindowTokens).toBe(ONE_MILLION);
     expect(getContextWindowForModel(NEW_MODEL)).toBe(ONE_MILLION);
+  });
+});
+
+describe("retired models remain historical metadata, not live choices", () => {
+  it("uses only reachable provider defaults and catalog rows", () => {
+    expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.deepseek).toBe("deepseek-v4-flash");
+    expect(BUILT_IN_PROVIDER_DEFAULT_MODELS.mistral).toBe("mistral-medium-latest");
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.deepseek).toEqual([
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
+    ]);
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.groq).not.toContain(
+      "mixtral-8x7b-32768",
+    );
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.mistral).toEqual([
+      "mistral-medium-latest",
+    ]);
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.minimax).toContain("MiniMax-M3");
+  });
+
+  it("does not offer retired Opus 4.1 or ABAB rows in model pickers", () => {
+    const store = new ConfigStore({
+      home: "/tmp/agenc-model-retirement",
+      env: {},
+      base: defaultConfig(),
+    });
+    const values = runWithCanonicalSettingsAuthority(store, () =>
+      runWithStartupProviderSelection(
+        { provider: "grok", model: "grok-4.6", environment: {} },
+        () => getModelOptions(false).map((option) => option.value),
+      ),
+    );
+    expect(values).not.toContain("claude-opus-4-1")
+    const minimaxValues = getCachedMiniMaxModelOptions().map(
+      (option) => option.value,
+    );
+    expect(minimaxValues).toContain("MiniMax-M3");
+    expect(minimaxValues.some((value) => value.startsWith("abab"))).toBe(false);
   });
 });
 

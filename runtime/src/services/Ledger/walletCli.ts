@@ -35,7 +35,7 @@ import { delimiter, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Readable } from "node:stream";
 import { extract, list, type ReadEntry } from "tar";
-import { resolveAgencHome } from "../../config/env.js";
+import { resolveHomeContext } from "../../config/home.js";
 import * as lockfile from "../../utils/lockfile.js";
 
 export const WALLET_CLI_PACKAGE = "@ledgerhq/wallet-cli";
@@ -252,7 +252,10 @@ function resolvedAgencHome(
   agencHome: string | undefined,
   env: NodeJS.ProcessEnv,
 ): string {
-  return resolve(agencHome ?? resolveAgencHome(env));
+  return resolveHomeContext(
+    agencHome === undefined ? env : { ...env, AGENC_HOME: agencHome },
+    env.HOME === undefined ? {} : { platformHome: env.HOME },
+  ).path;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

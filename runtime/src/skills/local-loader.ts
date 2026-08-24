@@ -28,6 +28,7 @@ import type { SessionServices } from "../session/session.js";
 import type { SkillLoadOutcome } from "../session/turn-context.js";
 import { substituteArguments } from "../tui/slash/argument-substitution.js";
 import { isRecord } from "../utils/record.js";
+import { getAgenCHomeDir } from "../utils/envUtils.js";
 import {
   createSkillChangeDetector,
   skillChangeDetector,
@@ -122,7 +123,7 @@ export interface LocalSkillsServiceOptions {
    *  scope invoked-skill tracking per session in the daemon; when absent,
    *  the instance uses a stable single-session default key. */
   readonly sessionId?: string;
-  readonly config?: Pick<AgenCConfig, "plugins" | "enabledPlugins">;
+  readonly config?: Pick<AgenCConfig, "plugins">;
   readonly fileWatcher?: FileWatcher;
   readonly skillChangeDetector?: SkillChangeDetector;
   readonly skillChangeEventSink?: Pick<SkillChangeDetector, "notify">;
@@ -178,11 +179,6 @@ const SKILL_LISTING_DEFAULT_CHAR_BUDGET = 8_000;
 const SKILL_LISTING_DESC_MAX_CHARS = 250;
 const SKILL_LISTING_CONTEXT_PERCENT = 0.01;
 const CHARS_PER_TOKEN = 4;
-const COMPAT_USER_SKILL_DIRS = [
-  ".claude", // branding-scan: allow legacy user skill root compatibility
-  ".codex", // branding-scan: allow legacy user skill root compatibility
-] as const;
-
 const SKIP_DIRS = new Set([
   ".git",
   "node_modules",
@@ -265,7 +261,6 @@ function localSkillRootCandidates(
   options: LocalSkillsServiceOptions,
 ): SkillRoot[] {
   const home = options.env?.HOME ?? homedir();
-  const defaultAgencHome = home ? join(home, ".agenc") : "";
   const agencHome = normalizeExistingCandidate(options.agencHome);
   const workspaceRoot = normalizeExistingCandidate(options.workspaceRoot);
 
@@ -320,29 +315,6 @@ function localSkillRootCandidates(
       loadedFrom: "commands_DEPRECATED",
       kind: "commands",
     });
-    roots.push({
-      path: join(defaultAgencHome, "skills"),
-      scope: "user",
-      source: "userSettings",
-      loadedFrom: "skills",
-      kind: "skills",
-    });
-    roots.push({
-      path: join(defaultAgencHome, "commands"),
-      scope: "user",
-      source: "userSettings",
-      loadedFrom: "commands_DEPRECATED",
-      kind: "commands",
-    });
-    for (const dir of COMPAT_USER_SKILL_DIRS) {
-      roots.push({
-        path: join(home, dir, "skills"),
-        scope: "user",
-        source: "userSettings",
-        loadedFrom: "skills",
-        kind: "skills",
-      });
-    }
   }
   const managedHome = options.env?.AGENC_MANAGED_HOME;
   if (managedHome && managedHome.length > 0) {
@@ -1199,7 +1171,7 @@ export function createLocalSkillsServices(
     readonly key: string;
     readonly value: Promise<LocalSkillsSnapshot>;
   } | null = null;
-  let lastPluginConfig: Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined =
+  let lastPluginConfig: Pick<AgenCConfig, "plugins"> | undefined =
     options.config;
   let watchedPluginConfigKey = JSON.stringify(options.config ?? null);
   let activePaths = new Set<string>();
@@ -1243,7 +1215,7 @@ export function createLocalSkillsServices(
   const detector = options.skillChangeDetector ?? createSkillChangeDetector();
   const eventSink = options.skillChangeEventSink ?? skillChangeDetector;
   const load = (
-    config?: Pick<AgenCConfig, "plugins" | "enabledPlugins">,
+    config?: Pick<AgenCConfig, "plugins">,
   ): Promise<LocalSkillsSnapshot> => {
     const effectiveOptions = config === undefined ? options : { ...options, config };
     const key = skillSnapshotCacheKey(effectiveOptions.config, activePaths);
@@ -1368,21 +1340,20 @@ export function createLocalSkillsServices(
 }
 
 function skillSnapshotCacheKey(
-  config: Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined,
+  config: Pick<AgenCConfig, "plugins"> | undefined,
   activePaths: ReadonlySet<string>,
 ): string {
   return JSON.stringify({
     plugins: config?.plugins ?? null,
-    enabledPlugins: config?.enabledPlugins ?? null,
     activePaths: [...activePaths].sort(),
   });
 }
 
 function pluginConfigView(
   config: unknown,
-): Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined {
+): Pick<AgenCConfig, "plugins"> | undefined {
   return isRecord(config)
-    ? config as Pick<AgenCConfig, "plugins" | "enabledPlugins">
+    ? config as Pick<AgenCConfig, "plugins">
     : undefined;
 }
 
@@ -1497,7 +1468,7 @@ Maintain a status table for each runner and update it as results arrive.`;
 }
 
 function buildDebugPrompt(args: string): string {
-  const debugLogPath = join(homedir(), ".agenc", "debug.log");
+  const debugLogPath = join(getAgenCHomeDir(), "debug.log");
   return `# Debug Skill
 
 Help the user debug the current AgenC session.
@@ -1547,8 +1518,8 @@ provider = "openai"
 
 [permissions]
 defaultMode = "default"
-allow = ["Read", "Skill(simplify)"]
-deny = ["Bash(rm -rf:*)"]
+allow = ["FileRead", "Skill(simplify)"]
+deny = ["system.bash(rm -rf:*)"]
 ask = ["Write(/etc/*)"]
 
 [tools]
@@ -1564,29 +1535,21 @@ Read the existing config before editing. Preserve unrelated keys and comments wh
 function buildKeybindingsPrompt(): string {
   return `# Keybindings Skill
 
-Create or modify \`~/.agenc/keybindings.json\` to customize AgenC keyboard shortcuts.
+Create or modify canonical \`~/.agenc/config.toml\` to customize AgenC keyboard shortcuts under \`tui.keybindings\`.
 
-Always read the existing file first. Merge changes with existing bindings; do not replace the whole file unless the user explicitly asks.
+Always read the existing config first. Preserve unrelated settings and merge changes with existing keybinding blocks.
 
 ## File Format
 
-\`\`\`json
-{
-  "$schema": "urn:agenc:keybindings:schema",
-  "$docs": "urn:agenc:docs:keybindings",
-  "bindings": [
-    {
-      "context": "Chat",
-      "bindings": {
-        "ctrl+e": "chat:externalEditor",
-        "shift+tab": "chat:cycleMode"
-      }
-    }
-  ]
-}
+\`\`\`toml
+[tui]
+keybindings = [
+  { context = "Chat", bindings = { "ctrl+e" = "chat:externalEditor", "shift+tab" = "chat:cycleMode" } },
+  { context = "Global", unbind = ["ctrl+t"] },
+]
 \`\`\`
 
-Use the Edit tool for existing files and Write only when the file does not exist.`;
+Use \`unbind\` for explicit removals because TOML has no null value. The canonical schema rejects unknown contexts, actions, fields, malformed chords, and conflicting aliases.`;
 }
 
 function buildBrowserPrompt(args: string): string {
@@ -1678,7 +1641,7 @@ const BUNDLED_SKILLS: readonly BundledSkillDefinition[] = [
     name: "update-config",
     description: "Create or edit AgenC configuration files.",
     argumentHint: "[setting request]",
-    allowedTools: ["Read", "Write", "Edit", "MultiEdit"],
+    allowedTools: ["FileRead", "Write", "Edit", "MultiEdit"],
     getPrompt: () => buildUpdateConfigPrompt(),
   },
   {
@@ -1686,14 +1649,14 @@ const BUNDLED_SKILLS: readonly BundledSkillDefinition[] = [
     aliases: ["keybindings-help"],
     description: "Create or modify AgenC TUI keybindings.",
     argumentHint: "[binding request]",
-    allowedTools: ["Read", "Write", "Edit", "MultiEdit"],
+    allowedTools: ["FileRead", "Write", "Edit", "MultiEdit"],
     getPrompt: () => buildKeybindingsPrompt(),
   },
   {
     name: "debug",
     description: "Enable or inspect debug information for the current AgenC session.",
     argumentHint: "[issue description]",
-    allowedTools: ["Read", "Grep", "Glob"],
+    allowedTools: ["FileRead", "Grep", "Glob"],
     disableModelInvocation: true,
     getPrompt: (args) => buildDebugPrompt(args),
   },

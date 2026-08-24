@@ -27,10 +27,7 @@ import { validateToolCallDetailed } from "../../types.js";
 import { coerceUsage } from "../../wire/shared.js";
 import { isFallbackTriggeredError } from "../../../recovery/api-errors.js";
 import type { OpenAIProviderConfig } from "../openai/types.js";
-import {
-  resolveGeminiCredential,
-  type GeminiResolvedCredential,
-} from "../../../utils/geminiAuth.js";
+import type { GeminiResolvedCredential } from "../../../utils/geminiAuth.js";
 import {
   createTokenAccountingConfigurationRevision,
   type ProviderNativeTokenCountResult,
@@ -42,9 +39,7 @@ import { validateAgentInvocationMessageSequence } from "../../../contracts/agent
 export interface GeminiProviderConfig extends OpenAIProviderConfig {
   readonly cachedContent?: string;
   readonly accessToken?: string;
-  readonly resolveCredential?: (
-    env?: NodeJS.ProcessEnv,
-  ) => Promise<GeminiResolvedCredential>;
+  readonly resolveCredential?: () => Promise<GeminiResolvedCredential>;
 }
 
 const DEFAULT_GEMINI_BASE_URL =
@@ -181,9 +176,9 @@ async function resolveGeminiAuthHeaders(
     };
   }
 
-  const resolved = await (config.resolveCredential ?? resolveGeminiCredential)(
-    process.env,
-  );
+  const resolved = config.resolveCredential === undefined
+    ? { kind: "none" as const }
+    : await config.resolveCredential();
   const headers = authHeadersForCredential(resolved, config.project);
   if (headers) return headers;
 

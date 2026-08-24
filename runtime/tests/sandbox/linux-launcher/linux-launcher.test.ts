@@ -113,7 +113,7 @@ describe("Linux sandbox launcher", () => {
         "--",
         "/bin/true",
       ]),
-    ).toThrow(/cannot be combined/u);
+    ).toThrow(/unknown Linux sandbox argument/u);
     expect(() =>
       parseLinuxSandboxLauncherArgs([
         "--permission-profile",

@@ -35,14 +35,14 @@ function makeLive(
     agentId: "child-thread",
     agentPath: "/root/task_1",
     agentNickname: "scout",
-    agentRole: "explorer",
+    agentRole: "scanner",
     agentRoleWorkspaceId: ROLE_WORKSPACE.id,
     depth: 1,
   };
   return {
     agentId: "child-thread",
     agentPath: "/root/task_1",
-    role: resolveAgentRole(ROLE_WORKSPACE, "explorer"),
+    role: resolveAgentRole(ROLE_WORKSPACE, "scanner"),
     depth: 1,
     nickname: "scout",
     status: new AgentStatusTracker(),

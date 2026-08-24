@@ -8,10 +8,13 @@ import {
 import { buildWorkflowToolController } from "./workflow-controller.js";
 import { createModelFacingTools } from "./model-facing-tools.js";
 import type { CsvAgentJobsRepositoryProvider } from "../app-server/csv-agent-jobs-authority.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
 
 export interface BootstrapToolRegistryOptions {
   readonly workspaceRoot: string;
   readonly agencHome?: string;
+  /** Session-owned provider/request environment. */
+  readonly environment?: ProviderEnvironment;
   readonly mcpManager: MCPManager;
   readonly getSession: () => Session | null;
   readonly csvAgentJobsRepositories: CsvAgentJobsRepositoryProvider;
@@ -39,12 +42,12 @@ export function buildBootstrapToolRegistry(
       ? { unifiedExecManager: options.toolRegistryOptions.unifiedExecManager }
       : {}),
     emitWarning: options.emitWarning,
-    env: process.env,
+    env: options.environment ?? process.env,
     ...(options.toolRegistryOptions?.toolsConfig !== undefined
       ? { toolsConfig: options.toolRegistryOptions.toolsConfig }
       : {}),
-    ...(options.toolRegistryOptions?.llmXai !== undefined
-      ? { llmXai: options.toolRegistryOptions.llmXai }
+    ...(options.toolRegistryOptions?.grokCapabilities !== undefined
+      ? { grokCapabilities: options.toolRegistryOptions.grokCapabilities }
       : {}),
     ...(options.toolRegistryOptions?.sessionProvider !== undefined
       ? { sessionProvider: options.toolRegistryOptions.sessionProvider }
@@ -58,6 +61,9 @@ export function buildBootstrapToolRegistry(
   });
   return buildToolRegistry({
     workspaceRoot: options.workspaceRoot,
+    ...(options.agencHome !== undefined
+      ? { agencHome: options.agencHome }
+      : {}),
     getSession: options.getSession,
     requireAdmission: true,
     mcpToolsProvider: options.mcpManager,

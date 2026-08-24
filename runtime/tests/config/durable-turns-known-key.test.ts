@@ -11,7 +11,7 @@ describe("durableTurns known key (todo-116)", () => {
     const normalized = normalizeRawConfig({
       ...defaultConfig(),
       durableTurns: {
-        resume: { onRestart: false, policy: "safe" },
+        resume: { onRestart: false },
       },
     });
     expect(normalized.durableTurns).toBeDefined();

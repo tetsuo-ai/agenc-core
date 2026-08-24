@@ -35,6 +35,7 @@ import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
 import { AsyncQueue } from "../utils/async-queue.js";
+import { createTestConfigStore } from "../fixtures.js";
 import {
   Session,
   type Event,
@@ -54,6 +55,7 @@ import type {
   LLMProvider,
   LLMResponse,
 } from "../llm/types.js";
+import { createManagedFeatures } from "../llm/registry/features.js";
 import {
   ReviewManager,
   type ReviewRequest,
@@ -82,6 +84,7 @@ import { RolloutStore } from "./rollout-store.js";
 import { isSafeSessionIdSegment } from "./session-store.js";
 import { AgenCDaemonRunInspectionService } from "../app-server/run-inspection.js";
 import { resolveStateDatabasePaths } from "../state/sqlite-driver.js";
+import { resolveAgentRuntimeOptions } from "./runtime-options.js";
 
 const TEST_REVIEW_CHILD_SESSION_ID =
   "review-70258a22d095bbaef7e15b5457a92c30c382f5bd2e4af2c54fcbf2e2e4da8a2d";
@@ -91,10 +94,7 @@ const TEST_REVIEW_CHILD_SESSION_ID =
 // ─────────────────────────────────────────────────────────────────────
 
 function mkFeatures(): ManagedFeatures {
-  return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
-  };
+  return createManagedFeatures();
 }
 
 function mkConfig(cwd = "/tmp"): Config {
@@ -228,6 +228,8 @@ function mkSession(
   const cwd = options.cwd ?? "/tmp";
   const services = {
     admissionRequired: false,
+    runtimeOptions: resolveAgentRuntimeOptions({}),
+    configStore: createTestConfigStore({ cwd }),
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},
@@ -238,6 +240,7 @@ function mkSession(
       isCancelled: () => false,
     },
     provider,
+    providerEnvironment: {},
     registry: {
       tools: [],
       toLLMTools: () => [],
@@ -261,12 +264,21 @@ function mkSession(
   return new Session(sessionOpts);
 }
 
+function requireTestConfigHome(session: Session): string {
+  const home = session.services.configStore?.agencHome;
+  if (home === undefined) {
+    throw new Error("review fixture requires a canonical ConfigStore home");
+  }
+  return home;
+}
+
 function mountTestRollout(session: Session): RolloutStore {
   const cwd = session.sessionConfiguration.cwd;
   const store = new RolloutStore({
     cwd,
     sessionId: session.conversationId,
     agencVersion: "0.2.0",
+    agencHome: requireTestConfigHome(session),
   });
   store.open({
     sessionId: session.conversationId,
@@ -695,7 +707,12 @@ describe("review delegate spawn admission", () => {
       req.subId,
     );
     const inspection = new AgenCDaemonRunInspectionService({
-      stateDatabasePaths: () => [resolveStateDatabasePaths({ cwd })],
+      stateDatabasePaths: () => [
+        resolveStateDatabasePaths({
+          cwd,
+          agencHome: requireTestConfigHome(session),
+        }),
+      ],
     });
     expect(inspection.status({ runId: childRunId })).toMatchObject({
       runId: childRunId,
@@ -852,7 +869,12 @@ describe("runAgenCReviewOneShot happy-path review", () => {
         await thread.completion;
 
         const inspection = new AgenCDaemonRunInspectionService({
-          stateDatabasePaths: () => [resolveStateDatabasePaths({ cwd })],
+          stateDatabasePaths: () => [
+            resolveStateDatabasePaths({
+              cwd,
+              agencHome: requireTestConfigHome(session),
+            }),
+          ],
         });
         expect(inspection.status({ runId: childRunId })).toMatchObject({
           runId: childRunId,
@@ -886,10 +908,7 @@ describe("runAgenCReviewOneShot happy-path review", () => {
   );
 
   it("keeps a completed reviewer result when post-terminal provider disposal fails", async () => {
-    const previousAgencHome = process.env.AGENC_HOME;
-    const home = mkdtempSync(join(tmpdir(), "agenc-review-disposal-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "agenc-review-disposal-workspace-"));
-    process.env.AGENC_HOME = home;
     const parentBroker = new SandboxExecutionBroker({
       mode: "danger_full_access",
       cwd,
@@ -909,6 +928,7 @@ describe("runAgenCReviewOneShot happy-path review", () => {
       { sandboxExecutionBroker: parentBroker },
       { cwd },
     );
+    const home = requireTestConfigHome(session);
     mountTestRollout(session);
     const req = mkOneShotRequest(session);
     const childRunId = deriveReviewChildSessionId(
@@ -957,9 +977,6 @@ describe("runAgenCReviewOneShot happy-path review", () => {
       unsubscribe();
       await session.shutdown();
       await disposeSandboxExecutionBroker(parentBroker);
-      if (previousAgencHome === undefined) delete process.env.AGENC_HOME;
-      else process.env.AGENC_HOME = previousAgencHome;
-      rmSync(home, { recursive: true, force: true });
       rmSync(cwd, { recursive: true, force: true });
     }
   });
@@ -1572,14 +1589,14 @@ describe("buildGuardianReviewSessionConfig", () => {
     expect(Object.isFrozen(reviewerCfg)).toBe(true);
   });
 
-  it("preserves features reference so callable members work", () => {
+  it("preserves the fixed feature predicate reference", () => {
     const parent = mkConfig();
     const reviewerCfg = buildGuardianReviewSessionConfig({
       parentConfig: parent,
       activeModel: "reviewer-5",
     });
-    expect(typeof reviewerCfg.features.appsEnabledForAuth).toBe("function");
-    expect(reviewerCfg.features.appsEnabledForAuth(false)).toBe(false);
+    expect(typeof reviewerCfg.features.enabled).toBe("function");
+    expect(reviewerCfg.features.enabled?.("personality")).toBe(true);
   });
 });
 

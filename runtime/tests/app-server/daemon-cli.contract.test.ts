@@ -72,11 +72,7 @@ import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
 } from "../permissions/types.js";
-import {
-  EnvHttpProxyAgent,
-  getGlobalDispatcher,
-  setGlobalDispatcher,
-} from "undici";
+import { getGlobalDispatcher, setGlobalDispatcher } from "undici";
 import { clearProxyCache } from "../utils/proxy.js";
 import { clearMTLSCache } from "../utils/mtls.js";
 import { AsyncQueue } from "../utils/async-queue.js";
@@ -96,6 +92,13 @@ import {
   writeDaemonRuntimeInfo,
 } from "./daemon-runtime-info.js";
 import type { AgenCDaemonInstanceIdentity } from "./daemon-instance-identity.js";
+
+const TEST_RUNTIME_OPTIONS = Object.freeze({
+  simpleMode: false,
+  stdinDataMode: false,
+  remoteMode: false,
+  allowUntrustedHooks: false,
+});
 
 function createRecoveredSession(
   threadId: string,
@@ -650,13 +653,6 @@ describe("AgenC daemon CLI", () => {
     expect(
       resolveAgenCDaemonSocketPath({ AGENC_HOME: "/tmp/agenc-home" }),
     ).toBe("/tmp/agenc-home/daemon.sock");
-    expect(
-      resolveAgenCDaemonSocketPath(
-        { AGENC_HOME: String.raw`C:\Users\Test\.agenc` },
-        String.raw`C:\Users\Test`,
-        "win32",
-      ),
-    ).toMatch(/^\\\\\.\\pipe\\agenc-daemon-[a-f0-9]{64}$/u);
     expect(resolveAgenCDaemonCookiePath({}, "/home/test")).toBe(
       "/home/test/.agenc/daemon.cookie",
     );
@@ -940,6 +936,11 @@ describe("AgenC daemon CLI", () => {
       kind: "command",
       action: "reload",
     });
+    expect(parseAgenCDaemonCliArgs(["daemon", "run"])).toEqual({
+      kind: "error",
+      message:
+        "unknown daemon command: run. Use 'agenc daemon start --foreground' instead.",
+    });
     expect(parseAgenCDaemonCliArgs(["daemon", "bogus"])).toEqual({
       kind: "error",
       message: "unknown daemon command: bogus",
@@ -949,6 +950,7 @@ describe("AgenC daemon CLI", () => {
   it("documents foreground daemon mode and ships supervisor templates", async () => {
     const helpText = formatAgenCDaemonCliHelpText();
     expect(helpText).toContain("agenc daemon start --foreground");
+    expect(helpText).not.toContain("agenc daemon run");
     expect(helpText).toContain("agenc daemon reload");
     expect(helpText).toContain("Run the daemon in the current process");
 
@@ -1165,7 +1167,7 @@ describe("AgenC daemon CLI", () => {
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     await writeFile(
       join(agencHome, "config.toml"),
-      '[auth]\nbackend = "remote"\n',
+      'config_version = 2\n\n[auth]\nbackend = "remote"\n',
     );
 
     await expect(
@@ -2715,6 +2717,8 @@ describe("AgenC daemon CLI", () => {
       await writeFile(
         join(agencHome, "config.toml"),
         `
+config_version = 2
+
 [auth]
 backend = "remote"
 
@@ -2800,6 +2804,8 @@ token_cap = 123
     await writeFile(
       join(agencHome, "config.toml"),
       `
+config_version = 2
+
 [mcp.server]
 enabled = true
 transport = "sse"
@@ -2825,6 +2831,8 @@ workspace = ${JSON.stringify(workspaceA)}
       await writeFile(
         join(agencHome, "config.toml"),
         `
+config_version = 2
+
 [mcp.server]
 enabled = true
 transport = "sse"
@@ -2896,6 +2904,8 @@ workspace = ${JSON.stringify(workspaceB)}
     await writeFile(
       join(agencHome, "config.toml"),
       `
+config_version = 2
+
 [auth]
 backend = "local"
 
@@ -2938,6 +2948,8 @@ workspace = ${JSON.stringify(process.cwd())}
       await writeFile(
         join(agencHome, "config.toml"),
         `
+config_version = 2
+
 [auth]
 backend = "remote"
 
@@ -3434,6 +3446,8 @@ workspace = ${JSON.stringify(process.cwd())}
     await writeFile(
       join(agencHome, "config.toml"),
       `
+config_version = 2
+
 [auth]
 backend = "local"
       `,
@@ -3552,9 +3566,19 @@ backend = "local"
       authenticated: true,
       provider: "local",
     });
-    await expect(
-      readFile(join(agencHome, "auth.json"), "utf8"),
-    ).resolves.toContain('"token"');
+    const persistedAuth = JSON.parse(
+      await readFile(join(agencHome, "auth.json"), "utf8"),
+    ) as Record<string, unknown>;
+    expect(persistedAuth).toMatchObject({
+      version: 1,
+      provider: "local",
+      identity: {
+        accountId: "local",
+        displayName: "Local AgenC user",
+        plan: "free",
+      },
+    });
+    expect(persistedAuth).not.toHaveProperty("token");
     const afterLoginWhoami = await client.request("auth.whoami");
     expect(afterLoginWhoami).toMatchObject({
       authenticated: true,
@@ -3730,8 +3754,8 @@ backend = "local"
           method: "agent.create",
           params: {
             cwd: process.cwd(),
-            cwd: process.cwd(),
             objective: "realtime thread state",
+            runtimeOptions: TEST_RUNTIME_OPTIONS,
           },
         })}\n`,
       );
@@ -3902,6 +3926,7 @@ backend = "local"
       const created = await writerClient.request("agent.create", {
         cwd: process.cwd(),
         objective: "health state",
+        runtimeOptions: TEST_RUNTIME_OPTIONS,
       });
       if (created.sessionId === undefined)
         throw new Error("session id missing");
@@ -4005,6 +4030,7 @@ backend = "local"
       const created = await client.request("agent.create", {
         cwd: process.cwd(),
         objective: "prove dispatcher boot injection",
+        runtimeOptions: TEST_RUNTIME_OPTIONS,
       });
       expect(created.agentId).toBe("agent_boot_injection");
       if (
@@ -4080,7 +4106,7 @@ backend = "local"
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     await writeFile(
       join(agencHome, "config.toml"),
-      '[auth]\nbackend = "remote"\n',
+      'config_version = 2\n\n[auth]\nbackend = "remote"\n',
     );
 
     const running = runAgenCDaemonCli(
@@ -4106,6 +4132,8 @@ backend = "local"
     await writeFile(
       join(agencHome, "config.toml"),
       `
+config_version = 2
+
 [mcp.server]
 enabled = true
 transport = "sse"
@@ -4139,6 +4167,8 @@ port = 0
     await writeFile(
       join(agencHome, "config.toml"),
       `
+config_version = 2
+
 [mcp.server]
 enabled = true
 transport = "sse"
@@ -4172,6 +4202,8 @@ workspace = ${JSON.stringify(process.cwd())}
     await writeFile(
       join(agencHome, "config.toml"),
       `
+config_version = 2
+
 [agent.retention]
 completed_days = 10000
 failed_days = 10000
@@ -4534,6 +4566,69 @@ snapshot_max_bytes = 64
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("refuses to reinterpret daemon environment for a run without durable runtime options", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const runId = "run-without-runtime-options";
+    const sessionId = "session-without-runtime-options";
+    seedRecoverableDaemonState(agencHome, {
+      cwd: process.cwd(),
+      runId,
+      sessionId,
+      includeRuntimeOptions: false,
+    });
+    const restoreAgent = vi.fn(async () => true);
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => {
+        throw new Error("not used");
+      },
+      restoreAgent,
+    };
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess, runner },
+    );
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    await expect(
+      Promise.race([
+        waitForPid(pidPath),
+        running.then((code) => {
+          throw new Error(`daemon exited ${code}: ${io.stderrText()}`);
+        }),
+      ]),
+    ).resolves.toBe(4100);
+    expect(restoreAgent).not.toHaveBeenCalled();
+
+    const authCookie = (
+      await readFile(resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8")
+    ).trim();
+    const client = createAgenCJsonLineDaemonRequestClient({
+      socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+      authCookie,
+      timeoutMs: 1000,
+    });
+    await expect(client.request("agent.list", {})).resolves.toMatchObject({
+      agents: [
+        {
+          agentId: runId,
+          metadata: {
+            recovery: {
+              runnable: false,
+              runtimeRestore: "unavailable",
+            },
+          },
+        },
+      ],
+    });
+
+    signalProcess.emit("SIGTERM");
+    await expect(running).resolves.toBe(0);
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
   it("rolls back an exact startup runtime and session when recovered-agent publication fails", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
@@ -4646,8 +4741,6 @@ snapshot_max_bytes = 64
 
   it("suspends an idle run, restores it on daemon restart, and accepts new input", async () => {
     const agencHome = await tempAgencHome();
-    const originalAgencHome = process.env.AGENC_HOME;
-    process.env.AGENC_HOME = agencHome;
     const host = createHost(agencHome);
     const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
     const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
@@ -4692,6 +4785,7 @@ snapshot_max_bytes = 64
             cwd: options.cwd,
             sessionId: options.conversationId,
             agencVersion: "0.16.1",
+            agencHome,
             resume: true,
             resumeRolloutPath: options.resumeRolloutPath,
             resumeRolloutLease: options.resumeRolloutLease,
@@ -4780,10 +4874,10 @@ snapshot_max_bytes = 64
       firstSignal.emit("SIGTERM");
       firstStopped = true;
       await expect(first).resolves.toBe(0);
+      const suspended = readCanonicalRunLifecycle(rolloutPath);
       expect(readAgentRunStatus(agencHome, process.cwd(), runId)).toBe(
         "suspended",
       );
-      const suspended = readCanonicalRunLifecycle(rolloutPath);
       expect(suspended.map(({ type }) => type)).toEqual(["run_suspended"]);
       expect(suspended[0]?.payload).toMatchObject({
         runId,
@@ -4877,8 +4971,6 @@ snapshot_max_bytes = 64
         secondSignal?.emit("SIGTERM");
         await second.catch(() => {});
       }
-      if (originalAgencHome === undefined) delete process.env.AGENC_HOME;
-      else process.env.AGENC_HOME = originalAgencHome;
       await rm(agencHome, { recursive: true, force: true });
     }
   });
@@ -5406,10 +5498,11 @@ snapshot_max_bytes = 64
       objective: "survive daemon restart",
       cwd: process.cwd(),
       model: "grok-4",
-      provider: "xai",
+      provider: "grok",
       profile: "fast",
       unattendedAllow: ["FileRead"],
       unattendedDeny: ["system.bash"],
+      runtimeOptions: TEST_RUNTIME_OPTIONS,
     });
     const sessionId = created.sessionId;
     if (sessionId === undefined) throw new Error("session id missing");
@@ -5500,7 +5593,7 @@ snapshot_max_bytes = 64
     expect(restoreBootstrapOptions?.argv).toEqual(
       expect.arrayContaining([
         "--provider",
-        "xai",
+        "grok",
         "--model",
         "grok-4",
         "--profile",
@@ -5591,6 +5684,7 @@ snapshot_max_bytes = 64
     const created = await client.request("agent.create", {
       objective: "route attach event",
       cwd: otherCwd,
+      runtimeOptions: TEST_RUNTIME_OPTIONS,
     });
     const sessionId = created.sessionId;
     if (sessionId === undefined) throw new Error("session id missing");
@@ -5651,6 +5745,8 @@ function seedRecoverableDaemonState(
     readonly toolArgs?: unknown;
     readonly recoveryCategory?: string;
     readonly status?: string;
+    /** Set false only when exercising the fail-closed pre-contract recovery path. */
+    readonly includeRuntimeOptions?: boolean;
   },
 ): string {
   const driver = openStateDatabases({
@@ -5683,6 +5779,9 @@ function seedRecoverableDaemonState(
         "2026-05-01T00:06:00.000Z",
         JSON.stringify({
           agentPath: `/root/${params.runId.replaceAll("-", "_")}`,
+          ...(params.includeRuntimeOptions === false
+            ? {}
+            : { runtimeOptions: TEST_RUNTIME_OPTIONS }),
         }),
       );
     driver
@@ -5900,6 +5999,7 @@ function seedRecoverableCompletedToolState(
         "2026-05-01T00:06:00.000Z",
         JSON.stringify({
           agentPath: `/root/${params.runId}`,
+          runtimeOptions: TEST_RUNTIME_OPTIONS,
         }),
       );
     driver
@@ -6193,9 +6293,7 @@ function latestSnapshotToolState(
   }
 }
 
-describe("daemon startup proxy configuration", () => {
-  // getProxyUrl reads process.env (not host.env), matching production where the
-  // spawned daemon's process.env IS the inherited parent CLI env.
+describe("daemon startup proxy isolation", () => {
   const PROXY_ENV = [
     "HTTPS_PROXY",
     "https_proxy",
@@ -6245,14 +6343,15 @@ describe("daemon startup proxy configuration", () => {
     }
   }
 
-  it("installs the env-proxy global dispatcher when HTTPS_PROXY is set", async () => {
+  it("does not install a process-global dispatcher when HTTPS_PROXY is set", async () => {
     process.env.HTTPS_PROXY = "http://127.0.0.1:9"; // unroutable; nothing connects
     clearProxyCache();
+    const before = getGlobalDispatcher();
     await bootDaemonAndStop();
-    // REVERT-SENSITIVE: without the configureGlobalAgents() call in
-    // runAgenCDaemonForeground, the global dispatcher stays undici's default
-    // Agent and this fails.
-    expect(getGlobalDispatcher()).toBeInstanceOf(EnvHttpProxyAgent);
+    // REVERT-SENSITIVE: a daemon-wide configureGlobalAgents() call replaces
+    // this dispatcher and lets one client's proxy authority affect every
+    // later bare fetch in the long-lived process.
+    expect(getGlobalDispatcher()).toBe(before);
   });
 
   it("leaves the default dispatcher untouched without any proxy/mTLS env", async () => {

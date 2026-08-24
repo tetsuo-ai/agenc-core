@@ -37,7 +37,7 @@ const client = await connect({
   // requestTimeoutMs      — per-RPC timeout (default 30s or AGENC_DAEMON_REQUEST_TIMEOUT_MS)
   onPermissionRequest: async (request) => {
     // request: { sessionId, requestId, toolName?, permissions, input?, reason? }
-    return request.toolName === "Read"
+    return request.toolName === "FileRead"
       ? { behavior: "allow", scope: "once" }
       : { behavior: "deny", reason: "not allowed here" };
   },
@@ -51,10 +51,20 @@ for await (const event of run) {
     case "text":
       process.stdout.write(event.delta);
       break;
+    case "message_committed":
+      /* durable assistant message; distinct from text deltas */ break;
     case "tool_call":
       /* event.toolName, event.input */ break;
     case "permission_request":
       /* also routed to onPermissionRequest */ break;
+    case "elicitation_request":
+      /* also routed to onElicitationRequest */ break;
+    case "history_reset":
+      /* drop buffered history; reload transcriptV2() */ break;
+    case "gap":
+      /* event.event_gap; do not skip */ break;
+    case "session_event":
+      /* lifecycle / session status */ break;
     case "status":
       /* event.runStatus */ break;
   }
@@ -79,8 +89,16 @@ Key `AgencClient` methods:
   `{ runId, specDigest, baseCommit, baseDirty }`)
 - `runStatus(id)` / `runResult(id)` / `replayRun(params)` /
   `reattachRun(options)` / `runEvidence(params)` / `cancelRun(id, reason?)`
+- `listCsvJobReviews` / `showCsvJobReview` / `resolveCsvJobReview`
 - `request(method, params)` → raw typed JSON-RPC for any of the **53** daemon methods
+- `initialize` (handshake; SDK retries 1.0/1.1), `close()`
+- `negotiatedProtocolVersion` / `serverProtocolVersion` / `serverCapabilities`
 - `onNotification(cb)` / `onSessionNotification(sessionId, cb)` → raw events
+- Path helpers: `resolveAgencHome`, `resolveDaemonSocketPath`, `resolveDaemonCookiePath`
+
+Generated public contracts (do not edit by hand):
+`packages/agenc-sdk/src/workflow-handoff.generated.ts` and
+`workflow-result.generated.ts`. Source schemas live under `runtime/src/agents/`.
 
 Permission requests with no registered handler are **denied** (never granted)
 so an unattended embedder can't hang a turn, mirroring `agenc -p`.
@@ -310,9 +328,21 @@ evidence shape (`toolCallId`, `disposition`, `evidenceRef`, and
 `evidenceSha256`), and partial mixtures are rejected. An earlier-shape request
 leaves durable effects unchanged in `remaining`.
 
-Server→client notifications (`AGENC_SDK_DAEMON_NOTIFICATION_METHODS`) cover
-command-exec deltas, message chunks, tool/permission/elicitation requests,
-agent/session status, and realtime stream events.
+Protocol version constant: **`1.2.0`**
+(`AGENC_SDK_DAEMON_PROTOCOL_VERSION`). Handshake rules and
+`PROTOCOL_VERSION_UNSUPPORTED` live in [daemon.md](reference/daemon.md).
+The SDK retries initialization at an older 1.0/1.1 daemon and uses advertised
+capabilities for additive fallbacks.
+
+Server→client notifications (`AGENC_SDK_DAEMON_NOTIFICATION_METHODS`, 17 names):
+
+| Group | Methods |
+| --- | --- |
+| Exec | `commandExec.outputDelta` |
+| Turn / tools | `event.message_chunk`, `event.tool_request`, `event.permission_request`, `event.user_input_request`, `event.mcp_elicitation_request` |
+| Status | `event.agent_status`, `event.session_event` |
+| Sync | `event.event_gap` (do not skip; resync from the durable cursor) |
+| Realtime | `thread/realtime/started`, `itemAdded`, `transcript/delta`, `transcript/done`, `outputAudio/delta`, `sdp`, `error`, `closed` |
 
 The command-exec methods remain typed for protocol compatibility, but
 `commandExec.start` currently returns `EXECUTION_ADMISSION_REQUIRED`: it cannot
@@ -382,8 +412,27 @@ sees the same output and completion behavior as `agenc -p`.
 cd runtime && npx vitest run tests/sdk-package
 ```
 
+## Errors
+
+Thrown by `connect()`, `AgencClient`, and `promptViaSubprocess`
+(`packages/agenc-sdk/src/client.ts`):
+
+| Class | When |
+| --- | --- |
+| `AgencRpcError` | JSON-RPC error object from the daemon. Fields: `code`, `data`, `method`, `requestId` |
+| `AgencMalformedResponseError` | Response body is not a valid result for the method. Field: `response` |
+| `AgencPromptRunInProgressError` | Second `prompt()` on a session that already has an active run (`ifBusy: "reject"` or equivalent). Fields: `sessionId`, `clientMessageId` |
+| `AgencDuplicateSubmissionIncompleteError` | Reused `clientMessageId` whose prior submit has no durable terminal outcome |
+| `AgencCapabilityUnavailableError` | Caller asked for a protocol 1.2 (or later) guarantee the negotiated daemon does not have |
+| `AgencRunReplayGapError` | Replay cursor hit an explicit `event_gap` / `cursor_ahead` / retention gap. Do not skip it |
+| `AgencRunReplayProtocolError` | Replay page would hide loss or corruption |
+
+Internal workbench RPCs (`workspace.editor.*`) are not on this client. See
+[daemon.md](reference/daemon.md) internal methods.
+
 ## Related
 
 - Package README: [`packages/agenc-sdk/README.md`](../packages/agenc-sdk/README.md)
 - Architecture: [`ARCHITECTURE.md`](ARCHITECTURE.md)
 - Channel gateway (SDK consumer): [`gateway.md`](gateway.md)
+- Env vars: [`reference/env.md`](reference/env.md)

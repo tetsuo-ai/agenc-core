@@ -22,13 +22,41 @@ node --experimental-strip-types runtime/src/eval-executor/cli.ts \
   --overlay /path/to/agent-overlay \
   --provider-host api.x.ai \
   --provider-base-url https://api.x.ai/v1 \
-  --provider-model grok-4.5 \
+  --provider-model grok-4.6 \
   --key-command /path/to/print-fresh-key \
   --output /path/to/baseline-output \
   --agent-timeout-ms 1800000
 ```
 
-(`npx tsx` works equally; run from `runtime/`.)
+Same CLI via npm (preferred):
+
+```bash
+npm --workspace=@tetsuo-ai/runtime run eval:executor -- \
+  run-agent-real-batch \
+  --overlay /path/to/agent-overlay \
+  --provider-host api.x.ai \
+  --provider-base-url https://api.x.ai/v1 \
+  --provider-model grok-4.6 \
+  --key-command /path/to/print-fresh-key \
+  --output /path/to/baseline-output \
+  --agent-timeout-ms 1800000
+```
+
+Other executor commands (`runtime/src/eval-executor/cli.ts`):
+
+| Command | Job |
+| --- | --- |
+| `verify-lock` | Re-hash the frozen pilot source lock (offline) |
+| `preflight --task <id>` | Triple cold preflight in a `--network none` container |
+| `run-agent --task <id> --overlay <dir>` | Offline mock-provider agent lane |
+| `run-agent-real --task <id> --overlay <dir>` | One real-provider task in the egress lane |
+| `run-agent-real-batch` | Resumable batch (this runbook) |
+| `trust-run --repository-commit <sha>` | Deterministic trust-conformance suite |
+
+Useful flags: `--lock` (default pilot source lock), `--parser-fallback-image`,
+`--operator-task-digest` (preflight), `--suite-dir` / `--seed-slot` (`trust-run`).
+Default output dirs: `eval-executor-output` (agent) and
+`eval-executor-output/trust` (`trust-run`).
 
 - Tasks default to every task in the frozen pilot source lock, in lock order;
   `--tasks id1,id2,...` selects and orders an explicit subset.

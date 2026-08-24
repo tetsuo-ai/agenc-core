@@ -1,7 +1,10 @@
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { getSecureStorage } from "../../utils/secureStorage/index.js";
+import { readNativeSecureStorage } from "../../utils/secureStorage/native.js";
+import { resolveSecureStorageHome } from "../../utils/secureStorage/home.js";
 import { RemoteAuthBackend } from "./remote.js";
 
 const REMOTE_AUTH_LOGIN_POLL_URL_ENV = "AGENC_REMOTE_AUTH_LOGIN_POLL_URL";
@@ -18,6 +21,10 @@ function invalidJsonResponse(): Response {
   return new Response("not-json", { status: 200 });
 }
 
+function readNativeFor(home: string) {
+  return readNativeSecureStorage(resolveSecureStorageHome({}, home));
+}
+
 function deferred<T>(): {
   readonly promise: Promise<T>;
   readonly resolve: (value: T) => void;
@@ -30,6 +37,14 @@ function deferred<T>(): {
 }
 
 describe("RemoteAuthBackend", () => {
+  beforeEach(() => {
+    getSecureStorage(resolveSecureStorageHome(process.env)).delete();
+  });
+
+  afterEach(() => {
+    getSecureStorage(resolveSecureStorageHome(process.env)).delete();
+  });
+
   it("persists a long-lived token returned by the configured login flow", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
     const accountSnapshotResolver = vi.fn(() => ({
@@ -80,8 +95,12 @@ describe("RemoteAuthBackend", () => {
           accountId: "acct-1",
         },
       });
-      await expect(readFile(join(agencHome, "auth.json"), "utf8")).resolves
-        .toContain("\"provider\": \"remote\"");
+      const authJson = await readFile(join(agencHome, "auth.json"), "utf8");
+      expect(authJson).toContain("\"provider\": \"remote\"");
+      expect(authJson).not.toContain("remote-token");
+      expect(readNativeFor(agencHome).remoteAuth).toMatchObject({
+        bearerToken: "remote-token",
+      });
       expect(loginFlow).toHaveBeenCalledWith({ sessionId: "cli" });
       expect(accountSnapshotResolver).toHaveBeenCalledWith({}, "remote-token");
     } finally {
@@ -89,7 +108,25 @@ describe("RemoteAuthBackend", () => {
     }
   });
 
-  it("uses a persisted remote login token for later HTTP auth calls", async () => {
+  it("rolls back the native bearer when metadata persistence fails", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    await mkdir(join(agencHome, "auth.json"));
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      loginFlow: () => ({ token: "rollback-token" }),
+    });
+
+    try {
+      await expect(backend.login()).rejects.toMatchObject({
+        code: expect.stringMatching(/EISDIR|ENOTDIR|ENOTEMPTY/u),
+      });
+      expect(readNativeFor(agencHome).remoteAuth).toBeUndefined();
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("lets an explicit env token beat a persisted remote login token", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ subscriptionTier: "team" }), {
@@ -120,10 +157,48 @@ describe("RemoteAuthBackend", () => {
           method: "POST",
           headers: {
             "content-type": "application/json",
-            authorization: "Bearer remote-token",
+            authorization: "Bearer bootstrap-token",
           },
           body: JSON.stringify({ sessionId: "session-1" }),
         },
+      );
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("lets an explicit constructor token beat env and persisted tokens", async () => {
+    const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ subscriptionTier: "team" }), {
+        status: 200,
+      }),
+    );
+    const backend = new RemoteAuthBackend({
+      agencHome,
+      env: {
+        [REMOTE_AUTH_TOKEN_ENV]: "env-token",
+        [REMOTE_AUTH_TIER_URL_ENV]:
+          "https://api.agenc.tech/test/subscription-tier",
+      },
+      fetchImpl,
+      loginFlow: () => ({ token: "persisted-token" }),
+      token: "constructor-token",
+    });
+
+    try {
+      await backend.login();
+      await expect(backend.getSubscriptionTier()).resolves.toBe("team");
+      expect(fetchImpl).toHaveBeenCalledWith(
+        "https://api.agenc.tech/test/subscription-tier",
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            authorization: "Bearer constructor-token",
+          }),
+        }),
+      );
+      expect(readNativeFor(agencHome).remoteAuth?.bearerToken).toBe(
+        "persisted-token",
       );
     } finally {
       await rm(agencHome, { recursive: true, force: true });
@@ -178,8 +253,11 @@ describe("RemoteAuthBackend", () => {
           displayName: "Canonical User",
         },
         subscriptionTier: "team",
-        token: "remote-token",
       });
+      expect(persisted).not.toHaveProperty("token");
+      expect(readNativeFor(agencHome).remoteAuth?.bearerToken).toBe(
+        "remote-token",
+      );
       expect(accountSnapshotResolver).toHaveBeenCalledWith({}, "remote-token");
     } finally {
       await rm(agencHome, { recursive: true, force: true });
@@ -323,7 +401,7 @@ describe("RemoteAuthBackend", () => {
       );
       await expect(
         readFile(join(agencHome, "auth.json"), "utf8"),
-      ).resolves.toContain('"token": "remote-token"');
+      ).resolves.not.toContain("remote-token");
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }
@@ -381,9 +459,10 @@ describe("RemoteAuthBackend", () => {
         await readFile(join(agencHome, "auth.json"), "utf8"),
       ) as Record<string, unknown>;
       expect(persisted).toMatchObject({
-        token: "token-b",
         identity: { accountId: "acct-b" },
       });
+      expect(persisted).not.toHaveProperty("token");
+      expect(readNativeFor(agencHome).remoteAuth?.bearerToken).toBe("token-b");
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }
@@ -472,7 +551,8 @@ describe("RemoteAuthBackend", () => {
       });
       await expect(
         readFile(join(agencHome, "auth.json"), "utf8"),
-      ).resolves.toContain('"token": "token-b"');
+      ).resolves.not.toContain("token-b");
+      expect(readNativeFor(agencHome).remoteAuth?.bearerToken).toBe("token-b");
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }
@@ -497,7 +577,10 @@ describe("RemoteAuthBackend", () => {
       );
       await expect(
         readFile(join(agencHome, "auth.json"), "utf8").then(JSON.parse),
-      ).resolves.toMatchObject({ token: "remote-token" });
+      ).resolves.toMatchObject({ provider: "remote" });
+      expect(readNativeFor(agencHome).remoteAuth?.bearerToken).toBe(
+        "remote-token",
+      );
       const stateArtifacts = (await readdir(agencHome)).filter((name) =>
         name.endsWith(".lock") || name.endsWith(".tmp")
       );
@@ -507,7 +590,7 @@ describe("RemoteAuthBackend", () => {
     }
   });
 
-  it("uses a persisted remote login token for later HTTP LLM usage calls", async () => {
+  it("lets an explicit env token beat persisted auth for LLM usage calls", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-remote-auth-"));
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({
@@ -556,7 +639,7 @@ describe("RemoteAuthBackend", () => {
           method: "POST",
           headers: {
             "content-type": "application/json",
-            authorization: "Bearer remote-token",
+            authorization: "Bearer bootstrap-token",
           },
           body: JSON.stringify({ sessionId: "session-1" }),
         },
@@ -1502,9 +1585,10 @@ describe("RemoteAuthBackend", () => {
         await readFile(join(agencHome, "auth.json"), "utf8"),
       ) as Record<string, unknown>;
       expect(persisted).toMatchObject({
-        token: "token-b",
         subscriptionTier: "free",
       });
+      expect(persisted).not.toHaveProperty("token");
+      expect(readNativeFor(agencHome).remoteAuth?.bearerToken).toBe("token-b");
     } finally {
       await rm(agencHome, { recursive: true, force: true });
     }
@@ -1639,6 +1723,7 @@ describe("RemoteAuthBackend", () => {
         provider: "remote",
       });
       await expect(backend.logout()).resolves.toEqual({ authenticated: false });
+      expect(readNativeFor(agencHome).remoteAuth).toBeUndefined();
       await expect(backend.whoami()).resolves.toEqual({
         authenticated: false,
         provider: "remote",

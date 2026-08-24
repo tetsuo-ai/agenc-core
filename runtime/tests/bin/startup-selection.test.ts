@@ -1,26 +1,84 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import { defaultConfig } from "../config/schema.js";
+import { ConfigStore } from "../config/store.js";
+import { resolveHomeContext } from "../config/home.js";
+import {
+  clearXaiOauthCredentials,
+  saveXaiOauthCredentials,
+} from "../utils/xaiOauthCredentials.js";
+import { resetCanonicalSettingsAuthorityForTesting } from "../utils/settings/canonicalAuthority.js";
 import {
   readStartupCliFlags,
+  resolveCanonicalStartupSelection,
   resolveStartupSelection,
+  startupConfigLayerOptions,
 } from "./startup-selection.js";
 
 describe("resolveStartupSelection", () => {
-  it("uses Bedrock model env when selected by provider", () => {
-    const resolved = resolveStartupSelection({
-      config: defaultConfig(),
-      env: {
-        AGENC_PROVIDER: "amazon-bedrock",
-        AWS_BEDROCK_MODEL: "amazon.nova-lite-v1:0",
-        AWS_ACCESS_KEY_ID: "bedrock-access-key",
-      },
-      argv: ["node", "agenc"],
+  it("uses the captured credential home for a qualified model selector", () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-qualified-model-home-"));
+    const homeA = resolveHomeContext({
+      AGENC_HOME: join(root, "home-a"),
+      HOME: root,
     });
+    const homeB = resolveHomeContext({
+      AGENC_HOME: join(root, "home-b"),
+      HOME: root,
+    });
+    const previousHome = process.env.AGENC_HOME;
 
-    expect(resolved.provider).toBe("amazon-bedrock");
-    expect(resolved.model).toBe("amazon.nova-lite-v1:0");
-    expect(resolved.apiKey).toBe("bedrock-access-key");
+    try {
+      expect(saveXaiOauthCredentials(homeA, {
+        accessToken: "oauth-home-a",
+        expiresAt: Date.now() + 60_000,
+      }).success).toBe(true);
+      expect(saveXaiOauthCredentials(homeB, {
+        accessToken: "oauth-home-b",
+        expiresAt: Date.now() + 60_000,
+      }).success).toBe(true);
+      process.env.AGENC_HOME = homeB.path;
+      resetCanonicalSettingsAuthorityForTesting();
+
+      const resolved = resolveStartupSelection({
+        config: defaultConfig(),
+        env: {
+          AGENC_HOME: homeA.path,
+          HOME: root,
+        },
+        cli: { model: "grok:grok-4.6" },
+      });
+
+      expect(resolved).toMatchObject({
+        provider: "grok",
+        model: "grok-4.6",
+        apiKey: "oauth-home-a",
+      });
+    } finally {
+      clearXaiOauthCredentials(homeA);
+      clearXaiOauthCredentials(homeB);
+      if (previousHome === undefined) delete process.env.AGENC_HOME;
+      else process.env.AGENC_HOME = previousHome;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects the retired Bedrock model selector", () => {
+    expect(() =>
+      resolveStartupSelection({
+        config: defaultConfig(),
+        env: {
+          AGENC_PROVIDER: "amazon-bedrock",
+          AWS_BEDROCK_MODEL: "amazon.nova-lite-v1:0",
+          AWS_ACCESS_KEY_ID: "bedrock-access-key",
+        },
+        argv: ["node", "agenc"],
+      })
+    ).toThrow(/obsolete configuration environment variable/u);
   });
 
   it("resolves config.model over providers.grok.default_model (config set model is honored)", () => {
@@ -56,6 +114,49 @@ describe("resolveStartupSelection", () => {
 });
 
 describe("readStartupCliFlags --permission-mode validation", () => {
+  it.each([
+    ["--yolo", "--dangerously-bypass-approvals-and-sandbox"],
+    ["--allow-dangerously-skip-permissions", "--dangerously-bypass-approvals-and-sandbox"],
+    ["--proactive", "--autonomous"],
+  ])("rejects retired startup flag %s", (flag, replacement) => {
+    expect(() => readStartupCliFlags(["node", "agenc", flag])).toThrow(
+      `unknown option '${flag}'. Use '${replacement}' instead.`,
+    );
+  });
+
+  it("parses --bare only in the startup option region", () => {
+    expect(
+      readStartupCliFlags(["node", "agenc", "--bare", "explain"]),
+    ).toMatchObject({ simpleMode: true });
+    expect(
+      readStartupCliFlags(["node", "agenc", "--", "--bare"]),
+    ).not.toHaveProperty("simpleMode");
+    expect(
+      readStartupCliFlags(["node", "agenc", "explain", "--bare"]),
+    ).not.toHaveProperty("simpleMode");
+  });
+
+  it("parses --config only in the startup option region", () => {
+    expect(
+      readStartupCliFlags([
+        "node",
+        "agenc",
+        "--config",
+        "operator.toml",
+        "explain",
+      ]),
+    ).toMatchObject({ configPath: "operator.toml" });
+    expect(
+      readStartupCliFlags([
+        "node",
+        "agenc",
+        "explain",
+        "--config",
+        "operator.toml",
+      ]),
+    ).not.toHaveProperty("configPath");
+  });
+
   it("accepts a valid --permission-mode value", () => {
     const flags = readStartupCliFlags([
       "node",
@@ -85,18 +186,19 @@ describe("readStartupCliFlags --permission-mode validation", () => {
     ).toThrow(/unknown permission mode 'Plan'\. Expected one of:/);
   });
 
-  it("ignores a valid-but-internal mode (unattended) without throwing", () => {
-    // `unattended` IS a valid PermissionMode but is not user-addressable at
-    // the startup CLI surface. The existing contract silently ignores it
-    // (returns undefined) rather than erroring like a real typo.
-    const flags = readStartupCliFlags([
-      "node",
-      "agenc",
-      "--permission-mode",
-      "unattended",
-    ]);
-    expect(flags.permissionMode).toBeUndefined();
-  });
+  it.each(["unattended", "bubble"])(
+    "rejects internal --permission-mode value %s",
+    (mode) => {
+      expect(() =>
+        readStartupCliFlags([
+          "node",
+          "agenc",
+          "--permission-mode",
+          mode,
+        ]),
+      ).toThrow(`unknown permission mode '${mode}'. Expected one of:`);
+    },
+  );
 
   it("ignores startup-looking tokens after the positional prompt begins", () => {
     const flags = readStartupCliFlags([
@@ -111,7 +213,7 @@ describe("readStartupCliFlags --permission-mode validation", () => {
       "fast",
       "--permission-mode",
       "bypassPermissions",
-      "--yolo",
+      "--dangerously-bypass-approvals-and-sandbox",
       "--autonomous",
     ]);
 
@@ -129,10 +231,151 @@ describe("readStartupCliFlags --permission-mode validation", () => {
       "gpt-5",
       "--permission-mode",
       "bypassPermissions",
-      "--yolo",
-      "--proactive",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "--autonomous",
     ]);
 
     expect(flags).toEqual({});
+  });
+});
+
+describe("canonical startup ConfigStore layers", () => {
+  it("freezes the environment captured by the startup CLI resolver", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-startup-env-snapshot-"));
+    const home = join(root, "home");
+    const workspace = join(root, "workspace");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(workspace, { recursive: true });
+    const env: NodeJS.ProcessEnv = {
+      AGENC_HOME: home,
+      HOME: home,
+      AGENC_PROVIDER: "openai",
+    };
+    const previousAmbientProvider = process.env.AGENC_PROVIDER;
+
+    try {
+      const cli = Object.freeze({ model: "gpt-5" });
+      const store = new ConfigStore({
+        home,
+        cwd: workspace,
+        env,
+        ...startupConfigLayerOptions({ cli, env, cwd: workspace }),
+      });
+      env.AGENC_PROVIDER = "grok";
+      process.env.AGENC_PROVIDER = "grok";
+
+      await expect(store.reload()).resolves.toMatchObject({
+        model_provider: "openai",
+        model: "gpt-5",
+      });
+      expect(store.provenance("model_provider")?.scope).toBe("cli");
+    } finally {
+      if (previousAmbientProvider === undefined) {
+        delete process.env.AGENC_PROVIDER;
+      } else {
+        process.env.AGENC_PROVIDER = previousAmbientProvider;
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps explicit config, profile, and CLI values on reload and subscription", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-startup-authority-"));
+    const home = join(root, "home");
+    const workspace = join(root, "workspace");
+    const explicitConfig = join(workspace, "operator.toml");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(workspace, { recursive: true });
+    writeFileSync(
+      explicitConfig,
+      [
+        "config_version = 2",
+        'model_provider = "grok"',
+        'model = "grok-4.3"',
+        'approval_policy = "on-request"',
+        'sandbox_mode = "workspace-write"',
+        "[tools_config]",
+        'enabled_tools = ["Write"]',
+        "[profiles.operator]",
+        'model = "grok-4.5"',
+        'approval_policy = "never"',
+        'sandbox_mode = "read-only"',
+        "[profiles.operator.tools_config]",
+        'enabled_tools = ["FileRead"]',
+        'disabled_tools = ["Write"]',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    try {
+      const cli = readStartupCliFlags([
+        "node",
+        "agenc",
+        "--config",
+        "operator.toml",
+        "--profile",
+        "operator",
+        "--provider",
+        "grok",
+        "--model",
+        "grok-4.6",
+      ]);
+      const env = {
+        AGENC_HOME: home,
+        HOME: home,
+        AGENC_MODEL: "grok-4.4",
+      };
+      const store = new ConfigStore({
+        home,
+        cwd: workspace,
+        env,
+        ...startupConfigLayerOptions({ cli, env, cwd: workspace }),
+      });
+      const observed: unknown[] = [];
+      const unsubscribe = store.subscribe((config) => observed.push(config));
+
+      const first = await store.reload();
+      const selection = resolveCanonicalStartupSelection({
+        config: first,
+        profileName: cli.profile,
+        env: {},
+      });
+      const expected = {
+        model_provider: "grok",
+        model: "grok-4.6",
+        approval_policy: "never",
+        sandbox_mode: "read-only",
+        tools_config: {
+          enabled_tools: ["FileRead"],
+          disabled_tools: ["Write"],
+        },
+      };
+
+      expect(first).toMatchObject(expected);
+      expect(selection).toMatchObject({
+        config: expected,
+        profileName: "operator",
+        provider: "grok",
+        model: "grok-4.6",
+      });
+      expect(store.provenance("model")?.scope).toBe("cli");
+      expect(store.provenance("sandbox_mode")?.scope).toBe("profile");
+      expect(store.sources("flag")).toEqual([
+        expect.objectContaining({ path: explicitConfig }),
+      ]);
+
+      const reloaded = await store.reload();
+      expect(reloaded).toMatchObject(expected);
+      expect(store.current()).toBe(reloaded);
+      expect(observed).toHaveLength(2);
+      expect(observed).toEqual([
+        expect.objectContaining(expected),
+        expect.objectContaining(expected),
+      ]);
+      unsubscribe();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });

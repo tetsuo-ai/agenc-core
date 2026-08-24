@@ -144,7 +144,6 @@ describe("Grep tool", () => {
         "-B",
         "-A",
         "-C",
-        "context",
         "-n",
         "-i",
         "type",
@@ -153,6 +152,7 @@ describe("Grep tool", () => {
         "multiline",
       ]),
     );
+    expect(schema.properties).not.toHaveProperty("context");
   });
 
   test("returns matching content lines for a basic pattern", async () => {
@@ -2168,25 +2168,9 @@ describe("Grep tool", () => {
     expect(c.content).toContain("after-2");
   });
 
-  test("context aliases -C for surrounding content lines", async () => {
-    await writeFile(
-      join(root, "ctx-alias.txt"),
-      ["before", "TARGET", "after"].join("\n"),
-      "utf8",
-    );
+  test("does not publish the removed context input alias", () => {
     const tool = createGrepTool({ allowedPaths: [root] });
-
-    const result = await tool.execute({
-      pattern: "TARGET",
-      path: root,
-      output_mode: "content",
-      context: 1,
-    });
-
-    expect(result.isError).toBeUndefined();
-    expect(result.content).toContain("before");
-    expect(result.content).toContain("TARGET");
-    expect(result.content).toContain("after");
+    expect(tool.inputSchema.properties).not.toHaveProperty("context");
   });
 
   test("multiline mode matches across line boundaries", async () => {

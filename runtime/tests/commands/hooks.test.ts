@@ -94,6 +94,14 @@ describe("/hooks command", () => {
     }
   });
 
+  it("rejects retired lower-camel event aliases", async () => {
+    const result = await hooksCommand.execute(ctx("show preToolUse 0"));
+    expect(result).toMatchObject({
+      kind: "error",
+      message: expect.stringContaining("Events: PreToolUse"),
+    });
+  });
+
   it("can disable and enable hooks for the session", async () => {
     const r = runtime();
     let result = await hooksCommand.execute(ctx("disable", r));

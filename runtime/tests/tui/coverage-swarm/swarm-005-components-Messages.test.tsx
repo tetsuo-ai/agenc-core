@@ -78,7 +78,7 @@ vi.mock('../../../src/tui/ink/useTerminalNotification.js', async () => {
 })
 
 vi.mock('../../../src/utils/config.js', () => ({
-  getGlobalConfig: () => ({ terminalProgressBarEnabled: true }),
+  getRuntimeState: () => ({ terminalProgressBarEnabled: true }),
 }))
 
 vi.mock('../../../src/utils/fullscreen.js', () => ({

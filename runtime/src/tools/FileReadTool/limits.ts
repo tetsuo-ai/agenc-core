@@ -12,15 +12,16 @@
  * dropped but mean tokens rose — the throw path yields a ~100-byte error
  * tool-result while truncation yields ~25K tokens of content at the cap.
  */
-import memoize from 'lodash-es/memoize.js'
 import { MAX_OUTPUT_SIZE } from 'src/utils/file.js'
+import { getSelectedProviderEnvironment } from 'src/utils/model/providers.js'
 const DEFAULT_MAX_OUTPUT_TOKENS = 25000
 /**
  * Env var override for max output tokens. Returns undefined when unset/invalid
  * so the caller can fall through to the next precedence tier.
  */
 function getEnvMaxTokens(): number | undefined {
-  const override = process.env.AGENC_FILE_READ_MAX_OUTPUT_TOKENS
+  const override =
+    getSelectedProviderEnvironment().AGENC_FILE_READ_MAX_OUTPUT_TOKENS
   if (override) {
     const parsed = parseInt(override, 10)
     if (!isNaN(parsed) && parsed > 0) {
@@ -48,7 +49,7 @@ export type FileReadingLimits = {
  * Defensive: each field is individually validated; invalid values fall
  * through to the hardcoded defaults (no route to cap=0).
  */
-export const getDefaultFileReadingLimits = memoize((): FileReadingLimits => {
+export const getDefaultFileReadingLimits = (): FileReadingLimits => {
   const override: Partial<FileReadingLimits> | null = {}
 
   const maxSizeBytes =
@@ -81,4 +82,4 @@ export const getDefaultFileReadingLimits = memoize((): FileReadingLimits => {
     includeMaxSizeInPrompt,
     targetedRangeNudge,
   }
-})
+}

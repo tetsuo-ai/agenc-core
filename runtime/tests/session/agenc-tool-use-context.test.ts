@@ -33,6 +33,7 @@ function createSession(overrides: Record<string, unknown> = {}) {
       registry: { toLLMTools: () => [] },
       provider: undefined,
     },
+    config: {},
     emit: vi.fn(),
     nextInternalSubId: () => "internal-1",
     ...overrides,
@@ -104,5 +105,19 @@ describe("buildAgenCToolUseContext", () => {
     expect(context.getAppState().toolPermissionContext).toMatchObject({
       mode: "default",
     });
+  });
+
+  test("projects the canonical session cost cap into attachment context", () => {
+    const session = createSession({
+      config: { maxBudgetUsd: 7.25 },
+    });
+
+    const context = buildAgenCToolUseContext(
+      session as unknown as Session,
+      createTurnContext(),
+      { llmTools: [] },
+    );
+
+    expect(context.options.maxBudgetUsd).toBe(7.25);
   });
 });

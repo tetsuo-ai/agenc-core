@@ -1,9 +1,10 @@
 import {
-  normalizeProviderSlug,
+  resolveProviderSlug,
   readProviderConfig,
   type AgenCConfig,
 } from "./_deps/config.js";
 import { resolveModelCatalogMetadata } from "./registry/model-catalog.js";
+import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
 import {
   BUILT_IN_PROVIDER_API_KEY_ENVS,
   BUILT_IN_PROVIDER_BASE_URLS,
@@ -211,12 +212,12 @@ export class ModelMetadataResolver {
   private async resolveLiveEndpointMetadata(
     params: LookupParams,
   ): Promise<ModelMetadataValues | undefined> {
-    const provider = normalizeProvider(params.provider);
+    const provider = normalizeMetadataProviderIdentity(params.provider);
     if (!LIVE_METADATA_PROVIDERS.has(provider)) return undefined;
     if (!shouldQueryLiveEndpoint(params, this.env)) return undefined;
     const baseUrl = providerBaseUrl(params.config, provider, this.env);
     if (!baseUrl) return undefined;
-    const headers = authHeaders(params.config, provider, this.env);
+    const headers = authHeaders(provider, this.env);
     // Ollama serves no context length over its OpenAI-compatible surface, so
     // the native endpoint is the only place the real number exists.
     if (provider !== "ollama") {
@@ -253,7 +254,7 @@ export class ModelMetadataResolver {
   private async resolveOpenRouterMetadata(
     params: LookupParams,
   ): Promise<ModelMetadataValues | undefined> {
-    if (normalizeProvider(params.provider) !== "openrouter") return undefined;
+    if (normalizeMetadataProviderIdentity(params.provider) !== "openrouter") return undefined;
     const response = await this.fetchJson(OPENROUTER_MODELS_URL);
     return metadataFromOpenAiModelsResponse(response, params.model);
   }
@@ -345,7 +346,7 @@ function shouldPreferDynamicMetadata(
   params: LookupParams,
   env: Readonly<Record<string, string | undefined>>,
 ): boolean {
-  const provider = normalizeProvider(params.provider);
+  const provider = normalizeMetadataProviderIdentity(params.provider);
   return provider === "openrouter" || shouldQueryLiveEndpoint(params, env);
 }
 
@@ -353,7 +354,7 @@ function shouldQueryLiveEndpoint(
   params: LookupParams,
   env: Readonly<Record<string, string | undefined>>,
 ): boolean {
-  const provider = normalizeProvider(params.provider);
+  const provider = normalizeMetadataProviderIdentity(params.provider);
   const providerConfig = readProviderConfig(params.config, provider);
   return (
     provider === "lmstudio" ||
@@ -369,7 +370,7 @@ function shouldPreferLiveEndpointOverExplicit(
   env: Readonly<Record<string, string | undefined>>,
 ): boolean {
   return (
-    normalizeProvider(params.provider) === "openai-compatible" &&
+    normalizeMetadataProviderIdentity(params.provider) === "openai-compatible" &&
     shouldQueryLiveEndpoint(params, env)
   );
 }
@@ -414,7 +415,8 @@ function mergeLiveEndpointMetadata(
 function readExplicitConfigMetadata(
   params: LookupParams,
 ): ModelMetadataValues {
-  const providerConfig = readProviderConfig(params.config, params.provider) as
+  const provider = normalizeMetadataProviderIdentity(params.provider);
+  const providerConfig = readProviderConfig(params.config, provider) as
     | Record<string, unknown>
     | undefined;
   const explicitContextWindow = readPositiveInteger(
@@ -423,7 +425,7 @@ function readExplicitConfigMetadata(
     "contextWindowTokens",
   );
   const catalogMaxContextWindow = resolveModelCatalogMetadata({
-    provider: params.provider,
+    provider,
     model: params.model,
   })?.maxContextWindow;
   const contextWindow =
@@ -474,7 +476,7 @@ function inferBuiltInMetadata(
   provider: string,
   model: string,
 ): ModelMetadataValues | undefined {
-  const normalizedProvider = normalizeProvider(provider);
+  const normalizedProvider = normalizeMetadataProviderIdentity(provider);
   const normalizedModel = model.trim().toLowerCase();
   const catalog = resolveModelCatalogMetadata({
     provider: normalizedProvider,
@@ -733,7 +735,7 @@ function modelIdMatches(candidate: string, model: string): boolean {
 }
 
 function providerAliases(provider: string): readonly string[] {
-  const normalized = normalizeProvider(provider);
+  const normalized = normalizeMetadataProviderIdentity(provider);
   switch (normalized) {
     case "grok":
       return ["grok", "xai", "x-ai"];
@@ -746,8 +748,8 @@ function providerAliases(provider: string): readonly string[] {
   }
 }
 
-function normalizeProvider(provider: string): string {
-  return normalizeProviderSlug(provider) ?? provider.trim().toLowerCase();
+function normalizeMetadataProviderIdentity(provider: string): string {
+  return normalizeProviderMetadataIdentity(provider) ?? "";
 }
 
 function normalizeId(value: string): string {
@@ -803,16 +805,10 @@ function modelsUrlFromBaseUrl(baseUrl: string): string {
 }
 
 function authHeaders(
-  config: AgenCConfig,
   provider: string,
   env: Readonly<Record<string, string | undefined>>,
 ): Readonly<Record<string, string>> | undefined {
-  const providerConfig = readProviderConfig(config, provider);
-  const configuredApiKeyEnv = providerConfig?.api_key_env?.trim();
-  const apiKey =
-    configuredApiKeyEnv
-      ? env[configuredApiKeyEnv]?.trim()
-      : envApiKey(provider, env);
+  const apiKey = envApiKey(provider, env);
   return apiKey ? { Authorization: `Bearer ${apiKey}` } : undefined;
 }
 
@@ -859,12 +855,12 @@ function envApiKey(
 }
 
 function defaultProviderBaseUrl(provider: string): string | undefined {
-  const slug = normalizeProviderSlug(provider);
+  const slug = resolveProviderSlug(provider);
   return slug === undefined ? undefined : BUILT_IN_PROVIDER_BASE_URLS[slug];
 }
 
 function defaultProviderApiKeyEnv(provider: string): string | undefined {
-  const slug = normalizeProviderSlug(provider);
+  const slug = resolveProviderSlug(provider);
   return slug === undefined ? undefined : BUILT_IN_PROVIDER_API_KEY_ENVS[slug];
 }
 

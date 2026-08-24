@@ -17,6 +17,10 @@
  */
 
 import type { LLMProvider } from "../llm/types.js";
+import {
+  bindingFromProvider,
+  type ProviderBinding,
+} from "./provider-service.js";
 import type { PermissionMode } from "../permissions/types.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { normalizePersonality } from "../context/personality-spec-instructions.js";
@@ -31,6 +35,7 @@ import type {
 import type { PendingWorktreeState } from "./pending-worktree.js";
 import type { RunInstructionEvidence } from "../prompts/instruction-evidence.js";
 import type { SessionEditorInteraction } from "./autonomous-mode.js";
+import type { DurableTurnsConfig } from "../config/schema.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Forward-dep structural types. Keep these narrow so TurnContext can carry
@@ -163,14 +168,10 @@ export interface ToolsConfig {
   readonly unifiedExecShellMode?: unknown;
 }
 
-/** agenc runtime `ManagedFeatures`. T10 (config feature flags). */
+/** Fixed runtime feature behavior; this is not an operator config surface. */
 export interface ManagedFeatures {
-  /** Returns whether a staged feature key is enabled. */
+  /** Returns whether a built-in runtime behavior is enabled. */
   readonly enabled?: (feature: string) => boolean;
-  /** Returns whether `apps_enabled_for_auth(is_chatgpt_auth)` is true. */
-  readonly appsEnabledForAuth: (isChatgptAuth: boolean) => boolean;
-  /** Returns whether to use the compatibility Landlock path. */
-  readonly useLegacyLandlock: () => boolean;
 }
 
 /** agenc runtime `GhostSnapshotConfig`. Defer to a later tranche. */
@@ -339,14 +340,12 @@ export interface SessionConfiguration {
   readonly sandboxAllowGpu?: boolean;
   readonly collaborationMode: CollaborationMode;
   readonly personality?: Personality;
-  readonly reviewModel?: string;
   readonly modelVerbosity?: "low" | "medium" | "high";
   readonly modelReasoningSummary?: ReasoningSummary;
   readonly serviceTier?: string;
   readonly approvalsReviewer?: string;
   readonly developerInstructions?: string;
   readonly userInstructions?: string;
-  readonly compactPrompt?: string;
   readonly appServerClientName?: string;
   readonly dynamicTools: ReadonlyArray<DynamicToolSpec>;
   readonly sessionSource: SessionSource;
@@ -405,7 +404,6 @@ export interface SessionSettingsUpdate {
   readonly sandboxPolicy?: SandboxPolicy;
   readonly windowsSandboxLevel?: WindowsSandboxLevel;
   readonly collaborationMode?: CollaborationMode;
-  readonly reviewModel?: string;
   readonly modelVerbosity?: "low" | "medium" | "high";
   readonly reasoningSummary?: ReasoningSummary;
   readonly serviceTier?: string;
@@ -445,30 +443,17 @@ export type SessionSource =
   | { readonly kind: "subagent"; readonly source: SubAgentSource }
   | { kind: "unknown"; raw: string };
 
-/**
- * Stage 2 (tool-result budgeting) knobs. Ports agenc's
- * `toolResultStorage` message-level budget into the AgenC context
- * adapter phase. Thresholds default to AgenC's 2MB/40KB pair; envs
- * `AGENC_TOOL_RESULT_BUDGET_BYTES` / `AGENC_TOOL_RESULT_TRUNCATE_BYTES`
- * override at the helper boundary.
- */
-export interface ConfigToolBudget {
-  /** Hard running-total budget across all tool-role messages. */
-  readonly maxToolResultBudgetBytes?: number;
-  /** Cap applied to each over-sized tool-role message body when shedding. */
-  readonly truncateToBytes?: number;
-}
-
 /** agenc runtime `Config`. The original config blob (large). T10 lands real shape. */
 export interface Config {
   readonly model: string;
-  readonly reviewModel?: string;
   readonly modelVerbosity?: "low" | "medium" | "high";
   readonly modelReasoningEffort?: ReasoningEffort;
   readonly modelReasoningSummary?: ReasoningSummary;
   readonly serviceTier?: string;
   readonly personality?: Personality;
   readonly autonomousMode?: boolean;
+  /** Final session-scoped coordinator-mode decision from canonical config. */
+  readonly coordinatorMode?: boolean;
   readonly approvalsReviewer?: string;
   readonly cwd: string;
   readonly features: ManagedFeatures;
@@ -496,11 +481,12 @@ export interface Config {
   readonly agent_max_threads?: number;
   readonly agent_max_depth?: number;
   readonly maxTurns?: number;
+  /** Canonical per-session USD cap; checked before every sampling iteration. */
+  readonly maxBudgetUsd?: number;
+  /** Canonical durable checkpoint/resume policy captured for this session. */
+  readonly durableTurns?: DurableTurnsConfig;
   readonly experimental_realtime_start_instructions?: string;
   readonly experimental_realtime_ws_backend_prompt?: string;
-  /** Stage 2 (tool-result budgeting) thresholds. Falls back to defaults
-   *  in `applyToolResultBudgeting` when absent. */
-  readonly toolBudget?: ConfigToolBudget;
   // T10 expands further.
 }
 
@@ -587,6 +573,9 @@ export interface TurnContext {
   /** The active provider for this turn (multi-provider per provider-matrix.md). */
   readonly provider: LLMProvider;
 
+  /** Immutable provider/model/client tuple captured at turn construction. */
+  readonly providerBinding?: ProviderBinding;
+
   /** Stable provider id for rollout/cost attribution. */
   readonly modelProviderId: string;
 
@@ -625,9 +614,6 @@ export interface TurnContext {
 
   /** Developer instructions (separate from user instructions). */
   readonly developerInstructions?: string;
-
-  /** Custom compaction prompt; falls back to library default. */
-  readonly compactPrompt?: string;
 
   /** User instructions block (AGENC.md ancestor walk + @include). */
   readonly userInstructions?: string;
@@ -953,7 +939,6 @@ export function agencHome(sc: SessionConfiguration): string | undefined {
  */
 export interface ThreadConfigSnapshot {
   readonly model: string;
-  readonly reviewModel?: string;
   readonly modelVerbosity?: "low" | "medium" | "high";
   readonly serviceTier?: string;
   readonly approvalPolicy: ApprovalPolicy;
@@ -970,7 +955,6 @@ export function threadConfigSnapshot(
 ): ThreadConfigSnapshot {
   const snap: ThreadConfigSnapshot = {
     model: sc.collaborationMode.model,
-    ...(sc.reviewModel !== undefined ? { reviewModel: sc.reviewModel } : {}),
     ...(sc.modelVerbosity !== undefined
       ? { modelVerbosity: sc.modelVerbosity }
       : {}),
@@ -1017,9 +1001,6 @@ export function applySessionConfiguration(
 
   if (updates.collaborationMode !== undefined) {
     next.collaborationMode = updates.collaborationMode;
-  }
-  if (updates.reviewModel !== undefined) {
-    next.reviewModel = updates.reviewModel;
   }
   if (updates.modelVerbosity !== undefined) {
     next.modelVerbosity = updates.modelVerbosity;
@@ -1205,6 +1186,7 @@ export interface BuildTurnContextOptions {
   config: Config;
   modelInfo: ModelInfo;
   provider: LLMProvider;
+  providerBinding?: ProviderBinding;
   sessionConfiguration: SessionConfiguration;
   authManager?: AuthManager;
   environment?: Environment;
@@ -1240,6 +1222,12 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
   const skillsOutcome: SkillLoadOutcome = opts.skillsOutcome ?? {
     invokedSkills: [],
   };
+  const providerBinding =
+    opts.providerBinding ??
+    bindingFromProvider({
+      provider: opts.provider,
+      model: opts.modelInfo.slug,
+    });
 
   const turnMetadataState: TurnMetadataState = {
     conversationId: opts.conversationId,
@@ -1254,7 +1242,7 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
   // this TurnContext so nested fields (permissions, features,
   // multiAgentV2, …) cannot be mutated by any phase *and* so freezing
   // does not leak back onto the caller's live config object.
-  // `structuredClone` strips functions (e.g. `features.appsEnabledForAuth`),
+  // `structuredClone` strips functions (for example `features.enabled`),
   // so preserve non-serializable subtrees by clone-then-graft.
   const preservedFeatures = opts.config.features;
   const clonedConfig = cloneConfigForSnapshot(opts.config);
@@ -1269,8 +1257,9 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     configSnapshot: frozenConfig,
     authManager: opts.authManager,
     modelInfo: opts.modelInfo,
-    provider: opts.provider,
-    modelProviderId: opts.provider.name,
+    provider: providerBinding.instance,
+    providerBinding,
+    modelProviderId: providerBinding.provider,
     reasoningEffort,
     reasoningSummary,
     modelVerbosity: sc.modelVerbosity,
@@ -1283,7 +1272,6 @@ export function buildTurnContext(opts: BuildTurnContextOptions): TurnContext {
     appServerClientName: sc.appServerClientName,
     baseInstructions: sc.baseInstructions,
     developerInstructions: sc.developerInstructions,
-    compactPrompt: sc.compactPrompt,
     userInstructions: sc.userInstructions,
     collaborationMode: sc.collaborationMode,
     personality: sc.personality,
@@ -1339,6 +1327,7 @@ export interface SessionForTurn {
   readonly config: Config;
   readonly modelInfo: ModelInfo;
   readonly provider: LLMProvider;
+  readonly providerBinding?: ProviderBinding;
   readonly authManager?: AuthManager;
   readonly environment?: Environment;
   readonly network?: NetworkProxy;
@@ -1381,7 +1370,6 @@ export function buildPerTurnConfig(
   mutableCloned.features = sourceConfig.features;
   mutableCloned.model = session.sessionConfiguration.collaborationMode.model;
   mutableCloned.cwd = effectiveCwd;
-  mutableCloned.reviewModel = session.sessionConfiguration.reviewModel;
   mutableCloned.modelVerbosity = session.sessionConfiguration.modelVerbosity;
   mutableCloned.modelReasoningEffort =
     session.sessionConfiguration.collaborationMode.reasoningEffort;
@@ -1427,6 +1415,9 @@ export function newDefaultTurnWithSubId(
     config: perTurnConfig,
     modelInfo: session.modelInfo,
     provider: session.provider,
+    ...(session.providerBinding !== undefined
+      ? { providerBinding: session.providerBinding }
+      : {}),
     sessionConfiguration: session.sessionConfiguration,
     ...(session.authManager !== undefined
       ? { authManager: session.authManager }
@@ -1475,6 +1466,9 @@ export function newTurnWithSubId(
     config: perTurnConfig,
     modelInfo: session.modelInfo,
     provider: session.provider,
+    ...(session.providerBinding !== undefined
+      ? { providerBinding: session.providerBinding }
+      : {}),
     sessionConfiguration: session.sessionConfiguration,
     ...(session.authManager !== undefined
       ? { authManager: session.authManager }

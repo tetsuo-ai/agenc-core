@@ -22,6 +22,7 @@ import type {
   StreamProgressCallback,
 } from "../../types.js";
 import type { ProviderFactoryOptions, ProviderName } from "../../provider.js";
+import { normalizeProviderIdentity } from "../../../provider-identity.js";
 
 type ConcreteProviderName = Exclude<ProviderName, "agenc">;
 
@@ -345,12 +346,17 @@ function withoutExecutionHandle(
 }
 
 function concreteProviderName(provider: string): ConcreteProviderName {
-  const normalized =
-    provider.trim().toLowerCase() === "xai"
-      ? "grok"
-      : provider.trim().toLowerCase();
+  const normalized = normalizeProviderIdentity(
+    provider,
+    "AgenC managed provider inference",
+  );
   if (normalized === "agenc") {
     throw new Error("AgenCProvider model inference returned provider agenc");
+  }
+  if (normalized === undefined) {
+    throw new Error(
+      `AgenCProvider model inference returned an empty provider`,
+    );
   }
   if ((CONCRETE_PROVIDER_NAMES as readonly string[]).includes(normalized)) {
     return normalized as ConcreteProviderName;

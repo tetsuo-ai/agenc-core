@@ -1,102 +1,34 @@
 /**
  * Centralized plugin directory configuration.
  *
- * This module provides the single source of truth for the plugins directory path.
- * It supports switching between 'plugins' and 'cowork_plugins' directories via:
- * - CLI flag: --cowork
- * - Environment variable: AGENC_USE_COWORK_PLUGINS
- *
- * The base directory can be overridden via AGENC_PLUGIN_CACHE_DIR.
+ * This module delegates to the single plugin-directory authority. The base
+ * directory is `$AGENC_HOME/plugins` unless the session's immutable runtime
+ * options supply an explicit `pluginStorageRoot` at client ingress.
  */
 
-import { mkdirSync } from 'fs'
 import { readdir, rm, stat } from 'fs/promises'
-import { delimiter, join } from 'path'
-import { getUseCoworkPlugins } from '../../bootstrap/state.js'
+import { join } from 'path'
 import { logForDebugging } from 'src/utils/debug.js'
-import { getAgenCConfigHomeDir, isEnvTruthy } from '../envUtils.js'
 import { errorMessage, isFsInaccessible } from '../errors.js'
 import { formatFileSize } from '../format.js'
-import { expandTilde } from '../permissions/pathValidation.js'
-
-const PLUGINS_DIR = 'plugins'
-const COWORK_PLUGINS_DIR = 'cowork_plugins'
-
-/**
- * Get the plugins directory name based on current mode.
- * Uses session state (from --cowork flag) or env var.
- *
- * Priority:
- * 1. Session state (set by CLI flag --cowork)
- * 2. Environment variable AGENC_USE_COWORK_PLUGINS
- * 3. Default: 'plugins'
- */
-function getPluginsDirectoryName(): string {
-  // Session state takes precedence (set by CLI flag)
-  if (getUseCoworkPlugins()) {
-    return COWORK_PLUGINS_DIR
-  }
-  // Fall back to env var
-  if (isEnvTruthy(process.env.AGENC_USE_COWORK_PLUGINS)) {
-    return COWORK_PLUGINS_DIR
-  }
-  return PLUGINS_DIR
-}
+import {
+  getPluginDataDir as createPluginDataDir,
+  getPluginsDirectory as resolvePluginsDirectory,
+  pluginDataDirPath as resolvePluginDataDirPath,
+} from '../../plugins/directories.js'
 
 /**
  * Get the full path to the plugins directory.
  *
- * Priority:
- * 1. AGENC_PLUGIN_CACHE_DIR env var (explicit override)
- * 2. Default: ~/.agenc/plugins or ~/.agenc/cowork_plugins
+ * Priority: session runtime option, then $AGENC_HOME/plugins.
  */
 export function getPluginsDirectory(): string {
-  // expandTilde: when AGENC_PLUGIN_CACHE_DIR is set via settings.json
-  // `env` (not shell), ~ is not expanded by the shell. Without this, a value
-  // like "~/.agenc/plugins" becomes a literal `~` directory created in the
-  // cwd of every project (gh-30794 / CC-212).
-  const envOverride = process.env.AGENC_PLUGIN_CACHE_DIR
-  if (envOverride) {
-    return expandTilde(envOverride)
-  }
-  return join(getAgenCConfigHomeDir(), getPluginsDirectoryName())
-}
-
-/**
- * Get the read-only plugin seed directories, if configured.
- *
- * Customers can pre-bake a populated plugins directory into their container
- * image and point AGENC_PLUGIN_SEED_DIR at it. CC will use it as a
- * read-only fallback layer under the primary plugins directory — marketplaces
- * and plugin caches found in the seed are used in place without re-cloning.
- *
- * Multiple seed directories can be layered using the platform path delimiter
- * (':' on Unix, ';' on Windows), in PATH-like precedence order — the first
- * seed that contains a given marketplace or plugin cache wins.
- *
- * Seed structure mirrors the primary plugins directory:
- *   $AGENC_PLUGIN_SEED_DIR/
- *     known_marketplaces.json
- *     marketplaces/<name>/...
- *     cache/<marketplace>/<plugin>/<version>/...
- *
- * @returns Absolute paths to seed dirs in precedence order (empty if unset)
- */
-export function getPluginSeedDirs(): string[] {
-  // Same tilde-expansion rationale as getPluginsDirectory (gh-30794).
-  const raw = process.env.AGENC_PLUGIN_SEED_DIR
-  if (!raw) return []
-  return raw.split(delimiter).filter(Boolean).map(expandTilde)
-}
-
-function sanitizePluginId(pluginId: string): string {
-  // Same character class as the install-cache sanitizer (pluginLoader.ts)
-  return pluginId.replace(/[^a-zA-Z0-9\-_]/g, '-')
+  return resolvePluginsDirectory()
 }
 
 /** Pure path — no mkdir. For display (e.g. uninstall dialog). */
 export function pluginDataDirPath(pluginId: string): string {
-  return join(getPluginsDirectory(), 'data', sanitizePluginId(pluginId))
+  return resolvePluginDataDirPath(pluginId)
 }
 
 /**
@@ -117,9 +49,7 @@ export function pluginDataDirPath(pluginId: string): string {
  * and their sync iteration loops. One mkdir in plugin-load path is cheap.
  */
 export function getPluginDataDir(pluginId: string): string {
-  const dir = pluginDataDirPath(pluginId)
-  mkdirSync(dir, { recursive: true })
-  return dir
+  return createPluginDataDir(pluginId)
 }
 
 /**

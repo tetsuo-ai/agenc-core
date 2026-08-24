@@ -5,6 +5,7 @@ import { describe, expect, test, vi } from "vitest";
 
 import { defaultConfig } from "../config/schema.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
+import { RemoteAuthBackend } from "../auth/backends/remote.js";
 import { MAX_ONBOARDING_INPUT_LENGTH } from "./inputPaste.js";
 import { hashPastedText, retrievePastedText } from "./pasteStore.js";
 
@@ -46,6 +47,39 @@ function withTempDir<T>(prefix: string, run: (path: string) => T): T {
     return run(path);
   } finally {
     rmSync(path, { recursive: true, force: true });
+  }
+}
+
+async function withRemoteAuthSession<T>(
+  prefix: string,
+  subscriptionTier: "free" | "pro",
+  run: (fixture: {
+    readonly agencHome: string;
+    readonly env: Readonly<{ AGENC_HOME: string }>;
+  }) => T | Promise<T>,
+): Promise<T> {
+  const agencHome = mkdtempSync(join(tmpdir(), prefix));
+  const env = Object.freeze({ AGENC_HOME: agencHome });
+  const backend = new RemoteAuthBackend({
+    agencHome,
+    env,
+    loginFlow: () => ({
+      token: "remote-session-token",
+      subscriptionTier,
+    }),
+    now: () => new Date("2026-08-24T00:00:00.000Z"),
+  });
+  let signedIn = false;
+  try {
+    await backend.login();
+    signedIn = true;
+    return await run({ agencHome, env });
+  } finally {
+    try {
+      if (signedIn) await backend.logout();
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
   }
 }
 
@@ -148,7 +182,7 @@ describe("first-run onboarding wizard", () => {
     expect(state.currentStepId).toBe("theme");
 
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
-    expect(state.selectedTheme).toBe("dark");
+    expect(state.selectedTheme).toBe("auto");
     expect(state.currentStepId).toBe("provider");
 
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
@@ -399,168 +433,138 @@ describe("first-run onboarding wizard", () => {
   });
 
   test("treats signed-in remote auth as managed provider readiness", async () => {
-    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-remote-auth-"));
-    try {
-      writeFileSync(
-        join(agencHome, "auth.json"),
-        JSON.stringify({
-          version: 1,
-          provider: "remote",
-          token: "remote-session-token",
-          subscriptionTier: "pro",
-          createdAt: "2026-01-01T00:00:00.000Z",
-        }),
-      );
-
-      await expect(
-        checkOnboardingProviderConnection(
-          {
-            config: defaultConfig(),
-            env: { AGENC_HOME: agencHome },
-          },
-          "openrouter",
-          "x-ai/grok-4.3",
-        ),
-      ).resolves.toMatchObject({
-        ok: true,
-        status: "ready",
-        detail: "AgenC Pro is signed in. Hosted OpenRouter model access is ready.",
-      });
-    } finally {
-      rmSync(agencHome, { recursive: true, force: true });
-    }
+    await withRemoteAuthSession(
+      "agenc-onboarding-remote-auth-",
+      "pro",
+      async ({ env }) => {
+        await expect(
+          checkOnboardingProviderConnection(
+            {
+              config: defaultConfig(),
+              env,
+            },
+            "openrouter",
+            "x-ai/grok-4.3",
+          ),
+        ).resolves.toMatchObject({
+          ok: true,
+          status: "ready",
+          detail:
+            "AgenC Pro is signed in. Hosted OpenRouter model access is ready.",
+        });
+      },
+    );
   });
 
-  test("starts Pro signed-in users on hosted OpenRouter instead of direct Grok", () => {
-    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-pro-default-"));
-    try {
-      writeFileSync(
-        join(agencHome, "auth.json"),
-        JSON.stringify({
-          version: 1,
-          provider: "remote",
-          token: "remote-session-token",
-          subscriptionTier: "pro",
-          createdAt: "2026-01-01T00:00:00.000Z",
-        }),
-      );
+  test("starts Pro signed-in users on hosted OpenRouter instead of direct Grok", async () => {
+    await withRemoteAuthSession(
+      "agenc-onboarding-pro-default-",
+      "pro",
+      ({ env }) => {
+        const context = {
+          config: defaultConfig(),
+          env,
+        };
+        const state = createInitialFirstRunOnboardingState(context);
 
-      const context = {
-        config: defaultConfig(),
-        env: { AGENC_HOME: agencHome },
-      };
-      const state = createInitialFirstRunOnboardingState(context);
-
-      expect(state.selectedProvider).toBe("openrouter");
-      expect(state.selectedModel).toBe("x-ai/grok-4.5");
-      expect(detailLinesForStep({ ...state, currentStepId: "provider" }, context)[0]).toBe(
-        "1. openrouter (current)",
-      );
-      expect(
-        detailLinesForStep(
-          { ...state, currentStepId: "api-key" },
-          context,
-        ).join("\n"),
-      ).toContain(
-        "Sign in or create an AgenC account — use hosted models",
-      );
-    } finally {
-      rmSync(agencHome, { recursive: true, force: true });
-    }
+        expect(state.selectedProvider).toBe("openrouter");
+        expect(state.selectedModel).toBe("x-ai/grok-4.5");
+        expect(
+          detailLinesForStep(
+            { ...state, currentStepId: "provider" },
+            context,
+          )[0],
+        ).toBe("1. openrouter (current)");
+        expect(
+          detailLinesForStep(
+            { ...state, currentStepId: "api-key" },
+            context,
+          ).join("\n"),
+        ).toContain(
+          "Sign in or create an AgenC account — use hosted models",
+        );
+      },
+    );
   });
 
   test("requires BYOK during onboarding when remote auth is free", async () => {
-    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-free-auth-"));
-    try {
-      writeFileSync(
-        join(agencHome, "auth.json"),
-        JSON.stringify({
-          version: 1,
-          provider: "remote",
-          token: "remote-session-token",
-          subscriptionTier: "free",
-          createdAt: "2026-01-01T00:00:00.000Z",
-        }),
-      );
-
-      const context = {
-        config: defaultConfig(),
-        env: { AGENC_HOME: agencHome },
-      };
-      await expect(
-        checkOnboardingProviderConnection(
-          context,
-          "openrouter",
-          "x-ai/grok-4.3",
-        ),
-      ).resolves.toMatchObject({
-        ok: false,
-        status: "needs-key",
-        keyEnvVar: "OPENROUTER_API_KEY",
-        canSkip: false,
-      });
-
-      const state = {
-        ...createInitialFirstRunOnboardingState(context),
-        currentStepId: "api-key" as const,
-        selectedProvider: "openrouter" as const,
-        selectedModel: "x-ai/grok-4.3",
-        connection: {
-          provider: "openrouter",
-          model: "x-ai/grok-4.3",
-          status: "needs-key" as const,
+    await withRemoteAuthSession(
+      "agenc-onboarding-free-auth-",
+      "free",
+      async ({ env }) => {
+        const context = {
+          config: defaultConfig(),
+          env,
+        };
+        await expect(
+          checkOnboardingProviderConnection(
+            context,
+            "openrouter",
+            "x-ai/grok-4.3",
+          ),
+        ).resolves.toMatchObject({
           ok: false,
-          detail: "AgenC account is signed in on the free plan.",
+          status: "needs-key",
           keyEnvVar: "OPENROUTER_API_KEY",
           canSkip: false,
-        },
-      };
+        });
 
-      const result = await submitFirstRunOnboardingInput(state, "next", context);
+        const state = {
+          ...createInitialFirstRunOnboardingState(context),
+          currentStepId: "api-key" as const,
+          selectedProvider: "openrouter" as const,
+          selectedModel: "x-ai/grok-4.3",
+          connection: {
+            provider: "openrouter",
+            model: "x-ai/grok-4.3",
+            status: "needs-key" as const,
+            ok: false,
+            detail: "AgenC account is signed in on the free plan.",
+            keyEnvVar: "OPENROUTER_API_KEY",
+            canSkip: false,
+          },
+        };
 
-      expect(result.completed).toBe(false);
-      expect(result.state.currentStepId).toBe("api-key");
-      expect(result.state.error).toContain("OPENROUTER_API_KEY is required");
-    } finally {
-      rmSync(agencHome, { recursive: true, force: true });
-    }
+        const result = await submitFirstRunOnboardingInput(
+          state,
+          "next",
+          context,
+        );
+
+        expect(result.completed).toBe(false);
+        expect(result.state.currentStepId).toBe("api-key");
+        expect(result.state.error).toContain("OPENROUTER_API_KEY is required");
+      },
+    );
   });
 
   test("recognizes a signed-in free account's hosted free model as ready", async () => {
-    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-free-ready-"));
-    try {
-      writeFileSync(
-        join(agencHome, "auth.json"),
-        JSON.stringify({
-          version: 1,
-          provider: "remote",
-          token: "remote-session-token",
-          subscriptionTier: "free",
-          createdAt: "2026-01-01T00:00:00.000Z",
-        }),
-      );
-      const context = {
-        config: defaultConfig(),
-        env: { AGENC_HOME: agencHome },
-      };
-      const state = createInitialFirstRunOnboardingState(context);
+    await withRemoteAuthSession(
+      "agenc-onboarding-free-ready-",
+      "free",
+      async ({ env }) => {
+        const context = {
+          config: defaultConfig(),
+          env,
+        };
+        const state = createInitialFirstRunOnboardingState(context);
 
-      expect(state.selectedProvider).toBe("openrouter");
-      expect(state.selectedModel).toMatch(/:free$/);
-      await expect(
-        checkOnboardingProviderConnection(
-          context,
-          state.selectedProvider,
-          state.selectedModel,
-        ),
-      ).resolves.toMatchObject({
-        ok: true,
-        status: "ready",
-        detail: "AgenC account is signed in. Free hosted model access is ready.",
-      });
-    } finally {
-      rmSync(agencHome, { recursive: true, force: true });
-    }
+        expect(state.selectedProvider).toBe("openrouter");
+        expect(state.selectedModel).toMatch(/:free$/);
+        await expect(
+          checkOnboardingProviderConnection(
+            context,
+            state.selectedProvider,
+            state.selectedModel,
+          ),
+        ).resolves.toMatchObject({
+          ok: true,
+          status: "ready",
+          detail:
+            "AgenC account is signed in. Free hosted model access is ready.",
+        });
+      },
+    );
   });
 
   test("describes verified provider credentials without asking users to add them later", () => {
@@ -593,7 +597,7 @@ describe("first-run onboarding wizard", () => {
     expect(lines.join("\n")).not.toContain("add it later");
   });
 
-  test("makes --yolo permission and sandbox behavior explicit", () => {
+  test("makes --dangerously-bypass-approvals-and-sandbox permission and sandbox behavior explicit", () => {
     const config = defaultConfig();
     const context = {
       config,
@@ -610,14 +614,14 @@ describe("first-run onboarding wizard", () => {
     const lines = detailLinesForStep(state, context);
 
     expect(lines).toContain(
-      "Permission mode: bypassPermissions (--yolo skips tool approval prompts).",
+      "Permission mode: bypassPermissions (--dangerously-bypass-approvals-and-sandbox skips tool approval prompts).",
     );
     expect(lines).toContain(
-      "Sandbox: danger-full-access (--yolo disables workspace sandboxing for this session).",
+      "Sandbox: danger-full-access (--dangerously-bypass-approvals-and-sandbox disables workspace sandboxing for this session).",
     );
     expect(lines.join("\n")).not.toContain("Sandbox: workspace-write");
     expect(lines).toContain(
-      "Press Enter to continue with --yolo, or restart without --yolo for prompts and sandboxing.",
+      "Press Enter to continue with --dangerously-bypass-approvals-and-sandbox, or restart without --dangerously-bypass-approvals-and-sandbox for prompts and sandboxing.",
     );
   });
 
@@ -1301,12 +1305,16 @@ describe("first-magic wiring contract (O-1b)", () => {
 
 describe("wizard theme mapping", () => {
   test("maps wizard choices to config ThemeSettings the provider consumes", () => {
-    // The theme step's choice must reach the live theme engine: "system" is
-    // the wizard's word for the engine's "auto"; unknown values no-op so a
+    // The wizard and engine share one vocabulary; unknown values no-op so a
     // stale onboarding state can never corrupt the configured theme.
+    expect(wizardThemeToSetting("auto")).toBe("auto");
     expect(wizardThemeToSetting("dark")).toBe("dark");
     expect(wizardThemeToSetting("light")).toBe("light");
-    expect(wizardThemeToSetting("system")).toBe("auto");
+    expect(wizardThemeToSetting("light-daltonized")).toBe("light-daltonized");
+    expect(wizardThemeToSetting("dark-daltonized")).toBe("dark-daltonized");
+    expect(wizardThemeToSetting("light-ansi")).toBe("light-ansi");
+    expect(wizardThemeToSetting("dark-ansi")).toBe("dark-ansi");
+    expect(wizardThemeToSetting("system")).toBeUndefined();
     expect(wizardThemeToSetting("neon")).toBeUndefined();
     expect(wizardThemeToSetting("")).toBeUndefined();
   });
@@ -1323,12 +1331,12 @@ describe("theme step terminal-background awareness", () => {
     setCachedSystemTheme("dark");
     const darkLines = detailLinesForStep(state, context).join("\n");
     expect(darkLines).toContain("your terminal background looks dark");
-    expect(darkLines).toContain('"dark" or "system" will read best');
+    expect(darkLines).toContain('"dark" or "auto" will read best');
 
     setCachedSystemTheme("light");
     const lightLines = detailLinesForStep(state, context).join("\n");
     expect(lightLines).toContain("your terminal background looks light");
-    expect(lightLines).toContain('"light" or "system" will read best');
+    expect(lightLines).toContain('"light" or "auto" will read best');
   });
 });
 

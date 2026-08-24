@@ -264,7 +264,7 @@ function createInProcessCanUseTool(
                 onAbortListener,
               )
               reportPermissionWait()
-              persistPermissionUpdates(permissionUpdates)
+              await persistPermissionUpdates(permissionUpdates)
               // Write back permission updates to the leader's shared context
               if (permissionUpdates.length > 0) {
                 const setToolPermissionContext =
@@ -362,7 +362,12 @@ function createInProcessCanUseTool(
           contentBlocks?: ContentBlockParam[],
         ) {
           cleanup()
-          persistPermissionUpdates(permissionUpdates)
+          void persistPermissionUpdates(permissionUpdates).catch(error => {
+            logForDebugging(
+              `Failed to persist teammate permission updates: ${String(error)}`,
+              { level: 'error' },
+            )
+          })
           const finalInput =
             updatedInput && Object.keys(updatedInput).length > 0
               ? updatedInput
@@ -912,10 +917,17 @@ function createTeammateRolloutOwner(params: {
     .replace(/[^A-Za-z0-9_-]/gu, '-')
     .slice(0, TEAMMATE_ROLLOUT_NAME_PREFIX_LENGTH)
   const sessionId = `teammate-${teammateName}-${randomUUID()}`
+  const agencHome = params.parentSession.services.configStore?.homeContext.path
+  if (agencHome === undefined) {
+    throw new Error(
+      'in-process teammate rollout requires canonical ConfigStore home authority',
+    )
+  }
   const store = new RolloutStore({
     cwd: params.cwd,
     sessionId,
     agencVersion: VERSION,
+    agencHome,
   })
   store.open({
     sessionId,
@@ -1505,7 +1517,6 @@ export async function runInProcessTeammate(
             availableTools: toolUseContext.options.tools,
             allowedTools,
             contentReplacementState: teammateReplacementState,
-            agentName: identity.agentName,
           })) {
             // Check lifecycle abort first (kills whole teammate)
             if (abortController.signal.aborted) {

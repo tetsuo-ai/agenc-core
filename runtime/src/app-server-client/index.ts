@@ -6,6 +6,7 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { resolve as resolvePath } from "node:path";
 import { cwd as processCwd } from "node:process";
 import {
   collectDaemonClientEnvOverrides,
@@ -24,9 +25,20 @@ import type {
   MessageContentBlock,
 } from "../app-server/protocol/index.js";
 import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
+import { sessionConfigurationFromAgenCConfig } from "../session/configuration.js";
+import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+  type AgentRuntimeOptions,
+} from "../session/runtime-options.js";
 import { resolveAgencHome } from "../config/env.js";
 import { ConfigStore } from "../config/store.js";
-import { resolveStartupSelection } from "../bin/startup-selection.js";
+import {
+  resolveCanonicalStartupSelection,
+  resolvedStartupProfileName,
+  startupConfigLayerOptions,
+  type StartupCliFlags,
+} from "../bin/startup-selection.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {
@@ -46,6 +58,7 @@ import type {
   AgenCBridgeSession,
   ConfigStoreLike,
 } from "../tui/session-types.js";
+import { snapshotProviderEnvironment } from "../llm/provider-options.js";
 
 export {
   collectDaemonClientEnvOverrides,
@@ -60,10 +73,12 @@ export {
 export interface AgenCDaemonPromptAgentOptions {
   readonly prompt: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly runtimeOptions?: AgentRuntimeOptions;
   readonly cwd?: string;
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  readonly configPath?: string;
   readonly initialContent?: string | readonly MessageContentBlock[];
   readonly deferInitialTurn?: boolean;
   readonly initialDisplayUserMessage?: string | null;
@@ -97,10 +112,12 @@ export interface ResumeAgenCDaemonPromptAgentOptions {
     readonly cwdIno: string;
   };
   readonly env?: NodeJS.ProcessEnv;
+  readonly runtimeOptions?: AgentRuntimeOptions;
   readonly cwd?: string;
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  readonly configPath?: string;
   readonly permissionMode?:
     | "default"
     | "plan"
@@ -118,16 +135,23 @@ export async function startAgenCDaemonPromptAgent(
     throw new Error("daemon prompt startup requires non-empty input");
   }
   const env = options.env ?? process.env;
+  const runtimeOptions =
+    options.runtimeOptions ?? resolveAgentRuntimeOptions(env);
   await defaultEnsureDaemonReady(env)();
   const client = createAgenCJsonLineDaemonClient({ env });
   const envOverrides = collectDaemonClientEnvOverrides(env);
+  const cwd = options.cwd ?? processCwd();
   return client.createAgent({
     objective: prompt,
     instructions: prompt,
-    cwd: options.cwd ?? processCwd(),
+    cwd,
+    runtimeOptions,
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.provider !== undefined ? { provider: options.provider } : {}),
     ...(options.profile !== undefined ? { profile: options.profile } : {}),
+    ...(options.configPath !== undefined
+      ? { configPath: resolvePath(cwd, options.configPath) }
+      : {}),
     ...(options.initialContent !== undefined
       ? { initialContent: options.initialContent }
       : {}),
@@ -164,17 +188,24 @@ export async function resumeAgenCDaemonPromptAgent(
     throw new Error("daemon prompt resume requires a non-empty session id");
   }
   const env = options.env ?? process.env;
+  const runtimeOptions =
+    options.runtimeOptions ?? resolveAgentRuntimeOptions(env);
   await defaultEnsureDaemonReady(env)();
   const client = createAgenCJsonLineDaemonClient({ env });
   const envOverrides = collectDaemonClientEnvOverrides(env);
+  const cwd = options.cwd ?? processCwd();
   return client.createAgent({
     resumeSessionId: sessionId,
     resumeRolloutPath: options.rolloutPath,
     resumeSourceProof: options.sourceProof,
-    cwd: options.cwd ?? processCwd(),
+    cwd,
+    runtimeOptions,
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.provider !== undefined ? { provider: options.provider } : {}),
     ...(options.profile !== undefined ? { profile: options.profile } : {}),
+    ...(options.configPath !== undefined
+      ? { configPath: resolvePath(cwd, options.configPath) }
+      : {}),
     ...(options.permissionMode !== undefined
       ? { permissionMode: options.permissionMode }
       : {}),
@@ -283,6 +314,7 @@ function isPersistedAgentWithoutRuntime(agent: AgentSummary): boolean {
 
 export interface AgenCDaemonOnlyTuiContextOptions {
   readonly env?: NodeJS.ProcessEnv;
+  readonly runtimeOptions?: AgentRuntimeOptions;
   readonly cwd: string;
   readonly conversationId: string;
   /** Immutable daemon-owned role authority, separate from execution cwd. */
@@ -290,10 +322,12 @@ export interface AgenCDaemonOnlyTuiContextOptions {
   readonly model?: string;
   readonly provider?: string;
   readonly profile?: string;
+  readonly configPath?: string;
   /**
    * Initial permission mode for the bridge session's PermissionModeRegistry.
-   * Forwarded from the CLI when `--yolo` (or its deprecated aliases) was on
-   * argv so `/permissions`, `/status`, and the footer chip surface the real
+   * Forwarded from the CLI when
+   * `--dangerously-bypass-approvals-and-sandbox` was on argv so
+   * `/permissions`, `/status`, and the footer chip surface the real
    * runtime authority instead of always claiming `default`.
    */
   readonly permissionMode?:
@@ -313,43 +347,49 @@ export interface AgenCDaemonOnlyTuiContext {
   close(): Promise<void>;
 }
 
-export async function createAgenCDaemonOnlyTuiContext(
+export function createAgenCDaemonOnlyTuiContext(
   options: AgenCDaemonOnlyTuiContextOptions,
 ): Promise<AgenCDaemonOnlyTuiContext> {
   const env = options.env ?? process.env;
+  const runtimeOptions =
+    options.runtimeOptions ?? resolveAgentRuntimeOptions(env);
+  return runWithAgentRuntimeOptions(runtimeOptions, () =>
+    createBoundAgenCDaemonOnlyTuiContext(options, env, runtimeOptions),
+  );
+}
+
+async function createBoundAgenCDaemonOnlyTuiContext(
+  options: AgenCDaemonOnlyTuiContextOptions,
+  env: NodeJS.ProcessEnv,
+  runtimeOptions: AgentRuntimeOptions,
+): Promise<AgenCDaemonOnlyTuiContext> {
+  const providerEnvironment = snapshotProviderEnvironment(env);
   const roleWorkspace = options.roleWorkspace
     ? normalizeAgentRoleWorkspace(options.roleWorkspace)
     : createAgentRoleWorkspace(options.cwd);
   const agencHome = resolveAgencHome(env);
+  const cli: StartupCliFlags = Object.freeze({
+    ...(options.provider !== undefined ? { provider: options.provider } : {}),
+    ...(options.model !== undefined ? { model: options.model } : {}),
+    ...(options.profile !== undefined ? { profile: options.profile } : {}),
+    ...(options.configPath !== undefined
+      ? { configPath: options.configPath }
+      : {}),
+  });
   const configStore = new ConfigStore({
     home: agencHome,
     env,
+    cwd: roleWorkspace.cwd,
+    ...startupConfigLayerOptions({ cli, env, cwd: roleWorkspace.cwd }),
     onWarn: (message) => process.stderr.write(`${message}\n`),
   });
-  const config = await configStore.reload();
-  const startupArgv = [
-    "node",
-    "agenc",
-    ...(options.provider !== undefined ? ["--provider", options.provider] : []),
-    ...(options.model !== undefined ? ["--model", options.model] : []),
-    ...(options.profile !== undefined ? ["--profile", options.profile] : []),
-  ];
-  const startup = resolveStartupSelection({
-    config,
+  const effectiveConfig = await configStore.reload();
+  const profileName = resolvedStartupProfileName(cli, env);
+  const startup = resolveCanonicalStartupSelection({
+    config: effectiveConfig,
     env,
-    argv: startupArgv,
+    ...(profileName !== undefined ? { profileName } : {}),
   });
-  const effectiveConfig = {
-    ...startup.config,
-    model: startup.model,
-    model_provider: startup.provider,
-  };
-  const configStoreLike: ConfigStoreLike = {
-    agencHome,
-    current: () => effectiveConfig,
-    subscribe: (listener) => configStore.subscribe(listener),
-    warnings: () => configStore.warnings(),
-  };
   const skillsServices = createLocalSkillsServices({
     agencHome,
     workspaceRoot: roleWorkspace.cwd,
@@ -380,8 +420,8 @@ export async function createAgenCDaemonOnlyTuiContext(
     env,
     {
       cwd: options.cwd,
-      includeProjectMcpServers: options.permissionMode === "bypassPermissions",
       sandboxExecutionBroker,
+      environment: providerEnvironment,
     },
   );
   await mcpRuntimeManager.start();
@@ -390,9 +430,16 @@ export async function createAgenCDaemonOnlyTuiContext(
   const abortController = new AbortController();
   let nextEventId = 0;
   const sessionConfiguration = {
-    cwd: options.cwd,
+    ...sessionConfigurationFromAgenCConfig({
+      config: effectiveConfig,
+      workspaceRoot: options.cwd,
+      provider: startup.provider,
+      model: startup.model,
+      dangerouslyBypassApprovalsAndSandbox:
+        options.permissionMode === "bypassPermissions",
+    }),
+    // The bridge exposes provider identity, not an in-process LLMProvider.
     provider: { slug: startup.provider },
-    collaborationMode: { model: startup.model },
   };
   const session: AgenCBridgeSession = {
     conversationId: options.conversationId,
@@ -402,6 +449,8 @@ export async function createAgenCDaemonOnlyTuiContext(
     home: agencHome,
     sessionConfiguration,
     services: {
+      runtimeOptions,
+      providerEnvironment,
       permissionModeRegistry: new PermissionModeRegistry(
         createEmptyToolPermissionContext({
           mode: options.permissionMode ?? "default",
@@ -438,7 +487,7 @@ export async function createAgenCDaemonOnlyTuiContext(
     listMcpTools: () => mcpService.getTools?.() ?? [],
   };
   return {
-    configStore: configStoreLike,
+    configStore,
     baseSession: session,
     model: startup.model,
     workspaceRoot: options.cwd,

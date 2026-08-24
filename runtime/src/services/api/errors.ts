@@ -26,13 +26,16 @@ import {
   isNonCustomOpusModel,
 } from '../../utils/model/model.js'
 import { getModelStrings } from '../../utils/model/modelStrings.js'
-import { getAPIProvider } from 'src/utils/model/providers.js'
+import {
+  getAPIProvider,
+  getSelectedProviderEnvironment,
+  getSelectedProviderName,
+} from 'src/utils/model/providers.js'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import {
   API_PDF_MAX_PAGES,
   PDF_TARGET_RAW_SIZE,
 } from '../../constants/apiLimits.js'
-import { isEnvTruthy } from '../../utils/envUtils.js'
 import { formatFileSize } from '../../utils/format.js'
 import { ImageResizeError } from '../../utils/imageResizer.js'
 import { ImageSizeError } from '../../utils/imageValidation.js'
@@ -47,6 +50,12 @@ import {
   extractOpenAiCategoryMarker,
   type OpenAiCompatibilityFailureCategory,
 } from './openaiErrorClassification.js'
+import { resolveSecureStorageHome } from '../../utils/secureStorage/home.js'
+import { isSessionRemoteMode } from '../../session/runtime-options.js'
+
+function credentialHome() {
+  return resolveSecureStorageHome()
+}
 export const API_ERROR_MESSAGE_PREFIX = 'API Error'
 const DEFAULT_FEEDBACK_CHANNEL =
   'https://github.com/tetsuo-ai/agenc-core/issues'
@@ -309,7 +318,7 @@ function getOauthOrgNotAllowedErrorMessage(): string {
  * not via /login. Transient auth errors should suggest retrying, not logging in.
  */
 function isCCRMode(): boolean {
-  return isEnvTruthy(process.env.AGENC_REMOTE)
+  return isSessionRemoteMode()
 }
 
 export function getAssistantMessageFromError(
@@ -371,7 +380,7 @@ export function getAssistantMessageFromError(
   if (
     error instanceof APIError &&
     error.status === 429 &&
-    shouldProcessRateLimits(isAgenCAISubscriber())
+    shouldProcessRateLimits(isAgenCAISubscriber(credentialHome()))
   ) {
     // Check if this is the new API with multiple rate limit headers
     const rateLimitType = error.headers?.get?.(
@@ -622,7 +631,7 @@ export function getAssistantMessageFromError(
 
   // Check for invalid model name error for subscription users trying to use Opus
   if (
-    isAgenCAISubscriber() &&
+    isAgenCAISubscriber(credentialHome()) &&
     error instanceof APIError &&
     error.status === 400 &&
     error.message.toLowerCase().includes('invalid model name') &&
@@ -639,14 +648,13 @@ export function getAssistantMessageFromError(
   // defaulting to a custom internal-only model for Ants, and there might be
   // Ants using new or unknown org IDs that haven't been gated in.
   if (
-    process.env.USER_TYPE === 'ant' &&
-    !process.env.ANTHROPIC_MODEL &&
+    getSelectedProviderEnvironment().USER_TYPE === 'ant' &&
     error instanceof Error &&
     error.message.toLowerCase().includes('invalid model name')
   ) {
     // Get organization ID from config - only use OAuth account data when actively using OAuth
-    const orgId = getOauthAccountInfo()?.organizationUuid
-    const baseMsg = `[internal] Your org isn't gated into the \`${model}\` model. Either run \`agenc\` with \`ANTHROPIC_MODEL=${getDefaultMainLoopModelSetting()}\``
+    const orgId = getOauthAccountInfo(credentialHome())?.organizationUuid
+    const baseMsg = `[internal] Your org isn't gated into the \`${model}\` model. Either run \`agenc --model ${getDefaultMainLoopModelSetting()}\``
     const msg = orgId
       ? `${baseMsg} or share your orgId (${orgId}) in ${getFeedbackChannel()} for help getting access.`
       : `${baseMsg} or reach out in ${getFeedbackChannel()} for help getting access.`
@@ -668,13 +676,14 @@ export function getAssistantMessageFromError(
   }
   // "Organization has been disabled" — commonly a stale ANTHROPIC_API_KEY
   // from a previous employer/project overriding subscription auth. Only handle
-  // the env-var case; apiKeyHelper and /login-managed keys mean the active
+  // the env-var case; /login-managed keys mean the active
   // auth's org is genuinely disabled with no dormant fallback to point at.
   if (
     error instanceof APIError &&
     error.status === 400 &&
     error.message.toLowerCase().includes('organization has been disabled')
   ) {
+    const providerEnvironment = getSelectedProviderEnvironment()
     const { source } = getproviderApiKeyWithSource()
     // getproviderApiKeyWithSource conflates the env var with FD-passed keys
     // under the same source value, and in CCR mode OAuth stays active despite
@@ -682,10 +691,14 @@ export function getAssistantMessageFromError(
     // actually set and actually on the wire.
     if (
       source === 'ANTHROPIC_API_KEY' &&
-      process.env.ANTHROPIC_API_KEY &&
-      !isAgenCAISubscriber()
+      providerEnvironment.ANTHROPIC_API_KEY &&
+      !isAgenCAISubscriber(credentialHome())
     ) {
-      const hasStoredOAuth = getAgenCAIOAuthTokens()?.accessToken != null
+      const hasStoredOAuth =
+        getAgenCAIOAuthTokens(
+          credentialHome(),
+          providerEnvironment,
+        )?.accessToken != null
       // Not 'authentication_failed' — that triggers VS Code's showLogin(), but
       // login can't fix this (approved env var keeps overriding OAuth). The fix
       // is configuration-based (unset the var), so invalid_request is correct.
@@ -713,8 +726,7 @@ export function getAssistantMessageFromError(
 
     // Check if the API key is from an external source
     const { source } = getproviderApiKeyWithSource()
-    const isExternalSource =
-      source === 'ANTHROPIC_API_KEY' || source === 'apiKeyHelper'
+    const isExternalSource = source === 'ANTHROPIC_API_KEY'
 
     return createAssistantAPIErrorMessage({
       error: 'authentication_failed',
@@ -774,7 +786,7 @@ export function getAssistantMessageFromError(
   // Bedrock errors like "403 You don't have access to the model with the specified model ID."
   // don't contain the actual model ID
   if (
-    isEnvTruthy(process.env.AGENC_USE_BEDROCK) &&
+    getSelectedProviderName() === 'amazon-bedrock' &&
     error instanceof Error &&
     error.message.toLowerCase().includes('model id')
   ) {
@@ -1047,7 +1059,7 @@ export function classifyAPIError(error: unknown): string {
 
   // Bedrock-specific errors
   if (
-    isEnvTruthy(process.env.AGENC_USE_BEDROCK) &&
+    getSelectedProviderName() === 'amazon-bedrock' &&
     error instanceof Error &&
     error.message.toLowerCase().includes('model id')
   ) {

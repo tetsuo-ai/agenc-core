@@ -48,10 +48,6 @@ import {
   LLMServerError,
   LLMTimeoutError,
 } from "../llm/errors.js";
-import {
-  withCompactContextGuards,
-  type CompactGuardEnv,
-} from "./compact-env-guard.js";
 import type {
   LLMContentPart,
   LLMMessage,
@@ -70,6 +66,7 @@ import {
   usesLocalToolProfile,
 } from "../llm/wire/capability-gating.js";
 import type { QueuedCommand } from "../types/textInputTypes.js";
+import { getSelectedProviderEnvironment } from "../utils/model/providers.js";
 import { safeStringify } from "../tools/types.js";
 import {
   classifyUntrustedToolResult,
@@ -500,19 +497,17 @@ async function runAgenCAutoCompact(params: {
       toolUseContext,
       forkContextMessages: messages,
     };
-    const result = await withCompactContextGuards(async () => {
-      const { autoCompactIfNeeded } =
-        await import("../services/compact/autoCompact.js");
-      return autoCompactIfNeeded(
-        messages,
-        toolUseContext,
-        cacheSafeParams,
-        params.querySource,
-        state.autoCompactTracking,
-        state.snipTokensFreed ?? 0,
-        { force: params.force === true },
-      );
-    }, envForToolUseContext(toolUseContext));
+    const { autoCompactIfNeeded } =
+      await import("../services/compact/autoCompact.js");
+    const result = await autoCompactIfNeeded(
+      messages,
+      toolUseContext,
+      cacheSafeParams,
+      params.querySource,
+      state.autoCompactTracking,
+      state.snipTokensFreed ?? 0,
+      { force: params.force === true },
+    );
     if (!result.wasCompacted || !result.compactionResult) {
       return compactionNotRun(result.consecutiveFailures);
     }
@@ -623,37 +618,34 @@ async function prepareAgenCQueryMessages(params: {
   readonly committed: boolean;
 }> {
   try {
-    const result = await withCompactContextGuards(async () => {
-      let messages = toAgenCRuntimeMessages(params.messages);
-      const budgeted = await applyToolResultBudget(
-        messages,
-        params.contentReplacementState,
-        {
-          limitChars: resolveToolResultBudgetChars(
-            params.toolUseContext.options.contextWindowTokens,
-          ),
-          persist: persistOversizedToolResult,
-        },
-      );
-      messages = budgeted.messages as AgenCRuntimeMessage[];
-      const { microcompactMessages } =
-        await import("../services/compact/microCompact.js");
-      const microcompactResult = await microcompactMessages(
-        messages,
-        params.toolUseContext,
-        params.querySource,
-      );
-      messages = microcompactResult.messages as AgenCRuntimeMessage[];
-      const committed = false;
-      return {
-        messages: truncateToolResultsToFit(
-          fromAgenCRuntimeMessages(messages),
+    let messages = toAgenCRuntimeMessages(params.messages);
+    const budgeted = await applyToolResultBudget(
+      messages,
+      params.contentReplacementState,
+      {
+        limitChars: resolveToolResultBudgetChars(
           params.toolUseContext.options.contextWindowTokens,
         ),
-        snipTokensFreed: 0,
-        committed,
-      };
-    }, envForToolUseContext(params.toolUseContext));
+        persist: persistOversizedToolResult,
+      },
+    );
+    messages = budgeted.messages as AgenCRuntimeMessage[];
+    const { microcompactMessages } =
+      await import("../services/compact/microCompact.js");
+    const microcompactResult = await microcompactMessages(
+      messages,
+      params.toolUseContext,
+      params.querySource,
+    );
+    messages = microcompactResult.messages as AgenCRuntimeMessage[];
+    const result = {
+      messages: truncateToolResultsToFit(
+        fromAgenCRuntimeMessages(messages),
+        params.toolUseContext.options.contextWindowTokens,
+      ),
+      snipTokensFreed: 0,
+      committed: false,
+    };
     return {
       messages: result.messages,
       snipTokensFreed: result.snipTokensFreed,
@@ -788,21 +780,15 @@ async function persistOversizedToolResult(
 
 async function toAgenCCompactionResult(
   result: AgenCCompactionResult,
-  toolUseContext?: AgenCToolUseContext,
 ): Promise<NonNullable<AgenCAutoCompactResult["compactionResult"]>> {
   let replacementHistory: LLMMessage[];
   try {
-    replacementHistory = await withCompactContextGuards(
-      async () => {
-        const { buildPostCompactMessages } =
-          await import("../services/compact/compact.js");
-        return fromAgenCRuntimeMessages(
-          buildPostCompactMessages(
-            toCompactServiceResult(result),
-          ) as AgenCRuntimeMessage[],
-        );
-      },
-      toolUseContext ? envForToolUseContext(toolUseContext) : undefined,
+    const { buildPostCompactMessages } =
+      await import("../services/compact/compact.js");
+    replacementHistory = fromAgenCRuntimeMessages(
+      buildPostCompactMessages(
+        toCompactServiceResult(result),
+      ) as AgenCRuntimeMessage[],
     );
   } catch (error) {
     if (result.transaction !== undefined) {
@@ -1070,21 +1056,6 @@ function cloneLLMMessage(message: LLMMessage): LLMMessage {
   return {
     ...message,
     content: cloneContent(message.content),
-  };
-}
-
-function envForToolUseContext(
-  toolUseContext: AgenCToolUseContext,
-): CompactGuardEnv {
-  const providerOverride = toolUseContext.options.providerOverride;
-  if (!providerOverride) return {};
-  return {
-    AGENC_USE_OPENAI: "1",
-    OPENAI_MODEL: providerOverride.model,
-    OPENAI_BASE_URL: providerOverride.baseURL,
-    OPENAI_API_KEY: providerOverride.apiKey,
-    AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW:
-      toolUseContext.options.contextWindowTokens.toString(),
   };
 }
 
@@ -1413,9 +1384,9 @@ const IN_MEMORY_TOOL_RESULT_MAX_CHARS = 6_000;
 const IN_MEMORY_TOOL_RESULT_CLEARED_MARKER =
   "[Old tool result content cleared]";
 const IN_MEMORY_MCP_TOOL_PREFIX = "mcp__";
-// The shell tool registers as "exec_command" in the LIVE tool registry (see
-// `src/tools/system/exec-command.ts`), NOT "Bash". There is no exported
-// constant for it at the source, so the canonical string is pinned here.
+// Shell tools register as "exec_command" / "system.bash" in the LIVE tool
+// registry. Removed names in the compactable set exist only for persisted
+// historical transcripts.
 const IN_MEMORY_EXEC_COMMAND_TOOL_NAME = "exec_command";
 // Tool names MUST match the LIVE tool registry. The whole-file reader is
 // `FILE_READ_TOOL_NAME` ("FileRead") and the shell tool is "exec_command" —
@@ -1427,11 +1398,13 @@ const IN_MEMORY_COMPACTABLE_TOOLS = new Set([
   FILE_READ_TOOL_NAME,
   "Read",
   IN_MEMORY_EXEC_COMMAND_TOOL_NAME,
+  "system.bash",
   "Bash",
   "PowerShell",
   "Grep",
   "Glob",
   "WebSearch",
+  "web_fetch",
   "WebFetch",
   "Edit",
   "Write",
@@ -1979,8 +1952,7 @@ function messageHasImageContent(message: LLMMessage | undefined): boolean {
 }
 
 function isAutoCompactEnabledForNotices(): boolean {
-  const raw =
-    process.env.DISABLE_AUTO_COMPACT ?? process.env.AGENC_DISABLE_AUTO_COMPACT;
+  const raw = getSelectedProviderEnvironment().AGENC_DISABLE_AUTO_COMPACT;
   if (raw === undefined) return true;
   return !TRUTHY_ENV.has(raw.trim().toLowerCase());
 }
@@ -2038,6 +2010,7 @@ function terminalToStopReason(
   switch (reason) {
     case "completed":
     case "max_turns":
+    case "max_budget_usd":
     case "cancelled":
     case "no_progress": // honest mapping, NOT default→"error" (would mask it as a crash)
       return reason;
@@ -3082,8 +3055,14 @@ async function prepareSamplingRequestBoundary(
   // Per-turn attachments run once, immediately before the retry-stable
   // request snapshot is captured. A reconnect must never consume one-shot
   // attachment state or observe a different prompt than the first attempt.
-  const agencHome = session.services.configStore?.agencHome;
-  const currentConfig = session.services.configStore?.current();
+  const attachmentConfigStore = session.services.configStore;
+  if (attachmentConfigStore === undefined) {
+    throw new Error(
+      "Cannot build session attachments without canonical ConfigStore home authority",
+    );
+  }
+  const agencHome = attachmentConfigStore.homeContext.path;
+  const currentConfig = attachmentConfigStore.current();
   const fileMentionAllowedRoots = extractMentionAllowedRoots(currentConfig);
   const userInput = extractLastUserText(state.messagesForQuery);
   const rootHumanTurn = session.currentRootHumanTurn();
@@ -3114,9 +3093,7 @@ async function prepareSamplingRequestBoundary(
       : {}),
     subagentDepth: ctx.depth,
     signal,
-    ...(typeof agencHome === "string" && agencHome.length > 0
-      ? { agencHome }
-      : {}),
+    agencHome,
     ...(fileMentionAllowedRoots !== undefined
       ? { fileMentionAllowedRoots }
       : {}),
@@ -3524,33 +3501,17 @@ export function isRetryableStreamError(error: unknown): boolean {
 /**
  * Outer model↔tool loop iteration cap. Default is **no cap** — the turn ends
  * when the model stops tool-calling (or cancel / budget / behavioral
- * backstop fires). An explicit `max_turns` / `maxTurns` config value or
- * `AGENC_MAX_TURNS` is the only way to force a hard iteration ceiling
- * (optional runaway-loop backstop for ops).
+ * backstop fires). The canonical repository maps `max_turns` (including its
+ * environment override) to the internal `maxTurns` snapshot once at startup.
  */
 function resolveMaxTurns(ctx: TurnContext): number {
-  const cfg = ctx.config as unknown as {
-    maxTurns?: number;
-    max_turns?: number;
-  };
-  // Prefer camel (bootstrap maps max_turns → maxTurns); accept snake as fallback.
-  const explicit =
-    typeof cfg.maxTurns === "number"
-      ? cfg.maxTurns
-      : typeof cfg.max_turns === "number"
-        ? cfg.max_turns
-        : undefined;
+  const explicit = ctx.config.maxTurns;
   if (
     typeof explicit === "number" &&
     Number.isFinite(explicit) &&
     explicit > 0
   ) {
     return explicit;
-  }
-  const envRaw = process.env.AGENC_MAX_TURNS;
-  if (envRaw !== undefined) {
-    const parsed = Number.parseInt(envRaw, 10);
-    if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
   // Unbounded: model stop-signal / cancel / budget owns termination.
   return Number.POSITIVE_INFINITY;
@@ -4536,9 +4497,7 @@ async function* runTurnKernelInner(
   // Behavioral backstop (goal #3): resolve the no-progress config once
   // per turn so the top-of-loop evaluate site and the post-tool record
   // site share an identical config object. Pure synchronous resolution.
-  const behavioralCfg: BehavioralConfig = resolveBehavioralConfig({
-    config: ctx.config as unknown as Record<string, unknown>,
-  });
+  const behavioralCfg: BehavioralConfig = resolveBehavioralConfig();
 
   // The phase loop — agenc runtime's "while streaming & tools" outer loop.
   while (true) {
@@ -4603,6 +4562,29 @@ async function* runTurnKernelInner(
         content: lastContent,
         usage,
         stopReason: "max_turns",
+      };
+      return returnTerminal(terminal);
+    }
+
+    const maxBudgetUsd = ctx.config.maxBudgetUsd;
+    const totalCostUsd = session.services.costSidecar?.getTotalCostUsd();
+    if (
+      typeof maxBudgetUsd === "number" &&
+      Number.isFinite(maxBudgetUsd) &&
+      maxBudgetUsd > 0 &&
+      typeof totalCostUsd === "number" &&
+      Number.isFinite(totalCostUsd) &&
+      totalCostUsd >= maxBudgetUsd
+    ) {
+      await drainInFlight(state, ctx, session);
+      await syncSessionState();
+      emitTurnComplete(lastContent);
+      const terminal: Terminal = { reason: "max_budget_usd" };
+      yield {
+        type: "turn_complete",
+        content: lastContent,
+        usage,
+        stopReason: "max_budget_usd",
       };
       return returnTerminal(terminal);
     }

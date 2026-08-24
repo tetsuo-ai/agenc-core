@@ -26,6 +26,14 @@ import type {
   InternalPermissionMode,
   PermissionRuleSource as PermissionRuleSourceType,
 } from "../types/permissions.js";
+import {
+  ALL_PERMISSION_MODES,
+  USER_ADDRESSABLE_PERMISSION_MODES,
+} from "../types/permissions.js";
+export {
+  ALL_PERMISSION_MODES,
+  USER_ADDRESSABLE_PERMISSION_MODES,
+} from "../types/permissions.js";
 
 /**
  * All permission mode variants supported by the runtime.
@@ -44,30 +52,6 @@ export type PermissionMode = InternalPermissionMode;
  * Modes that can be referenced by CLI flags / settings JSON. Excludes
  * internal-only `"unattended"` and `"bubble"` modes.
  */
-export const USER_ADDRESSABLE_PERMISSION_MODES: readonly PermissionMode[] =
-  Object.freeze([
-    "default",
-    "acceptEdits",
-    "plan",
-    "bypassPermissions",
-    "dontAsk",
-    "auto",
-  ] as const);
-
-/**
- * All permission modes including internal-only variants.
- */
-export const ALL_PERMISSION_MODES: readonly PermissionMode[] = Object.freeze([
-  "default",
-  "acceptEdits",
-  "plan",
-  "bypassPermissions",
-  "dontAsk",
-  "auto",
-  "unattended",
-  "bubble",
-] as const);
-
 export function isPermissionMode(value: unknown): value is PermissionMode {
   return (
     typeof value === "string" &&
@@ -121,8 +105,8 @@ export const PERMISSION_RULE_SOURCES: readonly PermissionRuleSource[] =
 
 /**
  * Sources whose rules are stored in JSON settings files on disk. These
- * are the only sources that `loadAllPermissionRulesFromDisk` and
- * `syncPermissionRulesFromDisk` walk.
+ * are the only sources that `loadAllPermissionRulesFromConfig` and
+ * `syncPermissionRulesFromConfig` walk.
  */
 export const SETTING_SOURCES: readonly PermissionRuleSource[] = Object.freeze([
   "userSettings",
@@ -323,13 +307,12 @@ export type PermissionResult<
 
 /**
  * For each source, a list of on-disk rule strings. The list is a
- * plain mutable array at the type level so builders (e.g. mode.ts'
- * strip/restore helpers) can compose new buckets before
- * `deepFreeze`-ing them at the context boundary. Callers should
- * never mutate a bucket they received from an existing context.
+ * readonly array. Builders compose mutable local arrays and freeze/cast only
+ * at the context boundary; consumers can never mutate a rule bucket obtained
+ * from the authoritative context.
  */
 export type ToolPermissionRulesBySource = {
-  [S in PermissionRuleSource]?: string[];
+  readonly [S in PermissionRuleSource]?: readonly string[];
 };
 
 export interface ToolPermissionContext {
@@ -357,7 +340,7 @@ export interface ToolPermissionContext {
   /**
    * Session-scoped allowlist of workspace directories in which the user
    * has accepted `bypassPermissions` mode. The evaluator consults this
-   * alongside `config.bypassPermissionsModeAcceptedIn`.
+   * alongside the canonical user-state acceptance list.
    */
   readonly bypassPermissionsAcceptedIn?: readonly string[];
   /**

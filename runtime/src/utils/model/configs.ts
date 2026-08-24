@@ -7,7 +7,7 @@ export type ModelConfig = {
 // ---------------------------------------------------------------------------
 // openai-compatible model mappings
 // Maps AgenC model tiers to sensible defaults for popular providers.
-// Override with OPENAI_MODEL, ANTHROPIC_MODEL, or settings.model
+// Resolve through the canonical session model selection.
 // ---------------------------------------------------------------------------
 export const OPENAI_MODEL_DEFAULTS = {
   opus: 'gpt-4o',           // best reasoning
@@ -18,7 +18,7 @@ export const OPENAI_MODEL_DEFAULTS = {
 // ---------------------------------------------------------------------------
 // Gemini model mappings
 // Maps AgenC model tiers to Google Gemini equivalents.
-// Override with GEMINI_MODEL env var.
+// Resolve through the canonical session model selection.
 // ---------------------------------------------------------------------------
 export const GEMINI_MODEL_DEFAULTS = {
   opus: 'gemini-2.5-pro',   // most capable

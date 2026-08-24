@@ -11,21 +11,21 @@ import { createPlanningTools } from '../../src/tools/system/planning.js'
 // plan events and the live todo list in the chat view stays empty.
 
 const ORIGINAL_TASK_LIST_ID = process.env.AGENC_TASK_LIST_ID
-const ORIGINAL_CONFIG_DIR = process.env.AGENC_CONFIG_DIR
+const ORIGINAL_AGENC_HOME = process.env.AGENC_HOME
 
 let home: string
 
 beforeEach(async () => {
   home = await mkdtemp(join(tmpdir(), 'agenc-todo-bridge-'))
-  process.env.AGENC_CONFIG_DIR = home
+  process.env.AGENC_HOME = home
   process.env.AGENC_TASK_LIST_ID = 'bridge-test'
 })
 
 afterEach(async () => {
   if (ORIGINAL_TASK_LIST_ID === undefined) delete process.env.AGENC_TASK_LIST_ID
   else process.env.AGENC_TASK_LIST_ID = ORIGINAL_TASK_LIST_ID
-  if (ORIGINAL_CONFIG_DIR === undefined) delete process.env.AGENC_CONFIG_DIR
-  else process.env.AGENC_CONFIG_DIR = ORIGINAL_CONFIG_DIR
+  if (ORIGINAL_AGENC_HOME === undefined) delete process.env.AGENC_HOME
+  else process.env.AGENC_HOME = ORIGINAL_AGENC_HOME
   await rm(home, { recursive: true, force: true })
 })
 

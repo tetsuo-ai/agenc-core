@@ -9,14 +9,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 
-import {
-  afterEach,
-  beforeEach,
-  describe,
-  expect,
-  it,
-  vi,
-} from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { RunAgentParams } from "../../agents/run-agent.js";
 import {
@@ -69,10 +62,8 @@ vi.mock("../../agents/run-agent.js", () => ({
 let tempRoot: string;
 let projectRoot: string;
 let previousAgencHome: string | undefined;
-let previousAgencConfigDir: string | undefined;
 let previousDisableSessionMemory: string | undefined;
 let previousSessionMemoryEnabled: string | undefined;
-let previousSimple: string | undefined;
 let previousRemote: string | undefined;
 let previousRemoteMemoryDir: string | undefined;
 let previousDisableAutoCompact: string | undefined;
@@ -87,18 +78,14 @@ beforeEach(async () => {
   projectRoot = join(tempRoot, "project");
   await mkdir(projectRoot, { recursive: true });
   previousAgencHome = process.env.AGENC_HOME;
-  previousAgencConfigDir = process.env.AGENC_CONFIG_DIR;
   previousDisableSessionMemory = process.env.AGENC_DISABLE_SESSION_MEMORY;
   previousSessionMemoryEnabled = process.env.AGENC_SESSION_MEMORY_ENABLED;
-  previousSimple = process.env.AGENC_SIMPLE;
   previousRemote = process.env.AGENC_REMOTE;
   previousRemoteMemoryDir = process.env.AGENC_REMOTE_MEMORY_DIR;
   previousDisableAutoCompact = process.env.AGENC_DISABLE_AUTO_COMPACT;
   process.env.AGENC_HOME = tempRoot;
-  delete process.env.AGENC_CONFIG_DIR;
   delete process.env.AGENC_DISABLE_SESSION_MEMORY;
   delete process.env.AGENC_SESSION_MEMORY_ENABLED;
-  delete process.env.AGENC_SIMPLE;
   delete process.env.AGENC_REMOTE;
   delete process.env.AGENC_REMOTE_MEMORY_DIR;
   delete process.env.AGENC_DISABLE_AUTO_COMPACT;
@@ -116,8 +103,6 @@ afterEach(async () => {
   runAgentMockState.calls.length = 0;
   if (previousAgencHome === undefined) delete process.env.AGENC_HOME;
   else process.env.AGENC_HOME = previousAgencHome;
-  if (previousAgencConfigDir === undefined) delete process.env.AGENC_CONFIG_DIR;
-  else process.env.AGENC_CONFIG_DIR = previousAgencConfigDir;
   if (previousDisableSessionMemory === undefined) {
     delete process.env.AGENC_DISABLE_SESSION_MEMORY;
   } else {
@@ -128,8 +113,6 @@ afterEach(async () => {
   } else {
     process.env.AGENC_SESSION_MEMORY_ENABLED = previousSessionMemoryEnabled;
   }
-  if (previousSimple === undefined) delete process.env.AGENC_SIMPLE;
-  else process.env.AGENC_SIMPLE = previousSimple;
   if (previousRemote === undefined) delete process.env.AGENC_REMOTE;
   else process.env.AGENC_REMOTE = previousRemote;
   if (previousRemoteMemoryDir === undefined) {
@@ -156,6 +139,9 @@ function makeSession(sessionId: string, childId = "child-session"): Session {
     config: { cwd: projectRoot },
     services: {
       admissionRequired: false,
+      configStore: {
+        homeContext: { path: tempRoot },
+      },
       agentControl: {
         spawn: async () => ({
           agentId: childId,
@@ -269,10 +255,13 @@ function makeAdmissionHarness(
 describe("session memory prompts", () => {
   it("substitutes variables in one pass", () => {
     expect(
-      substituteSessionMemoryVariables("{{notesPath}} {{missing}} {{currentNotes}}", {
-        notesPath: "/tmp/summary.md",
-        currentNotes: "Literal {{notesPath}}",
-      }),
+      substituteSessionMemoryVariables(
+        "{{notesPath}} {{missing}} {{currentNotes}}",
+        {
+          notesPath: "/tmp/summary.md",
+          currentNotes: "Literal {{notesPath}}",
+        },
+      ),
     ).toBe("/tmp/summary.md {{missing}} Literal {{notesPath}}");
   });
 
@@ -286,7 +275,11 @@ describe("session memory prompts", () => {
     );
 
     await expect(
-      buildSessionMemoryUpdatePrompt("Current notes", "/tmp/summary.md"),
+      buildSessionMemoryUpdatePrompt(
+        "Current notes",
+        "/tmp/summary.md",
+        tempRoot,
+      ),
     ).resolves.toBe("Path=/tmp/summary.md\nCurrent notes");
   });
 
@@ -328,7 +321,9 @@ describe("session memory extraction thresholds", () => {
       toolCallsBetweenUpdates: 1,
     });
 
-    expect(shouldExtractMemory([{ role: "user", content: "short" }], state)).toBe(false);
+    expect(
+      shouldExtractMemory([{ role: "user", content: "short" }], state),
+    ).toBe(false);
   });
 
   it("extracts at natural breaks after token growth", () => {
@@ -416,8 +411,7 @@ describe("session memory runtime", () => {
 
     expect(harness.acquire).toHaveBeenCalledOnce();
     expect(harness.acquire.mock.calls[0]?.[0]).toMatchObject({
-      stepId:
-        "tool:session-memory:session-admitted:sub-session-admitted-1",
+      stepId: "tool:session-memory:session-admitted:sub-session-admitted-1",
       kind: "tool_exec",
       sessionId: "session-admitted",
       parentScopeId: "session-memory:session-admitted",
@@ -455,7 +449,9 @@ describe("session memory runtime", () => {
           event.msg.payload.runId === "run-session-admitted",
       ),
     ).toBe(true);
-    expect(await readFile(setup.memoryPath, "utf8")).toContain("# Current State");
+    expect(await readFile(setup.memoryPath, "utf8")).toContain(
+      "# Current State",
+    );
   });
 
   it("does not execute setup effects when admission denies the boundary", async () => {
@@ -587,9 +583,9 @@ describe("session memory runtime", () => {
     expect(params.querySource).toBe("session_memory");
     expect(params.toolAllowlist).toEqual(["Edit"]);
     expect(params.initialMessages.at(-1)?.content).toContain(memoryPath);
-    expect(getSessionReadSnapshot("child-session-2", memoryPath)?.rawContent).toContain(
-      "# Current State",
-    );
+    expect(
+      getSessionReadSnapshot("child-session-2", memoryPath)?.rawContent,
+    ).toContain("# Current State");
     clearSessionReadState("child-session-2");
   });
 
@@ -684,7 +680,9 @@ describe("session memory runtime", () => {
       },
     });
     await expect(
-      Promise.resolve(policy({ name: "Edit" }, { file_path: join(tempRoot, "other.md") })),
+      Promise.resolve(
+        policy({ name: "Edit" }, { file_path: join(tempRoot, "other.md") }),
+      ),
     ).resolves.toMatchObject({ behavior: "deny" });
     await expect(
       Promise.resolve(policy({ name: "FileRead" }, { file_path: memoryPath })),

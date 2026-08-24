@@ -3,7 +3,19 @@
 `WorkflowTool` runs a named JSON workflow from `.agenc/workflows/` or
 `AGENC_HOME/workflows/`. Version 2 is the canonical agent-DAG format. The
 unversioned version-1 DAG reader remains for one compatibility epoch and emits
-a migration diagnostic; new workflows should not use it.
+a migration diagnostic (`WORKFLOW_MANIFEST_V1_COMPAT`); new workflows should
+not use it.
+
+This DAG is `runtime/src/agents/workflow-*.ts`. `runtime/src/workflow/` is the
+separate M5 verified-change pipeline (`agenc run start`). CSV batch jobs are
+another surface (`agents.md`). Do not mix the three.
+
+Invocation schema: required `name`, optional `args.max_concurrency`,
+`args.max_handoff_tokens`, `args.failure_policy`. Per-step optional
+`agent_type`, `model`, `task_name`, `isolation` (`none` \| `cwd` \| `worktree`).
+Spawn isolation on children is `none` \| `worktree`. A legacy `{ command }`
+shell workflow remains registered (`LEGACY_WORKFLOW_COMMAND_SCHEMA`) for one
+epoch; do not author new ones.
 
 ## Version-2 manifest
 

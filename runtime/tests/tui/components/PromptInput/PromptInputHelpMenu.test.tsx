@@ -1,6 +1,7 @@
 import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { renderToString } from '../../../utils/staticRender.js'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../../remoteAuthSessionContext.fixture.js'
 
 vi.mock('bun:bundle', () => ({
   feature: () => false,
@@ -16,8 +17,8 @@ vi.mock('../../keybindings/loadUserBindings.js', () => ({
 }))
 
 vi.mock('../../../utils/fastMode.js', () => ({
-  isFastModeAvailable: () => false,
-  isFastModeEnabled: () => false,
+  isFastModeAvailableForContext: () => false,
+  isFastModeEnabledForContext: () => false,
 }))
 
 vi.mock('../../../utils/platform.js', () => ({
@@ -27,7 +28,7 @@ vi.mock('../../../utils/platform.js', () => ({
 describe('PromptInputHelpMenu', () => {
   it('stacks rows in a single column at narrow terminal widths (<100)', async () => {
     const { PromptInputHelpMenu } = await import('./PromptInputHelpMenu.js')
-    const output = await renderToString(<PromptInputHelpMenu />, 80)
+    const output = await renderToString(<PromptInputHelpMenu remoteAuthSessionContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />, 80)
 
     const lines = output.split('\n')
     const bashLine = lines.find(line => line.includes('! for bash mode')) ?? ''
@@ -46,7 +47,7 @@ describe('PromptInputHelpMenu', () => {
 
   it('keeps the 3-column row layout at wide terminal widths (>=100)', async () => {
     const { PromptInputHelpMenu } = await import('./PromptInputHelpMenu.js')
-    const output = await renderToString(<PromptInputHelpMenu />, 120)
+    const output = await renderToString(<PromptInputHelpMenu remoteAuthSessionContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />, 120)
 
     // At 120 columns, the first column's "! for bash mode" should appear
     // on the same visual row as the middle column's
@@ -63,7 +64,7 @@ describe('PromptInputHelpMenu', () => {
 
   it('describes Shift+Tab as cycling modes', async () => {
     const { PromptInputHelpMenu } = await import('./PromptInputHelpMenu.js')
-    const output = await renderToString(<PromptInputHelpMenu />, 120)
+    const output = await renderToString(<PromptInputHelpMenu remoteAuthSessionContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />, 120)
 
     expect(output).toContain('shift + tab to cycle modes')
     expect(output).not.toContain('shift + tab to auto-accept edits')

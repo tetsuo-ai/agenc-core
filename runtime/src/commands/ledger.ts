@@ -18,7 +18,6 @@
  * @module
  */
 
-import { join } from "node:path";
 import {
   getLedgerStatusSnapshot,
   refreshLedgerStatus,
@@ -42,6 +41,7 @@ import {
   type SlashCommand,
   type SlashCommandResult,
 } from "./types.js";
+import { agencHomeFromCommandContext } from "./config-context.js";
 
 const READONLY_TIMEOUT_MS = 30_000;
 
@@ -322,7 +322,7 @@ export const ledgerCommand: SlashCommand = {
       const parsed = parseLedgerArguments(ctx.argsRaw);
       if (!parsed.ok) return { kind: "error", message: parsed.error };
       const args = parsed.args;
-      const agencHome = ctx.agencHome ?? join(ctx.home, ".agenc");
+      const agencHome = agencHomeFromCommandContext(ctx);
 
       if (
         args.length === 1 &&

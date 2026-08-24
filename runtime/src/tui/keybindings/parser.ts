@@ -197,7 +197,7 @@ export function chordToDisplayString(
 }
 
 /**
- * Parse keybinding blocks (from JSON config) into a flat list of ParsedBindings.
+ * Parse canonical keybinding blocks into a flat list of ParsedBindings.
  */
 export function parseBindings(blocks: KeybindingBlock[]): ParsedBinding[] {
   const bindings: ParsedBinding[] = []

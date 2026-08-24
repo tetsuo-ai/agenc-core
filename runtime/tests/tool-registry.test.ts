@@ -405,22 +405,73 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(result.content).toContain("[exec exit_code=0");
   });
 
-  test("dispatch routes legacy Read calls to the canonical FileRead tool", async () => {
-    const root = await mkdtemp(join(tmpdir(), "agenc-registry-read-alias-"));
-    try {
-      await writeFile(join(root, "note.txt"), "alias read body\n", "utf8");
-      const registry = buildToolRegistry({ workspaceRoot: root });
+  test("dispatch rejects removed file-tool names instead of rewriting them", async () => {
+    const registry = buildToolRegistry({ workspaceRoot: "/tmp" });
 
+    for (const removedName of [
+      "Read",
+      "FileReadTool",
+      "FileEdit",
+      "FileEditTool",
+      "FileWrite",
+      "FileWriteTool",
+    ]) {
       const result = await registry.dispatch({
-        id: "read-alias-1",
-        name: "Read",
-        arguments: JSON.stringify({ file_path: "note.txt", cwd: root }),
+        id: `removed-${removedName}`,
+        name: removedName,
+        arguments: "{}",
       });
 
-      expect(result.isError).toBeUndefined();
-      expect(result.content).toContain("alias read body");
-    } finally {
-      await rm(root, { recursive: true, force: true });
+      expect(result.isError).toBe(true);
+      expect(result.content).toContain(`unknown tool: ${removedName}`);
+    }
+  });
+
+  test("strict live schemas reject removed exact input aliases", async () => {
+    const registry = buildToolRegistry({
+      workspaceRoot: "/tmp",
+      sandboxExecutionBroker: explicitDangerBroker,
+    });
+    const removedInputs = [
+      ["exec_command", { command: "pwd" }],
+      ["exec_command", { cmd: "pwd", cwd: "/tmp" }],
+      ["write_stdin", { process_id: 1 }],
+      ["kill_process", { process_id: 1 }],
+      ["Grep", { pattern: "needle", context: 2 }],
+      ["system.bash", { command: "pwd", timeout: 1000 }],
+    ] as const;
+
+    const propertiesFor = (name: string): Record<string, unknown> =>
+      (
+        registry.tools.find((tool) => tool.name === name)?.inputSchema as {
+          readonly properties?: Record<string, unknown>;
+        }
+      )?.properties ?? {};
+    expect(propertiesFor("exec_command")).toMatchObject({
+      cmd: expect.anything(),
+      workdir: expect.anything(),
+    });
+    expect(propertiesFor("exec_command")).not.toHaveProperty("command");
+    expect(propertiesFor("exec_command")).not.toHaveProperty("cwd");
+    expect(propertiesFor("write_stdin")).toHaveProperty("session_id");
+    expect(propertiesFor("write_stdin")).not.toHaveProperty("process_id");
+    expect(propertiesFor("kill_process")).toHaveProperty("session_id");
+    expect(propertiesFor("kill_process")).not.toHaveProperty("process_id");
+    expect(propertiesFor("Grep")).toHaveProperty("-C");
+    expect(propertiesFor("Grep")).not.toHaveProperty("context");
+    expect(propertiesFor("system.bash")).toHaveProperty("timeoutMs");
+    expect(propertiesFor("system.bash")).not.toHaveProperty("timeout");
+
+    for (const [name, input] of removedInputs) {
+      const result = await registry.dispatch({
+        id: `removed-input-${name}`,
+        name,
+        arguments: JSON.stringify(input),
+      });
+      expect(
+        result.isError,
+        `${name} unexpectedly accepted ${JSON.stringify(input)}: ${result.content}`,
+      ).toBe(true);
     }
   });
 
@@ -907,8 +958,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     const registry = buildToolRegistry({
       workspaceRoot: "/tmp",
       toolsConfig: {
-        exec_command: { enabled: false },
-        Write: false,
+        disabled_tools: ["exec_command", "Write"],
       },
     });
 
@@ -1609,7 +1659,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
       plan: "# Approved Plan\n\nRun the checks.",
       mode: "acceptEdits",
       applyAllowedPrompts: true,
-      allowedPrompts: [{ tool: "Bash", prompt: "npm test" }],
+      allowedPrompts: [{ tool: "system.bash", prompt: "npm test" }],
     });
 
     const result = await registry.dispatch({
@@ -1622,7 +1672,7 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(result.content).toContain("# Approved Plan");
     expect(permissionRegistry.current().mode).toBe("acceptEdits");
     expect(permissionRegistry.current().alwaysAllowRules.session).toEqual([
-      "Bash(npm test)",
+      "system.bash(npm test)",
     ]);
     expect(result.metadata).toMatchObject({
       planWasEdited: true,

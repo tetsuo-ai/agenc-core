@@ -10,7 +10,7 @@
  * Subcommands:
  *   /config                 — show effective config snapshot (read-only)
  *   /config show            — alias of the above
- *   /config get <key>       — dot-path lookup (`tools_config.web_search`)
+ *   /config get <key>       — dot-path lookup (`tools_config.disabled_tools`)
  *   /config reload          — re-read TOML + env via ConfigStore.reload()
  *   /config profile         — show active profile (pending or default)
  *   /config profile <name>  — stage profile switch for next turn
@@ -20,12 +20,16 @@
  * @module
  */
 
-import { existsSync } from "node:fs";
-import { spawn } from "node:child_process";
-
 import type { AgenCConfig } from "../config/schema.js";
 import type { ConfigStore } from "../config/store.js";
 import { listProfiles } from "../config/profiles.js";
+import {
+  editCanonicalUserConfig,
+  parseConfigEditorCommand,
+  spawnConfigEditor,
+  splitConfigEditorCommandLine,
+  type ConfigEditorSpawner,
+} from "../config/editor.js";
 import type { Session } from "../session/session.js";
 import {
   safeExecute,
@@ -36,32 +40,12 @@ import {
 import { openConfigMenu } from "./config-menu.js";
 import {
   agencHomeFromCommandContext,
+  configStoreFromCommandContext,
   getConfigFilePath,
 } from "./config-context.js";
 import { asRecord } from "../utils/record.js";
 
 export { getConfigFilePath } from "./config-context.js";
-
-// ---------------------------------------------------------------------------
-// Service lookup
-// ---------------------------------------------------------------------------
-
-/**
- * Prefer the top-level `ctx.configStore` and fall back to
- * `session.services.configStore`; both entry paths wire the same store.
- */
-function findConfigStore(ctx: SlashCommandContext): ConfigStore | null {
-  const directConfigStore = ctx.configStore;
-  if (
-    directConfigStore !== undefined &&
-    asRecord(directConfigStore) !== null
-  ) {
-    return directConfigStore;
-  }
-  const services = asRecord(ctx.session.services);
-  const configStore = services?.configStore;
-  return asRecord(configStore) !== null ? (configStore as ConfigStore) : null;
-}
 
 /**
  * Daemon-path detection (mirrors `daemonPermissionModeFn` in permissions.ts).
@@ -247,20 +231,7 @@ function formatConfigReloadWarnings(configStore: ConfigStore): string {
 // Edit
 // ---------------------------------------------------------------------------
 
-export interface EditorSpawner {
-  (command: string, args: readonly string[]): Promise<number>;
-}
-
-const defaultSpawnEditor: EditorSpawner = (command, args) =>
-  new Promise((resolve) => {
-    try {
-      const child = spawn(command, args, { stdio: "inherit" });
-      child.on("exit", (code) => resolve(code ?? 0));
-      child.on("error", () => resolve(127));
-    } catch {
-      resolve(127);
-    }
-  });
+export type EditorSpawner = ConfigEditorSpawner;
 
 /**
  * Resolve the editor binary using $EDITOR → $VISUAL → `code`/`vim`/`nano`
@@ -273,98 +244,27 @@ export function editorForEnv(env: NodeJS.ProcessEnv): string {
   return "vim";
 }
 
-/**
- * Split a $EDITOR command line into argv tokens, honoring quotes and
- * backslash escapes (mirrors `splitCommandLine` in bin/config-cli.ts).
- * Editors are commonly configured with flags (e.g. `code --wait`,
- * `emacsclient -t`), so the string must be tokenized before spawning.
- */
-export function splitCommandLine(raw: string): string[] {
-  const args: string[] = [];
-  let current = "";
-  let quote: "'" | "\"" | null = null;
-  let escaped = false;
+/** Shared editor tokenization, re-exported for the command contract. */
+export const splitCommandLine = splitConfigEditorCommandLine;
 
-  const push = (): void => {
-    if (current.length > 0) {
-      args.push(current);
-      current = "";
-    }
-  };
-
-  for (const char of raw.trim()) {
-    if (escaped) {
-      current += char;
-      escaped = false;
-      continue;
-    }
-    if (char === "\\" && quote !== "'") {
-      escaped = true;
-      continue;
-    }
-    if (quote !== null) {
-      if (char === quote) quote = null;
-      else current += char;
-      continue;
-    }
-    if (char === "'" || char === "\"") {
-      quote = char;
-      continue;
-    }
-    if (/\s/u.test(char)) {
-      push();
-      continue;
-    }
-    current += char;
-  }
-  if (escaped) current += "\\";
-  if (quote !== null) {
-    throw new Error("EDITOR contains an unterminated quote");
-  }
-  push();
-  return args;
-}
-
-/**
- * Tokenize a resolved editor string into a command + args pair (mirrors
- * `parseEditorCommand` in bin/config-cli.ts).
- */
-export function parseEditorCommand(raw: string): {
-  readonly command: string;
-  readonly args: readonly string[];
-} {
-  const parts = splitCommandLine(raw);
-  const command = parts[0]?.trim();
-  if (command === undefined || command.length === 0) {
-    throw new Error("EDITOR resolved to an empty command");
-  }
-  return {
-    command,
-    args: parts.slice(1),
-  };
-}
+/** Shared editor command parser, re-exported for the command contract. */
+export const parseEditorCommand = parseConfigEditorCommand;
 
 async function openConfigInEditor(
   home: string,
   env: NodeJS.ProcessEnv = process.env,
-  spawner: EditorSpawner = defaultSpawnEditor,
+  spawner: EditorSpawner = spawnConfigEditor,
 ): Promise<SlashCommandResult> {
   const path = getConfigFilePath(home);
-  if (!existsSync(path)) {
-    return {
-      kind: "text",
-      text: `Config file does not exist yet: ${path}\nCreate it with: ${editorForEnv(env)} ${path}`,
-    };
-  }
-  // gaphunt3 #15: tokenize the $EDITOR string so editors carrying arguments
-  // (e.g. "code --wait", "emacsclient -t") spawn the binary + its flags
-  // instead of trying to exec the whole string as one executable name.
-  const editor = parseEditorCommand(editorForEnv(env));
-  const code = await spawner(editor.command, [...editor.args, path]);
-  if (code !== 0) {
+  const result = await editCanonicalUserConfig({
+    path,
+    editor: editorForEnv(env),
+    spawner,
+  });
+  if (result.exitCode !== 0) {
     return {
       kind: "error",
-      message: `Editor "${editor.command}" exited with code ${code}. File path: ${path}`,
+      message: `Editor "${result.editorCommand}" exited with code ${result.exitCode}. File path: ${path}`,
     };
   }
   return { kind: "text", text: `Edited ${path} (run /config reload to apply)` };
@@ -386,16 +286,15 @@ interface ConfigCommandDeps {
  */
 export function createConfigCommand(deps: ConfigCommandDeps = {}): SlashCommand {
   const env = deps.env ?? process.env;
-  const spawner = deps.spawner ?? defaultSpawnEditor;
+  const spawner = deps.spawner ?? spawnConfigEditor;
   return {
     name: "config",
-    aliases: ["settings"],
     description: "Manage configuration — opens a picker",
     immediate: true,
     userInvocable: true,
     execute: (ctx: SlashCommandContext): Promise<SlashCommandResult> =>
       safeExecute(async () => {
-        const configStore = findConfigStore(ctx);
+        const configStore = configStoreFromCommandContext(ctx);
         if (!configStore) {
           return {
             kind: "error",

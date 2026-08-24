@@ -320,11 +320,7 @@ function buildBashProgressForwarder(
   const chunks: string[] = [];
   let progressCounter = 0;
   const timeoutMs =
-    typeof input.timeoutMs === "number"
-      ? input.timeoutMs
-      : typeof input.timeout === "number"
-        ? input.timeout
-        : undefined;
+    typeof input.timeoutMs === "number" ? input.timeoutMs : undefined;
 
   return (event) => {
     chunks.push(event.chunk);
@@ -614,7 +610,6 @@ const bashInputSchema = z.strictObject({
   command: z.string(),
   args: z.array(z.string()).optional(),
   cwd: z.string().optional(),
-  timeout: z.number().optional(),
   timeoutMs: z.number().optional(),
 });
 
@@ -628,7 +623,6 @@ const notebookEditInputSchema = z.strictObject({
 
 export const CanonicalBashTool = createCanonicalTool({
   name: "system.bash",
-  aliases: ["Bash"],
   searchHint: "execute shell commands",
   maxResultSizeChars: Infinity,
   inputSchema: bashInputSchema,
@@ -638,11 +632,7 @@ export const CanonicalBashTool = createCanonicalTool({
     command: input.command,
     ...(Array.isArray(input.args) ? { args: input.args } : {}),
     cwd: typeof input.cwd === "string" ? input.cwd : root,
-    ...(input.timeoutMs !== undefined
-      ? { timeoutMs: input.timeoutMs }
-      : input.timeout !== undefined
-        ? { timeoutMs: input.timeout }
-        : {}),
+    ...(input.timeoutMs !== undefined ? { timeoutMs: input.timeoutMs } : {}),
   }),
   userFacingName: () => "system.bash",
   summary: (input) =>
@@ -656,7 +646,6 @@ export const CanonicalBashTool = createCanonicalTool({
 
 export const CanonicalFileReadTool = createCanonicalTool({
   name: "FileRead",
-  aliases: ["Read"],
   searchHint: "read local files",
   maxResultSizeChars: Infinity,
   inputSchema: fileReadInputSchema,
@@ -672,7 +661,6 @@ export const CanonicalFileReadTool = createCanonicalTool({
 
 export const CanonicalFileEditTool = createCanonicalTool({
   name: "Edit",
-  aliases: ["FileEdit"],
   searchHint: "edit local files",
   maxResultSizeChars: 30_000,
   inputSchema: fileEditInputSchema,
@@ -692,7 +680,6 @@ export const CanonicalFileEditTool = createCanonicalTool({
 
 export const CanonicalFileWriteTool = createCanonicalTool({
   name: "Write",
-  aliases: ["FileWrite"],
   searchHint: "write local files",
   maxResultSizeChars: 30_000,
   inputSchema: fileWriteInputSchema,
@@ -711,7 +698,6 @@ export const CanonicalFileWriteTool = createCanonicalTool({
 
 export const CanonicalGrepTool = createCanonicalTool({
   name: "Grep",
-  aliases: ["system.grep"],
   searchHint: "search file contents",
   maxResultSizeChars: 30_000,
   inputSchema: grepInputSchema,
@@ -726,7 +712,6 @@ export const CanonicalGrepTool = createCanonicalTool({
 
 export const CanonicalGlobTool = createCanonicalTool({
   name: "Glob",
-  aliases: ["system.glob"],
   searchHint: "find files by pattern",
   maxResultSizeChars: 30_000,
   inputSchema: globInputSchema,

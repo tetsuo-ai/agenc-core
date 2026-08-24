@@ -45,8 +45,6 @@ const ALLOW_ASSESSMENT = JSON.stringify({
 
 function mkFeatures(): ManagedFeatures {
   return {
-    appsEnabledForAuth: () => false,
-    useLegacyLandlock: () => false,
   };
 }
 

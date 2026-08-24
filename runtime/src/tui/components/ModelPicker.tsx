@@ -4,11 +4,12 @@ import capitalize from 'lodash-es/capitalize.js';
 import * as React from 'react';
 import { useCallback, useMemo, useState } from 'react';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
-import { FAST_MODE_MODEL_DISPLAY, isFastModeAvailable, isFastModeCooldown, isFastModeEnabled } from '../../utils/fastMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import type { ProviderAuthReadContext } from '../../utils/auth.js';
+import { FAST_MODE_MODEL_DISPLAY, isFastModeAvailableForContext, isFastModeCooldownForContext, isFastModeEnabledForContext } from '../../utils/fastMode.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Box, Text } from '../ink.js';
 import { useKeybindings } from '../keybindings/useKeybinding.js';
 import { useAppState, useSetAppState } from '../state/AppState.js';
-import { convertEffortValueToLevel, type AvailableEffortLevel, getAvailableEffortLevels, getDefaultEffortForModel, modelSupportsEffort, resolvePickerEffortPersistence, toPersistableEffort } from '../../utils/effort.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { convertEffortValueToLevel, effortValueToReasoningEffort, type AvailableEffortLevel, getAvailableEffortLevels, getDefaultEffortForModel, modelSupportsEffort, reasoningEffortToEffortLevel, resolvePickerEffortPersistence } from '../../utils/effort.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getDefaultMainLoopModel, type ModelSetting, modelDisplayString, parseUserSpecifiedModel } from '../../utils/model/model.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getModelOptions } from '../../utils/model/modelOptions.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { getSettingsForSource, updateSettingsForSource } from '../../utils/settings/settings.js'; // upstream-import: keep target is owned by another Z-PURGE item
@@ -25,13 +26,14 @@ export type Props = {
   onCancel?: () => void;
   isStandaloneCommand?: boolean;
   showFastModeNotice?: boolean;
+  remoteAuthSessionContext: ProviderAuthReadContext;
   /** Overrides the dim header line below "Select model". */
   headerText?: string;
   /**
-   * When true, skip writing effortLevel to userSettings on selection.
+   * When true, skip writing reasoning_effort to user config on selection.
    * Used by the assistant installer wizard where the model choice is
-   * project-scoped (written to the assistant's .agenc/settings.json via
-   * install.ts) and should not leak to the user's global ~/.agenc/settings.
+   * project-scoped (written to the assistant's .agenc/config.toml via
+   * install.ts) and should not leak to the user's global config.toml.
    */
   skipSettingsWrite?: boolean;
 };
@@ -49,6 +51,7 @@ export function ModelPicker(t0) {
     onCancel,
     isStandaloneCommand,
     showFastModeNotice,
+    remoteAuthSessionContext,
     headerText,
     skipSettingsWrite
   } = t0;
@@ -56,7 +59,8 @@ export function ModelPicker(t0) {
   const exitState = useExitOnCtrlCDWithKeybindings();
   const initialValue = initial === null ? NO_PREFERENCE : initial;
   const [focusedValue, setFocusedValue] = useState(initialValue);
-  const isFastMode = useAppState(_temp);
+  const fastModeEnabled = isFastModeEnabledForContext(remoteAuthSessionContext);
+  const isFastMode = useAppState(s => fastModeEnabled ? s.fastMode : false);
   const [hasToggledEffort, setHasToggledEffort] = useState(false);
   const effortValue = useAppState(_temp2);
   let t1;
@@ -229,11 +233,11 @@ export function ModelPicker(t0) {
   if ($[35] !== effort || $[36] !== hasToggledEffort || $[37] !== onSelect || $[38] !== setAppState || $[39] !== skipSettingsWrite) {
     t14 = function handleSelect(value_0) {
       if (!skipSettingsWrite) {
-        const effortLevel = resolvePickerEffortPersistence(effort, getDefaultEffortLevelForOption(value_0), getSettingsForSource("userSettings")?.effortLevel, hasToggledEffort);
-        const persistable = toPersistableEffort(effortLevel);
+        const effortLevel = resolvePickerEffortPersistence(effort, getDefaultEffortLevelForOption(value_0), reasoningEffortToEffortLevel(getSettingsForSource("userSettings")?.reasoning_effort), hasToggledEffort);
+        const persistable = effortValueToReasoningEffort(effortLevel);
         if (persistable !== undefined) {
-          updateSettingsForSource("userSettings", {
-            effortLevel: persistable
+          void updateSettingsForSource("userSettings", {
+            reasoning_effort: persistable
           });
         }
         setAppState(prev_0 => ({
@@ -335,14 +339,7 @@ export function ModelPicker(t0) {
   } else {
     t24 = $[66];
   }
-  let t25;
-  if ($[67] !== showFastModeNotice) {
-    t25 = isFastModeEnabled() ? showFastModeNotice ? <Box marginBottom={1}><Text dimColor={true}>Fast mode is <Text bold={true}>ON</Text> and available with{" "}{FAST_MODE_MODEL_DISPLAY} only (/fast). Switching to other models turn off fast mode.</Text></Box> : isFastModeAvailable() && !isFastModeCooldown() ? <Box marginBottom={1}><Text dimColor={true}>Use <Text bold={true}>/fast</Text> to turn on Fast mode ({FAST_MODE_MODEL_DISPLAY} only).</Text></Box> : null : null;
-    $[67] = showFastModeNotice;
-    $[68] = t25;
-  } else {
-    t25 = $[68];
-  }
+  const t25 = fastModeEnabled ? showFastModeNotice ? <Box marginBottom={1}><Text dimColor={true}>Fast mode is <Text bold={true}>ON</Text> and available with{" "}{FAST_MODE_MODEL_DISPLAY} only (/fast). Switching to other models turn off fast mode.</Text></Box> : isFastModeAvailableForContext(remoteAuthSessionContext) && !isFastModeCooldownForContext(remoteAuthSessionContext) ? <Box marginBottom={1}><Text dimColor={true}>Use <Text bold={true}>/fast</Text> to turn on Fast mode ({FAST_MODE_MODEL_DISPLAY} only).</Text></Box> : null : null;
   let t26;
   if ($[69] !== t19 || $[70] !== t23 || $[71] !== t24 || $[72] !== t25) {
     t26 = <Box flexDirection="column">{t19}{t23}{t24}{t25}</Box>;
@@ -384,9 +381,6 @@ function _temp3(opt_0) {
 }
 function _temp2(s_0) {
   return s_0.effortValue;
-}
-function _temp(s) {
-  return isFastModeEnabled() ? s.fastMode : false;
 }
 function resolveOptionModel(value?: string): string | undefined {
   if (!value) return undefined;

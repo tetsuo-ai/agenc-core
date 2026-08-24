@@ -31,17 +31,21 @@ import { join } from 'path'
 import { parse } from 'url'
 import xss from 'xss'
 import { MCP_CLIENT_METADATA_URL } from '../../constants/oauth.js'
+import type { HomeContext } from '../../config/home.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
 import { openBrowser } from '../../utils/browser.js'
-import { getAgenCConfigHomeDir } from '../../utils/envUtils.js'
 import { errorMessage, getErrnoCode } from '../../utils/errors.js'
 import * as lockfile from '../../utils/lockfile.js'
 import { logMCPDebug } from '../../utils/log.js'
 import { getPlatform } from '../../utils/platform.js'
-import { getSecureStorage } from '../../utils/secureStorage/index.js'
 import { clearKeychainCache } from '../../utils/secureStorage/macOsKeychainHelpers.js'
-import type { SecureStorageData } from '../../utils/secureStorage/index.js'
+import {
+  readNativeSecureStorage,
+  updateNativeSecureStorage,
+} from '../../utils/secureStorage/native.js'
 import { sleep } from '../../utils/sleep.js'
 import { jsonParse, jsonStringify } from '../../utils/slowOperations.js'
+import { getProxyFetchOptions } from '../../utils/proxy.js'
 import { buildRedirectUri, findAvailablePort } from './oauthPort.js'
 import type { McpHTTPServerConfig, McpSSEServerConfig } from './types.js'
 import { performCrossAppAccess, XaaTokenExchangeError } from './xaa.js'
@@ -51,7 +55,7 @@ import {
   discoverOidc,
   getCachedIdpIdToken,
   getIdpClientSecret,
-  getXaaIdpSettings,
+  getXaaIdpConfig,
   isXaaEnabled,
 } from './xaaIdpLogin.js'
 /**
@@ -62,10 +66,11 @@ const AUTH_REQUEST_TIMEOUT_MS = 30000
 const MAX_LOCK_RETRIES = 30
 
 async function acquireMcpRefreshLock(
+  home: HomeContext,
   serverName: string,
   serverKey: string,
 ): Promise<() => Promise<void>> {
-  const agencDir = getAgenCConfigHomeDir()
+  const agencDir = home.path
   await mkdir(agencDir, { recursive: true })
   const sanitizedKey = serverKey.replace(/[^a-zA-Z0-9]/g, '_')
   const lockfilePath = join(agencDir, `mcp-refresh-${sanitizedKey}.lock`)
@@ -352,7 +357,8 @@ async function normalizeOAuthErrorBody(
  * Used by AgenCAuthProvider for metadata discovery and token refresh.
  * Prevents stale timeout signals from affecting auth operations.
  */
-function createAuthFetch(): FetchLike {
+function createAuthFetch(environment: ProviderEnvironment): FetchLike {
+  const transportOptions = getProxyFetchOptions({ environment })
   return async (url: string | URL, init?: RequestInit) => {
     const timeoutSignal = AbortSignal.timeout(AUTH_REQUEST_TIMEOUT_MS)
     const isPost = init?.method?.toUpperCase() === 'POST'
@@ -360,7 +366,11 @@ function createAuthFetch(): FetchLike {
     // No existing signal - just use timeout
     if (!init?.signal) {
       // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-      const response = await fetch(url, { ...init, signal: timeoutSignal })
+      const response = await fetch(url, {
+        ...init,
+        signal: timeoutSignal,
+        ...transportOptions,
+      })
       return isPost ? normalizeOAuthErrorBody(response) : response
     }
 
@@ -383,7 +393,11 @@ function createAuthFetch(): FetchLike {
 
     try {
       // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
-      const response = await fetch(url, { ...init, signal: controller.signal })
+      const response = await fetch(url, {
+        ...init,
+        signal: controller.signal,
+        ...transportOptions,
+      })
       cleanup()
       return isPost ? normalizeOAuthErrorBody(response) : response
     } catch (error) {
@@ -405,16 +419,16 @@ function createAuthFetch(): FetchLike {
  *    without implementing RFC 9728. The SDK's own fallback strips the path, so this
  *    preserves the pre-existing path-aware probe for backward compatibility.
  *
- * Note: configuredMetadataUrl is user-controlled via .mcp.json. Project-scoped MCP
- * servers require user approval before connecting (same trust level as the MCP server
- * URL itself). The HTTPS requirement here is defense-in-depth beyond schema validation
- * — RFC 8414 mandates OAuth metadata retrieval over TLS.
+ * Note: configuredMetadataUrl is user-controlled via canonical project config.toml.
+ * Project-scoped MCP servers require user approval before connecting (same trust level
+ * as the MCP server URL itself). The HTTPS requirement here is defense-in-depth beyond
+ * schema validation — RFC 8414 mandates OAuth metadata retrieval over TLS.
  */
 async function fetchAuthServerMetadata(
   serverName: string,
   serverUrl: string,
   configuredMetadataUrl: string | undefined,
-  fetchFn?: FetchLike,
+  fetchFn: FetchLike,
   resourceMetadataUrl?: URL,
 ): Promise<Awaited<ReturnType<typeof discoverAuthorizationServerMetadata>>> {
   if (configuredMetadataUrl) {
@@ -423,8 +437,7 @@ async function fetchAuthServerMetadata(
         `authServerMetadataUrl must use https:// (got: ${configuredMetadataUrl})`,
       )
     }
-    const authFetch = fetchFn ?? createAuthFetch()
-    const response = await authFetch(configuredMetadataUrl, {
+    const response = await fetchFn(configuredMetadataUrl, {
       headers: { Accept: 'application/json' },
     })
     if (response.ok) {
@@ -449,7 +462,7 @@ async function fetchAuthServerMetadata(
     const { authorizationServerMetadata } = await discoverOAuthServerInfo(
       serverUrl,
       {
-        ...(fetchFn && { fetchFn }),
+        fetchFn,
         ...(resourceMetadataUrl && { resourceMetadataUrl }),
       },
     )
@@ -475,7 +488,7 @@ async function fetchAuthServerMetadata(
     return undefined
   }
   const metadata = await discoverAuthorizationServerMetadata(url, {
-    ...(fetchFn && { fetchFn }),
+    fetchFn,
   })
   return validateMcpOAuthAuthorizationServerMetadata(metadata)
 }
@@ -517,6 +530,8 @@ export function getServerKey(
  * /mcp to authenticate.
  */
 export function hasMcpDiscoveryButNoToken(
+  home: HomeContext,
+  environment: ProviderEnvironment,
   serverName: string,
   serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
 ): boolean {
@@ -524,27 +539,35 @@ export function hasMcpDiscoveryButNoToken(
   // access/refresh token — tokens() fires the xaaRefresh path. Skipping the
   // connection here would make that auto-auth branch unreachable after
   // invalidateCredentials('tokens') clears the stored tokens.
-  if (isXaaEnabled() && serverConfig.oauth?.xaa) {
+  if (isXaaEnabled(environment) && serverConfig.oauth?.xaa) {
     return false
   }
   const serverKey = getServerKey(serverName, serverConfig)
-  const entry = getSecureStorage().read()?.mcpOAuth?.[serverKey]
+  const entry = readNativeSecureStorage(home).mcpOAuth?.[serverKey]
   return entry !== undefined && !entry.accessToken && !entry.refreshToken
 }
 
 // Utilizing platform-specific secure storage to protect sensitive tokens
 export function clearServerTokensFromSecureStorage(
+  home: HomeContext,
   serverName: string,
   serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
 ): void {
-  const storage = getSecureStorage()
-  const existingData = storage.read()
-  if (!existingData?.mcpOAuth) return
-
   const serverKey = getServerKey(serverName, serverConfig)
-  if (existingData.mcpOAuth[serverKey]) {
-    delete existingData.mcpOAuth[serverKey]
-    storage.update(existingData)
+  const transaction = updateNativeSecureStorage(
+    home,
+    current => {
+      if (!current.mcpOAuth?.[serverKey]) return { ...current }
+      const mcpOAuth = { ...current.mcpOAuth }
+      delete mcpOAuth[serverKey]
+      const next = { ...current }
+      if (Object.keys(mcpOAuth).length === 0) delete next.mcpOAuth
+      else next.mcpOAuth = mcpOAuth
+      return next
+    },
+    `Failed to clear stored OAuth tokens for ${serverName}`,
+  )
+  if (transaction !== null) {
     logMCPDebug(serverName, 'Cleared stored tokens from secure storage')
   }
 }
@@ -564,7 +587,7 @@ type WWWAuthenticateParams = {
  * 2. Run the RFC 8693 + RFC 7523 exchange (no browser)
  * 3. Save tokens to the same keychain slot as normal OAuth
  *
- * IdP connection details come from settings.xaaIdp (configured once via
+ * IdP connection details come from canonical `xaa_idp` TOML (configured once via
  * `agenc mcp xaa setup`). Per-server config is just `oauth.xaa: true`
  * plus the AS clientId/clientSecret.
  *
@@ -572,6 +595,8 @@ type WWWAuthenticateParams = {
  * All errors are actionable — they tell the user what to run.
  */
 async function performMCPXaaAuth(
+  home: HomeContext,
+  environment: ProviderEnvironment,
   serverName: string,
   serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
   onAuthorizationUrl: (url: string) => void,
@@ -583,7 +608,7 @@ async function performMCPXaaAuth(
   }
 
   // IdP config comes from user-level settings, not per-server.
-  const idp = getXaaIdpSettings()
+  const idp = getXaaIdpConfig()
   if (!idp) {
     throw new Error(
       "XAA: no IdP connection configured. Run 'agenc mcp xaa setup --issuer <url> --client-id <id> --client-secret' to configure.",
@@ -597,14 +622,14 @@ async function performMCPXaaAuth(
     )
   }
 
-  const clientConfig = getMcpClientConfig(serverName, serverConfig)
+  const clientConfig = getMcpClientConfig(home, serverName, serverConfig)
   const clientSecret = clientConfig?.clientSecret
   if (!clientSecret) {
     // Diagnostic context for serverKey mismatch debugging. Only computed
     // on the error path so there's no perf cost on success.
     const wantedKey = getServerKey(serverName, serverConfig)
     const haveKeys = Object.keys(
-      getSecureStorage().read()?.mcpOAuthClientConfig ?? {},
+      readNativeSecureStorage(home).mcpOAuthClientConfig ?? {},
     )
     const headersForLogging = Object.fromEntries(
       Object.entries(serverConfig.headers ?? {}).map(([k, v]) =>
@@ -624,16 +649,18 @@ async function performMCPXaaAuth(
 
   // IdP client secret lives in a separate keychain slot (keyed by IdP issuer),
   // NOT the AS secret — different trust domain. Optional: if absent, PKCE-only.
-  const idpClientSecret = getIdpClientSecret(idp.issuer)
+  const idpClientSecret = getIdpClientSecret(idp.issuer, home)
 
   // Acquire id_token (cached or via one OIDC browser pop at the IdP).
   let idToken
   try {
     idToken = await acquireIdpIdToken({
+      home,
+      environment,
       idpIssuer: idp.issuer,
-      idpClientId: idp.clientId,
+      idpClientId: idp.client_id,
       idpClientSecret,
-      callbackPort: idp.callbackPort,
+      callbackPort: idp.callback_port,
       onAuthorizationUrl,
       skipBrowserOpen,
       abortSignal,
@@ -644,7 +671,7 @@ async function performMCPXaaAuth(
   }
 
   // Discover the IdP's token endpoint for the RFC 8693 exchange.
-  const oidc = await discoverOidc(idp.issuer)
+  const oidc = await discoverOidc(idp.issuer, environment)
 
   // Run the exchange. performCrossAppAccess throws XaaTokenExchangeError
   // for the IdP leg and "jwt-bearer grant failed" for the AS leg.
@@ -655,11 +682,12 @@ async function performMCPXaaAuth(
       {
         clientId,
         clientSecret,
-        idpClientId: idp.clientId,
+        idpClientId: idp.client_id,
         idpClientSecret,
         idpIdToken: idToken,
         idpTokenEndpoint: oidc.token_endpoint,
       },
+      environment,
       serverName,
       abortSignal,
     )
@@ -670,7 +698,7 @@ async function performMCPXaaAuth(
     // shouldClearIdToken so we key off OAuth semantics (4xx / invalid body
     // → clear; 5xx IdP outage → preserve) rather than substring matching.
     if (e instanceof XaaTokenExchangeError && e.shouldClearIdToken) {
-      clearIdpIdToken(idp.issuer)
+      clearIdpIdToken(idp.issuer, home)
       logMCPDebug(
         serverName,
         'XAA: cleared cached id_token after token-exchange failure',
@@ -682,39 +710,44 @@ async function performMCPXaaAuth(
   // Save tokens via the same storage path as normal OAuth. We write directly
   // (instead of AgenCAuthProvider.saveTokens) to avoid instantiating the
   // whole provider just to write the same keys.
-  const storage = getSecureStorage()
-  const existingData = storage.read() || {}
   const serverKey = getServerKey(serverName, serverConfig)
-  const prev = existingData.mcpOAuth?.[serverKey]
-  storage.update({
-    ...existingData,
-    mcpOAuth: {
-      ...existingData.mcpOAuth,
-      [serverKey]: {
-        ...prev,
-        serverName,
-        serverUrl: serverConfig.url,
-        accessToken: tokens.access_token,
-        // AS may omit refresh_token on jwt-bearer — preserve any existing one
-        refreshToken: tokens.refresh_token ?? prev?.refreshToken,
-        expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
-        scope: tokens.scope,
-        clientId,
-        clientSecret,
-        // Persist the AS URL so _doRefresh and revokeServerTokens can locate
-        // the token/revocation endpoints when MCP URL ≠ AS URL (the common
-        // XAA topology).
-        discoveryState: {
-          authorizationServerUrl: tokens.authorizationServerUrl,
+  updateNativeSecureStorage(
+    home,
+    current => {
+      const prev = current.mcpOAuth?.[serverKey]
+      return {
+        ...current,
+        mcpOAuth: {
+          ...current.mcpOAuth,
+          [serverKey]: {
+            ...prev,
+            serverName,
+            serverUrl: serverConfig.url,
+            accessToken: tokens.access_token,
+            // AS may omit refresh_token on jwt-bearer — preserve any existing one
+            refreshToken: tokens.refresh_token ?? prev?.refreshToken,
+            expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
+            scope: tokens.scope,
+            clientId,
+            clientSecret,
+            // Persist the AS URL so _doRefresh and revokeServerTokens can locate
+            // the token/revocation endpoints when MCP URL != AS URL.
+            discoveryState: {
+              authorizationServerUrl: tokens.authorizationServerUrl,
+            },
+          },
         },
-      },
+      }
     },
-  })
+    `Failed to save XAA OAuth tokens for ${serverName}`,
+  )
 
   logMCPDebug(serverName, 'XAA: tokens saved')
 }
 
 export async function performMCPOAuthFlow(
+  home: HomeContext,
+  environment: ProviderEnvironment,
   serverName: string,
   serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
   onAuthorizationUrl: (url: string) => void,
@@ -739,12 +772,14 @@ export async function performMCPOAuthFlow(
   // Servers with `oauth.xaa` but AGENC_ENABLE_XAA unset hard-fail with
   // actionable copy rather than silently degrade to consent.
   if (serverConfig.oauth?.xaa) {
-    if (!isXaaEnabled()) {
+    if (!isXaaEnabled(environment)) {
       throw new Error(
         `XAA is not enabled (set AGENC_ENABLE_XAA=1). Remove 'oauth.xaa' from server '${serverName}' to use the standard consent flow.`,
       )
     }
     await performMCPXaaAuth(
+      home,
+      environment,
       serverName,
       serverConfig,
       onAuthorizationUrl,
@@ -757,9 +792,8 @@ export async function performMCPOAuthFlow(
   // Check for cached step-up scope and resource metadata URL before clearing
   // tokens. The transport-attached auth provider persists scope when it receives
   // a step-up 401, so we can use it here instead of making an extra probe request.
-  const storage = getSecureStorage()
   const serverKey = getServerKey(serverName, serverConfig)
-  const cachedEntry = storage.read()?.mcpOAuth?.[serverKey]
+  const cachedEntry = readNativeSecureStorage(home).mcpOAuth?.[serverKey]
   const cachedStepUpScope = cachedEntry?.stepUpScope
   const cachedResourceMetadataUrl =
     cachedEntry?.discoveryState?.resourceMetadataUrl
@@ -767,7 +801,7 @@ export async function performMCPOAuthFlow(
   // Clear any existing stored credentials to ensure fresh client registration.
   // Note: this deletes the entire entry (including discoveryState/stepUpScope),
   // but we already read the cached values above.
-  clearServerTokensFromSecureStorage(serverName, serverConfig)
+  clearServerTokensFromSecureStorage(home, serverName, serverConfig)
 
   // Use cached step-up scope and resource metadata URL if available.
   // The transport-attached auth provider caches these when it receives a
@@ -791,7 +825,8 @@ export async function performMCPOAuthFlow(
   try {
     // Use configured callback port for pre-configured OAuth, otherwise find an available port
     const configuredCallbackPort = serverConfig.oauth?.callbackPort
-    const port = configuredCallbackPort ?? (await findAvailablePort())
+    const port =
+      configuredCallbackPort ?? (await findAvailablePort(environment))
     const redirectUri = buildRedirectUri(port)
     logMCPDebug(
       serverName,
@@ -799,13 +834,16 @@ export async function performMCPOAuthFlow(
     )
 
     const provider = new AgenCAuthProvider(
+      home,
       serverName,
       serverConfig,
       redirectUri,
       true,
       onAuthorizationUrl,
       options?.skipBrowserOpen,
+      environment,
     )
+    const authFetch = createAuthFetch(environment)
 
     // Fetch and store OAuth metadata for scope information
     try {
@@ -813,7 +851,7 @@ export async function performMCPOAuthFlow(
         serverName,
         serverConfig.url,
         serverConfig.oauth?.authServerMetadataUrl,
-        undefined,
+        authFetch,
         wwwAuthParams.resourceMetadataUrl,
       )
       if (metadata) {
@@ -1009,6 +1047,7 @@ export async function performMCPOAuthFlow(
             serverUrl: serverConfig.url,
             scope: wwwAuthParams.scope,
             resourceMetadataUrl: wwwAuthParams.resourceMetadataUrl,
+            fetchFn: authFetch,
           })
           logMCPDebug(serverName, `Initial auth result: ${result}`)
 
@@ -1049,6 +1088,7 @@ export async function performMCPOAuthFlow(
       serverUrl: serverConfig.url,
       authorizationCode,
       resourceMetadataUrl: wwwAuthParams.resourceMetadataUrl,
+      fetchFn: authFetch,
     })
 
     logMCPDebug(serverName, `Auth result: ${result}`)
@@ -1081,14 +1121,26 @@ export async function performMCPOAuthFlow(
         error.errorCode === 'invalid_client' &&
         error.message.includes('Client not found')
       ) {
-        const storage = getSecureStorage()
-        const existingData = storage.read() || {}
         const serverKey = getServerKey(serverName, serverConfig)
-        if (existingData.mcpOAuth?.[serverKey]) {
-          delete existingData.mcpOAuth[serverKey].clientId
-          delete existingData.mcpOAuth[serverKey].clientSecret
-          storage.update(existingData)
-        }
+        updateNativeSecureStorage(
+          home,
+          current => {
+            const entry = current.mcpOAuth?.[serverKey]
+            if (!entry) return { ...current }
+            return {
+              ...current,
+              mcpOAuth: {
+                ...current.mcpOAuth,
+                [serverKey]: {
+                  ...entry,
+                  clientId: undefined,
+                  clientSecret: undefined,
+                },
+              },
+            }
+          },
+          `Failed to clear rejected OAuth client credentials for ${serverName}`,
+        )
       }
     }
 
@@ -1129,6 +1181,8 @@ export function wrapFetchWithStepUpDetection(
 }
 
 export class AgenCAuthProvider implements OAuthClientProvider {
+  private readonly home: HomeContext
+  private readonly environment: ProviderEnvironment
   private serverName: string
   private serverConfig: McpSSEServerConfig | McpHTTPServerConfig
   private redirectUri: string
@@ -1144,13 +1198,17 @@ export class AgenCAuthProvider implements OAuthClientProvider {
   private skipBrowserOpen: boolean
 
   constructor(
+    home: HomeContext,
     serverName: string,
     serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
     redirectUri: string = buildRedirectUri(),
     handleRedirection = false,
     onAuthorizationUrl?: (url: string) => void,
     skipBrowserOpen?: boolean,
+    environment: ProviderEnvironment = Object.freeze({}),
   ) {
+    this.home = home
+    this.environment = Object.freeze({ ...environment })
     this.serverName = serverName
     this.serverConfig = serverConfig
     this.redirectUri = redirectUri
@@ -1196,7 +1254,7 @@ export class AgenCAuthProvider implements OAuthClientProvider {
    * Override via MCP_OAUTH_CLIENT_METADATA_URL env var (e.g. for testing, FedStart).
    */
   get clientMetadataUrl(): string | undefined {
-    const override = process.env.MCP_OAUTH_CLIENT_METADATA_URL
+    const override = this.environment.MCP_OAUTH_CLIENT_METADATA_URL
     if (override) {
       logMCPDebug(this.serverName, `Using CIMD URL from env: ${override}`)
       return override
@@ -1233,8 +1291,7 @@ export class AgenCAuthProvider implements OAuthClientProvider {
   }
 
   async clientInformation(): Promise<OAuthClientInformation | undefined> {
-    const storage = getSecureStorage()
-    const data = storage.read()
+    const data = readNativeSecureStorage(this.home)
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
     // Check session credentials first (from DCR or previous auth)
@@ -1266,40 +1323,38 @@ export class AgenCAuthProvider implements OAuthClientProvider {
   async saveClientInformation(
     clientInformation: OAuthClientInformationFull,
   ): Promise<void> {
-    const storage = getSecureStorage()
-    const existingData = storage.read() || {}
     const serverKey = getServerKey(this.serverName, this.serverConfig)
-
-    const updatedData: SecureStorageData = {
-      ...existingData,
-      mcpOAuth: {
-        ...existingData.mcpOAuth,
-        [serverKey]: {
-          ...existingData.mcpOAuth?.[serverKey],
-          serverName: this.serverName,
-          serverUrl: this.serverConfig.url,
-          clientId: clientInformation.client_id,
-          clientSecret: clientInformation.client_secret,
-          // Provide default values for required fields if not present
-          accessToken: existingData.mcpOAuth?.[serverKey]?.accessToken || '',
-          expiresAt: existingData.mcpOAuth?.[serverKey]?.expiresAt || 0,
+    updateNativeSecureStorage(
+      this.home,
+      current => ({
+        ...current,
+        mcpOAuth: {
+          ...current.mcpOAuth,
+          [serverKey]: {
+            ...current.mcpOAuth?.[serverKey],
+            serverName: this.serverName,
+            serverUrl: this.serverConfig.url,
+            clientId: clientInformation.client_id,
+            clientSecret: clientInformation.client_secret,
+            // Provide default values for required fields if not present
+            accessToken: current.mcpOAuth?.[serverKey]?.accessToken || '',
+            expiresAt: current.mcpOAuth?.[serverKey]?.expiresAt || 0,
+          },
         },
-      },
-    }
-
-    storage.update(updatedData)
+      }),
+      `Failed to save OAuth client information for ${this.serverName}`,
+    )
   }
 
   async tokens(): Promise<OAuthTokens | undefined> {
     // Cross-process token changes (another AgenC instance refreshed or invalidated)
     // are picked up via the keychain cache TTL (see macOsKeychainStorage.ts).
-    // In-process writes already invalidate the cache via storage.update().
+    // In-process writes already invalidate the native storage cache.
     // We do NOT clearKeychainCache() here — tokens() is called by the MCP SDK's
     // _commonHeaders on every request, and forcing a cache miss would trigger
     // a blocking spawnSync(`security find-generic-password`) 30-40x/sec.
     // See CPU profile: spawnSync was 7.2% of total CPU after PR #19436.
-    const storage = getSecureStorage()
-    const data = await storage.readAsync()
+    const data = readNativeSecureStorage(this.home)
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
     const tokenData = data?.mcpOAuth?.[serverKey]
@@ -1332,11 +1387,11 @@ export class AgenCAuthProvider implements OAuthClientProvider {
     // in keychain — real bug seen with xaa.dev.
     //
     // xaaRefresh() internally short-circuits to undefined when the id_token
-    // isn't cached (or settings.xaaIdp is gone) → we fall through to the
+    // isn't cached (or canonical xaa_idp is gone) → we fall through to the
     // existing needs-auth path → user runs `xaa login`.
     //
     if (
-      isXaaEnabled() &&
+      isXaaEnabled(this.environment) &&
       this.serverConfig.oauth?.xaa &&
       !tokenData?.refreshToken &&
       (!tokenData?.accessToken ||
@@ -1456,31 +1511,31 @@ export class AgenCAuthProvider implements OAuthClientProvider {
 
   async saveTokens(tokens: OAuthTokens): Promise<void> {
     this._pendingStepUpScope = undefined
-    const storage = getSecureStorage()
-    const existingData = storage.read() || {}
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
     logMCPDebug(this.serverName, `Saving tokens`)
     logMCPDebug(this.serverName, `Token expires in: ${tokens.expires_in}`)
     logMCPDebug(this.serverName, `Has refresh token: ${!!tokens.refresh_token}`)
 
-    const updatedData: SecureStorageData = {
-      ...existingData,
-      mcpOAuth: {
-        ...existingData.mcpOAuth,
-        [serverKey]: {
-          ...existingData.mcpOAuth?.[serverKey],
-          serverName: this.serverName,
-          serverUrl: this.serverConfig.url,
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token,
-          expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
-          scope: tokens.scope,
+    updateNativeSecureStorage(
+      this.home,
+      current => ({
+        ...current,
+        mcpOAuth: {
+          ...current.mcpOAuth,
+          [serverKey]: {
+            ...current.mcpOAuth?.[serverKey],
+            serverName: this.serverName,
+            serverUrl: this.serverConfig.url,
+            accessToken: tokens.access_token,
+            refreshToken: tokens.refresh_token,
+            expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
+            scope: tokens.scope,
+          },
         },
-      },
-    }
-
-    storage.update(updatedData)
+      }),
+      `Failed to save OAuth tokens for ${this.serverName}`,
+    )
   }
 
   /**
@@ -1498,16 +1553,19 @@ export class AgenCAuthProvider implements OAuthClientProvider {
    * closes the keychain write race across concurrent AgenC processes.
    */
   private async xaaRefresh(): Promise<OAuthTokens | undefined> {
-    const idp = getXaaIdpSettings()
+    const idp = getXaaIdpConfig()
     if (!idp) return undefined // config was removed mid-session
 
     const serverKey = getServerKey(this.serverName, this.serverConfig)
-    const release = await acquireMcpRefreshLock(this.serverName, serverKey)
+    const release = await acquireMcpRefreshLock(
+      this.home,
+      this.serverName,
+      serverKey,
+    )
 
     try {
       clearKeychainCache()
-      const storage = getSecureStorage()
-      const existingData = storage.read() || {}
+      const existingData = readNativeSecureStorage(this.home)
       const tokenData = existingData.mcpOAuth?.[serverKey]
       if (tokenData) {
         const expiresIn = (tokenData.expiresAt - Date.now()) / 1000
@@ -1526,7 +1584,7 @@ export class AgenCAuthProvider implements OAuthClientProvider {
         }
       }
 
-      const idToken = getCachedIdpIdToken(idp.issuer)
+      const idToken = getCachedIdpIdToken(idp.issuer, this.home)
       if (!idToken) {
         logMCPDebug(
           this.serverName,
@@ -1536,7 +1594,11 @@ export class AgenCAuthProvider implements OAuthClientProvider {
       }
 
       const clientId = this.serverConfig.oauth?.clientId
-      const clientConfig = getMcpClientConfig(this.serverName, this.serverConfig)
+      const clientConfig = getMcpClientConfig(
+        this.home,
+        this.serverName,
+        this.serverConfig,
+      )
       if (!clientId || !clientConfig?.clientSecret) {
         logMCPDebug(
           this.serverName,
@@ -1545,7 +1607,7 @@ export class AgenCAuthProvider implements OAuthClientProvider {
         return undefined // shouldn't happen if `mcp add` was correct
       }
 
-      const idpClientSecret = getIdpClientSecret(idp.issuer)
+      const idpClientSecret = getIdpClientSecret(idp.issuer, this.home)
 
       // Discover IdP token endpoint. Could cache (fetchCache.ts already
       // caches /.well-known/ requests), but OIDC metadata is cheap + idempotent.
@@ -1553,7 +1615,7 @@ export class AgenCAuthProvider implements OAuthClientProvider {
       // caller falls through to needs-authentication instead of throwing mid-connect.
       let oidc
       try {
-        oidc = await discoverOidc(idp.issuer)
+        oidc = await discoverOidc(idp.issuer, this.environment)
       } catch (e) {
         logMCPDebug(
           this.serverName,
@@ -1567,11 +1629,12 @@ export class AgenCAuthProvider implements OAuthClientProvider {
         {
           clientId,
           clientSecret: clientConfig.clientSecret,
-          idpClientId: idp.clientId,
+          idpClientId: idp.client_id,
           idpClientSecret,
           idpIdToken: idToken,
           idpTokenEndpoint: oidc.token_endpoint,
         },
+        this.environment,
         this.serverName,
       )
       // Write directly (not via saveTokens) so clientId + clientSecret land in
@@ -1579,28 +1642,33 @@ export class AgenCAuthProvider implements OAuthClientProvider {
       // only spreads existing data; if no prior performMCPXaaAuth ran,
       // revokeServerTokens would later read tokenData.clientId as undefined
       // and send a client_id-less RFC 7009 request that strict ASes reject.
-      const latestData = storage.read() || {}
-      const prev = latestData.mcpOAuth?.[serverKey]
-      storage.update({
-        ...latestData,
-        mcpOAuth: {
-          ...latestData.mcpOAuth,
-          [serverKey]: {
-            ...prev,
-            serverName: this.serverName,
-            serverUrl: this.serverConfig.url,
-            accessToken: tokens.access_token,
-            refreshToken: tokens.refresh_token ?? prev?.refreshToken,
-            expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
-            scope: tokens.scope,
-            clientId,
-            clientSecret: clientConfig.clientSecret,
-            discoveryState: {
-              authorizationServerUrl: tokens.authorizationServerUrl,
+      updateNativeSecureStorage(
+        this.home,
+        current => {
+          const prev = current.mcpOAuth?.[serverKey]
+          return {
+            ...current,
+            mcpOAuth: {
+              ...current.mcpOAuth,
+              [serverKey]: {
+                ...prev,
+                serverName: this.serverName,
+                serverUrl: this.serverConfig.url,
+                accessToken: tokens.access_token,
+                refreshToken: tokens.refresh_token ?? prev?.refreshToken,
+                expiresAt: Date.now() + (tokens.expires_in || 3600) * 1000,
+                scope: tokens.scope,
+                clientId,
+                clientSecret: clientConfig.clientSecret,
+                discoveryState: {
+                  authorizationServerUrl: tokens.authorizationServerUrl,
+                },
+              },
             },
-          },
+          }
         },
-      })
+        `Failed to save refreshed XAA tokens for ${this.serverName}`,
+      )
       return {
         access_token: tokens.access_token,
         token_type: 'Bearer',
@@ -1610,7 +1678,7 @@ export class AgenCAuthProvider implements OAuthClientProvider {
       }
     } catch (e) {
       if (e instanceof XaaTokenExchangeError && e.shouldClearIdToken) {
-        clearIdpIdToken(idp.issuer)
+        clearIdpIdToken(idp.issuer, this.home)
         logMCPDebug(
           this.serverName,
           'XAA: cleared id_token after exchange failure',
@@ -1667,13 +1735,23 @@ export class AgenCAuthProvider implements OAuthClientProvider {
     // Guard with !handleRedirection to avoid persisting during normal auth flows
     // (where the scope may come from metadata scopes_supported rather than a 401).
     if (this._scopes && !this.handleRedirection) {
-      const storage = getSecureStorage()
-      const existingData = storage.read() || {}
       const serverKey = getServerKey(this.serverName, this.serverConfig)
-      const existing = existingData.mcpOAuth?.[serverKey]
-      if (existing) {
-        existing.stepUpScope = this._scopes
-        storage.update(existingData)
+      const transaction = updateNativeSecureStorage(
+        this.home,
+        current => {
+          const existing = current.mcpOAuth?.[serverKey]
+          if (!existing) return { ...current }
+          return {
+            ...current,
+            mcpOAuth: {
+              ...current.mcpOAuth,
+              [serverKey]: { ...existing, stepUpScope: this._scopes },
+            },
+          }
+        },
+        `Failed to persist OAuth step-up scope for ${this.serverName}`,
+      )
+      if (transaction !== null) {
         logMCPDebug(this.serverName, `Persisted step-up scope: ${this._scopes}`)
       }
     }
@@ -1742,38 +1820,44 @@ export class AgenCAuthProvider implements OAuthClientProvider {
   async invalidateCredentials(
     scope: 'all' | 'client' | 'tokens' | 'verifier' | 'discovery',
   ): Promise<void> {
-    const storage = getSecureStorage()
-    const existingData = storage.read()
-    if (!existingData?.mcpOAuth) return
-
     const serverKey = getServerKey(this.serverName, this.serverConfig)
-    const tokenData = existingData.mcpOAuth[serverKey]
-    if (!tokenData) return
-
-    switch (scope) {
-      case 'all':
-        delete existingData.mcpOAuth[serverKey]
-        break
-      case 'client':
-        tokenData.clientId = undefined
-        tokenData.clientSecret = undefined
-        break
-      case 'tokens':
-        tokenData.accessToken = ''
-        tokenData.refreshToken = undefined
-        tokenData.expiresAt = 0
-        break
-      case 'verifier':
-        this._codeVerifier = undefined
-        return
-      case 'discovery':
-        tokenData.discoveryState = undefined
-        tokenData.stepUpScope = undefined
-        break
+    if (scope === 'verifier') {
+      this._codeVerifier = undefined
+      return
     }
-
-    storage.update(existingData)
-    logMCPDebug(this.serverName, `Invalidated credentials (scope: ${scope})`)
+    const transaction = updateNativeSecureStorage(
+      this.home,
+      current => {
+        const tokenData = current.mcpOAuth?.[serverKey]
+        if (!tokenData) return { ...current }
+        const mcpOAuth = { ...current.mcpOAuth }
+        if (scope === 'all') {
+          delete mcpOAuth[serverKey]
+        } else {
+          const nextToken = { ...tokenData }
+          if (scope === 'client') {
+            nextToken.clientId = undefined
+            nextToken.clientSecret = undefined
+          } else if (scope === 'tokens') {
+            nextToken.accessToken = ''
+            nextToken.refreshToken = undefined
+            nextToken.expiresAt = 0
+          } else {
+            nextToken.discoveryState = undefined
+            nextToken.stepUpScope = undefined
+          }
+          mcpOAuth[serverKey] = nextToken
+        }
+        const next = { ...current }
+        if (Object.keys(mcpOAuth).length === 0) delete next.mcpOAuth
+        else next.mcpOAuth = mcpOAuth
+        return next
+      },
+      `Failed to invalidate OAuth credentials for ${this.serverName}`,
+    )
+    if (transaction !== null) {
+      logMCPDebug(this.serverName, `Invalidated credentials (scope: ${scope})`)
+    }
   }
 
   async saveDiscoveryState(state: OAuthDiscoveryState): Promise<void> {
@@ -1796,8 +1880,6 @@ export class AgenCAuthProvider implements OAuthClientProvider {
       this._metadata = metadata
     }
 
-    const storage = getSecureStorage()
-    const existingData = storage.read() || {}
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
     logMCPDebug(
@@ -1805,39 +1887,34 @@ export class AgenCAuthProvider implements OAuthClientProvider {
       `Saving discovery state (authServer: ${state.authorizationServerUrl})`,
     )
 
-    // Persist only the URLs, NOT the full metadata blobs.
-    // authorizationServerMetadata alone is ~1.5-2KB per MCP server (every
-    // grant type, PKCE method, endpoint the IdP supports). On macOS the
-    // keychain write goes through `security -i` which has a 4096-byte stdin
-    // line limit — with hex encoding that's ~2013 bytes of JSON total. Two
-    // OAuth MCP servers persisting full metadata overflows it, corrupting
-    // the credential store (#30337). The SDK re-fetches missing metadata
-    // with one HTTP GET on the next auth — see node_modules/.../auth.js
-    // `cachedState.authorizationServerMetadata ?? await discover...`.
-    const updatedData: SecureStorageData = {
-      ...existingData,
-      mcpOAuth: {
-        ...existingData.mcpOAuth,
-        [serverKey]: {
-          ...existingData.mcpOAuth?.[serverKey],
-          serverName: this.serverName,
-          serverUrl: this.serverConfig.url,
-          accessToken: existingData.mcpOAuth?.[serverKey]?.accessToken || '',
-          expiresAt: existingData.mcpOAuth?.[serverKey]?.expiresAt || 0,
-          discoveryState: {
-            authorizationServerUrl: state.authorizationServerUrl,
-            resourceMetadataUrl: state.resourceMetadataUrl,
+    // Persist only the authoritative discovery URLs, not a stale copy of the
+    // full provider metadata. The SDK re-fetches metadata from those URLs on
+    // the next auth when needed.
+    updateNativeSecureStorage(
+      this.home,
+      current => ({
+        ...current,
+        mcpOAuth: {
+          ...current.mcpOAuth,
+          [serverKey]: {
+            ...current.mcpOAuth?.[serverKey],
+            serverName: this.serverName,
+            serverUrl: this.serverConfig.url,
+            accessToken: current.mcpOAuth?.[serverKey]?.accessToken || '',
+            expiresAt: current.mcpOAuth?.[serverKey]?.expiresAt || 0,
+            discoveryState: {
+              authorizationServerUrl: state.authorizationServerUrl,
+              resourceMetadataUrl: state.resourceMetadataUrl,
+            },
           },
         },
-      },
-    }
-
-    storage.update(updatedData)
+      }),
+      `Failed to save OAuth discovery state for ${this.serverName}`,
+    )
   }
 
   async discoveryState(): Promise<OAuthDiscoveryState | undefined> {
-    const storage = getSecureStorage()
-    const data = storage.read()
+    const data = readNativeSecureStorage(this.home)
     const serverKey = getServerKey(this.serverName, this.serverConfig)
 
     const cached = data?.mcpOAuth?.[serverKey]?.discoveryState
@@ -1877,6 +1954,7 @@ export class AgenCAuthProvider implements OAuthClientProvider {
           this.serverName,
           this.serverConfig.url,
           metadataUrl,
+          createAuthFetch(this.environment),
         )
         if (metadata) {
           const validatedMetadata =
@@ -1904,13 +1982,16 @@ export class AgenCAuthProvider implements OAuthClientProvider {
     refreshToken: string,
   ): Promise<OAuthTokens | undefined> {
     const serverKey = getServerKey(this.serverName, this.serverConfig)
-    const release = await acquireMcpRefreshLock(this.serverName, serverKey)
+    const release = await acquireMcpRefreshLock(
+      this.home,
+      this.serverName,
+      serverKey,
+    )
 
     try {
       // Re-read tokens after acquiring lock — another process may have refreshed
       clearKeychainCache()
-      const storage = getSecureStorage()
-      const data = storage.read()
+      const data = readNativeSecureStorage(this.home)
       const tokenData = data?.mcpOAuth?.[serverKey]
       if (tokenData) {
         const expiresIn = (tokenData.expiresAt - Date.now()) / 1000
@@ -1953,7 +2034,7 @@ export class AgenCAuthProvider implements OAuthClientProvider {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
         logMCPDebug(this.serverName, `Starting token refresh`)
-        const authFetch = createAuthFetch()
+        const authFetch = createAuthFetch(this.environment)
 
         // Reuse cached metadata from the initial OAuth flow if available,
         // since metadata (token endpoint URL, etc.) is static per auth server.
@@ -2033,8 +2114,7 @@ export class AgenCAuthProvider implements OAuthClientProvider {
             `Token refresh failed with invalid_grant: ${error.message}`,
           )
           clearKeychainCache()
-          const storage = getSecureStorage()
-          const data = storage.read()
+          const data = readNativeSecureStorage(this.home)
           const serverKey = getServerKey(this.serverName, this.serverConfig)
           const tokenData = data?.mcpOAuth?.[serverKey]
           if (tokenData) {
@@ -2092,8 +2172,10 @@ export class AgenCAuthProvider implements OAuthClientProvider {
   }
 }
 
-export async function readClientSecret(): Promise<string> {
-  const envSecret = process.env.MCP_CLIENT_SECRET
+export async function readClientSecret(
+  environment: ProviderEnvironment,
+): Promise<string> {
+  const envSecret = environment.MCP_CLIENT_SECRET
   if (envSecret) {
     return envSecret
   }
@@ -2130,41 +2212,54 @@ export async function readClientSecret(): Promise<string> {
 }
 
 export function saveMcpClientSecret(
+  home: HomeContext,
   serverName: string,
   serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
   clientSecret: string,
 ): void {
-  const storage = getSecureStorage()
-  const existingData = storage.read() || {}
   const serverKey = getServerKey(serverName, serverConfig)
-  storage.update({
-    ...existingData,
-    mcpOAuthClientConfig: {
-      ...existingData.mcpOAuthClientConfig,
-      [serverKey]: { clientSecret },
-    },
-  })
+  updateNativeSecureStorage(
+    home,
+    current => ({
+      ...current,
+      mcpOAuthClientConfig: {
+        ...current.mcpOAuthClientConfig,
+        [serverKey]: { clientSecret },
+      },
+    }),
+    `Failed to save OAuth client secret for ${serverName}`,
+  )
 }
 
 export function clearMcpClientConfig(
+  home: HomeContext,
   serverName: string,
   serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
 ): void {
-  const storage = getSecureStorage()
-  const existingData = storage.read()
-  if (!existingData?.mcpOAuthClientConfig) return
   const serverKey = getServerKey(serverName, serverConfig)
-  if (existingData.mcpOAuthClientConfig[serverKey]) {
-    delete existingData.mcpOAuthClientConfig[serverKey]
-    storage.update(existingData)
-  }
+  updateNativeSecureStorage(
+    home,
+    current => {
+      if (!current.mcpOAuthClientConfig?.[serverKey]) return { ...current }
+      const mcpOAuthClientConfig = { ...current.mcpOAuthClientConfig }
+      delete mcpOAuthClientConfig[serverKey]
+      const next = { ...current }
+      if (Object.keys(mcpOAuthClientConfig).length === 0) {
+        delete next.mcpOAuthClientConfig
+      } else {
+        next.mcpOAuthClientConfig = mcpOAuthClientConfig
+      }
+      return next
+    },
+    `Failed to clear OAuth client config for ${serverName}`,
+  )
 }
 function getMcpClientConfig(
+  home: HomeContext,
   serverName: string,
   serverConfig: McpSSEServerConfig | McpHTTPServerConfig,
 ): { clientSecret?: string } | undefined {
-  const storage = getSecureStorage()
-  const data = storage.read()
+  const data = readNativeSecureStorage(home)
   const serverKey = getServerKey(serverName, serverConfig)
   return data?.mcpOAuthClientConfig?.[serverKey]
 }

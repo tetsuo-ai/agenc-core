@@ -54,6 +54,7 @@ const UNBOUNDED_DAEMON_METHODS: ReadonlySet<AgencDaemonMethod> = new Set([
   "message.stream",
 ]);
 
+/** `$AGENC_HOME` if set, otherwise `$HOME/.agenc`. */
 export function resolveAgencHome(
   env: NodeJS.ProcessEnv = process.env,
   userHome = homedir(),
@@ -64,6 +65,7 @@ export function resolveAgencHome(
     : join(userHome, ".agenc");
 }
 
+/** Unix socket under the home, or a stable per-home named pipe on Windows. */
 export function resolveDaemonSocketPath(
   env: NodeJS.ProcessEnv = process.env,
   userHome?: string,
@@ -79,6 +81,7 @@ export function resolveDaemonSocketPath(
   return `\\\\.\\pipe\\agenc-daemon-${identity}`;
 }
 
+/** Path of `daemon.cookie` under the AgenC home. */
 export function resolveDaemonCookiePath(
   env: NodeJS.ProcessEnv = process.env,
   userHome?: string,

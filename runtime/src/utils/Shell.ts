@@ -52,6 +52,8 @@ import {
   spawnContainedProcess,
   terminateProcessTreeAndWait,
 } from "./supervisedProcess.js";
+import { peekAmbientRuntimeSession } from "../session/current-session.js";
+import type { AgentRuntimeOptions } from "../session/runtime-options.js";
 
 export type ShellConfig = {
   provider: ShellProvider;
@@ -80,9 +82,14 @@ function isExecutable(shellPath: string): boolean {
 /**
  * Determines the best available shell to use.
  */
-export async function findSuitableShell(): Promise<string> {
-  // Check for explicit shell override first
-  const shellOverride = process.env.AGENC_SHELL;
+export async function findSuitableShell(
+  runtimeOptions?: AgentRuntimeOptions,
+): Promise<string> {
+  const ambientSession = peekAmbientRuntimeSession();
+  const resolvedOptions =
+    runtimeOptions ?? ambientSession?.services?.runtimeOptions;
+  // Check the immutable per-session override first.
+  const shellOverride = resolvedOptions?.posixShellPath;
   if (shellOverride) {
     // Validate it's a supported shell type
     const isSupported =
@@ -93,13 +100,13 @@ export async function findSuitableShell(): Promise<string> {
     } else {
       // Note, if we ever want to add support for new shells here we'll need to update or Bash tool parsing to account for this
       logForDebugging(
-        `AGENC_SHELL="${shellOverride}" is not a valid bash/zsh path, falling back to detection`,
+        `Configured shell "${shellOverride}" is not a valid bash/zsh path, falling back to detection`,
       );
     }
   }
 
   // Check user's preferred shell from environment
-  const env_shell = process.env.SHELL;
+  const env_shell = ambientSession?.services.userShell.path ?? process.env.SHELL;
   // Only consider SHELL if it's bash or zsh
   const isEnvShellSupported =
     env_shell && (env_shell.includes("bash") || env_shell.includes("zsh"));
@@ -154,13 +161,34 @@ export async function findSuitableShell(): Promise<string> {
 }
 
 async function getShellConfigImpl(): Promise<ShellConfig> {
-  const binShell = await findSuitableShell();
-  const provider = await createBashShellProvider(binShell);
+  const runtimeOptions =
+    peekAmbientRuntimeSession()?.services?.runtimeOptions;
+  const binShell = await findSuitableShell(runtimeOptions);
+  const provider = await createBashShellProvider(binShell, {
+    ...(runtimeOptions?.commandWrapperArgv !== undefined
+      ? { commandWrapperArgv: runtimeOptions.commandWrapperArgv }
+      : {}),
+  });
   return { provider };
 }
 
-// Memoize the entire shell config so it only happens once per session
-export const getShellConfig = memoize(getShellConfigImpl);
+const shellConfigs = new Map<string, Promise<ShellConfig>>();
+
+/** Cache by immutable session shell policy, never by daemon-global state. */
+export function getShellConfig(): Promise<ShellConfig> {
+  const runtimeOptions =
+    peekAmbientRuntimeSession()?.services?.runtimeOptions;
+  const key = JSON.stringify({
+    shell: runtimeOptions?.posixShellPath ?? null,
+    wrapper: runtimeOptions?.commandWrapperArgv ?? [],
+  });
+  let pending = shellConfigs.get(key);
+  if (pending === undefined) {
+    pending = getShellConfigImpl();
+    shellConfigs.set(key, pending);
+  }
+  return pending;
+}
 
 export const getPsProvider = memoize(async (): Promise<ShellProvider> => {
   const psPath = await getCachedPowerShellPath();
@@ -225,8 +253,10 @@ export async function exec(
     .padStart(4, "0");
 
   // Sandbox temp directory - use per-user directory name to prevent multi-user permission conflicts
+  const runtimeOptions =
+    peekAmbientRuntimeSession()?.services?.runtimeOptions;
   const sandboxTmpDir = posixJoin(
-    process.env.AGENC_TMPDIR || "/tmp",
+    runtimeOptions?.sessionTempRoot || "/tmp",
     getAgenCTempDirName(),
   );
 

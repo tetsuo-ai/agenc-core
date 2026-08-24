@@ -6,6 +6,7 @@ import {
 
 describe('openAiCodeOAuthShared', () => {
   const originalFetch = globalThis.fetch
+  const environment = Object.freeze({})
 
   afterEach(() => {
     globalThis.fetch = originalFetch
@@ -23,7 +24,7 @@ describe('openAiCodeOAuthShared', () => {
     ) as unknown as typeof fetch
 
     await expect(
-      exchangeProviderCodeIdTokenForApiKey('id-token'),
+      exchangeProviderCodeIdTokenForApiKey('id-token', environment),
     ).rejects.toThrow(
       'ProviderCode API key exchange completed, but no API key token was returned.',
     )
@@ -40,7 +41,7 @@ describe('openAiCodeOAuthShared', () => {
     ) as unknown as typeof fetch
 
     await expect(
-      exchangeProviderCodeIdTokenForApiKey('id-token'),
+      exchangeProviderCodeIdTokenForApiKey('id-token', environment),
     ).rejects.toThrow('ProviderCode API key exchange returned invalid JSON.')
   })
 })

@@ -3,11 +3,11 @@ import { constants as fsConstants } from 'fs'
 import { access, writeFile } from 'fs/promises'
 import { homedir } from 'os'
 import { join } from 'path'
-import { type ReleaseChannel, saveGlobalConfig } from './config.js'
+import { type ReleaseChannel, updateRuntimeState } from './config.js'
 import { getAPIProvider } from './model/providers.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { env } from './env.js'
-import { getAgenCConfigHomeDir } from './envUtils.js'
+import { getAgenCHomeDir } from './envUtils.js'
 import { AgenCError, getErrnoCode, isENOENT } from './errors.js'
 import { execFileNoThrowWithCwd } from './execFileNoThrow.js'
 import { getFsImplementation } from './fsOperations.js'
@@ -163,7 +163,7 @@ const LOCK_TIMEOUT_MS = 5 * 60 * 1000 // 5 minute timeout for locks
  * This is a function to ensure it's evaluated at runtime after test setup
  */
 export function getLockFilePath(): string {
-  return join(getAgenCConfigHomeDir(), '.update.lock')
+  return join(getAgenCHomeDir(), '.update.lock')
 }
 
 /**
@@ -226,7 +226,7 @@ async function acquireLock(): Promise<boolean> {
         // fs.mkdir from getFsImplementation() is always recursive:true and
         // swallows EEXIST internally, so a dir-creation race cannot reach the
         // catch below — only writeFile's EEXIST (true lock contention) can.
-        await fs.mkdir(getAgenCConfigHomeDir())
+        await fs.mkdir(getAgenCHomeDir())
         await writeFile(lockPath, `${process.pid}`, {
           encoding: 'utf8',
           flag: 'wx',
@@ -507,7 +507,7 @@ To fix this issue:
     }
 
     // Set installMethod to 'global' to track npm global installations
-    saveGlobalConfig(current => ({
+    updateRuntimeState(current => ({
       ...current,
       installMethod: 'global',
     }))

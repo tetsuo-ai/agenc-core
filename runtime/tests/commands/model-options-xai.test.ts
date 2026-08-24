@@ -12,17 +12,11 @@ import {
   getDefaultMainLoopModelSetting,
 } from "../../src/utils/model/model.js";
 import { getModelOptions } from "../../src/utils/model/modelOptions.js";
-import { resetSettingsCache } from "../../src/utils/settings/settingsCache.js";
+import { runWithStartupProviderSelection } from "../../src/utils/model/providers.js";
 
 const ORIGINAL_ENV = {
-  AGENC_CONFIG_DIR: process.env.AGENC_CONFIG_DIR,
   AGENC_HOME: process.env.AGENC_HOME,
-  AGENC_USE_GEMINI: process.env.AGENC_USE_GEMINI,
-  AGENC_USE_GITHUB: process.env.AGENC_USE_GITHUB,
-  AGENC_USE_MISTRAL: process.env.AGENC_USE_MISTRAL,
-  AGENC_USE_MINIMAX: process.env.AGENC_USE_MINIMAX,
-  AGENC_USE_OPENAI: process.env.AGENC_USE_OPENAI,
-  NVIDIA_NIM: process.env.NVIDIA_NIM,
+  AGENC_PROVIDER: process.env.AGENC_PROVIDER,
   OPENAI_MODEL: process.env.OPENAI_MODEL,
   XAI_API_KEY: process.env.XAI_API_KEY,
 };
@@ -43,20 +37,13 @@ function restoreEnv(): void {
 beforeEach(async () => {
   restoreEnv();
   tempHome = await mkdtemp(join(tmpdir(), "agenc-xai-model-options-"));
-  process.env.AGENC_CONFIG_DIR = tempHome;
   process.env.AGENC_HOME = tempHome;
-  delete process.env.AGENC_USE_GEMINI;
-  delete process.env.AGENC_USE_GITHUB;
-  delete process.env.AGENC_USE_MISTRAL;
-  delete process.env.AGENC_USE_MINIMAX;
-  delete process.env.AGENC_USE_OPENAI;
-  delete process.env.NVIDIA_NIM;
+  process.env.AGENC_PROVIDER = "grok";
   delete process.env.OPENAI_MODEL;
   process.env.XAI_API_KEY = "xai-test-key";
   setInitialMainLoopModel(null);
   setMainLoopModelOverride(undefined);
   resetModelStringsForTestingOnly();
-  resetSettingsCache();
 });
 
 afterEach(async () => {
@@ -64,7 +51,6 @@ afterEach(async () => {
   setInitialMainLoopModel(null);
   setMainLoopModelOverride(undefined);
   resetModelStringsForTestingOnly();
-  resetSettingsCache();
   if (tempHome !== null) {
     await rm(tempHome, { recursive: true, force: true });
     tempHome = null;
@@ -73,9 +59,15 @@ afterEach(async () => {
 
 describe("xAI model options", () => {
   it("uses grok-4.6 as the default and hides legacy Anthropic picker rows", () => {
-    expect(getDefaultMainLoopModelSetting()).toBe("grok-4.6");
+    const { defaultModel, options } = runWithStartupProviderSelection(
+      { provider: "grok", model: "grok-4.6", environment: { ...process.env } },
+      () => ({
+        defaultModel: getDefaultMainLoopModelSetting(),
+        options: getModelOptions(false),
+      }),
+    );
+    expect(defaultModel).toBe("grok-4.6");
 
-    const options = getModelOptions(false);
     // The grok picker is derived from REGISTERED_MODEL_CATALOG, with the
     // current frontier model leading the older catalog entries. grok-4.6 is
     // both the newest entry and the current default (asserted above).
