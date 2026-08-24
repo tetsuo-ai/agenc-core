@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, test } from "vitest";
 import { DAEMON_CLIENT_ENV_SNAPSHOT_KEYS } from "../../src/app-server/client-env-snapshot.js";
 import { CANONICAL_SESSION_ENV_KEYS } from "../../src/session/environment.js";
+import { getContextWindowForModelForContext } from "../../src/utils/context.js";
 
 const SRC = fileURLToPath(new URL("../../src/", import.meta.url));
 const TESTS = fileURLToPath(new URL("../", import.meta.url));
@@ -274,6 +275,18 @@ describe("provider authority architecture", () => {
     );
   });
 
+  test("bootstrap cannot restore a duck-typed injected BYOK authority", () => {
+    const source = readFileSync(`${SRC}/bin/bootstrap.ts`, "utf8");
+    expect(source).not.toContain("AuthBackendWithLocalByokKeys");
+    expect(source).not.toContain("canReadLocalByokKeys");
+    expect(source).not.toMatch(
+      /authBackend\s+as\s+\{\s*readByokKey\??\s*:/u,
+    );
+    expect(source).toMatch(
+      /new LocalAuthBackend\(\{\s*agencHome,\s*env\s*\}\)/u,
+    );
+  });
+
   test("provider and web request paths cannot rediscover client env from process globals", () => {
     const directSessionEnvironment =
       /process\.env\.(?:(?:OPENAI|ANTHROPIC|GEMINI|MISTRAL|NVIDIA|MINIMAX|XAI|GROK|OLLAMA|LMSTUDIO|OPENROUTER|GROQ|DEEPSEEK|AWS_BEDROCK|GITHUB|GH|GOOGLE|AGENC_XAI)_[A-Z0-9_]+|(?:FIRECRAWL|BING|EXA|JINA|LINKUP|MOJEEK|TAVILY|YOU)_API_KEY|WEB_[A-Z0-9_]+)/u;
@@ -380,6 +393,8 @@ describe("provider authority architecture", () => {
 
   test("provider-dependent TUI labels and fast mode use captured session authority", () => {
     const capturedKeys = new Set(CANONICAL_SESSION_ENV_KEYS);
+    expect(capturedKeys).toContain("AGENC_ONBOARDING");
+    expect(capturedKeys).toContain("AGENC_DISABLE_1M_CONTEXT");
     expect(capturedKeys).toContain("AGENC_DISABLE_FAST_MODE");
     expect(capturedKeys).toContain("AGENC_SKIP_FAST_MODE_NETWORK_ERRORS");
 
@@ -408,6 +423,39 @@ describe("provider authority architecture", () => {
     expect(appSource).toMatch(
       /modelDisplayContext=\{remoteAuthSessionContext\}/u,
     );
+    expect(appSource).toMatch(/modelSetting:\s*mainLoopModelSetting/u);
+    expect(appSource).toMatch(
+      /getContextWindowForModelForContext\([\s\S]*?remoteAuthSessionContext/u,
+    );
+
+    const modelSource = readFileSync(`${SRC}/utils/model/model.ts`, "utf8");
+    const runtimeResolver = modelSource.match(
+      /export function getRuntimeMainLoopModel\([\s\S]*?\n\}/u,
+    )?.[0];
+    expect(runtimeResolver).toBeDefined();
+    expect(runtimeResolver).toContain("modelSetting: ModelSetting | undefined");
+    expect(runtimeResolver).not.toContain("getUserSpecifiedModelSetting(");
+
+    expect(
+      getContextWindowForModelForContext(
+        "unknown-local-model",
+        {
+          provider: "openai-compatible",
+          environment: {
+            AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW: "777777",
+          },
+        },
+      ),
+    ).toBe(777_777);
+    expect(
+      getContextWindowForModelForContext(
+        "claude-sonnet-4-6[1m]",
+        {
+          provider: "anthropic",
+          environment: { AGENC_DISABLE_1M_CONTEXT: "1" },
+        },
+      ),
+    ).not.toBe(1_000_000);
 
     const effortIndicatorSource = readFileSync(
       `${SRC}/tui/components/EffortIndicator.ts`,

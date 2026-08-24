@@ -180,14 +180,20 @@ export function spawnBubblewrap(
 }
 
 export function findSystemBubblewrapInPath(
-  searchPath: string | undefined = process.env["PATH"],
+  searchPath?: string,
   cwd: string = process.cwd(),
   trustedDirectories: readonly string[] = TRUSTED_BWRAP_DIRECTORIES,
 ): string | null {
-  if (!searchPath) return null;
+  // A supplied `undefined` is an authoritative missing session PATH (for
+  // example, after decoding a daemon protocol tombstone). Only a caller that
+  // omits the search-path argument entirely opts into this process's PATH.
+  const effectiveSearchPath = arguments.length === 0
+    ? process.env["PATH"]
+    : searchPath;
+  if (!effectiveSearchPath) return null;
   const cwdReal = realpathOrSelf(cwd);
   const trusted = trustedDirectories.map((directory) => realpathOrSelf(directory));
-  for (const segment of searchPath.split(path.delimiter)) {
+  for (const segment of effectiveSearchPath.split(path.delimiter)) {
     if (!segment) continue;
     for (const program of [DEFAULT_BWRAP_PROGRAM, FALLBACK_BWRAP_PROGRAM]) {
       const candidate = path.join(segment, program);

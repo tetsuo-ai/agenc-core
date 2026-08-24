@@ -12,9 +12,10 @@ import {
   OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW,
 } from '../llm/openai-compatible-token-limits.js'
 import { resolveModelCatalogMetadata } from '../llm/registry/model-catalog.js'
+import type { ProviderEnvironment } from '../llm/provider-options.js'
 import {
-  getSelectedProviderEnvironment,
-  getSelectedProviderName,
+  apiProviderForProvider,
+  getSelectedProviderSelection,
 } from './model/providers.js'
 
 // Model context window size (200k tokens for all models right now)
@@ -25,9 +26,9 @@ export const MODEL_CONTEXT_WINDOW_DEFAULT = 200_000
 // otherwise auto-compact fires on every message (issue #635).
 // Override via AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW env var to avoid
 // hardcoding when deploying models not yet in openaiContextWindows.ts.
-function openAiFallbackContextWindow(): number {
+function openAiFallbackContextWindow(environment: ProviderEnvironment): number {
   const v = parseInt(
-    getSelectedProviderEnvironment().AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW ?? '',
+    environment.AGENC_OPENAI_FALLBACK_CONTEXT_WINDOW ?? '',
     10,
   )
   return !isNaN(v) && v > 0
@@ -51,11 +52,18 @@ const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 64_000
 export const CAPPED_DEFAULT_MAX_TOKENS = CAPPED_DEFAULT_MAX_OUTPUT_TOKENS
 export const ESCALATED_MAX_TOKENS = ESCALATED_MAX_OUTPUT_TOKENS
 
-function usesOpenAICompatibleModelLimits(): boolean {
-  const provider = getSelectedProviderName()
-  return provider !== 'anthropic' &&
-    provider !== 'amazon-bedrock' &&
-    provider !== 'agenc'
+function usesOpenAICompatibleModelLimits(provider: string): boolean {
+  const apiProvider = apiProviderForProvider(provider)
+  return apiProvider !== 'firstParty' && apiProvider !== 'agenc'
+}
+
+export type ContextWindowProviderContext = {
+  readonly provider: string
+  readonly environment: ProviderEnvironment
+}
+
+function is1mContextDisabledIn(environment: ProviderEnvironment): boolean {
+  return isEnvTruthy(environment.AGENC_DISABLE_1M_CONTEXT)
 }
 
 /**
@@ -63,7 +71,7 @@ function usesOpenAICompatibleModelLimits(): boolean {
  * Used by C4E admins to disable 1M context for HIPAA compliance.
  */
 export function is1mContextDisabled(): boolean {
-  return isEnvTruthy(process.env.AGENC_DISABLE_1M_CONTEXT)
+  return is1mContextDisabledIn(process.env)
 }
 
 export function has1mContext(model: string): boolean {
@@ -103,7 +111,14 @@ export function claudeFamilyVersion(
 // new minor releases inherit automatically. Only touch this for a NEW family
 // or a capability regression.
 export function modelSupports1M(model: string): boolean {
-  if (is1mContextDisabled()) {
+  return modelSupports1MInEnvironment(model, process.env)
+}
+
+function modelSupports1MInEnvironment(
+  model: string,
+  environment: ProviderEnvironment,
+): boolean {
+  if (is1mContextDisabledIn(environment)) {
     return false
   }
   // Parse the RAW model string first: getCanonicalName collapses minors
@@ -134,16 +149,29 @@ export function getContextWindowForModel(
   model: string,
   betas?: string[],
 ): number {
+  return getContextWindowForModelForContext(
+    model,
+    getSelectedProviderSelection(),
+    betas,
+  )
+}
+
+export function getContextWindowForModelForContext(
+  model: string,
+  context: ContextWindowProviderContext,
+  betas?: string[],
+): number {
+  const { environment, provider } = context
   // Allow override via environment variable (internal-only)
   // This takes precedence over all other context window resolution, including 1M detection,
   // so users can cap the effective context window for local decisions (auto-compact, etc.)
   // while still using a 1M-capable endpoint.
   if (
-    getSelectedProviderEnvironment().USER_TYPE === 'ant' &&
-    getSelectedProviderEnvironment().AGENC_MAX_CONTEXT_TOKENS
+    environment.USER_TYPE === 'ant' &&
+    environment.AGENC_MAX_CONTEXT_TOKENS
   ) {
     const override = parseInt(
-      getSelectedProviderEnvironment().AGENC_MAX_CONTEXT_TOKENS!,
+      environment.AGENC_MAX_CONTEXT_TOKENS,
       10,
     )
     if (!isNaN(override) && override > 0) {
@@ -152,7 +180,10 @@ export function getContextWindowForModel(
   }
 
   // [1m] suffix — explicit client-side opt-in, respected over all detection
-  if (has1mContext(model)) {
+  if (
+    !is1mContextDisabledIn(environment) &&
+    /\[1m\]/i.test(model)
+  ) {
     return 1_000_000
   }
 
@@ -169,12 +200,11 @@ export function getContextWindowForModel(
   // Unknown models get a conservative 128k default. This was previously 8k,
   // but that caused auto-compact to fire on every turn because the effective
   // context (8k minus output reservation) became negative (issue #635).
-  if (usesOpenAICompatibleModelLimits()) {
-    const selectionEnvironment = getSelectedProviderEnvironment()
+  if (usesOpenAICompatibleModelLimits(provider)) {
     const openaiWindow = getOpenAICompatibleContextWindow(model, {
-      provider: getSelectedProviderName(),
+      provider,
       externalOverridesJson:
-        selectionEnvironment.AGENC_OPENAI_CONTEXT_WINDOWS,
+        environment.AGENC_OPENAI_CONTEXT_WINDOWS,
     })
     if (openaiWindow !== undefined) {
       return openaiWindow
@@ -183,24 +213,27 @@ export function getContextWindowForModel(
       `[context] Warning: model "${model}" not in context window table — using conservative 128k default. ` +
       'Add it to src/utils/model/openaiContextWindows.ts for accurate compaction.',
     )
-    return openAiFallbackContextWindow()
+    return openAiFallbackContextWindow(environment)
   }
 
   const cap = getModelCapability(model)
   if (cap?.max_input_tokens && cap.max_input_tokens >= 100_000) {
     if (
       cap.max_input_tokens > MODEL_CONTEXT_WINDOW_DEFAULT &&
-      is1mContextDisabled()
+      is1mContextDisabledIn(environment)
     ) {
       return MODEL_CONTEXT_WINDOW_DEFAULT
     }
     return cap.max_input_tokens
   }
 
-  if (betas?.includes(CONTEXT_1M_BETA_HEADER) && modelSupports1M(model)) {
+  if (
+    betas?.includes(CONTEXT_1M_BETA_HEADER) &&
+    modelSupports1MInEnvironment(model, environment)
+  ) {
     return 1_000_000
   }
-  if (process.env.USER_TYPE === 'ant') {
+  if (environment.USER_TYPE === 'ant') {
     const antModel = resolveAntModel(model)
     if (antModel?.contextWindow) {
       return antModel.contextWindow
@@ -262,10 +295,21 @@ export function getModelMaxOutputTokens(model: string): {
   default: number
   upperLimit: number
 } {
+  return getModelMaxOutputTokensForContext(model, getSelectedProviderSelection())
+}
+
+export function getModelMaxOutputTokensForContext(
+  model: string,
+  context: ContextWindowProviderContext,
+): {
+  default: number
+  upperLimit: number
+} {
+  const { environment, provider } = context
   let defaultTokens: number
   let upperLimit: number
 
-  if (process.env.USER_TYPE === 'ant') {
+  if (environment.USER_TYPE === 'ant') {
     const antModel = resolveAntModel(model.toLowerCase())
     if (antModel) {
       defaultTokens = antModel.defaultMaxTokens ?? MAX_OUTPUT_TOKENS_DEFAULT
@@ -275,12 +319,11 @@ export function getModelMaxOutputTokens(model: string): {
   }
 
   // openai-compatible provider — use known output limits to avoid 400 errors
-  if (usesOpenAICompatibleModelLimits()) {
-    const selectionEnvironment = getSelectedProviderEnvironment()
+  if (usesOpenAICompatibleModelLimits(provider)) {
     const openaiMax = getOpenAICompatibleMaxOutputTokens(model, {
-      provider: getSelectedProviderName(),
+      provider,
       externalOverridesJson:
-        selectionEnvironment.AGENC_OPENAI_MAX_OUTPUT_TOKENS,
+        environment.AGENC_OPENAI_MAX_OUTPUT_TOKENS,
     })
     if (openaiMax !== undefined) {
       return { default: openaiMax, upperLimit: openaiMax }

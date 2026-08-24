@@ -293,13 +293,19 @@ export function getDefaultHaikuModel(): ModelName {
 export function getRuntimeMainLoopModel(params: {
   permissionMode: PermissionMode
   mainLoopModel: string
+  modelSetting: ModelSetting | undefined
   exceeds200kTokens?: boolean
 }): ModelName {
-  const { permissionMode, mainLoopModel, exceeds200kTokens = false } = params
+  const {
+    permissionMode,
+    mainLoopModel,
+    modelSetting,
+    exceeds200kTokens = false,
+  } = params
 
   // opusplan uses Opus in plan mode without [1m] suffix.
   if (
-    getUserSpecifiedModelSetting() === 'opusplan' &&
+    modelSetting === 'opusplan' &&
     permissionMode === 'plan' &&
     !exceeds200kTokens
   ) {
@@ -307,7 +313,7 @@ export function getRuntimeMainLoopModel(params: {
   }
 
   // sonnetplan by default
-  if (getUserSpecifiedModelSetting() === 'haiku' && permissionMode === 'plan') {
+  if (modelSetting === 'haiku' && permissionMode === 'plan') {
     return getDefaultSonnetModel()
   }
 

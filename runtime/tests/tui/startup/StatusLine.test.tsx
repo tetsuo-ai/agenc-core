@@ -4,6 +4,7 @@ import React from 'react'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import { createRoot } from '../ink/root.js'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../remoteAuthSessionContext.fixture.js'
 import { StatusLine } from './StatusLine.js'
 
 const mocks = vi.hoisted(() => ({
@@ -86,7 +87,7 @@ vi.mock('../../utils/settings/canonicalAuthority.js', () => ({
 
 vi.mock('../../utils/context.js', () => ({
   calculateContextPercentages: () => ({ used: 0, remaining: 100 }),
-  getContextWindowForModel: () => 100000,
+  getContextWindowForModelForContext: () => 100000,
 }))
 
 vi.mock('../../utils/cwd.js', () => ({
@@ -208,6 +209,7 @@ describe('StatusLine vim mode display', () => {
           <StatusLine
             messagesRef={{ current: [] }}
             lastAssistantMessageId={null}
+            providerContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
             vimMode={vimMode}
           />,
         )

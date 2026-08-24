@@ -5,6 +5,7 @@ import type { UUID } from 'crypto';
 import type { RefObject } from 'react';
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { RuntimeStateRepository } from '../../config/runtime-state-repository.js';
 import type { StreamingToolUse } from '../../llm/types.js';
 import { every } from '../../utils/set.js';
 import { getIsRemoteMode } from '../../bootstrap/state.js';
@@ -92,14 +93,16 @@ class WelcomePanelBoundary extends React.Component<
 const LogoHeader = React.memo(function LogoHeader(t0: {
   readonly agentDefinitions?: AgentDefinitionsResult;
   readonly providerAuthContext: ProviderAuthReadContext;
+  readonly stateRepository: RuntimeStateRepository;
   readonly showWelcome?: boolean;
 }) {
   const {
     agentDefinitions,
     providerAuthContext,
+    stateRepository,
     showWelcome = false,
   } = t0;
-  return <OffscreenFreeze><Box flexDirection="column" gap={1}><React.Suspense fallback={null}><StatusNotices homeContext={providerAuthContext.home} providerAuthContext={providerAuthContext} agentDefinitions={agentDefinitions} /></React.Suspense>{showWelcome ? <WelcomePanelBoundary><WelcomeColdPanelWithModel /></WelcomePanelBoundary> : null}</Box></OffscreenFreeze>;
+  return <OffscreenFreeze><Box flexDirection="column" gap={1}><React.Suspense fallback={null}><StatusNotices homeContext={providerAuthContext.home} providerAuthContext={providerAuthContext} stateRepository={stateRepository} agentDefinitions={agentDefinitions} /></React.Suspense>{showWelcome ? <WelcomePanelBoundary><WelcomeColdPanelWithModel /></WelcomePanelBoundary> : null}</Box></OffscreenFreeze>;
 });
 
 // Dead code elimination: conditional import for brief mode
@@ -156,6 +159,7 @@ type Props = {
   showAllInTranscript?: boolean;
   agentDefinitions?: AgentDefinitionsResult;
   providerAuthContext: ProviderAuthReadContext;
+  stateRepository: RuntimeStateRepository;
   onOpenRateLimitOptions?: () => void;
   /** Hide the logo/header - used for subagent zoom view */
   hideLogo?: boolean;
@@ -287,6 +291,7 @@ const MessagesImpl = ({
   showAllInTranscript = false,
   agentDefinitions,
   providerAuthContext,
+  stateRepository,
   onOpenRateLimitOptions,
   hideLogo = false,
   isLoading,
@@ -625,7 +630,7 @@ const MessagesImpl = ({
   }, [tools, lookups_0]);
   return <>
       {/* Logo */}
-      {!hideLogo && !(renderRange && renderRange[0] > 0) && <LogoHeader agentDefinitions={agentDefinitions} providerAuthContext={providerAuthContext} showWelcome={renderableMessages.length === 0 && !streamingText && !isBriefOnly} />}
+      {!hideLogo && !(renderRange && renderRange[0] > 0) && <LogoHeader agentDefinitions={agentDefinitions} providerAuthContext={providerAuthContext} stateRepository={stateRepository} showWelcome={renderableMessages.length === 0 && !streamingText && !isBriefOnly} />}
 
       {/* Truncation indicator */}
       {hasTruncatedMessages_0 && <Divider title={`${toggleShowAllShortcut} to show ${chalk.bold(hiddenMessageCount_0)} previous messages`} width={contentColumns} />}

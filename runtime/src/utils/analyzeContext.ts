@@ -54,12 +54,18 @@ import { isBareMode } from './envUtils.js'
 import { errorMessage, toError } from './errors.js'
 import { logError } from './log.js'
 import { normalizeMessagesForAPI } from './messages.js'
-import { getRuntimeMainLoopModel } from './model/model.js'
+import {
+  getRuntimeMainLoopModel,
+  type ModelSetting,
+} from './model/model.js'
 import type { SettingSource } from './settings/constants.js'
 import { jsonStringify } from './slowOperations.js'
 import { buildEffectiveSystemPrompt } from './systemPrompt.js'
 import type { Theme } from './theme.js'
-import { getCurrentUsage } from './tokens.js'
+import {
+  doesMostRecentAssistantMessageExceed200k,
+  getCurrentUsage,
+} from './tokens.js'
 
 const RESERVED_CATEGORY_NAME = 'Autocompact buffer'
 const MANUAL_COMPACT_BUFFER_NAME = 'Compact buffer'
@@ -919,6 +925,7 @@ async function approximateMessageTokens(
 export async function analyzeContextUsage(
   messages: Message[],
   model: string,
+  modelSetting: ModelSetting,
   getToolPermissionContext: () => Promise<ToolPermissionContext>,
   tools: Tools,
   agentDefinitions: AgentDefinitionsResult,
@@ -931,6 +938,8 @@ export async function analyzeContextUsage(
   const runtimeModel = getRuntimeMainLoopModel({
     permissionMode: (await getToolPermissionContext()).mode,
     mainLoopModel: model,
+    modelSetting,
+    exceeds200kTokens: doesMostRecentAssistantMessageExceed200k(messages),
   })
   // Get context window size
   const contextWindow = getContextWindowForModel(runtimeModel, getSdkBetas())

@@ -3,6 +3,7 @@ import {
   checkIsAgenCNativeProvider as checkIsAgenCNativeProviderUnbound,
   getAgentModel as getAgentModelUnbound,
 } from '../../../src/utils/model/agent.ts'
+import { getRuntimeMainLoopModel as getRuntimeMainLoopModelUnbound } from '../../../src/utils/model/model.ts'
 import { runWithStartupProviderSelection } from '../../../src/utils/model/providers.ts'
 
 const providerEnvKeys = [
@@ -95,6 +96,10 @@ const getAgentModel = (...args: Parameters<typeof getAgentModelUnbound>) =>
 const checkIsAgenCNativeProvider = () =>
   withSelectedProvider(checkIsAgenCNativeProviderUnbound)
 
+const getRuntimeMainLoopModel = (
+  ...args: Parameters<typeof getRuntimeMainLoopModelUnbound>
+) => withSelectedProvider(() => getRuntimeMainLoopModelUnbound(...args))
+
 describe('getAgentModel provider-aware fallback', () => {
   afterEach(() => {
     restoreProviderEnv()
@@ -109,6 +114,7 @@ describe('getAgentModel provider-aware fallback', () => {
         'claude-sonnet-4-6',
         undefined,
         'default',
+        undefined,
       )
 
       expect(result).toContain('haiku')
@@ -125,6 +131,7 @@ describe('getAgentModel provider-aware fallback', () => {
         'gpt-4o-mini',
         undefined,
         'default',
+        undefined,
       )
 
       expect(result).toBe('gpt-4o-mini')
@@ -138,6 +145,7 @@ describe('getAgentModel provider-aware fallback', () => {
         'gemini-2.5-pro',
         undefined,
         'default',
+        undefined,
       )
 
       expect(result).toBe('gemini-2.5-pro')
@@ -151,6 +159,7 @@ describe('getAgentModel provider-aware fallback', () => {
         'claude-sonnet-4-6',
         undefined,
         'default',
+        undefined,
       )
 
       expect(result).toBe('claude-sonnet-4-6')
@@ -164,6 +173,7 @@ describe('getAgentModel provider-aware fallback', () => {
         'gpt-4o-mini',
         undefined,
         'default',
+        undefined,
       )
 
       expect(result).toBe('gpt-4o-mini')
@@ -177,6 +187,7 @@ describe('getAgentModel provider-aware fallback', () => {
         'mistral-small-latest',
         undefined,
         'default',
+        undefined,
       )
 
       expect(result).toBe('mistral-small-latest')
@@ -190,6 +201,7 @@ describe('getAgentModel provider-aware fallback', () => {
         'gpt-4o-mini',
         undefined,
         'default',
+        undefined,
       )
 
       expect(result).toBe('gpt-4o-mini')
@@ -203,6 +215,7 @@ describe('getAgentModel provider-aware fallback', () => {
         'meta/llama-3.1-8b-instruct',
         undefined,
         'default',
+        undefined,
       )
 
       expect(result).toBe('meta/llama-3.1-8b-instruct')
@@ -216,6 +229,7 @@ describe('getAgentModel provider-aware fallback', () => {
         'MiniMax-M2.5-highspeed',
         undefined,
         'default',
+        undefined,
       )
 
       expect(result).toBe('MiniMax-M2.5-highspeed')
@@ -229,6 +243,7 @@ describe('getAgentModel provider-aware fallback', () => {
         'gpt-5.5-mini',
         undefined,
         'default',
+        undefined,
       )
 
       expect(result).toBe('gpt-5.5-mini')
@@ -244,9 +259,24 @@ describe('getAgentModel provider-aware fallback', () => {
         'gpt-4o',
         undefined,
         'default',
+        undefined,
       )
 
       expect(result).toBe('gpt-4o')
+    })
+
+    test('inherit applies the explicit parent alias in plan mode without ambient settings', () => {
+      useProvider('first-party')
+
+      const result = getAgentModel(
+        'inherit',
+        'claude-sonnet-4-6',
+        undefined,
+        'plan',
+        'opusplan',
+      )
+
+      expect(result).toContain('opus')
     })
   })
 
@@ -268,5 +298,64 @@ describe('getAgentModel provider-aware fallback', () => {
 
       expect(checkIsAgenCNativeProvider()).toBe(false)
     })
+  })
+})
+
+describe('getRuntimeMainLoopModel explicit setting authority', () => {
+  afterEach(() => {
+    restoreProviderEnv()
+  })
+
+  test('uses opusplan only for plan mode below the 200k threshold', () => {
+    useProvider('first-party')
+
+    expect(
+      getRuntimeMainLoopModel({
+        permissionMode: 'plan',
+        mainLoopModel: 'claude-sonnet-4-6',
+        modelSetting: 'opusplan',
+      }),
+    ).toContain('opus')
+    expect(
+      getRuntimeMainLoopModel({
+        permissionMode: 'default',
+        mainLoopModel: 'claude-sonnet-4-6',
+        modelSetting: 'opusplan',
+      }),
+    ).toBe('claude-sonnet-4-6')
+    expect(
+      getRuntimeMainLoopModel({
+        permissionMode: 'plan',
+        mainLoopModel: 'claude-sonnet-4-6',
+        modelSetting: 'opusplan',
+        exceeds200kTokens: true,
+      }),
+    ).toBe('claude-sonnet-4-6')
+  })
+
+  test('uses the plan model for an explicit haiku setting', () => {
+    useProvider('first-party')
+
+    expect(
+      getRuntimeMainLoopModel({
+        permissionMode: 'plan',
+        mainLoopModel: 'claude-haiku-4-5',
+        modelSetting: 'haiku',
+      }),
+    ).toContain('sonnet')
+  })
+
+  test('does not reinterpret a resolved provider model when the raw setting is absent', () => {
+    useProvider('first-party')
+
+    for (const modelSetting of [null, undefined]) {
+      expect(
+        getRuntimeMainLoopModel({
+          permissionMode: 'plan',
+          mainLoopModel: 'haiku',
+          modelSetting,
+        }),
+      ).toBe('haiku')
+    }
   })
 })

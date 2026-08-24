@@ -279,6 +279,7 @@ export async function resumeAgentBackground({
     toolUseContext.options.mainLoopModel,
     undefined,
     permissionMode,
+    appState.mainLoopModelForSession ?? appState.mainLoopModel,
   );
 
   // `selectedAgent.permissionMode` is typed with the permissions/types.ts

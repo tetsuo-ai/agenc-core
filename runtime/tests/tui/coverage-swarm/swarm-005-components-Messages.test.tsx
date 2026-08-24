@@ -2,7 +2,10 @@ import { PassThrough } from 'node:stream'
 import type { ReactNode } from 'react'
 import React from 'react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
-import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../remoteAuthSessionContext.fixture.js'
+import {
+  TEST_REMOTE_AUTH_SESSION_CONTEXT,
+  TEST_RUNTIME_STATE_REPOSITORY,
+} from '../remoteAuthSessionContext.fixture.js'
 
 const harness = vi.hoisted(() => ({
   rows: [] as Array<{
@@ -288,6 +291,7 @@ const baseProps = {
   isMessageSelectorVisible: false,
   messages: [],
   providerAuthContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
+  stateRepository: TEST_RUNTIME_STATE_REPOSITORY,
   screen: 'main' as const,
   streamingToolUses: [],
   toolJSX: null,

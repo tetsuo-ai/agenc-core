@@ -6,6 +6,7 @@ import { renderToString } from "../../utils/staticRender.js";
 import {
   TEST_REMOTE_AUTH_ENVIRONMENT,
   TEST_REMOTE_AUTH_SESSION_CONTEXT,
+  TEST_RUNTIME_STATE_REPOSITORY,
 } from "../remoteAuthSessionContext.fixture.js";
 
 function providerAuthContextWithEnvironment(
@@ -104,6 +105,7 @@ describe("StatusNotices coverage", () => {
       <StatusNotices
         homeContext={daemonDisabledAuthContext.home}
         providerAuthContext={daemonDisabledAuthContext}
+        stateRepository={TEST_RUNTIME_STATE_REPOSITORY}
       />,
       100,
     );
@@ -121,6 +123,7 @@ describe("StatusNotices coverage", () => {
       <StatusNotices
         homeContext={daemonEnabledAuthContext.home}
         providerAuthContext={daemonEnabledAuthContext}
+        stateRepository={TEST_RUNTIME_STATE_REPOSITORY}
       />,
       100,
     );

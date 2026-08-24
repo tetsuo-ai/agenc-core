@@ -1,6 +1,7 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import * as React from 'react';
 import type { HomeContext } from '../../config/home.js';
+import type { RuntimeStateRepository } from '../../config/runtime-state-repository.js';
 import type { ProviderAuthReadContext } from '../../utils/auth.js';
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js';
 import { getRuntimeState } from '../../utils/config.js';
@@ -13,6 +14,7 @@ import { getActiveNotices, type StatusNoticeContext, type StatusNoticeDefinition
 type Props = {
   homeContext: HomeContext;
   providerAuthContext: ProviderAuthReadContext;
+  stateRepository: RuntimeStateRepository;
   agentDefinitions?: AgentDefinitionsResult;
 };
 
@@ -122,6 +124,7 @@ export function StatusNotices(t0: Props) {
     agentDefinitions,
     homeContext,
     providerAuthContext,
+    stateRepository,
   } = t0;
   const [memoryDiagnostics, setMemoryDiagnostics] = React.useState(cachedMemoryDiagnostics);
   React.useEffect(() => {
@@ -133,7 +136,7 @@ export function StatusNotices(t0: Props) {
       setMemoryDiagnostics(cachedMemoryDiagnostics);
     });
   }, []);
-  const t2 = getRuntimeState();
+  const t2 = getRuntimeState(stateRepository);
   const context = {
     config: t2,
     homeContext,

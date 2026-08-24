@@ -449,8 +449,8 @@ function execCommand(
   // execve does NOT search PATH — a bare program name (e.g. `rg` from the
   // system-ripgrep resolution) would die here with ENOENT even when the
   // binary is perfectly mounted inside the namespace. Resolve bare names
-  // against the command's own PATH (the daemon's sanitized env, which keeps
-  // PATH by design) before exec'ing.
+  // against the command's own PATH before exec'ing. An absent session PATH is
+  // authoritative and must not recover the daemon launcher's process PATH.
   const program = resolveProgramOnPath(rawProgram, options.env);
   process.chdir(options.cwd);
   execve(program, [options.argv0, ...args], stringOnlyEnv(options.env));
@@ -462,7 +462,7 @@ function resolveProgramOnPath(
   env: NodeJS.ProcessEnv,
 ): string {
   if (program.includes("/")) return program;
-  const pathValue = env.PATH ?? env.Path ?? env.path ?? process.env.PATH ?? "";
+  const pathValue = env.PATH ?? env.Path ?? env.path ?? "";
   for (const dir of pathValue.split(":")) {
     if (dir.length === 0) continue;
     const candidate = path.join(dir, program);

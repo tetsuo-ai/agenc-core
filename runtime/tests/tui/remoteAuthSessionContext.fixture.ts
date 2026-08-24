@@ -3,6 +3,7 @@ import { join } from "node:path";
 
 import type { EnvSnapshot } from "../../src/config/env.js";
 import { resolveHomeContext } from "../../src/config/home.js";
+import { RuntimeStateRepository } from "../../src/config/runtime-state-repository.js";
 import type { ProviderAuthReadContext } from "../../src/utils/auth.js";
 
 const TEST_AUTH_HOME = join(tmpdir(), "agenc-tui-auth-authority-test-home");
@@ -19,3 +20,8 @@ export const TEST_REMOTE_AUTH_SESSION_CONTEXT: ProviderAuthReadContext =
     environment: TEST_REMOTE_AUTH_ENVIRONMENT,
     provider: "anthropic",
   });
+
+export const TEST_RUNTIME_STATE_REPOSITORY = new RuntimeStateRepository(
+  TEST_REMOTE_AUTH_SESSION_CONTEXT.home,
+  { storage: "memory" },
+);

@@ -149,6 +149,7 @@ import {
   useSetAppState,
 } from "../state/AppState.js";
 import { useSettings } from "../hooks/useSettings.js";
+import { useMainLoopModel } from "../hooks/useMainLoopModel.js";
 import {
   FullscreenModeProvider,
 } from "../context/fullscreenModeContext.js";
@@ -168,11 +169,10 @@ import { requestTuiSessionTurnCancel } from "../sessionCancel.js";
 import { getSdkBetas } from "../../bootstrap/state.js";
 import {
   calculateContextPercentages,
-  getContextWindowForModel,
+  getContextWindowForModelForContext,
 } from "../../utils/context.js";
 import {
   getRuntimeMainLoopModel,
-  type ModelName,
 } from "../../utils/model/model.js";
 import {
   doesMostRecentAssistantMessageExceed200k,
@@ -1719,10 +1719,10 @@ function startupModel(props: AgenCTuiProps): string | null {
   );
 }
 function hasAcknowledgedCostThreshold(props: AgenCTuiProps): boolean {
-  const repository =
-    props.session.services.configStore?.stateRepository ??
-    props.configStore.stateRepository;
-  return repository?.get().hasAcknowledgedCostThreshold === true;
+  return (
+    getTuiConfigStore(props.session).stateRepository.get()
+      .hasAcknowledgedCostThreshold === true
+  );
 }
 async function persistOnboardingSelection(
   props: AgenCTuiProps,
@@ -2342,6 +2342,7 @@ export function getTuiProviderEnvironment(
 function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const { exit } = useApp();
   const settings = useSettings();
+  const stateRepository = getTuiConfigStore(props.session).stateRepository;
   const getFpsMetrics = useFpsMetrics();
   useCostSummary(getFpsMetrics);
   const renderHealthWarning = formatRenderHealthWarning(getFpsMetrics?.());
@@ -4452,7 +4453,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // when a new assistant message lands (its usage block carries the token
   // counts) or the model/permission mode changes — never per streaming delta.
   // Derivation mirrors StatusLine so both surfaces show the same number.
-  const mainLoopModelSetting = useAppState((state) => state.mainLoopModel);
+  const mainLoopModelSetting = useAppState(
+    (state) => state.mainLoopModelForSession ?? state.mainLoopModel,
+  );
+  const resolvedMainLoopModel = useMainLoopModel();
   const contextPctLabel = useMemo(() => {
     const messages = transcriptMessagesRef.current as any[];
     // Daemon-bridge transcripts synthesize assistant messages with zero
@@ -4463,16 +4467,23 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     if (!usage) return null;
     const runtimeModel = getRuntimeMainLoopModel({
       permissionMode: toolPermissionContext.mode,
-      mainLoopModel: mainLoopModelSetting as ModelName,
+      mainLoopModel: resolvedMainLoopModel,
+      modelSetting: mainLoopModelSetting,
       exceeds200kTokens: doesMostRecentAssistantMessageExceed200k(messages),
     });
-    const windowSize = getContextWindowForModel(runtimeModel, getSdkBetas());
+    const windowSize = getContextWindowForModelForContext(
+      runtimeModel,
+      remoteAuthSessionContext,
+      getSdkBetas(),
+    );
     const { used } = calculateContextPercentages(usage, windowSize);
     return used === null ? null : `ctx ${used}%`;
   }, [
     lastAssistantMessageId,
     transcript.latestUsage,
     mainLoopModelSetting,
+    resolvedMainLoopModel,
+    remoteAuthSessionContext,
     toolPermissionContext.mode,
   ]);
   const realtimeState = useRealtimeState(props.session.realtime);
@@ -6623,19 +6634,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const handleCostThresholdDone = useCallback(() => {
     setShowCostDialog(false);
     setHaveShownCostDialog(true);
-    const repository =
-      props.session.services.configStore?.stateRepository ??
-      props.configStore.stateRepository;
-    if (repository !== undefined) {
-      updateRuntimeState(
-        (current) => ({
-          ...current,
-          hasAcknowledgedCostThreshold: true,
-        }),
-        repository,
-      );
-    }
-  }, [props.configStore.stateRepository, props.session.services.configStore]);
+    updateRuntimeState(
+      (current) => ({
+        ...current,
+        hasAcknowledgedCostThreshold: true,
+      }),
+      stateRepository,
+    );
+  }, [stateRepository]);
 
   // Spinner gating + mode derivation.
   //
@@ -6819,6 +6825,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       streamingToolUses={transcript.streamingToolUses}
       showAllInTranscript={showAllInTranscript}
       providerAuthContext={remoteAuthSessionContext}
+      stateRepository={stateRepository}
       isLoading={isLoading}
       streamingText={transcript.streamingText}
       streamingThinking={transcript.streamingThinking as never}

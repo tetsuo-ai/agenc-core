@@ -14,6 +14,7 @@ import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed
 import type { LLMProvider } from "../llm/types.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
 import { createManagedFeatures } from "../llm/registry/features.js";
+import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
 import {
   markCapabilityDrift,
   markCapabilityVerified,
@@ -179,26 +180,17 @@ function firstNonEmptyString(
   return undefined;
 }
 
-interface AuthBackendWithLocalByokKeys extends AuthBackend {
-  readByokKey(
-    provider: string,
-  ): string | undefined | Promise<string | undefined>;
-}
-
-function canReadLocalByokKeys(
-  authBackend: AuthBackend | undefined,
-): authBackend is AuthBackendWithLocalByokKeys {
-  return (
-    authBackend !== undefined &&
-    typeof (authBackend as { readByokKey?: unknown }).readByokKey === "function"
-  );
-}
-
-async function readAuthBackendByokKey(
-  authBackend: AuthBackend | undefined,
+async function readLocalByokFallback(
+  authBackend: LocalAuthBackend,
   provider: ProviderName,
+  ...higherPrecedenceApiKeys: Array<string | undefined>
 ): Promise<string | undefined> {
-  if (!canReadLocalByokKeys(authBackend)) return undefined;
+  if (
+    resolveBuiltInProviderInfo(provider)?.onboarding.access !== "api-key" ||
+    firstNonEmptyString(...higherPrecedenceApiKeys) !== undefined
+  ) {
+    return undefined;
+  }
   const apiKey = await authBackend.readByokKey(provider);
   return typeof apiKey === "string" && apiKey.trim().length > 0
     ? apiKey.trim()
@@ -1048,17 +1040,14 @@ async function bootstrapLocalRuntimeSessionScoped(
   );
   const localByokAuthBackend = new LocalAuthBackend({ agencHome, env });
   const managedKeysEnabled = resolveAuthManagedKeysEnabled(startup.config);
-  const startupInjectedByokKey = await readAuthBackendByokKey(
-    options.authBackend,
-    startup.provider,
-  );
-  const startupLocalByokKey = await readAuthBackendByokKey(
+  const startupLocalByokKey = await readLocalByokFallback(
     localByokAuthBackend,
     startup.provider,
+    options.apiKey,
+    startup.apiKey,
   );
   const startupByokApiKey = firstNonEmptyString(
     startup.apiKey,
-    startupInjectedByokKey,
     startupLocalByokKey,
   );
   const byokApiKey = selectByokPrecedenceApiKey({
@@ -1095,17 +1084,20 @@ async function bootstrapLocalRuntimeSessionScoped(
     startup.config,
     env,
   );
-  const runtimeAuthBackendByokKey =
-    resolvedProvider === startup.provider
-      ? startupInjectedByokKey
-      : await readAuthBackendByokKey(options.authBackend, resolvedProvider);
+  const runtimeProviderApiKey = resolvedProvider === startup.provider
+    ? startup.apiKey
+    : runtimeProviderSettings?.apiKey;
   const runtimeLocalByokKey =
     resolvedProvider === startup.provider
       ? startupLocalByokKey
-      : await readAuthBackendByokKey(localByokAuthBackend, resolvedProvider);
+      : await readLocalByokFallback(
+          localByokAuthBackend,
+          resolvedProvider,
+          options.apiKey,
+          runtimeProviderApiKey,
+        );
   const runtimeByokApiKey = firstNonEmptyString(
-    startup.apiKey,
-    runtimeAuthBackendByokKey,
+    runtimeProviderApiKey,
     runtimeLocalByokKey,
   );
   const runtimeSelectedByokApiKey = selectByokPrecedenceApiKey({

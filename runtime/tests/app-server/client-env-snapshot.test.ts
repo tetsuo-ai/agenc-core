@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   collectDaemonClientEnvOverrides,
   DAEMON_CLIENT_ENV_SNAPSHOT_KEYS,
+  mergeDaemonClientEnvironment,
   normalizeDaemonClientEnvOverrides,
 } from "../../src/app-server/client-env-snapshot.js";
 
@@ -45,6 +46,52 @@ describe("daemon client environment snapshots", () => {
       AGENC_HEARTBEAT_INTERVAL: "",
       AGENC_TRANSACTION_GUARD: "",
     });
+  });
+
+  it("materializes protocol clear markers as absent runtime values", () => {
+    const merged = mergeDaemonClientEnvironment(
+      {
+        HOME: "/daemon/home",
+        AGENC_PROVIDER: "openai",
+        AGENC_EFFORT_LEVEL: "high",
+        AGENC_CREDENTIAL_DOCS_MCP: "Bearer stale-client",
+      },
+      { AGENC_EFFORT_LEVEL: "   " },
+    );
+
+    expect(merged).toMatchObject({ HOME: "/daemon/home" });
+    expect(merged).not.toHaveProperty("AGENC_PROVIDER");
+    expect(merged).not.toHaveProperty("AGENC_EFFORT_LEVEL");
+    expect(merged).not.toHaveProperty("AGENC_CREDENTIAL_DOCS_MCP");
+  });
+
+  it("materializes one client's values while clearing omitted session state", () => {
+    const merged = mergeDaemonClientEnvironment(
+      {
+        AGENC_PROVIDER: "openai",
+        AGENC_EFFORT_LEVEL: "high",
+      },
+      collectDaemonClientEnvOverrides({
+        AGENC_PROVIDER: "gemini",
+        PATH: "/client/bin",
+      }),
+    );
+
+    expect(merged).toMatchObject({
+      AGENC_PROVIDER: "gemini",
+      PATH: "/client/bin",
+    });
+    expect(merged).not.toHaveProperty("AGENC_EFFORT_LEVEL");
+  });
+
+  it("captures onboarding display control for the owning TUI session", () => {
+    const forced = collectDaemonClientEnvOverrides({
+      AGENC_ONBOARDING: "force",
+    });
+    const ordinary = collectDaemonClientEnvOverrides({});
+
+    expect(forced.AGENC_ONBOARDING).toBe("force");
+    expect(ordinary.AGENC_ONBOARDING).toBe("");
   });
 
   it("isolates remote attribution metadata without duplicating remote behavior", () => {

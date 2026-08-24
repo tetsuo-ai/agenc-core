@@ -4,6 +4,7 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -574,6 +575,37 @@ describe("SandboxExecutionBroker", () => {
           agencLinuxSandboxExe: workspaceHelper,
         }).reason,
       ).toContain("outside the writable workspace");
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "does not probe the daemon PATH when the session PATH is absent",
+    () => {
+      const root = tempRoot("agenc-sandbox-broker-session-path-");
+      const outside = tempRoot("agenc-sandbox-broker-session-path-helper-");
+      const helper = join(outside, "agenc-linux-sandbox");
+      writeFileSync(helper, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+      const daemonBin = tempRoot("agenc-sandbox-broker-daemon-path-");
+      symlinkSync("/bin/true", join(daemonBin, "bwrap"));
+      const previousPath = process.env.PATH;
+      process.env.PATH = daemonBin;
+      try {
+        const status = probeSandboxExecutionStatus({
+          mode: "workspace_write",
+          cwd: root,
+          env: { AGENC_DISABLE_LANDLOCK_FALLBACK: "1" },
+          platform: "linux",
+          agencLinuxSandboxExe: helper,
+        });
+
+        expect(status).toMatchObject({
+          kind: "unavailable",
+          reason: "bubblewrap was not found in a trusted system directory",
+        });
+      } finally {
+        if (previousPath === undefined) delete process.env.PATH;
+        else process.env.PATH = previousPath;
+      }
     },
   );
 

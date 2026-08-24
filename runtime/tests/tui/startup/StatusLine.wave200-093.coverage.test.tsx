@@ -4,6 +4,7 @@ import React from 'react'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 import { createRoot } from '../ink/root.js'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../remoteAuthSessionContext.fixture.js'
 import { StatusLine, statusLineShouldDisplay } from './StatusLine.js'
 
 const mocks = vi.hoisted(() => ({
@@ -106,7 +107,7 @@ vi.mock('../../utils/settings/canonicalAuthority.js', () => ({
 
 vi.mock('../../utils/context.js', () => ({
   calculateContextPercentages: () => ({ used: 2, remaining: 98 }),
-  getContextWindowForModel: mocks.getContextWindowForModel,
+  getContextWindowForModelForContext: mocks.getContextWindowForModel,
 }))
 
 vi.mock('../../utils/cwd.js', () => ({
@@ -263,6 +264,7 @@ describe('StatusLine wave200-093 coverage', () => {
         <StatusLine
           messagesRef={{ current: [{ uuid: 'assistant-093' }] as any[] }}
           lastAssistantMessageId="assistant-093"
+          providerContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
           vimMode="NORMAL"
         />,
       )
@@ -353,10 +355,12 @@ describe('StatusLine wave200-093 coverage', () => {
     expect(mocks.getRuntimeMainLoopModel).toHaveBeenCalledWith({
       permissionMode: 'acceptEdits',
       mainLoopModel: 'gpt-5',
+      modelSetting: undefined,
       exceeds200kTokens: true,
     })
     expect(mocks.getContextWindowForModel).toHaveBeenCalledWith(
       'runtime-gpt-5',
+      TEST_REMOTE_AUTH_SESSION_CONTEXT,
       ['context-window-beta'],
     )
     expect(mocks.appState.statusLineText).toBe('updated-status')

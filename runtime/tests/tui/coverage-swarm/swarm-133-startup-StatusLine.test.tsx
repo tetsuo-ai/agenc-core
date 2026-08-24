@@ -4,6 +4,7 @@ import React from 'react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 import { createRoot } from '../ink/root.js'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../remoteAuthSessionContext.fixture.js'
 
 const harness = vi.hoisted(() => ({
   addNotification: vi.fn(),
@@ -102,7 +103,7 @@ vi.mock('../../../src/permissions/trust/project-trust.js', () => ({
 
 vi.mock('../../../src/utils/context.js', () => ({
   calculateContextPercentages: () => harness.contextPercentages,
-  getContextWindowForModel: () => 1000,
+  getContextWindowForModelForContext: () => 1000,
 }))
 
 vi.mock('../../../src/utils/cwd.js', () => ({
@@ -311,7 +312,7 @@ describe('StatusLine coverage swarm row 133', () => {
 
     try {
       root.render(
-        <StatusLine messagesRef={{ current: [] }} lastAssistantMessageId={null} />,
+        <StatusLine messagesRef={{ current: [] }} lastAssistantMessageId={null} providerContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />,
       )
       await waitFor(() => harness.setAppState.mock.calls.length === 1)
     } finally {
@@ -385,6 +386,7 @@ describe('StatusLine coverage swarm row 133', () => {
         <StatusLine
           messagesRef={{ current: messages }}
           lastAssistantMessageId={null}
+          providerContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
         />,
       )
       await waitFor(() => harness.executeStatusLineCommand.mock.calls.length === 1)
@@ -396,6 +398,7 @@ describe('StatusLine coverage swarm row 133', () => {
         <StatusLine
           messagesRef={{ current: messages }}
           lastAssistantMessageId={null}
+          providerContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
         />,
       )
       await waitFor(() => harness.executeStatusLineCommand.mock.calls.length === 2)
@@ -424,6 +427,7 @@ describe('StatusLine coverage swarm row 133', () => {
         <StatusLine
           messagesRef={{ current: messages }}
           lastAssistantMessageId="assistant-before"
+          providerContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
         />,
       )
       await waitFor(() => harness.executeStatusLineCommand.mock.calls.length === 1)
@@ -462,7 +466,7 @@ describe('StatusLine coverage swarm row 133', () => {
 
     try {
       root.render(
-        <StatusLine messagesRef={{ current: [] }} lastAssistantMessageId={null} />,
+        <StatusLine messagesRef={{ current: [] }} lastAssistantMessageId={null} providerContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />,
       )
       await waitFor(() => harness.executeStatusLineCommand.mock.calls.length === 1)
       await new Promise(resolve => setTimeout(resolve, 0))

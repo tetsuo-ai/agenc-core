@@ -655,6 +655,9 @@ function probeLinuxSandbox(options: {
       isolationProgram,
     );
   };
+  // Pass the session value through even when it is absent. The resolver treats
+  // an omitted argument as permission to use process.env.PATH, while this
+  // explicit `undefined` preserves a decoded client PATH tombstone.
   const bwrap = findSystemBubblewrapInPath(options.env.PATH, options.cwd);
   if (bwrap === null) {
     return landlockFallback(

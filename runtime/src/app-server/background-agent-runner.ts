@@ -1028,9 +1028,9 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   async startAgent(
     params: AgenCBackgroundAgentStartParams,
   ): Promise<AgenCBackgroundAgentStartResult> {
-    // Merge the client's complete allowlisted snapshot on top of the runner's
-    // captured env. Empty-string entries intentionally clear daemon-start
-    // provider/config values; they are not omitted fallback markers.
+    // Materialize the client's complete allowlisted snapshot on top of the
+    // runner's captured env. Protocol clear markers become absent runtime keys
+    // so daemon-start provider/config values cannot leak into this session.
     const mergedEnv = mergeDaemonClientEnvironment(this.#env, params.envOverrides);
     const bootstrap = await this.#bootstrap({
       ...(mergedEnv !== undefined ? { env: mergedEnv } : {}),
@@ -1401,7 +1401,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       let insertedGeneration: ActiveBackgroundAgent | undefined;
       try {
         // Restores retain the same complete per-client snapshot semantics as
-        // first start, including empty-string clears of daemon-start state.
+        // first start, including removal of cleared daemon-start state.
         const mergedEnv = mergeDaemonClientEnvironment(
           this.#env,
           params.envOverrides,

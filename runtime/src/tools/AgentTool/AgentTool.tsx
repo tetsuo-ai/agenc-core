@@ -709,6 +709,7 @@ export const AgentTool = buildTool({
       toolUseContext.options.mainLoopModel,
       repositoryControlledAgent || isForkPath ? undefined : model,
       permissionMode,
+      appState.mainLoopModelForSession ?? appState.mainLoopModel,
     );
 
     // Resolve effective isolation mode (explicit param overrides agent def)

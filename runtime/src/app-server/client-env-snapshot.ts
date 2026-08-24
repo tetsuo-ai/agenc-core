@@ -61,11 +61,23 @@ export function normalizeDaemonClientEnvOverrides(
   }
   const keys = canonicalSessionEnvironmentKeys(provided, inheritedEnvironment)
   return Object.fromEntries(
-    keys.map((key) => [key, provided[key] ?? ""]),
+    keys.map((key) => {
+      const value = provided[key]
+      return [
+        key,
+        value !== undefined && value.trim().length > 0 ? value : "",
+      ]
+    }),
   )
 }
 
-/** Merge a normalized client snapshot while clearing inherited dynamic secrets. */
+/**
+ * Materialize a client snapshot for runtime use.
+ *
+ * Empty strings are protocol-only clear markers. Runtime consumers receive
+ * actual key absence, so every config/provider consumer observes the same
+ * semantics without independently interpreting the wire representation.
+ */
 export function mergeDaemonClientEnvironment(
   inheritedEnvironment: Readonly<Record<string, string | undefined>> | undefined,
   overrides: Readonly<Record<string, string>> | undefined,
@@ -77,5 +89,13 @@ export function mergeDaemonClientEnvironment(
     overrides,
     inheritedEnvironment ?? {},
   )
-  return { ...(inheritedEnvironment ?? {}), ...normalized }
+  const merged: NodeJS.ProcessEnv = { ...(inheritedEnvironment ?? {}) }
+  for (const [key, value] of Object.entries(normalized)) {
+    if (value.length === 0) {
+      delete merged[key]
+    } else {
+      merged[key] = value
+    }
+  }
+  return merged
 }

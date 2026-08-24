@@ -143,6 +143,7 @@ These have their own pages. Short map:
 
 | Var | Effect |
 | --- | --- |
+| `AGENC_ONBOARDING` | First-run wizard control captured for the owning TUI session. `force` shows the wizard even after completion; `0`, `false`, or `off` suppress it. Unset follows persisted `onboarding.json` state |
 | `AGENC_TUI_WORKBENCH` | `0` uses classic fullscreen instead of workbench |
 | `AGENC_NO_FLICKER` | `0` disables fullscreen; `1` forces it on, including under tmux `-CC`. When unset, tmux `-CC` disables fullscreen; otherwise `tui.flickerFreeMode` is authoritative and defaults to on |
 | `AGENC_DISABLE_MOUSE` | Disables mouse tracking |

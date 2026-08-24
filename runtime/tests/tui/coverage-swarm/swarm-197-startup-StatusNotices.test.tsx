@@ -6,6 +6,7 @@ import { renderToString } from '../../../src/utils/staticRender.js'
 import {
   TEST_REMOTE_AUTH_ENVIRONMENT,
   TEST_REMOTE_AUTH_SESSION_CONTEXT,
+  TEST_RUNTIME_STATE_REPOSITORY,
 } from '../remoteAuthSessionContext.fixture.js'
 
 function providerAuthContextWithEnvironment(
@@ -92,6 +93,7 @@ async function renderStatusNotices(
     React.createElement(StatusNotices, {
       homeContext: TEST_REMOTE_AUTH_SESSION_CONTEXT.home,
       providerAuthContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
+      stateRepository: TEST_RUNTIME_STATE_REPOSITORY,
       ...props,
     }),
     { columns: 120 },
@@ -182,10 +184,12 @@ describe('StatusNotices coverage swarm row 197', () => {
         <StatusNotices
           homeContext={TEST_REMOTE_AUTH_SESSION_CONTEXT.home}
           providerAuthContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
+          stateRepository={TEST_RUNTIME_STATE_REPOSITORY}
         />
         <StatusNotices
           homeContext={TEST_REMOTE_AUTH_SESSION_CONTEXT.home}
           providerAuthContext={TEST_REMOTE_AUTH_SESSION_CONTEXT}
+          stateRepository={TEST_RUNTIME_STATE_REPOSITORY}
         />
       </>,
       { columns: 120 },

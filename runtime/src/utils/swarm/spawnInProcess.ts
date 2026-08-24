@@ -45,6 +45,7 @@ type SetAppStateFn = (updater: (prev: AppState) => AppState) => void
  * This is a subset of ToolUseContext - only what spawnInProcessTeammate actually uses.
  */
 export type SpawnContext = {
+  getAppState(): AppState
   setAppState: SetAppStateFn
   toolUseId?: string
 }
@@ -174,7 +175,9 @@ export async function spawnInProcessTeammate(
       model,
       abortController,
       awaitingPlanApproval: false,
-      spinnerVerb: sample(getSpinnerVerbs()),
+      spinnerVerb: sample(
+        getSpinnerVerbs(context.getAppState().settings.spinnerVerbs),
+      ),
       pastTenseVerb: sample(TURN_COMPLETION_VERBS),
       permissionMode: planModeRequired
         ? 'plan'

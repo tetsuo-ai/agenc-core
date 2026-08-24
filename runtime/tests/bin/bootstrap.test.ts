@@ -1800,7 +1800,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  it("uses fixed runtime feature behavior without a config authority", async () => {
+  it("uses options.apiKey without probing the saved BYOK vault", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
 
@@ -1821,6 +1821,9 @@ describe("bootstrapLocalRuntimeSession", () => {
         }) as never,
     );
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const readByokSpy = vi
+      .spyOn(LocalAuthBackend.prototype, "readByokKey")
+      .mockRejectedValue(new Error("options.apiKey must prevent vault reads"));
 
     let shutdown: (() => Promise<void>) | null = null;
     try {
@@ -1840,6 +1843,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         boot.config.features.enabled?.("default_mode_request_user_input"),
       ).toBe(false);
       expect(boot.config.features.enabled?.("unknown-feature")).toBe(false);
+      expect(readByokSpy).not.toHaveBeenCalled();
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */
@@ -1986,6 +1990,11 @@ describe("bootstrapLocalRuntimeSession", () => {
       }),
     );
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const readByokSpy = vi
+      .spyOn(LocalAuthBackend.prototype, "readByokKey")
+      .mockRejectedValue(
+        new Error("local no-auth providers must not probe the BYOK vault"),
+      );
 
     let shutdown: (() => Promise<void>) | null = null;
     try {
@@ -2007,6 +2016,70 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(boot.session.services.authManager).toEqual({
         mode: "local_no_auth",
       });
+      expect(readByokSpy).not.toHaveBeenCalled();
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      restoreEnv();
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  // branding-scan: allow real provider identifier in test title
+  it("uses an explicit OpenAI-compatible key without probing the saved BYOK vault", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const restoreEnv = clearProcessEnv([
+      "OPENAI_API_KEY",
+      "OPENAI_API_BASE",
+      "OPENAI_BASE_URL",
+      "OPENAI_MODEL",
+      "OPENAI_COMPATIBLE_API_KEY",
+      "OPENAI_COMPATIBLE_BASE_URL",
+      "OPENAI_COMPATIBLE_MODEL",
+    ]);
+
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      jsonResponse({
+        data: [
+          {
+            id: "local-model",
+            max_model_len: 65_536,
+            max_output_tokens: 8_192,
+          },
+        ],
+      }),
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const readByokSpy = vi
+      .spyOn(LocalAuthBackend.prototype, "readByokKey")
+      .mockRejectedValue(
+        new Error("explicit provider credentials must prevent vault reads"),
+      );
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        env: {
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          AGENC_PROVIDER: "openai-compatible",
+          AGENC_MODEL: "local-model",
+          HOME: home,
+          OPENAI_COMPATIBLE_API_KEY: "explicit-compatible-key",
+          SHELL: "/bin/sh",
+        },
+        argv: ["node", "agenc"],
+      });
+      shutdown = boot.shutdown;
+
+      expect(boot.resolvedProvider).toBe("openai-compatible");
+      expect(boot.session.services.authManager).toEqual({
+        mode: "bearer_key",
+      });
+      expect(readByokSpy).not.toHaveBeenCalled();
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */
@@ -2191,6 +2264,10 @@ describe("bootstrapLocalRuntimeSession", () => {
       );
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
     const vendSpy = vi.spyOn(authBackend, "vendKey");
+    const readByokSpy = vi.spyOn(
+      LocalAuthBackend.prototype,
+      "readByokKey",
+    );
 
     let shutdown: (() => Promise<void>) | null = null;
     try {
@@ -2218,6 +2295,8 @@ describe("bootstrapLocalRuntimeSession", () => {
         }),
       );
       expect(vendSpy).not.toHaveBeenCalled();
+      expect(readByokSpy).toHaveBeenCalledTimes(1);
+      expect(readByokSpy).toHaveBeenCalledWith("grok");
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */
@@ -2227,7 +2306,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  it("does not vend managed keys when an explicit API key is provided", async () => {
+  it("does not read stored BYOK or vend managed keys when an environment API key is provided", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
     const calls: string[] = [];
@@ -2267,11 +2346,13 @@ describe("bootstrapLocalRuntimeSession", () => {
           }) as never,
       );
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const readByokSpy = vi
+      .spyOn(LocalAuthBackend.prototype, "readByokKey")
+      .mockRejectedValue(new Error("stored BYOK must not be read"));
 
     let shutdown: (() => Promise<void>) | null = null;
     try {
       const boot = await bootstrapLocalRuntimeSession({
-        apiKey: "explicit-xai-key",
         authBackend,
         conversationId: "conv-explicit-byok",
         env: {
@@ -2281,7 +2362,7 @@ describe("bootstrapLocalRuntimeSession", () => {
           AGENC_WORKSPACE: workspace,
           HOME: home,
           GROK_API_KEY: "",
-          XAI_API_KEY: "",
+          XAI_API_KEY: "explicit-xai-key",
         },
       });
       shutdown = boot.shutdown;
@@ -2293,6 +2374,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         }),
       );
       expect(calls).toEqual(["getSubscriptionTier:conv-explicit-byok"]);
+      expect(readByokSpy).not.toHaveBeenCalled();
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */
@@ -2362,6 +2444,170 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
+  it("ignores duck-typed injected BYOK readers and uses the canonical local vault", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    await new LocalAuthBackend({ agencHome: home }).saveByokKey({
+      provider: "grok",
+      apiKey: "canonical-saved-xai-key",
+    });
+    const rogueReadByokKey = vi.fn(() => "rogue-injected-key");
+    const authBackend = {
+      login: () => ({ authenticated: true, provider: "local" as const }),
+      logout: () => ({ authenticated: false as const }),
+      whoami: () => ({ authenticated: true, provider: "local" as const }),
+      vendKey: () => {
+        throw new Error("vendKey should not run");
+      },
+      inferAgencModel: () => {
+        throw new Error("inferAgencModel should not run");
+      },
+      getSubscriptionTier: () => "pro" as const,
+      readByokKey: rogueReadByokKey,
+    } as AuthBackend & {
+      readByokKey(provider: string): string | undefined;
+    };
+
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const canonicalReadSpy = vi.spyOn(
+      LocalAuthBackend.prototype,
+      "readByokKey",
+    );
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        authBackend,
+        conversationId: "conv-canonical-local-byok",
+        env: {
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+          GROK_API_KEY: "",
+          SHELL: "/bin/sh",
+          XAI_API_KEY: "",
+        },
+      });
+      shutdown = boot.shutdown;
+
+      expect(createProviderSpy).toHaveBeenCalledWith(
+        "grok",
+        expect.objectContaining({ apiKey: "canonical-saved-xai-key" }),
+      );
+      expect(canonicalReadSpy).toHaveBeenCalledTimes(1);
+      expect(canonicalReadSpy).toHaveBeenCalledWith("grok");
+      expect(rogueReadByokKey).not.toHaveBeenCalled();
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("uses re-resolved provider credentials without probing the saved BYOK vault", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    await writeFile(
+      join(home, "config.toml"),
+      [
+        "config_version = 2",
+        'model_provider = "grok"',
+        'model = "agenc:managed-route"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    const authBackend: AuthBackend = {
+      login: () => ({ authenticated: true, provider: "local" }),
+      logout: () => ({ authenticated: false }),
+      whoami: () => ({ authenticated: true, provider: "local" }),
+      vendKey: () => {
+        throw new Error("vendKey should not run");
+      },
+      inferAgencModel: () => ({
+        provider: "openrouter",
+        model: "x-ai/grok-4.3",
+      }),
+      getSubscriptionTier: () => "team",
+    };
+
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const readByokSpy = vi
+      .spyOn(LocalAuthBackend.prototype, "readByokKey")
+      .mockRejectedValue(
+        new Error("resolved provider credentials must prevent vault reads"),
+      );
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        authBackend,
+        conversationId: "conv-resolved-provider-byok",
+        fetchImpl: offlineFetchFixture(),
+        env: {
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+          OPENROUTER_API_KEY: "resolved-openrouter-key",
+          SHELL: "/bin/sh",
+          XAI_API_KEY: "startup-xai-key",
+        },
+      });
+      shutdown = boot.shutdown;
+
+      expect(boot.resolvedProvider).toBe("openrouter");
+      expect(createProviderSpy).toHaveBeenCalledWith(
+        "openrouter",
+        expect.objectContaining({ apiKey: "resolved-openrouter-key" }),
+      );
+      expect(readByokSpy).not.toHaveBeenCalled();
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   it("keeps the hosted model shortcut behind the AgenC provider boundary", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
@@ -2411,6 +2657,11 @@ describe("bootstrapLocalRuntimeSession", () => {
           }) as never,
       );
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const readByokSpy = vi
+      .spyOn(LocalAuthBackend.prototype, "readByokKey")
+      .mockRejectedValue(
+        new Error("hosted AgenC must not probe the local BYOK vault"),
+      );
 
     let shutdown: (() => Promise<void>) | null = null;
     try {
@@ -2450,6 +2701,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         "getSubscriptionTier:conv-hosted",
         "inferAgencModel:agenc:agenc:team",
       ]);
+      expect(readByokSpy).not.toHaveBeenCalled();
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */

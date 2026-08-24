@@ -301,6 +301,10 @@ function makeTopLevelRunner(opts: {
   });
   const providerService = {
     environment: () => providerEnvironment,
+    current: () => ({
+      provider: sessionState.sessionConfiguration.provider.slug,
+      model: sessionState.sessionConfiguration.collaborationMode.model,
+    }),
   };
   const session = {
     conversationId: opts.conversationId,
@@ -493,14 +497,15 @@ describe("AgenC delegate background-agent runner", () => {
     });
 
     expect(bootstrap).toHaveBeenCalledOnce();
-    expect(vi.mocked(bootstrap).mock.calls[0]?.[0].env).toMatchObject({
-      AGENC_PROVIDER: "",
-      AGENC_MODEL: "",
-      OPENAI_BASE_URL: "",
-      XAI_API_KEY: "",
-      AGENC_CREDENTIAL_DOCS_MCP: "",
-      PATH: "/client/bin",
-    });
+    const runtimeEnvironment = vi.mocked(bootstrap).mock.calls[0]?.[0].env;
+    expect(runtimeEnvironment).toMatchObject({ PATH: "/client/bin" });
+    expect(runtimeEnvironment).not.toHaveProperty("AGENC_PROVIDER");
+    expect(runtimeEnvironment).not.toHaveProperty("AGENC_MODEL");
+    expect(runtimeEnvironment).not.toHaveProperty("OPENAI_BASE_URL");
+    expect(runtimeEnvironment).not.toHaveProperty("XAI_API_KEY");
+    expect(runtimeEnvironment).not.toHaveProperty(
+      "AGENC_CREDENTIAL_DOCS_MCP",
+    );
   });
 
   it("waits for the exact terminal generation cleanup before explicit restore", async () => {
@@ -2415,15 +2420,16 @@ describe("AgenC delegate background-agent runner", () => {
     expect(bootstrap).toHaveBeenCalledWith(expect.objectContaining({
       env: expect.objectContaining({
         AGENC_HOME: "/tmp/agenc-home",
-        AGENC_PROVIDER: "",
-        AGENC_MODEL: "",
-        XAI_API_KEY: "",
       }),
       argv: ["/usr/bin/node", "/opt/agenc/bin/agenc.js", "--model", "grok-4"],
       cwd: "/workspace",
       executionAdmissionAutonomous: true,
       csvAgentJobsRepositories,
     }));
+    const runtimeEnvironment = vi.mocked(bootstrap).mock.calls[0]?.[0].env;
+    expect(runtimeEnvironment).not.toHaveProperty("AGENC_PROVIDER");
+    expect(runtimeEnvironment).not.toHaveProperty("AGENC_MODEL");
+    expect(runtimeEnvironment).not.toHaveProperty("XAI_API_KEY");
     expect(permissionModeRegistry.update).toHaveBeenCalledTimes(1);
     expect(permissionUpdates[0]).toMatchObject({
       mode: "unattended",

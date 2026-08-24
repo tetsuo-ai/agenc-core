@@ -440,6 +440,13 @@ vi.mock("../state/AppState.js", async () => {
       if (context === null) throw new Error("missing AppState test provider");
       return selector(context.state);
     },
+    useAppStateMaybeOutsideOfProvider: (
+      selector: (state: Record<string, unknown>) => unknown,
+    ) => {
+      const context = React.useContext(StateContext);
+      if (context === null) throw new Error("missing AppState test provider");
+      return selector(context.state);
+    },
     useSetAppState: () => {
       const context = React.useContext(StateContext);
       if (context === null) throw new Error("missing AppState test provider");

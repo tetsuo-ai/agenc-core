@@ -102,6 +102,7 @@ function SpinnerWithVerbInner({
 }: Props): React.ReactNode {
   const settings = useSettings();
   const reducedMotion = settings?.prefersReducedMotion ?? false;
+  const spinnerVerbs = getSpinnerVerbs(settings.spinnerVerbs);
 
   // The v2 visual contract keeps this row off the animation clock.
   // SpinnerAnimationRow owns a 1s wall-clock tick for the elapsed timer and
@@ -176,7 +177,7 @@ function SpinnerWithVerbInner({
   // Only used as a teammate-verb fallback now — the leader's own fallback is an
   // HONEST phase label (see phaseVerb below), never a random flavor word, so a
   // slow turn can't read as a system fault like a frozen "Booting…".
-  const [randomVerb] = useState(() => sample(getSpinnerVerbs()));
+  const [randomVerb] = useState(() => sample(spinnerVerbs));
 
   // Honest phase label derived from the real streaming mode. Agrees with the
   // workbench title-bar indicator (both call verbForMode), so the title bar and
@@ -249,7 +250,7 @@ function SpinnerWithVerbInner({
           </Text>
         </Box>
         {hasRunningLocalAgents && <RunningLocalAgentsLine agents={runningLocalAgents} />}
-        {showSpinnerTree && <TeammateSpinnerTree selectedIndex={selectedIPAgentIndex} isInSelectionMode={viewSelectionMode === 'selecting-agent'} allIdle={allIdle} leaderTokenCount={leaderTokenCount} leaderIdleText="Idle" />}
+        {showSpinnerTree && <TeammateSpinnerTree selectedIndex={selectedIPAgentIndex} isInSelectionMode={viewSelectionMode === 'selecting-agent'} allIdle={allIdle} leaderTokenCount={leaderTokenCount} leaderIdleText="Idle" spinnerVerbs={spinnerVerbs} />}
       </Box>;
   }
 
@@ -260,7 +261,7 @@ function SpinnerWithVerbInner({
         <Box flexDirection="row" flexWrap="wrap" marginTop={1} width="100%">
           <Text dimColor>{idleText}</Text>
         </Box>
-        {showSpinnerTree && hasRunningTeammates && <TeammateSpinnerTree selectedIndex={selectedIPAgentIndex} isInSelectionMode={viewSelectionMode === 'selecting-agent'} allIdle={allIdle} leaderVerb={leaderIsIdle ? undefined : leaderVerb} leaderIdleText={leaderIsIdle ? 'Idle' : undefined} leaderTokenCount={leaderTokenCount} />}
+        {showSpinnerTree && hasRunningTeammates && <TeammateSpinnerTree selectedIndex={selectedIPAgentIndex} isInSelectionMode={viewSelectionMode === 'selecting-agent'} allIdle={allIdle} leaderVerb={leaderIsIdle ? undefined : leaderVerb} leaderIdleText={leaderIsIdle ? 'Idle' : undefined} leaderTokenCount={leaderTokenCount} spinnerVerbs={spinnerVerbs} />}
       </Box>;
   }
 
@@ -294,7 +295,7 @@ function SpinnerWithVerbInner({
   return <Box flexDirection="column" width="100%" alignItems="flex-start">
       <SpinnerAnimationRow mode={mode} reducedMotion={reducedMotion} hasActiveTools={hasActiveTools} responseLengthRef={responseLengthRef} message={message} messageColor={messageColor} shimmerColor={shimmerColor} overrideColor={overrideColor} loadingStartTimeRef={loadingStartTimeRef} totalPausedMsRef={totalPausedMsRef} pauseStartTimeRef={pauseStartTimeRef} spinnerSuffix={spinnerSuffix} verbose={verbose} columns={columns} hasRunningTeammates={hasRunningTeammates} teammateTokens={teammateTokens} foregroundedTeammate={foregroundedTeammate} leaderIsIdle={leaderIsIdle} thinkingStatus={thinkingStatus} effortSuffix={effortSuffix} showLeaderTokenStats={showLeaderTokenStats} />
       {hasRunningLocalAgents && <RunningLocalAgentsLine agents={runningLocalAgents} />}
-      {showSpinnerTree && hasRunningTeammates ? <TeammateSpinnerTree selectedIndex={selectedIPAgentIndex} isInSelectionMode={viewSelectionMode === 'selecting-agent'} allIdle={allIdle} leaderVerb={leaderIsIdle ? undefined : leaderVerb} leaderIdleText={leaderIsIdle ? 'Idle' : undefined} leaderTokenCount={leaderTokenCount} /> : (showExpandedTodos || hasOpenTodoTasks) && tasksV2 && tasksV2.length > 0 ? <Box width="100%" flexDirection="column">
+      {showSpinnerTree && hasRunningTeammates ? <TeammateSpinnerTree selectedIndex={selectedIPAgentIndex} isInSelectionMode={viewSelectionMode === 'selecting-agent'} allIdle={allIdle} leaderVerb={leaderIsIdle ? undefined : leaderVerb} leaderIdleText={leaderIsIdle ? 'Idle' : undefined} leaderTokenCount={leaderTokenCount} spinnerVerbs={spinnerVerbs} /> : (showExpandedTodos || hasOpenTodoTasks) && tasksV2 && tasksV2.length > 0 ? <Box width="100%" flexDirection="column">
           <MessageResponse>
             <TaskListV2 tasks={tasksV2} />
           </MessageResponse>
@@ -332,7 +333,10 @@ function BriefSpinner(t0: BriefSpinnerProps) {
     mode,
     overrideMessage
   } = t0;
-  const [randomVerb] = useState(_temp4);
+  const settings = useSettings();
+  const [randomVerb] = useState(
+    () => sample(getSpinnerVerbs(settings.spinnerVerbs)) ?? "Working",
+  );
   const verb = overrideMessage ?? randomVerb;
   const connStatus = useAppState(_temp5);
   useEffect(() => {
@@ -385,9 +389,6 @@ function RunningLocalAgentsLine({
 }
 function _temp5(s: any) {
   return s.remoteConnectionStatus;
-}
-function _temp4() {
-  return sample(getSpinnerVerbs()) ?? "Working";
 }
 export function BriefIdleStatus() {
   const $ = _c(9);

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   createBwrapCommandArgs,
@@ -471,6 +471,41 @@ describe("Linux sandbox launcher", () => {
     });
   });
 
+  it("does not recover a missing session PATH from the launcher process", () => {
+    const root = withTempDir("agenc-linux-launcher-path-authority-");
+    const cwd = path.join(root, "workspace");
+    const daemonBin = path.join(root, "daemon-bin");
+    fs.mkdirSync(cwd);
+    fs.mkdirSync(daemonBin);
+    const daemonBubblewrap = path.join(daemonBin, "bwrap");
+    writeExecutable(daemonBubblewrap, "#!/bin/sh\nexit 0\n");
+    const previousPath = process.env.PATH;
+    process.env.PATH = daemonBin;
+    try {
+      expect(
+        findSystemBubblewrapInPath(undefined, cwd, [daemonBin]),
+      ).toBeNull();
+      expect(
+        preferredBubblewrapLauncher({
+          cwd,
+          env: {},
+          trustedDirectories: [daemonBin],
+          probeArgv0: () => true,
+        }),
+      ).toBeNull();
+      expect(
+        preferredBubblewrapLauncher({
+          cwd,
+          trustedDirectories: [daemonBin],
+          probeArgv0: () => true,
+        }),
+      ).toMatchObject({ program: fs.realpathSync(daemonBubblewrap) });
+    } finally {
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
+  });
+
   it("rejects bubblewrap that advertises required flags but cannot create namespaces", () => {
     const root = withTempDir("agenc-linux-launcher-namespace-probe-");
     const cwd = path.join(root, "workspace");
@@ -797,6 +832,47 @@ describe("Linux sandbox launcher", () => {
         { cwd: process.cwd(), env: process.env, argv0: "agenc-linux-sandbox" },
       ),
     ).resolves.toBe(7);
+  });
+
+  it("does not resolve an inner command from the launcher process PATH", async () => {
+    const root = withTempDir("agenc-linux-inner-path-authority-");
+    const daemonBin = path.join(root, "daemon-bin");
+    fs.mkdirSync(daemonBin);
+    const daemonCommand = path.join(daemonBin, "session-command");
+    writeExecutable(daemonCommand, "#!/bin/sh\nexit 0\n");
+    const previousPath = process.env.PATH;
+    const previousCwd = process.cwd();
+    let invokedProgram: string | undefined;
+    const execve = vi.spyOn(process, "execve").mockImplementation(
+      ((file: string): never => {
+        invokedProgram = file;
+        throw new Error("stop after capturing execve");
+      }) as typeof process.execve,
+    );
+    process.env.PATH = daemonBin;
+    try {
+      const exitCode = await runLinuxSandboxMain([
+        "--sandbox-policy-cwd",
+        root,
+        "--command-cwd",
+        root,
+        "--permission-profile",
+        JSON.stringify(workspaceWriteProfile(root, "disabled")),
+        "--apply-seccomp-then-exec",
+        "--",
+        "session-command",
+      ], {
+        env: { AGENC_LINUX_SANDBOX_ACTIVE: "1" },
+      });
+
+      expect(exitCode).toBe(2);
+      expect(invokedProgram).toBe("session-command");
+    } finally {
+      process.chdir(previousCwd);
+      execve.mockRestore();
+      if (previousPath === undefined) delete process.env.PATH;
+      else process.env.PATH = previousPath;
+    }
   });
 
   it("validates managed proxy route inputs without accepting non-loopback endpoints", () => {

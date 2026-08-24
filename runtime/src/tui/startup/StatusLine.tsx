@@ -2,6 +2,7 @@
 import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { memo, useCallback, useEffect, useRef } from 'react';
+import type { ProviderAuthReadContext } from '../../utils/auth.js';
 import { getRawUtilization } from '../rate-limits/agenc-ai-limits.js';
 import { getIsRemoteMode, getKairosActive, getMainThreadAgentType, getOriginalCwd, getSdkBetas, getSessionId } from '../../bootstrap/state.js';
 import { DEFAULT_OUTPUT_STYLE_NAME } from '../../constants/outputStyles.js';
@@ -14,11 +15,11 @@ import type { Message } from '../../types/message.js';
 import type { StatusLineCommandInput } from '../../types/statusLine.js';
 import type { VimMode } from '../../types/textInputTypes.js';
 import { checkHasProjectTrustAcceptedSync } from '../../permissions/trust/project-trust.js';
-import { calculateContextPercentages, getContextWindowForModel } from '../../utils/context.js';
+import { calculateContextPercentages, getContextWindowForModelForContext } from '../../utils/context.js';
 import { getCwd } from '../../utils/cwd.js';
 import { createBaseHookInput, executeStatusLineCommand } from '../../utils/hooks.js';
 import { getLastAssistantMessage } from '../../utils/messages.js';
-import { getRuntimeMainLoopModel, type ModelName, renderModelName } from '../../utils/model/model.js';
+import { getRuntimeMainLoopModel, type ModelName, type ModelSetting, renderModelName } from '../../utils/model/model.js';
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js';
 import { getCurrentSessionTitle } from '../../utils/sessionStorage.js';
 import { doesMostRecentAssistantMessageExceed200k, getCurrentUsage } from '../../utils/tokens.js';
@@ -33,17 +34,18 @@ export function statusLineShouldDisplay(settings: ReadonlySettings): boolean {
   if (feature('KAIROS') && getKairosActive()) return false;
   return settings?.statusLine !== undefined;
 }
-function buildStatusLineCommandInput(permissionMode: PermissionMode, exceeds200kTokens: boolean, settings: ReadonlySettings, messages: Message[], addedDirs: string[], mainLoopModel: ModelName, vimMode?: VimMode): StatusLineCommandInput {
+function buildStatusLineCommandInput(permissionMode: PermissionMode, exceeds200kTokens: boolean, settings: ReadonlySettings, messages: Message[], addedDirs: string[], mainLoopModel: ModelName, modelSetting: ModelSetting, providerContext: ProviderAuthReadContext, vimMode?: VimMode): StatusLineCommandInput {
   const agentType = getMainThreadAgentType();
   const worktreeSession = getCurrentWorktreeSession();
   const runtimeModel = getRuntimeMainLoopModel({
     permissionMode,
     mainLoopModel,
+    modelSetting,
     exceeds200kTokens
   });
   const outputStyleName = settings?.outputStyle || DEFAULT_OUTPUT_STYLE_NAME;
   const currentUsage = getCurrentUsage(messages);
-  const contextWindowSize = getContextWindowForModel(runtimeModel, getSdkBetas());
+  const contextWindowSize = getContextWindowForModelForContext(runtimeModel, providerContext, getSdkBetas());
   const contextPercentages = calculateContextPercentages(currentUsage, contextWindowSize);
   const sessionId = getSessionId();
   const sessionName = getCurrentSessionTitle(sessionId);
@@ -130,6 +132,7 @@ type Props = {
   // lastAssistantMessageId is the actual re-render trigger.
   messagesRef: React.RefObject<Message[]>;
   lastAssistantMessageId: string | null;
+  providerContext: ProviderAuthReadContext;
   vimMode?: VimMode;
 };
 export function getLastAssistantMessageId(messages: Message[]): string | null {
@@ -138,6 +141,7 @@ export function getLastAssistantMessageId(messages: Message[]): string | null {
 function StatusLineInner({
   messagesRef,
   lastAssistantMessageId,
+  providerContext,
   vimMode
 }: Props): React.ReactNode {
   const abortControllerRef = useRef<AbortController | undefined>(undefined);
@@ -154,6 +158,7 @@ function StatusLineInner({
   // reads the session ConfigStore snapshot, so another session's /model write
   // would leak into this session's statusline (tracked in upstream issue #37596).
   const mainLoopModel = useMainLoopModel();
+  const mainLoopModelSetting = useAppState(s => s.mainLoopModelForSession ?? s.mainLoopModel);
 
   // Keep latest values in refs for stable callback access
   const settingsRef = useRef(settings);
@@ -166,6 +171,8 @@ function StatusLineInner({
   addedDirsRef.current = additionalWorkingDirectories;
   const mainLoopModelRef = useRef(mainLoopModel);
   mainLoopModelRef.current = mainLoopModel;
+  const mainLoopModelSettingRef = useRef(mainLoopModelSetting);
+  mainLoopModelSettingRef.current = mainLoopModelSetting;
 
   // Track previous state to detect changes and cache expensive calculations
   const previousStateRef = useRef<{
@@ -174,12 +181,14 @@ function StatusLineInner({
     permissionMode: PermissionMode;
     vimMode: VimMode | undefined;
     mainLoopModel: ModelName;
+    mainLoopModelSetting: ModelSetting;
   }>({
     messageId: null,
     exceeds200kTokens: false,
     permissionMode,
     vimMode,
-    mainLoopModel
+    mainLoopModel,
+    mainLoopModelSetting
   });
 
   // Debounce timer ref
@@ -211,7 +220,7 @@ function StatusLineInner({
         previousStateRef.current.messageId = currentMessageId;
         previousStateRef.current.exceeds200kTokens = exceeds200kTokens;
       }
-      const statusInput = buildStatusLineCommandInput(permissionModeRef.current, exceeds200kTokens, settingsRef.current, msgs, Array.from(addedDirsRef.current.keys()), mainLoopModelRef.current, vimModeRef.current);
+      const statusInput = buildStatusLineCommandInput(permissionModeRef.current, exceeds200kTokens, settingsRef.current, msgs, Array.from(addedDirsRef.current.keys()), mainLoopModelRef.current, mainLoopModelSettingRef.current, providerContext, vimModeRef.current);
       const text = await executeStatusLineCommand(statusInput, controller.signal, undefined, logResult);
       if (!controller.signal.aborted) {
         setAppState(prev => {
@@ -225,7 +234,7 @@ function StatusLineInner({
     } catch {
       // Silently ignore errors in status line updates
     }
-  }, [messagesRef, setAppState]);
+  }, [messagesRef, providerContext, setAppState]);
 
   // Stable debounced schedule function — no deps, uses refs
   const scheduleUpdate = useCallback(() => {
@@ -240,15 +249,16 @@ function StatusLineInner({
 
   // Only trigger update when assistant message, permission mode, vim mode, or model actually changes
   useEffect(() => {
-    if (lastAssistantMessageId !== previousStateRef.current.messageId || permissionMode !== previousStateRef.current.permissionMode || vimMode !== previousStateRef.current.vimMode || mainLoopModel !== previousStateRef.current.mainLoopModel) {
+    if (lastAssistantMessageId !== previousStateRef.current.messageId || permissionMode !== previousStateRef.current.permissionMode || vimMode !== previousStateRef.current.vimMode || mainLoopModel !== previousStateRef.current.mainLoopModel || mainLoopModelSetting !== previousStateRef.current.mainLoopModelSetting) {
       // Don't update messageId here — let doUpdate handle it so
       // exceeds200kTokens is recalculated with the latest messages
       previousStateRef.current.permissionMode = permissionMode;
       previousStateRef.current.vimMode = vimMode;
       previousStateRef.current.mainLoopModel = mainLoopModel;
+      previousStateRef.current.mainLoopModelSetting = mainLoopModelSetting;
       scheduleUpdate();
     }
-  }, [lastAssistantMessageId, permissionMode, vimMode, mainLoopModel, scheduleUpdate]);
+  }, [lastAssistantMessageId, permissionMode, vimMode, mainLoopModel, mainLoopModelSetting, scheduleUpdate]);
 
   // When the statusLine command changes (hot reload), log the next result
   const statusLineCommand = settings?.statusLine?.command;

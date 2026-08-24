@@ -4,6 +4,7 @@ import { MODEL_ALIASES, type ModelAlias } from './aliases.js'
 import {
   getCanonicalName,
   getRuntimeMainLoopModel,
+  type ModelSetting,
   parseUserSpecifiedModel,
 } from './model.js'
 import { getAPIProvider, isFirstPartyAnthropicBaseUrl } from './providers.js'
@@ -31,8 +32,9 @@ export function getDefaultSubagentModel(): string {
 export function getAgentModel(
   agentModel: string | undefined,
   parentModel: string,
-  toolSpecifiedModel?: ModelAlias,
-  permissionMode?: PermissionMode,
+  toolSpecifiedModel: ModelAlias | undefined,
+  permissionMode: PermissionMode | undefined,
+  parentModelSetting: ModelSetting | undefined,
 ): string {
   // Prioritize tool-specified model if provided
   if (toolSpecifiedModel) {
@@ -60,6 +62,7 @@ export function getAgentModel(
     return getRuntimeMainLoopModel({
       permissionMode: permissionMode ?? 'default',
       mainLoopModel: parentModel,
+      modelSetting: parentModelSetting,
       exceeds200kTokens: false,
     })
   }
@@ -70,6 +73,7 @@ export function getAgentModel(
     return getRuntimeMainLoopModel({
       permissionMode: permissionMode ?? 'default',
       mainLoopModel: parentModel,
+      modelSetting: parentModelSetting,
       exceeds200kTokens: false,
     })
   }

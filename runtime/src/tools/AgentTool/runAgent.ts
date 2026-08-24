@@ -426,6 +426,7 @@ export async function* runAgent({
     toolUseContext.options.mainLoopModel,
     model,
     permissionMode,
+    appState.mainLoopModelForSession ?? appState.mainLoopModel,
   )
 
   const agentId = override?.agentId ? override.agentId : createAgentId()
