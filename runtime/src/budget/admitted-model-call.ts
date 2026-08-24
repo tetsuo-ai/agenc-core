@@ -304,6 +304,25 @@ function cancellationAfterDispatch(signal: AbortSignal): Error | undefined {
  * A provider failure after the dispatch marker is conservative: usage becomes
  * `held_unknown`; generic catch/finally code must never refund it as zero.
  */
+/**
+ * Whether a provider-reported model id names the model we asked for.
+ *
+ * Local servers answer with their own canonical id: ask LM Studio for
+ * `unsloth/qwen3.8-27b` and it replies `qwen3.8-27b`. Compared as raw
+ * strings that reads as the provider silently switching models, which
+ * books a fallback against a step that already exists and kills the turn
+ * with AdmissionStepConflictError — the user sees an empty answer.
+ * Vendor prefix and case are not identity.
+ */
+function isSameModelIdentity(reported: string, requested: string): boolean {
+  const normalize = (value: string): string =>
+    value.trim().toLowerCase().split("/").pop() ?? value.trim().toLowerCase();
+  if (reported.trim().toLowerCase() === requested.trim().toLowerCase()) {
+    return true;
+  }
+  return normalize(reported) === normalize(requested);
+}
+
 export async function runAdmittedModelCall(
   params: AdmittedModelCallOptions,
 ): Promise<LLMResponse> {
@@ -654,7 +673,10 @@ export async function runAdmittedModelCall(
       if (lateCancellation !== undefined) throw lateCancellation;
       return response;
     }
-    if (response.model !== "" && response.model !== effectiveModel) {
+    if (
+      response.model !== "" &&
+      !isSameModelIdentity(response.model, effectiveModel)
+    ) {
       client.recordFallback({
         stepId: params.stepId,
         fromModel: effectiveModel,
