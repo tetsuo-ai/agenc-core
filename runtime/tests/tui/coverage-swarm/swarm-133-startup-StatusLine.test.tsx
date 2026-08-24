@@ -113,8 +113,8 @@ vi.mock('../../../src/utils/debug.js', () => ({
   logForDebugging: harness.logForDebugging,
 }))
 
-vi.mock('../../../src/utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => harness.fullscreenEnabled,
+vi.mock('../../../src/tui/context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => harness.fullscreenEnabled,
 }))
 
 vi.mock('../../../src/utils/hooks.js', () => ({

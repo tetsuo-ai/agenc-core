@@ -639,7 +639,12 @@ export type Tool<
    */
   renderToolUseMessage(
     input: Partial<z.infer<Input>>,
-    options: { theme: ThemeName; verbose: boolean; commands?: Command[] },
+    options: {
+      theme: ThemeName;
+      verbose: boolean;
+      fullscreen: boolean;
+      commands?: Command[];
+    },
   ): React.ReactNode;
   /**
    * Returns true when the non-verbose rendering of this output is truncated
@@ -665,6 +670,7 @@ export type Tool<
       terminalSize?: { columns: number; rows: number };
       inProgressToolCallCount?: number;
       isTranscriptMode?: boolean;
+      fullscreen: boolean;
     },
   ): React.ReactNode;
   renderToolUseQueuedMessage?(): React.ReactNode;
@@ -684,6 +690,7 @@ export type Tool<
       verbose: boolean;
       progressMessagesForMessage: ProgressMessage[];
       isTranscriptMode?: boolean;
+      fullscreen: boolean;
     },
   ): React.ReactNode;
   /**
@@ -698,6 +705,7 @@ export type Tool<
       tools: Tools;
       verbose: boolean;
       isTranscriptMode?: boolean;
+      fullscreen: boolean;
     },
   ): React.ReactNode;
 
@@ -725,6 +733,7 @@ export type Tool<
     options: {
       shouldAnimate: boolean;
       tools: Tools;
+      fullscreen: boolean;
     },
   ): React.ReactNode | null;
 };

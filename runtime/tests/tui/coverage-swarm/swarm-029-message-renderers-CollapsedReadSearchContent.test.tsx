@@ -41,8 +41,8 @@ vi.mock('src/utils/file.js', () => ({
   getDisplayPath: (path: string) => `display:${path}`,
 }))
 
-vi.mock('src/utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => true,
+vi.mock('src/tui/context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => true,
 }))
 
 vi.mock('src/tui/components/CtrlOToExpand.js', () => ({

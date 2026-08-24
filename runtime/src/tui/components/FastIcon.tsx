@@ -1,11 +1,7 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { c as _c } from "react-compiler-runtime";
-import chalk from 'chalk';
 import { LIGHTNING_BOLT } from '../../constants/figures.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import { Text } from '../ink.js';
-import { getExecutionAuthoritySettings } from '../../utils/settings/settings.js';
-import { resolveThemeSetting } from '../../utils/systemTheme.js'; // upstream-import: keep target is owned by another Z-PURGE item
-import { color } from './design-system/color';
 type Props = {
   cooldown?: boolean;
 };
@@ -32,16 +28,4 @@ export function FastIcon(t0: Props) {
     t1 = $[1];
   }
   return t1;
-}
-export function getFastIconString(applyColor = true, cooldown = false): string {
-  if (!applyColor) {
-    return LIGHTNING_BOLT;
-  }
-  const themeName = resolveThemeSetting(
-    getExecutionAuthoritySettings().tui?.theme ?? 'dark'
-  );
-  if (cooldown) {
-    return chalk.dim(color('promptBorder', themeName)(LIGHTNING_BOLT));
-  }
-  return color('fastMode', themeName)(LIGHTNING_BOLT);
 }

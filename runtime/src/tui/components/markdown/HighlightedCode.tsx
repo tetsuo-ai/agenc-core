@@ -1,9 +1,9 @@
 import { c as _c } from "react-compiler-runtime";
 import type React from 'react';
 import { memo, useEffect, useRef, useState } from 'react';
+import { useFullscreenMode } from '../../context/fullscreenModeContext.js';
 import { useSettings } from '../../hooks/useSettings.js';
 import { Ansi, Box, type DOMElement, measureElement, NoSelect, Text, useTheme } from '../../ink.js';
-import { isFullscreenEnvEnabled } from '../../../utils/fullscreen.js';
 import sliceAnsi from '../../../utils/sliceAnsi.js';
 import { countCharInString } from '../../../utils/stringUtils.js';
 import { HighlightedCodeFallback } from './HighlightedCodeFallback.js';
@@ -28,6 +28,7 @@ export const HighlightedCode = memo(function HighlightedCode(t0: Props): React.R
   const [measuredWidth, setMeasuredWidth] = useState(width || DEFAULT_WIDTH);
   const [theme] = useTheme();
   const settings = useSettings();
+  const isFullscreen = useFullscreenMode();
   const syntaxHighlightingDisabled = settings.syntaxHighlightingDisabled ?? false;
   let t2;
   bb0: {
@@ -103,7 +104,7 @@ export const HighlightedCode = memo(function HighlightedCode(t0: Props): React.R
   const lines = t5;
   let t6;
   bb2: {
-    if (!isFullscreenEnvEnabled()) {
+    if (!isFullscreen) {
       t6 = 0;
       break bb2;
     }

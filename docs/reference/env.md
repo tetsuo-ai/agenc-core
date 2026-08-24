@@ -144,6 +144,7 @@ These have their own pages. Short map:
 | Var | Effect |
 | --- | --- |
 | `AGENC_TUI_WORKBENCH` | `0` uses classic fullscreen instead of workbench |
+| `AGENC_NO_FLICKER` | `0` disables fullscreen; `1` forces it on, including under tmux `-CC`. When unset, tmux `-CC` disables fullscreen; otherwise `tui.flickerFreeMode` is authoritative and defaults to on |
 | `AGENC_DISABLE_MOUSE` | Disables mouse tracking |
 | `AGENC_DISABLE_MOUSE_CLICKS` | Disables click handling |
 | `AGENC_DISABLE_TERMINAL_TITLE` | Leaves the terminal title alone |
@@ -256,7 +257,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_N*
 
-`AGENC_NOPROGRESS_IGNORE_TOOLS`, `AGENC_NOPROGRESS_TERMINATE`, `AGENC_NOPROGRESS_WARN`, `AGENC_NO_FLICKER`.
+`AGENC_NOPROGRESS_IGNORE_TOOLS`, `AGENC_NOPROGRESS_TERMINATE`, `AGENC_NOPROGRESS_WARN`.
 
 ### AGENC_O*
 

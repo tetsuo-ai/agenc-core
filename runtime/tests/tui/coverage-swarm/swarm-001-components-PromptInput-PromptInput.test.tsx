@@ -534,8 +534,8 @@ vi.mock('../../utils/fastMode.js', () => ({
   isFastModeSupportedByModelForContext: () => harness.fastMode.supportedByModel,
 }))
 
-vi.mock('../../utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => harness.fullscreen,
+vi.mock('../context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => harness.fullscreen,
 }))
 
 vi.mock('../../utils/imagePaste.js', () => ({

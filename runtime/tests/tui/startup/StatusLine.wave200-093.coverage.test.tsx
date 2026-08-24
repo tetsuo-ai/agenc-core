@@ -117,8 +117,8 @@ vi.mock('../../utils/debug.js', () => ({
   logForDebugging: mocks.logForDebugging,
 }))
 
-vi.mock('../../utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => false,
+vi.mock('../context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => false,
 }))
 
 vi.mock('../../utils/hooks.js', () => ({

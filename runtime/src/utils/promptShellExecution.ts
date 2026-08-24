@@ -39,12 +39,12 @@ import { isPowerShellToolEnabled } from './shell/shellToolUtils.js'
 const getPowerShellTool = (() => {
   let cached: PromptShellTool | undefined
   return (): PromptShellTool => {
-    if (!cached) {
-      cached = (
-        require('../tools/PowerShellTool/PowerShellTool.js') as typeof import('../tools/PowerShellTool/PowerShellTool.js')
-      ).PowerShellTool
-    }
-    return cached
+    if (cached !== undefined) return cached
+    const loaded = (
+      require('../tools/PowerShellTool/PowerShellTool.js') as typeof import('../tools/PowerShellTool/PowerShellTool.js')
+    ).PowerShellTool as unknown as PromptShellTool
+    cached = loaded
+    return loaded
   }
 })()
 /* eslint-enable @typescript-eslint/no-require-imports */

@@ -15,8 +15,15 @@ const rowMock = vi.hoisted(() => ({
 
 vi.mock("../../utils/collapseReadSearch.js", () => ({
   getDisplayMessageFromCollapsed: (message: any) => message.displayMessage ?? message,
-  getToolSearchOrReadInfo: (name: string) => ({
-    isCollapsible: rowMock.collapsibleToolNames.has(name),
+  getToolSearchOrReadInfo: (
+    name: string,
+    _input: unknown,
+    _tools: unknown,
+    fullscreen: boolean,
+  ) => ({
+    isCollapsible:
+      rowMock.collapsibleToolNames.has(name) ||
+      (fullscreen && name === "FullscreenOnly"),
   }),
   getToolUseIdsFromCollapsedGroup: (message: { toolUseIds?: string[] }) =>
     message.toolUseIds ?? [],
@@ -141,7 +148,13 @@ describe("hasContentAfterIndex", () => {
     ] as any[];
 
     expect(
-      hasContentAfterIndex(messages, 0, {} as any, new Set(["streaming-shell"])),
+      hasContentAfterIndex(
+        messages,
+        0,
+        {} as any,
+        new Set(["streaming-shell"]),
+        false,
+      ),
     ).toBe(false);
   });
 
@@ -152,6 +165,7 @@ describe("hasContentAfterIndex", () => {
         0,
         {} as any,
         new Set(),
+        false,
       ),
     ).toBe(true);
     expect(
@@ -160,12 +174,38 @@ describe("hasContentAfterIndex", () => {
         0,
         {} as any,
         new Set(),
+        false,
       ),
     ).toBe(true);
 
     rowMock.collapsibleToolNames.delete("GroupedRead");
     expect(
-      hasContentAfterIndex([collapsed(["read-1"]), groupedToolUse("grouped-1")] as any[], 0, {} as any, new Set()),
+      hasContentAfterIndex(
+        [collapsed(["read-1"]), groupedToolUse("grouped-1")] as any[],
+        0,
+        {} as any,
+        new Set(),
+        false,
+      ),
+    ).toBe(true);
+  });
+
+  test("uses the resolved fullscreen mode for tool classification", () => {
+    const messages = [
+      collapsed(["read-1"]),
+      assistantBlock({
+        id: "fullscreen-only",
+        input: {},
+        name: "FullscreenOnly",
+        type: "tool_use",
+      }),
+    ] as any[];
+
+    expect(
+      hasContentAfterIndex(messages, 0, {} as any, new Set(), true),
+    ).toBe(false);
+    expect(
+      hasContentAfterIndex(messages, 0, {} as any, new Set(), false),
     ).toBe(true);
   });
 });

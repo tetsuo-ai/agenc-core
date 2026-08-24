@@ -356,8 +356,11 @@ export function getManagedSettingsKeysForLogging(settings: RuntimeSettingsPatch)
   return [...expanded].sort();
 }
 
-export function getInitialSettings(): RuntimeSettingsSnapshot {
-  const authority = requireAuthority(getCanonicalSettingsAuthority());
+export function getInitialSettings(
+  authority: CanonicalSettingsAuthority = requireAuthority(
+    getCanonicalSettingsAuthority(),
+  ),
+): RuntimeSettingsSnapshot {
   return Object.freeze({ ...authority.current(), ...readStateSettings(authority) });
 }
 

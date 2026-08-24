@@ -24,6 +24,7 @@ import { summarizeToolInput } from './toolRowPreview.js';
 import { buildEditDiffPreview } from '../edit-diff-preview.js';
 import { isFixedRerunSuccess } from './fixedRerunLink.js';
 import { AURA_LIFECYCLE_GLYPHS } from '../../utils/theme.js';
+import { useFullscreenMode } from '../context/fullscreenModeContext.js';
 type Props = {
   param: AgenCToolUseBlockParam;
   addMargin: boolean;
@@ -65,6 +66,7 @@ export function AssistantToolUseMessage({
   lookups,
   isTranscriptMode,
 }: Props): React.ReactNode {
+  const fullscreen = useFullscreenMode();
   const terminalSize = useTerminalSize();
   const [theme] = useTheme();
   const bg = useSelectedMessageBg();
@@ -144,6 +146,7 @@ export function AssistantToolUseMessage({
         verbose,
         inProgressToolCallCount,
         isTranscriptMode,
+        fullscreen,
       },
       terminalSize,
     );
@@ -163,6 +166,7 @@ export function AssistantToolUseMessage({
     theme,
     verbose,
     commands,
+    fullscreen,
   });
   if (renderedToolUseMessage === null) {
     return (
@@ -203,6 +207,7 @@ export function AssistantToolUseMessage({
         verbose,
         inProgressToolCallCount,
         isTranscriptMode,
+        fullscreen,
       },
       terminalSize,
     )
@@ -464,11 +469,13 @@ function selectPendingWorkerRequest(state: {
 function renderToolUseMessage(tool: Tool, input: unknown, {
   theme,
   verbose,
-  commands
+  commands,
+  fullscreen,
 }: {
   theme: ThemeName;
   verbose: boolean;
   commands: Command[];
+  fullscreen: boolean;
 }): React.ReactNode {
   try {
     const parsed = tool.inputSchema.safeParse(input);
@@ -478,7 +485,8 @@ function renderToolUseMessage(tool: Tool, input: unknown, {
     return tool.renderToolUseMessage(parsed.data, {
       theme,
       verbose,
-      commands
+      commands,
+      fullscreen,
     });
   } catch (error) {
     logError(new Error(`Error rendering tool use message for ${tool.name}: ${error}`));
@@ -488,11 +496,13 @@ function renderToolUseMessage(tool: Tool, input: unknown, {
 function renderToolUseProgressMessage(tool: Tool, tools: Tools, lookups: ReturnType<typeof buildMessageLookups>, toolUseID: string, progressMessagesForMessage: ProgressMessage[], {
   verbose,
   inProgressToolCallCount,
-  isTranscriptMode
+  isTranscriptMode,
+  fullscreen,
 }: {
   verbose: boolean;
   inProgressToolCallCount?: number;
   isTranscriptMode?: boolean;
+  fullscreen: boolean;
 }, terminalSize: {
   columns: number;
   rows: number;
@@ -504,7 +514,8 @@ function renderToolUseProgressMessage(tool: Tool, tools: Tools, lookups: ReturnT
       verbose,
       terminalSize,
       inProgressToolCallCount: inProgressToolCallCount ?? 1,
-      isTranscriptMode
+      isTranscriptMode,
+      fullscreen,
     }) ?? null;
     return <>
         <TuiErrorBoundary>

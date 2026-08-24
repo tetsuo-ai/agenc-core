@@ -8,7 +8,6 @@ import type {
   NormalizedUserMessage,
   RenderableMessage,
 } from '../types/message.js'
-import { isFullscreenEnvEnabled } from './fullscreen.js'
 import { extractTag } from './messages.js'
 
 function isCompletedBackgroundBash(
@@ -39,8 +38,9 @@ function isCompletedBackgroundBash(
 export function collapseBackgroundBashNotifications(
   messages: RenderableMessage[],
   verbose: boolean,
+  fullscreen: boolean,
 ): RenderableMessage[] {
-  if (!isFullscreenEnvEnabled()) return messages
+  if (!fullscreen) return messages
   if (verbose) return messages
 
   const result: RenderableMessage[] = []

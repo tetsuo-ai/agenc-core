@@ -1,11 +1,5 @@
 import { describe, expect, test, vi } from 'vitest'
 
-// Keep fullscreen-specific bash bucketing out of the way; these tests only
-// exercise non-collapsible Edit retries.
-vi.mock('../../utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => false,
-}))
-
 // REPL primitives are only consulted when a tool is missing from `tools`; our
 // fixtures always include the tool, but stub it to avoid pulling the real tree.
 vi.mock('../../tools/REPLTool/primitiveTools.js', () => ({
@@ -87,7 +81,7 @@ describe('collapseReadSearchGroups - failed retry rollup', () => {
       messages.push(errorResult(id, 'File has not been read yet'))
     }
 
-    const out = collapseReadSearchGroups(messages, tools)
+    const out = collapseReadSearchGroups(messages, tools, false)
 
     const editRows = out.filter(isEditToolUse)
     expect(editRows).toHaveLength(1)
@@ -115,7 +109,7 @@ describe('collapseReadSearchGroups - failed retry rollup', () => {
       errorResult(b, 'File has not been read yet'),
     ]
 
-    const out = collapseReadSearchGroups(messages, tools)
+    const out = collapseReadSearchGroups(messages, tools, false)
     const editRows = out.filter(isEditToolUse)
     expect(editRows).toHaveLength(2)
     // Distinct targets => no rollup annotation.
@@ -133,7 +127,7 @@ describe('collapseReadSearchGroups - failed retry rollup', () => {
       toolResult(b, false, 'ok'),
     ]
 
-    const out = collapseReadSearchGroups(messages, tools)
+    const out = collapseReadSearchGroups(messages, tools, false)
     const editRows = out.filter(isEditToolUse)
     // Two successful edits to the same file are independent rows.
     expect(editRows).toHaveLength(2)
@@ -152,7 +146,7 @@ describe('collapseReadSearchGroups - failed retry rollup', () => {
       toolResult(ok, false, 'updated'),
     ]
 
-    const out = collapseReadSearchGroups(messages, tools)
+    const out = collapseReadSearchGroups(messages, tools, false)
     const editRows = out.filter(isEditToolUse)
     expect(editRows).toHaveLength(1)
     // 2 prior failures + the successful attempt = 3 folded attempts.
@@ -180,7 +174,7 @@ describe('collapseReadSearchGroups - failed retry rollup', () => {
       errorResult(b, 'File has not been read yet'),
     ]
 
-    const out = collapseReadSearchGroups(messages, tools)
+    const out = collapseReadSearchGroups(messages, tools, false)
     const editRows = out.filter(isEditToolUse)
     expect(editRows).toHaveLength(2)
   })

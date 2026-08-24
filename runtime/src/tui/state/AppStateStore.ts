@@ -394,6 +394,7 @@ export type AppStateStore = Store<AppState>
 export function getDefaultAppState(): AppState {
   return getDefaultAppStateForProviderEnvironment(
     getSelectedProviderEnvironment(),
+    getInitialSettings(),
   )
 }
 
@@ -404,8 +405,8 @@ export function getDefaultAppState(): AppState {
  */
 export function getDefaultAppStateForProviderEnvironment(
   providerEnvironment: ProviderEnvironment,
+  initialSettings: RuntimeSettingsSnapshot,
 ): AppState {
-  const initialSettings = getInitialSettings()
   const initialMode: PermissionMode =
     isTeammate() && isPlanModeRequired()
       ? 'plan'

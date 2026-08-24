@@ -12,6 +12,7 @@ import { InterruptedByUser } from '../../components/InterruptedByUser';
 import { MessageResponse } from '../../components/MessageResponse';
 import { RejectedPlanMessage, RejectedToolUseMessage } from '../../components/v2/messagePrimitives.js';
 import { getTextToolResultContent } from './utils';
+import { useFullscreenMode } from '../../context/fullscreenModeContext.js';
 type Props = {
   progressMessagesForMessage: ProgressMessage[];
   tool?: Tool; // undefined when resuming an old conversation that uses an old tool
@@ -29,6 +30,7 @@ export function UserToolErrorMessage({
   verbose,
   isTranscriptMode,
 }: Props): React.ReactNode {
+  const fullscreen = useFullscreenMode();
   if (isPermissionDeniedToolResult(param.content)) {
     return <MessageResponse height={1}><Text dimColor={true}>{PERMISSION_DENIED_TOOL_RESULT_MESSAGE}</Text></MessageResponse>;
   }
@@ -59,7 +61,8 @@ export function UserToolErrorMessage({
       progressMessagesForMessage: filterToolProgressMessages(progressMessagesForMessage),
       tools,
       verbose,
-      isTranscriptMode
+      isTranscriptMode,
+      fullscreen,
     }) ?? <FallbackToolUseErrorMessage result={param.content} verbose={verbose} />
   );
 }

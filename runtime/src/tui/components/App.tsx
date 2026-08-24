@@ -110,7 +110,7 @@ import { ScrollKeybindingHandler } from "./ScrollKeybindingHandler.js";
 import type { ScrollBoxHandle } from "../ink/components/ScrollBox.js";
 import { AlternateScreen } from "../ink/components/AlternateScreen.js";
 import {
-  isFullscreenEnvEnabled,
+  isFullscreenEnabledForCurrentTerminal,
   isMouseTrackingEnabled,
 } from "../../utils/fullscreen.js";
 import { SpinnerWithVerb } from "./spinner/Spinner.js";
@@ -148,6 +148,11 @@ import {
   useAppStateStore,
   useSetAppState,
 } from "../state/AppState.js";
+import { useSettings } from "../hooks/useSettings.js";
+import {
+  FullscreenModeProvider,
+} from "../context/fullscreenModeContext.js";
+import { getInitialSettings } from "../../utils/settings/settings.js";
 import {
   Box,
   Text,
@@ -1757,6 +1762,7 @@ function initialState(props: AgenCTuiProps, roleWorkspaceCwd: string): any {
     })();
   const defaults = getDefaultAppStateForProviderEnvironment(
     getTuiProviderEnvironment(props.session),
+    getInitialSettings(getTuiConfigStore(props.session)),
   );
   return {
     ...defaults,
@@ -2288,17 +2294,22 @@ function completionPipelineStateSignature(
 export function getTuiRemoteAuthSessionReadContext(
   session: AgenCBridgeSession,
 ): ProviderAuthReadContext {
-  const home = session.services.configStore?.homeContext;
-  if (home === undefined) {
-    throw new Error(
-      "TUI session requires a canonical ConfigStore home for authentication reads",
-    );
-  }
+  const home = getTuiConfigStore(session).homeContext;
   return Object.freeze({
     home,
     environment: getTuiProviderEnvironment(session),
     provider: getTuiProviderName(session),
   });
+}
+
+function getTuiConfigStore(session: AgenCBridgeSession) {
+  const configStore = session.services.configStore;
+  if (configStore === undefined) {
+    throw new Error(
+      "TUI session requires a canonical ConfigStore captured at ingress",
+    );
+  }
+  return configStore;
 }
 
 export function getTuiProviderName(session: AgenCBridgeSession): string {
@@ -2330,6 +2341,7 @@ export function getTuiProviderEnvironment(
 
 function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const { exit } = useApp();
+  const settings = useSettings();
   const getFpsMetrics = useFpsMetrics();
   useCostSummary(getFpsMetrics);
   const renderHealthWarning = formatRenderHealthWarning(getFpsMetrics?.());
@@ -2518,7 +2530,9 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const activePredictionRequestIdRef = useRef<string | null>(null);
   const [predictionConsentPromptVisible, setPredictionConsentPromptVisible] =
     useState(false);
-  const fullscreen = isFullscreenEnvEnabled();
+  const fullscreen = isFullscreenEnabledForCurrentTerminal(
+    settings.tui?.flickerFreeMode,
+  );
   const workbenchEnabled = fullscreen && isWorkbenchEnabled();
   const workbenchState = useAppState(getWorkbenchStateFromAppState);
   const [workspaceEditorAuthority, setWorkspaceEditorAuthority] =
@@ -6692,100 +6706,102 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       onboarding.state,
     );
     return (
-      <Box flexDirection="column" width="100%">
-        <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
-        <Onboarding
-          state={onboarding.state}
-          steps={onboarding.steps}
-          currentStep={onboarding.currentStep}
-          context={onboardingContext}
-        />
-        {toolJSX !== null ? (
-          <Box flexDirection="column" width="100%">
-            {toolJSX.jsx}
-          </Box>
-        ) : null}
-        <PromptInput
-          debug={false}
-          ideSelection={undefined}
-          toolPermissionContext={toolPermissionContext as any}
-          setToolPermissionContext={setToolPermissionContext as any}
-          apiKeyStatus="valid"
-          remoteAuthSessionContext={remoteAuthSessionContext}
-          commands={EMPTY_ONBOARDING_COMMANDS}
-          agents={agents as any}
-          isLoading={false}
-          verbose={false}
-          getMessages={getTranscriptMessages}
-          hasMessages={hasTranscriptMessages}
-          isMidConversation={hasTranscriptMessages}
-          lastAssistantMessageId={lastAssistantMessageId}
-          onAutoUpdaterResult={() => {}}
-          autoUpdaterResult={null}
-          input={input}
-          onInputChange={setInput}
-          mode={mode}
-          onModeChange={setMode}
-          stashedPrompt={stashedPrompt}
-          setStashedPrompt={setStashedPrompt}
-          submitCount={submitCount}
-          onShowMessageSelector={handleShowMessageSelector}
-          onMessageActionsEnter={handleShowMessageSelector}
-          mcpClients={mcpClients as never}
-          pastedContents={pastedContents}
-          setPastedContents={setPastedContents}
-          vimMode={vimMode}
-          setVimMode={setVimMode}
-          showBashesDialog={showBashesDialog}
-          setShowBashesDialog={setShowBashesDialog}
-          onExit={handleExit}
-          getToolUseContext={getToolUseContext}
-          onBashSubmit={runQueuedBashCommand}
-          queueOwner={commandQueueOwner}
-          queueExecutionCwd={queueWorkspaceRoot}
-          restoreComposerDraftForView={restoreComposerDraftForView}
-          onboardingInput={onboardingInput}
-          onSubmit={async (value_0, helpers) => {
-            if (isExitSlashCommand(value_0)) {
-              setInput("");
-              helpers.clearBuffer();
-              helpers.resetHistory();
-              helpers.setCursorOffset(0);
-              handleExit();
-              return;
-            }
-            if (
-              value_0.trim().startsWith("/") &&
-              !isOnboardingSlashAlias(value_0)
-            ) {
+      <FullscreenModeProvider enabled={fullscreen}>
+        <Box flexDirection="column" width="100%">
+          <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
+          <Onboarding
+            state={onboarding.state}
+            steps={onboarding.steps}
+            currentStep={onboarding.currentStep}
+            context={onboardingContext}
+          />
+          {toolJSX !== null ? (
+            <Box flexDirection="column" width="100%">
+              {toolJSX.jsx}
+            </Box>
+          ) : null}
+          <PromptInput
+            debug={false}
+            ideSelection={undefined}
+            toolPermissionContext={toolPermissionContext as any}
+            setToolPermissionContext={setToolPermissionContext as any}
+            apiKeyStatus="valid"
+            remoteAuthSessionContext={remoteAuthSessionContext}
+            commands={EMPTY_ONBOARDING_COMMANDS}
+            agents={agents as any}
+            isLoading={false}
+            verbose={false}
+            getMessages={getTranscriptMessages}
+            hasMessages={hasTranscriptMessages}
+            isMidConversation={hasTranscriptMessages}
+            lastAssistantMessageId={lastAssistantMessageId}
+            onAutoUpdaterResult={() => {}}
+            autoUpdaterResult={null}
+            input={input}
+            onInputChange={setInput}
+            mode={mode}
+            onModeChange={setMode}
+            stashedPrompt={stashedPrompt}
+            setStashedPrompt={setStashedPrompt}
+            submitCount={submitCount}
+            onShowMessageSelector={handleShowMessageSelector}
+            onMessageActionsEnter={handleShowMessageSelector}
+            mcpClients={mcpClients as never}
+            pastedContents={pastedContents}
+            setPastedContents={setPastedContents}
+            vimMode={vimMode}
+            setVimMode={setVimMode}
+            showBashesDialog={showBashesDialog}
+            setShowBashesDialog={setShowBashesDialog}
+            onExit={handleExit}
+            getToolUseContext={getToolUseContext}
+            onBashSubmit={runQueuedBashCommand}
+            queueOwner={commandQueueOwner}
+            queueExecutionCwd={queueWorkspaceRoot}
+            restoreComposerDraftForView={restoreComposerDraftForView}
+            onboardingInput={onboardingInput}
+            onSubmit={async (value_0, helpers) => {
+              if (isExitSlashCommand(value_0)) {
+                setInput("");
+                helpers.clearBuffer();
+                helpers.resetHistory();
+                helpers.setCursorOffset(0);
+                handleExit();
+                return;
+              }
+              if (
+                value_0.trim().startsWith("/") &&
+                !isOnboardingSlashAlias(value_0)
+              ) {
+                await submitViaElicitationPrompt(
+                  elicitation,
+                  submit,
+                  value_0,
+                  helpers,
+                );
+                return;
+              }
+              if (await onboarding.submit(value_0)) {
+                setInput("");
+                helpers.clearBuffer();
+                helpers.resetHistory();
+                helpers.setCursorOffset(0);
+                return;
+              }
               await submitViaElicitationPrompt(
                 elicitation,
                 submit,
                 value_0,
                 helpers,
               );
-              return;
-            }
-            if (await onboarding.submit(value_0)) {
-              setInput("");
-              helpers.clearBuffer();
-              helpers.resetHistory();
-              helpers.setCursorOffset(0);
-              return;
-            }
-            await submitViaElicitationPrompt(
-              elicitation,
-              submit,
-              value_0,
-              helpers,
-            );
-          }}
-          isSearchingHistory={isSearchingHistory}
-          setIsSearchingHistory={setIsSearchingHistory}
-          helpOpen={helpOpen}
-          setHelpOpen={setHelpOpen}
-        />
-      </Box>
+            }}
+            isSearchingHistory={isSearchingHistory}
+            setIsSearchingHistory={setIsSearchingHistory}
+            helpOpen={helpOpen}
+            setHelpOpen={setHelpOpen}
+          />
+        </Box>
+      </FullscreenModeProvider>
     );
   }
   const messagesElement = isLocalJSXCommandActive ? null : (
@@ -7134,16 +7150,20 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   );
   if (fullscreen) {
     return (
-      <AlternateScreen mouseTracking={isMouseTrackingEnabled()}>
-        {body}
-      </AlternateScreen>
+      <FullscreenModeProvider enabled={fullscreen}>
+        <AlternateScreen mouseTracking={isMouseTrackingEnabled()}>
+          {body}
+        </AlternateScreen>
+      </FullscreenModeProvider>
     );
   }
   // Non-fullscreen: wrap in a flex column so children stack normally.
   return (
-    <Box flexDirection="column" width="100%">
-      {body}
-    </Box>
+    <FullscreenModeProvider enabled={fullscreen}>
+      <Box flexDirection="column" width="100%">
+        {body}
+      </Box>
+    </FullscreenModeProvider>
   );
 }
 export function AgenCTuiApp(props: AgenCTuiProps): React.ReactElement {

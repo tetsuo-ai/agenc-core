@@ -43,6 +43,7 @@ vi.mock('../../context/promptOverlayContext.js', () => ({
 
 vi.mock('../../hooks/useSettings.js', () => ({
   useSettings: () => ({
+    tui: {},
     statusLine: harness.statusLineEnabled
       ? {
           command: 'status',
@@ -58,8 +59,8 @@ vi.mock('../../hooks/useTerminalSize.js', () => ({
   }),
 }))
 
-vi.mock('../../../utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => harness.fullscreen,
+vi.mock('../../context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => harness.fullscreen,
 }))
 
 vi.mock('../../state/AppState.js', () => ({

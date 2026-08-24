@@ -18,8 +18,8 @@ vi.mock("bun:bundle", () => ({
   feature: (name: string) => collapsedMock.featureFlags.has(name),
 }));
 
-vi.mock("../../utils/fullscreen.js", () => ({
-  isFullscreenEnvEnabled: () => collapsedMock.fullscreen,
+vi.mock("../context/fullscreenModeContext.js", () => ({
+  useFullscreenMode: () => collapsedMock.fullscreen,
 }));
 
 vi.mock("../../utils/collapseReadSearch.js", async importOriginal => {

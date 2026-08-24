@@ -3,6 +3,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import React, { createContext, type ReactNode, type RefObject, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { fileURLToPath } from 'url';
+import { useFullscreenMode } from '../context/fullscreenModeContext.js';
 import { ModalContext } from '../context/modalContext';
 import { PromptOverlayProvider } from '../context/promptOverlayContext.js';
 import { useTerminalSize } from '../hooks/useTerminalSize';
@@ -12,7 +13,6 @@ import instances from '../ink/instances.js';
 import { Box, Text, useTerminalFocus } from '../ink.js';
 import type { Message } from '../../types/message';
 import { openBrowser, openPath } from '../../utils/browser.js';
-import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import { logError } from '../../utils/log.js';
 import { plural } from '../../utils/stringUtils.js';
 import { modelDisplayString } from '../../utils/model/model.js';
@@ -358,8 +358,8 @@ export function computeUnseenDivider(messages: readonly Message[], dividerIndex:
  * Outside fullscreen mode, renders content sequentially so the existing
  * main-screen scrollback rendering works unchanged.
  *
- * Fullscreen mode defaults on for ants (AGENC_NO_FLICKER=0 to opt out)
- * and off for external users (AGENC_NO_FLICKER=1 to opt in).
+ * Fullscreen mode follows the session's resolved flicker-free setting,
+ * which defaults to enabled.
  * The <AlternateScreen> wrapper
  * (alt buffer + mouse tracking + height constraint) lives at REPL's root
  * so nothing can accidentally render outside it.
@@ -390,6 +390,7 @@ export function FullscreenLayout(t0) {
   } = useTerminalSize();
   const layoutBudget = calculateFullscreenLayoutBudget(terminalRows);
   const noColor = isNoColorEnv();
+  const isFullscreen = useFullscreenMode();
   const [stickyPrompt, setStickyPrompt] = useState(null);
   let t4;
   if ($[0] === Symbol.for("react.memo_cache_sentinel")) {
@@ -427,15 +428,8 @@ export function FullscreenLayout(t0) {
     t6 = $[5];
   }
   const pillVisible = useSyncExternalStore(subscribe, t6);
-  let t7;
-  if ($[6] === Symbol.for("react.memo_cache_sentinel")) {
-    t7 = [];
-    $[6] = t7;
-  } else {
-    t7 = $[6];
-  }
-  useLayoutEffect(_temp3, t7);
-  if (isFullscreenEnvEnabled()) {
+  useLayoutEffect(isFullscreen ? _temp3 : _temp, [isFullscreen]);
+  if (isFullscreen) {
     const sticky = hideSticky ? null : stickyPrompt;
     const headerPrompt = sticky != null && sticky !== "clicked" && overlay == null ? sticky : null;
     const padCollapsed = sticky != null && overlay == null;
@@ -736,9 +730,6 @@ const fullscreenHyperlinkOwners = new WeakMap<object, {
 // "Jump to bottom" when count is 0 (scrolled away but no new messages yet —
 // the dead zone where users previously thought chat stalled).
 function _temp3() {
-  if (!isFullscreenEnvEnabled()) {
-    return;
-  }
   const ink = instances.get(process.stdout);
   if (!ink) {
     return;

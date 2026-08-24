@@ -61,16 +61,6 @@ vi.mock("../../../utils/config.js", () => ({
   getRuntimeState: () => footerMock.globalConfig,
 }));
 
-vi.mock("../../../utils/settings/canonicalAuthority.js", () => ({
-  getCanonicalSettingsAuthority: () => ({
-    current: () => footerMock.globalConfig,
-  }),
-}));
-
-vi.mock("../../../utils/settings/settings.js", () => ({
-  getExecutionAuthoritySettings: () => footerMock.globalConfig,
-}));
-
 vi.mock("../../../utils/permissions/PermissionMode.js", () => ({
   getModeColor: () => "mode",
   isDefaultMode: (mode: string | undefined) => mode === undefined || mode === "default",
@@ -154,8 +144,20 @@ vi.mock("../../hooks/useTasksV2.js", () => ({
   useTasksV2: () => footerMock.tasksV2,
 }));
 
-vi.mock("../../../utils/fullscreen.js", () => ({
-  isFullscreenEnvEnabled: () => footerMock.fullscreen,
+vi.mock("./utils.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("./utils.js")>();
+  return {
+    ...actual,
+    isVimModeEnabled: () => footerMock.globalConfig.tui?.vimMode === true,
+  };
+});
+
+vi.mock("../../hooks/useSettings.js", () => ({
+  useSettings: () => footerMock.globalConfig,
+}));
+
+vi.mock("../../context/fullscreenModeContext.js", () => ({
+  useFullscreenMode: () => footerMock.fullscreen,
 }));
 
 vi.mock("../../ink/terminal.js", () => ({

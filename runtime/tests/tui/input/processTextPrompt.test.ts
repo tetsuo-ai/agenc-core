@@ -72,8 +72,8 @@ vi.mock('../history/history.js', () => ({
   addToHistory: () => {},
 }))
 
-vi.mock('../../utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => false,
+vi.mock('../context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => false,
 }))
 
 vi.mock('../../utils/env.js', () => ({

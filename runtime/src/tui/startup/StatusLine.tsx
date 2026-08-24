@@ -5,6 +5,7 @@ import { memo, useCallback, useEffect, useRef } from 'react';
 import { getRawUtilization } from '../rate-limits/agenc-ai-limits.js';
 import { getIsRemoteMode, getKairosActive, getMainThreadAgentType, getOriginalCwd, getSdkBetas, getSessionId } from '../../bootstrap/state.js';
 import { DEFAULT_OUTPUT_STYLE_NAME } from '../../constants/outputStyles.js';
+import { useFullscreenMode } from '../context/fullscreenModeContext.js';
 import { useNotifications } from '../context/notifications.js';
 import { getTotalAPIDuration, getTotalCost, getTotalDuration, getTotalInputTokens, getTotalLinesAdded, getTotalLinesRemoved, getTotalOutputTokens } from '../../cost/tracker.js';
 import { useMainLoopModel } from '../hooks/useMainLoopModel.js';
@@ -15,7 +16,6 @@ import type { VimMode } from '../../types/textInputTypes.js';
 import { checkHasProjectTrustAcceptedSync } from '../../permissions/trust/project-trust.js';
 import { calculateContextPercentages, getContextWindowForModel } from '../../utils/context.js';
 import { getCwd } from '../../utils/cwd.js';
-import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js';
 import { createBaseHookInput, executeStatusLineCommand } from '../../utils/hooks.js';
 import { getLastAssistantMessage } from '../../utils/messages.js';
 import { getRuntimeMainLoopModel, type ModelName, renderModelName } from '../../utils/model/model.js';
@@ -146,6 +146,7 @@ function StatusLineInner({
   const statusLineText = useAppState(s => s.statusLineText);
   const setAppState = useSetAppState();
   const settings = useSettings();
+  const isFullscreen = useFullscreenMode();
   const {
     addNotification
   } = useNotifications();
@@ -315,7 +316,7 @@ function StatusLineInner({
       {vimModeIndicator ? <Text dimColor>{vimModeIndicator}</Text> : null}
       {statusLineText ? <Text dimColor wrap="truncate">
           <Ansi>{statusLineText}</Ansi>
-        </Text> : isFullscreenEnvEnabled() ? <Text> </Text> : null}
+        </Text> : isFullscreen ? <Text> </Text> : null}
     </Box>;
 }
 

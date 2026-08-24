@@ -18,6 +18,10 @@ vi.mock("../hooks/useUpdateNotification", () => ({
   useUpdateNotification: () => true,
 }));
 
+vi.mock("../hooks/useSettings.js", () => ({
+  useSettings: () => ({ autoUpdatesChannel: "latest" }),
+}));
+
 vi.mock("src/utils/debug.js", () => ({
   logForDebugging: () => {},
 }));

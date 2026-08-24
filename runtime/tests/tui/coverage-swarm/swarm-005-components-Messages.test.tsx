@@ -2,6 +2,7 @@ import { PassThrough } from 'node:stream'
 import type { ReactNode } from 'react'
 import React from 'react'
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../remoteAuthSessionContext.fixture.js'
 
 const harness = vi.hoisted(() => ({
   rows: [] as Array<{
@@ -63,6 +64,12 @@ vi.mock('../../../src/tui/hooks/useTerminalSize.js', () => ({
   useTerminalSize: () => ({ columns: 48, rows: 24 }),
 }))
 
+vi.mock('../../../src/tui/hooks/useSettings.js', () => ({
+  useSettings: () => ({
+    tui: { terminalProgressBarEnabled: true },
+  }),
+}))
+
 vi.mock('../../../src/tui/keybindings/useShortcutDisplay.js', () => ({
   useShortcutDisplay: () => 'Ctrl+E',
 }))
@@ -81,8 +88,8 @@ vi.mock('../../../src/utils/config.js', () => ({
   getRuntimeState: () => ({ terminalProgressBarEnabled: true }),
 }))
 
-vi.mock('../../../src/utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => false,
+vi.mock('../../../src/tui/context/fullscreenModeContext.js', () => ({
+  useFullscreenMode: () => false,
 }))
 
 vi.mock('../../../src/tui/startup/StatusNotices.js', () => ({
@@ -280,6 +287,7 @@ const baseProps = {
   isLoading: false,
   isMessageSelectorVisible: false,
   messages: [],
+  providerAuthContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
   screen: 'main' as const,
   streamingToolUses: [],
   toolJSX: null,

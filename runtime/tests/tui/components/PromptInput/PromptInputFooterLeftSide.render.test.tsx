@@ -203,8 +203,20 @@ vi.mock("../../hooks/useTasksV2.js", () => ({
   useTasksV2: () => harness.tasksV2,
 }));
 
-vi.mock("../../../utils/fullscreen.js", () => ({
-  isFullscreenEnvEnabled: () => harness.fullscreen,
+vi.mock("./utils.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("./utils.js")>();
+  return {
+    ...actual,
+    isVimModeEnabled: () => harness.config.tui.vimMode === true,
+  };
+});
+
+vi.mock("../../hooks/useSettings.js", () => ({
+  useSettings: () => harness.config,
+}));
+
+vi.mock("../../context/fullscreenModeContext.js", () => ({
+  useFullscreenMode: () => harness.fullscreen,
 }));
 
 vi.mock("../../ink/terminal.js", async importOriginal => {
@@ -222,16 +234,6 @@ vi.mock("../../ink/hooks/use-selection.js", () => ({
 
 vi.mock("../../../utils/config.js", () => ({
   getRuntimeState: () => harness.config,
-}));
-
-vi.mock("../../../utils/settings/canonicalAuthority.js", () => ({
-  getCanonicalSettingsAuthority: () => ({
-    current: () => harness.config,
-  }),
-}));
-
-vi.mock("../../../utils/settings/settings.js", () => ({
-  getExecutionAuthoritySettings: () => harness.config,
 }));
 
 vi.mock("../../../utils/platform.js", () => ({

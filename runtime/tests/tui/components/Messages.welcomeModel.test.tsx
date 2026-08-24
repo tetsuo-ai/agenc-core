@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { Command } from '../../commands.js'
 import type { Tools } from '../../tools/Tool.js'
 import { renderToString } from '../../utils/staticRender.js'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../remoteAuthSessionContext.fixture.js'
 import { AppStateProvider, getDefaultAppState } from '../state/AppState.js'
 import { AGENC_LOGO_MARK_LINES } from './v2/primitives.js'
 import { Messages } from './Messages.js'
@@ -32,6 +33,8 @@ const baseProps = {
   inProgressToolUseIDs: new Set<string>(),
   isMessageSelectorVisible: false,
   conversationId: 'welcome-model-smoke',
+  isLoading: false,
+  providerAuthContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
   screen: 'main' as const,
   streamingToolUses: [],
 }

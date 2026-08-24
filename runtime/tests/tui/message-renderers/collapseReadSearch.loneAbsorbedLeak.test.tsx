@@ -5,13 +5,10 @@ import { describe, expect, it, vi } from 'vitest'
 // leak those absorbed rows (or their results) into the default transcript.
 //
 // ToolSearch is only absorbed-silently when fullscreen mode is enabled, so this
-// suite forces it on. `feature()` stays a no-op (HISTORY_SNIP off is fine —
+// suite passes it explicitly. `feature()` stays a no-op (HISTORY_SNIP off is fine —
 // ToolSearch alone exercises the leak path).
 vi.mock('bun:bundle', () => ({
   feature: () => false,
-}))
-vi.mock('../../../src/utils/fullscreen.js', () => ({
-  isFullscreenEnvEnabled: () => true,
 }))
 vi.mock('../../../src/tools/REPLTool/primitiveTools.js', () => ({
   getReplPrimitiveTools: () => [],
@@ -97,6 +94,7 @@ describe('collapseReadSearchGroups — lone group does not leak absorbed ToolSea
         result(read, 'file body'),
       ],
       tools,
+      true,
     )
 
     // The lone Read is un-collapsed (no count summary).
@@ -119,6 +117,7 @@ describe('collapseReadSearchGroups — lone group does not leak absorbed ToolSea
         result(search, 'loaded WebFetch'),
       ],
       tools,
+      true,
     )
 
     expect(out.some(isCollapsedGroup)).toBe(false)
@@ -131,6 +130,7 @@ describe('collapseReadSearchGroups — lone group does not leak absorbed ToolSea
     const out = collapseReadSearchGroups(
       [use(read, 'FileRead', { file_path: '/repo/a.md' }), result(read, 'x')],
       tools,
+      true,
     )
     expect(out.some(isCollapsedGroup)).toBe(false)
     expect(toolUseNames(out)).toEqual(['FileRead'])

@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from 'react'
 import { isInputModeCharacter } from '../components/PromptInput/inputModes.js'
 import { useNotifications } from '../context/notifications.js'
+import { useFullscreenMode } from '../context/fullscreenModeContext.js'
 import stripAnsi from 'strip-ansi'
 import { markBackslashReturnUsed } from '../../commands/terminalSetup/terminalSetup.js'
 import { addToHistory } from '../history/history.js'
@@ -20,7 +21,6 @@ import {
   yankPop,
 } from '../../utils/TextCursor.js'
 import { env } from '../../utils/env.js'
-import { isFullscreenEnvEnabled } from '../../utils/fullscreen.js'
 import type { ImageDimensions } from '../../utils/imageResizer.js'
 import { isModifierPressed, prewarmModifiers } from '../../utils/modifiers.js'
 import { useDoublePress } from './useDoublePress.js'
@@ -96,6 +96,7 @@ export function useTextInput({
   inlineGhostText,
   dim,
 }: UseTextInputProps): TextInputState {
+  const isFullscreen = useFullscreenMode()
   // Pre-warm the modifiers module for Apple Terminal (has internal guard, safe to call multiple times)
   if (env.terminal === 'Apple_Terminal') {
     prewarmModifiers()
@@ -435,12 +436,12 @@ export function useTextInput({
       case key.pageDown:
         // In fullscreen mode, PgUp/PgDn scroll the message viewport instead
         // of moving the cursor — no-op here, ScrollKeybindingHandler handles it.
-        if (isFullscreenEnvEnabled()) {
+        if (isFullscreen) {
           return NOOP_HANDLER
         }
         return () => cursor.endOfLine()
       case key.pageUp:
-        if (isFullscreenEnvEnabled()) {
+        if (isFullscreen) {
           return NOOP_HANDLER
         }
         return () => cursor.startOfLine()

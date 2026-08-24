@@ -10,6 +10,7 @@ import {
 } from '../../utils/model/model.js'
 import { ContentWidthProvider } from '../context/contentWidthContext.js'
 import { stringWidth } from '../ink/stringWidth.js'
+import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../remoteAuthSessionContext.fixture.js'
 import { AGENC_LOGO_MARK_LINES } from './v2/primitives.js'
 import { Messages } from './Messages.js'
 
@@ -37,6 +38,8 @@ const baseProps = {
   inProgressToolUseIDs: new Set<string>(),
   isMessageSelectorVisible: false,
   conversationId: 'welcome-smoke',
+  isLoading: false,
+  providerAuthContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
   screen: 'main' as const,
   streamingToolUses: [],
 }

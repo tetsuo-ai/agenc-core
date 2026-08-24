@@ -332,7 +332,7 @@ vi.mock("../../utils/envUtils.js", () => ({
 }));
 
 vi.mock("../../utils/fullscreen.js", () => ({
-  isFullscreenEnvEnabled: () => fullscreenProbe.fullscreen,
+  isFullscreenEnabledForCurrentTerminal: () => fullscreenProbe.fullscreen,
   isMouseClicksDisabled: () => true,
   isMouseTrackingEnabled: () => fullscreenProbe.mouseTracking,
 }));
@@ -367,6 +367,7 @@ vi.mock("../state/AppState.js", async () => {
     // uncaught-error boundary.
     AppStoreContext: StateContext,
     getDefaultAppState: () => ({
+      settings: {},
       mainLoopModel: null,
       mainLoopModelForSession: null,
       toolPermissionContext: defaultPermissionContext,
@@ -374,9 +375,13 @@ vi.mock("../state/AppState.js", async () => {
       notifications: { current: null, queue: [] },
       elicitation: { queue: [] },
     }),
-    getDefaultAppStateForProviderEnvironment: (environment: unknown) => {
+    getDefaultAppStateForProviderEnvironment: (
+      environment: unknown,
+      settings: Record<string, unknown>,
+    ) => {
       providerProbe.defaultStateProviderEnvironments.push(environment);
       return {
+        settings,
         mainLoopModel: null,
         mainLoopModelForSession: null,
         toolPermissionContext: defaultPermissionContext,

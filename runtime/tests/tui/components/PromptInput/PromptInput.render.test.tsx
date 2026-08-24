@@ -580,8 +580,8 @@ vi.mock("../../../utils/fastMode.js", () => ({
   },
 }));
 
-vi.mock("../../../utils/fullscreen.js", () => ({
-  isFullscreenEnvEnabled: () => false,
+vi.mock("../../context/fullscreenModeContext.js", () => ({
+  useFullscreenMode: () => false,
 }));
 
 vi.mock("../../../utils/imagePaste.js", () => ({

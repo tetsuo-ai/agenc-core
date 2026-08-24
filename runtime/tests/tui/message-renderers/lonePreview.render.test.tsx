@@ -128,7 +128,11 @@ describe('lone Read/Grep keeps its per-call preview in NON-verbose live mode (FI
 
     // Run the REAL collapser over the lone read pair. FIX 2 must NOT fold it
     // into a one-line count summary.
-    const out = collapseReadSearchGroups([use, resultMessage] as never, tools)
+    const out = collapseReadSearchGroups(
+      [use, resultMessage] as never,
+      tools,
+      false,
+    )
     expect(out.some((m: any) => m?.type === 'collapsed_read_search')).toBe(false)
     // The original result message survives so the per-call preview renders.
     const survived = out.find(
@@ -165,7 +169,11 @@ describe('lone Read/Grep keeps its per-call preview in NON-verbose live mode (FI
       },
     })
 
-    const out = collapseReadSearchGroups([use, resultMessage] as never, tools)
+    const out = collapseReadSearchGroups(
+      [use, resultMessage] as never,
+      tools,
+      false,
+    )
     expect(out.some((m: any) => m?.type === 'collapsed_read_search')).toBe(false)
 
     const body = await renderResultBody({

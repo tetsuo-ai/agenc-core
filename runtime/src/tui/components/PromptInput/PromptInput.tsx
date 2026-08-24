@@ -1,5 +1,4 @@
 import { feature } from "bun:bundle";
-import chalk from "chalk";
 import * as path from "path";
 import * as React from "react";
 import type { ProviderAuthReadContext } from "../../../utils/auth.js";
@@ -12,6 +11,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { useContentWidth } from "../../context/contentWidthContext.js";
+import { useFullscreenMode } from "../../context/fullscreenModeContext.js";
 import { useNotifications } from "../../context/notifications.js";
 import { useCommandQueue } from "../../hooks/useCommandQueue.js";
 import {
@@ -60,7 +60,6 @@ import { useMainLoopModel } from "../../hooks/useMainLoopModel.js";
 import { selectAgenCTuiGlyphs } from "../../glyphs.js";
 import { useTerminalSize } from "../../hooks/useTerminalSize.js";
 import { useTypeahead } from "../../hooks/useTypeahead.js";
-import type { BorderTextOptions } from "../../ink/render-border.js";
 import { useTerminalFocus } from "../../ink/hooks/use-terminal-focus.js";
 import { stringWidth } from "../../ink/stringWidth.js";
 import { Box, type ClickEvent, type Key, Text, useInput } from "../../ink.js";
@@ -142,7 +141,6 @@ import {
   isFastModeEnabledForContext,
   isFastModeSupportedByModelForContext,
 } from "../../../utils/fastMode.js";
-import { isFullscreenEnvEnabled } from "../../../utils/fullscreen.js";
 import type { PromptInputHelpers } from "../../../utils/handlePromptSubmit.js";
 import type { VimRoutingState } from "../../input/processTextPrompt.js";
 import { extractDraggedFilePaths } from "../../../utils/dragDropPaths.js";
@@ -208,7 +206,6 @@ import {
   useCoordinatorTaskCount,
 } from "../CoordinatorAgentStatus.js";
 import { getEffortNotificationText } from "../EffortIndicator.js";
-import { getFastIconString } from "../FastIcon.js";
 import { calculateFullscreenLayoutBudget } from "../FullscreenLayout.js";
 import { GlobalSearchDialog } from "../GlobalSearchDialog.js";
 import { HistorySearchDialog } from "../../history/HistorySearchDialog.js";
@@ -800,6 +797,7 @@ function PromptInput({
   onSubmissionBlocked,
   onboardingInput,
 }: Props): React.ReactNode {
+  const isFullscreen = useFullscreenMode();
   const fastModeEnabled = isFastModeEnabledForContext(
     remoteAuthSessionContext,
   );
@@ -3531,7 +3529,7 @@ function PromptInput({
   // wide chars, wrapped lines, and clamps past-end clicks to line end.
   const maxVisibleLines = calculatePromptMaxVisibleLines(
     rows,
-    isFullscreenEnvEnabled(),
+    isFullscreen,
   );
   const handleInputClick = useCallback(
     (e: ClickEvent) => {
@@ -3796,14 +3794,14 @@ function PromptInput({
       ) : null,
     [showAutoModeOptIn, handleAutoModeOptInAccept, handleAutoModeOptInDecline],
   );
-  const fullscreenPromptDialog = isFullscreenEnvEnabled()
+  const fullscreenPromptDialog = isFullscreen
     ? (backgroundTasksDialogElement ??
       modeSwitcherElement ??
       autoModeOptInDialog)
     : null;
   useSetPromptOverlayDialog(fullscreenPromptDialog);
   useRegisterOverlay("prompt-overlay-dialog", fullscreenPromptDialog !== null);
-  if (showBashesDialog && !isFullscreenEnvEnabled()) {
+  if (showBashesDialog && !isFullscreen) {
     return backgroundTasksDialogElement;
   }
   if (isAgentSwarmsEnabled() && showTeamsDialog) {
@@ -3991,7 +3989,7 @@ function PromptInput({
       backgroundColor="surfaceBackground"
       opaque
     >
-      {!isFullscreenEnvEnabled() && (
+      {!isFullscreen && (
         <PromptInputQueuedCommands queueOwner={queueOwner} />
       )}
       {hasSuppressedDialogs && (
@@ -4088,7 +4086,7 @@ function PromptInput({
         </Box>
       )}
       {onboardingInput === undefined &&
-      !isFullscreenEnvEnabled() &&
+      !isFullscreen &&
       modeSwitcherElement ? (
         <Box flexDirection="column" marginTop={1}>
           {modeSwitcherElement}
@@ -4142,14 +4140,14 @@ function PromptInput({
           setHistoryQuery={setHistoryQuery}
           historyFailedMatch={historyFailedMatch}
           onOpenTasksDialog={
-            isFullscreenEnvEnabled() ? handleOpenTasksDialog : undefined
+            isFullscreen ? handleOpenTasksDialog : undefined
           }
         />
       )}
-      {onboardingInput !== undefined || isFullscreenEnvEnabled()
+      {onboardingInput !== undefined || isFullscreen
         ? null
         : autoModeOptInDialog}
-      {onboardingInput === undefined && isFullscreenEnvEnabled() ? (
+      {onboardingInput === undefined && isFullscreen ? (
         // position=absolute takes zero layout height so the spinner
         // doesn't shift when a notification appears/disappears. Yoga
         // anchors absolute children at the parent's content-box origin;
@@ -4264,23 +4262,6 @@ function extractUserMessageBashOutputTexts(m: unknown): string[] {
   }
   return outputs;
 }
-function buildBorderText(
-  showFastIcon: boolean,
-  showFastIconHint: boolean,
-  fastModeCooldown: boolean,
-): BorderTextOptions | undefined {
-  if (!showFastIcon) return undefined;
-  const fastSeg = showFastIconHint
-    ? `${getFastIconString(true, fastModeCooldown)} ${chalk.dim("/fast")}`
-    : getFastIconString(true, fastModeCooldown);
-  return {
-    content: ` ${fastSeg} `,
-    position: "top",
-    align: "end",
-    offset: 0,
-  };
-}
-
 function WorkbenchAttachmentChips({
   attachments,
   onRemove,
