@@ -123,6 +123,15 @@ interface RetainedServerCleanup {
   retryTask?: Promise<void>;
 }
 
+interface DeferredMcpRefresh {
+  readonly promise: Promise<void>;
+  readonly opts: MCPManagerStartOpts;
+  readonly resolve: () => void;
+  readonly reject: (error: unknown) => void;
+  readonly removeAbortListener: () => void;
+  cancelled: boolean;
+}
+
 class MCPConnectionCleanupError extends AggregateError {
   readonly originalError: unknown;
 
@@ -400,6 +409,7 @@ export class MCPManager {
   private running = false;
   private restartAfterSandboxTransition = false;
   private lifecycleTail: Promise<void> = Promise.resolve();
+  private deferredRefresh: DeferredMcpRefresh | undefined;
   private lastStartOpts: Omit<MCPManagerStartOpts, "signal"> = {};
   private lifecycleGeneration = 0;
   private readonly startupGates = new Set<StartupGate>();
@@ -429,6 +439,68 @@ export class MCPManager {
       () => undefined,
     );
     return run;
+  }
+
+  private deferRefreshUntilSandboxResume(
+    opts: MCPManagerStartOpts,
+  ): DeferredMcpRefresh {
+    this.rejectDeferredRefresh(
+      new Error("MCP refresh was superseded before sandbox resume"),
+    );
+    let resolveRefresh: (() => void) | undefined;
+    let rejectRefresh: ((error: unknown) => void) | undefined;
+    const promise = new Promise<void>((resolve, reject) => {
+      resolveRefresh = resolve;
+      rejectRefresh = reject;
+    });
+    // A signal can reject before refreshServers reaches its final await. Keep
+    // that short window from becoming an unhandled rejection.
+    void promise.catch(() => undefined);
+    let record: DeferredMcpRefresh;
+    const onAbort = (): void => {
+      if (this.deferredRefresh !== record) return;
+      record.cancelled = true;
+      this.deferredRefresh = undefined;
+      this.restartAfterSandboxTransition = false;
+      record.removeAbortListener();
+      record.reject(
+        new Error(
+          `MCP refresh cancelled before sandbox resume (${opts.signal?.reason ?? "unspecified"})`,
+        ),
+      );
+    };
+    record = {
+      promise,
+      opts,
+      resolve: () => resolveRefresh?.(),
+      reject: (error) => rejectRefresh?.(error),
+      removeAbortListener: () =>
+        opts.signal?.removeEventListener("abort", onAbort),
+      cancelled: false,
+    };
+    this.deferredRefresh = record;
+    if (opts.signal?.aborted === true) {
+      onAbort();
+    } else {
+      opts.signal?.addEventListener("abort", onAbort, { once: true });
+    }
+    return record;
+  }
+
+  private resolveDeferredRefresh(record: DeferredMcpRefresh): void {
+    if (this.deferredRefresh !== record) return;
+    this.deferredRefresh = undefined;
+    record.removeAbortListener();
+    record.resolve();
+  }
+
+  private rejectDeferredRefresh(error: unknown): void {
+    const record = this.deferredRefresh;
+    if (record === undefined) return;
+    this.deferredRefresh = undefined;
+    record.cancelled = true;
+    record.removeAbortListener();
+    record.reject(error);
   }
 
   /**
@@ -485,12 +557,31 @@ export class MCPManager {
               this.sandboxQuiesced = false;
               if (!this.restartAfterSandboxTransition) return;
               this.restartAfterSandboxTransition = false;
-              await this.start(this.lastStartOpts);
+              const deferred = this.deferredRefresh;
+              try {
+                await this.start(deferred?.opts ?? this.lastStartOpts);
+                if (deferred !== undefined) {
+                  if (deferred.cancelled) {
+                    await this.stopInternal(true);
+                    return;
+                  }
+                  this.resolveDeferredRefresh(deferred);
+                }
+              } catch (error) {
+                if (deferred?.cancelled === true) return;
+                if (deferred !== undefined) {
+                  this.rejectDeferredRefresh(error);
+                }
+                throw error;
+              }
             });
           },
           dispose: async () => {
             this.sandboxQuiesced = true;
             this.restartAfterSandboxTransition = false;
+            this.rejectDeferredRefresh(
+              new Error("MCP refresh cancelled by sandbox disposal"),
+            );
             void this.beginShutdown();
             await this.enqueueLifecycle(async () => {
               await this.stopInternal(true);
@@ -536,6 +627,11 @@ export class MCPManager {
    * waits for that cleanup before rebasing sandbox authority.
    */
   async start(opts: MCPManagerStartOpts = {}): Promise<void> {
+    if (this.sandboxQuiesced) {
+      throw new Error(
+        "MCP manager cannot start while sandbox execution is quiesced",
+      );
+    }
     if (
       this.running ||
       this.shutdownTask !== undefined ||
@@ -646,6 +742,7 @@ export class MCPManager {
    */
   async stop(): Promise<void> {
     this.restartAfterSandboxTransition = false;
+    this.rejectDeferredRefresh(new Error("MCP refresh cancelled by shutdown"));
     void this.beginShutdown();
     await this.enqueueLifecycle(async () => {
       await this.stopInternal(false);
@@ -655,6 +752,7 @@ export class MCPManager {
   /** Stop and reject unless cleanup of every connection owner is proven. */
   async stopStrict(): Promise<void> {
     this.restartAfterSandboxTransition = false;
+    this.rejectDeferredRefresh(new Error("MCP refresh cancelled by shutdown"));
     void this.beginShutdown();
     await this.enqueueLifecycle(async () => {
       await this.stopInternal(true);
@@ -755,17 +853,33 @@ export class MCPManager {
     opts: MCPManagerStartOpts = {},
   ): Promise<void> {
     const nextConfigs = Object.freeze(configs.map(immutableMcpServerConfig));
+    let deferred: DeferredMcpRefresh | undefined;
     await this.enqueueLifecycle(async () => {
+      this.rejectDeferredRefresh(
+        new Error("MCP refresh was superseded by a newer configuration"),
+      );
       await this.stopInternal(true);
       this.configs = nextConfigs;
       this.resetConnectionStates();
       if (this.sandboxQuiesced) {
         this.restartAfterSandboxTransition = true;
         this.lastStartOpts = withoutStartSignal(opts);
+        deferred = this.deferRefreshUntilSandboxResume(opts);
         return;
       }
       await this.start(opts);
+      if (this.sandboxQuiesced) {
+        this.restartAfterSandboxTransition = true;
+        deferred = this.deferRefreshUntilSandboxResume(opts);
+        return;
+      }
+      if (opts.signal?.aborted === true) {
+        throw new Error(
+          `MCP refresh cancelled during startup (${opts.signal.reason ?? "unspecified"})`,
+        );
+      }
     });
+    await deferred?.promise;
   }
 
   /**
@@ -867,6 +981,14 @@ export class MCPManager {
   }
 
   async reconnectServer(name: string): Promise<MCPReconnectResult> {
+    if (this.sandboxQuiesced) {
+      return reconnectFailure(
+        name,
+        new Error(
+          `MCP server "${name}" cannot reconnect while sandbox execution is quiesced`,
+        ),
+      );
+    }
     const config = this.getServerConfig(name);
     if (!config) {
       return {

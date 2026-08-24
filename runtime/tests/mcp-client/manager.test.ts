@@ -5,7 +5,10 @@ import { MCPManager } from "./manager.js";
 import type { MCPServerConfig } from "./types.js";
 import type { MCPToolBridgePermissionOptions } from "./tools.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
-import { transitionSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
+import {
+  registerSandboxExecutionLifecycleParticipant,
+  transitionSandboxExecutionBroker,
+} from "../sandbox/execution-lifecycle.js";
 import { MCPTransportCleanupError } from "./transports/connect-with-cleanup.js";
 
 // Mock the connection and tools modules
@@ -93,6 +96,24 @@ function makeMockBridge(serverName: string, toolNames: string[]) {
       execute: vi.fn().mockResolvedValue({ content: "ok" }),
     })),
     dispose: vi.fn().mockResolvedValue(undefined),
+  };
+}
+
+function deferred<T = void>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T) => void;
+  readonly reject: (error: unknown) => void;
+} {
+  let resolvePromise: ((value: T) => void) | undefined;
+  let rejectPromise: ((error: unknown) => void) | undefined;
+  const promise = new Promise<T>((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  return {
+    promise,
+    resolve: (value) => resolvePromise?.(value),
+    reject: (error) => rejectPromise?.(error),
   };
 }
 
@@ -318,12 +339,17 @@ describe("MCPManager", () => {
     });
     const transition = transitionSandboxExecutionBroker(broker, newCwd);
 
-    await expect(refresh).resolves.toBeUndefined();
+    let refreshSettled = false;
+    void refresh.finally(() => {
+      refreshSettled = true;
+    });
+    await Promise.resolve();
+    expect(refreshSettled).toBe(false);
     expect(manager.getConnectedServers()).toEqual([]);
     expect(broker.cwd).toBe(oldCwd);
 
     resolveRacedClient?.(racedClient);
-    await transition;
+    await Promise.all([transition, refresh]);
 
     expect(racedClient.close).toHaveBeenCalledOnce();
     expect(mockCreateMCPConnection).toHaveBeenCalledTimes(3);
@@ -335,6 +361,115 @@ describe("MCPManager", () => {
       "mcp.current.after",
     ]);
 
+    await manager.stop();
+    manager.setSandboxExecutionBroker(undefined);
+  });
+
+  it("supersedes a deferred refresh before sandbox resume without starting stale config", async () => {
+    const oldCwd = resolve("deferred-refresh-old");
+    const newCwd = resolve("deferred-refresh-new");
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: oldCwd,
+    });
+    const holdTransition = deferred();
+    const unregisterBlocker = registerSandboxExecutionLifecycleParticipant(
+      broker,
+      {
+        name: "test-transition-blocker",
+        quiesce: () => holdTransition.promise,
+        resume: async () => {},
+      },
+    );
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(makeMockBridge("old", ["before"]))
+      .mockResolvedValueOnce(makeMockBridge("current", ["after"]));
+
+    const manager = new MCPManager([makeConfig("old")]);
+    manager.setSandboxExecutionBroker(broker);
+    await manager.start();
+    const transition = transitionSandboxExecutionBroker(broker, newCwd);
+    await vi.waitFor(() => {
+      expect(manager.getConnectedServers()).toEqual([]);
+    });
+
+    const staleRefresh = manager.refreshServers([makeConfig("stale")]);
+    await vi.waitFor(() => {
+      expect(manager.getConfiguredServers().map(({ name }) => name)).toEqual([
+        "stale",
+      ]);
+    });
+    const currentRefresh = manager.refreshServers([makeConfig("current")]);
+    await expect(staleRefresh).rejects.toThrow(/superseded/);
+    await vi.waitFor(() => {
+      expect(manager.getConfiguredServers().map(({ name }) => name)).toEqual([
+        "current",
+      ]);
+    });
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+
+    holdTransition.resolve();
+    await Promise.all([transition, currentRefresh]);
+
+    expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+    expect(manager.getConnectedServers()).toEqual(["current"]);
+    expect(manager.getTools().map(({ name }) => name)).toEqual([
+      "mcp.current.after",
+    ]);
+
+    unregisterBlocker();
+    await manager.stop();
+    manager.setSandboxExecutionBroker(undefined);
+  });
+
+  it("rejects direct start and reconnect while sandbox execution is quiesced", async () => {
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: resolve("direct-lifecycle-old"),
+    });
+    const holdTransition = deferred();
+    const unregisterBlocker = registerSandboxExecutionLifecycleParticipant(
+      broker,
+      {
+        name: "test-direct-lifecycle-blocker",
+        quiesce: () => holdTransition.promise,
+        resume: async () => {},
+      },
+    );
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["before"]))
+      .mockResolvedValueOnce(makeMockBridge("srv1", ["after"]));
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    manager.setSandboxExecutionBroker(broker);
+    await manager.start();
+    const transition = transitionSandboxExecutionBroker(
+      broker,
+      resolve("direct-lifecycle-new"),
+    );
+    await vi.waitFor(() => {
+      expect(manager.getConnectedServers()).toEqual([]);
+    });
+
+    await expect(manager.start()).rejects.toThrow(/sandbox execution is quiesced/);
+    await expect(manager.reconnectServer("srv1")).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("sandbox execution is quiesced"),
+    });
+    expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
+
+    holdTransition.resolve();
+    await transition;
+    expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+    expect(manager.getConnectedServers()).toEqual(["srv1"]);
+
+    unregisterBlocker();
     await manager.stop();
     manager.setSandboxExecutionBroker(undefined);
   });
