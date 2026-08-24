@@ -21,6 +21,7 @@ import type { OpenAIProviderConfig } from "./types.js";
 export class OpenAIAuthSession {
   private readonly config: OpenAIProviderConfig;
   private oauthState: OAuthRefreshState | null;
+  private subscriptionAccountId: string | null;
   private oauthExhaustedMessage: string | null = null;
   private readonly providerName: string;
   private readonly apiKeyEnvLabel: string;
@@ -29,6 +30,10 @@ export class OpenAIAuthSession {
     this.config = config;
     this.providerName = config.providerName ?? "openai";
     this.apiKeyEnvLabel = config.apiKeyEnvLabel ?? "OPENAI_API_KEY";
+    this.subscriptionAccountId =
+      Object.entries(config.defaultHeaders ?? {}).find(
+        ([name]) => name.toLowerCase() === "chatgpt-account-id",
+      )?.[1]?.trim() || null;
     this.oauthState =
       config.authMode === "oauth" && config.oauth
         ? {
@@ -37,6 +42,17 @@ export class OpenAIAuthSession {
           consecutiveAuthFailures: 0,
         }
         : null;
+  }
+
+  updateSubscriptionAuth(auth: {
+    readonly accessToken: string;
+    readonly accountId: string;
+  }): void {
+    (this.config as { apiKey?: string }).apiKey = auth.accessToken;
+    this.subscriptionAccountId = auth.accountId;
+    if (this.oauthState !== null) {
+      this.oauthState = { ...this.oauthState, accessToken: auth.accessToken };
+    }
   }
 
   async withAuthorizedOperation<T>(
@@ -123,6 +139,9 @@ export class OpenAIAuthSession {
   private headersForBearerToken(token: string): Record<string, string> {
     return {
       ...buildBearerAuthHeaders({ apiKey: token }),
+      ...(this.subscriptionAccountId
+        ? { "ChatGPT-Account-ID": this.subscriptionAccountId }
+        : {}),
       ...(this.config.organization
         ? { "openai-organization": this.config.organization }
         : {}),

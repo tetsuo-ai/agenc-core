@@ -8,7 +8,11 @@ import {
 } from "../../errors.js";
 import { GeminiProvider } from "../gemini/index.js";
 import { LMStudioProvider } from "../lmstudio/index.js";
-import { OpenAIProvider } from "./adapter.js";
+import { OpenAIAuthSession } from "./auth.js";
+import {
+  OpenAIProvider,
+  refreshAndSyncOpenAiSubscriptionBearer,
+} from "./adapter.js";
 
 const PROVIDER_TEST_LABEL = "Open" + "AI";
 
@@ -51,6 +55,150 @@ function expectNoRequestMetadataWarning(emitWarning: ReturnType<typeof vi.fn>): 
 }
 
 describe("OpenAIProvider", () => {
+  test("adopts a fresh stored bearer even when no refresh is needed", async () => {
+    const auth = new OpenAIAuthSession({
+      apiKey: "stale-token",
+      model: "gpt-5-codex",
+      defaultHeaders: { "ChatGPT-Account-ID": "old-account" },
+    });
+    const refreshSubscription = vi.fn(async () => false);
+
+    await refreshAndSyncOpenAiSubscriptionBearer({
+      readSubscriptionAuth: () => ({
+        accessToken: "fresh-token",
+        accountId: "new-account",
+      }),
+      refreshSubscription,
+      applySubscriptionAuth: (stored) => auth.updateSubscriptionAuth(stored),
+    });
+
+    expect(refreshSubscription).toHaveBeenCalledOnce();
+    const headers = new Headers(auth.resolveHeaders());
+    expect(headers.get("authorization")).toBe("Bearer fresh-token");
+    expect(headers.get("chatgpt-account-id")).toBe("new-account");
+  });
+
+  test("checks subscription freshness before non-stream chat", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("unavailable", { status: 503 }),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "subscription-token",
+      model: "gpt-5-codex",
+      baseURL: "https://chatgpt.com/backend-api/codex",
+      fetchImpl,
+    });
+    const refresh = vi.spyOn(
+      provider as unknown as {
+        refreshSubscriptionBearerIfExpiring: () => Promise<void>;
+      },
+      "refreshSubscriptionBearerIfExpiring",
+    ).mockResolvedValue();
+
+    await expect(
+      provider.chat([{ role: "user", content: "hello" }], {
+        singleWireAttempt: true,
+      }),
+    ).rejects.toBeDefined();
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  test("checks subscription freshness before chat-completions streaming", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("unavailable", { status: 503 }),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "subscription-token",
+      model: "gpt-5-codex",
+      baseURL: "https://chatgpt.com/backend-api/codex",
+      useResponsesApi: false,
+      fetchImpl,
+    });
+    const refresh = vi.spyOn(
+      provider as unknown as {
+        refreshSubscriptionBearerIfExpiring: () => Promise<void>;
+      },
+      "refreshSubscriptionBearerIfExpiring",
+    ).mockResolvedValue();
+
+    await expect(
+      provider.chatStream(
+        [{ role: "user", content: "hello" }],
+        () => {},
+        { singleWireAttempt: true },
+      ),
+    ).rejects.toBeDefined();
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  test("checks subscription freshness before health checks", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({ models: [] }),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "subscription-token",
+      model: "gpt-5-codex",
+      baseURL: "https://chatgpt.com/backend-api/codex",
+      fetchImpl,
+    });
+    const refresh = vi.spyOn(
+      provider as unknown as {
+        refreshSubscriptionBearerIfExpiring: () => Promise<void>;
+      },
+      "refreshSubscriptionBearerIfExpiring",
+    ).mockResolvedValue();
+
+    await expect(provider.healthCheck()).resolves.toBe(true);
+    expect(refresh).toHaveBeenCalledOnce();
+  });
+
+  test("health-checks platform models without a ChatGPT client version", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({ data: [] }),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "platform-key",
+      model: "gpt-5",
+      fetchImpl,
+    });
+
+    await expect(provider.healthCheck()).resolves.toBe(true);
+
+    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(requestUrl)).toBe("https://api.openai.com/v1/models");
+    const headers = new Headers(init?.headers);
+    expect(headers.get("authorization")).toBe("Bearer platform-key");
+    expect(headers.get("chatgpt-account-id")).toBeNull();
+    expect(headers.get("originator")).toBeNull();
+  });
+
+  test("health-checks ChatGPT models with client version and subscription headers", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      Response.json({ models: [] }),
+    );
+    const provider = new OpenAIProvider({
+      apiKey: "subscription-token",
+      model: "gpt-5-codex",
+      baseURL: "https://chatgpt.com/backend-api/codex",
+      defaultHeaders: {
+        "ChatGPT-Account-ID": "account-id",
+        originator: "agenc",
+      },
+      fetchImpl,
+    });
+
+    await expect(provider.healthCheck()).resolves.toBe(true);
+
+    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(requestUrl)).toBe(
+      "https://chatgpt.com/backend-api/codex/models?client_version=0.149.0",
+    );
+    const headers = new Headers(init?.headers);
+    expect(headers.get("authorization")).toBe("Bearer subscription-token");
+    expect(headers.get("chatgpt-account-id")).toBe("account-id");
+    expect(headers.get("originator")).toBe("agenc");
+  });
+
   test.each([
     { api: "responses", useResponsesApi: true },
     { api: "chat completions", useResponsesApi: false },

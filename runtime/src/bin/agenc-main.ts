@@ -159,6 +159,7 @@ import {
   runAgenCAuthCli,
 } from "./auth-cli.js";
 import {
+  formatOpenAiAuthCliHelpText,
   parseOpenAiAuthCliArgs,
   runOpenAiAuthCli,
 } from "./openai-auth-cli.js";
@@ -355,6 +356,7 @@ export function formatCliHelpText(): string {
     "       agenc run <start|status|result|replay|evidence|cancel> [<run-id>] [options]",
     "       agenc init [--force]",
     "       agenc <login|logout|whoami>",
+    "       agenc openai-<login|logout|auth-status|models> [--json]",
     "       agenc providers [--json] [--no-local-check]",
     "       agenc config <command> [args]",
     "       agenc plugin <command> [options]",
@@ -380,6 +382,7 @@ export function formatCliHelpText(): string {
     "  run                                     Start, inspect, replay, export, or cancel a durable run",
     "  init                                    Create .agenc/config.json and AGENC.md",
     "  login | logout | whoami                  Manage the configured auth session",
+    "  openai-models                           List models available to the stored OpenAI sign-in",
     "  providers                               Check provider readiness and local health",
     "  config                                  Show, mutate, validate, or edit config.toml",
     "  plugin                                  Manage local plugins and marketplaces",
@@ -444,6 +447,15 @@ export function formatCliHelpTopicText(topic: string): string | null {
     case "logout":
     case "whoami":
       return formatAgenCAuthCliHelpText();
+    case "openai-login":
+    case "chatgpt-login":
+    case "openai-logout":
+    case "chatgpt-logout":
+    case "openai-auth-status":
+    case "chatgpt-auth-status":
+    case "openai-models":
+    case "chatgpt-models":
+      return formatOpenAiAuthCliHelpText();
     case "daemon":
       return formatAgenCDaemonCliHelpText();
     case "remote":

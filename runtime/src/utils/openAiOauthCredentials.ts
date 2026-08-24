@@ -1,18 +1,34 @@
 /**
  * Storage for the ChatGPT sign-in: the RFC 8693-exchanged platform API
- * key (long-lived — the thing the runtime actually consumes) plus the
- * login tokens that produced it. Modeled on xaiOauthCredentials, minus
- * the refresh machinery the exchanged key does not need.
+ * key (long-lived — the platform path consumes it) plus the subscription
+ * tokens used by accounts without a platform organization. Subscription
+ * refresh is single-flight and coordinated across AgenC processes because
+ * OpenAI refresh tokens rotate.
  */
 
+import { mkdir } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+
 import { getSecureStorage, type SecureStorageData } from './secureStorage/index.js'
-import { isBareMode } from './envUtils.js'
+import { clearKeychainCache } from './secureStorage/macOsKeychainHelpers.js'
+import { getAgenCConfigHomeDir, isBareMode } from './envUtils.js'
+import * as lockfile from './lockfile.js'
 import {
   PROVIDER_CODE_REFRESH_URL,
   decodeJwtPayload,
   getOpenAiCodeOAuthClientId,
   normalizeOAuthTokenPayload,
 } from '../services/api/openAiCodeOAuthShared.js'
+import {
+  CHATGPT_BACKEND_BASE_URL,
+  CHATGPT_BACKEND_ORIGINATOR,
+} from '../services/api/openAiChatGptBackend.js'
+
+export {
+  CHATGPT_BACKEND_BASE_URL,
+  CHATGPT_BACKEND_ORIGINATOR,
+}
 
 export const OPENAI_OAUTH_STORAGE_KEY = 'openAiOauth' as const
 
@@ -24,15 +40,27 @@ const READ_CACHE_TTL_MS = 30_000
 let readCache: { at: number; blob: OpenAiOauthCredentialBlob | undefined } | null =
   null
 
+/** Bypass the process-local cache so refresh coordination sees sibling writes. */
+function readOpenAiOauthCredentialsFresh():
+  | OpenAiOauthCredentialBlob
+  | undefined {
+  if (isBareMode()) return undefined
+  // getSecureStorage().read() has its own macOS cache in addition to the
+  // module cache above. Invalidate it here or an under-lock "fresh" read
+  // could still miss a sibling process's Keychain rotation for 30 seconds.
+  clearKeychainCache()
+  const data = getSecureStorage().read()
+  const blob = data?.[OPENAI_OAUTH_STORAGE_KEY]
+  readCache = { at: Date.now(), blob }
+  return blob
+}
+
 export function readOpenAiOauthCredentials(): OpenAiOauthCredentialBlob | undefined {
   if (isBareMode()) return undefined
   if (readCache !== null && Date.now() - readCache.at < READ_CACHE_TTL_MS) {
     return readCache.blob
   }
-  const data = getSecureStorage().read()
-  const blob = data?.[OPENAI_OAUTH_STORAGE_KEY]
-  readCache = { at: Date.now(), blob }
-  return blob
+  return readOpenAiOauthCredentialsFresh()
 }
 
 /** The exchanged platform API key, when signed in. */
@@ -48,17 +76,6 @@ export function readOpenAiOauthApiKey(): string | undefined {
  * account id in a header — no platform API key is involved, which is why
  * this path works for accounts that have no platform organization.
  */
-// branding-scan: allow factual reference to real provider in endpoint
-export const CHATGPT_BACKEND_BASE_URL =
-  'https://chatgpt.com/backend-api/codex'
-
-/**
- * Identifies the calling client to that backend. It accepts third-party
- * values (other harnesses send their own name), so we send ours rather
- * than impersonating a first-party client.
- */
-export const CHATGPT_BACKEND_ORIGINATOR = 'agenc'
-
 export interface OpenAiSubscriptionAuth {
   readonly accessToken: string
   readonly accountId: string
@@ -119,49 +136,185 @@ export function saveOpenAiOauthCredentials(
   return result
 }
 
-/**
- * Refresh the subscription access token when it is close to expiring.
- * Returns true when the stored credential was updated. The refresh
- * response restates the tokens but never the account id, so that field
- * is carried forward from the existing blob.
- */
-export async function refreshOpenAiSubscriptionIfNeeded(options?: {
+export interface RefreshOpenAiSubscriptionOptions {
   readonly nowMs?: number
   readonly windowMs?: number
+}
+
+const OPENAI_OAUTH_REFRESH_TIMEOUT_MS = 10_000
+let inflightSubscriptionRefresh: Promise<boolean> | null = null
+
+function isSubscriptionBlob(
+  blob: OpenAiOauthCredentialBlob | undefined,
+): blob is OpenAiOauthCredentialBlob {
+  return (
+    blob !== undefined &&
+    !blob.apiKey?.trim() &&
+    Boolean(blob.accessToken?.trim()) &&
+    Boolean(blob.accountId?.trim()) &&
+    Boolean(blob.refreshToken?.trim())
+  )
+}
+
+function sameSubscriptionGrant(
+  left: OpenAiOauthCredentialBlob,
+  right: OpenAiOauthCredentialBlob,
+): boolean {
+  return (
+    left.accessToken?.trim() === right.accessToken?.trim() &&
+    left.refreshToken?.trim() === right.refreshToken?.trim() &&
+    left.accountId?.trim() === right.accountId?.trim() &&
+    !right.apiKey?.trim()
+  )
+}
+
+function subscriptionChangedFrom(
+  current: OpenAiOauthCredentialBlob | undefined,
+  previous: OpenAiOauthCredentialBlob,
+): boolean {
+  return isSubscriptionBlob(current) && !sameSubscriptionGrant(current, previous)
+}
+
+async function acquireOpenAiRefreshLock(): Promise<
+  (() => Promise<void>) | null
+> {
+  try {
+    // macOS keeps the legacy Keychain service global whenever
+    // AGENC_CONFIG_DIR is unset, even if AGENC_HOME differs. Use the same
+    // legacy-global lock namespace so those processes cannot rotate one
+    // shared refresh token concurrently.
+    const dir = process.env.AGENC_CONFIG_DIR
+      ? getAgenCConfigHomeDir()
+      : join(homedir(), '.agenc')
+    await mkdir(dir, { recursive: true })
+    return await lockfile.lock(join(dir, '.openai-oauth-refresh'), {
+      realpath: false,
+      stale: 30_000,
+      retries: { retries: 5, minTimeout: 200, maxTimeout: 2_000 },
+    })
+  } catch {
+    // Refresh tokens rotate. Proceeding without the cross-process lock could
+    // let two processes consume the same grant and invalidate the credential
+    // family even if later storage conflict checks prevent an overwrite.
+    return null
+  }
+}
+
+async function performOpenAiSubscriptionRefresh(args: {
+  readonly initial: OpenAiOauthCredentialBlob
+  readonly now: number
 }): Promise<boolean> {
+  // The caller may have populated the 30s read cache before a sibling
+  // process rotated the grant. Adopt that rotation without replaying its
+  // now-consumed refresh token.
+  const beforeLock = readOpenAiOauthCredentialsFresh()
+  if (subscriptionChangedFrom(beforeLock, args.initial)) return true
+  if (!isSubscriptionBlob(beforeLock)) return false
+
+  const release = await acquireOpenAiRefreshLock()
+  if (release === null) return false
+  try {
+    const current = readOpenAiOauthCredentialsFresh()
+    if (subscriptionChangedFrom(current, args.initial)) return true
+    if (!isSubscriptionBlob(current)) return false
+
+    let response: Response
+    try {
+      response = await fetch(PROVIDER_CODE_REFRESH_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id: getOpenAiCodeOAuthClientId(),
+          grant_type: 'refresh_token',
+          refresh_token: current.refreshToken!.trim(),
+        }),
+        signal: AbortSignal.timeout(OPENAI_OAUTH_REFRESH_TIMEOUT_MS),
+      })
+    } catch {
+      return subscriptionChangedFrom(
+        readOpenAiOauthCredentialsFresh(),
+        current,
+      )
+    }
+    if (!response.ok) {
+      return subscriptionChangedFrom(
+        readOpenAiOauthCredentialsFresh(),
+        current,
+      )
+    }
+
+    let payload: ReturnType<typeof normalizeOAuthTokenPayload>
+    try {
+      payload = normalizeOAuthTokenPayload(await response.json())
+    } catch {
+      return subscriptionChangedFrom(
+        readOpenAiOauthCredentialsFresh(),
+        current,
+      )
+    }
+    if (!payload.accessToken) {
+      return subscriptionChangedFrom(
+        readOpenAiOauthCredentialsFresh(),
+        current,
+      )
+    }
+
+    // Login/logout are not required to take the refresh lock. Re-read just
+    // before persistence so a response to an older grant cannot resurrect a
+    // logout or overwrite a newer login that landed while POST was in flight.
+    const latest = readOpenAiOauthCredentialsFresh()
+    if (!isSubscriptionBlob(latest)) return false
+    if (!sameSubscriptionGrant(latest, current)) return true
+
+    const saved = saveOpenAiOauthCredentials({
+      ...latest,
+      accessToken: payload.accessToken,
+      ...(payload.idToken ? { idToken: payload.idToken } : {}),
+      // Refresh tokens rotate; reusing a spent one is rejected.
+      ...(payload.refreshToken ? { refreshToken: payload.refreshToken } : {}),
+      obtainedAt: args.now,
+    })
+    return saved.success
+  } finally {
+    // The credential may already be durably rotated. A cleanup error must not
+    // turn that success into `false` at the caller and leave its live bearer
+    // on the now-stale token.
+    try {
+      await release()
+    } catch {
+      // The lock implementation owns stale-lock recovery on the next attempt.
+    }
+  }
+}
+
+/**
+ * Refresh the subscription access token when it is close to expiring.
+ * Returns true when this process updated the credential or adopted a newer
+ * sibling-process grant, so callers know to re-read and swap their bearer.
+ */
+export function refreshOpenAiSubscriptionIfNeeded(
+  options?: RefreshOpenAiSubscriptionOptions,
+): Promise<boolean> {
   const blob = readOpenAiOauthCredentials()
-  const refreshToken = blob?.refreshToken?.trim()
-  if (blob === undefined || !refreshToken) return false
-  if (blob.apiKey?.trim()) return false
+  if (!isSubscriptionBlob(blob)) return Promise.resolve(false)
 
   const now = options?.nowMs ?? Date.now()
   const window = options?.windowMs ?? 5 * 60_000
   const expiresAt = jwtExpiryMs(blob.accessToken)
-  if (expiresAt !== undefined && expiresAt - window > now) return false
+  if (expiresAt !== undefined && expiresAt - window > now) {
+    return Promise.resolve(false)
+  }
 
-  const response = await fetch(PROVIDER_CODE_REFRESH_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      client_id: getOpenAiCodeOAuthClientId(),
-      grant_type: 'refresh_token',
-      refresh_token: refreshToken,
-    }),
-    signal: AbortSignal.timeout(30_000),
+  if (inflightSubscriptionRefresh !== null) {
+    return inflightSubscriptionRefresh
+  }
+  inflightSubscriptionRefresh = performOpenAiSubscriptionRefresh({
+    initial: blob,
+    now,
+  }).finally(() => {
+    inflightSubscriptionRefresh = null
   })
-  if (!response.ok) return false
-  const payload = normalizeOAuthTokenPayload(await response.json())
-  if (!payload.accessToken) return false
-
-  const saved = saveOpenAiOauthCredentials({
-    ...blob,
-    accessToken: payload.accessToken,
-    ...(payload.idToken ? { idToken: payload.idToken } : {}),
-    // Refresh tokens rotate; reusing a spent one is rejected.
-    ...(payload.refreshToken ? { refreshToken: payload.refreshToken } : {}),
-    obtainedAt: now,
-  })
-  return saved.success
+  return inflightSubscriptionRefresh
 }
 
 /** `exp` from a JWT payload, in ms. Undefined when unreadable. */
