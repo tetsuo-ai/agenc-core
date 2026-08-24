@@ -80,6 +80,64 @@ describe("GeminiProvider", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  test("sends a tool's image as a picture, not as base64 text", async () => {
+    // Left inside the functionResponse JSON the model receives characters,
+    // not an image, and answers about something it never saw.
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        candidates: [
+          {
+            content: { role: "model", parts: [{ text: "ok" }] },
+            finishReason: "STOP",
+          },
+        ],
+      }),
+    );
+    const provider = new GeminiProvider({
+      apiKey: "gemini-test",
+      model: "gemini-3.5-flash",
+      fetchImpl,
+    });
+
+    await provider.chat([
+      { role: "user", content: "what is in the picture?" },
+      {
+        role: "tool",
+        toolName: "FileRead",
+        toolCallId: "call-1",
+        content: [
+          { type: "text", text: "Read shape.png" },
+          {
+            type: "input_image",
+            image_url: "data:image/png;base64,AAAB",
+          },
+        ],
+      },
+    ]);
+
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    const request = JSON.parse(String(init?.body)) as {
+      readonly contents: readonly {
+        readonly parts: readonly Record<string, unknown>[];
+      }[];
+    };
+    const toolTurn = request.contents.find((entry) =>
+      entry.parts.some((part) => part.functionResponse !== undefined),
+    );
+    expect(toolTurn).toBeDefined();
+    const inline = toolTurn?.parts.find((part) => part.inlineData !== undefined);
+    expect(inline?.inlineData).toEqual({
+      mimeType: "image/png",
+      data: "AAAB",
+    });
+    // …and the base64 does not also travel as text inside the response.
+    const response = toolTurn?.parts.find(
+      (part) => part.functionResponse !== undefined,
+    )?.functionResponse;
+    expect(JSON.stringify(response)).not.toContain("AAAB");
+    expect(JSON.stringify(response)).toContain("Read shape.png");
+  });
+
   test("preserves policy, task, and data as separate Gemini authorities", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
@@ -456,13 +514,20 @@ describe("GeminiProvider", () => {
     });
     const [, init] = fetchImpl.mock.calls[0] ?? [];
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    // Gemini's function declarations take an OpenAPI subset and reject the
+    // whole request on any key outside it, so `additionalProperties` is
+    // stripped on the way out even though the tool declares it.
     expect(requestBody.tools).toEqual([
       {
         functionDeclarations: [
           {
             name: "system.echo",
             description: "Echo text",
-            parameters: echoTool.function.parameters,
+            parameters: {
+              type: "object",
+              properties: { text: { type: "string" } },
+              required: ["text"],
+            },
           },
         ],
       },
