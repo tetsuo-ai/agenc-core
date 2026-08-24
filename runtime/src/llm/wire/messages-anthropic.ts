@@ -348,24 +348,17 @@ export function buildAnthropicMessagesRequest(
     const effort = input.options.reasoningEffort;
     body.output_config = { effort: effort === "minimal" ? "low" : effort };
   }
-  // Task 28: never attach a `thinking` config for the Fable/Mythos 5
-  // family — thinking is always on and any explicit configuration other
-  // than `{type:"adaptive"}` (incl. `disabled` and `enabled`/budget_tokens)
-  // returns a 400; omitting the param runs adaptive thinking. Depth is the
-  // effort parameter's job on that family. Opus-family (>= 4.6) behavior
-  // below is unchanged.
+  // No request carries a `thinking` config any more, on either family.
+  //
   // Current models reject an explicit `thinking.type.enabled` outright —
   // "Use thinking.type.adaptive and output_config.effort to control
-  // thinking behaviour" — so where effort is carrying the decision, the
-  // thinking block is left off entirely and adaptive thinking runs. The
-  // budget form stays only for a request that set no effort at all.
-  if (
-    thinkingEnabled &&
-    !alwaysOnThinking &&
-    body.output_config === undefined
-  ) {
-    body.thinking = { type: "adaptive" };
-  }
+  // thinking behaviour" — and omitting the parameter runs adaptive
+  // thinking anyway, so effort above is the whole of the decision. On the
+  // Fable/Mythos 5 family thinking is always on server-side and any
+  // explicit configuration is a 400 regardless.
+  //
+  // `thinkingEnabled` still gates the forced-tool_choice rule above, which
+  // is the only thing it is for now.
   if (input.contextManagement) {
     body.context_management = input.contextManagement;
   }

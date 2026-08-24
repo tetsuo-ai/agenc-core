@@ -873,24 +873,42 @@ describe("buildAnthropicMessagesRequest — fable/mythos 5 family", () => {
     tools: [],
   };
 
-  test("a fable-5 request carries NO thinking config while opus-4-8 keeps its config", () => {
+  test("an effort carries the decision, so neither family also sends a thinking config", () => {
+    // Current models refuse `thinking.type.enabled` outright — "Use
+    // thinking.type.adaptive and output_config.effort to control thinking
+    // behaviour" — so where effort is set, the thinking block is left off.
     const fable = buildAnthropicMessagesRequest({
       ...baseInput,
       model: "claude-fable-5",
       options: { reasoningEffort: "high" },
     });
     expect(fable.thinking).toBeUndefined();
+    expect(fable.output_config).toEqual({ effort: "high" });
 
-    // Opus family behavior is unchanged (kept exactly as-is).
     const opus = buildAnthropicMessagesRequest({
       ...baseInput,
       model: "claude-opus-4-8",
       options: { reasoningEffort: "high" },
     });
-    expect(opus.thinking).toEqual({
-      type: "enabled",
-      budget_tokens: 4096,
-    });
+    expect(opus.thinking).toBeUndefined();
+    expect(opus.output_config).toEqual({ effort: "high" });
+  });
+
+  test("no request carries a thinking config, with or without an effort", () => {
+    // Omitting the parameter runs adaptive thinking anyway, so there is
+    // nothing left for a thinking block to say.
+    for (const model of ["claude-opus-4-8", "claude-fable-5"]) {
+      expect(
+        buildAnthropicMessagesRequest({ ...baseInput, model }).thinking,
+      ).toBeUndefined();
+      expect(
+        buildAnthropicMessagesRequest({
+          ...baseInput,
+          model,
+          options: { reasoningEffort: "low" },
+        }).thinking,
+      ).toBeUndefined();
+    }
   });
 
   test("provider spellings of the family also omit the thinking config", () => {
