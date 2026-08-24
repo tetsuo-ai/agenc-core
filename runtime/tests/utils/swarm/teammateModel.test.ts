@@ -53,6 +53,6 @@ describe("getHardcodedTeammateModelFallback", () => {
   test("resolves a concrete Mistral fallback when Mistral is the active provider", () => {
     process.env.AGENC_USE_MISTRAL = "1";
 
-    expect(getHardcodedTeammateModelFallback()).toBe("devstral-latest");
+    expect(getHardcodedTeammateModelFallback()).toBe("mistral-medium-latest");
   });
 });

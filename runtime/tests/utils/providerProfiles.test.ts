@@ -740,7 +740,7 @@ describe('getProviderPresetDefaults', () => {
     expect(defaults.name).toBe('DeepSeek')
     expect(defaults.baseUrl).toBe('https://api.deepseek.com/v1')
     expect(defaults.model).toBe(
-      'deepseek-v4-flash, deepseek-v4-pro, deepseek-chat, deepseek-reasoner',
+      'deepseek-v4-flash, deepseek-v4-pro, deepseek-chat',
     )
     expect(defaults.requiresApiKey).toBe(true)
   })
