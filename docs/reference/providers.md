@@ -2,7 +2,8 @@
 
 Built-in model providers for AgenC **0.17.0**. Source of truth:
 `runtime/src/llm/registry/provider-info.ts`
-(`BUILT_IN_PROVIDER_DEFAULT_MODELS`, base URLs, API key envs).
+(`BUILT_IN_PROVIDER_DEFAULT_MODELS`, base URLs, API key envs, and first-run
+access/order metadata).
 
 CLI: `agenc providers` · `agenc login` · `agenc config` · `/provider` and
 `/model` in the TUI.
@@ -91,30 +92,35 @@ they run only through the Grok Build CLI ACP path. See
 
 ## Built-in providers (16)
 
-| Slug | Display name | Default model | Base URL | API key env (primary) |
-| --- | --- | --- | --- | --- |
-| `grok` | xAI Grok | `grok-4.6` | `https://api.x.ai/v1` | `XAI_API_KEY` |
-| `openai` | OpenAI | `gpt-5` | `https://api.openai.com/v1` | `OPENAI_API_KEY` |
-| `anthropic` | Anthropic | `claude-opus-4-7` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` |
-| `ollama` | Ollama | `llama3.3` | `http://localhost:11434` | _(none required)_ |
-| `lmstudio` | LM Studio | `gpt-4o-mini` | `http://localhost:1234/v1` | `LMSTUDIO_API_KEY` (optional) |
-| `openai-compatible` | OpenAI-compatible | `local-model` | `http://localhost:8000/v1` | `OPENAI_COMPATIBLE_API_KEY` |
-| `openrouter` | OpenRouter | `x-ai/grok-4.5` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` |
-| `groq` | Groq | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` |
-| `deepseek` | DeepSeek | `deepseek-v4-flash` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` |
-| `gemini` | Gemini | `gemini-2.5-pro` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` |
-| `mistral` | Mistral | `mistral-medium-latest` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` |
-| `nvidia-nim` | NVIDIA NIM | `nvidia/llama-3.1-nemotron-70b-instruct` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` |
-| `minimax` | MiniMax | `MiniMax-M2.5` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` |
-| `github` | GitHub Copilot | `gpt-4o` | `https://api.githubcopilot.com` | `GITHUB_TOKEN` |
-| `amazon-bedrock` | Amazon Bedrock | `amazon.nova-pro-v1:0` | `https://bedrock-runtime.us-east-1.amazonaws.com` | `AWS_ACCESS_KEY_ID` (or Bedrock-specific) |
-| `agenc` | AgenC | `agenc` | `https://id.agenc.ag/v1` | managed auth (`requiresManagedAuth`) |
+| Slug | Display name | Default model | Base URL | API key env (primary) | Onboarding access |
+| --- | --- | --- | --- | --- | --- |
+| `grok` | xAI Grok | `grok-4.6` | `https://api.x.ai/v1` | `XAI_API_KEY` | `api-key` |
+| `openai` | OpenAI | `gpt-5` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `api-key` |
+| `anthropic` | Anthropic | `claude-opus-4-7` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` | `api-key` |
+| `ollama` | Ollama | `llama3.3` | `http://localhost:11434` | _(none required)_ | `local` |
+| `lmstudio` | LM Studio | `gpt-4o-mini` | `http://localhost:1234/v1` | `LMSTUDIO_API_KEY` (optional) | `local` |
+| `openai-compatible` | OpenAI-compatible | `local-model` | `http://localhost:8000/v1` | `OPENAI_COMPATIBLE_API_KEY` | `local` |
+| `openrouter` | OpenRouter | `x-ai/grok-4.5` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `api-key` |
+| `groq` | Groq | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `api-key` |
+| `deepseek` | DeepSeek | `deepseek-v4-flash` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `api-key` |
+| `gemini` | Gemini | `gemini-2.5-pro` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` | `api-key` |
+| `mistral` | Mistral | `mistral-medium-latest` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | `api-key` |
+| `nvidia-nim` | NVIDIA NIM | `nvidia/llama-3.1-nemotron-70b-instruct` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | `api-key` |
+| `minimax` | MiniMax | `MiniMax-M2.5` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | `api-key` |
+| `github` | GitHub Copilot | `gpt-4o` | `https://api.githubcopilot.com` | `GITHUB_TOKEN` | `api-key` |
+| `amazon-bedrock` | Amazon Bedrock | `amazon.nova-pro-v1:0` | `https://bedrock-runtime.us-east-1.amazonaws.com` | `AWS_ACCESS_KEY_ID` (or Bedrock-specific) | `api-key` |
+| `agenc` | AgenC | `agenc` | `https://id.agenc.ag/v1` | managed auth (`requiresManagedAuth`) | `managed` |
+
+`openrouter` remains an `api-key` first-run route, but a signed-in AgenC
+subscription can supply its managed key access when that feature is enabled.
 
 ## Auth model
 
 Provider credentials are owned by the **auth backend** / BYOK config, not by
 the provider registry. The registry stores **request and catalog metadata**
-only (base URL, default model, retry/timeouts, catalog lists).
+plus non-secret first-run routing metadata (base URL, default model,
+retry/timeouts, catalog lists, onboarding access and order). It does not store
+credentials.
 
 - **Local BYOK** — explicit provider environment keys are transient inputs;
   keys saved through AgenC live only in the home-scoped native credential

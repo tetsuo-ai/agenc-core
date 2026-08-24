@@ -4,7 +4,7 @@ import { resolveProviderSettings } from "../config/resolve-provider.js";
 import type { AgenCConfig } from "../config/schema.js";
 import {
   BUILT_IN_PROVIDER_BASE_URLS,
-  resolveBuiltInProviderSlug,
+  resolveBuiltInProviderInfo,
   type BuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
 import type { OnboardingEnv } from "./projectOnboardingState.js";
@@ -34,7 +34,10 @@ export interface UseApiKeyVerificationOptions extends VerifyApiKeyParams {
   readonly enabled?: boolean;
 }
 
-const LOCAL_KEYLESS_PROVIDERS = new Set<BuiltInProviderSlug>([
+// This is provider verification-protocol behavior, not the onboarding access
+// classification: an OpenAI-compatible local endpoint can authenticate its
+// models route, while Ollama and LM Studio have no stable key-check contract.
+const PROVIDERS_WITHOUT_API_KEY_VERIFICATION = new Set<BuiltInProviderSlug>([
   "ollama",
   "lmstudio",
 ]);
@@ -79,17 +82,18 @@ export async function verifyApiKey(
   if (/\s/.test(apiKey)) {
     return { status: "invalid", error: "API keys must not contain whitespace." };
   }
-  const provider = resolveBuiltInProviderSlug(params.provider);
-  if (provider === undefined) {
+  const providerInfo = resolveBuiltInProviderInfo(params.provider);
+  if (providerInfo === undefined) {
     return { status: "error", error: `Unknown provider: ${params.provider}` };
   }
-  if (provider === "agenc") {
+  const provider = providerInfo.id;
+  if (providerInfo.onboarding.access === "managed") {
     return {
       status: "error",
       error: "Hosted AgenC uses account auth instead of first-run BYOK keys.",
     };
   }
-  if (LOCAL_KEYLESS_PROVIDERS.has(provider)) {
+  if (PROVIDERS_WITHOUT_API_KEY_VERIFICATION.has(provider)) {
     return { status: "valid" };
   }
   const fetchImpl = params.fetchImpl ?? globalThis.fetch?.bind(globalThis);

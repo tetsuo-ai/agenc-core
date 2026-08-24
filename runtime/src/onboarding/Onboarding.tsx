@@ -32,7 +32,9 @@ import {
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   listBuiltInProviderInfo,
+  resolveBuiltInProviderInfo,
   resolveBuiltInProviderSlug,
+  type BuiltInProviderOnboardingInfo,
   type BuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
@@ -396,23 +398,16 @@ export function wizardThemeToSetting(
 ): ThemeSetting | undefined {
   return THEME_CHOICES.find((theme) => theme === choice);
 }
-const LOCAL_PROVIDERS = new Set<BuiltInProviderSlug>([
-  "ollama",
-  "lmstudio",
-  "openai-compatible",
-]);
-const KEY_REQUIRED_PROVIDERS = new Set<BuiltInProviderSlug>([
-  "grok",
-  "openai",
-  "anthropic",
-  "openrouter",
-  "groq",
-  "deepseek",
-  "gemini",
-]);
-const MANAGED_KEY_PROVIDERS = new Set<BuiltInProviderSlug>([
-  "openrouter",
-]);
+
+function providerOnboardingInfo(
+  provider: BuiltInProviderSlug,
+): BuiltInProviderOnboardingInfo {
+  const info = resolveBuiltInProviderInfo(provider);
+  if (info === undefined) {
+    throw new Error(`Missing built-in provider metadata for ${provider}`);
+  }
+  return info.onboarding;
+}
 
 function buildFirstRunOnboardingSteps(
   state: FirstRunOnboardingState,
@@ -433,7 +428,7 @@ function providerDefaultModel(
   >,
 ): string {
   if (
-    MANAGED_KEY_PROVIDERS.has(provider) &&
+    providerOnboardingInfo(provider).supportsManagedKeyAccess &&
     resolveAuthManagedKeysEnabled(context.config) &&
     context.remoteAuthSessionContext !== undefined &&
     hasRemoteAuthSessionSync(context.remoteAuthSessionContext)
@@ -475,7 +470,7 @@ function initialProvider(
     hasRemoteAuthSessionSync(context.remoteAuthSessionContext)
   ) {
     return configured === undefined || configured === "grok"
-      ? "openrouter"
+      ? SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER
       : configured;
   }
   return configured ?? "grok";
@@ -524,7 +519,9 @@ export async function detectRunningLocalProviders(
   context: Pick<FirstRunOnboardingContext, "config" | "env" | "fetchImpl" | "checkLocalProviders">,
 ): Promise<readonly BuiltInProviderSlug[]> {
   if (context.checkLocalProviders === false) return [];
-  const candidates: readonly BuiltInProviderSlug[] = ["ollama", "lmstudio"];
+  const candidates = listBuiltInProviderInfo()
+    .filter((provider) => provider.onboarding.access === "local")
+    .map((provider) => provider.id);
   const results = await Promise.all(
     candidates.map(async (provider) => {
       const settings = resolveProviderSettings(provider, context.config, context.env);
@@ -552,37 +549,19 @@ function providerChoices(
     resolveAuthManagedKeysEnabled(context.config) &&
     context.remoteAuthSessionContext !== undefined &&
     hasRemoteAuthSessionSync(context.remoteAuthSessionContext);
-  const preferredOrder: readonly BuiltInProviderSlug[] = Object.freeze(
-    hostedReady
-      ? [
-          "openrouter",
-          "grok",
-          "openai",
-          "anthropic",
-          "ollama",
-          "lmstudio",
-          "openai-compatible",
-          "groq",
-          "deepseek",
-          "gemini",
-          "agenc",
-        ]
-      : [
-          "grok",
-          "openai",
-          "anthropic",
-          "ollama",
-          "lmstudio",
-          "openai-compatible",
-          "openrouter",
-          "groq",
-          "deepseek",
-          "gemini",
-          "agenc",
-        ],
+  return Object.freeze(
+    [...listBuiltInProviderInfo()]
+      .sort((left, right) => {
+        if (hostedReady) {
+          const managedAccessOrder =
+            Number(!left.onboarding.supportsManagedKeyAccess) -
+            Number(!right.onboarding.supportsManagedKeyAccess);
+          if (managedAccessOrder !== 0) return managedAccessOrder;
+        }
+        return left.onboarding.order - right.onboarding.order;
+      })
+      .map((provider) => provider.id),
   );
-  const available = new Set(listBuiltInProviderInfo().map((info) => info.id));
-  return preferredOrder.filter((provider) => available.has(provider));
 }
 
 function withCompletedStep(
@@ -1058,8 +1037,9 @@ export async function checkOnboardingProviderConnection(
     settings?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS[provider];
   const keyEnvVar =
     BUILT_IN_PROVIDER_API_KEY_ENVS[provider];
+  const onboarding = providerOnboardingInfo(provider);
 
-  if (provider === "agenc") {
+  if (onboarding.access === "managed") {
     return {
       provider,
       model,
@@ -1069,7 +1049,7 @@ export async function checkOnboardingProviderConnection(
     };
   }
 
-  if (LOCAL_PROVIDERS.has(provider)) {
+  if (onboarding.access === "local") {
     if (context.checkLocalProviders === false) {
       return {
         provider,
@@ -1128,19 +1108,8 @@ export async function checkOnboardingProviderConnection(
     };
   }
 
-  if (!KEY_REQUIRED_PROVIDERS.has(provider)) {
-    return {
-      provider,
-      model,
-      status: "ready",
-      ok: true,
-      detail: "Provider is available without a local API key.",
-      baseURL,
-    };
-  }
-
   if (
-    MANAGED_KEY_PROVIDERS.has(provider) &&
+    onboarding.supportsManagedKeyAccess &&
     resolveAuthManagedKeysEnabled(context.config) &&
     context.remoteAuthSessionContext !== undefined &&
     hasRemoteAuthSessionSync(context.remoteAuthSessionContext)
@@ -1526,7 +1495,9 @@ export async function submitFirstRunOnboardingInput(
           };
         }
         if (isApiKeyEntryCommand(command)) {
-          if (!KEY_REQUIRED_PROVIDERS.has(state.selectedProvider)) {
+          if (
+            providerOnboardingInfo(state.selectedProvider).access !== "api-key"
+          ) {
             return {
               state: withCompletedStep(
                 {
@@ -1828,7 +1799,11 @@ function apiKeyInstructionForProvider(
   provider: BuiltInProviderSlug,
 ): string {
   const keyEnvVar = BUILT_IN_PROVIDER_API_KEY_ENVS[provider];
-  if (!KEY_REQUIRED_PROVIDERS.has(provider)) {
+  const onboarding = providerOnboardingInfo(provider);
+  if (onboarding.access === "managed") {
+    return "This provider requires AgenC account auth. Choose the account sign-in option to continue.";
+  }
+  if (onboarding.access !== "api-key") {
     return "This provider can continue without a BYOK API key. Press Enter to continue.";
   }
   if (keyEnvVar === undefined) {
@@ -2011,8 +1986,10 @@ export function detailLinesForStep(
           BUILT_IN_PROVIDER_API_KEY_ENVS[state.selectedProvider];
         const billingProvider =
           state.selectedProvider === "grok" ? "xAI" : state.selectedProvider;
-        const providerAccess =
-          KEY_REQUIRED_PROVIDERS.has(state.selectedProvider)
+        const onboarding = providerOnboardingInfo(state.selectedProvider);
+        const providerAccess = onboarding.access === "managed"
+          ? `Use ${state.selectedProvider} through AgenC account auth.`
+          : onboarding.access === "api-key"
             ? `Use ${keyEnvVar ?? `a ${state.selectedProvider} API key`} — requests are billed by ${billingProvider}.`
             : `Use ${state.selectedProvider} directly — no account sign-in or provider API key required.`;
         return [

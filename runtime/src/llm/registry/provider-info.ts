@@ -76,6 +76,56 @@ export const BUILT_IN_PROVIDER_DEFAULT_MODELS = Object.freeze({
 
 export type BuiltInProviderSlug = keyof typeof BUILT_IN_PROVIDER_DEFAULT_MODELS;
 
+export type BuiltInProviderOnboardingAccess =
+  | "api-key"
+  | "local"
+  | "managed";
+
+export interface BuiltInProviderOnboardingInfo {
+  /** Stable provider-picker rank. Lower values appear first. */
+  readonly order: number;
+  /** Mutually exclusive first-run credential/readiness path. */
+  readonly access: BuiltInProviderOnboardingAccess;
+  /** A signed-in AgenC subscription may supply this provider's key. */
+  readonly supportsManagedKeyAccess: boolean;
+}
+
+function onboardingInfo(
+  order: number,
+  access: BuiltInProviderOnboardingAccess,
+  supportsManagedKeyAccess = false,
+): BuiltInProviderOnboardingInfo {
+  return Object.freeze({
+    order,
+    access,
+    supportsManagedKeyAccess,
+  });
+}
+
+/**
+ * Canonical first-run classification for every built-in provider. Keeping this
+ * beside the provider registry prevents onboarding from growing a second,
+ * incomplete provider catalog or credential policy.
+ */
+const BUILT_IN_PROVIDER_ONBOARDING = Object.freeze({
+  grok: onboardingInfo(10, "api-key"),
+  openai: onboardingInfo(20, "api-key"),
+  anthropic: onboardingInfo(30, "api-key"),
+  ollama: onboardingInfo(40, "local"),
+  lmstudio: onboardingInfo(50, "local"),
+  "openai-compatible": onboardingInfo(60, "local"),
+  openrouter: onboardingInfo(70, "api-key", true),
+  groq: onboardingInfo(80, "api-key"),
+  deepseek: onboardingInfo(90, "api-key"),
+  gemini: onboardingInfo(100, "api-key"),
+  mistral: onboardingInfo(110, "api-key"),
+  "nvidia-nim": onboardingInfo(120, "api-key"),
+  minimax: onboardingInfo(130, "api-key"),
+  github: onboardingInfo(140, "api-key"),
+  "amazon-bedrock": onboardingInfo(150, "api-key"),
+  agenc: onboardingInfo(160, "managed"),
+} satisfies Readonly<Record<BuiltInProviderSlug, BuiltInProviderOnboardingInfo>>);
+
 export const BUILT_IN_PROVIDER_BASE_URLS = Object.freeze({
   grok: "https://api.x.ai/v1",
   openai: "https://api.openai.com/v1",
@@ -199,6 +249,7 @@ export interface BuiltInProviderInfo {
   readonly websocketConnectTimeoutMs: number;
   readonly supportsWebsockets: boolean;
   readonly requiresManagedAuth: boolean;
+  readonly onboarding: BuiltInProviderOnboardingInfo;
 }
 
 const PROVIDER_DISPLAY_NAMES: Readonly<Record<BuiltInProviderSlug, string>> =
@@ -232,6 +283,7 @@ export function resolveBuiltInProviderInfo(
 ): BuiltInProviderInfo | undefined {
   const id = resolveBuiltInProviderSlug(provider);
   if (id === undefined) return undefined;
+  const onboarding = BUILT_IN_PROVIDER_ONBOARDING[id];
   return {
     id,
     name: PROVIDER_DISPLAY_NAMES[id],
@@ -245,7 +297,8 @@ export function resolveBuiltInProviderInfo(
     streamIdleTimeoutMs: DEFAULT_STREAM_IDLE_TIMEOUT_MS,
     websocketConnectTimeoutMs: DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS,
     supportsWebsockets: id === "openai",
-    requiresManagedAuth: id === "agenc",
+    requiresManagedAuth: onboarding.access === "managed",
+    onboarding,
   };
 }
 

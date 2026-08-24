@@ -6,6 +6,9 @@ import { describe, expect, test, vi } from "vitest";
 import { defaultConfig } from "../config/schema.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
 import { RemoteAuthBackend } from "../auth/backends/remote.js";
+import type { RemoteAuthSessionReadContext } from "../auth/session-state.js";
+import { listBuiltInProviderInfo } from "../llm/registry/provider-info.js";
+import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 import { MAX_ONBOARDING_INPUT_LENGTH } from "./inputPaste.js";
 import { hashPastedText, retrievePastedText } from "./pasteStore.js";
 
@@ -55,14 +58,20 @@ async function withRemoteAuthSession<T>(
   subscriptionTier: "free" | "pro",
   run: (fixture: {
     readonly agencHome: string;
-    readonly env: Readonly<{ AGENC_HOME: string }>;
+    readonly env: RemoteAuthSessionReadContext["environment"];
+    readonly remoteAuthSessionContext: RemoteAuthSessionReadContext;
   }) => T | Promise<T>,
 ): Promise<T> {
   const agencHome = mkdtempSync(join(tmpdir(), prefix));
   const env = Object.freeze({ AGENC_HOME: agencHome });
+  const ingress = captureSecureStorageIngress(env, agencHome);
+  const remoteAuthSessionContext = Object.freeze({
+    home: ingress.home,
+    environment: ingress.environment,
+  });
   const backend = new RemoteAuthBackend({
-    agencHome,
-    env,
+    agencHome: ingress.home.path,
+    env: ingress.environment,
     loginFlow: () => ({
       token: "remote-session-token",
       subscriptionTier,
@@ -73,7 +82,11 @@ async function withRemoteAuthSession<T>(
   try {
     await backend.login();
     signedIn = true;
-    return await run({ agencHome, env });
+    return await run({
+      agencHome,
+      env: ingress.environment,
+      remoteAuthSessionContext,
+    });
   } finally {
     try {
       if (signedIn) await backend.logout();
@@ -359,6 +372,92 @@ describe("first-run onboarding wizard", () => {
     });
   });
 
+  test("lists every canonical built-in provider in the provider step", () => {
+    const context = { config: defaultConfig(), env: {} };
+    const state = {
+      ...createInitialFirstRunOnboardingState(context),
+      currentStepId: "provider" as const,
+    };
+    const listedProviders = detailLinesForStep(state, context)
+      .flatMap((line) => line.match(/^\d+\. ([a-z0-9-]+)/u)?.[1] ?? []);
+
+    expect(listedProviders).toEqual(
+      listBuiltInProviderInfo().map((provider) => provider.id),
+    );
+  });
+
+  test.each([
+    "grok",
+    "openai",
+    "anthropic",
+    "openrouter",
+    "groq",
+    "deepseek",
+    "gemini",
+    "mistral",
+    "nvidia-nim",
+    "minimax",
+    "github",
+    "amazon-bedrock",
+  ] as const)("does not classify %s as keyless", async (provider) => {
+    const info = listBuiltInProviderInfo().find(
+      (candidate) => candidate.id === provider,
+    );
+    expect(info).toBeDefined();
+
+    await expect(
+      checkOnboardingProviderConnection(
+        { config: defaultConfig(), env: {} },
+        provider,
+        info!.defaultModel,
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      status: "needs-key",
+      keyEnvVar: info!.apiKeyEnvVar,
+    });
+  });
+
+  test.each([
+    "ollama",
+    "lmstudio",
+    "openai-compatible",
+  ] as const)("uses the local readiness path for %s", async (provider) => {
+    const info = listBuiltInProviderInfo().find(
+      (candidate) => candidate.id === provider,
+    );
+    expect(info).toBeDefined();
+
+    await expect(
+      checkOnboardingProviderConnection(
+        {
+          config: defaultConfig(),
+          env: {},
+          checkLocalProviders: false,
+        },
+        provider,
+        info!.defaultModel,
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      status: "local-unchecked",
+    });
+  });
+
+  test("uses the managed-auth readiness path for the AgenC provider", async () => {
+    await expect(
+      checkOnboardingProviderConnection(
+        { config: defaultConfig(), env: {} },
+        "agenc",
+        "agenc",
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      status: "needs-key",
+      detail: expect.stringContaining("requires account auth"),
+    });
+  });
+
   test("rejects reachable local providers that do not list the selected model", async () => {
     const config = defaultConfig();
     const ollamaFetch = vi.fn<typeof fetch>().mockResolvedValue(
@@ -436,12 +535,13 @@ describe("first-run onboarding wizard", () => {
     await withRemoteAuthSession(
       "agenc-onboarding-remote-auth-",
       "pro",
-      async ({ env }) => {
+      async ({ env, remoteAuthSessionContext }) => {
         await expect(
           checkOnboardingProviderConnection(
             {
               config: defaultConfig(),
               env,
+              remoteAuthSessionContext,
             },
             "openrouter",
             "x-ai/grok-4.3",
@@ -460,10 +560,11 @@ describe("first-run onboarding wizard", () => {
     await withRemoteAuthSession(
       "agenc-onboarding-pro-default-",
       "pro",
-      ({ env }) => {
+      ({ env, remoteAuthSessionContext }) => {
         const context = {
           config: defaultConfig(),
           env,
+          remoteAuthSessionContext,
         };
         const state = createInitialFirstRunOnboardingState(context);
 
@@ -491,10 +592,11 @@ describe("first-run onboarding wizard", () => {
     await withRemoteAuthSession(
       "agenc-onboarding-free-auth-",
       "free",
-      async ({ env }) => {
+      async ({ env, remoteAuthSessionContext }) => {
         const context = {
           config: defaultConfig(),
           env,
+          remoteAuthSessionContext,
         };
         await expect(
           checkOnboardingProviderConnection(
@@ -542,10 +644,11 @@ describe("first-run onboarding wizard", () => {
     await withRemoteAuthSession(
       "agenc-onboarding-free-ready-",
       "free",
-      async ({ env }) => {
+      async ({ env, remoteAuthSessionContext }) => {
         const context = {
           config: defaultConfig(),
           env,
+          remoteAuthSessionContext,
         };
         const state = createInitialFirstRunOnboardingState(context);
 
