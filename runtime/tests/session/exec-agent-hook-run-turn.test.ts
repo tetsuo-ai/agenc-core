@@ -32,7 +32,7 @@ import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { runTurnCompat } from "../session/turn-compat.js";
 import { startBackgroundSession } from "../tasks/LocalMainSessionTask.js";
-import { enqueue, resetCommandQueue } from "../utils/messageQueueManager.js";
+import { enqueue, resetCommandQueueForTesting } from "../utils/messageQueueManager.js";
 import { execAgentHook } from "../utils/hooks/execAgentHook.js";
 import type { Tool, ToolUseContext } from "../tools/Tool.js";
 import type { Message } from "../types/message.js";
@@ -59,7 +59,7 @@ afterEach(async () => {
     await testCleanup.pop()?.();
   }
   clearCurrentRuntimeSession();
-  resetCommandQueue();
+  resetCommandQueueForTesting();
 });
 
 describe("execAgentHook run-turn integration", () => {

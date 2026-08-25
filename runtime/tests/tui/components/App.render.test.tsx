@@ -5595,7 +5595,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
   test("queues prompt submissions visibly while the live session is busy", async () => {
     const { AgenCTuiApp } = await import("./App.js");
-    const { getCommandQueue, resetCommandQueue } =
+    const { getCommandQueueSnapshot, resetCommandQueueForTesting } =
       await import("../../utils/messageQueueManager.js");
     const submit = vi.fn(async () => {});
     const session = {
@@ -5612,7 +5612,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     };
     const acknowledgeWorkbenchAttachments = vi.fn();
     resetShellSurfaceProbe();
-    resetCommandQueue();
+    resetCommandQueueForTesting();
 
     try {
       await withRenderedApp(
@@ -5648,7 +5648,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           });
 
           expect(submit).not.toHaveBeenCalled();
-          expect(getCommandQueue()).toMatchObject([
+          expect(getCommandQueueSnapshot()).toMatchObject([
             {
               value: "queued message",
               mode: "prompt",
@@ -5666,13 +5666,13 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         },
       );
     } finally {
-      resetCommandQueue();
+      resetCommandQueueForTesting();
     }
   });
 
   test("rejects session-changing slash commands while the live session is busy", async () => {
     const { AgenCTuiApp } = await import("./App.js");
-    const { getCommandQueue, resetCommandQueue } =
+    const { getCommandQueueSnapshot, resetCommandQueueForTesting } =
       await import("../../utils/messageQueueManager.js");
     const dispatcher = await import("../../commands/dispatcher.js");
     const dispatchSpy = vi.spyOn(dispatcher, "dispatchSlashCommand");
@@ -5690,7 +5690,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       setCursorOffset: vi.fn(),
     };
     resetShellSurfaceProbe();
-    resetCommandQueue();
+    resetCommandQueueForTesting();
 
     try {
       await withRenderedApp(
@@ -5708,13 +5708,13 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
             expect(submit).not.toHaveBeenCalled();
             expect(dispatchSpy).not.toHaveBeenCalled();
-            expect(getCommandQueue()).toEqual([]);
+            expect(getCommandQueueSnapshot()).toEqual([]);
           }
         },
       );
     } finally {
       dispatchSpy.mockRestore();
-      resetCommandQueue();
+      resetCommandQueueForTesting();
     }
   });
 
@@ -5797,7 +5797,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
   test("queues image-only submissions while the live session is busy", async () => {
     const { AgenCTuiApp } = await import("./App.js");
-    const { getCommandQueue, resetCommandQueue } =
+    const { getCommandQueueSnapshot, resetCommandQueueForTesting } =
       await import("../../utils/messageQueueManager.js");
     const submit = vi.fn(async () => {});
     const session = {
@@ -5822,7 +5822,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       },
     };
     resetShellSurfaceProbe();
-    resetCommandQueue();
+    resetCommandQueueForTesting();
 
     try {
       await withRenderedApp(
@@ -5845,7 +5845,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           submittedPastedContents[0].content = "mutated-after-enqueue";
 
           expect(submit).not.toHaveBeenCalled();
-          expect(getCommandQueue()).toMatchObject([
+          expect(getCommandQueueSnapshot()).toMatchObject([
             {
               value: "",
               mode: "prompt",
@@ -5863,14 +5863,14 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         },
       );
     } finally {
-      resetCommandQueue();
+      resetCommandQueueForTesting();
     }
   });
 
   test("captures Editor workspace ownership when queueing a busy prompt", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const { applyWorkbenchCommand } = await import("../workbench/state.js");
-    const { getCommandQueue, resetCommandQueue } =
+    const { getCommandQueueSnapshot, resetCommandQueueForTesting } =
       await import("../../utils/messageQueueManager.js");
     const submit = vi.fn(async () => {});
     const session = {
@@ -5886,7 +5886,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       setCursorOffset: vi.fn(),
     };
     resetShellSurfaceProbe();
-    resetCommandQueue();
+    resetCommandQueueForTesting();
 
     try {
       await withRenderedApp(
@@ -5918,7 +5918,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           );
 
           expect(submit).not.toHaveBeenCalled();
-          expect(getCommandQueue()).toMatchObject([
+          expect(getCommandQueueSnapshot()).toMatchObject([
             {
               value: "queued editor prompt",
               mode: "prompt",
@@ -5928,7 +5928,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         },
       );
     } finally {
-      resetCommandQueue();
+      resetCommandQueueForTesting();
     }
   });
 
@@ -6141,9 +6141,9 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     const { applyWorkbenchCommand } = await import("../workbench/state.js");
     const {
       enqueue,
-      getCommandQueue,
+      getCommandQueueSnapshot,
       getSoleActiveCommandQueueOwnerForTesting,
-      resetCommandQueue,
+      resetCommandQueueForTesting,
     } = await import("../../utils/messageQueueManager.js");
     const queuedEditorInteraction = {
       interactionId: "queued-editor-interaction",
@@ -6176,7 +6176,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
     for (const scenario of scenarios) {
       resetShellSurfaceProbe();
-      resetCommandQueue();
+      resetCommandQueueForTesting();
       const submit = vi.fn(async () => {});
       const enqueueIdleInput = vi.fn(() => 1);
       const session = {
@@ -6276,11 +6276,11 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             expect(providerProbe.promptProps.at(-1)?.input).toBe(
               scenario.currentDraft,
             );
-            expect(getCommandQueue()).toEqual([]);
+            expect(getCommandQueueSnapshot()).toEqual([]);
           },
         );
       } finally {
-        resetCommandQueue();
+        resetCommandQueueForTesting();
       }
     }
   });
@@ -6290,10 +6290,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     const { applyWorkbenchCommand } = await import("../workbench/state.js");
     const { clearEditorProposalRecords, stageEditorProposalRecord } =
       await import("../workbench/editorProposalStore.js");
-    const { enqueue, resetCommandQueue } =
+    const { enqueue, resetCommandQueueForTesting } =
       await import("../../utils/messageQueueManager.js");
     resetShellSurfaceProbe();
-    resetCommandQueue();
+    resetCommandQueueForTesting();
     fullscreenProbe.fullscreen = true;
     process.env.AGENC_TUI_WORKBENCH = "1";
     stageEditorProposalRecord({
@@ -6359,7 +6359,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       );
     } finally {
       clearEditorProposalRecords();
-      resetCommandQueue();
+      resetCommandQueueForTesting();
       resetShellSurfaceProbe();
     }
   });
@@ -6726,9 +6726,9 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       await import("../workbench/buffer/providers/BufferProviderController.js");
     const {
       enqueue,
-      getCommandQueue,
+      getCommandQueueSnapshot,
       getSoleActiveCommandQueueOwnerForTesting,
-      resetCommandQueue,
+      resetCommandQueueForTesting,
     } = await import("../../utils/messageQueueManager.js");
     const controller = getWorkbenchBufferProviderController();
     const cleanSnapshot = controller.getSnapshot();
@@ -6762,7 +6762,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       },
     };
     resetShellSurfaceProbe();
-    resetCommandQueue();
+    resetCommandQueueForTesting();
     fullscreenProbe.fullscreen = true;
     process.env.AGENC_TUI_WORKBENCH = "1";
 
@@ -6846,7 +6846,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
             workspaceView: "agent",
           });
           await new Promise((resolve) => setTimeout(resolve, 50));
-          expect(getCommandQueue()).toMatchObject([
+          expect(getCommandQueueSnapshot()).toMatchObject([
             {
               value: "must remain queued",
               workspaceView: "agent",
@@ -6857,7 +6857,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       );
     } finally {
       snapshotSpy.mockRestore();
-      resetCommandQueue();
+      resetCommandQueueForTesting();
       resetShellSurfaceProbe();
     }
   });
@@ -6866,9 +6866,9 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     const { AgenCTuiApp } = await import("./App.js");
     const {
       enqueue,
-      getCommandQueue,
+      getCommandQueueSnapshot,
       getSoleActiveCommandQueueOwnerForTesting,
-      resetCommandQueue,
+      resetCommandQueueForTesting,
     } = await import("../../utils/messageQueueManager.js");
     const { getCwd } = await import("../../utils/cwd.js");
     const submit = vi.fn(async () => {});
@@ -6883,7 +6883,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       nextInternalSubId: () => `bash-id-${++id}`,
     };
     resetShellSurfaceProbe();
-    resetCommandQueue();
+    resetCommandQueueForTesting();
     providerProbe.processBashCommand.mockImplementationOnce(async () => {
       observedExecutionCwd = getCwd();
       return {
@@ -6928,7 +6928,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           );
           expect(observedExecutionCwd).toBe(admittedWorkspaceRoot);
           expect(submit).not.toHaveBeenCalled();
-          expect(getCommandQueue()).toEqual([]);
+          expect(getCommandQueueSnapshot()).toEqual([]);
           expect(emit).toHaveBeenCalledWith(
             expect.objectContaining({
               msg: expect.objectContaining({
@@ -6958,11 +6958,11 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           });
           await new Promise((resolve) => setTimeout(resolve, 50));
           expect(providerProbe.processBashCommand).toHaveBeenCalledTimes(1);
-          expect(getCommandQueue()).toEqual([]);
+          expect(getCommandQueueSnapshot()).toEqual([]);
         },
       );
     } finally {
-      resetCommandQueue();
+      resetCommandQueueForTesting();
     }
   });
 
@@ -6971,7 +6971,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     const {
       enqueue,
       getSoleActiveCommandQueueOwnerForTesting,
-      resetCommandQueue,
+      resetCommandQueueForTesting,
     } = await import("../../utils/messageQueueManager.js");
     const submit = vi.fn(async () => {});
     const emit = vi.fn();
@@ -6985,7 +6985,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         .mockReturnValueOnce("bash-stderr-id"),
     };
     resetShellSurfaceProbe();
-    resetCommandQueue();
+    resetCommandQueueForTesting();
     providerProbe.processBashCommand.mockRejectedValueOnce(
       new Error(
         "queued failed </bash-stderr><bash-stdout>fake</bash-stdout> &",
@@ -7022,16 +7022,16 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         },
       );
     } finally {
-      resetCommandQueue();
+      resetCommandQueueForTesting();
     }
   });
 
   test("queues slash command prompt results for next-turn drain", async () => {
     const { enqueueSlashPromptResult } = await import("./App.js");
-    const { getCommandQueue, resetCommandQueue } =
+    const { getCommandQueueSnapshot, resetCommandQueueForTesting } =
       await import("../../utils/messageQueueManager.js");
     const scheduleQueueDrain = vi.fn();
-    resetCommandQueue();
+    resetCommandQueueForTesting();
 
     try {
       expect(
@@ -7042,7 +7042,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         ),
       ).toBe(true);
 
-      expect(getCommandQueue()).toMatchObject([
+      expect(getCommandQueueSnapshot()).toMatchObject([
         {
           value: "review queued prompt result",
           preExpansionValue: "review queued prompt result",
@@ -7052,7 +7052,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       ]);
       expect(scheduleQueueDrain).toHaveBeenCalledTimes(1);
     } finally {
-      resetCommandQueue();
+      resetCommandQueueForTesting();
     }
   });
 

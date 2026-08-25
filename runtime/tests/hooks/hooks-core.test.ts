@@ -65,8 +65,8 @@ import { SessionProviderService } from "../../src/session/provider-service.js";
 import { ConfigStore } from "../../src/config/store.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 import {
-  getCommandQueue,
-  resetCommandQueue,
+  getCommandQueueSnapshot,
+  resetCommandQueueForTesting,
 } from "../../src/utils/messageQueueManager.js";
 
 const tempDirs: string[] = [];
@@ -158,7 +158,7 @@ function acceptInteractiveWorkspaceTrust(): void {
 }
 
 afterEach(async () => {
-  resetCommandQueue();
+  resetCommandQueueForTesting();
   clearCurrentRuntimeSession();
   resetStateForTests();
   restoreOptionalEnv("AGENC_HOME", originalAgenCHome);
@@ -211,9 +211,9 @@ test("async rewake completion retains the session that launched the hook", async
   switchSession("00000000-0000-4000-8000-000000000902" as never, null);
 
   await vi.waitFor(() => {
-    expect(getCommandQueue()).toHaveLength(1);
+    expect(getCommandQueueSnapshot()).toHaveLength(1);
   });
-  expect(getCommandQueue()[0]?.queueOwner).toEqual({
+  expect(getCommandQueueSnapshot()[0]?.queueOwner).toEqual({
     kind: "session",
     conversationId: sessionId,
   });

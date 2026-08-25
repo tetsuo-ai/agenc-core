@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, test, vi } from "vitest";
 import type { PastedContent } from "../../../utils/config.js";
 import {
   enqueue,
-  resetCommandQueue,
+  resetCommandQueueForTesting,
 } from "../../../utils/messageQueueManager.js";
 import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../../remoteAuthSessionContext.fixture.js";
 
@@ -1021,7 +1021,7 @@ async function renderPromptInput(overrides: Record<string, unknown> = {}) {
 describe("PromptInput render surface", () => {
   beforeEach(() => {
     harness.reset();
-    resetCommandQueue();
+    resetCommandQueueForTesting();
     vi.mocked(getImageFromClipboard).mockReset();
     vi.mocked(getImageFromClipboard).mockResolvedValue(null);
     vi.mocked(cacheImagePath).mockClear();
@@ -2337,7 +2337,7 @@ describe("PromptInput render surface", () => {
         }),
       });
     } finally {
-      resetCommandQueue();
+      resetCommandQueueForTesting();
       await rendered.dispose();
     }
   });

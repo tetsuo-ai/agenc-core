@@ -1,13 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test'
-import { getCommandQueue, resetCommandQueue } from '../../src/utils/messageQueueManager.ts'
+import { getCommandQueueSnapshot, resetCommandQueueForTesting } from '../../src/utils/messageQueueManager.ts'
 
 describe('handlePromptSubmit', () => {
   beforeEach(() => {
-    resetCommandQueue()
+    resetCommandQueueForTesting()
   })
 
   afterEach(() => {
-    resetCommandQueue()
+    resetCommandQueueForTesting()
   })
 
   it('queues prompt submissions during generation without interrupting the current turn', async () => {
@@ -74,7 +74,7 @@ describe('handlePromptSubmit', () => {
     expect(bufferCleared).toBe(true)
     expect(pastedContentsCleared).toBe(true)
     expect(historyReset).toBe(true)
-    expect(getCommandQueue()).toMatchObject([
+    expect(getCommandQueueSnapshot()).toMatchObject([
       {
         value: 'use another library',
         preExpansionValue: 'use another library',

@@ -9,7 +9,7 @@ vi.mock("../../src/services/PromptSuggestion/speculation.js", () => ({
 
 const { getSessionId, switchSession } =
   await import("../../src/bootstrap/state.js");
-const { getCommandQueue, queuedCommandOwnedByConversation, resetCommandQueue } =
+const { getCommandQueueSnapshot, queuedCommandOwnedByConversation, resetCommandQueueForTesting } =
   await import("../../src/utils/messageQueueManager.js");
 const { spawnShellTask } =
   await import("../../src/tasks/LocalShellTask/LocalShellTask.js");
@@ -37,7 +37,7 @@ function mutableState(initialTasks: Record<string, unknown> = {}): {
 }
 
 afterEach(() => {
-  resetCommandQueue();
+  resetCommandQueueForTesting();
   vi.restoreAllMocks();
 });
 
@@ -81,10 +81,10 @@ describe("background notification queue ownership", () => {
       resolveResult?.({ code: 0, interrupted: false });
 
       await vi.waitFor(() => {
-        expect(getCommandQueue()).toHaveLength(1);
+        expect(getCommandQueueSnapshot()).toHaveLength(1);
       });
 
-      const [notification] = getCommandQueue();
+      const [notification] = getCommandQueueSnapshot();
       expect(notification?.queueOwner).toEqual(OWNER_A);
       expect(queuedCommandOwnedByConversation(notification!, SESSION_A)).toBe(
         true,
@@ -116,7 +116,7 @@ describe("background notification queue ownership", () => {
       switchSession(SESSION_B as never, null);
       completeMainSessionTask("smain0001", true, state.setAppState);
 
-      const [notification] = getCommandQueue();
+      const [notification] = getCommandQueueSnapshot();
       expect(notification?.queueOwner).toEqual(OWNER_A);
       expect(queuedCommandOwnedByConversation(notification!, SESSION_A)).toBe(
         true,

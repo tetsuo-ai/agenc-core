@@ -6,7 +6,7 @@ import type {
   RequestUserInputEvent,
 } from "../../elicitation/types.js";
 import { isMcpUrlCompletionResponse } from "../../elicitation/url-completion.js";
-import { getCommandQueue, resetCommandQueue } from "../../utils/messageQueueManager.js";
+import { getCommandQueueSnapshot, resetCommandQueueForTesting } from "../../utils/messageQueueManager.js";
 import {
   createElicitationQueue,
   enqueueSlashPromptResult,
@@ -348,17 +348,17 @@ describe("App coverage swarm row 002", () => {
 
   test("enqueueSlashPromptResult ignores blank content and queues trimmed work", () => {
     const scheduleQueueDrain = vi.fn();
-    resetCommandQueue();
+    resetCommandQueueForTesting();
 
     try {
       expect(enqueueSlashPromptResult("   ", scheduleQueueDrain)).toBe(false);
-      expect(getCommandQueue()).toEqual([]);
+      expect(getCommandQueueSnapshot()).toEqual([]);
       expect(scheduleQueueDrain).not.toHaveBeenCalled();
 
       expect(enqueueSlashPromptResult("  queued content  ", scheduleQueueDrain)).toBe(
         true,
       );
-      expect(getCommandQueue()).toMatchObject([
+      expect(getCommandQueueSnapshot()).toMatchObject([
         {
           value: "  queued content  ",
           preExpansionValue: "  queued content  ",
@@ -367,7 +367,7 @@ describe("App coverage swarm row 002", () => {
       ]);
       expect(scheduleQueueDrain).toHaveBeenCalledTimes(1);
     } finally {
-      resetCommandQueue();
+      resetCommandQueueForTesting();
     }
   });
 });

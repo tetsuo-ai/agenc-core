@@ -24,14 +24,14 @@ vi.mock('../../../utils/messageQueueManager.js', async () => {
 })
 
 import {
-  getCommandQueue,
-  resetCommandQueue,
+  getCommandQueueSnapshot,
+  resetCommandQueueForTesting,
 } from '../../../utils/messageQueueManager.js'
 import { applyBusyInputSubmissionPolicy } from './PromptInput.js'
 
 describe('PromptInput busy bash coverage', () => {
   afterEach(() => {
-    resetCommandQueue()
+    resetCommandQueueForTesting()
   })
 
   test('swallows empty bash submissions while busy without queueing or clearing input state', () => {
@@ -56,7 +56,7 @@ describe('PromptInput busy bash coverage', () => {
       }),
     ).toBe(true)
 
-    expect(getCommandQueue()).toEqual([])
+    expect(getCommandQueueSnapshot()).toEqual([])
     expect(addNotification).not.toHaveBeenCalled()
     expect(setInput).not.toHaveBeenCalled()
     expect(setCursorOffset).not.toHaveBeenCalled()

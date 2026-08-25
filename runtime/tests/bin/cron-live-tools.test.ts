@@ -24,7 +24,7 @@ import {
 import { listAllCronTasks } from "../utils/cronTasks.js";
 import type { Session } from "../session/session.js";
 import {
-  dequeueAll,
+  resetCommandQueueForTesting,
   getCommandQueueSnapshot,
 } from "../utils/messageQueueManager.js";
 
@@ -76,7 +76,7 @@ beforeEach(() => {
   setProjectRoot(tempRoot);
   setOriginalCwd(tempRoot);
   setCwdState(tempRoot);
-  dequeueAll();
+  resetCommandQueueForTesting();
 });
 
 afterEach(async () => {
@@ -85,7 +85,7 @@ afterEach(async () => {
   // below and die with an unhandled ENOENT writing scheduled_tasks.json.
   await resetCronSchedulerForTests();
   resetStateForTests();
-  dequeueAll();
+  resetCommandQueueForTesting();
   rmSync(tempRoot, { recursive: true, force: true });
 });
 
@@ -193,7 +193,7 @@ describe("live Cron tools drive the real scheduler", () => {
       setProjectRoot(tempRoot);
       setOriginalCwd(tempRoot);
       setCwdState(tempRoot);
-      dequeueAll();
+      resetCommandQueueForTesting();
 
       // …and the bootstrap re-arm path starts a fresh runner from the
       // persisted store.

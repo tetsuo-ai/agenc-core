@@ -55,7 +55,7 @@ import {
 import {
   enqueue as enqueueCommand,
   getCommandQueueSnapshot,
-  resetCommandQueue,
+  resetCommandQueueForTesting,
 } from "../utils/messageQueueManager.js";
 import type { QueuedCommand } from "../types/textInputTypes.js";
 import { createToolResultIntegrity } from "./tool-result-integrity.js";
@@ -172,7 +172,7 @@ afterEach(() => {
   sessionMemoryPostSamplingMockState.calls.length = 0;
   sessionMemoryPostSamplingMockState.error = null;
   clearSessionReadState("conv-test");
-  resetCommandQueue();
+  resetCommandQueueForTesting();
   for (const home of generatedConfigHomes) {
     rmSync(home, { recursive: true, force: true });
   }

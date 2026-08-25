@@ -996,8 +996,8 @@ export async function getQueuedCommandAttachments(
   // Include both 'prompt' and 'task-notification' commands as attachments.
   // During proactive agentic loops, task-notification commands would otherwise
   // stay in the queue permanently (useQueueProcessor can't run while a query
-  // is active), causing hasPendingNotifications() to return true and Sleep to
-  // wake immediately with 0ms duration in an infinite loop.
+  // is active), leaving queued work that wakes Sleep immediately with 0ms
+  // duration in an infinite loop.
   const filtered = queuedCommands.filter(_ =>
     INLINE_NOTIFICATION_MODES.has(_.mode),
   )
