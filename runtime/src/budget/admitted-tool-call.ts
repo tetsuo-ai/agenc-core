@@ -702,6 +702,31 @@ function reconcileToolUsage(
     });
     return undefined;
   }
+  /*
+   * A reservation that cannot cost anything did not cost anything by
+   * completing. Holding it unknown is the right instinct for a provider
+   * call that may have been charged before the wire died — but a local
+   * tool that finished cleanly has no charge to be unsure about, and the
+   * hold is permanent: nothing can be admitted behind an unsettled step,
+   * so the run errors and the session takes no further input.
+   *
+   * Observed with the `Skill` tool, which reads a file and returns text.
+   * It succeeded, reported no usage because it spends nothing, and ended
+   * a session mid-build with "this run has ended and cannot accept new
+   * input". Its tokens are not lost either — a tool result is charged
+   * where it is actually paid for, in the next model call's input.
+   *
+   * A failure still holds: a tool that threw may have spent something on
+   * its way out.
+   */
+  if (estimate.maxCostUsd === 0 && result?.isError !== true) {
+    client.reconcile(reservationId, {
+      inputTokens: 0,
+      outputTokens: 0,
+      costUsd: 0,
+    });
+    return undefined;
+  }
   client.holdUnknown(reservationId, missingUsageReason);
   incrementEffectSettlementMetric(session, "heldAccounting");
   return undefined;
