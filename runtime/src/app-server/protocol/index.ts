@@ -11,9 +11,10 @@ export const JSON_RPC_VERSION = "2.0" as const;
 /**
  * Current daemon protocol version.
  * 1.2 adds identity-bearing transcript.v2 and turn-scoped cancellation.
- * Clients that need those semantics must not negotiate an older daemon.
+ * 1.3 adds the passive MCP status projection and its live-only invalidation.
+ * Clients that need either additive surface must not negotiate an older daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.2.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.3.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -67,6 +68,7 @@ export const AGENC_DAEMON_METHODS = [
   "session.transcript.v2",
   "session.cancelTurn",
   "session.resolveToolCall",
+  "session.mcp.status",
   "session.mcp.addServer",
   "message.send",
   "message.stream",
@@ -153,6 +155,7 @@ export const AGENC_DAEMON_NOTIFICATION_METHODS = [
   "event.permission_request",
   "event.user_input_request",
   "event.mcp_elicitation_request",
+  "event.mcp_status_changed",
   "event.agent_status",
   "event.session_event",
   "event.event_gap",
@@ -431,6 +434,14 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     result: "object",
     description:
       "Operator review of unknown-outcome tool effects (M4 gate): mark them resolved so the side-effecting mutation gate lifts. TUI /resolve uses this so the session does not have to be closed for the CLI path.",
+  },
+  "session.mcp.status": {
+    method: "session.mcp.status",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "Read the daemon-owned session's passive, revisioned MCP status projection without exposing clients or connection authority.",
   },
   "session.mcp.addServer": {
     method: "session.mcp.addServer",
@@ -917,6 +928,13 @@ export const AGENC_DAEMON_NOTIFICATION_SPECS = defineNotificationSpecs({
     description:
       "Ask an attached client to resolve a pending MCP elicitation request.",
   },
+  "event.mcp_status_changed": {
+    method: "event.mcp_status_changed",
+    direction: "server-to-client",
+    params: "required",
+    description:
+      "Invalidate attached clients' passive MCP status projection after an authoritative committed change.",
+  },
   "event.agent_status": {
     method: "event.agent_status",
     direction: "server-to-client",
@@ -1372,6 +1390,10 @@ export interface SessionCancelTurnParams extends JsonObject {
   readonly reason?: string;
   /** Cancel only when this exact turn is still active. */
   readonly expectedTurnId?: string;
+}
+
+export interface SessionMcpStatusParams extends JsonObject {
+  readonly sessionId: string;
 }
 
 export interface SessionMcpServerConfig extends JsonObject {
@@ -1961,6 +1983,12 @@ export interface EventMcpElicitationRequestParams extends AgenCEventBaseParams {
   readonly request: JsonObject;
 }
 
+/** Non-journal control-plane invalidation for the passive MCP projection. */
+export interface EventMcpStatusChangedParams extends JsonObject {
+  readonly sessionId: string;
+  readonly revision: number;
+}
+
 export interface EventAgentStatusParams extends AgenCEventBaseParams {
   readonly agentId: string;
   readonly status: AgentStatus;
@@ -2045,6 +2073,7 @@ export interface AgenCDaemonNotificationParamsByMethod {
   readonly "event.permission_request": EventPermissionRequestParams;
   readonly "event.user_input_request": EventUserInputRequestParams;
   readonly "event.mcp_elicitation_request": EventMcpElicitationRequestParams;
+  readonly "event.mcp_status_changed": EventMcpStatusChangedParams;
   readonly "event.agent_status": EventAgentStatusParams;
   readonly "event.session_event": EventSessionEventParams;
   readonly "event.event_gap": EventGapParams;
@@ -2082,6 +2111,10 @@ export type AgenCDaemonNotification =
   | AgenCDaemonNotificationWithParams<
       "event.mcp_elicitation_request",
       EventMcpElicitationRequestParams
+    >
+  | AgenCDaemonNotificationWithParams<
+      "event.mcp_status_changed",
+      EventMcpStatusChangedParams
     >
   | AgenCDaemonNotificationWithParams<
       "event.agent_status",
@@ -2190,6 +2223,10 @@ export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<
       "session.resolveToolCall",
       SessionResolveToolCallParams
+    >
+  | AgenCDaemonRequestWithParams<
+      "session.mcp.status",
+      SessionMcpStatusParams
     >
   | AgenCDaemonRequestWithParams<
       "session.mcp.addServer",
@@ -2952,6 +2989,36 @@ export interface SessionCancelTurnResult extends JsonObject {
   readonly stale?: boolean;
 }
 
+export interface SessionMcpStatusServer extends JsonObject {
+  readonly name: string;
+  readonly transport: "stdio" | "sse" | "http" | "websocket";
+  readonly enabled: boolean;
+  readonly required: boolean;
+  readonly state:
+    | "connected"
+    | "pending"
+    | "failed"
+    | "disabled"
+    | "needs-auth"
+    | "disconnected";
+  /** Sanitized executable basename or URL origin; never connection authority. */
+  readonly displayTarget?: string;
+  readonly toolCount: number;
+}
+
+export interface SessionMcpStatusTool extends JsonObject {
+  readonly serverName: string;
+  readonly name: string;
+}
+
+/** Passive, serializable projection of the daemon-owned MCP runtime. */
+export interface SessionMcpStatusResult extends JsonObject {
+  readonly sessionId: string;
+  readonly revision: number;
+  readonly servers: readonly SessionMcpStatusServer[];
+  readonly tools: readonly SessionMcpStatusTool[];
+}
+
 export interface SessionMcpAddServerResult extends JsonObject {
   readonly sessionId: string;
   readonly serverName: string;
@@ -3489,6 +3556,7 @@ export interface AgenCDaemonResultByMethod {
   readonly "session.transcript.v2": SessionTranscriptV2Result;
   readonly "session.cancelTurn": SessionCancelTurnResult;
   readonly "session.resolveToolCall": SessionResolveToolCallResult;
+  readonly "session.mcp.status": SessionMcpStatusResult;
   readonly "session.mcp.addServer": SessionMcpAddServerResult;
   readonly "message.send": MessageSendResult;
   readonly "message.stream": MessageStreamResult;

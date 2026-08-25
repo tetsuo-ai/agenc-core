@@ -1292,6 +1292,91 @@ describe("AgenC background agent lifecycle", () => {
     });
   });
 
+  it("reads passive MCP status from the runner that owns the daemon session", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session-mcp-status",
+      agentId: "agent-mcp-status",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "inspect MCP",
+    });
+    const getMcpStatus = vi.fn(async () => ({
+      revision: 4,
+      servers: [
+        {
+          name: "audit-ping",
+          transport: "stdio" as const,
+          enabled: true,
+          required: false,
+          state: "connected" as const,
+          displayTarget: "node",
+          toolCount: 1,
+          error: "https://operator:hunter2@example.test/private",
+          command: "node --token hunter2",
+          args: ["--token", "hunter2"],
+          env: { API_KEY: "hunter2" },
+          headers: { Authorization: "Bearer hunter2" },
+          client: { secret: "hunter2" },
+        },
+      ],
+      tools: [
+        {
+          serverName: "audit-ping",
+          name: "mcp.audit-ping.check",
+          description:
+            "Use https://operator:hunter2@example.test/private?token=hunter2",
+          inputSchema: { token: "hunter2" },
+          client: { secret: "hunter2" },
+        },
+      ],
+    }));
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-05-01T12:00:00.000Z",
+          status: "running",
+        }),
+        getMcpStatus,
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-mcp-status",
+      objective: "inspect MCP",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session-mcp-status"],
+      runtimeAvailable: true,
+    });
+
+    await expect(
+      agents.getMcpStatusForSession({ sessionId: "session-mcp-status" }),
+    ).resolves.toEqual({
+      sessionId: "session-mcp-status",
+      revision: 4,
+      servers: [
+        {
+          name: "audit-ping",
+          transport: "stdio",
+          enabled: true,
+          required: false,
+          state: "connected",
+          displayTarget: "node",
+          toolCount: 1,
+        },
+      ],
+      tools: [
+        {
+          serverName: "audit-ping",
+          name: "mcp.audit-ping.check",
+        },
+      ],
+    });
+    expect(getMcpStatus).toHaveBeenCalledWith("agent-mcp-status");
+  });
+
   it("routes session.mcp.addServer to the runner that owns the daemon session", async () => {
     const sessions = new AgenCDaemonSessionManager();
     await sessions.restoreSession({
@@ -5265,7 +5350,7 @@ describe("AgenC background agent lifecycle", () => {
         id: "future-protocol",
         method: "initialize",
         params: {
-          protocol: { version: "1.3.0" },
+          protocol: { version: "1.4.0" },
           clientName: "contract-test",
         },
       }),
@@ -5277,8 +5362,8 @@ describe("AgenC background agent lifecycle", () => {
         message: "Unsupported protocol version",
         data: {
           code: "PROTOCOL_VERSION_UNSUPPORTED",
-          clientVersion: "1.3.0",
-          serverVersion: "1.2.0",
+          clientVersion: "1.4.0",
+          serverVersion: "1.3.0",
         },
       },
     });
@@ -5343,16 +5428,16 @@ describe("AgenC background agent lifecycle", () => {
       id: 1,
       result: {
         type: "initialized",
-        protocolVersion: "1.2.0",
-        protocol: { version: "1.2.0" },
+        protocolVersion: "1.3.0",
+        protocol: { version: "1.3.0" },
         capabilities: {},
       },
     });
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.2.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.3.0");
     expect(connection.initializeState).toMatchObject({
-      protocol: { version: "1.2.0" },
+      protocol: { version: "1.3.0" },
       clientProtocol: { version: "1.0.0" },
-      serverProtocol: { version: "1.2.0" },
+      serverProtocol: { version: "1.3.0" },
       clientCapabilities: { experimentalApi: true },
     });
     expect(

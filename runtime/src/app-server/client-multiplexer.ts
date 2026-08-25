@@ -97,6 +97,12 @@ export interface RegisterAgenCClientOptions {
   /** Physical delivery identity; logical clients on one socket share this key. */
   readonly deliveryKey?: string;
   readonly send: AgenCClientSend;
+  /**
+   * Connection-negotiated filter for ordinary session notifications. This is
+   * evaluated both for live fan-out and detached replay so an older client is
+   * never sent a notification introduced by a newer protocol minor.
+   */
+  readonly acceptsSessionEvent?: (event: JsonObject) => boolean;
   /** Capabilities authenticated/recorded during this connection's initialize. */
   readonly capabilities?: JsonObject;
 }
@@ -116,6 +122,7 @@ interface MutableClient {
   clientId: string;
   deliveryKey: string;
   send: AgenCClientSend;
+  acceptsSessionEvent: (event: JsonObject) => boolean;
   sessionIds: Set<string>;
   deliveryQueue: Promise<void>;
   /**
@@ -231,6 +238,7 @@ export class AgenCDaemonClientMultiplexer {
         clientId,
         deliveryKey: options.deliveryKey ?? clientId,
         send: options.send,
+        acceptsSessionEvent: options.acceptsSessionEvent ?? (() => true),
         sessionIds: new Set(),
         deliveryQueue: Promise.resolve(),
         pendingDeliveryBytes: 0,
@@ -401,7 +409,9 @@ export class AgenCDaemonClientMultiplexer {
       async (state) => {
         const client = requireClient(state, clientId);
         const existingRoute = state.sessions.get(sessionId);
-        const replayedEvents = [...(existingRoute?.bufferedEvents ?? [])];
+        const replayedEvents = (existingRoute?.bufferedEvents ?? []).filter(
+          client.acceptsSessionEvent,
+        );
         assertReplayDeliveriesFitAvailable(
           client,
           [replayedEvents],
@@ -617,9 +627,22 @@ export class AgenCDaemonClientMultiplexer {
       for (const client of attachedClients) {
         if (!client.evicted) targetsByDeliveryKey.set(client.deliveryKey, client);
       }
-      const activeClients = [...targetsByDeliveryKey.values()];
+      const activeClients = [...targetsByDeliveryKey.values()].filter(
+        (client) => client.acceptsSessionEvent(event),
+      );
 
       if (activeClients.length === 0) {
+        // Status invalidations are ephemeral hints: every compatible client
+        // reads the authoritative snapshot on attach/reconnect. Retaining a
+        // hint for an older or detached client would only pollute transcript
+        // replay (and can never recover state by itself).
+        if (event.method === "event.mcp_status_changed") {
+          return {
+            deliveries: [] as EnqueuedDelivery[],
+            hadLiveTargets: false,
+            bufferedWithoutTarget: false,
+          };
+        }
         // No attached client to deliver to. Only buffer (creating a route on
         // demand) when the session is still live: a terminated/unknown session
         // can never gain a client to drain the buffer, and its buffer-only

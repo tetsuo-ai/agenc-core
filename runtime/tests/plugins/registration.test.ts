@@ -49,6 +49,7 @@ vi.mock("../utils/secureStorage/native.js", async importOriginal => {
 import { sourcePath } from "../helpers/source-path.ts";
 import { findCommand } from "../commands.js";
 import { MCPManager } from "../mcp-client/manager.js";
+import { mcpServerNameValidationIssue } from "../mcp-client/server-name.js";
 import { pluginDataDirPath } from "./directories.js";
 import { loadPlugins, type PluginLoadIssue } from "./loader.js";
 import { substitutePluginTemplate } from "./registration/common.js";
@@ -634,6 +635,38 @@ describe("plugin registration", () => {
         AGENC_PLUGIN_MCP_SERVER: "local",
         AGENC_PLUGIN_SANDBOX: "stdio-child-process",
       });
+    });
+  });
+
+  test("bounds long plugin-scoped MCP identities before manager construction", async () => {
+    await withTempPlugin(async ({ pluginRoot, options }) => {
+      const pluginName = `plugin-${"p".repeat(245)}`;
+      const serverName = `server-${"s".repeat(245)}`;
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: pluginName,
+        mcpServers: {
+          [serverName]: { command: "node" },
+        },
+      });
+
+      const result = await loadPlugins(options);
+      const first = await loadPluginMcpServers({ plugins: result.enabled });
+      const second = await loadPluginMcpServers({ plugins: result.enabled });
+      const names = Object.keys(first);
+
+      expect(names).toHaveLength(1);
+      expect(names[0]).toHaveLength(256);
+      expect(names[0]).toMatch(/:[a-f0-9]{64}$/u);
+      expect(mcpServerNameValidationIssue(names[0])).toBeUndefined();
+      expect(Object.keys(second)).toEqual(names);
+      expect(() =>
+        new MCPManager(
+          Object.entries(first).map(([name, config]) => ({
+            name,
+            ...config,
+          })),
+        ),
+      ).not.toThrow();
     });
   });
 

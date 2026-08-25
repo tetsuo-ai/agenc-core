@@ -17,6 +17,7 @@ import type {
   MessageStreamParams,
   RequestId,
   SessionAttachParams,
+  SessionMcpStatusResult,
   SessionMcpAddServerParams,
   SessionMcpServerByNameParams,
   SessionMcpServerConfig,
@@ -102,6 +103,12 @@ import type { PhaseEvent } from "../phases/events.js";
 import type {
   IdleInputAdmission,
   IdleInputOwnership,
+  McpManager,
+  McpServerMutationResult,
+  McpSessionServerConfig,
+  McpSurfaceServer,
+  McpSurfaceSnapshot,
+  McpSurfaceTool,
 } from "../session/session.js";
 import { isMcpUrlCompletionResponse } from "../elicitation/url-completion.js";
 import { takePlanApprovalChoice } from "./plan-approval-choice.js";
@@ -116,8 +123,9 @@ import type {
   StartRealtimeAudioCapture,
 } from "./realtime/audio.js";
 import type { AgenCCompactProgressControls } from "./session-types.js";
-import type { McpServerMutationResult } from "../session/session.js";
+import { mcpServerNameValidationIssue } from "../mcp-client/server-name.js";
 import { isRecord } from "../utils/record.js";
+import { logForDebugging } from "../utils/debug.js";
 import type { AgentRoleWorkspace } from "../agents/role-workspace.js";
 import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
 
@@ -306,6 +314,11 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   commitIdleInputAdmission?(token: string): boolean;
   listMcpClients?(): readonly unknown[];
   listMcpTools?(): readonly unknown[];
+  mcpSurfaceSnapshot?(): McpSurfaceSnapshot;
+  refreshMcpSurface?(): Promise<McpSurfaceSnapshot>;
+  subscribeToMcpSurface?(
+    cb: (snapshot: McpSurfaceSnapshot) => void,
+  ): () => void;
 }
 
 export type AgenCDaemonBackedTuiSession<
@@ -319,6 +332,8 @@ export type AgenCDaemonBackedTuiSession<
   | "rollbackIdleInputAdmission"
   | "commitIdleInputAdmission"
   | "getInitialTranscriptEvents"
+  | "listMcpClients"
+  | "listMcpTools"
   | "submit"
   | "subscribeToEvents"
 > & {
@@ -758,30 +773,46 @@ export function createDaemonTuiSession<
       ? { audioPlayer: options.realtimeAudioPlayer }
       : {}),
   });
+  const mcpProjection = createDaemonMcpProjection(client, sessionId);
+  const services: MutableBridgeServices = {
+    ...baseSession.services,
+    mcpManager: mcpProjection.manager,
+  };
+  const eventBridgeSession: AgenCTuiBridgeSession = {
+    ...baseSession,
+    services,
+  };
   const ensureDaemonEventsSubscribed = (): void => {
     if (unsubscribeDaemonEvents !== null) return;
     unsubscribeDaemonEvents = subscribeToDaemonEvents(
       client,
       sessionId,
       realtimeThreadId,
-      baseSession,
+      eventBridgeSession,
       realtime,
+      mcpProjection,
       broadcastDaemonEvent,
     );
+    const currentConnectionState = client.getConnectionState?.();
+    if (
+      currentConnectionState !== null &&
+      currentConnectionState !== undefined
+    ) {
+      mcpProjection.noteConnectionState(currentConnectionState);
+    }
   };
   const maybeStopDaemonEvents = (): void => {
-    if (eventSubscribers.size > 0 || unsubscribeDaemonEvents === null) return;
+    if (
+      eventSubscribers.size > 0 ||
+      mcpProjection.hasSubscribers() ||
+      unsubscribeDaemonEvents === null
+    ) {
+      return;
+    }
     unsubscribeDaemonEvents();
     unsubscribeDaemonEvents = null;
+    mcpProjection.noteConnectionObservationGap();
   };
-  const services = baseSession.services as MutableBridgeServices;
-  if (services.mcpManager !== undefined) {
-    services.mcpManager = createDaemonMirroredMcpManager(
-      services.mcpManager,
-      client,
-      sessionId,
-    );
-  }
   const admitQueuedInputs = (
     inputs: readonly unknown[],
     owned: boolean,
@@ -865,10 +896,23 @@ export function createDaemonTuiSession<
     idleInputAdmissions.delete(token);
     return true;
   };
+  const daemonSessionBase = { ...baseSession };
+  Reflect.deleteProperty(daemonSessionBase, "listMcpClients");
+  Reflect.deleteProperty(daemonSessionBase, "listMcpTools");
   return {
-    ...baseSession,
+    ...daemonSessionBase,
     conversationId,
     services,
+    mcpSurfaceSnapshot: () => mcpProjection.snapshot(),
+    refreshMcpSurface: () => mcpProjection.refresh(),
+    subscribeToMcpSurface: (cb) => {
+      const unsubscribe = mcpProjection.subscribe(cb);
+      ensureDaemonEventsSubscribed();
+      return () => {
+        unsubscribe();
+        maybeStopDaemonEvents();
+      };
+    },
     realtime,
     activeTurn: {
       unsafePeek: () =>
@@ -1307,103 +1351,460 @@ export function createDaemonTuiSession<
   } as AgenCDaemonBackedTuiSession<Session>;
 }
 
-type McpManagerLike = NonNullable<
-  AgenCTuiBridgeSession["services"]["mcpManager"]
-> & {
-  addServer?(config: SessionMcpServerConfig): Promise<McpServerMutationResult>;
-  reconnectServer?(name: string): Promise<McpServerMutationResult>;
-  enableServer?(name: string): Promise<McpServerMutationResult>;
-  disableServer?(name: string): Promise<McpServerMutationResult>;
-};
-
 interface MutableBridgeServices {
   mcpManager?: unknown;
   [key: string]: unknown;
 }
 
-function createDaemonMirroredMcpManager(
-  baseManager: unknown,
+interface DaemonMcpProjection {
+  readonly manager: McpManager;
+  snapshot(): McpSurfaceSnapshot;
+  refresh(minimumRevision?: number): Promise<McpSurfaceSnapshot>;
+  invalidate(revision: number): void;
+  noteConnectionState(state: AgenCDaemonConnectionState): void;
+  noteConnectionObservationGap(): void;
+  subscribe(listener: (snapshot: McpSurfaceSnapshot) => void): () => void;
+  hasSubscribers(): boolean;
+}
+
+function freezeDaemonMcpSnapshot(
+  result: SessionMcpStatusResult,
+): McpSurfaceSnapshot {
+  if (!Array.isArray(result.servers) || !Array.isArray(result.tools)) {
+    throw new Error("Daemon MCP status returned invalid projection arrays");
+  }
+  return Object.freeze({
+    revision: result.revision,
+    servers: Object.freeze(
+      result.servers.map((server, index): McpSurfaceServer => {
+        const name = daemonMcpProjectionServerName(
+          server.name,
+          `servers[${index}].name`,
+        );
+        const transport = daemonMcpProjectionTransport(
+          server.transport,
+          `servers[${index}].transport`,
+        );
+        const state = daemonMcpProjectionState(
+          server.state,
+          `servers[${index}].state`,
+        );
+        if (typeof server.enabled !== "boolean") {
+          throw new Error(
+            `Daemon MCP status servers[${index}].enabled must be boolean`,
+          );
+        }
+        if (typeof server.required !== "boolean") {
+          throw new Error(
+            `Daemon MCP status servers[${index}].required must be boolean`,
+          );
+        }
+        if (!Number.isSafeInteger(server.toolCount) || server.toolCount < 0) {
+          throw new Error(
+            `Daemon MCP status servers[${index}].toolCount must be a non-negative safe integer`,
+          );
+        }
+        const displayTarget =
+          server.displayTarget === undefined
+            ? undefined
+            : daemonMcpProjectionDisplayTarget(
+                server.displayTarget,
+                `servers[${index}].displayTarget`,
+              );
+        return Object.freeze({
+          name,
+          transport,
+          enabled: server.enabled,
+          required: server.required,
+          state,
+          ...(displayTarget !== undefined ? { displayTarget } : {}),
+          toolCount: server.toolCount,
+        });
+      }),
+    ),
+    tools: Object.freeze(
+      result.tools.map((tool, index): McpSurfaceTool =>
+        Object.freeze({
+          serverName: daemonMcpProjectionServerName(
+            tool.serverName,
+            `tools[${index}].serverName`,
+          ),
+          name: daemonMcpProjectionString(
+            tool.name,
+            `tools[${index}].name`,
+            512,
+          ),
+        }),
+      ),
+    ),
+  });
+}
+
+function daemonMcpProjectionString(
+  value: unknown,
+  field: string,
+  maxLength: number,
+): string {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    Array.from(value).length > maxLength ||
+    /[\u0000-\u001F\u007F-\u009F]/u.test(value)
+  ) {
+    throw new Error(`Daemon MCP status ${field} is invalid`);
+  }
+  return value;
+}
+
+function daemonMcpProjectionServerName(
+  value: unknown,
+  field: string,
+): string {
+  if (mcpServerNameValidationIssue(value) !== undefined) {
+    throw new Error(`Daemon MCP status ${field} is invalid`);
+  }
+  return value as string;
+}
+
+function daemonMcpProjectionTransport(
+  value: unknown,
+  field: string,
+): McpSurfaceServer["transport"] {
+  if (
+    value === "stdio" ||
+    value === "sse" ||
+    value === "http" ||
+    value === "websocket"
+  ) {
+    return value;
+  }
+  throw new Error(`Daemon MCP status ${field} is invalid`);
+}
+
+function daemonMcpProjectionState(
+  value: unknown,
+  field: string,
+): McpSurfaceServer["state"] {
+  if (
+    value === "connected" ||
+    value === "pending" ||
+    value === "failed" ||
+    value === "disabled" ||
+    value === "needs-auth" ||
+    value === "disconnected"
+  ) {
+    return value;
+  }
+  throw new Error(`Daemon MCP status ${field} is invalid`);
+}
+
+function daemonMcpProjectionDisplayTarget(
+  value: unknown,
+  field: string,
+): string {
+  const target = daemonMcpProjectionString(value, field, 512);
+  if (!/[\\/]/u.test(target)) {
+    if (target.length <= 256) return target;
+    throw new Error(`Daemon MCP status ${field} is invalid`);
+  }
+  try {
+    const endpoint = new URL(target);
+    if (
+      (endpoint.protocol === "http:" ||
+        endpoint.protocol === "https:" ||
+        endpoint.protocol === "ws:" ||
+        endpoint.protocol === "wss:") &&
+      endpoint.username.length === 0 &&
+      endpoint.password.length === 0 &&
+      endpoint.origin === target
+    ) {
+      return target;
+    }
+  } catch {
+    // Fall through to the boundary error below.
+  }
+  throw new Error(`Daemon MCP status ${field} is invalid`);
+}
+
+function daemonMcpSnapshotSignature(snapshot: McpSurfaceSnapshot): string {
+  return JSON.stringify([snapshot.servers, snapshot.tools]);
+}
+
+function createDaemonMcpProjection(
   client: AgenCDaemonTuiClient,
   sessionId: string,
-): unknown {
-  if (typeof baseManager !== "object" || baseManager === null) {
-    return baseManager;
-  }
-  const manager = baseManager as McpManagerLike;
-  return {
-    ...manager,
-    addServer: async (
-      config: SessionMcpServerConfig,
-    ): Promise<McpServerMutationResult> => {
-      const remote = await client.request("session.mcp.addServer", {
-        sessionId,
-        config,
-      } satisfies SessionMcpAddServerParams);
-      // The daemon owns the REAL MCP connection; `remote` is the
-      // authoritative outcome. The local manager is only a client-side
-      // projection we best-effort keep in sync so the status surface
-      // reflects the new server. A failure of that local mirror must NOT
-      // be reported as the overall result when the daemon already added
-      // the server — doing so showed the user "failed to add server" even
-      // though the connection the daemon owns is live. Mirror locally,
-      // but always report the daemon's authoritative outcome.
-      if (remote.success && typeof manager.addServer === "function") {
-        await manager.addServer(config).catch(() => undefined);
+): DaemonMcpProjection {
+  let snapshot: McpSurfaceSnapshot = Object.freeze({
+    revision: 0,
+    servers: Object.freeze([]),
+    tools: Object.freeze([]),
+  });
+  let hasAcceptedSnapshot = false;
+  let acceptedRevision = -1;
+  let connectionEpoch = 0;
+  let wasConnected = client.getConnectionState?.()?.status === "connected";
+  let requestedRevision = -1;
+  let refreshTask: Promise<McpSurfaceSnapshot> | null = null;
+  const listeners = new Set<(next: McpSurfaceSnapshot) => void>();
+
+  const publish = (next: McpSurfaceSnapshot): void => {
+    snapshot = next;
+    for (const listener of [...listeners]) {
+      try {
+        listener(next);
+      } catch (error) {
+        logForDebugging(
+          `Daemon MCP projection listener failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          { level: "error" },
+        );
       }
+    }
+  };
+  const applyResult = (result: SessionMcpStatusResult): void => {
+    if (result.sessionId !== sessionId) {
+      throw new Error(
+        `Daemon MCP status session mismatch: ${result.sessionId} !== ${sessionId}`,
+      );
+    }
+    if (!Number.isSafeInteger(result.revision) || result.revision < 0) {
+      throw new Error("Daemon MCP status returned an invalid revision");
+    }
+    if (result.revision < acceptedRevision) return;
+    const next = freezeDaemonMcpSnapshot(result);
+    if (hasAcceptedSnapshot && result.revision === acceptedRevision) {
+      if (
+        daemonMcpSnapshotSignature(next) !==
+        daemonMcpSnapshotSignature(snapshot)
+      ) {
+        throw new Error(
+          `Daemon MCP status revision ${result.revision} changed payload`,
+        );
+      }
+      return;
+    }
+    acceptedRevision = result.revision;
+    hasAcceptedSnapshot = true;
+    publish(next);
+  };
+  const refresh = (minimumRevision = -1): Promise<McpSurfaceSnapshot> => {
+    requestedRevision = Math.max(requestedRevision, minimumRevision);
+    if (refreshTask !== null) return refreshTask;
+    const taskEpoch = connectionEpoch;
+    const task = (async (): Promise<McpSurfaceSnapshot> => {
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const targetRevision = requestedRevision;
+        requestedRevision = -1;
+        let result: SessionMcpStatusResult;
+        try {
+          result = await client.request("session.mcp.status", { sessionId });
+        } catch (error) {
+          if (connectionEpoch !== taskEpoch) return snapshot;
+          requestedRevision = Math.max(requestedRevision, targetRevision);
+          if (attempt === 2) throw error;
+          continue;
+        }
+        if (connectionEpoch !== taskEpoch) return snapshot;
+        applyResult(result);
+        if (acceptedRevision >= targetRevision && requestedRevision <= acceptedRevision) {
+          return snapshot;
+        }
+        requestedRevision = Math.max(requestedRevision, targetRevision);
+      }
+      throw new Error(
+        `Daemon MCP status did not reach revision ${requestedRevision}`,
+      );
+    })();
+    refreshTask = task;
+    void task.finally(() => {
+      if (refreshTask === task) refreshTask = null;
+    }).catch(() => undefined);
+    return task;
+  };
+  const refreshAfterMutation = async (): Promise<void> => {
+    try {
+      await refresh();
+    } catch (error) {
+      logForDebugging(
+        `Daemon MCP projection refresh failed after mutation: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { level: "warn" },
+      );
+    }
+  };
+  const mutationResult = (
+    remote: SessionMcpServerMutationResult,
+  ): McpServerMutationResult => ({
+    serverName: remote.serverName,
+    success: remote.success,
+    toolCount: remote.toolCount,
+    ...(remote.error !== undefined ? { error: remote.error } : {}),
+  });
+
+  const manager: McpManager = {
+    effectiveServers: async () => {
+      await refresh();
+      return new Map(
+        snapshot.servers.map((server) => [
+          server.name,
+          {
+            enabled: server.enabled,
+            required: server.required,
+            ...(server.displayTarget !== undefined &&
+            server.transport === "stdio"
+              ? { command: server.displayTarget }
+              : server.displayTarget !== undefined
+                ? { url: server.displayTarget }
+                : {}),
+          },
+        ]),
+      );
+    },
+    toolPluginProvenance: async () => null,
+    refreshFromAuthority: async () => {
+      const current = await refresh();
       return {
-        serverName: remote.serverName,
-        success: remote.success,
-        toolCount: remote.toolCount,
-        ...(remote.error !== undefined ? { error: remote.error } : {}),
+        configuredServers: current.servers.map((server) => server.name),
+        requiredServers: current.servers
+          .filter((server) => server.required)
+          .map((server) => server.name),
       };
     },
-    reconnectServer: async (name: string): Promise<McpServerMutationResult> => {
+    addServer: async (config: McpSessionServerConfig) => {
+      const daemonConfig: SessionMcpServerConfig = {
+        name: config.name,
+        ...(config.transport !== undefined
+          ? { transport: config.transport }
+          : {}),
+        ...(config.command !== undefined ? { command: config.command } : {}),
+        ...(config.args !== undefined ? { args: [...config.args] } : {}),
+        ...(config.endpoint !== undefined ? { endpoint: config.endpoint } : {}),
+        ...(config.enabled !== undefined ? { enabled: config.enabled } : {}),
+        ...(config.required !== undefined ? { required: config.required } : {}),
+      };
+      const remote = await client.request("session.mcp.addServer", {
+        sessionId,
+        config: daemonConfig,
+      } satisfies SessionMcpAddServerParams);
+      await refreshAfterMutation();
+      return mutationResult(remote);
+    },
+    reconnectServer: async (name: string) => {
       const remote = await client.request("session.mcp.reconnectServer", {
         sessionId,
         serverName: name,
       } satisfies SessionMcpServerByNameParams);
-      // Daemon owns the real MCP connection; best-effort sync the local
-      // manager so the client-side status projection stays consistent.
-      if (remote.success && typeof manager.reconnectServer === "function") {
-        await manager.reconnectServer(name).catch(() => undefined);
-      }
-      return {
-        serverName: remote.serverName,
-        success: remote.success,
-        toolCount: remote.toolCount,
-        ...(remote.error !== undefined ? { error: remote.error } : {}),
-      };
+      await refreshAfterMutation();
+      return mutationResult(remote);
     },
-    enableServer: async (name: string): Promise<McpServerMutationResult> => {
+    enableServer: async (name: string) => {
       const remote = await client.request("session.mcp.enableServer", {
         sessionId,
         serverName: name,
       } satisfies SessionMcpServerByNameParams);
-      if (remote.success && typeof manager.enableServer === "function") {
-        await manager.enableServer(name).catch(() => undefined);
-      }
-      return {
-        serverName: remote.serverName,
-        success: remote.success,
-        toolCount: remote.toolCount,
-        ...(remote.error !== undefined ? { error: remote.error } : {}),
-      };
+      await refreshAfterMutation();
+      return mutationResult(remote);
     },
-    disableServer: async (name: string): Promise<McpServerMutationResult> => {
+    disableServer: async (name: string) => {
       const remote = await client.request("session.mcp.disableServer", {
         sessionId,
         serverName: name,
       } satisfies SessionMcpServerByNameParams);
-      if (remote.success && typeof manager.disableServer === "function") {
-        await manager.disableServer(name).catch(() => undefined);
-      }
-      return {
-        serverName: remote.serverName,
-        success: remote.success,
-        toolCount: remote.toolCount,
-        ...(remote.error !== undefined ? { error: remote.error } : {}),
-      };
+      await refreshAfterMutation();
+      return mutationResult(remote);
     },
+    getTools: () => snapshot.tools,
+    getToolsByServer: (name) =>
+      snapshot.tools.filter((tool) => tool.serverName === name),
+    getConfiguredServers: () =>
+      snapshot.servers.map((server): McpSessionServerConfig => ({
+        name: server.name,
+        transport: server.transport,
+        enabled: server.enabled,
+        required: server.required,
+        ...(server.displayTarget !== undefined && server.transport === "stdio"
+          ? { command: server.displayTarget }
+          : server.displayTarget !== undefined
+            ? { endpoint: server.displayTarget }
+            : {}),
+      })),
+    getConnectionState: (name) => {
+      const state = snapshot.servers.find((server) => server.name === name);
+      if (state === undefined || state.state === "disconnected") return undefined;
+      return state.state === "failed"
+        ? { type: "failed" as const }
+        : { type: state.state };
+    },
+    isConnected: (name) =>
+      snapshot.servers.some(
+        (server) => server.name === name && server.state === "connected",
+      ),
+    resolveMcpToolInfo: (toolName) => {
+      const tool = snapshot.tools.find((candidate) => candidate.name === toolName);
+      return tool === undefined
+        ? undefined
+        : { serverName: tool.serverName, toolName: tool.name };
+    },
+    getServerForTool: (toolName) =>
+      snapshot.tools.find((candidate) => candidate.name === toolName)?.serverName,
+    getConnectedServers: () =>
+      snapshot.servers
+        .filter((server) => server.state === "connected")
+        .map((server) => server.name),
+    mcpSurfaceSnapshot: () => snapshot,
+    subscribeMcpSurfaceInvalidations: (listener) => {
+      const wrapped = (next: McpSurfaceSnapshot): void =>
+        listener(next.revision);
+      listeners.add(wrapped);
+      return () => listeners.delete(wrapped);
+    },
+  };
+
+  return {
+    manager,
+    snapshot: () => snapshot,
+    refresh,
+    invalidate: (revision) => {
+      if (!Number.isSafeInteger(revision) || revision < 0) return;
+      if (revision <= acceptedRevision) return;
+      void refresh(revision).catch((error: unknown) => {
+        logForDebugging(
+          `Daemon MCP invalidation refresh failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          { level: "warn" },
+        );
+      });
+    },
+    noteConnectionState: (state) => {
+      const connected = state.status === "connected";
+      if (connected && !wasConnected) {
+        connectionEpoch += 1;
+        acceptedRevision = -1;
+        hasAcceptedSnapshot = false;
+        requestedRevision = -1;
+        refreshTask = null;
+        void refresh().catch((error: unknown) => {
+          logForDebugging(
+            `Daemon MCP projection refresh failed after reconnect: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            { level: "warn" },
+          );
+        });
+      }
+      wasConnected = connected;
+    },
+    noteConnectionObservationGap: () => {
+      wasConnected = false;
+    },
+    subscribe: (listener) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    hasSubscribers: () => listeners.size > 0,
   };
 }
 
@@ -1451,11 +1852,21 @@ function subscribeToDaemonEvents(
   realtimeThreadId: string,
   session: AgenCTuiBridgeSession,
   realtime: AgenCRealtimeTuiControls,
+  mcpProjection: DaemonMcpProjection,
   cb: (event: unknown) => void,
 ): () => void {
   const unsubscribeSession = client.subscribeToSessionEvents(
     sessionId,
     (event) => {
+      if (
+        event.method === "event.mcp_status_changed" &&
+        isJsonObject(event.params) &&
+        event.params.sessionId === sessionId &&
+        typeof event.params.revision === "number"
+      ) {
+        mcpProjection.invalidate(event.params.revision);
+        return;
+      }
       const transcriptEvent = toTranscriptEvent(event);
       cb(transcriptEvent);
       void maybeBridgeDaemonApproval(
@@ -1481,6 +1892,7 @@ function subscribeToDaemonEvents(
     cb(transcriptEvent);
   });
   const unsubscribeConnection = client.subscribeToConnectionState?.((state) => {
+    mcpProjection.noteConnectionState(state);
     for (const event of connectionNoticeEvents(state)) {
       cb(event);
     }

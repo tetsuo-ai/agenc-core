@@ -1,3 +1,5 @@
+import { boundScopedServerIdentifier } from "../identifiers/server-name.js";
+
 export function normalizePluginIdentifierSegment(
   value: string,
   fallback: string,
@@ -38,12 +40,14 @@ export function pluginScopedServerIdentifier(
   serverName: string,
 ): string {
   const serverParts = serverName.split(":").filter((part) => part.length > 0);
-  return normalizePluginIdentifierName(
-    [
-      "plugin",
-      pluginName,
-      ...(serverParts.length > 0 ? serverParts : ["server"]),
-    ],
-    "server",
+  return boundScopedServerIdentifier(
+    normalizePluginIdentifierName(
+      [
+        "plugin",
+        pluginName,
+        ...(serverParts.length > 0 ? serverParts : ["server"]),
+      ],
+      "server",
+    ),
   );
 }

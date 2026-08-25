@@ -13,6 +13,7 @@ import type {
   RequestUserInputEvent,
 } from "../../elicitation/types.js";
 import type { AgenCBridgeSession } from "../session-types.js";
+import type { McpSurfaceSnapshot } from "../../session/session.js";
 import type { AgenCRealtimeTuiControls } from "../realtime/controller.js";
 import type {
   McpFormPending,
@@ -4696,6 +4697,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       async () => {
         expect(providerProbe.mcpConnectivityProps.at(-1)).toEqual({
           mcpClients,
+          mcpServers: [],
         });
         const promptProps = providerProbe.promptProps.at(-1)!;
         expect(promptProps).toEqual(
@@ -4816,6 +4818,132 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         expect(context.options.tools).not.toContain(firstTool);
       },
     );
+  });
+
+  test("uses daemon MCP status subscriptions without treating passive tools as executable", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const passiveTool = {
+      serverName: "files",
+      name: "mcp.files.search",
+    } as const;
+    let surface: McpSurfaceSnapshot = {
+      revision: 1,
+      servers: [
+        {
+          name: "files",
+          transport: "stdio",
+          enabled: true,
+          required: false,
+          state: "connected",
+          displayTarget: "server.js",
+          toolCount: 1,
+        },
+      ],
+      tools: [passiveTool],
+    };
+    let notifyMcpSurface:
+      | ((snapshot: McpSurfaceSnapshot) => void)
+      | undefined;
+    const unsubscribeMcpSurface = vi.fn();
+    const passiveBaseSession = createSession();
+    delete passiveBaseSession.listMcpClients;
+    delete passiveBaseSession.listMcpTools;
+    const session = {
+      ...passiveBaseSession,
+      // The daemon exposes tool identity only through the passive snapshot. It
+      // is not a callable Tool instance and must not reach model contexts.
+      mcpSurfaceSnapshot: vi.fn(() => surface),
+      refreshMcpSurface: vi.fn(async () => surface),
+      subscribeToMcpSurface: vi.fn(
+        (callback: (snapshot: McpSurfaceSnapshot) => void) => {
+          notifyMcpSurface = callback;
+          return unsubscribeMcpSurface;
+        },
+      ),
+    } satisfies AgenCBridgeSession;
+    resetShellSurfaceProbe();
+
+    await withRenderedApp(
+      <AgenCTuiApp session={session} isInteractive={false} />,
+      async () => {
+        expect(session.subscribeToMcpSurface).toHaveBeenCalledTimes(1);
+        expect(session.refreshMcpSurface).toHaveBeenCalledTimes(1);
+        expect(providerProbe.mcpConnectivityProps.at(-1)).toEqual({
+          mcpClients: [],
+          mcpServers: surface.servers,
+        });
+
+        const promptProps = providerProbe.promptProps.at(-1)!;
+        const context = (
+          promptProps.getToolUseContext as (
+            messages: unknown[],
+            newMessages: unknown[],
+            abortController: AbortController,
+          ) => {
+            readonly options: {
+              readonly tools: readonly unknown[];
+              readonly mcpClients: readonly unknown[];
+            };
+          }
+        )([], [], new AbortController());
+        expect(context.options.mcpClients).toEqual([]);
+        expect(context.options.tools).not.toContain(passiveTool);
+
+        const permissionAbort = new AbortController();
+        let permissionSettled = false;
+        const permission = session.services.approvalResolver!.request({
+          callId: "passive-mcp-permission",
+          toolName: passiveTool.name,
+          turnId: "turn-mcp",
+          signal: permissionAbort.signal,
+          invocation: {
+            session: {} as never,
+            turn: {} as never,
+            tracker: {
+              appendFileDiff() {},
+              snapshot: () => [],
+              clear() {},
+            },
+            callId: "passive-mcp-permission",
+            toolName: { name: passiveTool.name },
+            payload: {
+              kind: "mcp",
+              rawArguments: '{"query":"status"}',
+            },
+            source: "direct",
+          },
+        } as never);
+        void permission.then(() => {
+          permissionSettled = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        // The passive descriptor is valid for the name-only approval display
+        // contract, so the fail-closed resolver must not auto-deny it.
+        expect(permissionSettled).toBe(false);
+        permissionAbort.abort();
+        await expect(permission).resolves.toEqual({ kind: "abort" });
+
+        surface = {
+          revision: 2,
+          servers: [
+            {
+              ...surface.servers[0]!,
+              state: "failed",
+            },
+          ],
+          tools: [],
+        };
+        notifyMcpSurface?.(surface);
+        await new Promise((resolve) => setTimeout(resolve, 25));
+
+        expect(providerProbe.mcpConnectivityProps.at(-1)).toEqual({
+          mcpClients: [],
+          mcpServers: surface.servers,
+        });
+      },
+    );
+
+    expect(unsubscribeMcpSurface).toHaveBeenCalledTimes(1);
   });
 
   test("mounts global keybindings against the live transcript state", async () => {

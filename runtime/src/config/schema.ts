@@ -49,6 +49,7 @@ import type {
   KeybindingContextName,
 } from "../tui/keybindings/types.js";
 import { isDynamicSessionCredentialEnvironmentKey } from "../session/environment.js";
+import { mcpServerNameValidationIssue } from "../mcp-client/server-name.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Core enums / unions
@@ -2495,8 +2496,12 @@ export function validateMcpServersConfig(
   const record = requirePlainObject(raw, "", makeError);
   const out: Record<string, McpServerConfig> = {};
   for (const [serverName, config] of Object.entries(record)) {
-    if (serverName.trim().length === 0) {
-      throw makeError(serverName, "server name must not be empty");
+    const serverNameIssue = mcpServerNameValidationIssue(serverName);
+    if (serverNameIssue !== undefined) {
+      throw makeError(
+        "",
+        `server name ${JSON.stringify(serverName)} ${serverNameIssue}`,
+      );
     }
     out[serverName] = validateExternalMcpServerConfig(config, serverName);
   }

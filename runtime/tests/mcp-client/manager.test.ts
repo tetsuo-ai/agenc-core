@@ -130,6 +130,23 @@ describe("MCPManager", () => {
     );
   });
 
+  it.each(["", "bad name", "bad.name", "bad\nname", "a".repeat(257)])(
+    "rejects invalid server identity %j before constructing runtime state",
+    (name) => {
+      expect(() => new MCPManager([{ name, command: "node" }])).toThrow(
+        /Invalid MCP server name/u,
+      );
+    },
+  );
+
+  it("accepts plugin-scoped server identities", () => {
+    expect(
+      new MCPManager([
+        { name: "plugin:sample:local", command: "node" },
+      ]).getConfiguredServers(),
+    ).toHaveLength(1);
+  });
+
   // --------------------------------------------------------------------------
   // start()
   // --------------------------------------------------------------------------
@@ -161,6 +178,38 @@ describe("MCPManager", () => {
         client: "client1",
       }),
     );
+  });
+
+  it("isolates surface subscribers and supports idempotent unsubscribe", async () => {
+    const bridge = makeMockBridge("srv1", ["toolA"]);
+    mockCreateMCPConnection.mockResolvedValueOnce("client1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      error: vi.fn(),
+      warn: vi.fn(),
+    };
+    const manager = new MCPManager([makeConfig("srv1")], logger);
+    const healthyListener = vi.fn();
+    const unsubscribeBroken = manager.subscribeSurfaceChanges(() => {
+      throw new Error("projection failed");
+    });
+    const unsubscribeHealthy = manager.subscribeSurfaceChanges(healthyListener);
+
+    await expect(manager.start()).resolves.toBeUndefined();
+
+    expect(healthyListener).toHaveBeenCalled();
+    expect(logger.warn).toHaveBeenCalledWith(
+      "MCP surface change listener failed:",
+      expect.objectContaining({ message: "projection failed" }),
+    );
+    const callsBeforeUnsubscribe = healthyListener.mock.calls.length;
+    unsubscribeBroken();
+    unsubscribeHealthy();
+    unsubscribeHealthy();
+    await manager.stop();
+    expect(healthyListener).toHaveBeenCalledTimes(callsBeforeUnsubscribe);
   });
 
   it("skips disabled servers", async () => {
@@ -1579,6 +1628,54 @@ describe("MCPManager", () => {
     }
   });
 
+  it("notifies surface subscribers when automatic reconnect succeeds", async () => {
+    vi.useFakeTimers();
+    const initialBridge = makeMockBridge("srv1", ["tool"]);
+    initialBridge.tools[0]!.execute = vi.fn().mockResolvedValue({
+      content: "transport closed",
+      isError: true,
+    });
+    const reconnectedBridge = makeMockBridge("srv1", ["tool"]);
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(initialBridge)
+      .mockResolvedValueOnce(reconnectedBridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    let unsubscribe = (): void => {};
+    try {
+      await manager.start();
+      const observations: Array<{
+        readonly state: unknown;
+        readonly tools: readonly string[];
+      }> = [];
+      unsubscribe = manager.subscribeSurfaceChanges(() => {
+        observations.push({
+          state: manager.getConnectionState("srv1"),
+          tools: manager.getTools().map((tool) => tool.name),
+        });
+      });
+
+      await manager.getTools()[0]!.execute({});
+      expect(observations).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
+      expect(observations).toEqual([
+        {
+          state: { type: "connected" },
+          tools: ["mcp.srv1.tool"],
+        },
+      ]);
+    } finally {
+      unsubscribe();
+      await manager.stop();
+      vi.useRealTimers();
+    }
+  });
+
   it("retains failed automatic reconnect cleanup and blocks replacement", async () => {
     vi.useFakeTimers();
     const oldCwd = resolve("automatic-reconnect-cleanup-old");
@@ -1668,8 +1765,19 @@ describe("MCPManager", () => {
     mockCreateToolBridge.mockResolvedValueOnce(initialBridge);
 
     const manager = new MCPManager([makeConfig("srv1")]);
+    let unsubscribe = (): void => {};
     try {
       await manager.start();
+      const observations: Array<{
+        readonly state: unknown;
+        readonly toolCount: number;
+      }> = [];
+      unsubscribe = manager.subscribeSurfaceChanges(() => {
+        observations.push({
+          state: manager.getConnectionState("srv1"),
+          toolCount: manager.getTools().length,
+        });
+      });
       const staleTool = manager.getTools()[0]!;
       await staleTool.execute({});
       await vi.advanceTimersByTimeAsync(1_000);
@@ -1679,6 +1787,15 @@ describe("MCPManager", () => {
         type: "failed",
         error: expect.stringContaining("cleanup remains unproven"),
       });
+      expect(observations).toEqual([
+        {
+          state: {
+            type: "failed",
+            error: expect.stringContaining("cleanup remains unproven"),
+          },
+          toolCount: 0,
+        },
+      ]);
       await expect(staleTool.execute({})).resolves.toEqual({
         content: 'MCP server "srv1" cleanup remains unproven',
         isError: true,
@@ -1686,6 +1803,7 @@ describe("MCPManager", () => {
       await vi.advanceTimersByTimeAsync(60_000);
       expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
     } finally {
+      unsubscribe();
       await manager.stop();
       vi.useRealTimers();
     }

@@ -295,7 +295,7 @@ other runs. `run.evidence` declares
 that compatibility source, together with an explicit completeness value and
 content hashes.
 
-## Daemon method surface (53 methods)
+## Daemon method surface (54 methods)
 
 Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 (order pinned to the runtime registry):
@@ -306,7 +306,7 @@ Mirrored in `packages/agenc-sdk/src/protocol.ts` as `AGENC_SDK_DAEMON_METHODS`
 | agents              | `agent.create`, `agent.list`, `agent.attach`, `agent.stop`, `agent.logs`                                                                                                                                                                                |
 | runs                | `run.start`, `run.status`, `run.result`, `run.replay`, `run.evidence`, `run.cancel`                                                                                                                                                                     |
 | CSV review          | `csvJob.review.list`, `csvJob.review.show`, `csvJob.review.resolve`                                                                                                                                                                                     |
-| sessions            | `session.create`, `session.list`, `session.attach`, `session.detach`, `session.terminate`, `session.clear`, `session.snapshot`, `session.transcript`, `session.transcript.v2`, `session.cancelTurn`, `session.resolveToolCall`, `session.mcp.addServer` |
+| sessions            | `session.create`, `session.list`, `session.attach`, `session.detach`, `session.terminate`, `session.clear`, `session.snapshot`, `session.transcript`, `session.transcript.v2`, `session.cancelTurn`, `session.resolveToolCall`, `session.mcp.status`, `session.mcp.addServer` |
 | messaging           | `message.send`, `message.stream`                                                                                                                                                                                                                        |
 | realtime            | `thread/realtime/start`, `thread/realtime/appendAudio`, `thread/realtime/appendText`, `thread/realtime/stop`, `thread/realtime/listVoices`                                                                                                              |
 | tools / permissions | `tool.approve`, `tool.deny`, `tool.cancel`, `elicitation.respond`, `permission.list`                                                                                                                                                                    |
@@ -328,21 +328,29 @@ evidence shape (`toolCallId`, `disposition`, `evidenceRef`, and
 `evidenceSha256`), and partial mixtures are rejected. An earlier-shape request
 leaves durable effects unchanged in `remaining`.
 
-Protocol version constant: **`1.2.0`**
+Protocol version constant: **`1.3.0`**
 (`AGENC_SDK_DAEMON_PROTOCOL_VERSION`). Handshake rules and
 `PROTOCOL_VERSION_UNSUPPORTED` live in [daemon.md](reference/daemon.md).
-The SDK retries initialization at an older 1.0/1.1 daemon and uses advertised
-capabilities for additive fallbacks.
+The SDK retries initialization at an older 1.0/1.1/1.2 daemon and uses
+advertised capabilities for additive fallbacks.
 
-Server→client notifications (`AGENC_SDK_DAEMON_NOTIFICATION_METHODS`, 17 names):
+Server→client notifications (`AGENC_SDK_DAEMON_NOTIFICATION_METHODS`, 18 names):
 
 | Group | Methods |
 | --- | --- |
 | Exec | `commandExec.outputDelta` |
 | Turn / tools | `event.message_chunk`, `event.tool_request`, `event.permission_request`, `event.user_input_request`, `event.mcp_elicitation_request` |
-| Status | `event.agent_status`, `event.session_event` |
+| Status | `event.agent_status`, `event.session_event`, `event.mcp_status_changed` |
 | Sync | `event.event_gap` (do not skip; resync from the durable cursor) |
 | Realtime | `thread/realtime/started`, `itemAdded`, `transcript/delta`, `transcript/done`, `outputAudio/delta`, `sdp`, `error`, `closed` |
+
+`session.mcp.status` is a passive, credential-free projection. The matching
+`event.mcp_status_changed` notification carries only `{ sessionId, revision }`;
+fetch the method after invalidation rather than treating the event as a tool or
+connection object. Protocols 1.0–1.2 advertise the method as unavailable and do
+not receive the notification. Invalidations are live-only and coalesced, so a
+newly attached client fetches the snapshot instead of replaying status hints.
+Reset the revision watermark when reconnecting to a replacement daemon.
 
 The command-exec methods remain typed for protocol compatibility, but
 `commandExec.start` currently returns `EXECUTION_ADMISSION_REQUIRED`: it cannot

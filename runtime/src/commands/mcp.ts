@@ -9,6 +9,7 @@
  */
 
 import { mkdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { join, relative } from "node:path";
 
 import type { Session } from "../session/session.js";
@@ -23,6 +24,7 @@ import {
   type SlashCommandResult,
 } from "./types.js";
 import { openMcpMenu } from "./mcp-menu.js";
+import { mcpServerNameValidationIssue } from "../mcp-client/server-name.js";
 
 export interface McpServerStatus {
   readonly name: string;
@@ -311,12 +313,16 @@ function compactMcpText(value: string, limit: number): string {
   return `${normalized.slice(0, limit - 1).trimEnd()}…`;
 }
 
-function validateMcpServerName(name: string): string | null {
-  return /^[A-Za-z0-9_-]+$/u.test(name) ? name : null;
-}
-
 function validateMcpToolName(name: string): string | null {
   return /^[A-Za-z][A-Za-z0-9_-]*$/u.test(name) ? name : null;
+}
+
+function mcpScaffoldScriptFilename(serverName: string): string {
+  const readablePrefix = serverName.replace(/:/gu, "-").slice(0, 160);
+  const identityDigest = createHash("sha256")
+    .update(serverName, "utf8")
+    .digest("hex");
+  return `${readablePrefix}-${identityDigest}.mjs`;
 }
 
 function jsonString(value: string): string {
@@ -432,11 +438,11 @@ export async function createProjectMcpServer(
     }
   | { readonly error: string }
 > {
-  const serverName = validateMcpServerName(serverNameRaw);
-  if (serverName === null) {
+  const serverName = serverNameRaw.trim();
+  const serverNameIssue = mcpServerNameValidationIssue(serverName);
+  if (serverNameIssue !== undefined) {
     return {
-      error:
-        "Invalid MCP server name. Use only letters, numbers, hyphens, and underscores.",
+      error: `Invalid MCP server name: ${serverNameIssue}.`,
     };
   }
   const toolName = validateMcpToolName(toolNameRaw);
@@ -449,7 +455,7 @@ export async function createProjectMcpServer(
   const description =
     descriptionRaw.trim() || `Return a simple response from ${serverName}.`;
   const serverDir = join(cwd, ".agenc", "mcp");
-  const scriptFile = join(serverDir, `${serverName}.mjs`);
+  const scriptFile = join(serverDir, mcpScaffoldScriptFilename(serverName));
   await mkdir(serverDir, { recursive: true, mode: 0o700 });
   try {
     await writeFile(

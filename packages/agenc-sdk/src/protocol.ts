@@ -23,7 +23,7 @@ import type {
 /** JSON-RPC 2.0 envelope version sent on every request. */
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
 /** Protocol the SDK advertises on `initialize`. Handshake rules are in docs/sdk.md. */
-export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.2.0" as const;
+export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.3.0" as const;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | readonly JsonValue[] | JsonObject;
@@ -66,6 +66,7 @@ export const AGENC_SDK_DAEMON_METHODS = [
   "session.transcript.v2",
   "session.cancelTurn",
   "session.resolveToolCall",
+  "session.mcp.status",
   "session.mcp.addServer",
   "message.send",
   "message.stream",
@@ -107,6 +108,7 @@ export const AGENC_SDK_DAEMON_NOTIFICATION_METHODS = [
   "event.permission_request",
   "event.user_input_request",
   "event.mcp_elicitation_request",
+  "event.mcp_status_changed",
   "event.agent_status",
   "event.session_event",
   "event.event_gap",
@@ -352,6 +354,10 @@ export interface SessionResolveToolCallEvidenceParams extends JsonObject {
 export type SessionResolveToolCallParams =
   SessionResolveToolCallLegacyParams | SessionResolveToolCallEvidenceParams;
 
+export interface SessionMcpStatusParams extends JsonObject {
+  readonly sessionId: string;
+}
+
 export interface SessionMcpServerConfig extends JsonObject {
   readonly name: string;
   readonly transport?: "stdio" | "sse" | "http" | "websocket";
@@ -553,6 +559,7 @@ export interface AgencParamsByMethod {
   readonly "session.transcript.v2": SessionTranscriptV2Params;
   readonly "session.cancelTurn": SessionCancelTurnParams;
   readonly "session.resolveToolCall": SessionResolveToolCallParams;
+  readonly "session.mcp.status": SessionMcpStatusParams;
   readonly "session.mcp.addServer": SessionMcpAddServerParams;
   readonly "message.send": MessageSendParams;
   readonly "message.stream": MessageStreamParams;
@@ -1190,6 +1197,34 @@ export interface SessionResolveToolCallResult extends JsonObject {
   readonly remaining: number;
 }
 
+export interface SessionMcpStatusServer extends JsonObject {
+  readonly name: string;
+  readonly transport: "stdio" | "sse" | "http" | "websocket";
+  readonly enabled: boolean;
+  readonly required: boolean;
+  readonly state:
+    | "connected"
+    | "pending"
+    | "failed"
+    | "disabled"
+    | "needs-auth"
+    | "disconnected";
+  readonly displayTarget?: string;
+  readonly toolCount: number;
+}
+
+export interface SessionMcpStatusTool extends JsonObject {
+  readonly serverName: string;
+  readonly name: string;
+}
+
+export interface SessionMcpStatusResult extends JsonObject {
+  readonly sessionId: string;
+  readonly revision: number;
+  readonly servers: readonly SessionMcpStatusServer[];
+  readonly tools: readonly SessionMcpStatusTool[];
+}
+
 export interface SessionMcpAddServerResult extends JsonObject {
   readonly sessionId: string;
   readonly serverName: string;
@@ -1369,6 +1404,7 @@ export interface AgencResultByMethod {
   readonly "session.transcript.v2": SessionTranscriptV2Result;
   readonly "session.cancelTurn": SessionCancelTurnResult;
   readonly "session.resolveToolCall": SessionResolveToolCallResult;
+  readonly "session.mcp.status": SessionMcpStatusResult;
   readonly "session.mcp.addServer": SessionMcpAddServerResult;
   readonly "message.send": MessageSendResult;
   readonly "message.stream": MessageStreamResult;
@@ -1448,6 +1484,12 @@ export interface EventMcpElicitationRequestParams extends AgencEventBaseParams {
   readonly serverName: string;
   readonly turnId: string;
   readonly request: JsonObject;
+}
+
+/** Non-journal control-plane invalidation for the passive MCP projection. */
+export interface EventMcpStatusChangedParams extends JsonObject {
+  readonly sessionId: string;
+  readonly revision: number;
 }
 
 export interface EventAgentStatusParams extends AgencEventBaseParams {

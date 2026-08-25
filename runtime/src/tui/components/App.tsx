@@ -192,6 +192,11 @@ import { EDITOR_PROPOSAL_TOOL_NAME } from "../../tools/system/editor-proposal.js
 import type { ToolPermissionContext } from "../../permissions/types.js";
 import type { AgenCConfig } from "../../config/schema.js";
 import { createTuiTools } from "../tool-rendering.js";
+import type {
+  McpSurfaceServer,
+  McpSurfaceSnapshot as CommittedMcpSurfaceSnapshot,
+  McpSurfaceTool,
+} from "../../session/session.js";
 import { useSessionTranscript } from "../session-transcript.js";
 import { useToolJSX } from "../tool-jsx-state.js";
 import { executeRealtimeComposerCommand } from "../realtime/commands.js";
@@ -289,6 +294,8 @@ export { shouldEnableTranscriptScrollKeybindings } from "../workbench/transcript
 export type McpFieldValue = string | number | boolean | readonly string[];
 const EMPTY_MCP_CLIENTS: readonly MCPServerConnection[] = [];
 const EMPTY_MCP_TOOLS: readonly unknown[] = [];
+const EMPTY_MCP_SERVERS: readonly McpSurfaceServer[] = [];
+const EMPTY_MCP_STATUS_TOOLS: readonly McpSurfaceTool[] = [];
 const EMPTY_ONBOARDING_COMMANDS: Command[] = [];
 const BUSY_BLOCKED_SLASH_COMMANDS = new Set([
   "agents",
@@ -1988,14 +1995,41 @@ function useInitialSubmit(
 }
 type McpSurfaceSnapshot = {
   readonly clients: readonly MCPServerConnection[];
-  readonly tools: readonly unknown[];
+  /** Live, callable tools only. Passive daemon catalog entries never enter this list. */
+  readonly tools: readonly ExecutableMcpTool[];
+  readonly servers: readonly McpSurfaceServer[];
+  /** Display-only tool catalog used by MCP status and approval presentation. */
+  readonly statusTools: readonly McpSurfaceTool[];
 };
+type ExecutableMcpTool = {
+  readonly name: string;
+  readonly [key: string]: unknown;
+};
+function isExecutableMcpTool(value: unknown): value is ExecutableMcpTool {
+  if (value === null || typeof value !== "object") return false;
+  const candidate = value as {
+    readonly name?: unknown;
+    readonly call?: unknown;
+    readonly execute?: unknown;
+  };
+  return (
+    typeof candidate.name === "string" &&
+    (typeof candidate.call === "function" ||
+      typeof candidate.execute === "function")
+  );
+}
 function readMcpSurfaceSnapshot(
   session: AgenCTuiProps["session"],
+  committedSnapshot: CommittedMcpSurfaceSnapshot | undefined =
+    session.mcpSurfaceSnapshot?.(),
 ): McpSurfaceSnapshot {
+  const listedTools = session.listMcpTools?.() ?? EMPTY_MCP_TOOLS;
+  const tools = listedTools.filter(isExecutableMcpTool);
   return {
     clients: session.listMcpClients?.() ?? EMPTY_MCP_CLIENTS,
-    tools: session.listMcpTools?.() ?? EMPTY_MCP_TOOLS,
+    tools,
+    servers: committedSnapshot?.servers ?? EMPTY_MCP_SERVERS,
+    statusTools: committedSnapshot?.tools ?? EMPTY_MCP_STATUS_TOOLS,
   };
 }
 function mcpSurfaceValueSignature(value: unknown): string {
@@ -2052,57 +2086,98 @@ function mcpSurfaceSignature(snapshot: McpSurfaceSnapshot): string {
     }
     return "";
   });
-  return `${clients.join("\u0000")}\u0001${tools.join("\u0000")}`;
+  const servers = snapshot.servers.map((server) =>
+    [
+      server.name,
+      server.transport,
+      server.enabled,
+      server.required,
+      server.state,
+      server.displayTarget,
+      server.toolCount,
+    ]
+      .map(mcpSurfaceValueSignature)
+      .join(":"),
+  );
+  const statusTools = snapshot.statusTools.map((tool) =>
+    [tool.serverName, tool.name].map(mcpSurfaceValueSignature).join(":"),
+  );
+  return `${clients.join("\u0000")}\u0001${tools.join("\u0000")}\u0001${servers.join("\u0000")}\u0001${statusTools.join("\u0000")}`;
 }
-function useSessionMcpSurface(session) {
-  const $ = _c(8);
-  let t0;
-  if ($[0] !== session) {
-    t0 = () => readMcpSurfaceSnapshot(session);
-    $[0] = session;
-    $[1] = t0;
-  } else {
-    t0 = $[1];
-  }
-  const [snapshot, setSnapshot] = useState(t0);
-  let t1;
-  if ($[2] !== session) {
-    t1 = () => {
+function useSessionMcpSurface(
+  session: AgenCTuiProps["session"],
+): McpSurfaceSnapshot {
+  const [snapshot, setSnapshot] = useState<McpSurfaceSnapshot>(() =>
+    readMcpSurfaceSnapshot(session),
+  );
+  const publish = useCallback(
+    (committedSnapshot?: CommittedMcpSurfaceSnapshot) => {
       setSnapshot((previous) => {
-        const next = readMcpSurfaceSnapshot(session);
+        const next = readMcpSurfaceSnapshot(session, committedSnapshot);
         return mcpSurfaceSignature(previous) === mcpSurfaceSignature(next)
           ? previous
           : next;
       });
+    },
+    [session],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const publishIfMounted = (
+      committedSnapshot?: CommittedMcpSurfaceSnapshot,
+    ): void => {
+      if (!cancelled) publish(committedSnapshot);
     };
-    $[2] = session;
-    $[3] = t1;
-  } else {
-    t1 = $[3];
-  }
-  const refresh = t1;
-  let t2;
-  let t3;
-  if ($[4] !== refresh || $[5] !== session) {
-    t2 = () => {
-      refresh();
-      const unsubscribe = session.subscribeToEvents?.(() => refresh());
-      const interval = setInterval(refresh, 1500);
-      return () => {
-        unsubscribe?.();
-        clearInterval(interval);
-      };
+
+    publishIfMounted();
+    let unsubscribeSurface: (() => void) | undefined;
+    try {
+      unsubscribeSurface = session.subscribeToMcpSurface?.(publishIfMounted);
+    } catch (error) {
+      logForDebugging(
+        `MCP surface subscription failed: ${
+          error instanceof Error ? (error.stack ?? error.message) : String(error)
+        }`,
+        { level: "warn" },
+      );
+    }
+    const unsubscribeEvents =
+      unsubscribeSurface === undefined
+        ? session.subscribeToEvents?.(() => publishIfMounted())
+        : undefined;
+
+    let refreshTask: Promise<CommittedMcpSurfaceSnapshot> | undefined;
+    try {
+      refreshTask = session.refreshMcpSurface?.();
+    } catch (error) {
+      logForDebugging(
+        `MCP surface refresh failed: ${
+          error instanceof Error ? (error.stack ?? error.message) : String(error)
+        }`,
+        { level: "warn" },
+      );
+    }
+    if (refreshTask !== undefined) {
+      void refreshTask.then(publishIfMounted).catch((error) => {
+        logForDebugging(
+          `MCP surface refresh failed: ${
+            error instanceof Error
+              ? (error.stack ?? error.message)
+              : String(error)
+          }`,
+          { level: "warn" },
+        );
+      });
+    }
+
+    return () => {
+      cancelled = true;
+      unsubscribeSurface?.();
+      unsubscribeEvents?.();
     };
-    t3 = [refresh, session];
-    $[4] = refresh;
-    $[5] = session;
-    $[6] = t2;
-    $[7] = t3;
-  } else {
-    t2 = $[6];
-    t3 = $[7];
-  }
-  useEffect(t2, t3);
+  }, [publish, session]);
+
   return snapshot;
 }
 function extractTag(text: string, tag: string): string | null {
@@ -4553,6 +4628,13 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     () => [...tools, ...mcpSurface.tools],
     [tools, mcpSurface.tools],
   );
+  // Approval rendering only needs tool identity. Include passive daemon
+  // catalog entries here so an MCP permission prompt can be named accurately,
+  // but never place them in availableTools/model execution contexts.
+  const permissionToolDescriptors = useMemo(
+    () => [...availableTools, ...mcpSurface.statusTools],
+    [availableTools, mcpSurface.statusTools],
+  );
   const refreshAvailableTools = useCallback(
     () => [...tools, ...readMcpSurfaceSnapshot(props.session).tools],
     [props.session, tools],
@@ -6068,8 +6150,12 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     return () => scheduler.stop(activation);
   }, [commandQueueOwner.workspaceRoot, props.session.conversationId]);
   const toolUseConfirmQueue = useMemo(
-    () => buildToolUseConfirmQueue(permissionRequests, availableTools),
-    [permissionRequests, availableTools],
+    () =>
+      buildToolUseConfirmQueue(
+        permissionRequests,
+        permissionToolDescriptors,
+      ),
+    [permissionRequests, permissionToolDescriptors],
   );
 
   // Per-turn AbortController. CancelRequestHandler reads
@@ -6142,7 +6228,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     [addNotification],
   );
   useMcpConnectivityStatus({
-    mcpClients: mcpClients as MCPServerConnection[],
+    mcpClients,
+    mcpServers: mcpSurface.servers,
   });
   const title = useMemo(() => terminalTitle(props), [props]);
   const titleIsAnimating =
@@ -6896,7 +6983,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         ) : null}
         <PermissionOverlay
           request={permissionRequests[0]}
-          tools={availableTools as any}
+          tools={permissionToolDescriptors}
           mcpClients={mcpClients as any}
         />
       </>

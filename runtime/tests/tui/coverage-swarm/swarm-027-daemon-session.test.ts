@@ -98,6 +98,14 @@ function createClient(
           events: [{ id: "event_1", type: "message" }],
         } as AgenCDaemonResultByMethod[Method];
       }
+      if (method === "session.mcp.status") {
+        return {
+          sessionId: params?.sessionId,
+          revision: 0,
+          servers: [],
+          tools: [],
+        } as AgenCDaemonResultByMethod[Method];
+      }
       if (method === "session.mcp.addServer") {
         const config = params?.config;
         const name =
@@ -258,7 +266,7 @@ describe("coverage swarm daemon session adapter", () => {
     ]);
   });
 
-  it("returns daemon MCP addServer results across local mirror edge cases", async () => {
+  it("replaces inherited MCP managers and returns only daemon mutation results", async () => {
     const nullManagerSession = createDaemonTuiSession({
       baseSession: createBaseSession({
         services: { mcpManager: null },
@@ -267,7 +275,10 @@ describe("coverage swarm daemon session adapter", () => {
       sessionId: "session_1",
       clientId: "tui_1",
     });
-    expect(nullManagerSession.services.mcpManager).toBeNull();
+    expect(nullManagerSession.services.mcpManager).toEqual(
+      expect.objectContaining({ addServer: expect.any(Function) }),
+    );
+    expect(nullManagerSession.listMcpClients?.()).toEqual([]);
 
     const remoteOnlySession = createDaemonTuiSession({
       baseSession: createBaseSession({
@@ -315,6 +326,7 @@ describe("coverage swarm daemon session adapter", () => {
       success: true,
       toolCount: 2,
     });
+    expect(alreadyConfiguredAddServer).not.toHaveBeenCalled();
 
     const fatalLocalAddServer = vi.fn(async () => ({
       serverName: "fatal-local",
@@ -341,6 +353,7 @@ describe("coverage swarm daemon session adapter", () => {
       success: true,
       toolCount: 2,
     });
+    expect(fatalLocalAddServer).not.toHaveBeenCalled();
   });
 
   it("bridges resolver fallbacks for permissions and elicitations", async () => {

@@ -84,6 +84,10 @@ import type {
   SessionClearResult,
   SessionMcpAddServerParams,
   SessionMcpAddServerResult,
+  SessionMcpStatusParams,
+  SessionMcpStatusResult,
+  SessionMcpStatusServer,
+  SessionMcpStatusTool,
   SessionMcpServerByNameParams,
   SessionMcpServerMutationResult,
   SessionSnapshotParams,
@@ -2620,6 +2624,47 @@ export class AgenCDaemonAgentManager {
     };
   }
 
+  async getMcpStatusForSession(
+    params: SessionMcpStatusParams,
+  ): Promise<SessionMcpStatusResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.mcp.status requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.getMcpStatus === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.mcp.status requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowMcpStatus: true },
+    );
+    const snapshot = await this.#runner.getMcpStatus(agentId);
+    return {
+      sessionId: params.sessionId,
+      revision: snapshot.revision,
+      servers: snapshot.servers.map((server): SessionMcpStatusServer => ({
+        name: server.name,
+        transport: server.transport,
+        enabled: server.enabled,
+        required: server.required,
+        state: server.state,
+        ...(server.displayTarget !== undefined
+          ? { displayTarget: server.displayTarget }
+          : {}),
+        toolCount: server.toolCount,
+      })),
+      tools: snapshot.tools.map((tool): SessionMcpStatusTool => ({
+        serverName: tool.serverName,
+        name: tool.name,
+      })),
+    };
+  }
+
   async reconnectMcpServerOnSession(
     params: SessionMcpServerByNameParams,
   ): Promise<SessionMcpServerMutationResult> {
@@ -3438,6 +3483,7 @@ export class AgenCDaemonAgentManager {
       readonly allowPartialCompact?: boolean;
       readonly allowCompactionOperator?: boolean;
       readonly allowConversationRewind?: boolean;
+      readonly allowMcpStatus?: boolean;
       readonly allowMcpAddServer?: boolean;
       readonly allowMcpReconnectServer?: boolean;
       readonly allowMcpEnableServer?: boolean;
@@ -3481,6 +3527,9 @@ export class AgenCDaemonAgentManager {
     const hasConversationRewindRunner =
       options.allowConversationRewind === true &&
       this.#runner?.rewindConversationToMessage !== undefined;
+    const hasMcpStatusRunner =
+      options.allowMcpStatus === true &&
+      this.#runner?.getMcpStatus !== undefined;
     const hasMcpAddServerRunner =
       options.allowMcpAddServer === true &&
       this.#runner?.addMcpServer !== undefined;
@@ -3523,6 +3572,7 @@ export class AgenCDaemonAgentManager {
       !hasPartialCompactRunner &&
       !hasCompactionOperatorRunner &&
       !hasConversationRewindRunner &&
+      !hasMcpStatusRunner &&
       !hasMcpAddServerRunner &&
       !hasMcpReconnectServerRunner &&
       !hasMcpEnableServerRunner &&

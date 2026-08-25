@@ -28,6 +28,13 @@ allow-listing, process-group cleanup, and PID-tree teardown.
 Servers are configured under `mcp_servers` in config (typed as
 `McpServerConfig` in `runtime/src/config/schema.ts`):
 
+Server names are stable runtime identifiers: 1–256 ASCII letters, numbers,
+colons, hyphens, or underscores. A period is not allowed because `.` separates
+the server and tool portions of the canonical `mcp.<server>.<tool>` identity.
+Colons are reserved-compatible with plugin-scoped names such as
+`plugin:sample:local`; overlong generated plugin scopes are deterministically
+compacted with a SHA-256 suffix before they reach the runtime manager.
+
 ```toml
 [mcp_servers.docs]
 transport = "stdio"
@@ -59,9 +66,20 @@ secrets that must cross a daemon session boundary. A configured
 `AGENC_MCP_SERVER_NAME` and `AGENC_MCP_SERVER_URL`; reconnects retain the
 original environment and shell-wrapper authority.
 
-Also: daemon method `session.mcp.addServer` (and related enable/disable/reconnect
-paths on the dispatcher) for session-scoped server mutations. The public SDK
-method registry includes `session.mcp.addServer`; see [`../sdk.md`](../sdk.md).
+Daemon sessions own their outbound MCP manager and all live transports. The
+daemon TUI never creates a client-side manager or mirrors mutations into a
+second connection set. It forwards `session.mcp.addServer` and the internal
+enable, disable, and reconnect methods to the owning daemon session.
+
+`session.mcp.status` returns a revisioned, passive projection for the public
+SDK and TUI. It contains server names, transport/state flags, sanitized display
+targets, tool counts, and tool names. It never contains SDK
+clients, environment variables, headers, arguments, authentication material,
+full remote URLs, raw connection errors, or executable tool schemas.
+`event.mcp_status_changed`
+contains only `sessionId` and `revision`; clients then fetch the complete
+projection. Revisions are monotonic within one live daemon connection and
+clients reset their watermark after reconnecting to a replacement daemon.
 
 AgenC can also expose itself as an MCP server via `[mcp.server]`
 (`enabled`, `transport` = `stdio` | `sse`, optional `host` / `port`). Daemon
@@ -97,7 +115,9 @@ Built-in helpers that help the agent work with MCP resources:
 (`McpAuthTool` exists as an OAuth helper in the tools tree; it is
 not the primary LIVE bridge surface.)
 
-Slash: `/mcp` opens the MCP connection menu in the TUI.
+Slash: `/mcp` opens the MCP connection menu in the TUI. In daemon mode the menu
+reads the passive status projection and sends mutations back to the daemon; it
+does not own transports or executable MCP clients.
 
 ### CLI
 
@@ -116,7 +136,7 @@ command line). Full flag tables: [cli.md](cli.md).
 ### Sampling & roots
 
 Session-owned managers can route `sampling/createMessage` through the active
-runtime provider. Sessionless compatibility connections return a graceful
+runtime provider. Connections without a runtime session return a graceful
 unavailable result. Host roots are advertised per the MCP connection.
 
 ## Inbound server

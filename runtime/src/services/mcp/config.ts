@@ -52,6 +52,7 @@ import {
   canonicalMcpServerToServiceConfig,
   serviceMcpServerToCanonicalConfig,
 } from './user-config-toml.js'
+import { mcpServerNameValidationIssue } from '../../mcp-client/server-name.js'
 
 /**
  * Internal utility: Add scope to server configs
@@ -667,10 +668,9 @@ export async function addMcpConfig(
   scope: ConfigScope,
   authority: CanonicalSettingsAuthority,
 ): Promise<void> {
-  if (name.match(/[^a-zA-Z0-9_-]/)) {
-    throw new Error(
-      `Invalid name ${name}. Names can only contain letters, numbers, hyphens, and underscores.`,
-    )
+  const serverNameIssue = mcpServerNameValidationIssue(name)
+  if (serverNameIssue !== undefined) {
+    throw new Error(`Invalid MCP server name: ${serverNameIssue}.`)
   }
 
   // Block reserved server name "agenc-in-chrome"

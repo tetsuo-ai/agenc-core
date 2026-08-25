@@ -51,6 +51,7 @@ import type { McpSamplingHandlers } from "../services/mcp/hostCapabilities.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import { registerSandboxExecutionLifecycleParticipant } from "../sandbox/execution-lifecycle.js";
 import { MCPTransportCleanupError } from "./transports/connect-with-cleanup.js";
+import { assertValidMcpServerName } from "./server-name.js";
 
 /** I-50: cancellable MCP startup wait; 30s default. */
 const MCP_STARTUP_TIMEOUT_MS = 30_000;
@@ -158,6 +159,7 @@ function requireMcpConfigValue(
 }
 
 function immutableMcpServerConfig(config: MCPServerConfig): MCPServerConfig {
+  assertValidMcpServerName(config.name);
   const tools =
     config.tools === undefined
       ? undefined
@@ -423,6 +425,7 @@ export class MCPManager {
   private readonly reconnectOperations = new Set<ManagedReconnectOperation>();
   private readonly reconnectTails = new Map<string, Promise<void>>();
   private readonly retainedCleanup = new Map<string, RetainedServerCleanup>();
+  private readonly surfaceChangeListeners = new Set<() => void>();
   private shutdownTask: Promise<ReadonlyArray<unknown>> | undefined;
 
   constructor(
@@ -595,6 +598,44 @@ export class MCPManager {
     }
   }
 
+  /**
+   * Subscribe to invalidations of the manager's published MCP surface.
+   *
+   * The callback is synchronous so fail-closed revocation is observable before
+   * transport cleanup yields. It carries no revision or snapshot: callers own
+   * projection, equality, and coalescing at their boundary.
+   */
+  subscribeSurfaceChanges(listener: () => void): () => void {
+    this.surfaceChangeListeners.add(listener);
+    let subscribed = true;
+    return () => {
+      if (!subscribed) return;
+      subscribed = false;
+      this.surfaceChangeListeners.delete(listener);
+    };
+  }
+
+  private commitSurfaceMutation(mutation: () => void): void {
+    mutation();
+    this.notifySurfaceChanged();
+  }
+
+  private notifySurfaceChanged(): void {
+    for (const listener of Array.from(this.surfaceChangeListeners)) {
+      try {
+        listener();
+      } catch (error) {
+        // Surface observers are downstream projections. A broken observer must
+        // never interrupt connection publication or fail-closed revocation.
+        try {
+          this.logger.warn?.("MCP surface change listener failed:", error);
+        } catch {
+          // Logging is best-effort on this isolation path.
+        }
+      }
+    }
+  }
+
   getConnectionState(name: string): MCPConnectionState | undefined {
     const config = this.getServerConfig(name);
     if (config?.enabled === false) return { type: "disabled" };
@@ -611,12 +652,14 @@ export class MCPManager {
   }
 
   private resetConnectionStates(): void {
-    this.connectionStates.clear();
-    for (const config of this.configs) {
-      this.connectionStates.set(config.name, {
-        type: config.enabled === false ? "disabled" : "pending",
-      });
-    }
+    this.commitSurfaceMutation(() => {
+      this.connectionStates.clear();
+      for (const config of this.configs) {
+        this.connectionStates.set(config.name, {
+          type: config.enabled === false ? "disabled" : "pending",
+        });
+      }
+    });
   }
 
   /**
@@ -693,24 +736,26 @@ export class MCPManager {
 
     let successCount = 0;
     const failures: Array<{ name: string; reason: unknown }> = [];
-    for (let i = 0; i < results.length; i++) {
-      const result = results[i];
-      const cfg = enabledConfigs[i];
-      if (result.status === "fulfilled") {
-        successCount++;
-        this.connectionStates.set(cfg.name, { type: "connected" });
-      } else {
-        this.connectionStates.set(cfg.name, {
-          type: "failed",
-          error: errMessage(result.reason),
-        });
-        failures.push({ name: cfg.name, reason: result.reason });
-        this.logger.error(
-          `Failed to connect to MCP server "${cfg.name}":`,
-          result.reason,
-        );
+    this.commitSurfaceMutation(() => {
+      for (let i = 0; i < results.length; i++) {
+        const result = results[i];
+        const cfg = enabledConfigs[i];
+        if (result.status === "fulfilled") {
+          successCount++;
+          this.connectionStates.set(cfg.name, { type: "connected" });
+        } else {
+          this.connectionStates.set(cfg.name, {
+            type: "failed",
+            error: errMessage(result.reason),
+          });
+          failures.push({ name: cfg.name, reason: result.reason });
+          this.logger.error(
+            `Failed to connect to MCP server "${cfg.name}":`,
+            result.reason,
+          );
+        }
       }
-    }
+    });
 
     const totalTools = this.getTools().length;
     this.logger.info(
@@ -863,6 +908,11 @@ export class MCPManager {
       }
       for (const error of errors) {
         this.logger.warn?.("Error disconnecting MCP server:", error);
+      }
+      if (errors.length > 0) {
+        // Cleanup retention changes getConnectionState() from pending to the
+        // fail-closed state after the synchronous unpublication above.
+        this.notifySurfaceChanged();
       }
       this.logger.info("All MCP servers disconnected");
       return errors;
@@ -1031,7 +1081,9 @@ export class MCPManager {
       };
     }
     if (config.enabled === false) {
-      this.connectionStates.set(name, { type: "disabled" });
+      this.commitSurfaceMutation(() => {
+        this.connectionStates.set(name, { type: "disabled" });
+      });
       return {
         serverName: name,
         success: false,
@@ -1072,9 +1124,11 @@ export class MCPManager {
 
     return promise.catch((error: unknown) => {
       if (this.isReconnectLifecycleCurrent(lifecycleGeneration, running)) {
-        this.connectionStates.set(config.name, {
-          type: "failed",
-          error: errMessage(error),
+        this.commitSurfaceMutation(() => {
+          this.connectionStates.set(config.name, {
+            type: "failed",
+            error: errMessage(error),
+          });
         });
       }
       return reconnectFailure(config.name, error);
@@ -1114,7 +1168,9 @@ export class MCPManager {
           new Error(`MCP server "${config.name}" reconnect cancelled by shutdown`),
         );
       }
-      this.connectionStates.set(config.name, { type: "connected" });
+      this.commitSurfaceMutation(() => {
+        this.connectionStates.set(config.name, { type: "connected" });
+      });
       return {
         serverName: config.name,
         success: true,
@@ -1122,9 +1178,11 @@ export class MCPManager {
       };
     } catch (error) {
       if (this.isReconnectLifecycleCurrent(lifecycleGeneration, running)) {
-        this.connectionStates.set(config.name, {
-          type: "failed",
-          error: errMessage(error),
+        this.commitSurfaceMutation(() => {
+          this.connectionStates.set(config.name, {
+            type: "failed",
+            error: errMessage(error),
+          });
         });
       }
       return reconnectFailure(config.name, error);
@@ -1462,6 +1520,11 @@ export class MCPManager {
             undefined,
             companionIsCurrent,
           );
+          if (reconnectIsCurrent()) {
+            // The resilient tool bridge and its optional companions now expose
+            // one coherent replacement surface.
+            this.notifySurfaceChanged();
+          }
         },
       });
       // Publish before the optional companion bridges are constructed so
@@ -1657,31 +1720,45 @@ export class MCPManager {
     error: unknown,
   ): void {
     if (bridge === undefined) {
-      this.retainUnownedCleanupFailure(serverName, error);
+      this.commitSurfaceMutation(() => {
+        this.retainUnownedCleanupFailure(serverName, error);
+      });
       return;
     }
-    this.retainCleanupFailures(serverName, [
-      {
-        owner: cleanupOwner(serverName, bridge, () => invokeDisposal(bridge)),
-        error,
-      },
-    ]);
-    if (this.bridges.get(serverName) !== bridge) return;
+    if (this.bridges.get(serverName) !== bridge) {
+      this.commitSurfaceMutation(() => {
+        this.retainCleanupFailures(serverName, [
+          {
+            owner: cleanupOwner(serverName, bridge, () => invokeDisposal(bridge)),
+            error,
+          },
+        ]);
+      });
+      return;
+    }
 
     // This callback executes inside the reconnect task. Retain the outer
     // owner and unpublish synchronously, but never await bridge.dispose()
     // here: it waits that same reconnect task and would self-deadlock.
-    this.invalidateServerAuthority(serverName);
-    this.bridges.delete(serverName);
     const resourceBridge = this.resourceBridges.get(serverName);
     const promptBridge = this.promptBridges.get(serverName);
-    this.resourceBridges.delete(serverName);
-    this.promptBridges.delete(serverName);
-    this.connectedConnections.delete(serverName);
-    this.serverInstructions.delete(serverName);
-    this.connectionStates.set(serverName, {
-      type: "failed",
-      error: `MCP server "${serverName}" cleanup remains unproven`,
+    this.commitSurfaceMutation(() => {
+      this.retainCleanupFailures(serverName, [
+        {
+          owner: cleanupOwner(serverName, bridge, () => invokeDisposal(bridge)),
+          error,
+        },
+      ]);
+      this.invalidateServerAuthority(serverName);
+      this.bridges.delete(serverName);
+      this.resourceBridges.delete(serverName);
+      this.promptBridges.delete(serverName);
+      this.connectedConnections.delete(serverName);
+      this.serverInstructions.delete(serverName);
+      this.connectionStates.set(serverName, {
+        type: "failed",
+        error: `MCP server "${serverName}" cleanup remains unproven`,
+      });
     });
     const companionDisposals = [resourceBridge, promptBridge].flatMap(
       (companion) =>
@@ -1757,6 +1834,7 @@ export class MCPManager {
       ) {
         if (this.retainedCleanup.get(serverName) === retained) {
           this.retainedCleanup.delete(serverName);
+          this.notifySurfaceChanged();
         }
         return;
       }
@@ -1792,11 +1870,16 @@ export class MCPManager {
     const existing = this.bridges.get(name);
     const existingResource = this.resourceBridges.get(name);
     const existingPrompt = this.promptBridges.get(name);
-    this.connectedConnections.delete(name);
-    this.bridges.delete(name);
-    this.resourceBridges.delete(name);
-    this.promptBridges.delete(name);
-    this.serverInstructions.delete(name);
+    this.commitSurfaceMutation(() => {
+      this.connectedConnections.delete(name);
+      this.bridges.delete(name);
+      this.resourceBridges.delete(name);
+      this.promptBridges.delete(name);
+      this.serverInstructions.delete(name);
+      if (this.connectionStates.get(name)?.type === "connected") {
+        this.connectionStates.set(name, { type: "pending" });
+      }
+    });
 
     const owners: ServerCleanupOwner[] = [
       ...(existing !== undefined
@@ -1846,6 +1929,9 @@ export class MCPManager {
           result.reason,
         );
       }
+    }
+    if (cleanupErrors.length > 0) {
+      this.notifySurfaceChanged();
     }
     if (strictCleanup && cleanupErrors.length > 0) {
       throw new MCPConnectionCleanupError(name, reason, cleanupErrors);

@@ -1218,6 +1218,233 @@ describe("mcp-startup session-owned manager helpers", () => {
     ]);
   });
 
+  it("never projects raw MCP connection errors or endpoint credentials", () => {
+    const manager = {
+      getConfiguredServers: vi.fn(() => [
+        {
+          name: "remote",
+          transport: "http" as const,
+          endpoint:
+            "https://operator:hunter2@example.test/private?token=hunter2",
+        },
+      ]),
+      getConnectionState: vi.fn(() => ({
+        type: "failed" as const,
+        error:
+          "authentication failed for https://operator:hunter2@example.test/private?token=hunter2",
+      })),
+      getToolsByServer: vi.fn(() => []),
+    } as unknown as MCPManager;
+
+    const service = createSessionMcpService(manager, TEST_SERVICE_OPTIONS);
+    const snapshot = service.mcpSurfaceSnapshot?.();
+
+    expect(snapshot).toEqual({
+      revision: 0,
+      servers: [
+        {
+          name: "remote",
+          transport: "http",
+          enabled: true,
+          required: false,
+          state: "failed",
+          displayTarget: "https://example.test",
+          toolCount: 0,
+        },
+      ],
+      tools: [],
+    });
+    expect(JSON.stringify(snapshot)).not.toContain("hunter2");
+    expect(JSON.stringify(snapshot)).not.toContain("operator");
+  });
+
+  it("omits an empty stdio display target instead of publishing an invalid DTO", () => {
+    const manager = {
+      getConfiguredServers: vi.fn(() => [
+        { name: "local", transport: "stdio" as const, command: "/opt/mcp/" },
+      ]),
+      getConnectionState: vi.fn(() => ({ type: "pending" as const })),
+      getToolsByServer: vi.fn(() => []),
+    } as unknown as MCPManager;
+
+    const service = createSessionMcpService(manager, TEST_SERVICE_OPTIONS);
+
+    expect(service.mcpSurfaceSnapshot?.()).toEqual({
+      revision: 0,
+      servers: [
+        {
+          name: "local",
+          transport: "stdio",
+          enabled: true,
+          required: false,
+          state: "pending",
+          toolCount: 0,
+        },
+      ],
+      tools: [],
+    });
+  });
+
+  it("uses a safe fallback for unsupported remote endpoint schemes", () => {
+    const manager = {
+      getConfiguredServers: vi.fn(() => [
+        {
+          name: "remote",
+          transport: "http" as const,
+          endpoint: "ftp://operator:hunter2@example.test/private",
+        },
+      ]),
+      getConnectionState: vi.fn(() => ({ type: "failed" as const })),
+      getToolsByServer: vi.fn(() => []),
+    } as unknown as MCPManager;
+
+    const service = createSessionMcpService(manager, TEST_SERVICE_OPTIONS);
+
+    expect(service.mcpSurfaceSnapshot?.()).toMatchObject({
+      servers: [
+        {
+          name: "remote",
+          displayTarget: "remote endpoint",
+        },
+      ],
+    });
+    expect(JSON.stringify(service.mcpSurfaceSnapshot?.())).not.toContain(
+      "hunter2",
+    );
+  });
+
+  it("uses a safe fallback instead of truncating an overlong URL origin", () => {
+    const manager = {
+      getConfiguredServers: vi.fn(() => [
+        {
+          name: "remote",
+          transport: "http" as const,
+          endpoint: `https://${"a".repeat(500)}.example.test/mcp`,
+        },
+      ]),
+      getConnectionState: vi.fn(() => ({ type: "failed" as const })),
+      getToolsByServer: vi.fn(() => []),
+    } as unknown as MCPManager;
+
+    const service = createSessionMcpService(manager, TEST_SERVICE_OPTIONS);
+
+    expect(service.mcpSurfaceSnapshot?.()).toMatchObject({
+      servers: [{ name: "remote", displayTarget: "remote endpoint" }],
+    });
+  });
+
+  it("never publishes a candidate MCP surface while a failed add rolls back", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const candidateConnectStarted = deferred();
+    const releaseCandidateConnect = deferred();
+    mockCreateMCPConnection.mockImplementationOnce(async () => {
+      candidateConnectStarted.resolve(undefined);
+      await releaseCandidateConnect.promise;
+      throw new Error("candidate connect failed");
+    });
+    const manager = createSessionMcpManager([]);
+    const service = createSessionMcpService(manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    const baseline = service.mcpSurfaceSnapshot?.();
+    const revisions: number[] = [];
+    const unsubscribe = service.subscribeMcpSurfaceInvalidations?.((revision) => {
+      revisions.push(revision);
+    });
+    try {
+      const add = service.addServer?.({
+        name: "candidate",
+        command: "candidate-mcp",
+      });
+      await candidateConnectStarted.promise;
+
+      expect(manager.getConfiguredServers().map((config) => config.name)).toEqual([
+        "candidate",
+      ]);
+      expect(manager.getConnectionState("candidate")).toEqual({
+        type: "pending",
+      });
+      expect(service.mcpSurfaceSnapshot?.()).toBe(baseline);
+      expect(revisions).toEqual([]);
+
+      releaseCandidateConnect.resolve(undefined);
+      await expect(add).resolves.toMatchObject({
+        success: false,
+        error: "candidate connect failed",
+      });
+      expect(manager.getConfiguredServers()).toEqual([]);
+      expect(service.mcpSurfaceSnapshot?.()).toBe(baseline);
+      expect(revisions).toEqual([]);
+    } finally {
+      releaseCandidateConnect.resolve(undefined);
+      unsubscribe?.();
+      await service.dispose?.();
+      await manager.stopStrict();
+      fixture.cleanup();
+    }
+  });
+
+  it("publishes only committed session mutations and later manager-originated changes", async () => {
+    const fixture = await createMcpAuthorityFixture();
+    const manager = createSessionMcpManager([]);
+    const service = createSessionMcpService(manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    const revisions: number[] = [];
+    const unsubscribe = service.subscribeMcpSurfaceInvalidations?.((revision) => {
+      revisions.push(revision);
+    });
+    try {
+      await expect(
+        service.addServer?.({ name: "local", command: "local-mcp" }),
+      ).resolves.toMatchObject({ success: true });
+
+      expect(revisions).toEqual([1]);
+      expect(service.mcpSurfaceSnapshot?.()).toMatchObject({
+        revision: 1,
+        servers: [
+          expect.objectContaining({
+            name: "local",
+            state: "connected",
+            displayTarget: "local-mcp",
+          }),
+        ],
+        tools: [expect.objectContaining({ serverName: "local" })],
+      });
+
+      await manager.stopStrict();
+      await vi.waitFor(() => {
+        expect(service.mcpSurfaceSnapshot?.()).toMatchObject({
+          revision: 2,
+          servers: [expect.objectContaining({ name: "local", state: "pending" })],
+          tools: [],
+        });
+      });
+      expect(revisions).toEqual([1, 2]);
+
+      await service.dispose?.();
+      const terminalSnapshot = service.mcpSurfaceSnapshot?.();
+      expect(terminalSnapshot).toMatchObject({
+        revision: 3,
+        servers: [],
+        tools: [],
+      });
+      await manager.refreshServers([
+        { name: "outside", command: "outside-mcp" },
+      ]);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(service.mcpSurfaceSnapshot?.()).toBe(terminalSnapshot);
+      expect(revisions).toEqual([1, 2]);
+    } finally {
+      unsubscribe?.();
+      await service.dispose?.();
+      await manager.stopStrict();
+      fixture.cleanup();
+    }
+  });
+
   it("keeps an admitted session server and its enabled override across authority refreshes", async () => {
     const fixture = await createMcpAuthorityFixture();
     const manager = createSessionMcpManager([]);

@@ -3228,8 +3228,8 @@ workspace = ${JSON.stringify(process.cwd())}
           id: "initialize-shutdown",
           method: "initialize",
           params: {
-            protocolVersion: "1.2.0",
-            protocol: { version: "1.2.0" },
+            protocolVersion: "1.3.0",
+            protocol: { version: "1.3.0" },
             clientName: "agenc-shutdown-contract",
             authCookie,
             capabilities: {},
@@ -3315,8 +3315,8 @@ workspace = ${JSON.stringify(process.cwd())}
             id,
             method: "initialize",
             params: {
-              protocolVersion: "1.2.0",
-              protocol: { version: "1.2.0" },
+              protocolVersion: "1.3.0",
+              protocol: { version: "1.3.0" },
               clientName: id,
               authCookie,
               capabilities: {},
@@ -3858,8 +3858,8 @@ backend = "local"
       id: "initialize",
       result: {
         type: "initialized",
-        protocolVersion: "1.2.0",
-        protocol: { version: "1.2.0" },
+        protocolVersion: "1.3.0",
+        protocol: { version: "1.3.0" },
       },
     });
 

@@ -566,7 +566,7 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
   });
 
-  it("mirrors daemon-backed MCP additions to the runtime session", async () => {
+  it("routes MCP additions only to the daemon and refreshes passive status", async () => {
     const client = createClient();
     client.request = async (method, params) => {
       client.requests.push({ method, params });
@@ -576,6 +576,38 @@ describe("AgenC TUI daemon session adapter", () => {
           serverName: "audit-ping",
           success: true,
           toolCount: 1,
+        } as never;
+      }
+      if (method === "session.mcp.status") {
+        return {
+          sessionId: "session_1",
+          revision: 1,
+          servers: [
+            {
+              name: "audit-ping",
+              transport: "stdio",
+              enabled: true,
+              required: false,
+              state: "connected",
+              displayTarget: "node",
+              toolCount: 1,
+              error: "https://operator:hunter2@example.test/private",
+              env: { API_KEY: "hunter2" },
+              headers: { Authorization: "Bearer hunter2" },
+              args: ["--token", "hunter2"],
+              client: { secret: "hunter2" },
+            },
+          ],
+          tools: [
+            {
+              serverName: "audit-ping",
+              name: "mcp.audit-ping.check",
+              description:
+                "Use https://operator:hunter2@example.test/private",
+              inputSchema: { token: "hunter2" },
+              client: { secret: "hunter2" },
+            },
+          ],
         } as never;
       }
       return {} as never;
@@ -617,7 +649,11 @@ describe("AgenC TUI daemon session adapter", () => {
       success: true,
       toolCount: 1,
     });
-    expect(client.requests).toEqual([
+    expect(
+      client.requests.filter(
+        (request) => request.method !== "session.mcp.status",
+      ),
+    ).toEqual([
       {
         method: "session.attach",
         params: { sessionId: "session_1", clientId: "tui_1" },
@@ -635,16 +671,164 @@ describe("AgenC TUI daemon session adapter", () => {
         },
       },
     ]);
-    expect(localAddServer).toHaveBeenCalledWith({
-      name: "audit-ping",
-      transport: "stdio",
-      command: "node",
-      args: ["/tmp/audit-ping.mjs"],
+    expect(client.requests).toContainEqual({
+      method: "session.mcp.status",
+      params: { sessionId: "session_1" },
+    });
+    expect(localAddServer).not.toHaveBeenCalled();
+    expect(session.listMcpClients).toBeUndefined();
+    expect(session.listMcpTools).toBeUndefined();
+    expect(session.mcpSurfaceSnapshot?.()).toEqual({
+      revision: 1,
+      servers: [
+        {
+          name: "audit-ping",
+          transport: "stdio",
+          enabled: true,
+          required: false,
+          state: "connected",
+          displayTarget: "node",
+          toolCount: 1,
+        },
+      ],
+      tools: [{ serverName: "audit-ping", name: "mcp.audit-ping.check" }],
+    });
+    expect(JSON.stringify(session.mcpSurfaceSnapshot?.())).not.toContain(
+      "hunter2",
+    );
+  });
+
+  it("rejects unsafe daemon MCP projection values before caching them", async () => {
+    const client = createClient();
+    client.request = async (method, params) => {
+      client.requests.push({ method, params });
+      if (method === "session.mcp.status") {
+        return {
+          sessionId: "session_1",
+          revision: 1,
+          servers: [
+            {
+              name: "remote",
+              transport: "http",
+              enabled: true,
+              required: false,
+              state: "connected",
+              displayTarget:
+                "https://example.test/private?token=hunter2#credential",
+              toolCount: 0,
+            },
+          ],
+          tools: [],
+        } as never;
+      }
+      return {} as never;
+    };
+    const session = await attachDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await expect(session.refreshMcpSurface?.()).rejects.toThrow(
+      "Daemon MCP status servers[0].displayTarget is invalid",
+    );
+    expect(session.mcpSurfaceSnapshot?.()).toEqual({
+      revision: 0,
+      servers: [],
+      tools: [],
     });
   });
 
-  it("mirrors daemon-backed MCP reconnect/enable/disable to the runtime session", async () => {
+  it("rejects non-canonical daemon MCP server identities before caching them", async () => {
     const client = createClient();
+    client.request = async (method, params) => {
+      client.requests.push({ method, params });
+      if (method === "session.mcp.status") {
+        return {
+          sessionId: "session_1",
+          revision: 1,
+          servers: [
+            {
+              name: "remote.bad",
+              transport: "http",
+              enabled: true,
+              required: false,
+              state: "connected",
+              displayTarget: "https://example.test",
+              toolCount: 0,
+            },
+          ],
+          tools: [],
+        } as never;
+      }
+      return {} as never;
+    };
+    const session = await attachDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+
+    await expect(session.refreshMcpSurface?.()).rejects.toThrow(
+      "Daemon MCP status servers[0].name is invalid",
+    );
+    expect(session.mcpSurfaceSnapshot?.()).toEqual({
+      revision: 0,
+      servers: [],
+      tools: [],
+    });
+  });
+
+  it("retries a transient MCP status failure without losing the invalidation revision", async () => {
+    const client = createClient();
+    let statusAttempts = 0;
+    client.request = async (method, params) => {
+      client.requests.push({ method, params });
+      if (method === "session.mcp.status") {
+        statusAttempts += 1;
+        if (statusAttempts === 1) {
+          throw new Error("temporary daemon read failure");
+        }
+        return {
+          sessionId: "session_1",
+          revision: 5,
+          servers: [],
+          tools: [],
+        } as never;
+      }
+      return {} as never;
+    };
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const revisions: number[] = [];
+    const unsubscribeEvents = session.subscribeToEvents(() => {});
+    const unsubscribeSurface = session.subscribeToMcpSurface?.((snapshot) => {
+      revisions.push(snapshot.revision);
+    });
+
+    client.emit("session_1", {
+      method: "event.mcp_status_changed",
+      params: { sessionId: "session_1", revision: 5 },
+    });
+    await vi.waitFor(() => {
+      expect(session.mcpSurfaceSnapshot?.().revision).toBe(5);
+    });
+    expect(statusAttempts).toBe(2);
+    expect(revisions).toEqual([5]);
+
+    unsubscribeSurface?.();
+    unsubscribeEvents();
+  });
+
+  it("routes MCP state mutations only to the daemon authority", async () => {
+    const client = createClient();
+    let revision = 0;
     client.request = async (method, params) => {
       client.requests.push({ method, params });
       if (
@@ -657,6 +841,31 @@ describe("AgenC TUI daemon session adapter", () => {
           serverName: "audit-ping",
           success: true,
           toolCount: 2,
+        } as never;
+      }
+      if (method === "session.mcp.status") {
+        revision += 1;
+        return {
+          sessionId: "session_1",
+          revision,
+          servers: [
+            {
+              name: "audit-ping",
+              transport: "stdio",
+              enabled: revision < 3,
+              required: false,
+              state: revision < 3 ? "connected" : "disabled",
+              displayTarget: "node",
+              toolCount: revision < 3 ? 2 : 0,
+            },
+          ],
+          tools:
+            revision < 3
+              ? [
+                  { serverName: "audit-ping", name: "mcp.audit-ping.check" },
+                  { serverName: "audit-ping", name: "mcp.audit-ping.report" },
+                ]
+              : [],
         } as never;
       }
       return {} as never;
@@ -708,7 +917,9 @@ describe("AgenC TUI daemon session adapter", () => {
     expect(enableResult).toEqual(projected);
     expect(disableResult).toEqual(projected);
 
-    expect(client.requests).toEqual([
+    expect(
+      client.requests.filter((request) => request.method !== "session.mcp.status"),
+    ).toEqual([
       {
         method: "session.attach",
         params: { sessionId: "session_1", clientId: "tui_1" },
@@ -726,9 +937,156 @@ describe("AgenC TUI daemon session adapter", () => {
         params: { sessionId: "session_1", serverName: "audit-ping" },
       },
     ]);
-    expect(localReconnect).toHaveBeenCalledWith("audit-ping");
-    expect(localEnable).toHaveBeenCalledWith("audit-ping");
-    expect(localDisable).toHaveBeenCalledWith("audit-ping");
+    expect(
+      client.requests.filter((request) => request.method === "session.mcp.status"),
+    ).toHaveLength(3);
+    expect(localReconnect).not.toHaveBeenCalled();
+    expect(localEnable).not.toHaveBeenCalled();
+    expect(localDisable).not.toHaveBeenCalled();
+    expect(session.mcpSurfaceSnapshot?.()).toMatchObject({
+      revision: 3,
+      servers: [
+        expect.objectContaining({
+          name: "audit-ping",
+          enabled: false,
+          state: "disabled",
+        }),
+      ],
+      tools: [],
+    });
+  });
+
+  it("tracks revisioned passive MCP status across invalidations and reconnect epochs", async () => {
+    const client = createClient();
+    client.connectionState = { status: "connected", id: "connection-1" };
+    let currentStatus = {
+      sessionId: "session_1",
+      revision: 9,
+      servers: [
+        {
+          name: "audit-ping",
+          transport: "stdio" as const,
+          enabled: true,
+          required: false,
+          state: "connected" as const,
+          displayTarget: "node",
+          toolCount: 1,
+        },
+      ],
+      tools: [
+        { serverName: "audit-ping", name: "mcp.audit-ping.check" },
+      ],
+    };
+    client.request = async (method, params) => {
+      client.requests.push({ method, params });
+      if (method === "session.mcp.status") return currentStatus as never;
+      return {} as never;
+    };
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const transcriptEvents: unknown[] = [];
+    const surfaceRevisions: number[] = [];
+    const unsubscribeEvents = session.subscribeToEvents((event) => {
+      transcriptEvents.push(event);
+    });
+    const unsubscribeSurface = session.subscribeToMcpSurface?.((snapshot) => {
+      surfaceRevisions.push(snapshot.revision);
+    });
+
+    await expect(session.refreshMcpSurface?.()).resolves.toMatchObject({
+      revision: 9,
+    });
+    expect(surfaceRevisions).toEqual([9]);
+    const statusRequestsAfterInitial = client.requests.filter(
+      (request) => request.method === "session.mcp.status",
+    ).length;
+
+    client.emit("session_1", {
+      method: "event.mcp_status_changed",
+      params: { sessionId: "session_1", revision: 8 },
+    });
+    await flush();
+    expect(
+      client.requests.filter(
+        (request) => request.method === "session.mcp.status",
+      ),
+    ).toHaveLength(statusRequestsAfterInitial);
+
+    currentStatus = {
+      ...currentStatus,
+      revision: 10,
+      servers: [
+        {
+          ...currentStatus.servers[0]!,
+          state: "failed",
+          toolCount: 0,
+        },
+      ],
+      tools: [],
+    };
+    client.emit("session_1", {
+      method: "event.mcp_status_changed",
+      params: { sessionId: "session_1", revision: 10 },
+    });
+    await vi.waitFor(() => {
+      expect(session.mcpSurfaceSnapshot?.()).toMatchObject({
+        revision: 10,
+        servers: [
+          expect.objectContaining({
+            name: "audit-ping",
+            state: "failed",
+          }),
+        ],
+        tools: [],
+      });
+    });
+
+    client.emitConnection({ status: "disconnected", message: "socket lost" });
+    currentStatus = {
+      sessionId: "session_1",
+      revision: 1,
+      servers: [],
+      tools: [],
+    };
+    client.emitConnection({ status: "connected", id: "connection-2" });
+    await vi.waitFor(() => {
+      expect(session.mcpSurfaceSnapshot?.()).toMatchObject({
+        revision: 1,
+        servers: [],
+        tools: [],
+      });
+    });
+    expect(surfaceRevisions).toEqual([9, 10, 1]);
+    expect(transcriptEvents).not.toContainEqual(
+      expect.objectContaining({ type: "mcp_status_changed" }),
+    );
+
+    unsubscribeSurface?.();
+    unsubscribeEvents();
+
+    // No listener can observe a daemon replacement while the TUI surface is
+    // unmounted. Re-subscribing must conservatively open a new revision epoch
+    // from the client's current connection state instead of pinning revision 1.
+    currentStatus = {
+      sessionId: "session_1",
+      revision: 0,
+      servers: [],
+      tools: [],
+    };
+    client.connectionState = { status: "connected", id: "connection-3" };
+    const remountedRevisions: number[] = [];
+    const unsubscribeRemounted = session.subscribeToMcpSurface?.((snapshot) => {
+      remountedRevisions.push(snapshot.revision);
+    });
+    await vi.waitFor(() => {
+      expect(session.mcpSurfaceSnapshot?.().revision).toBe(0);
+    });
+    expect(remountedRevisions).toEqual([0]);
+    unsubscribeRemounted?.();
   });
 
   it("exposes daemon turn activity through activeTurn for prompt busy state", async () => {

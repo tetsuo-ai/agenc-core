@@ -128,13 +128,10 @@ describe("app-server-client daemon helpers", () => {
     ).rejects.toThrow("matches multiple agents");
   });
 
-  it("rolls back watcher and MCP resources when daemon-only setup fails", async () => {
+  it("rolls back the skills watcher when daemon-only setup fails", async () => {
     vi.resetModules();
     const watcherStart = vi.fn().mockResolvedValue(undefined);
     const watcherStop = vi.fn().mockResolvedValue(undefined);
-    const refreshFromAuthority = vi.fn().mockResolvedValue(undefined);
-    const dispose = vi.fn().mockResolvedValue(undefined);
-    const clearServersStrict = vi.fn().mockResolvedValue(undefined);
     vi.doMock("../skills/local-loader.js", async (importActual) => {
       const actual =
         await importActual<typeof import("../skills/local-loader.js")>();
@@ -144,18 +141,6 @@ describe("app-server-client daemon helpers", () => {
           skillsManager: {},
           pluginsManager: {},
           skillsWatcher: { start: watcherStart, stop: watcherStop },
-        })),
-      };
-    });
-    vi.doMock("../session/mcp-startup.js", async (importActual) => {
-      const actual =
-        await importActual<typeof import("../session/mcp-startup.js")>();
-      return {
-        ...actual,
-        createSessionMcpManager: vi.fn(() => ({ clearServersStrict })),
-        createSessionMcpService: vi.fn(() => ({
-          refreshFromAuthority,
-          dispose,
         })),
       };
     });
@@ -186,13 +171,9 @@ describe("app-server-client daemon helpers", () => {
       ).rejects.toThrow("agent definition setup failed");
 
       expect(watcherStart).toHaveBeenCalledOnce();
-      expect(refreshFromAuthority).toHaveBeenCalledOnce();
-      expect(dispose).toHaveBeenCalledOnce();
       expect(watcherStop).toHaveBeenCalledOnce();
-      expect(clearServersStrict).not.toHaveBeenCalled();
     } finally {
       vi.doUnmock("../skills/local-loader.js");
-      vi.doUnmock("../session/mcp-startup.js");
       vi.doUnmock("../tools/AgentTool/loadAgentsDir.js");
       vi.resetModules();
       rmSync(agencHome, { recursive: true, force: true });
@@ -518,7 +499,7 @@ describe("app-server-client daemon helpers", () => {
     }
   });
 
-  it("still disposes MCP when the daemon-only skills watcher stop fails", async () => {
+  it("does not create a second MCP owner when daemon-only cleanup fails", async () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-close-fail-home-"));
     const workspace = mkdtempSync(
       join(tmpdir(), "agenc-close-fail-workspace-"),
@@ -540,17 +521,14 @@ describe("app-server-client daemon helpers", () => {
           await originalWatcherStop?.();
           throw new Error("watcher stop failed");
         });
-      const mcpService = context.baseSession.services.mcpManager;
-      const originalDispose = mcpService.dispose?.bind(mcpService);
-      const mcpDispose = vi
-        .spyOn(mcpService, "dispose")
-        .mockImplementation(() => originalDispose?.() ?? Promise.resolve());
+      expect(context.baseSession.services.mcpManager).toBeUndefined();
+      expect(context.baseSession.listMcpClients).toBeUndefined();
+      expect(context.baseSession.listMcpTools).toBeUndefined();
 
       await expect(context.close()).rejects.toThrow(
         "daemon-only TUI context cleanup failed",
       );
       expect(watcherStop).toHaveBeenCalledOnce();
-      expect(mcpDispose).toHaveBeenCalledOnce();
       context = null;
     } finally {
       await context?.close().catch(() => undefined);
@@ -746,27 +724,10 @@ describe("app-server-client daemon helpers", () => {
     process.env.XAI_API_KEY = "test-key";
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-daemon-slash-home-"));
     const cwd = mkdtempSync(join(tmpdir(), "agenc-daemon-slash-cwd-"));
-    const pidFile = join(agencHome, "mcp", "audit-ping.pid");
-    const fixture = join(
-      process.cwd(),
-      "src/mcp-client/test-fixtures/stdio-pid-server.cjs",
-    );
     mkdirSync(join(cwd, ".agenc/skills/python-game"), { recursive: true });
     writeFileSync(
       join(cwd, ".agenc/skills/python-game/SKILL.md"),
       "---\nname: python-game\ndescription: Help with the Python game.\n---\n",
-      "utf8",
-    );
-    writeFileSync(
-      join(agencHome, "config.toml"),
-      [
-        "config_version = 2",
-        "[mcp_servers.audit-ping]",
-        `command = ${JSON.stringify(process.execPath)}`,
-        `args = [${JSON.stringify(fixture)}, ${JSON.stringify("${MCP_PID_FILE}")}]`,
-        'env_vars = ["MCP_SESSION_MARKER"]',
-        "",
-      ].join("\n"),
       "utf8",
     );
     let context: Awaited<
@@ -777,8 +738,6 @@ describe("app-server-client daemon helpers", () => {
         ...process.env,
         AGENC_HOME: agencHome,
         HOME: agencHome,
-        MCP_PID_FILE: pidFile,
-        MCP_SESSION_MARKER: "captured-daemon-tui-session",
       };
       const contextPromise = createAgenCDaemonOnlyTuiContext({
         env: contextEnvironment,
@@ -786,14 +745,8 @@ describe("app-server-client daemon helpers", () => {
         conversationId: "agenc-tui-daemon-slash-test",
         permissionMode: "bypassPermissions",
       });
-      contextEnvironment.MCP_SESSION_MARKER = "mutated-after-tui-ingress";
       context = await contextPromise;
-      expect(readFileSync(pidFile, "utf8").split(/\r?\n/u)[1]).toBe(
-        "captured-daemon-tui-session",
-      );
-      expect(context.baseSession.services.providerEnvironment).not.toHaveProperty(
-        "MCP_SESSION_MARKER",
-      );
+      expect(context.baseSession.services.mcpManager).toBeUndefined();
       const registry = buildDefaultRegistry();
       const run = async (input: string) => {
         const parsed = parseSlashCommand(input);
@@ -832,18 +785,6 @@ describe("app-server-client daemon helpers", () => {
           text: expect.stringContaining(
             "not yet supported when running against the daemon",
           ),
-        },
-      });
-      await expect(run("/mcp")).resolves.toMatchObject({
-        result: {
-          kind: "text",
-          text: expect.stringContaining("audit-ping: connected"),
-        },
-      });
-      await expect(run("/mcp tools")).resolves.toMatchObject({
-        result: {
-          kind: "text",
-          text: expect.stringContaining("mcp.audit-ping.ping"),
         },
       });
       await expect(run("/skills")).resolves.toMatchObject({

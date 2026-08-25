@@ -761,7 +761,7 @@ class ClientRunAttachment implements AgencRunAttachment {
   }
 }
 
-/** Typed JSON-RPC client for the 53 public daemon methods. */
+/** Typed JSON-RPC client for the 54 public daemon methods. */
 export class AgencClient {
   readonly #transport: AgencTransport;
   readonly #createRequestId: () => RequestId;
@@ -1571,7 +1571,7 @@ function compatibleServerVersionFromInitializeError(
   if (match === null) return undefined;
   const major = Number.parseInt(match[1]!, 10);
   const minor = Number.parseInt(match[2]!, 10);
-  if (major !== 1 || minor < 0 || minor >= 2) return undefined;
+  if (major !== 1 || minor < 0 || minor >= 3) return undefined;
   return serverVersion;
 }
 

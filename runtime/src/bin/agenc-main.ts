@@ -57,6 +57,7 @@ import {
   Session,
   type IdleInputAdmission,
   type IdleInputOwnership,
+  type McpSurfaceSnapshot,
 } from "../session/session.js";
 import {
   AUTONOMOUS_SUBMIT_SOURCE,
@@ -89,6 +90,7 @@ import {
 import { resolveHomeContext } from "../config/home.js";
 import { snapshotProviderEnvironment } from "../llm/provider-options.js";
 import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
+import { logForDebugging } from "../utils/debug.js";
 import {
   recentOomSnapshotNotice,
   startHeapWatchdog,
@@ -2860,6 +2862,10 @@ type DeferredWorkspaceEditorSessionSurface = Pick<
 >;
 
 type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & {
+  readonly services?: {
+    readonly mcpManager?: NonNullable<Session["services"]["mcpManager"]>;
+    readonly [key: string]: unknown;
+  };
   submit?: (message: string, opts?: SessionSubmitOptions) => Promise<void>;
   enqueueIdleInput?: (input: unknown, ownership?: IdleInputOwnership) => number;
   enqueueIdleInputBatch?: (
@@ -2903,6 +2909,13 @@ type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & {
     reload?: boolean;
   }) => Promise<unknown>;
   getInitialTranscriptEvents?: () => readonly unknown[];
+  listMcpClients?: () => readonly unknown[];
+  listMcpTools?: () => readonly unknown[];
+  mcpSurfaceSnapshot?: () => McpSurfaceSnapshot;
+  refreshMcpSurface?: () => Promise<McpSurfaceSnapshot>;
+  subscribeToMcpSurface?: (
+    cb: (snapshot: McpSurfaceSnapshot) => void,
+  ) => () => void;
   activeTurn?: {
     unsafePeek?: () => { readonly turnId: string } | null;
   } | null;
@@ -3066,6 +3079,238 @@ async function createDeferredDaemonPromptTuiSession(params: {
   >();
   const subscribers = new Set<(event: unknown) => void>();
   const liveUnsubscribers = new Map<(event: unknown) => void, () => void>();
+  const mcpSurfaceSubscribers = new Set<
+    (snapshot: McpSurfaceSnapshot) => void
+  >();
+  const liveMcpSurfaceUnsubscribers = new Map<
+    (snapshot: McpSurfaceSnapshot) => void,
+    () => void
+  >();
+  const lastMcpSurfaceSignatures = new Map<
+    (snapshot: McpSurfaceSnapshot) => void,
+    string
+  >();
+  const emptyMcpSurface: McpSurfaceSnapshot = Object.freeze({
+    revision: 0,
+    servers: Object.freeze([]),
+    tools: Object.freeze([]),
+  });
+
+  type DeferredMcpManager = NonNullable<
+    Session["services"]["mcpManager"]
+  >;
+
+  const currentLiveMcpManager = (): DeferredMcpManager | undefined =>
+    liveSession?.services?.mcpManager;
+
+  const noLiveMcpSession = (action: string): Error =>
+    new Error(
+      `Cannot ${action}: no live daemon session. Send a message first.`,
+    );
+
+  const requireLiveMcpManager = (action: string): DeferredMcpManager => {
+    if (liveSession === null) throw noLiveMcpSession(action);
+    const manager = currentLiveMcpManager();
+    if (manager === undefined) {
+      throw new Error(
+        `Cannot ${action}: the live daemon session has no MCP authority.`,
+      );
+    }
+    return manager;
+  };
+
+  const currentMcpSurfaceSnapshot = (): McpSurfaceSnapshot =>
+    liveSession?.mcpSurfaceSnapshot?.() ?? emptyMcpSurface;
+
+  const deliverMcpSurfaceSnapshot = (
+    subscriber: (snapshot: McpSurfaceSnapshot) => void,
+    snapshot: McpSurfaceSnapshot,
+  ): void => {
+    const signature = JSON.stringify([
+      snapshot.revision,
+      snapshot.servers,
+      snapshot.tools,
+    ]);
+    if (lastMcpSurfaceSignatures.get(subscriber) === signature) return;
+    lastMcpSurfaceSignatures.set(subscriber, signature);
+    try {
+      subscriber(snapshot);
+    } catch {
+      // A passive observer cannot interfere with daemon event delivery.
+    }
+  };
+
+  const refreshCurrentMcpSurface = async (): Promise<McpSurfaceSnapshot> => {
+    const live = liveSession;
+    if (live === null) return emptyMcpSurface;
+    const snapshot =
+      (await live.refreshMcpSurface?.()) ??
+      live.mcpSurfaceSnapshot?.() ??
+      emptyMcpSurface;
+    return liveSession === live ? snapshot : currentMcpSurfaceSnapshot();
+  };
+
+  const clearLiveMcpSurfaceSubscriptions = (): void => {
+    for (const unsubscribe of liveMcpSurfaceUnsubscribers.values()) {
+      try {
+        unsubscribe();
+      } catch {
+        // Subscription cleanup is observational and must stay fail-soft.
+      }
+    }
+    liveMcpSurfaceUnsubscribers.clear();
+    lastMcpSurfaceSignatures.clear();
+  };
+
+  const attachLiveMcpSurfaceSubscriber = (
+    live: TuiSessionShape,
+    subscriber: (snapshot: McpSurfaceSnapshot) => void,
+    emitCurrent: boolean,
+  ): void => {
+    try {
+      const unsubscribe = live.subscribeToMcpSurface?.((snapshot) => {
+        if (
+          liveSession !== live ||
+          !mcpSurfaceSubscribers.has(subscriber)
+        ) {
+          return;
+        }
+        deliverMcpSurfaceSnapshot(subscriber, snapshot);
+      });
+      if (unsubscribe !== undefined) {
+        liveMcpSurfaceUnsubscribers.set(subscriber, unsubscribe);
+      }
+    } catch {
+      // A passive subscription cannot make an otherwise healthy attach fail.
+    }
+    if (!emitCurrent || liveSession !== live) return;
+    deliverMcpSurfaceSnapshot(
+      subscriber,
+      live.mcpSurfaceSnapshot?.() ?? emptyMcpSurface,
+    );
+  };
+
+  const attachLiveMcpSurfaceSubscribers = (live: TuiSessionShape): void => {
+    clearLiveMcpSurfaceSubscriptions();
+    for (const subscriber of mcpSurfaceSubscribers) {
+      attachLiveMcpSurfaceSubscriber(live, subscriber, true);
+    }
+    void (async () => {
+      const refreshed =
+        (await live.refreshMcpSurface?.()) ??
+        live.mcpSurfaceSnapshot?.() ??
+        emptyMcpSurface;
+      if (liveSession !== live) return;
+      for (const subscriber of mcpSurfaceSubscribers) {
+        deliverMcpSurfaceSnapshot(subscriber, refreshed);
+      }
+    })().catch((error: unknown) => {
+      logForDebugging(
+        `Deferred daemon MCP status refresh failed after attach: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { level: "warn" },
+      );
+    });
+  };
+
+  const coldMcpManager: DeferredMcpManager = {
+    effectiveServers: async () => {
+      throw noLiveMcpSession("read MCP server status");
+    },
+    toolPluginProvenance: async () => undefined,
+    refreshFromAuthority: async () => {
+      const manager = requireLiveMcpManager("refresh MCP authority");
+      if (manager.refreshFromAuthority === undefined) {
+        throw new Error(
+          "Cannot refresh MCP authority: the live daemon session does not support it.",
+        );
+      }
+      return manager.refreshFromAuthority();
+    },
+    reconnectServer: async (name) => {
+      const manager = requireLiveMcpManager(`reconnect MCP server "${name}"`);
+      if (manager.reconnectServer === undefined) {
+        throw new Error("MCP reconnect is not supported by this session.");
+      }
+      return manager.reconnectServer(name);
+    },
+    enableServer: async (name) => {
+      const manager = requireLiveMcpManager(`enable MCP server "${name}"`);
+      if (manager.enableServer === undefined) {
+        throw new Error("MCP enable is not supported by this session.");
+      }
+      return manager.enableServer(name);
+    },
+    disableServer: async (name) => {
+      const manager = requireLiveMcpManager(`disable MCP server "${name}"`);
+      if (manager.disableServer === undefined) {
+        throw new Error("MCP disable is not supported by this session.");
+      }
+      return manager.disableServer(name);
+    },
+    addServer: async (config) => {
+      const manager = requireLiveMcpManager(
+        `add MCP server "${config.name}"`,
+      );
+      if (manager.addServer === undefined) {
+        throw new Error("MCP add is not supported by this session.");
+      }
+      return manager.addServer(config);
+    },
+    getTools: () => [],
+    getToolsByServer: () => [],
+    getConfiguredServers: () => [],
+    getConnectionState: () => undefined,
+    getConnectedConnection: () => undefined,
+    getResources: async () => [],
+    getResourcesByServer: async () => [],
+    readResource: async () => null,
+    isConnected: () => false,
+    getConnectedServers: () => [],
+    mcpSurfaceSnapshot: currentMcpSurfaceSnapshot,
+    subscribeMcpSurfaceInvalidations: (listener) => {
+      const subscriber = (snapshot: McpSurfaceSnapshot): void =>
+        listener(snapshot.revision);
+      mcpSurfaceSubscribers.add(subscriber);
+      const live = liveSession;
+      if (live !== null) {
+        attachLiveMcpSurfaceSubscriber(live, subscriber, false);
+      }
+      return () => {
+        mcpSurfaceSubscribers.delete(subscriber);
+        lastMcpSurfaceSignatures.delete(subscriber);
+        try {
+          liveMcpSurfaceUnsubscribers.get(subscriber)?.();
+        } catch {
+          // Subscription cleanup is observational and must stay fail-soft.
+        }
+        liveMcpSurfaceUnsubscribers.delete(subscriber);
+      };
+    },
+  };
+  const deferredMcpManager = new Proxy(coldMcpManager, {
+    get: (target, property, receiver) => {
+      // These two seams belong to the outer wrapper because their listeners
+      // must survive live-session replacement. Every other manager member is
+      // resolved dynamically from the current daemon-backed facade, which
+      // prevents this wrapper from mirroring the MCP API as it evolves.
+      if (
+        property === "mcpSurfaceSnapshot" ||
+        property === "subscribeMcpSurfaceInvalidations"
+      ) {
+        return Reflect.get(target, property, receiver);
+      }
+      const manager = currentLiveMcpManager();
+      if (manager !== undefined) {
+        const value = Reflect.get(manager, property, manager);
+        if (value !== undefined) {
+          return typeof value === "function" ? value.bind(manager) : value;
+        }
+      }
+      return Reflect.get(target, property, receiver);
+    },
+  });
 
   const queuedBlocksBytes = (
     blocks: readonly MessageContentBlock[],
@@ -3241,10 +3486,21 @@ async function createDeferredDaemonPromptTuiSession(params: {
   const detachLiveSession = async (): Promise<void> => {
     for (const unsubscribe of liveUnsubscribers.values()) unsubscribe();
     liveUnsubscribers.clear();
+    const hadLiveSession = liveSession !== null;
+    clearLiveMcpSurfaceSubscriptions();
     liveSession = null;
     liveAgentId = null;
     liveSessionAwaitingFirstTurn = false;
     liveSessionStartupDeferred = false;
+    if (hadLiveSession && !deferredSessionClosed) {
+      for (const subscriber of mcpSurfaceSubscribers) {
+        try {
+          subscriber(emptyMcpSurface);
+        } catch {
+          // A passive status observer cannot interfere with detach/recovery.
+        }
+      }
+    }
     const client = daemonClient;
     daemonClient = null;
     await client?.close().catch(() => {
@@ -3446,11 +3702,13 @@ async function createDeferredDaemonPromptTuiSession(params: {
             liveUnsubscribers.set(subscriber, unsubscribe);
           }
         }
+        attachLiveMcpSurfaceSubscribers(liveSession);
         return liveSession;
       } catch (error) {
         inFlightQueuedInputs = null;
         for (const unsubscribe of liveUnsubscribers.values()) unsubscribe();
         liveUnsubscribers.clear();
+        clearLiveMcpSurfaceSubscriptions();
         liveSession = null;
         liveAgentId = null;
         liveSessionAwaitingFirstTurn = false;
@@ -3566,12 +3824,42 @@ async function createDeferredDaemonPromptTuiSession(params: {
   };
 
   const base = params.baseSession as Record<string, unknown>;
+  const daemonSessionBase = { ...base };
+  delete daemonSessionBase.listMcpClients;
+  delete daemonSessionBase.listMcpTools;
+  const baseServices = isRecord(base.services) ? base.services : {};
   const originalEmit =
     typeof base.emit === "function"
       ? (base.emit as (event: unknown) => void).bind(base)
       : undefined;
   const session: TuiSessionShape & Record<string, unknown> = {
-    ...base,
+    ...daemonSessionBase,
+    // The deferred TUI never owns an MCP runtime. This stable facade forwards
+    // to the daemon-backed session after attach and exposes only empty passive
+    // state before then; it intentionally replaces any bootstrap manager.
+    services: {
+      ...baseServices,
+      mcpManager: deferredMcpManager,
+    },
+    mcpSurfaceSnapshot: currentMcpSurfaceSnapshot,
+    refreshMcpSurface: refreshCurrentMcpSurface,
+    subscribeToMcpSurface: (cb) => {
+      mcpSurfaceSubscribers.add(cb);
+      const live = liveSession;
+      if (live !== null) {
+        attachLiveMcpSurfaceSubscriber(live, cb, false);
+      }
+      return () => {
+        mcpSurfaceSubscribers.delete(cb);
+        lastMcpSurfaceSignatures.delete(cb);
+        try {
+          liveMcpSurfaceUnsubscribers.get(cb)?.();
+        } catch {
+          // Subscription cleanup is observational and must stay fail-soft.
+        }
+        liveMcpSurfaceUnsubscribers.delete(cb);
+      };
+    },
     // Editor coherence and proposal recovery are workspace-scoped, not
     // conversation-scoped. Keep them on one auxiliary daemon connection so
     // authoritative Neovim fencing works before the first Agent turn and
@@ -4339,6 +4627,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
       await controlClient?.close().catch(() => {
         /* best effort */
       });
+      mcpSurfaceSubscribers.clear();
       idleInputAdmissions.clear();
       liveInputAdmissions.clear();
     },

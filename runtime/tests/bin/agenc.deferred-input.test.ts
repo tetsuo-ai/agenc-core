@@ -12,6 +12,8 @@ import type {
 import type {
   IdleInputAdmission,
   IdleInputOwnership,
+  McpManager,
+  McpSurfaceSnapshot,
 } from "../session/session.js";
 import type {
   WorkspaceEditorAcquireParams,
@@ -45,6 +47,9 @@ import type {
 } from "../app-server/protocol/index.js";
 
 interface DeferredInputSession {
+  readonly services: {
+    readonly mcpManager: McpManager;
+  };
   submit(message: string, opts?: SessionSubmitOptions): Promise<void>;
   enqueueIdleInput(input: unknown, ownership?: IdleInputOwnership): number;
   enqueueIdleInputBatch(
@@ -110,6 +115,11 @@ interface DeferredInputSession {
   reportEditorPredictionFeedback(
     params: WorkspaceEditorPredictionFeedbackSessionParams,
   ): Promise<WorkspaceEditorPredictionFeedbackResult>;
+  mcpSurfaceSnapshot(): McpSurfaceSnapshot;
+  refreshMcpSurface(): Promise<McpSurfaceSnapshot>;
+  subscribeToMcpSurface(
+    cb: (snapshot: McpSurfaceSnapshot) => void,
+  ): () => void;
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -197,10 +207,44 @@ function daemonHarness(
     readonly rejectFirstAttach?: boolean;
     readonly rejectMessageStream?: boolean;
     readonly rejectFirstEditorPrediction?: boolean;
+    readonly withMcpSurface?: boolean;
   } = {},
 ) {
   let attachAttempts = 0;
   let predictionAttempts = 0;
+  let mcpRevision = 1;
+  const mcpServers: Array<{
+    readonly name: string;
+    readonly transport: "stdio";
+    readonly enabled: boolean;
+    readonly required: boolean;
+    readonly state: "connected";
+    readonly displayTarget: string;
+    readonly toolCount: number;
+  }> = options.withMcpSurface === true
+    ? [
+        {
+          name: "alpha",
+          transport: "stdio",
+          enabled: true,
+          required: false,
+          state: "connected",
+          displayTarget: "alpha-server",
+          toolCount: 1,
+        },
+      ]
+    : [];
+  const mcpTools: Array<{
+    readonly serverName: string;
+    readonly name: string;
+  }> = options.withMcpSurface === true
+    ? [
+        {
+          serverName: "alpha",
+          name: "mcp.alpha.read",
+        },
+      ]
+    : [];
   const requests: Array<{
     readonly method: string;
     readonly params: Record<string, unknown> | undefined;
@@ -287,6 +331,42 @@ function daemonHarness(
       if (method === "daemon.reload") {
         return { reloaded: true };
       }
+      if (method === "session.mcp.status") {
+        return {
+          sessionId: String(params?.sessionId ?? "session-1"),
+          revision: mcpRevision,
+          servers: mcpServers,
+          tools: mcpTools,
+        };
+      }
+      if (method === "session.mcp.addServer") {
+        const config = params?.config as
+          | { readonly name?: unknown; readonly command?: unknown }
+          | undefined;
+        const serverName =
+          typeof config?.name === "string" ? config.name : "added";
+        mcpRevision += 1;
+        mcpServers.push({
+          name: serverName,
+          transport: "stdio",
+          enabled: true,
+          required: false,
+          state: "connected",
+          displayTarget:
+            typeof config?.command === "string" ? config.command : "node",
+          toolCount: 1,
+        });
+        mcpTools.push({
+          serverName,
+          name: `mcp.${serverName}.ping`,
+        });
+        return {
+          sessionId: String(params?.sessionId ?? "session-1"),
+          serverName,
+          success: true,
+          toolCount: 1,
+        };
+      }
       return {};
     }),
     subscribeToSessionEvents: vi.fn(() => () => undefined),
@@ -318,6 +398,150 @@ function daemonHarness(
 }
 
 describe("deferred daemon input ownership", () => {
+  it("replaces bootstrap MCP authority with an inert pre-attach facade", async () => {
+    const harness = daemonHarness();
+    const inheritedAdd = vi.fn(async (config: { readonly name: string }) => ({
+      serverName: config.name,
+      success: true,
+      toolCount: 99,
+    }));
+    const inheritedManager = {
+      effectiveServers: vi.fn(async () => new Map()),
+      toolPluginProvenance: vi.fn(async () => undefined),
+      addServer: inheritedAdd,
+    } satisfies McpManager;
+    const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
+      baseSession: withConfigStore({
+        ...harness.baseSession,
+        services: { mcpManager: inheritedManager },
+      }),
+      deps: harness.deps as never,
+      agencHome: process.cwd(),
+      env: {},
+      cwd: process.cwd(),
+      clientId: "deferred-mcp-cold-test",
+    });
+    cleanups.push(deferred.close);
+    const session = deferred.session as DeferredInputSession;
+
+    expect(session.services.mcpManager).not.toBe(inheritedManager);
+    expect("listMcpClients" in session).toBe(false);
+    expect("listMcpTools" in session).toBe(false);
+    expect(session.mcpSurfaceSnapshot()).toEqual({
+      revision: 0,
+      servers: [],
+      tools: [],
+    });
+    await expect(session.refreshMcpSurface()).resolves.toEqual({
+      revision: 0,
+      servers: [],
+      tools: [],
+    });
+    await expect(
+      session.services.mcpManager.effectiveServers({}, undefined),
+    ).rejects.toThrow(/no live daemon session/i);
+    await expect(
+      session.services.mcpManager.addServer?.({
+        name: "cold",
+        transport: "stdio",
+        command: "node",
+      }),
+    ).rejects.toThrow(/no live daemon session/i);
+    await expect(
+      session.services.mcpManager.refreshFromAuthority?.(),
+    ).rejects.toThrow(/no live daemon session/i);
+    expect(inheritedManager.effectiveServers).not.toHaveBeenCalled();
+    expect(inheritedAdd).not.toHaveBeenCalled();
+    expect(harness.startPromptAgent).not.toHaveBeenCalled();
+  });
+
+  it("forwards MCP reads, mutations, and surface subscriptions after attach", async () => {
+    const harness = daemonHarness({ withMcpSurface: true });
+    const inheritedAdd = vi.fn(async (config: { readonly name: string }) => ({
+      serverName: config.name,
+      success: true,
+      toolCount: 99,
+    }));
+    const inheritedManager = {
+      effectiveServers: vi.fn(async () => new Map()),
+      toolPluginProvenance: vi.fn(async () => undefined),
+      addServer: inheritedAdd,
+    } satisfies McpManager;
+    const deferred = await __createDeferredDaemonPromptTuiSessionForTest({
+      baseSession: withConfigStore({
+        ...harness.baseSession,
+        services: { mcpManager: inheritedManager },
+      }),
+      deps: harness.deps as never,
+      agencHome: process.cwd(),
+      env: {},
+      cwd: process.cwd(),
+      clientId: "deferred-mcp-live-test",
+      preparePrompt: async ({ message }) => message,
+    });
+    cleanups.push(deferred.close);
+    const session = deferred.session as DeferredInputSession;
+    const observedRevisions: number[] = [];
+    const unsubscribe = session.subscribeToMcpSurface((snapshot) => {
+      observedRevisions.push(snapshot.revision);
+    });
+
+    await session.submit("start daemon MCP authority");
+    await vi.waitFor(() => {
+      expect(session.mcpSurfaceSnapshot()).toMatchObject({
+        revision: 1,
+        servers: [expect.objectContaining({ name: "alpha" })],
+        tools: [expect.objectContaining({ name: "mcp.alpha.read" })],
+      });
+      expect(observedRevisions).toContain(1);
+    });
+    const effectiveServers =
+      await session.services.mcpManager.effectiveServers({}, undefined);
+    expect([...effectiveServers.keys()]).toEqual(["alpha"]);
+    await expect(
+      session.services.mcpManager.addServer?.({
+        name: "beta",
+        transport: "stdio",
+        command: "beta-server",
+        enabled: true,
+      }),
+    ).resolves.toEqual({
+      serverName: "beta",
+      success: true,
+      toolCount: 1,
+    });
+
+    expect("listMcpClients" in session).toBe(false);
+    expect("listMcpTools" in session).toBe(false);
+    expect(session.mcpSurfaceSnapshot()).toMatchObject({
+      revision: 2,
+      servers: expect.arrayContaining([
+        expect.objectContaining({ name: "alpha" }),
+        expect.objectContaining({ name: "beta" }),
+      ]),
+      tools: expect.arrayContaining([
+        expect.objectContaining({ name: "mcp.alpha.read" }),
+        expect.objectContaining({ name: "mcp.beta.ping" }),
+      ]),
+    });
+    expect(observedRevisions).toContain(2);
+    expect(harness.requests).toContainEqual({
+      method: "session.mcp.addServer",
+      params: {
+        sessionId: "session-1",
+        config: {
+          name: "beta",
+          transport: "stdio",
+          command: "beta-server",
+          enabled: true,
+        },
+      },
+    });
+    expect(inheritedAdd).not.toHaveBeenCalled();
+
+    unsubscribe();
+  });
+
   it("exposes cold Editor authority through one lazy sessionless control client", async () => {
     const harness = daemonHarness();
     const deferred = await __createDeferredDaemonPromptTuiSessionForTest({

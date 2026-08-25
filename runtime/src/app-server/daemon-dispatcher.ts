@@ -135,6 +135,7 @@ import {
   type SessionResolveToolCallLegacyParams,
   type SessionResolveToolCallParams,
   type SessionClearParams,
+  type SessionMcpStatusParams,
   type SessionMcpAddServerParams,
   type SessionMcpServerByNameParams,
   type WorkspaceEditorAcquireParams,
@@ -235,6 +236,19 @@ const THREAD_REALTIME_VOICES = [
   "verse",
 ] as const;
 
+/**
+ * Single compatibility table for methods added after protocol 1.0. The same
+ * negotiated method capability gates both requests and any notification that
+ * tells a client to call that method.
+ */
+const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
+  Partial<Record<AgenCDaemonKnownMethod, number>>
+> = Object.freeze({
+  "workspace.editor.topology.recovered.resolve": 1,
+  "session.transcript.v2": 2,
+  "session.mcp.status": 3,
+});
+
 const CSV_JOB_REVIEW_MAX_PAGE_SIZE = 100;
 const CSV_JOB_REVIEW_MAX_IDENTIFIER_BYTES = 1_024;
 const CSV_JOB_REVIEW_MAX_EVIDENCE_REF_BYTES = 4_096;
@@ -308,6 +322,7 @@ function buildServerCapabilities(
       agentManager,
       "resolveSessionToolCall",
     ),
+    "session.mcp.status": hasMethod(agentManager, "getMcpStatusForSession"),
     "session.mcp.addServer": hasMethod(agentManager, "addMcpServerToSession"),
     "message.send": hasMethod(agentManager, "streamAgentMessage"),
     "message.stream": hasMethod(agentManager, "streamAgentMessage"),
@@ -466,6 +481,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "snapshotSession"
     | "getSessionTranscript"
     | "getSessionTranscriptV2"
+    | "getMcpStatusForSession"
     | "addMcpServerToSession"
     | "reconnectMcpServerOnSession"
     | "enableMcpServerOnSession"
@@ -566,6 +582,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "snapshotSession"
     | "getSessionTranscript"
     | "getSessionTranscriptV2"
+    | "getMcpStatusForSession"
     | "addMcpServerToSession"
     | "reconnectMcpServerOnSession"
     | "enableMcpServerOnSession"
@@ -821,7 +838,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       }
 
       if (
-        method === "session.transcript.v2" &&
+        MINIMUM_PROTOCOL_MINOR_BY_METHOD[method] !== undefined &&
         connection.initializeState?.serverCapabilities[
           AGENC_DAEMON_METHOD_CAPABILITIES_KEY
         ][method] !== true
@@ -1037,6 +1054,13 @@ export class AgenCDaemonJsonRpcDispatcher {
           id,
           await this.#agentManager.resolveSessionToolCall(
             validateSessionResolveToolCallParams(params),
+          ),
+        );
+      case "session.mcp.status":
+        return successResponse(
+          id,
+          await this.#agentManager.getMcpStatusForSession(
+            validateSessionMcpStatusParams(params),
           ),
         );
       case "session.mcp.addServer":
@@ -1713,6 +1737,8 @@ export class AgenCDaemonJsonRpcDispatcher {
           clientId,
           deliveryKey: connection.cancellationScope,
           send: (message) => connection.sendNotification!(message),
+          acceptsSessionEvent: (event) =>
+            connection.acceptsSessionEvent(event),
         })
         .catch((error) => {
           if (
@@ -1963,6 +1989,16 @@ export class AgenCDaemonJsonRpcConnection {
     return this.#sendNotification;
   }
 
+  acceptsSessionEvent(event: JsonObject): boolean {
+    const requiredMethod = requiredMethodCapabilityForSessionEvent(event);
+    if (requiredMethod === undefined) return true;
+    return (
+      this.#initializeState?.serverCapabilities[
+        AGENC_DAEMON_METHOD_CAPABILITIES_KEY
+      ][requiredMethod] === true
+    );
+  }
+
   trackClientId(clientId: string): void {
     this.#clientIds.add(clientId);
   }
@@ -2191,18 +2227,21 @@ function negotiateInitializeProtocol(
   const clientProtocol = parseProtocolVersion(clientVersion)!;
   const methodCapabilities = {
     ...serverCapabilities[AGENC_DAEMON_METHOD_CAPABILITIES_KEY],
-    ...(clientProtocol.minor < 1
-      ? { "workspace.editor.topology.recovered.resolve": false }
-      : {}),
-    ...(clientProtocol.minor < 2 ? { "session.transcript.v2": false } : {}),
-  };
-  const negotiatedCapabilities =
-    clientProtocol.minor < 2
-      ? ({
-          ...serverCapabilities,
-          [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: methodCapabilities,
-        } satisfies AgenCDaemonServerCapabilities)
-      : serverCapabilities;
+  } as Record<AgenCDaemonKnownMethod, boolean>;
+  let capabilitiesChanged = false;
+  for (const [method, minimumMinor] of Object.entries(
+    MINIMUM_PROTOCOL_MINOR_BY_METHOD,
+  ) as Array<[AgenCDaemonKnownMethod, number]>) {
+    if (clientProtocol.minor >= minimumMinor) continue;
+    methodCapabilities[method] = false;
+    capabilitiesChanged = true;
+  }
+  const negotiatedCapabilities = capabilitiesChanged
+    ? ({
+        ...serverCapabilities,
+        [AGENC_DAEMON_METHOD_CAPABILITIES_KEY]: methodCapabilities,
+      } satisfies AgenCDaemonServerCapabilities)
+    : serverCapabilities;
   return {
     supported: true,
     state: {
@@ -2235,6 +2274,14 @@ function parseProtocolVersion(
     major: Number.parseInt(match[1]!, 10),
     minor: Number.parseInt(match[2]!, 10),
   };
+}
+
+function requiredMethodCapabilityForSessionEvent(
+  event: JsonObject,
+): AgenCDaemonKnownMethod | undefined {
+  return event.method === "event.mcp_status_changed"
+    ? "session.mcp.status"
+    : undefined;
 }
 
 function cloneJsonObject(value: JsonObject | undefined): JsonObject {
@@ -3060,6 +3107,17 @@ function validateSessionMcpAddServerParams(
     }
   }
   return validated as SessionMcpAddServerParams;
+}
+
+function validateSessionMcpStatusParams(
+  params: JsonObject,
+): SessionMcpStatusParams {
+  const validated = validateObjectShape(params, {
+    methodName: "session.mcp.status",
+    stringFields: ["sessionId"],
+  });
+  validateRequiredString(validated, "session.mcp.status", "sessionId");
+  return validated as SessionMcpStatusParams;
 }
 
 function validateSessionMcpServerByNameParams(

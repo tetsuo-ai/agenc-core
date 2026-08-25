@@ -5,6 +5,7 @@ import type { HistoryReplacedEvent } from "../session/transcript-replacement.js"
 import type {
   IdleInputAdmission,
   IdleInputOwnership,
+  McpSurfaceSnapshot,
   SessionServices,
 } from "../session/session.js";
 import type { ApprovalResolver } from "../tools/orchestrator.js";
@@ -346,6 +347,12 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
   ): void;
   listMcpClients?(): readonly MCPServerConnection[];
   listMcpTools?(): readonly unknown[];
+  /** Cached committed MCP status; daemon sessions expose no transport clients. */
+  mcpSurfaceSnapshot?(): McpSurfaceSnapshot;
+  refreshMcpSurface?(): Promise<McpSurfaceSnapshot>;
+  subscribeToMcpSurface?(
+    cb: (snapshot: McpSurfaceSnapshot) => void,
+  ): () => void;
 }
 
 type MutableCompactProgressSession = {

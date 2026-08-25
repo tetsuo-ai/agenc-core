@@ -32,8 +32,10 @@
     "session.clear",
     "session.snapshot",
     "session.transcript",
+    "session.transcript.v2",
     "session.cancelTurn",
     "session.resolveToolCall",
+    "session.mcp.status",
     "session.mcp.addServer",
     "message.send",
     "message.stream",
@@ -56,6 +58,7 @@
     "health.ready",
     "health.stats",
     "daemon.reload",
+    "daemon.shutdown",
     "auth.login",
     "auth.whoami",
     "auth.logout"
@@ -67,6 +70,7 @@
     "event.permission_request",
     "event.user_input_request",
     "event.mcp_elicitation_request",
+    "event.mcp_status_changed",
     "event.agent_status",
     "event.session_event",
     "event.event_gap",
@@ -757,6 +761,19 @@
         "sessionId"
       ]
     },
+    "SessionTranscriptV2Params": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sessionId"
+      ]
+    },
     "SessionCancelTurnParams": {
       "type": "object",
       "additionalProperties": false,
@@ -843,6 +860,138 @@
         {
           "$ref": "#/definitions/SessionResolveToolCallEvidenceParams"
         }
+      ]
+    },
+    "SessionMcpStatusParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "sessionId"
+      ]
+    },
+    "SessionMcpStatusServer": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9:_-]+$"
+        },
+        "transport": {
+          "type": "string",
+          "enum": [
+            "stdio",
+            "sse",
+            "http",
+            "websocket"
+          ]
+        },
+        "enabled": {
+          "type": "boolean"
+        },
+        "required": {
+          "type": "boolean"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "connected",
+            "pending",
+            "failed",
+            "disabled",
+            "needs-auth",
+            "disconnected"
+          ]
+        },
+        "displayTarget": {
+          "type": "string",
+          "minLength": 1,
+          "oneOf": [
+            {
+              "maxLength": 512,
+              "pattern": "^(?:https?|wss?)://[^/?#@\\s]+$"
+            },
+            {
+              "maxLength": 256,
+              "pattern": "^[^/\\\\\\r\\n\\u0000]+$"
+            }
+          ]
+        },
+        "toolCount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "name",
+        "transport",
+        "enabled",
+        "required",
+        "state",
+        "toolCount"
+      ]
+    },
+    "SessionMcpStatusTool": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "serverName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9:_-]+$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "pattern": "^[^\\u0000-\\u001F\\u007F-\\u009F]+$"
+        }
+      },
+      "required": [
+        "serverName",
+        "name"
+      ]
+    },
+    "SessionMcpStatusResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "servers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SessionMcpStatusServer"
+          }
+        },
+        "tools": {
+          "type": "array",
+          "items": {
+            "$ref": "#/definitions/SessionMcpStatusTool"
+          }
+        }
+      },
+      "required": [
+        "sessionId",
+        "revision",
+        "servers",
+        "tools"
       ]
     },
     "SessionMcpServerConfig": {
@@ -2044,6 +2193,25 @@
         "request"
       ]
     },
+    "EventMcpStatusChangedParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionId": {
+          "type": "string",
+          "minLength": 1
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "sessionId",
+        "revision"
+      ]
+    },
     "EventAgentStatusParams": {
       "type": "object",
       "additionalProperties": false,
@@ -2160,6 +2328,19 @@
       "additionalProperties": false,
       "properties": {}
     },
+    "DaemonShutdownParams": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "instanceId": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "required": [
+        "instanceId"
+      ]
+    },
     "AuthLoginParams": {
       "type": "object",
       "additionalProperties": false,
@@ -2250,10 +2431,16 @@
           "$ref": "#/definitions/SessionTranscriptRequest"
         },
         {
+          "$ref": "#/definitions/SessionTranscriptV2Request"
+        },
+        {
           "$ref": "#/definitions/SessionCancelTurnRequest"
         },
         {
           "$ref": "#/definitions/SessionResolveToolCallRequest"
+        },
+        {
+          "$ref": "#/definitions/SessionMcpStatusRequest"
         },
         {
           "$ref": "#/definitions/SessionMcpAddServerRequest"
@@ -2322,6 +2509,9 @@
           "$ref": "#/definitions/DaemonReloadRequest"
         },
         {
+          "$ref": "#/definitions/DaemonShutdownRequest"
+        },
+        {
           "$ref": "#/definitions/AuthLoginRequest"
         },
         {
@@ -2351,6 +2541,9 @@
         },
         {
           "$ref": "#/definitions/EventMcpElicitationRequestNotification"
+        },
+        {
+          "$ref": "#/definitions/EventMcpStatusChangedNotification"
         },
         {
           "$ref": "#/definitions/EventAgentStatusNotification"
@@ -2499,6 +2692,26 @@
         },
         "params": {
           "$ref": "#/definitions/EventMcpElicitationRequestParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "method",
+        "params"
+      ]
+    },
+    "EventMcpStatusChangedNotification": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "method": {
+          "const": "event.mcp_status_changed"
+        },
+        "params": {
+          "$ref": "#/definitions/EventMcpStatusChangedParams"
         }
       },
       "required": [
@@ -3369,6 +3582,30 @@
         "params"
       ]
     },
+    "SessionTranscriptV2Request": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.transcript.v2"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionTranscriptV2Params"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
     "SessionCancelTurnRequest": {
       "type": "object",
       "additionalProperties": false,
@@ -3408,6 +3645,30 @@
         },
         "params": {
           "$ref": "#/definitions/SessionResolveToolCallParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ]
+    },
+    "SessionMcpStatusRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "session.mcp.status"
+        },
+        "params": {
+          "$ref": "#/definitions/SessionMcpStatusParams"
         }
       },
       "required": [
@@ -3938,6 +4199,30 @@
         "jsonrpc",
         "id",
         "method"
+      ]
+    },
+    "DaemonShutdownRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "#/definitions/RequestId"
+        },
+        "method": {
+          "const": "daemon.shutdown"
+        },
+        "params": {
+          "$ref": "#/definitions/DaemonShutdownParams"
+        }
+      },
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
       ]
     },
     "AuthLoginRequest": {

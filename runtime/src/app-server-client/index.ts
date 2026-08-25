@@ -41,12 +41,7 @@ import {
 } from "../bin/startup-selection.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
-import {
-  createSessionMcpManager,
-  createSessionMcpService,
-} from "../session/mcp-startup.js";
 import { createLocalSkillsServices } from "../skills/local-loader.js";
-import { projectMcpManagerToConnections } from "../mcp-client/tui-connections.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import { disposeSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
 import {
@@ -57,7 +52,6 @@ import {
 import { loadFreshAgentDefinitions } from "../tools/AgentTool/loadAgentsDir.js";
 import type { AgenCBridgeSession } from "../tui/session-types.js";
 import { snapshotProviderEnvironment } from "../llm/provider-options.js";
-import { snapshotMcpRequestEnvironment } from "../mcp-client/environment.js";
 
 export {
   collectDaemonClientEnvOverrides,
@@ -367,8 +361,6 @@ interface DaemonOnlyTuiCleanupResources {
   readonly skillsWatcher: ReturnType<
     typeof createLocalSkillsServices
   >["skillsWatcher"];
-  readonly mcpService?: ReturnType<typeof createSessionMcpService>;
-  readonly mcpManager?: ReturnType<typeof createSessionMcpManager>;
   readonly sandboxExecutionBroker?: SandboxExecutionBroker;
 }
 
@@ -384,11 +376,6 @@ async function closeDaemonOnlyTuiResources(
       return Promise.reject(error);
     }
   };
-  const mcpDispose = startCleanup(() =>
-    resources.mcpService?.dispose !== undefined
-      ? resources.mcpService.dispose()
-      : (resources.mcpManager?.clearServersStrict() ?? Promise.resolve()),
-  );
   const skillsWatcherStop = startCleanup(() =>
     resources.watcherStarted
       ? (resources.skillsWatcher.stop?.() ?? Promise.resolve())
@@ -400,7 +387,7 @@ async function closeDaemonOnlyTuiResources(
       : Promise.resolve(),
   );
   const failures = (
-    await Promise.allSettled([mcpDispose, skillsWatcherStop, sandboxDispose])
+    await Promise.allSettled([skillsWatcherStop, sandboxDispose])
   ).flatMap((result) => (result.status === "rejected" ? [result.reason] : []));
   if (failures.length > 0) {
     throw new AggregateError(
@@ -416,7 +403,6 @@ async function createBoundAgenCDaemonOnlyTuiContext(
   runtimeOptions: AgentRuntimeOptions,
 ): Promise<AgenCDaemonOnlyTuiContext> {
   const providerEnvironment = snapshotProviderEnvironment(env);
-  const mcpRequestEnvironment = snapshotMcpRequestEnvironment(env);
   const roleWorkspace = options.roleWorkspace
     ? normalizeAgentRoleWorkspace(options.roleWorkspace)
     : createAgentRoleWorkspace(options.cwd);
@@ -454,8 +440,6 @@ async function createBoundAgenCDaemonOnlyTuiContext(
   });
   let watcherStarted = false;
   let sandboxExecutionBroker: SandboxExecutionBroker | undefined;
-  let mcpRuntimeManager: ReturnType<typeof createSessionMcpManager> | undefined;
-  let mcpService: ReturnType<typeof createSessionMcpService> | undefined;
   try {
     await skillsServices.skillsWatcher.start();
     watcherStarted = true;
@@ -474,18 +458,7 @@ async function createBoundAgenCDaemonOnlyTuiContext(
       env,
       allowGpu: effectiveConfig.sandbox?.allow_gpu === true,
     });
-    mcpRuntimeManager = createSessionMcpManager([], {
-      environment: mcpRequestEnvironment,
-      sandboxExecutionBroker,
-    });
-    mcpService = createSessionMcpService(mcpRuntimeManager, {
-      authority: configStore,
-      environment: mcpRequestEnvironment,
-    });
-    const activeMcpService = mcpService;
-    const activeMcpRuntimeManager = mcpRuntimeManager;
     const activeSandboxExecutionBroker = sandboxExecutionBroker;
-    await activeMcpService.refreshFromAuthority?.();
     const agentDefinitions = await loadFreshAgentDefinitions(roleWorkspace.cwd);
     const abortController = new AbortController();
     let nextEventId = 0;
@@ -520,7 +493,6 @@ async function createBoundAgenCDaemonOnlyTuiContext(
         ),
         configStore,
         sandboxExecutionBroker: activeSandboxExecutionBroker,
-        mcpManager: activeMcpService,
         skillsManager: skillsServices.skillsManager,
         pluginsManager: skillsServices.pluginsManager,
         skillsWatcher: skillsServices.skillsWatcher,
@@ -543,9 +515,6 @@ async function createBoundAgenCDaemonOnlyTuiContext(
       flushEventLog: () => {},
       emit: () => {},
       nextInternalSubId: () => `daemon-client-${++nextEventId}-${randomUUID()}`,
-      listMcpClients: () =>
-        projectMcpManagerToConnections(activeMcpService as never),
-      listMcpTools: () => activeMcpService.getTools?.() ?? [],
     };
     return {
       baseSession: session,
@@ -555,8 +524,6 @@ async function createBoundAgenCDaemonOnlyTuiContext(
         closeDaemonOnlyTuiResources({
           watcherStarted,
           skillsWatcher: skillsServices.skillsWatcher,
-          mcpService: activeMcpService,
-          mcpManager: activeMcpRuntimeManager,
           sandboxExecutionBroker: activeSandboxExecutionBroker,
         }),
     };
@@ -565,10 +532,6 @@ async function createBoundAgenCDaemonOnlyTuiContext(
       await closeDaemonOnlyTuiResources({
         watcherStarted,
         skillsWatcher: skillsServices.skillsWatcher,
-        ...(mcpService !== undefined ? { mcpService } : {}),
-        ...(mcpRuntimeManager !== undefined
-          ? { mcpManager: mcpRuntimeManager }
-          : {}),
         ...(sandboxExecutionBroker !== undefined
           ? { sandboxExecutionBroker }
           : {}),

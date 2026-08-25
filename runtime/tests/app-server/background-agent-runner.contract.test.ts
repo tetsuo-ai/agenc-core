@@ -1102,6 +1102,23 @@ describe("AgenC delegate background-agent runner", () => {
     });
   });
 
+  it("maps MCP invalidations to the strict passive status notification", () => {
+    expect(
+      notificationFromDaemonEvent("session-1", "agent-1", {
+        id: "mcp-status:agent-1:7",
+        type: "mcp_status_changed",
+        payload: { revision: 7 },
+      }),
+    ).toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.mcp_status_changed",
+      params: {
+        sessionId: "session-1",
+        revision: 7,
+      },
+    });
+  });
+
   it("derives collision-free legacy eventIds without changing reused envelope ids", () => {
     const first = daemonEventFromUnboundSessionEvent({
       id: "reused-tool-progress-sub-id",
@@ -1258,6 +1275,153 @@ describe("AgenC delegate background-agent runner", () => {
         (event as { params?: { sequence?: unknown } }).params?.sequence,
       ).toEqual(expect.any(Number));
     }
+  });
+
+  it("reads cached MCP status but keeps invalidations live-only and coalesced", async () => {
+    const { runner, session, stub, shutdown } = makeTopLevelRunner({
+      conversationId: "session-mcp-status",
+    });
+    const snapshot = Object.freeze({
+      revision: 7,
+      servers: Object.freeze([
+        Object.freeze({
+          name: "audit-ping",
+          transport: "stdio" as const,
+          enabled: true,
+          required: false,
+          state: "connected" as const,
+          displayTarget: "node",
+          toolCount: 1,
+        }),
+      ]),
+      tools: Object.freeze([
+        Object.freeze({
+          serverName: "audit-ping",
+          name: "mcp.audit-ping.check",
+        }),
+      ]),
+    });
+    let invalidationListener: ((revision: number) => void) | undefined;
+    const unsubscribe = vi.fn();
+    Object.assign(session.services, {
+      mcpManager: {
+        mcpSurfaceSnapshot: () => snapshot,
+        subscribeMcpSurfaceInvalidations: (
+          listener: (revision: number) => void,
+        ) => {
+          invalidationListener = listener;
+          return unsubscribe;
+        },
+      },
+    });
+
+    await runner.startAgent({
+      objective: "inspect MCP status",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await expect(runner.getMcpStatus("session-mcp-status")).resolves.toBe(
+      snapshot,
+    );
+
+    invalidationListener?.(8);
+    await new Promise((resolve) => setImmediate(resolve));
+    const emitted: unknown[] = [];
+    let markMcpDeliveryStarted!: () => void;
+    const mcpDeliveryStarted = new Promise<void>((resolve) => {
+      markMcpDeliveryStarted = resolve;
+    });
+    let releaseMcpDelivery!: () => void;
+    await runner.attachAgentSessionEvents("session-mcp-status", {
+      sessionId: "daemon-session-1",
+      emit: (event) => {
+        emitted.push(event);
+        if (
+          (event as { readonly method?: unknown }).method ===
+            "event.mcp_status_changed" &&
+          (event as { readonly params?: { readonly revision?: unknown } }).params
+            ?.revision === 12
+        ) {
+          return new Promise<void>((resolve) => {
+            releaseMcpDelivery = resolve;
+            markMcpDeliveryStarted();
+          });
+        }
+      },
+    });
+    expect(
+      emitted.filter(
+        (event) =>
+          (event as { readonly method?: unknown }).method ===
+          "event.mcp_status_changed",
+      ),
+    ).toEqual([]);
+
+    invalidationListener?.(9);
+    invalidationListener?.(10);
+    invalidationListener?.(11);
+    await vi.waitFor(() => {
+      expect(
+        emitted.filter(
+          (event) =>
+            (event as { readonly method?: unknown }).method ===
+            "event.mcp_status_changed",
+        ),
+      ).toEqual([
+        {
+          jsonrpc: JSON_RPC_VERSION,
+          method: "event.mcp_status_changed",
+          params: { sessionId: "daemon-session-1", revision: 11 },
+        },
+      ]);
+    });
+
+    invalidationListener?.(12);
+    await mcpDeliveryStarted;
+
+    stub.pushStatus({
+      status: "completed",
+      turnId: "turn-mcp-status",
+      endedAtMs: 2,
+      lastMessage: "done",
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(shutdown).not.toHaveBeenCalled();
+    invalidationListener?.(13);
+
+    releaseMcpDelivery();
+    await vi.waitFor(() => {
+      expect(
+        emitted.filter(
+          (event) =>
+            (event as { readonly method?: unknown }).method ===
+            "event.mcp_status_changed",
+        ),
+      ).toEqual([
+        {
+          jsonrpc: JSON_RPC_VERSION,
+          method: "event.mcp_status_changed",
+          params: { sessionId: "daemon-session-1", revision: 11 },
+        },
+        {
+          jsonrpc: JSON_RPC_VERSION,
+          method: "event.mcp_status_changed",
+          params: { sessionId: "daemon-session-1", revision: 12 },
+        },
+      ]);
+    });
+    await vi.waitFor(() => expect(shutdown).toHaveBeenCalledOnce());
+    await vi.waitFor(async () => {
+      await expect(
+        runner.getAgentSnapshot("session-mcp-status"),
+      ).resolves.toBeNull();
+    });
+    expect(unsubscribe).toHaveBeenCalledOnce();
+
+    const emittedAfterRetirement = emitted.length;
+    invalidationListener?.(14);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(emitted).toHaveLength(emittedAfterRetirement);
   });
 
   it("broadcasts a same-session rollback replacement before acknowledging it", async () => {

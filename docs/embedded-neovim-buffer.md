@@ -670,7 +670,7 @@ node scripts/check-embedded-neovim-buffer.mjs
 The TUI talks to the daemon over `AGENC_DAEMON_INTERNAL_METHODS`
 (`workspace.editor.acquire` / `sync` / `heartbeat` / `release`, topology,
 proposal, `predict`, plus session compaction/rewind and `session.setModel`).
-Those methods are not part of the public 53-method SDK. Names:
+Those methods are not part of the public 54-method SDK. Names:
 [`reference/daemon.md`](reference/daemon.md) (Internal methods). Config:
 [`reference/config.md`](reference/config.md) `[buffer]`.
 

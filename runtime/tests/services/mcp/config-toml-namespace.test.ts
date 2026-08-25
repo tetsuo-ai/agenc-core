@@ -62,6 +62,36 @@ async function readConfigToml(): Promise<string> {
 }
 
 describe("MCP config TOML namespace", () => {
+  test("uses the canonical MCP server-name contract for persisted additions", async () => {
+    await expect(
+      addMcpConfig(
+        "plugin:sample:local",
+        { type: "stdio", command: "plugin-mcp", args: [] },
+        "user",
+        configStore,
+      ),
+    ).resolves.toBeUndefined();
+    expect(configStore.current().mcp_servers).toHaveProperty(
+      "plugin:sample:local",
+    );
+
+    for (const name of [
+      "bad.name",
+      "bad name",
+      "bad\nname",
+      "a".repeat(257),
+    ]) {
+      await expect(
+        addMcpConfig(
+          name,
+          { type: "stdio", command: "bad-mcp", args: [] },
+          "user",
+          configStore,
+        ),
+      ).rejects.toThrow(/Invalid MCP server name/u);
+    }
+  });
+
   test("user-scoped stdio servers are written to mcp_servers and loaded by session startup", async () => {
     await addUserMcpServerToToml(
       "github",

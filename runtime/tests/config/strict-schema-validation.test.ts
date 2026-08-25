@@ -222,6 +222,34 @@ describe("strict schema-v2 validation coverage", () => {
     expect(() => validateAgenCConfigBlocks(malformed(config))).toThrow(error);
   });
 
+  test.each([
+    ["empty", ""],
+    ["whitespace", "bad name"],
+    ["tool-namespace delimiter", "bad.name"],
+    ["terminal control", "bad\nname"],
+    ["overlong", "a".repeat(257)],
+  ])("rejects an %s MCP server name", (_label, serverName) => {
+    expect(() =>
+      validateAgenCConfigBlocks(
+        malformed({
+          mcp_servers: {
+            [serverName]: { command: "node" },
+          },
+        }),
+      ),
+    ).toThrow(/Invalid mcp_servers: server name/u);
+  });
+
+  test("accepts canonical plugin-scoped MCP server names", () => {
+    expect(
+      validateAgenCConfigBlocks({
+        mcp_servers: {
+          "plugin:sample:local": { command: "node" },
+        },
+      }).mcp_servers,
+    ).toHaveProperty("plugin:sample:local");
+  });
+
   test("ordinary strict loading rejects the retired llm.xai surface", () => {
     expect(() =>
       validateStrictConfigDocument({

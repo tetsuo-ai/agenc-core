@@ -199,11 +199,8 @@ describe("daemon-backed /model switch surfaces the daemon's authoritative outcom
   });
 });
 
-describe("daemon-mirrored MCP addServer reports the daemon's outcome, not the mirror's", () => {
-  it("does NOT report failure when the daemon add succeeded but the local mirror failed", async () => {
-    // GAP #13b: the daemon owns the REAL MCP connection. A failure of the
-    // best-effort local mirror must not be reported as the overall result
-    // when the daemon already added the server.
+describe("daemon-owned MCP addServer has no local connection mirror", () => {
+  it("reports daemon success without invoking an inherited local manager", async () => {
     const client = createClient();
     client.results.set("session.mcp.addServer", {
       sessionId: "session_1",
@@ -211,18 +208,21 @@ describe("daemon-mirrored MCP addServer reports the daemon's outcome, not the mi
       success: true,
       toolCount: 3,
     });
+    client.results.set("session.mcp.status", {
+      sessionId: "session_1",
+      revision: 1,
+      servers: [],
+      tools: [],
+    });
     const baseSession = createBaseSession();
     let localAddCalled = false;
     baseSession.services.mcpManager = {
       addServer: async () => {
         localAddCalled = true;
-        // Local mirror fails for a reason unrelated to "already
-        // configured" — e.g. the client-side projection can't spawn the
-        // stdio child. The daemon connection is nonetheless live.
         return {
           serverName: "audit-ping",
           success: false,
-          error: "spawn ENOENT (local mirror cannot launch child)",
+          error: "inherited manager must not be invoked",
         };
       },
     };
@@ -249,8 +249,7 @@ describe("daemon-mirrored MCP addServer reports the daemon's outcome, not the mi
       args: ["/tmp/audit-ping.mjs"],
     });
 
-    expect(localAddCalled).toBe(true);
-    // Authoritative daemon outcome, NOT the local mirror's failure.
+    expect(localAddCalled).toBe(false);
     expect(result.success).toBe(true);
     expect(result.serverName).toBe("audit-ping");
     expect(result.toolCount).toBe(3);
@@ -264,6 +263,12 @@ describe("daemon-mirrored MCP addServer reports the daemon's outcome, not the mi
       serverName: "audit-ping",
       success: false,
       error: "daemon refused: duplicate name",
+    });
+    client.results.set("session.mcp.status", {
+      sessionId: "session_1",
+      revision: 1,
+      servers: [],
+      tools: [],
     });
     let localAddCalled = false;
     const baseSession = createBaseSession();
@@ -294,8 +299,6 @@ describe("daemon-mirrored MCP addServer reports the daemon's outcome, not the mi
       args: ["/tmp/audit-ping.mjs"],
     });
 
-    // Daemon add failed: do not even touch the local mirror, and report
-    // the daemon failure.
     expect(localAddCalled).toBe(false);
     expect(result.success).toBe(false);
     expect(result.error).toBe("daemon refused: duplicate name");

@@ -122,7 +122,7 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 ## Protocol
 
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
-- Protocol version constant: **`1.2.0`**
+- Protocol version constant: **`1.3.0`**
   (`AGENC_DAEMON_PROTOCOL_VERSION` in `runtime/src/app-server/protocol/index.ts`).
 - Clients send `initialize` with the protocol version. Negotiation compares the
   numeric major and minor versions: the server accepts the same major when the
@@ -130,12 +130,14 @@ const client = await connect(); // socket + cookie under AGENC_HOME
   does not affect compatibility. Malformed versions, different majors, and a
   client minor newer than the server are rejected with
   `PROTOCOL_VERSION_UNSUPPORTED`.
-- Consequently, a 1.2 daemon accepts 1.0 and 1.1 clients, while a client that
-  requires 1.2 is rejected by a still-running 1.0/1.1 daemon. The embedding
-  SDK retries initialization at the reported older server version and uses
-  advertised capabilities for additive fallbacks; Core/TUI callers may still
-  fail closed. Update if necessary, then run `agenc daemon restart` so the
-  daemon uses the installed protocol version.
+- Consequently, a 1.3 daemon accepts 1.0, 1.1, and 1.2 clients, while a client
+  that requires 1.3 is rejected by a still-running 1.0/1.1/1.2 daemon. The
+  embedding SDK retries initialization at the reported older server version and
+  uses advertised capabilities for additive fallbacks; Core/TUI callers may
+  still fail closed. Protocols 1.0–1.2 advertise `session.mcp.status: false`,
+  reject that method, and never receive `event.mcp_status_changed`. Update if
+  necessary, then run `agenc daemon restart` so the daemon uses the installed
+  protocol version.
 
 ### Public methods (`AGENC_DAEMON_METHODS`)
 
@@ -150,6 +152,7 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 | `session.terminate` / `session.clear` / `session.snapshot` / `session.transcript` / `session.transcript.v2` | Session control and identity-bearing history sync                                                                  |
 | `session.cancelTurn`                                                                                        | Abort the current turn, optionally only when `expectedTurnId` still matches                                        |
 | `session.resolveToolCall`                                                                                   | Resolve a tool call whose durable outcome requires review                                                          |
+| `session.mcp.status`                                                                                        | Read the owning session's revisioned, credential-free MCP status projection                                        |
 | `session.mcp.addServer`                                                                                     | Attach MCP server to a session                                                                                     |
 | `message.send` / `message.stream`                                                                           | Prompt turns                                                                                                       |
 | `thread/realtime/start` / `appendAudio` / `appendText` / `stop` / `listVoices`                              | Realtime voice/thread. `start` is advertised `false` (fail-closed)                                                 |
@@ -165,7 +168,7 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 
 ### Internal methods (`AGENC_DAEMON_INTERNAL_METHODS`)
 
-Not part of the public 53-method SDK surface. The TUI and workbench use them
+Not part of the public 54-method SDK surface. The TUI and workbench use them
 over the same JSON-RPC socket. Embedders should not call these unless they are
 reimplementing the workbench. Source:
 `runtime/src/app-server/protocol/index.ts`.
@@ -178,11 +181,11 @@ reimplementing the workbench. Source:
 | Code prediction | `workspace.editor.predict`, `cancelPrediction`, `predictionFeedback` |
 | Compaction / rewind | `session.partialCompactFromMessage`, `rollbackCompaction`, `extendCompactionRollbackRetention`, `rewindConversationToMessage`, `previewFileRewind`, `rewindFilesToMessage` |
 | Session controls | `session.setModel`, `setPermissionMode`, `applyConfig` |
-| Hooks / MCP | `session.hooks.status`, `hooks.setDisabled`, `mcp.reconnectServer`, `mcp.enableServer`, `mcp.disableServer` |
+| Hooks / MCP | `session.hooks.status`, `session.hooks.setDisabled`, `session.mcp.reconnectServer`, `session.mcp.enableServer`, `session.mcp.disableServer` |
 
 Workbench BUFFER and Neovim behavior: [`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md).
 
-### Race-safe turns and transcript sync (protocol 1.2)
+### Race-safe turns and transcript sync (protocol 1.2+)
 
 `message.send` and `message.stream` accept a caller-stable
 `clientMessageId`. Reusing it with the same content is idempotent; reusing it
@@ -319,15 +322,22 @@ sessions.
 
 ### Server → client notifications
 
-All 17 names in `AGENC_DAEMON_NOTIFICATION_METHODS`:
+All 18 names in `AGENC_DAEMON_NOTIFICATION_METHODS`:
 
 | Group | Methods |
 | --- | --- |
 | Exec | `commandExec.outputDelta` |
 | Turn / tools | `event.message_chunk`, `event.tool_request`, `event.permission_request`, `event.user_input_request`, `event.mcp_elicitation_request` |
-| Status | `event.agent_status`, `event.session_event` |
+| Status | `event.agent_status`, `event.session_event`, `event.mcp_status_changed` |
 | Sync | `event.event_gap` (retention eviction or replay required; do not skip) |
 | Realtime (typed; start is advertised `false`) | `thread/realtime/started`, `itemAdded`, `transcript/delta`, `transcript/done`, `outputAudio/delta`, `sdp`, `error`, `closed` |
+
+`event.mcp_status_changed` is an invalidation, not a state dump. Its strict
+payload is `{ sessionId, revision }`. Fetch `session.mcp.status` for the
+sanitized server/tool projection. A daemon replacement starts a new revision
+epoch, so reconnecting clients discard the prior connection's watermark. The
+invalidation is live-only and coalesced: it never enters transcript or detached
+replay buffers, and a newly attached client fetches the current snapshot.
 
 `initialize.capabilities` can opt an authenticated connection into delivery
 outside ordinary session attachment:

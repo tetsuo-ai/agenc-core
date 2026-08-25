@@ -1107,6 +1107,41 @@ export interface McpManager {
    * consumer as `getConnectedServers`.
    */
   getServerInstructions?(name: string): string | undefined;
+  /**
+   * Atomic, credential-free projection captured only after an MCP transaction
+   * has committed (or finished rolling back). Daemon clients consume this
+   * instead of constructing a second connection manager.
+   */
+  mcpSurfaceSnapshot?(): McpSurfaceSnapshot;
+  /** Subscribe to committed status revisions; candidate transaction state is never emitted. */
+  subscribeMcpSurfaceInvalidations?(listener: (revision: number) => void): () => void;
+}
+
+export interface McpSurfaceServer {
+  readonly name: string;
+  readonly transport: "stdio" | "sse" | "http" | "websocket";
+  readonly enabled: boolean;
+  readonly required: boolean;
+  readonly state:
+    | "connected"
+    | "pending"
+    | "failed"
+    | "disabled"
+    | "needs-auth"
+    | "disconnected";
+  readonly displayTarget?: string;
+  readonly toolCount: number;
+}
+
+export interface McpSurfaceTool {
+  readonly serverName: string;
+  readonly name: string;
+}
+
+export interface McpSurfaceSnapshot {
+  readonly revision: number;
+  readonly servers: readonly McpSurfaceServer[];
+  readonly tools: readonly McpSurfaceTool[];
 }
 
 export interface McpServerMutationResult {

@@ -31,6 +31,10 @@ import {
   MCPManager as LiveMCPManager,
   toScopedMcpServerConfig,
 } from "../mcp-client/manager.js";
+import {
+  assertValidMcpServerName,
+  mcpServerNameValidationIssue,
+} from "../mcp-client/server-name.js";
 import type { MCPToolBridgePermissionOptions } from "../mcp-client/tools.js";
 import type { MCPServerConfig } from "../mcp-client/types.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
@@ -67,6 +71,9 @@ import { EMPTY_MCP_TOOL_APPROVAL_TEMPLATE_FILE } from "../permissions/rpc/mcp-to
 import { RequestPermissionsRpc } from "../permissions/rpc/request-permissions.js";
 import type {
   McpServerMutationResult,
+  McpSurfaceServer,
+  McpSurfaceSnapshot,
+  McpSurfaceTool,
   McpSessionServerConfig,
   Session,
   SessionServices,
@@ -76,6 +83,7 @@ import { createMCPCallObserverForSession } from "./observer-wiring.js";
 import { createSessionMcpElicitationHandlers } from "../elicitation/mcp.js";
 import type { McpGranularElicitationPolicy } from "../elicitation/mcp.js";
 import { logForDebugging } from "../utils/debug.js";
+import { redactSecrets } from "../secrets/index.js";
 
 export interface McpStartupCancellationToken {
   readonly signal: AbortSignal;
@@ -192,6 +200,108 @@ function buildEffectiveServerMap(
   }
 
   return map;
+}
+
+function sanitizeMcpSurfaceText(value: string, maxLength = 4_096): string {
+  const printable = redactSecrets(value)
+    .replace(/[\u0000-\u001F\u007F-\u009F]/gu, " ")
+    .trim();
+  const codePoints = Array.from(printable);
+  return codePoints.length <= maxLength
+    ? printable
+    : `${codePoints.slice(0, Math.max(0, maxLength - 1)).join("")}…`;
+}
+
+function mcpSurfaceDisplayTarget(
+  config: ConfiguredServerWithExtras,
+): string | undefined {
+  if ((config.transport ?? "stdio") === "stdio") {
+    const command = config.command?.trim();
+    if (!command) return undefined;
+    const executable = command.split(/[\\/]/u).at(-1) ?? command;
+    const displayTarget = sanitizeMcpSurfaceText(executable, 256);
+    return displayTarget.length > 0 ? displayTarget : undefined;
+  }
+  if (config.endpoint === undefined) return undefined;
+  try {
+    const endpoint = new URL(config.endpoint);
+    if (
+      endpoint.protocol !== "http:" &&
+      endpoint.protocol !== "https:" &&
+      endpoint.protocol !== "ws:" &&
+      endpoint.protocol !== "wss:"
+    ) {
+      return "remote endpoint";
+    }
+    const origin = endpoint.origin;
+    if (
+      origin.length > 512 ||
+      new URL(origin).origin !== origin
+    ) {
+      return "remote endpoint";
+    }
+    return origin;
+  } catch {
+    return "remote endpoint";
+  }
+}
+
+function projectMcpSurface(
+  manager: RuntimeMcpManagerWithMetadata,
+  revision: number,
+): McpSurfaceSnapshot {
+  const configs = [...(manager.getConfiguredServers?.() ?? [])].sort((a, b) =>
+    a.name.localeCompare(b.name),
+  );
+  const tools: McpSurfaceTool[] = [];
+  const servers: McpSurfaceServer[] = configs.map((config) => {
+    assertValidMcpServerName(config.name);
+    const serverTools = [
+      ...(typeof manager.getToolsByServer === "function"
+        ? manager.getToolsByServer(config.name)
+        : []),
+    ].sort((a, b) => a.name.localeCompare(b.name));
+    for (const tool of serverTools) {
+      tools.push(
+        Object.freeze({
+          serverName: config.name,
+          name: sanitizeMcpSurfaceText(tool.name, 512),
+        }),
+      );
+    }
+    const enabled = config.enabled !== false;
+    const connectionState = manager.getConnectionState?.(config.name);
+    const state: McpSurfaceServer["state"] = !enabled
+      ? "disabled"
+      : connectionState?.type === "connected" ||
+          (typeof manager.isConnected === "function" &&
+            manager.isConnected(config.name))
+        ? "connected"
+        : connectionState?.type ?? "disconnected";
+    const displayTarget = mcpSurfaceDisplayTarget(config);
+    return Object.freeze({
+      name: config.name,
+      transport: config.transport ?? "stdio",
+      enabled,
+      required: config.required ?? false,
+      state,
+      ...(displayTarget !== undefined ? { displayTarget } : {}),
+      toolCount: serverTools.length,
+    });
+  });
+  tools.sort(
+    (a, b) =>
+      a.serverName.localeCompare(b.serverName) || a.name.localeCompare(b.name),
+  );
+  return Object.freeze({
+    revision,
+    servers: Object.freeze(servers),
+    tools: Object.freeze(tools),
+  });
+}
+
+function mcpSurfaceSignature(snapshot: McpSurfaceSnapshot): string {
+  return JSON.stringify([snapshot.servers, snapshot.tools]);
 }
 
 /**
@@ -834,7 +944,13 @@ export function createSessionMcpService(
     enabledOverrides: new Map(),
   };
   let mutationTail: Promise<void> = Promise.resolve();
+  let serviceMutationActive = false;
+  let managerSurfaceDirty = false;
+  let managerSurfaceCommitScheduled = false;
   let closed = false;
+  let surfaceSnapshot = projectMcpSurface(runtimeManager, 0);
+  let surfaceSignature = mcpSurfaceSignature(surfaceSnapshot);
+  const surfaceInvalidationListeners = new Set<(revision: number) => void>();
   let authorityGeneration = 0;
   let appliedAuthorityGeneration = -1;
   let notifiedAuthorityGeneration = -1;
@@ -850,17 +966,96 @@ export function createSessionMcpService(
   let pendingAuthorityRevocation: Promise<void> | undefined;
   let authoritySubscriptionInstalled = false;
   let unsubscribeAuthority: (() => void) | undefined;
+  let unsubscribeManagerSurface: (() => void) | undefined;
   let disposeTask: Promise<void> | undefined;
   const planGenerations = new WeakMap<SessionMcpResolutionPlan, number>();
 
+  const commitSurfaceIfChanged = (notify = true): void => {
+    let candidate: McpSurfaceSnapshot;
+    let candidateSignature: string;
+    try {
+      candidate = projectMcpSurface(runtimeManager, surfaceSnapshot.revision);
+      candidateSignature = mcpSurfaceSignature(candidate);
+    } catch (error) {
+      logForDebugging(
+        `MCP committed surface projection failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { level: "error" },
+      );
+      return;
+    }
+    if (candidateSignature === surfaceSignature) return;
+    if (surfaceSnapshot.revision >= Number.MAX_SAFE_INTEGER) {
+      logForDebugging("MCP surface revision exhausted", { level: "error" });
+      return;
+    }
+    surfaceSnapshot = Object.freeze({
+      ...candidate,
+      revision: surfaceSnapshot.revision + 1,
+    });
+    surfaceSignature = candidateSignature;
+    if (!notify) return;
+    for (const listener of [...surfaceInvalidationListeners]) {
+      try {
+        listener(surfaceSnapshot.revision);
+      } catch (error) {
+        logForDebugging(
+          `MCP surface invalidation listener failed: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          { level: "error" },
+        );
+      }
+    }
+  };
+
   const enqueueMutation = <T>(operation: () => Promise<T>): Promise<T> => {
-    const run = mutationTail.then(operation);
+    const run = mutationTail.then(async () => {
+      serviceMutationActive = true;
+      try {
+        return await operation();
+      } finally {
+        serviceMutationActive = false;
+        managerSurfaceDirty = false;
+        if (!closed) commitSurfaceIfChanged();
+      }
+    });
     mutationTail = run.then(
       () => undefined,
       () => undefined,
     );
     return run;
   };
+  const scheduleManagerSurfaceCommit = (): void => {
+    if (closed) return;
+    managerSurfaceDirty = true;
+    if (serviceMutationActive || managerSurfaceCommitScheduled) return;
+    managerSurfaceCommitScheduled = true;
+    const run = mutationTail.then(() => {
+      managerSurfaceCommitScheduled = false;
+      if (closed || !managerSurfaceDirty) return;
+      managerSurfaceDirty = false;
+      commitSurfaceIfChanged();
+    });
+    mutationTail = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    void run.catch((error: unknown) => {
+      logForDebugging(
+        `MCP manager surface reconciliation failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+        { level: "error" },
+      );
+    });
+  };
+  if (typeof manager.subscribeSurfaceChanges === "function") {
+    unsubscribeManagerSurface = manager.subscribeSurfaceChanges(
+      scheduleManagerSurfaceCommit,
+    );
+  }
   const closedError = (): Error => new Error("MCP session service is closed");
   const stopManagerStrict = (): Promise<void> => manager.stopStrict();
   const clearManagerStrict = (): Promise<void> => manager.clearServersStrict();
@@ -1267,12 +1462,13 @@ export function createSessionMcpService(
   const addSessionServerUnlocked = async (
     config: McpSessionServerConfig,
   ): Promise<McpServerMutationResult> => {
-    if (!/^[A-Za-z0-9_-]+$/u.test(config.name)) {
+    const serverNameIssue = mcpServerNameValidationIssue(config.name);
+    if (serverNameIssue !== undefined) {
       return {
         serverName: config.name,
         success: false,
         toolCount: 0,
-        error: `Invalid MCP server name "${config.name}". Names can only contain letters, numbers, hyphens, and underscores.`,
+        error: `Invalid MCP server name: ${serverNameIssue}.`,
       };
     }
     const { args: inputArgs, ...inputConfig } = config;
@@ -1495,6 +1691,9 @@ export function createSessionMcpService(
   const dispose = (): Promise<void> => {
     if (disposeTask !== undefined) return disposeTask;
     closed = true;
+    unsubscribeManagerSurface?.();
+    unsubscribeManagerSurface = undefined;
+    managerSurfaceDirty = false;
     authorityGeneration += 1;
     authorityRefreshPending = false;
     authorityRefreshForcePending = false;
@@ -1506,10 +1705,18 @@ export function createSessionMcpService(
     const initialRevocation = stopManagerStrict();
     void initialRevocation.catch(() => undefined);
     const drain = mutationTail;
-    const run = drain.then(async () => {
-      await initialRevocation.catch(() => undefined);
-      await clearManagerStrict();
-    });
+    const run = drain
+      .then(async () => {
+        await initialRevocation.catch(() => undefined);
+        await clearManagerStrict();
+      })
+      .finally(() => {
+        try {
+          commitSurfaceIfChanged(false);
+        } finally {
+          surfaceInvalidationListeners.clear();
+        }
+      });
     mutationTail = run.then(
       () => undefined,
       () => undefined,
@@ -1565,6 +1772,12 @@ export function createSessionMcpService(
       enqueueServerMutation(config.name, () =>
         addSessionServerUnlocked(config),
       ),
+    mcpSurfaceSnapshot: () => surfaceSnapshot,
+    subscribeMcpSurfaceInvalidations: (listener) => {
+      if (closed) return () => {};
+      surfaceInvalidationListeners.add(listener);
+      return () => surfaceInvalidationListeners.delete(listener);
+    },
     dispose,
     getTools:
       typeof manager.getTools === "function"

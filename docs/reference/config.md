@@ -508,7 +508,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `mcp.server.transport` | `stdio` or `sse`. |
 | `mcp.server.port`, `mcp.server.host` | SSE listener port and host. |
 | `mcp.server.workspace` | Absolute workspace required for daemon SSE autostart. |
-| `mcp_servers`, `mcp_servers.<server>` | Named external MCP connections. |
+| `mcp_servers`, `mcp_servers.<server>` | Named external MCP connections. Server identifiers are 1–256 ASCII letters, numbers, colons, hyphens, or underscores; `.` is reserved as the tool-identity delimiter. |
 | `mcp_servers.<server>.transport` | `stdio`, `sse`, `http`, or `websocket`. |
 | `mcp_servers.<server>.command`, `mcp_servers.<server>.args`, `mcp_servers.<server>.cwd` | Stdio process launch fields. |
 | `mcp_servers.<server>.env`, `mcp_servers.<server>.env.<name>`, `mcp_servers.<server>.env_vars` | Literal environment map and inherited variable-name array. |

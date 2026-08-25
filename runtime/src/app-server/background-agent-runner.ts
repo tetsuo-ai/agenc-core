@@ -55,6 +55,7 @@ import {
 import type { ToolRegistry } from "../tool-registry.js";
 import { getPlan, getPlanFilePath } from "../utils/plans.js";
 import { stableStringify } from "../utils/stableStringify.js";
+import { logForDebugging } from "../utils/debug.js";
 import { EXIT_PLAN_MODE_TOOL_NAME } from "../tools/ExitPlanModeTool/constants.js";
 import type { AgentId } from "../types/ids.js";
 import {
@@ -94,7 +95,11 @@ import {
   type ReviewDecision,
 } from "../permissions/review-decision.js";
 import type { AgentStatus as ThreadAgentStatus } from "../agents/status.js";
-import type { McpServerMutationResult, Session } from "../session/session.js";
+import type {
+  McpServerMutationResult,
+  McpSurfaceSnapshot,
+  Session,
+} from "../session/session.js";
 import type { Event } from "../session/event-log.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import { reconstructFromRollout } from "../session/rollout-reconstruction.js";
@@ -575,6 +580,7 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentMcpServerByNameParams,
   ): Promise<McpServerMutationResult>;
+  getMcpStatus?(agentId: string): Promise<McpSurfaceSnapshot>;
   partialCompactFromMessage?(
     agentId: string,
     params: AgenCBackgroundAgentPartialCompactParams,
@@ -729,6 +735,7 @@ interface ActiveBackgroundAgent {
   uninstallRuntimeSettingsPreCommit?: () => void;
   unsubscribeElicitationEvents?: () => void;
   unsubscribePhaseEvents?: () => void;
+  unsubscribeMcpSurfaceInvalidations?: () => void;
   sessionBinding?: AgenCBackgroundAgentSessionEventBinding;
   bufferedEvents: BackgroundAgentDaemonEvent[];
   activeToolCallIds: Set<string>;
@@ -1193,6 +1200,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       this.#pendingEvents.delete(managedThread.threadId);
       this.#pendingActiveToolCallIds.delete(managedThread.threadId);
       this.#active.set(managedThread.threadId, active);
+      active.unsubscribeMcpSurfaceInvalidations =
+        this.#installMcpSurfaceInvalidationBridge(active);
       this.#installDurableTerminalFinalizer(active, managedThread.threadId);
       active.unsubscribeElicitationEvents =
         this.#installSessionEventLogBridge(active);
@@ -1667,6 +1676,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         this.#pendingEvents.delete(params.agentId);
         this.#pendingActiveToolCallIds.delete(params.agentId);
         this.#active.set(params.agentId, active);
+        active.unsubscribeMcpSurfaceInvalidations =
+          this.#installMcpSurfaceInvalidationBridge(active);
         insertedGeneration = active;
         this.#installDurableTerminalFinalizer(active, params.agentId);
         active.unsubscribeElicitationEvents =
@@ -1766,6 +1777,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active.uninstallRuntimeSettingsPreCommit?.();
     active.unsubscribeElicitationEvents?.();
     active.unsubscribePhaseEvents?.();
+    active.unsubscribeMcpSurfaceInvalidations?.();
     if (this.#active.get(agentId) === active) {
       this.#active.delete(agentId);
       this.#pendingEvents.delete(agentId);
@@ -1918,6 +1930,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active.uninstallApprovalBridge?.();
     active.uninstallRuntimeSettingsPreCommit?.();
     active.unsubscribeElicitationEvents?.();
+    active.unsubscribePhaseEvents?.();
+    active.unsubscribeMcpSurfaceInvalidations?.();
     // gaphunt3 #48: the agentId is the session/conversationId used as the
     // vended-key cache key, so evict this session's entries on stop —
     // otherwise non-expiring keys leak for the daemon's lifetime.
@@ -1995,6 +2009,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active.uninstallRuntimeSettingsPreCommit?.();
     active.unsubscribeElicitationEvents?.();
     active.unsubscribePhaseEvents?.();
+    active.unsubscribeMcpSurfaceInvalidations?.();
     this.#abortPendingToolDecisions(agentId);
     this.#authBackend?.clearVendedKeysForSession(agentId);
     if (shutdownErrors.length > 0) {
@@ -2107,6 +2122,83 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     for (const event of replay) {
       await this.#emitDaemonEvent(active, event);
     }
+  }
+
+  #installMcpSurfaceInvalidationBridge(
+    active: ActiveBackgroundAgent,
+  ): (() => void) | undefined {
+    const manager = active.bootstrap.session.services.mcpManager;
+    if (manager === undefined) return undefined;
+    const subscribe = manager.subscribeMcpSurfaceInvalidations;
+    if (subscribe === undefined) return undefined;
+    const agentId = active.thread.threadId;
+    let disposed = false;
+    let pendingRevision: number | undefined;
+    let drainScheduled = false;
+    const drain = (): void => {
+      if (drainScheduled || pendingRevision === undefined) return;
+      drainScheduled = true;
+      const tail = active.dispatchChain
+        .then(async () => {
+          while (pendingRevision !== undefined) {
+            const revision = pendingRevision;
+            pendingRevision = undefined;
+            if (
+              disposed ||
+              this.#active.get(agentId) !== active ||
+              !isRunnableActiveAgent(active)
+            ) {
+              return;
+            }
+            const binding = active.sessionBinding;
+            if (binding === undefined) continue;
+            await binding.emit(
+              notificationFromDaemonEvent(binding.sessionId, agentId, {
+                id: `mcp-status:${agentId}:${revision}`,
+                type: "mcp_status_changed",
+                payload: { revision },
+              }),
+            );
+          }
+        })
+        .catch((error: unknown) => {
+          logForDebugging(
+            `MCP status invalidation delivery failed: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            { level: "error" },
+          );
+        })
+        .finally(() => {
+          drainScheduled = false;
+          if (!disposed && pendingRevision !== undefined) drain();
+        });
+      active.dispatchChain = tail;
+    };
+    const unsubscribe = subscribe.call(manager, (revision) => {
+      if (
+        disposed ||
+        this.#active.get(agentId) !== active ||
+        !isRunnableActiveAgent(active)
+      ) {
+        return;
+      }
+      // This is an ephemeral invalidation, not transcript state. A client that
+      // attaches later fetches the current snapshot explicitly, so never queue
+      // a pre-attachment revision for replay.
+      if (active.sessionBinding === undefined) return;
+      pendingRevision =
+        pendingRevision === undefined
+          ? revision
+          : Math.max(pendingRevision, revision);
+      drain();
+    });
+    return () => {
+      if (disposed) return;
+      disposed = true;
+      pendingRevision = undefined;
+      unsubscribe();
+    };
   }
 
   async submitAgentMessage(
@@ -2365,6 +2457,26 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       toolCount: result.toolCount,
       ...(result.error !== undefined ? { error: result.error } : {}),
     };
+  }
+
+  async getMcpStatus(agentId: string): Promise<McpSurfaceSnapshot> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const manager = active.bootstrap.session.services.mcpManager;
+    if (manager === undefined) {
+      throw new Error(
+        "MCP status projection is not available for this daemon session.",
+      );
+    }
+    const snapshot = manager.mcpSurfaceSnapshot;
+    if (snapshot === undefined) {
+      throw new Error(
+        "MCP status projection is not available for this daemon session.",
+      );
+    }
+    return snapshot.call(manager);
   }
 
   async reconnectMcpServer(
@@ -3776,6 +3888,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         active.uninstallRuntimeSettingsPreCommit?.();
         active.unsubscribeElicitationEvents?.();
         active.unsubscribePhaseEvents?.();
+        active.unsubscribeMcpSurfaceInvalidations?.();
         // gaphunt3 #48: the agentId is the session/conversationId used as the
         // vended-key cache key, so evict this session's entries on terminal
         // cleanup — otherwise non-expiring keys leak for the daemon's lifetime.
@@ -4840,6 +4953,22 @@ export function notificationFromDaemonEvent(
 ): AgenCDaemonSessionNotification {
   const base = eventBaseParams(sessionId, agentId, event);
   const payload = event.payload;
+  if (
+    event.type === "mcp_status_changed" &&
+    isJsonObject(payload) &&
+    typeof payload.revision === "number" &&
+    Number.isSafeInteger(payload.revision) &&
+    payload.revision >= 0
+  ) {
+    return {
+      jsonrpc: JSON_RPC_VERSION,
+      method: "event.mcp_status_changed",
+      params: {
+        sessionId,
+        revision: payload.revision,
+      },
+    };
+  }
   if (
     event.type === "agent_message_delta" &&
     isJsonObject(payload) &&
