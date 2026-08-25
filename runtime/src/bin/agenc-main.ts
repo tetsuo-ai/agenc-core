@@ -280,6 +280,9 @@ import {
   setIsRemoteMode,
   setSessionTrustAccepted,
 } from "../bootstrap/state.js";
+import {
+  installAgenCShutdownSignalHandlers,
+} from "../lifecycle/signal-handlers.js";
 import { installGlobalErrorNet } from "../utils/gracefulShutdown.js";
 import { isRecord } from "../utils/record.js";
 import type { AgenCTuiBridgeSession } from "../tui/daemon-session.js";
@@ -735,39 +738,14 @@ function startupContentFromInputs(
 // ─────────────────────────────────────────────────────────────────────
 
 /**
- * Thrown when an init step observes its AbortSignal. The top-level
- * IIFE recognises this error type + exits with code 130 (SIGINT
- * conventional) after running reverse-cleanup. Mirrors I-51 rule
- * "emit error:'init_aborted'".
+ * Thrown when pre-daemon one-shot setup observes its lifecycle AbortSignal.
+ * The one-shot boundary maps it to the shared signal handler's exit code.
  */
 class InitAbortedError extends Error {
   constructor(message: string) {
     super(`init_aborted: ${message}`);
     this.name = "InitAbortedError";
   }
-}
-
-/**
- * Wire pre-session signal handlers to the init-stage AbortController.
- * Ctrl+C / SIGTERM / SIGHUP during init propagates to every async
- * init step, which in turn throws InitAbortedError; the top-level
- * catcher runs reverse-cleanup before exit.
- */
-export function installInitSignalHandlers(
-  initAbort: AbortController,
-  proc: Pick<NodeJS.Process, "once" | "removeListener"> = process,
-): () => void {
-  const onSigInt = () => initAbort.abort("SIGINT during init");
-  const onSigTerm = () => initAbort.abort("SIGTERM during init");
-  const onSigHup = () => initAbort.abort("SIGHUP during init");
-  proc.once("SIGINT", onSigInt);
-  proc.once("SIGTERM", onSigTerm);
-  proc.once("SIGHUP", onSigHup);
-  return () => {
-    proc.removeListener("SIGINT", onSigInt);
-    proc.removeListener("SIGTERM", onSigTerm);
-    proc.removeListener("SIGHUP", onSigHup);
-  };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1994,6 +1972,28 @@ function oneShotSnapshotFields(
   };
 }
 
+function oneShotAbortExitCode(signal: AbortSignal): number {
+  const reason = signal.reason;
+  if (
+    isJsonRecord(reason) &&
+    typeof reason.exitCode === "number" &&
+    Number.isInteger(reason.exitCode) &&
+    reason.exitCode >= 0 &&
+    reason.exitCode <= 255
+  ) {
+    return reason.exitCode;
+  }
+  return 130;
+}
+
+function oneShotAbortDescription(signal: AbortSignal): string {
+  const reason = signal.reason;
+  if (isJsonRecord(reason) && typeof reason.signal === "string") {
+    return `${reason.signal} during one-shot`;
+  }
+  return String(reason ?? "aborted");
+}
+
 /**
  * Detect a daemon `event.permission_request` and extract the `requestId` the
  * client must answer.
@@ -2093,8 +2093,15 @@ async function runDaemonOneShotPrompt(params: {
   readonly configPath?: string;
   readonly initialContent?: string | readonly MessageContentBlock[];
   readonly permissionMode?: AgentCreateParams["permissionMode"];
+  readonly signal: AbortSignal;
 }): Promise<number> {
+  if (params.signal.aborted) {
+    return oneShotAbortExitCode(params.signal);
+  }
   await params.deps.ensureDaemonReady(params.env)();
+  if (params.signal.aborted) {
+    return oneShotAbortExitCode(params.signal);
+  }
   const daemonClient = await params.deps.createConnectedTuiClient({
     env: params.env,
   });
@@ -2102,6 +2109,7 @@ async function runDaemonOneShotPrompt(params: {
   let unsubscribeEvents: (() => void) | null = null;
   let unsubscribeConnection: (() => void) | null = null;
   let completed = false;
+  let cancelled = false;
   let printedAssistantOutput = false;
   let assistantOutput = "";
   let lastPrintedChar = "";
@@ -2109,6 +2117,10 @@ async function runDaemonOneShotPrompt(params: {
   const collectedEvents: unknown[] = [];
 
   try {
+    if (params.signal.aborted) {
+      cancelled = true;
+      return oneShotAbortExitCode(params.signal);
+    }
     const envOverrides = collectDaemonClientEnvOverrides(params.env);
     const createParams: AgentCreateParams = {
       objective: params.prompt,
@@ -2133,12 +2145,26 @@ async function runDaemonOneShotPrompt(params: {
         mode: "one-shot",
       },
     };
-    const started = await daemonClient.request("agent.create", createParams);
-    startedAgentId = started.agentId;
-    const attachment = await daemonClient.request("agent.attach", {
-      agentId: started.agentId,
-      clientId: `agenc-one-shot-${process.pid}`,
+    const started = await daemonClient.request("agent.create", createParams, {
+      signal: params.signal,
     });
+    startedAgentId = started.agentId;
+    if (params.signal.aborted) {
+      cancelled = true;
+      return oneShotAbortExitCode(params.signal);
+    }
+    const attachment = await daemonClient.request(
+      "agent.attach",
+      {
+        agentId: started.agentId,
+        clientId: `agenc-one-shot-${process.pid}`,
+      },
+      { signal: params.signal },
+    );
+    if (params.signal.aborted) {
+      cancelled = true;
+      return oneShotAbortExitCode(params.signal);
+    }
     const sessionId =
       attachment.sessionIds[0] ??
       started.sessionId ??
@@ -2153,11 +2179,15 @@ async function runDaemonOneShotPrompt(params: {
     const code = await new Promise<number>((resolve, reject) => {
       let settled = false;
       let finalizing = false;
+      let onAbort: (() => void) | null = null;
       const settle = (
         next: { readonly code: number } | { readonly error: Error },
       ) => {
         if (settled) return;
         settled = true;
+        if (onAbort !== null) {
+          params.signal.removeEventListener("abort", onAbort);
+        }
         unsubscribeEvents?.();
         unsubscribeConnection?.();
         if ("error" in next) {
@@ -2166,6 +2196,15 @@ async function runDaemonOneShotPrompt(params: {
           resolve(next.code);
         }
       };
+      onAbort = () => {
+        cancelled = true;
+        settle({ code: oneShotAbortExitCode(params.signal) });
+      };
+      params.signal.addEventListener("abort", onAbort, { once: true });
+      if (params.signal.aborted) {
+        onAbort();
+        return;
+      }
       const snapshotFieldsForStructuredOutput = async (): Promise<
         Pick<OneShotJsonResult, "tokenUsage" | "cacheStats">
       > => {
@@ -2183,6 +2222,8 @@ async function runDaemonOneShotPrompt(params: {
         readonly finalMessage: string;
       }): Promise<void> => {
         if (outputFormat === "text") return;
+        const snapshotFields = await snapshotFieldsForStructuredOutput();
+        if (settled) return;
         const jsonResult: OneShotJsonResult = {
           type: "result",
           sessionId,
@@ -2190,7 +2231,7 @@ async function runDaemonOneShotPrompt(params: {
           exitCode: result.exitCode,
           finalMessage: result.finalMessage,
           deniedPermissionRequestIds: [...deniedPermissionRequestIds],
-          ...(await snapshotFieldsForStructuredOutput()),
+          ...snapshotFields,
           ...(outputFormat === "json" ? { events: collectedEvents } : {}),
         };
         if (outputFormat === "json") {
@@ -2213,6 +2254,7 @@ async function runDaemonOneShotPrompt(params: {
       unsubscribeEvents = daemonClient.subscribeToSessionEvents(
         sessionId,
         (event) => {
+          if (settled) return;
           if (outputFormat === "json") {
             collectedEvents.push(event);
           } else if (outputFormat === "stream-json") {
@@ -2309,8 +2351,11 @@ async function runDaemonOneShotPrompt(params: {
         },
       );
     });
-    completed = true;
+    completed = !cancelled;
     return code;
+  } catch (error) {
+    if (params.signal.aborted) cancelled = true;
+    throw error;
   } finally {
     const stopEvents = unsubscribeEvents as (() => void) | null;
     const stopConnection = unsubscribeConnection as (() => void) | null;
@@ -2327,7 +2372,11 @@ async function runDaemonOneShotPrompt(params: {
         daemonClient,
         env: params.env,
         agentId: startedAgentId,
-        reason: completed ? "one_shot_complete" : "one_shot_failed",
+        reason: cancelled
+          ? "one_shot_cancelled"
+          : completed
+            ? "one_shot_complete"
+            : "one_shot_failed",
       });
     }
     await daemonClient.close().catch(() => {
@@ -2353,13 +2402,15 @@ export async function oneShotCLI(
   startupImages: readonly string[] = [],
   parsedStartupCliFlags?: StartupCliFlags,
 ): Promise<number> {
-  const initAbort = new AbortController();
-  const uninstallInitSignals = installInitSignalHandlers(initAbort);
+  const lifecycleAbort = new AbortController();
+  const shutdownSignal = installAgenCShutdownSignalHandlers((event) => {
+    lifecycleAbort.abort(event);
+  });
 
   const throwIfAborted = (step: string) => {
-    if (initAbort.signal.aborted) {
+    if (lifecycleAbort.signal.aborted) {
       throw new InitAbortedError(
-        `${step}: ${String(initAbort.signal.reason ?? "aborted")}`,
+        `${step}: ${oneShotAbortDescription(lifecycleAbort.signal)}`,
       );
     }
   };
@@ -2382,7 +2433,7 @@ export async function oneShotCLI(
     const resolvedUserMessage =
       userMessage !== null && userMessage.length > 0
         ? userMessage
-        : await resolveUserMessage(initAbort.signal);
+        : await resolveUserMessage(lifecycleAbort.signal);
     throwIfAborted("resolveUserMessage");
 
     const cliCwd = resolveCliCwdForStartup(sessionEnv);
@@ -2428,7 +2479,7 @@ export async function oneShotCLI(
       agencHome,
       cwd: daemonCwd,
       env: process.env,
-      signal: initAbort.signal,
+      signal: lifecycleAbort.signal,
       stderr: process.stderr,
       dangerouslyBypassApprovalsAndSandbox:
         startupCliFlags.dangerouslyBypassApprovalsAndSandbox === true,
@@ -2489,11 +2540,18 @@ export async function oneShotCLI(
       ...(oneShotPermissionMode !== undefined
         ? { permissionMode: oneShotPermissionMode }
         : {}),
+      signal: lifecycleAbort.signal,
     });
   } catch (error) {
+    if (lifecycleAbort.signal.aborted) {
+      if (error instanceof InitAbortedError) {
+        process.stderr.write(`agenc: ${error.message}\n`);
+      }
+      return oneShotAbortExitCode(lifecycleAbort.signal);
+    }
     if (error instanceof InitAbortedError) {
       process.stderr.write(`agenc: ${error.message}\n`);
-      return 130;
+      return oneShotAbortExitCode(lifecycleAbort.signal);
     }
     if (
       error instanceof SessionLockedError ||
@@ -2505,7 +2563,7 @@ export async function oneShotCLI(
     process.stderr.write(`agenc: ${cliStartupErrorMessage(error)}\n`);
     return 1;
   } finally {
-    uninstallInitSignals();
+    shutdownSignal.dispose();
   }
 }
 
