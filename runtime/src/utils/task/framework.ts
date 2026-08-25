@@ -4,14 +4,9 @@ import {
   type TaskStatus,
   type TaskType,
 } from "../../tasks/Task.js";
-import { buildTaskNotificationXml } from "../../tasks/taskNotificationXml.js";
 import type { TaskState } from "../../tasks/types.js";
-import { enqueuePendingNotification } from "../messageQueueManager.js";
 import type { SessionQueueOwner } from "../queueOwnership.js";
-import { getTaskOutputDelta, getTaskOutputPath } from "./diskOutput.js";
-
-// Standard polling interval for all tasks
-export const POLL_INTERVAL_MS = 1000;
+import { getTaskOutputDelta } from "./diskOutput.js";
 
 // Duration to display killed tasks before eviction
 export const STOPPED_DISPLAY_MS = 3_000;
@@ -126,14 +121,6 @@ export function evictTerminalTask(
 }
 
 /**
- * Get all running tasks.
- */
-export function getRunningTasks(state: AppState): TaskState[] {
-  const tasks = state.tasks ?? {};
-  return Object.values(tasks).filter((task) => task.status === "running");
-}
-
-/**
  * Generate attachments for tasks with new output or status changes.
  * Called by the framework to create push notifications.
  */
@@ -228,65 +215,4 @@ export function applyTaskOffsetsAndEvictions(
     }
     return changed ? { ...prev, tasks: newTasks } : prev;
   });
-}
-
-/**
- * Poll all running tasks and check for updates.
- * This is the main polling loop called by the framework.
- */
-export async function pollTasks(
-  getAppState: () => AppState,
-  setAppState: SetAppState,
-): Promise<void> {
-  const state = getAppState();
-  const { attachments, updatedTaskOffsets, evictedTaskIds } =
-    await generateTaskAttachments(state);
-
-  applyTaskOffsetsAndEvictions(setAppState, updatedTaskOffsets, evictedTaskIds);
-
-  // Send notifications for completed tasks
-  for (const attachment of attachments) {
-    enqueueTaskNotification(attachment);
-  }
-}
-
-/**
- * Enqueue a task notification to the message queue.
- */
-function enqueueTaskNotification(attachment: TaskAttachment): void {
-  const statusText = getStatusText(attachment.status);
-
-  const outputPath = getTaskOutputPath(attachment.taskId);
-  const message = buildTaskNotificationXml({
-    taskId: attachment.taskId,
-    toolUseId: attachment.toolUseId,
-    taskType: attachment.taskType,
-    outputPath,
-    status: attachment.status,
-    summary: `Task "${attachment.description}" ${statusText}`,
-  });
-
-  enqueuePendingNotification({
-    value: message,
-    mode: "task-notification",
-    queueOwner: attachment.queueOwner,
-  });
-}
-
-/**
- * Get human-readable status text.
- */
-function getStatusText(status: TaskStatus): string {
-  switch (status) {
-    case "completed":
-      return "completed successfully";
-    case "failed":
-      return "failed";
-    case "killed":
-      return "was stopped";
-    case "running":
-      return "is running";
-    case "pending":
-      return "is pending";
-  }
 }

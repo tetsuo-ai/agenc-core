@@ -54,10 +54,6 @@ import type { ToolUseContext } from "../tools/Tool.js";
 import type { Message } from "../types/message.js";
 import { isBareMode } from "../utils/envUtils.js";
 import { getExecutionAuthoritySettings } from "../utils/settings/settings.js";
-import {
-  createCacheSafeParams,
-  saveCacheSafeParams,
-} from "../utils/forkedAgent.js";
 import type { REPLHookContext } from "../utils/hooks/postSamplingHooks.js";
 import { asSystemPrompt } from "../utils/systemPromptType.js";
 import { renderHookAdditionalContextSection } from "../prompts/hook-context-framing.js";
@@ -371,10 +367,6 @@ function launchTerminalBackgroundHooks(
     session,
     querySource,
   );
-  if (isCacheSharingQuerySource(querySource)) {
-    saveCacheSafeParams(createCacheSafeParams(hookContext));
-  }
-
   if (isBareMode()) return;
 
   if (isMainThreadQuerySource(querySource)) {

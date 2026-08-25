@@ -70,19 +70,6 @@ export type CacheSafeParams = {
   forkContextMessages: Message[];
 };
 
-// Slot written by handleStopHooks after each turn so post-turn forks
-// can share the main loop's prompt cache without each caller threading
-// params through.
-let lastCacheSafeParams: CacheSafeParams | null = null;
-
-export function saveCacheSafeParams(params: CacheSafeParams | null): void {
-  lastCacheSafeParams = params;
-}
-
-export function getLastCacheSafeParams(): CacheSafeParams | null {
-  return lastCacheSafeParams;
-}
-
 export type ForkedAgentParams = {
   /** Messages to start the forked query loop with */
   promptMessages: Message[];
@@ -123,13 +110,7 @@ export type ForkedAgentResult = {
 };
 
 /**
- * Creates CacheSafeParams from REPLHookContext.
- * Use this helper when forking from a post-sampling hook context.
- *
- * To override specific fields (e.g., toolUseContext with cloned file state),
- * spread the result and override: `{ ...createCacheSafeParams(context), toolUseContext: clonedContext }`
- *
- * @param context - The REPLHookContext from the post-sampling hook
+ * Creates cache-safe fork parameters from a post-sampling hook context.
  */
 export function createCacheSafeParams(
   context: REPLHookContext,

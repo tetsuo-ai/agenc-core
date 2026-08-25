@@ -15,7 +15,6 @@ import { MAX_STOP_HOOK_BLOCKS } from "./stop-hooks.js";
 const terminalHookMocks = vi.hoisted(() => ({
   promptCalls: [] as Array<{ context: unknown; options: unknown }>,
   autoCalls: [] as Array<{ context: unknown; appendSystemMessage: unknown }>,
-  cacheParams: [] as unknown[],
   order: [] as string[],
   promptReject: false,
   autoReject: false,
@@ -43,18 +42,6 @@ vi.mock("../services/autoDream/autoDream.js", () => ({
     },
   ),
 }));
-
-vi.mock("../utils/forkedAgent.js", async () => {
-  const actual = await vi.importActual<
-    typeof import("../utils/forkedAgent.js")
-  >("../utils/forkedAgent.js");
-  return {
-    ...actual,
-    saveCacheSafeParams: vi.fn((params: unknown) => {
-      terminalHookMocks.cacheParams.push(params);
-    }),
-  };
-});
 
 const ROLE_WORKSPACE = createAgentRoleWorkspace("/tmp");
 
@@ -165,7 +152,6 @@ describe("commit", () => {
     vi.clearAllMocks();
     terminalHookMocks.promptCalls = [];
     terminalHookMocks.autoCalls = [];
-    terminalHookMocks.cacheParams = [];
     terminalHookMocks.order = [];
     terminalHookMocks.promptReject = false;
     terminalHookMocks.autoReject = false;
@@ -370,7 +356,6 @@ describe("commit", () => {
     await commit(state, mkCtx(), session);
 
     expect(terminalHookMocks.order).toEqual(["prompt", "dream", "stop"]);
-    expect(terminalHookMocks.cacheParams).toHaveLength(1);
     expect(terminalHookMocks.promptCalls).toHaveLength(1);
     expect(terminalHookMocks.autoCalls).toHaveLength(1);
     const context = terminalHookMocks.promptCalls[0].context as {
@@ -453,7 +438,6 @@ describe("commit", () => {
     await commit(state, ctx, session);
 
     expect(stopHook).not.toHaveBeenCalled();
-    expect(terminalHookMocks.cacheParams).toHaveLength(0);
     expect(terminalHookMocks.promptCalls).toHaveLength(0);
     expect(terminalHookMocks.autoCalls).toHaveLength(0);
     expect(ensureExtractMemoriesInitialized).not.toHaveBeenCalled();
@@ -461,7 +445,7 @@ describe("commit", () => {
     expect(state.transition).toBeUndefined();
   });
 
-  test("saves cache for sdk terminal turns without launching prompt suggestion", async () => {
+  test("sdk terminal turns skip prompt suggestion while retaining auto-dream", async () => {
     const state = mkState({
       needsFollowUp: false,
       toolUseBlocks: [],
@@ -473,7 +457,6 @@ describe("commit", () => {
       querySource: "sdk",
     });
 
-    expect(terminalHookMocks.cacheParams).toHaveLength(1);
     expect(terminalHookMocks.promptCalls).toHaveLength(0);
     expect(terminalHookMocks.autoCalls).toHaveLength(1);
   });
@@ -490,7 +473,6 @@ describe("commit", () => {
 
     await commit(state, mkCtx(), mkSession());
 
-    expect(terminalHookMocks.cacheParams).toHaveLength(0);
     expect(terminalHookMocks.promptCalls).toHaveLength(0);
     expect(terminalHookMocks.autoCalls).toHaveLength(0);
   });
@@ -507,7 +489,6 @@ describe("commit", () => {
       querySource: "agent:child",
     });
 
-    expect(terminalHookMocks.cacheParams).toHaveLength(0);
     expect(terminalHookMocks.promptCalls).toHaveLength(0);
     expect(terminalHookMocks.autoCalls).toHaveLength(0);
   });

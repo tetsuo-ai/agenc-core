@@ -75,4 +75,40 @@ describe("retired print relay architecture", () => {
     expect(daemonClient).toContain("notificationListeners");
     expect(cli).toContain("subscribeToSessionEvents(");
   });
+
+  test("does not retain deleted-output cache slots, pollers, or environment controls", () => {
+    const forkedAgent = readFileSync(
+      resolve(sourceRoot, "utils/forkedAgent.ts"),
+      "utf8",
+    );
+    const taskFramework = readFileSync(
+      resolve(sourceRoot, "utils/task/framework.ts"),
+      "utf8",
+    );
+    const envReference = readFileSync(
+      resolve(repositoryRoot, "docs/reference/env.md"),
+      "utf8",
+    );
+    const hermeticEnv = readFileSync(
+      resolve(repositoryRoot, "runtime/tests/helpers/hermetic-env.mjs"),
+      "utf8",
+    );
+
+    expect(forkedAgent).not.toMatch(
+      /\b(?:lastCacheSafeParams|saveCacheSafeParams|getLastCacheSafeParams)\b/u,
+    );
+    expect(taskFramework).not.toMatch(
+      /\b(?:POLL_INTERVAL_MS|getRunningTasks|pollTasks|enqueueTaskNotification)\b/u,
+    );
+
+    for (const retiredVariable of [
+      "AGENC_PROGRESS_NORMALIZE_VOLATILE",
+      "AGENC_PROGRESS_RESULT_PREFIX",
+      "AGENC_PROGRESS_WINDOW",
+      "AGENC_REMOTE_SEND_KEEPALIVES",
+    ]) {
+      expect(envReference).not.toContain(retiredVariable);
+      expect(hermeticEnv).not.toContain(retiredVariable);
+    }
+  });
 });
