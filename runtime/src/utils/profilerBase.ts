@@ -1,7 +1,6 @@
 /**
- * Shared infrastructure for profiler modules (startupProfiler, queryProfiler,
- * headlessProfiler). All three use the same perf_hooks timeline and the same
- * line format for detailed reports.
+ * Shared infrastructure for startupProfiler and queryProfiler. Both use the
+ * same perf_hooks timeline and detailed-report line format.
  */
 
 import { performance as nodePerformance } from 'node:perf_hooks'

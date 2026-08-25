@@ -186,7 +186,6 @@ import {
   isFastModeSupportedByModel,
 } from 'src/utils/fastMode.js'
 import { returnValue } from 'src/utils/generators.js'
-import { headlessProfilerCheckpoint } from 'src/utils/headlessProfiler.js'
 import { isMcpInstructionsDeltaEnabled } from 'src/utils/mcpInstructionsDelta.js'
 import { calculateUSDCost } from 'src/utils/modelCost.js'
 import { endQueryProfile, queryCheckpoint } from 'src/utils/queryProfiler.js'
@@ -1864,10 +1863,6 @@ async function* queryModel(
         // awaits until response headers arrive, so this MUST be before the await
         // or the "Network TTFB" phase measurement is wrong.
         queryCheckpoint('query_api_request_sent')
-        if (!options.agentId) {
-          headlessProfilerCheckpoint('api_request_sent')
-        }
-
         // Generate and track client request ID so timeouts (which return no
         // server request ID) can still be correlated with server logs.
         // First-party only — 3P providers don't log it (inc-4029 class).
@@ -1994,9 +1989,6 @@ async function* queryModel(
         if (isFirstChunk) {
           logForDebugging('Stream started - received first chunk')
           queryCheckpoint('query_first_chunk_received')
-          if (!options.agentId) {
-            headlessProfilerCheckpoint('first_chunk')
-          }
           endQueryProfile()
           isFirstChunk = false
         }

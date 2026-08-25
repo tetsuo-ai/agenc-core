@@ -378,10 +378,6 @@ vi.mock('../../../src/utils/agentContext.js', () => ({
   getAgentContext: () => null,
 }))
 
-vi.mock('../../../src/utils/headlessProfiler.js', () => ({
-  headlessProfilerCheckpoint: vi.fn(),
-}))
-
 vi.mock('../../../src/utils/queryProfiler.js', () => ({
   endQueryProfile: vi.fn(),
   queryCheckpoint: vi.fn(),
