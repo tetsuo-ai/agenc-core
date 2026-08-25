@@ -192,7 +192,9 @@ listed here. Region selection is `AWS_BEDROCK_REGION`, then `AWS_REGION`, then
 `AWS_DEFAULT_REGION`. Without `AWS_BEDROCK_BASE_URL`, that resolved region
 produces `https://bedrock-runtime.<region>.amazonaws.com`; without a region,
 the registry default is `us-east-1`. No additional AWS credential sources are
-consumed by this direct SigV4 provider.
+consumed by this direct SigV4 provider. Bedrock model discovery and token
+counting receive the same captured credentials explicitly; they do not invoke
+the AWS SDK profile, shared-file, instance-metadata, or web-identity chains.
 
 ## Wire layer
 

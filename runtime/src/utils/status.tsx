@@ -6,7 +6,7 @@ import type { MCPServerConnection } from '../services/mcp/types.js';
 import { getAccountInformation, isAgenCAISubscriber } from './auth.js';
 import { getLargeMemoryFiles, getMemoryFiles, MAX_MEMORY_CHARACTER_COUNT } from '../memory/index.js';
 import { getDoctorDiagnostic } from './doctorDiagnostic.js';
-import { getAWSRegion, getDefaultVertexRegion, isEnvTruthy } from './envUtils.js';
+import { getDefaultVertexRegion, isEnvTruthy } from './envUtils.js';
 import { getDisplayPath } from './file.js';
 import { formatNumber } from './format.js';
 import { getIdeClientName, type IDEExtensionInstallationStatus, isJetBrainsIde, toIDEDisplayName } from './ide.js';
@@ -275,23 +275,6 @@ export function buildAPIProviderProperties(): Property[] {
       properties.push({
         label: 'First-party base URL',
         value: anthropicBaseUrl
-      });
-    }
-  } else if (apiProvider === 'bedrock') {
-    const bedrockBaseUrl = providerEnvironment.BEDROCK_BASE_URL;
-    if (bedrockBaseUrl) {
-      properties.push({
-        label: 'Bedrock base URL',
-        value: bedrockBaseUrl
-      });
-    }
-    properties.push({
-      label: 'AWS region',
-      value: getAWSRegion(providerEnvironment)
-    });
-    if (isEnvTruthy(providerEnvironment.AGENC_SKIP_BEDROCK_AUTH)) {
-      properties.push({
-        value: 'AWS auth skipped'
       });
     }
   } else if (apiProvider === 'vertex') {

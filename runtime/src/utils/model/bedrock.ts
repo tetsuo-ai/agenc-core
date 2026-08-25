@@ -1,8 +1,75 @@
 import memoize from 'lodash-es/memoize.js'
-import { getAWSRegion, isEnvTruthy } from '../envUtils.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
+import {
+  resolveBuiltInProviderRegionalEndpoint,
+} from '../../llm/registry/provider-info.js'
+import {
+  resolveProviderBaseURLEnvironment,
+  resolveProviderCredentialEnvironment,
+} from '../../llm/registry/provider-ingress.js'
 import { logError } from '../log.js'
 import { getAWSClientProxyConfig } from '../proxy.js'
 import { getSelectedProviderEnvironment } from './providers.js'
+
+const AMAZON_BEDROCK_PROVIDER = 'amazon-bedrock'
+
+interface BedrockSdkClientSettings {
+  readonly region: string
+  readonly runtimeEndpoint: string
+  readonly credentials: {
+    readonly accessKeyId: string
+    readonly secretAccessKey: string
+    readonly sessionToken?: string
+  }
+}
+
+/**
+ * Project the registry-owned Bedrock environment contract into AWS SDK input.
+ * Supplying credentials explicitly prevents the SDK's ambient profile and
+ * metadata-provider chains from becoming a second authentication path.
+ */
+function resolveBedrockSdkClientSettings(
+  environment: ProviderEnvironment,
+): BedrockSdkClientSettings {
+  const credentialResolution = resolveProviderCredentialEnvironment(
+    AMAZON_BEDROCK_PROVIDER,
+    environment,
+  )
+  if (credentialResolution?.kind !== 'aws-sigv4') {
+    throw new Error('Amazon Bedrock registry metadata is not AWS SigV4')
+  }
+  if (
+    credentialResolution.accessKeyId === undefined ||
+    credentialResolution.secretAccessKey === undefined
+  ) {
+    const missing = credentialResolution.missingRequired
+      .map(requirement => requirement.envVars.join(' or '))
+      .join(' and ')
+    throw new Error(`Amazon Bedrock requires ${missing}`)
+  }
+  const regionalEndpoint = resolveBuiltInProviderRegionalEndpoint(
+    AMAZON_BEDROCK_PROVIDER,
+    credentialResolution.region?.value,
+  )
+  if (regionalEndpoint === undefined) {
+    throw new Error('Amazon Bedrock registry has no regional endpoint')
+  }
+  const endpointOverride = resolveProviderBaseURLEnvironment(
+    AMAZON_BEDROCK_PROVIDER,
+    environment,
+  )
+  return Object.freeze({
+    region: regionalEndpoint.region,
+    runtimeEndpoint: endpointOverride?.value ?? regionalEndpoint.baseURL,
+    credentials: Object.freeze({
+      accessKeyId: credentialResolution.accessKeyId.value,
+      secretAccessKey: credentialResolution.secretAccessKey.value,
+      ...(credentialResolution.sessionToken !== undefined
+        ? { sessionToken: credentialResolution.sessionToken.value }
+        : {}),
+    }),
+  })
+}
 
 export const getBedrockInferenceProfiles = memoize(async function (): Promise<
   string[]
@@ -49,34 +116,14 @@ export function findFirstMatch(
 
 async function createBedrockClient() {
   const { BedrockClient } = await import('@aws-sdk/client-bedrock')
-  // Match the provider Bedrock SDK's region behavior exactly:
-  // - Reads AWS_REGION or AWS_DEFAULT_REGION env vars (not AWS config files)
-  // - Falls back to 'us-east-1' if neither is set
-  // This ensures we query profiles from the same region the client will use
   const environment = getSelectedProviderEnvironment()
-  const region = getAWSRegion(environment)
-
-  const skipAuth = isEnvTruthy(environment.AGENC_SKIP_BEDROCK_AUTH)
+  const settings = resolveBedrockSdkClientSettings(environment)
 
   const clientConfig: ConstructorParameters<typeof BedrockClient>[0] = {
-    region,
-    ...(environment.ANTHROPIC_BEDROCK_BASE_URL && {
-      endpoint: environment.ANTHROPIC_BEDROCK_BASE_URL,
-    }),
+    region: settings.region,
+    // AWS SDK annotates credential objects with internal source metadata.
+    credentials: { ...settings.credentials },
     ...(await getAWSClientProxyConfig(environment)),
-    ...(skipAuth && {
-      requestHandler: new (
-        await import('@smithy/node-http-handler')
-      ).NodeHttpHandler(),
-      httpAuthSchemes: [
-        {
-          schemeId: 'smithy.api#noAuth',
-          identityProvider: () => async () => ({}),
-          signer: new (await import('@smithy/core')).NoAuthSigner(),
-        },
-      ],
-      httpAuthSchemeProvider: () => [{ schemeId: 'smithy.api#noAuth' }],
-    }),
   }
 
   return new BedrockClient(clientConfig)
@@ -87,30 +134,14 @@ export async function createBedrockRuntimeClient() {
     '@aws-sdk/client-bedrock-runtime'
   )
   const environment = getSelectedProviderEnvironment()
-  const region = getAWSRegion(environment)
-  const skipAuth = isEnvTruthy(environment.AGENC_SKIP_BEDROCK_AUTH)
+  const settings = resolveBedrockSdkClientSettings(environment)
 
   const clientConfig: ConstructorParameters<typeof BedrockRuntimeClient>[0] = {
-    region,
-    ...(environment.ANTHROPIC_BEDROCK_BASE_URL && {
-      endpoint: environment.ANTHROPIC_BEDROCK_BASE_URL,
-    }),
+    region: settings.region,
+    endpoint: settings.runtimeEndpoint,
+    // AWS SDK annotates credential objects with internal source metadata.
+    credentials: { ...settings.credentials },
     ...(await getAWSClientProxyConfig(environment)),
-    ...(skipAuth && {
-      // BedrockRuntimeClient defaults to HTTP/2 without fallback
-      // proxy servers may not support this, so we explicitly force HTTP/1.1
-      requestHandler: new (
-        await import('@smithy/node-http-handler')
-      ).NodeHttpHandler(),
-      httpAuthSchemes: [
-        {
-          schemeId: 'smithy.api#noAuth',
-          identityProvider: () => async () => ({}),
-          signer: new (await import('@smithy/core')).NoAuthSigner(),
-        },
-      ],
-      httpAuthSchemeProvider: () => [{ schemeId: 'smithy.api#noAuth' }],
-    }),
   }
 
   return new BedrockRuntimeClient(clientConfig)

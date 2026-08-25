@@ -162,6 +162,7 @@ describe("provider authority architecture", () => {
       "llm/provider.ts",
       "llm/providers/bedrock/index.ts",
       "commands/provider-menu.tsx",
+      "utils/model/bedrock.ts",
     ]) {
       const source = readFileSync(`${SRC}/${path}`, "utf8");
       expect(source).toMatch(/resolveBuiltInProviderRegionalEndpoint/u);
@@ -170,6 +171,17 @@ describe("provider authority architecture", () => {
       expect(source).not.toMatch(/bedrock-runtime\./u);
       expect(source).not.toMatch(/us-east-1/u);
     }
+
+    const production = sourceFiles(SRC).filter(
+      (path) => path.endsWith(".ts") || path.endsWith(".tsx"),
+    );
+    const retiredBedrockIngress =
+      /\b(?:ANTHROPIC_BEDROCK_BASE_URL|BEDROCK_BASE_URL|AGENC_SKIP_BEDROCK_AUTH)\b/u;
+    expect(
+      production
+        .filter((path) => retiredBedrockIngress.test(readFileSync(path, "utf8")))
+        .map((path) => relative(SRC, path)),
+    ).toEqual([]);
   });
 
   test("provider selector identity has one normalizer and one retired mapping", () => {

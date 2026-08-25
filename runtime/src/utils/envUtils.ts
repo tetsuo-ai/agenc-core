@@ -109,16 +109,6 @@ export function parseEnvVars(
 }
 
 /**
- * Get the AWS region with fallback to default
- * Matches the provider Bedrock SDK's region behavior.
- */
-export function getAWSRegion(
-  env: Readonly<Record<string, string | undefined>>,
-): string {
-  return env.AWS_REGION || env.AWS_DEFAULT_REGION || 'us-east-1'
-}
-
-/**
  * Get the default Vertex AI region
  */
 export function getDefaultVertexRegion(
