@@ -44,6 +44,22 @@ const TOKEN_ACCOUNTING_MESSAGE_FRAME_TOKENS = 8;
 const TOKEN_ACCOUNTING_TOOL_FRAME_TOKENS = 16;
 const TOKEN_ACCOUNTING_TOOL_CHOICE_FRAME_TOKENS = 8;
 const TOKEN_ACCOUNTING_MEDIA_FRAME_TOKENS = 64;
+/**
+ * What one inline image is worth, whatever it weighs.
+ *
+ * An image reaches the wire as base64, and the conservative estimator reads
+ * the whole request as a string: a 2 MB JPEG becomes ~2.7 MB of base64 and,
+ * at two bytes per token, over a million tokens. Three attached pictures
+ * priced a turn at 3.2M against a 258k window, admission refused it, and no
+ * amount of compaction could ever bring it down — the pixels are not the
+ * conversation.
+ *
+ * A vision model charges by tiles, not by bytes, and the ceiling is small
+ * and fixed: OpenAI tops out near 1.1k tokens for a high-detail image,
+ * Anthropic near 1.6k at its 1568px bound, Gemini in the same range. 1600 is
+ * the worst of those, so it over-counts a little and never under-counts.
+ */
+const TOKEN_ACCOUNTING_INLINE_IMAGE_TOKENS = 1_600;
 const TOKEN_ACCOUNTING_MINIMUM_INPUT_TOKENS = 1;
 const TOKEN_ACCOUNTING_UTF8_WORST_CASE_BYTES_PER_TOKEN = 1;
 
@@ -956,8 +972,12 @@ function conservativeFallbackResult(
     request.provider,
     request.options.promptCacheKey,
   );
+  // Measured with the image payloads taken out. They are charged their own
+  // allowance below; left in, their base64 is read as prose and one picture
+  // outweighs the entire conversation. The identity itself is untouched —
+  // the cache digest is computed from the real thing.
   const promptTokens = estimateUtf8TokenUnits(
-    stableStringify(promptIdentity),
+    stableStringify(withoutInlineMedia(promptIdentity)),
     TOKEN_ACCOUNTING_CONSERVATIVE_BYTES_PER_TOKEN,
   );
   const frameTokens =
@@ -969,7 +989,8 @@ function conservativeFallbackResult(
     (request.options.toolChoice === undefined
       ? 0
       : TOKEN_ACCOUNTING_TOOL_CHOICE_FRAME_TOKENS) +
-    inspection.mediaCount * TOKEN_ACCOUNTING_MEDIA_FRAME_TOKENS;
+    inspection.mediaCount * TOKEN_ACCOUNTING_MEDIA_FRAME_TOKENS +
+    inspection.inlineImageCount * TOKEN_ACCOUNTING_INLINE_IMAGE_TOKENS;
   const beforeMargin = safeTokenSum(promptTokens, frameTokens);
   const safetyMarginTokens = safetyMarginForTokens(beforeMargin);
   const inputTokens = Math.max(
@@ -1076,12 +1097,15 @@ function inspectRequestContent(
   readonly contentTypes: readonly TokenAccountingContentType[];
   readonly uncertainComponents: readonly string[];
   readonly mediaCount: number;
+  /** Inline images, which are charged an allowance instead of their bytes. */
+  readonly inlineImageCount: number;
   readonly hasImages: boolean;
   readonly hasDocuments: boolean;
 } {
   const contentTypes = new Set<TokenAccountingContentType>();
   const uncertainComponents = new Set<string>();
   let mediaCount = 0;
+  let inlineImageCount = 0;
   let hasImages = false;
   let hasDocuments = false;
 
@@ -1125,6 +1149,7 @@ function inspectRequestContent(
         const url = part.image_url?.url?.trim() ?? "";
         if (isInlineDataUrl(url)) {
           contentTypes.add("image_inline");
+          inlineImageCount += 1;
         } else {
           contentTypes.add("image_remote");
           uncertainComponents.add(
@@ -1141,6 +1166,7 @@ function inspectRequestContent(
           : {};
         if (source.type === "base64" && typeof source.data === "string") {
           contentTypes.add("image_inline");
+          inlineImageCount += 1;
         } else {
           contentTypes.add("image_remote");
           uncertainComponents.add(
@@ -1175,6 +1201,7 @@ function inspectRequestContent(
     contentTypes: [...contentTypes].sort(),
     uncertainComponents: [...uncertainComponents].sort(),
     mediaCount,
+    inlineImageCount,
     hasImages,
     hasDocuments,
   };
@@ -1342,6 +1369,50 @@ function normalizeEndpointPath(pathname: string): string {
   // token-count cache entry; only a trailing slash is canonicalized.
   const trimmed = pathname.replace(/\/+$/u, "");
   return trimmed.length > 0 ? trimmed : TOKEN_ACCOUNTING_DEFAULT_ENDPOINT_PATH;
+}
+
+/**
+ * A copy with every inline image payload replaced by a short marker, for
+ * measurement only. Walks the projected request rather than the messages so
+ * it catches an image wherever a provider projection puts it: a data URL
+ * under `image_url.url`, or raw base64 under `source.data`.
+ *
+ * The marker keeps the shape so the surrounding framing is still counted,
+ * and a truncated prefix keeps two different images from collapsing to the
+ * same measured value.
+ */
+function withoutInlineMedia(value: unknown): unknown {
+  if (typeof value === "string") {
+    return isInlineDataUrl(value) || isBareImageBase64(value)
+      ? `${value.slice(0, INLINE_MEDIA_MARKER_CHARS)}…`
+      : value;
+  }
+  if (Array.isArray(value)) return value.map(withoutInlineMedia);
+  if (isPlainRecord(value)) {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      out[key] = withoutInlineMedia(entry);
+    }
+    return out;
+  }
+  return value;
+}
+
+/** Enough to stay distinct between images, far too little to weigh much. */
+const INLINE_MEDIA_MARKER_CHARS = 64;
+
+/**
+ * Base64 with no data-URL header, which is how the Anthropic and Gemini
+ * projections carry an image. Length is the tell: no ordinary field in a
+ * request runs to thousands of unbroken base64 characters.
+ */
+const BARE_BASE64_MIN_CHARS = 512;
+
+function isBareImageBase64(value: string): boolean {
+  return (
+    value.length >= BARE_BASE64_MIN_CHARS &&
+    /^[A-Za-z0-9+/]+={0,2}$/u.test(value)
+  );
 }
 
 function isInlineDataUrl(value: string): boolean {
