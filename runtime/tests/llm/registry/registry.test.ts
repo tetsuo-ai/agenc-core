@@ -30,6 +30,9 @@ const DONOR_MODEL_IDS = Object.freeze([
   // gpt-5 (the openai built-in default) is registered first so the default
   // resolves through the single-source registry rather than heuristic fallback.
   "gpt-5",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
   "gpt-5.5",
   "gpt-5.4",
   "gpt-5.4-mini",
@@ -166,7 +169,7 @@ describe("LLM registry", () => {
         model: "gpt-5.4-2026-02-01",
       }),
     ).toMatchObject({
-      contextWindow: 272_000,
+      contextWindow: 922_000,
     });
 
     expect(
@@ -184,7 +187,7 @@ describe("LLM registry", () => {
         model: "preview/gpt-5.4-2026-02-01",
       }),
     ).toMatchObject({
-      contextWindow: 272_000,
+      contextWindow: 922_000,
     });
   });
 
@@ -204,7 +207,7 @@ describe("LLM registry", () => {
       expect(entry.supportsReasoningSummaries).toBe(true);
     }
     expect(entries.find((entry) => entry.model === "gpt-5.4")).toMatchObject({
-      maxContextWindow: 1_000_000,
+      maxContextWindow: 1_050_000,
       defaultReasoningLevel: "xhigh",
       additionalSpeedTiers: ["fast"],
     });

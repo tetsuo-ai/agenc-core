@@ -46,7 +46,10 @@ describe("ModelRegistry", () => {
       model: "gpt-5.4",
     });
 
-    expect(entry.metadata.contextWindow).toBe(272_000);
+    // 1,050,000 window less the 128,000 it may spend on output. 272,000 is
+    // OpenAI's price-tier boundary, which the catalog used to carry as if it
+    // were the limit.
+    expect(entry.metadata.contextWindow).toBe(922_000);
     expect(entry.capabilities.supportsProviderNativeWebSearch).toBe(true);
     expect(modelRegistryEntryToModelInfo(entry)).toMatchObject({
       slug: "gpt-5.4",

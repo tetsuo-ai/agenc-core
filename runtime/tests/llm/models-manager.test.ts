@@ -55,7 +55,9 @@ describe("StaticModelsManager", () => {
     const info = await manager.getModelInfo("gpt-5.4");
     expect(info).toMatchObject({
       slug: "gpt-5.4",
-      contextWindow: 272_000,
+      // The documented 1,050,000 window less its 128,000 of output, not the
+      // 272,000 price-tier boundary the catalog used to carry.
+      contextWindow: 922_000,
       defaultReasoningLevel: "xhigh",
       defaultReasoningSummary: "none",
       serviceTiers: [
