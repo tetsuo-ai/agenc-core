@@ -76,6 +76,29 @@ describe("retired print relay architecture", () => {
     expect(cli).toContain("subscribeToSessionEvents(");
   });
 
+  test("does not restore the shadow process-signal installer", () => {
+    const gracefulShutdownSource = readFileSync(
+      resolve(sourceRoot, "utils/gracefulShutdown.ts"),
+      "utf8",
+    );
+    const lifecycleSignalSource = readFileSync(
+      resolve(sourceRoot, "lifecycle/signal-handlers.ts"),
+      "utf8",
+    );
+
+    expect(gracefulShutdownSource).not.toMatch(
+      /\b(?:setupGracefulShutdown|orphanCheckInterval|tokenizeCliOptionRegion|getIsScrollDraining)\b/u,
+    );
+    expect(gracefulShutdownSource).not.toContain('from "signal-exit"');
+    expect(gracefulShutdownSource).toContain("installGlobalErrorNet");
+    expect(gracefulShutdownSource).toContain(
+      "export async function gracefulShutdown",
+    );
+    expect(lifecycleSignalSource).toContain(
+      "export function installAgenCShutdownSignalHandlers",
+    );
+  });
+
   test("does not retain deleted-output cache slots, pollers, or environment controls", () => {
     const forkedAgent = readFileSync(
       resolve(sourceRoot, "utils/forkedAgent.ts"),
