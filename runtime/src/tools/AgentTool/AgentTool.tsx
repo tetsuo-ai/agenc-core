@@ -6,20 +6,13 @@ import type {
 } from "src/types/message.js";
 import { getQuerySourceForAgent } from "src/utils/promptCategory.js";
 import { z } from "zod/v4";
-import {
-  clearInvokedSkillsForAgent,
-  getSdkAgentProgressSummariesEnabled,
-} from "../../bootstrap/state.js";
+import { clearInvokedSkillsForAgent } from "../../bootstrap/state.js";
 import {
   enhanceSystemPromptWithEnvDetails,
   getSystemPrompt,
 } from "../../constants/prompts.js";
 import { isCoordinatorMode } from "../../coordinator/coordinatorMode.js";
 import { requireCurrentRuntimeSession } from "../../session/current-session.js";
-import {
-  startAgentSummarization,
-  toSummaryCacheSafeParams,
-} from "../../services/AgentSummary/agentSummary.js";
 import { clearDumpState } from "../../services/api/dumpPrompts.js";
 import {
   completeAgentTask as completeAsyncAgent,
@@ -35,7 +28,6 @@ import {
   registerAsyncAgent,
   unregisterAgentForeground,
   updateAgentProgress as updateAsyncAgentProgress,
-  updateAgentSummary as updateAsyncAgentSummary,
   updateProgressFromMessage,
 } from "../../tasks/LocalAgentTask/LocalAgentTask.js";
 
@@ -47,7 +39,6 @@ import { getCwd, runWithCwdOverride } from "../../utils/cwd.js";
 import { logForDebugging } from "src/utils/debug.js";
 import { isEnvTruthy } from "../../utils/envUtils.js";
 import { AbortError, errorMessage, toError } from "../../utils/errors.js";
-import type { CacheSafeParams } from "../../utils/forkedAgent.js";
 import { lazySchema } from "../../utils/lazySchema.js";
 import {
   createUserMessage,
@@ -89,7 +80,6 @@ import {
   classifyHandoffIfNeeded,
   extractPartialResult,
   finalizeAgentTool,
-  getLastToolUseName,
   runAsyncAgentLifecycle,
 } from "./agentToolUtils.js";
 import {
@@ -1139,9 +1129,7 @@ export const AgentTool = buildTool({
               rootSetAppState,
               agentIdForCleanup: asyncAgentId,
               enableSummarization:
-                isCoordinator ||
-                isForkSubagentEnabled() ||
-                getSdkAgentProgressSummariesEnabled(),
+                isCoordinator || isForkSubagentEnabled(),
               getWorktreeResult: cleanupWorktreeIfNeeded,
             }),
           ),
@@ -1197,10 +1185,6 @@ export const AgentTool = buildTool({
           wrapWithCwd(async () => {
             const agentMessages: MessageType[] = [];
             const agentStartTime = Date.now();
-            const syncTracker = createProgressTracker();
-            const syncResolveActivity = createActivityDescriptionResolver(
-              toolUseContext.options.tools,
-            );
 
             // Yield initial progress message to carry metadata (prompt)
             if (promptMessages.length > 0) {
@@ -1264,11 +1248,6 @@ export const AgentTool = buildTool({
             let backgroundHintShown = false;
             // Track if the agent was backgrounded (cleanup handled by backgrounded finally)
             let wasBackgrounded = false;
-            // Per-scope stop function — NOT shared with the backgrounded closure.
-            // idempotent: startAgentSummarization's stop() checks `stopped` flag.
-            let stopForegroundSummarization: (() => void) | undefined;
-            // const capture for sound type narrowing inside the callback below
-            const summaryTaskId = foregroundTaskId;
 
             // Get async iterator for the agent
             const agentIterator = runAgent({
@@ -1277,22 +1256,6 @@ export const AgentTool = buildTool({
                 ...runAgentParams.override,
                 agentId: syncAgentId,
               },
-              onCacheSafeParams:
-                summaryTaskId && getSdkAgentProgressSummariesEnabled()
-                  ? (params: CacheSafeParams) => {
-                      const { stop } = startAgentSummarization({
-                        taskId: summaryTaskId,
-                        agentId: syncAgentId,
-                        cacheSafeParams: toSummaryCacheSafeParams(params),
-                        getAgentTranscript: async () => ({
-                          messages: agentMessages,
-                        }),
-                        updateAgentSummary: (id, summary) =>
-                          updateAsyncAgentSummary(id, summary, rootSetAppState),
-                      });
-                      stopForegroundSummarization = stop;
-                    }
-                  : undefined,
             })[Symbol.asyncIterator]();
 
             // Track if an error occurred during iteration
@@ -1348,16 +1311,11 @@ export const AgentTool = buildTool({
                     // Capture the taskId for use in the async callback
                     const backgroundedTaskId = foregroundTaskId;
                     wasBackgrounded = true;
-                    // Stop foreground summarization; the backgrounded closure
-                    // below owns its own independent stop function.
-                    stopForegroundSummarization?.();
 
                     // Workload: inherited via ALS at `void` invocation time,
                     // same as the async-from-start path above.
                     // Continue agent in background and return async result
                     void runWithAgentContext(syncAgentContext, async () => {
-                      let stopBackgroundedSummarization:
-                        (() => void) | undefined;
                       try {
                         // Clean up the foreground iterator so its finally block runs
                         // (releases MCP connections, session hooks, prompt cache tracking, etc.)
@@ -1390,27 +1348,6 @@ export const AgentTool = buildTool({
                             agentId: asAgentId(backgroundedTaskId),
                             abortController: task.abortController,
                           },
-                          onCacheSafeParams:
-                            getSdkAgentProgressSummariesEnabled()
-                              ? (params: CacheSafeParams) => {
-                                  const { stop } = startAgentSummarization({
-                                    taskId: backgroundedTaskId,
-                                    agentId: asAgentId(backgroundedTaskId),
-                                    cacheSafeParams:
-                                      toSummaryCacheSafeParams(params),
-                                    getAgentTranscript: async () => ({
-                                      messages: agentMessages,
-                                    }),
-                                    updateAgentSummary: (id, summary) =>
-                                      updateAsyncAgentSummary(
-                                        id,
-                                        summary,
-                                        rootSetAppState,
-                                      ),
-                                  });
-                                  stopBackgroundedSummarization = stop;
-                                }
-                              : undefined,
                         })) {
                           agentMessages.push(msg);
 
@@ -1514,7 +1451,6 @@ export const AgentTool = buildTool({
                           ...worktreeResult,
                         });
                       } finally {
-                        stopBackgroundedSummarization?.();
                         // Defensive cleanup: wrap each call so one failure doesn't
                         // prevent the other from running. Without this, if
                         // clearInvokedSkillsForAgent throws, clearDumpState is
@@ -1561,25 +1497,6 @@ export const AgentTool = buildTool({
                 if (result.done) break;
                 const message = result.value;
                 agentMessages.push(message);
-
-                // Track foreground progress for the optional live summarizer.
-                updateProgressFromMessage(
-                  syncTracker,
-                  message,
-                  syncResolveActivity,
-                  toolUseContext.options.tools,
-                );
-                if (
-                  foregroundTaskId &&
-                  getSdkAgentProgressSummariesEnabled() &&
-                  getLastToolUseName(message)
-                ) {
-                  updateAsyncAgentProgress(
-                    foregroundTaskId,
-                    getProgressUpdate(syncTracker),
-                    rootSetAppState,
-                  );
-                }
 
                 // Forward bash_progress events from sub-agent to parent so the SDK
                 // receives tool_progress events just as it does for the main agent.
@@ -1656,11 +1573,6 @@ export const AgentTool = buildTool({
               if (toolUseContext.setToolJSX) {
                 toolUseContext.setToolJSX(null);
               }
-
-              // Stop foreground summarization. Idempotent — if already stopped at
-              // the backgrounding transition, this is a no-op. The backgrounded
-              // closure owns a separate stop function (stopBackgroundedSummarization).
-              stopForegroundSummarization?.();
 
               // Unregister foreground task if agent completed without being backgrounded
               if (foregroundTaskId) {

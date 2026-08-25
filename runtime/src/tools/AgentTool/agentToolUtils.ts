@@ -335,18 +335,6 @@ export function finalizeAgentTool(
   }
 }
 
-/**
- * Returns the name of the last tool_use block in an assistant message,
- * or undefined if the message is not an assistant message with tool_use.
- */
-export function getLastToolUseName(message: MessageType): string | undefined {
-  if (message.type !== 'assistant') return undefined
-  const block = message.message.content.findLast(
-    (b: { type: string }) => b.type === 'tool_use',
-  )
-  return block?.type === 'tool_use' ? block.name : undefined
-}
-
 export async function classifyHandoffIfNeeded({
   agentMessages,
   tools,

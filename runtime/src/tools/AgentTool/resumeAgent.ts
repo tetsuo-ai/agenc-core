@@ -1,5 +1,4 @@
 import { promises as fsp } from "fs";
-import { getSdkAgentProgressSummariesEnabled } from "../../bootstrap/state.js";
 import {
   assertAgentRoleWorkspaceMatches,
   type AgentRoleWorkspace,
@@ -390,9 +389,7 @@ export async function resumeAgentBackground({
         rootSetAppState,
         agentIdForCleanup: agentId,
         enableSummarization:
-          isCoordinatorMode() ||
-          isForkSubagentEnabled() ||
-          getSdkAgentProgressSummariesEnabled(),
+          isCoordinatorMode() || isForkSubagentEnabled(),
         getWorktreeResult: async () =>
           resumedWorktreePath ? { worktreePath: resumedWorktreePath } : {},
       }),
