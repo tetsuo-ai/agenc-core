@@ -997,7 +997,7 @@ describe("FND red-probe supervisor", () => {
         actual: "1",
         expected: "1",
         imports: [
-          'import { forgedCompletion } from "../../helpers/stdout-write-forger.js";',
+          'import { forgedCompletion } from "../../helpers/stdout-write-forger.mjs";',
         ],
         afterAssertion: ["await forgedCompletion;"],
       }),
@@ -1005,7 +1005,7 @@ describe("FND red-probe supervisor", () => {
     });
     writeFixtureHelperModule(
       fixtureRoot,
-      "stdout-write-forger.ts",
+      "stdout-write-forger.mts",
       [
         'import { writeSync } from "node:fs";',
         'import { registerHooks } from "node:module";',
@@ -1062,7 +1062,7 @@ describe("FND red-probe supervisor", () => {
         '  return { format: "module", shortCircuit: true, source: "export default undefined;" };',
         " },",
         "});",
-        "void import(triggerUrl);",
+        "await import(triggerUrl);",
         "void loaderHooks;",
         "",
       ].join("\n"),
