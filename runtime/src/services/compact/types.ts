@@ -59,7 +59,6 @@ export type CompactContext = {
   readonly setStreamMode?: (mode: "requesting" | "responding" | null) => void;
   readonly setResponseLength?: (updater: (length: number) => number) => void;
   readonly onCompactProgress?: (event: CompactProgressEvent) => void;
-  readonly setSDKStatus?: (status: "compacting" | null) => void;
   readonly options?: {
     readonly mainLoopModel?: string;
     readonly contextWindowTokens?: number;

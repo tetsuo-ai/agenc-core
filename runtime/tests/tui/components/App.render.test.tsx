@@ -5055,7 +5055,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       setStreamMode?: (mode: "requesting" | "responding" | null) => void;
       setResponseLength?: (updater: (length: number) => number) => void;
       onCompactProgress?: (event: unknown) => void;
-      setSDKStatus?: (status: "compacting" | null) => void;
     };
     resetShellSurfaceProbe();
 
@@ -5068,25 +5067,25 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
         expect(session.setStreamMode).toEqual(expect.any(Function));
         expect(session.setResponseLength).toEqual(expect.any(Function));
         expect(session.onCompactProgress).toEqual(expect.any(Function));
-        expect(session.setSDKStatus).toEqual(expect.any(Function));
 
-        session.setSDKStatus?.("compacting");
+        session.onCompactProgress?.({
+          type: "hooks_start",
+          hookType: "pre_compact",
+        });
         await new Promise((resolve) => setTimeout(resolve, 25));
-        expect(output()).toMatch(/Compacting[\s\S]*conversation/);
-
-        session.setSDKStatus?.(null);
-        await new Promise((resolve) => setTimeout(resolve, 25));
+        expect(stripAnsi(output())).toMatch(
+          /Running[\s\S]*PreCompact[\s\S]*hooks/,
+        );
 
         session.onCompactProgress?.({ type: "compact_start" });
         await new Promise((resolve) => setTimeout(resolve, 25));
-        expect(output()).toMatch(/Compacting[\s\S]*conversation/);
+        expect(stripAnsi(output())).toContain("Compacting");
 
         session.setResponseLength?.((length) => length + 8);
         await new Promise((resolve) => setTimeout(resolve, 25));
         expect(output()).toMatch(/8[\s\S]*chars/);
 
         session.onCompactProgress?.({ type: "compact_end" });
-        session.setSDKStatus?.(null);
         await new Promise((resolve) => setTimeout(resolve, 25));
       },
     );
@@ -5094,7 +5093,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     expect(session.setStreamMode).toBeUndefined();
     expect(session.setResponseLength).toBeUndefined();
     expect(session.onCompactProgress).toBeUndefined();
-    expect(session.setSDKStatus).toBeUndefined();
   });
 
   test("routes exit through worktree ExitFlow only for active worktree sessions", async () => {

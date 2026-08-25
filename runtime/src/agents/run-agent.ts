@@ -643,7 +643,6 @@ interface AgentRunContext {
   readonly setStreamMode: (mode: "requesting" | "responding" | null) => void;
   readonly setResponseLength: (updater: (length: number) => number) => void;
   readonly onCompactProgress: (event: unknown) => void;
-  readonly setSDKStatus: (status: "compacting" | null) => void;
   readonly addNotification: (notification: unknown) => void;
   readonly emitWarning: (warning: {
     readonly cause: string;
@@ -693,7 +692,6 @@ type SessionSurface = {
   readonly setStreamMode?: (mode: "requesting" | "responding" | null) => void;
   readonly setResponseLength?: (updater: (length: number) => number) => void;
   readonly onCompactProgress?: (event: unknown) => void;
-  readonly setSDKStatus?: (status: "compacting" | null) => void;
   readonly addNotification?: (notification: unknown) => void;
   readonly emitWarning?: (warning: {
     readonly cause: string;
@@ -763,7 +761,6 @@ function buildAgentRunContext(
     setStreamMode: surface.setStreamMode ?? (() => {}),
     setResponseLength: surface.setResponseLength ?? (() => {}),
     onCompactProgress: surface.onCompactProgress ?? (() => {}),
-    setSDKStatus: surface.setSDKStatus ?? (() => {}),
     addNotification: surface.addNotification ?? (() => {}),
     emitWarning:
       surface.emitWarning ??
@@ -883,7 +880,6 @@ function readAgentSessionSurface(session: Session): SessionSurface {
     setResponseLength:
       read<(updater: (length: number) => number) => void>("setResponseLength"),
     onCompactProgress: read<(event: unknown) => void>("onCompactProgress"),
-    setSDKStatus: read<(status: "compacting" | null) => void>("setSDKStatus"),
     addNotification: read<(notification: unknown) => void>("addNotification"),
     emitWarning:
       read<

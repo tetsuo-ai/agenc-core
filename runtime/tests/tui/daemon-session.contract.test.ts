@@ -149,27 +149,23 @@ describe("compact progress controls", () => {
       setStreamMode: vi.fn(),
       setResponseLength: vi.fn(),
       onCompactProgress: vi.fn(),
-      setSDKStatus: vi.fn(),
     };
 
     const restore = installCompactProgressControls(session, controls);
     session.setStreamMode?.("requesting");
     session.setResponseLength?.((value) => value + 1);
     session.onCompactProgress?.({ type: "compact_start" });
-    session.setSDKStatus?.("compacting");
 
     expect(controls.setStreamMode).toHaveBeenCalledWith("requesting");
     expect(controls.setResponseLength).toHaveBeenCalledOnce();
     expect(controls.onCompactProgress).toHaveBeenCalledWith({
       type: "compact_start",
     });
-    expect(controls.setSDKStatus).toHaveBeenCalledWith("compacting");
 
     restore();
     expect(session.setStreamMode).toBe(previousSetStreamMode);
     expect(session.setResponseLength).toBeUndefined();
     expect(session.onCompactProgress).toBeUndefined();
-    expect(session.setSDKStatus).toBeUndefined();
   });
 });
 

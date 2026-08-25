@@ -4308,7 +4308,6 @@ export class Session {
       readonly setStreamMode?: CompactContext["setStreamMode"];
       readonly setResponseLength?: CompactContext["setResponseLength"];
       readonly onCompactProgress?: CompactContext["onCompactProgress"];
-      readonly setSDKStatus?: CompactContext["setSDKStatus"];
     };
     return {
       abortController,
@@ -4321,7 +4320,6 @@ export class Session {
       setStreamMode: surface.setStreamMode,
       setResponseLength: surface.setResponseLength,
       onCompactProgress: surface.onCompactProgress,
-      setSDKStatus: surface.setSDKStatus,
       options: {
         mainLoopModel:
           this.modelInfo.slug ??

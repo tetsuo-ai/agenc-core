@@ -67,7 +67,6 @@ export interface AgenCCompactProgressControls {
   setStreamMode?(mode: "requesting" | "responding" | null): void;
   setResponseLength?(updater: (length: number) => number): void;
   onCompactProgress?(event: unknown): void;
-  setSDKStatus?(status: "compacting" | null): void;
 }
 
 export interface PermissionModeRegistryLike {
@@ -359,7 +358,6 @@ type MutableCompactProgressSession = {
   setStreamMode?: AgenCCompactProgressControls["setStreamMode"];
   setResponseLength?: AgenCCompactProgressControls["setResponseLength"];
   onCompactProgress?: AgenCCompactProgressControls["onCompactProgress"];
-  setSDKStatus?: AgenCCompactProgressControls["setSDKStatus"];
 };
 
 export function installCompactProgressControls(
@@ -371,12 +369,10 @@ export function installCompactProgressControls(
     setStreamMode: target.setStreamMode,
     setResponseLength: target.setResponseLength,
     onCompactProgress: target.onCompactProgress,
-    setSDKStatus: target.setSDKStatus,
   };
   target.setStreamMode = controls.setStreamMode;
   target.setResponseLength = controls.setResponseLength;
   target.onCompactProgress = controls.onCompactProgress;
-  target.setSDKStatus = controls.setSDKStatus;
   return () => {
     restoreCompactProgressControl(
       target,
@@ -392,11 +388,6 @@ export function installCompactProgressControls(
       target,
       "onCompactProgress",
       previous.onCompactProgress,
-    );
-    restoreCompactProgressControl(
-      target,
-      "setSDKStatus",
-      previous.setSDKStatus,
     );
   };
 }

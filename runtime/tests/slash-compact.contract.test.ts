@@ -126,14 +126,10 @@ describe("slash /compact contract", () => {
     const onCompactProgress = vi.fn((event) => {
       compactLifecycle.push(event);
     });
-    const setSDKStatus = vi.fn((status) => {
-      compactLifecycle.push({ type: "sdk_status", status });
-    });
     Object.assign(session, {
       setStreamMode,
       setResponseLength,
       onCompactProgress,
-      setSDKStatus,
     });
 
     const result = await command?.execute({
@@ -150,8 +146,6 @@ describe("slash /compact contract", () => {
     });
     expect(state.history[0]?.content).toBe("large request");
     expect(JSON.stringify(state.history)).not.toContain("slash compact summary");
-    expect(setSDKStatus).toHaveBeenNthCalledWith(1, "compacting");
-    expect(setSDKStatus).toHaveBeenLastCalledWith(null);
     expect(setStreamMode).toHaveBeenCalledWith("requesting");
     expect(setResponseLength).toHaveBeenCalledWith(expect.any(Function));
     expect(onCompactProgress).toHaveBeenNthCalledWith(1, {
@@ -166,14 +160,12 @@ describe("slash /compact contract", () => {
     });
     expect(compactLifecycle).toEqual([
       { type: "hooks_start", hookType: "pre_compact" },
-      { type: "sdk_status", status: "compacting" },
       { type: "stream_mode", mode: "requesting" },
       { type: "response_length", length: 0 },
       { type: "compact_start" },
       { type: "stream_mode", mode: "requesting" },
       { type: "response_length", length: 0 },
       { type: "compact_end" },
-      { type: "sdk_status", status: null },
     ]);
   });
 });

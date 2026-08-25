@@ -87,20 +87,14 @@ describe("compact service", () => {
 
   test("clears progress state after a fail-closed manual attempt", async () => {
     const onCompactProgress = vi.fn();
-    const setSDKStatus = vi.fn();
     await expect(manualCompactCall("", {
       messages: [message("older"), message("newer", "assistant")],
       onCompactProgress,
-      setSDKStatus,
     })).rejects.toThrow(/history was not changed/i);
     expect(onCompactProgress.mock.calls.map(([event]) => event)).toEqual([
       { type: "hooks_start", hookType: "pre_compact" },
       { type: "compact_start" },
       { type: "compact_end" },
-    ]);
-    expect(setSDKStatus.mock.calls.map(([status]) => status)).toEqual([
-      "compacting",
-      null,
     ]);
   });
 

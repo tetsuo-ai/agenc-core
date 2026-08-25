@@ -62,7 +62,6 @@ export async function manualCompactCall(
     type: "hooks_start",
     hookType: "pre_compact",
   });
-  context.setSDKStatus?.("compacting");
   try {
     context.setStreamMode?.("requesting");
     context.setResponseLength?.(() => 0);
@@ -84,7 +83,6 @@ export async function manualCompactCall(
     context.setStreamMode?.("requesting");
     context.setResponseLength?.(() => 0);
     context.onCompactProgress?.({ type: "compact_end" });
-    context.setSDKStatus?.(null);
   }
 }
 

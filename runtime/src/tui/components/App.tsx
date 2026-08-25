@@ -6294,35 +6294,18 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       responseLength: 0,
     });
   }, []);
-  const setCompactSDKStatus = useCallback((status: "compacting" | null) => {
-    if (status === "compacting") {
-      setCompactProgress({
-        status: "compacting",
-        label: "Compacting conversation",
-        responseLength: 0,
-      });
-      return;
-    }
-    setCompactProgress({
-      status: "idle",
-      label: null,
-      responseLength: 0,
-    });
-  }, []);
   useEffect(
     () =>
       installCompactProgressControls(props.session, {
         setStreamMode: setCompactStreamMode,
         setResponseLength: setCompactResponseLength,
         onCompactProgress: handleCompactProgress,
-        setSDKStatus: setCompactSDKStatus,
       }),
     [
       props.session,
       setCompactStreamMode,
       setCompactResponseLength,
       handleCompactProgress,
-      setCompactSDKStatus,
     ],
   );
   const handleShowMessageSelector = useCallback(() => {

@@ -810,7 +810,6 @@ function attachToolContextSurface(
     setStreamMode: toolUseContext.setStreamMode,
     setResponseLength: toolUseContext.setResponseLength,
     onCompactProgress: toolUseContext.onCompactProgress,
-    setSDKStatus: toolUseContext.setSDKStatus,
     addNotification: toolUseContext.addNotification,
   });
 }
