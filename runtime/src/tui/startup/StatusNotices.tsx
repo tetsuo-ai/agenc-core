@@ -6,7 +6,7 @@ import type { ProviderAuthReadContext } from '../../utils/auth.js';
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js';
 import { getRuntimeState } from '../../utils/config.js';
 import { logError } from '../../utils/log.js';
-import { buildMemoryDiagnostics } from '../../utils/status.js';
+import { buildMemoryDiagnostics } from './memoryDiagnostics.js';
 import { Box } from '../ink.js';
 import ThemedBox from '../components/design-system/ThemedBox.js';
 import ThemedText from '../components/design-system/ThemedText.js';
@@ -26,7 +26,7 @@ async function loadMemoryDiagnostics(): Promise<void> {
     return memoryDiagnosticsPromise;
   }
   memoryDiagnosticsPromise = buildMemoryDiagnostics().then(diagnostics => {
-    cachedMemoryDiagnostics = diagnostics.map(diagnostic => String(diagnostic));
+    cachedMemoryDiagnostics = diagnostics;
   }).catch(error => {
     logError(error);
     cachedMemoryDiagnostics = [];

@@ -77,7 +77,7 @@ vi.mock("../../utils/jetbrains.js", () => ({
   isJetBrainsPluginInstalledCachedSync: () => true,
 }));
 
-vi.mock("../../utils/status.js", () => ({
+vi.mock("./memoryDiagnostics.js", () => ({
   buildMemoryDiagnostics: mocks.buildMemoryDiagnostics,
 }));
 

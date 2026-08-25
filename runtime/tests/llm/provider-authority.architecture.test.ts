@@ -426,7 +426,7 @@ describe("provider authority architecture", () => {
     for (const path of [
       "utils/model/model.ts",
       "utils/model/openaiContextWindows.ts",
-      "utils/status.tsx",
+      "commands/status.ts",
       "services/api/providerConfig.ts",
       "services/api/openaiShim.ts",
     ]) {
@@ -435,6 +435,10 @@ describe("provider authority architecture", () => {
         /process\.env\.(?:OPENAI|OPENAI_COMPATIBLE|GITHUB|GEMINI|MISTRAL|NVIDIA|MINIMAX|AWS_BEDROCK|ANTHROPIC).*MODEL/u,
       );
     }
+    expect(existsSync(`${SRC}/utils/status.tsx`)).toBe(false);
+    expect(
+      readFileSync(`${SRC}/tui/startup/StatusNotices.tsx`, "utf8"),
+    ).toMatch(/\.\/memoryDiagnostics\.js/u);
 
     const production = sourceFiles(SRC)
       .filter((path) => /\.(?:ts|tsx)$/.test(path))

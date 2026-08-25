@@ -39,7 +39,7 @@ type Notice = {
 }
 
 const harness = vi.hoisted(() => ({
-  buildMemoryDiagnostics: vi.fn<() => Promise<unknown[]>>(async () => []),
+  buildMemoryDiagnostics: vi.fn<() => Promise<string[]>>(async () => []),
   contexts: [] as CapturedContext[],
   getActiveNotices: vi.fn((context: CapturedContext): Notice[] => {
     harness.contexts.push(context)
@@ -70,7 +70,7 @@ vi.mock('../../../src/utils/config.js', () => ({
   getRuntimeState: () => harness.globalConfig,
 }))
 
-vi.mock('../../../src/utils/status.js', () => ({
+vi.mock('../../../src/tui/startup/memoryDiagnostics.js', () => ({
   buildMemoryDiagnostics: harness.buildMemoryDiagnostics,
 }))
 
@@ -167,7 +167,7 @@ describe('StatusNotices coverage swarm row 197', () => {
   })
 
   test('shares a pending memory diagnostics request and reuses the cached result', async () => {
-    let resolveDiagnostics: (value: unknown[]) => void = () => {}
+    let resolveDiagnostics: (value: string[]) => void = () => {}
     harness.buildMemoryDiagnostics.mockImplementation(
       () =>
         new Promise(resolve => {
@@ -199,7 +199,7 @@ describe('StatusNotices coverage swarm row 197', () => {
       expect(harness.buildMemoryDiagnostics).toHaveBeenCalledTimes(1)
     })
 
-    resolveDiagnostics([404, 'Large memory file'])
+    resolveDiagnostics(['404', 'Large memory file'])
     await Promise.resolve()
 
     const cachedOutput = await renderStatusNotices()
