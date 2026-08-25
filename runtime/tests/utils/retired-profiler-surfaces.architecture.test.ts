@@ -47,4 +47,21 @@ describe("retired profiler surfaces", () => {
     expect(violations).toEqual([]);
     expect(envReference).not.toContain("AGENC_PROFILE_QUERY");
   });
+
+  test("does not retain the inert startup profiler or its private helpers", () => {
+    const retiredSurface =
+      /\b(?:startupProfiler|profilerBase|profileCheckpoint|profileReport|isDetailedProfilingEnabled|getStartupPerfLogPath)\b/u;
+    const violations = sourceFiles(sourceRoot)
+      .filter((path) => retiredSurface.test(readFileSync(path, "utf8")))
+      .map((path) => relative(sourceRoot, path).replaceAll("\\", "/"));
+    const envReference = readFileSync(
+      resolve(repositoryRoot, "docs/reference/env.md"),
+      "utf8",
+    );
+
+    expect(existsSync(resolve(sourceRoot, "utils/startupProfiler.ts"))).toBe(false);
+    expect(existsSync(resolve(sourceRoot, "utils/profilerBase.ts"))).toBe(false);
+    expect(violations).toEqual([]);
+    expect(envReference).not.toContain("AGENC_PROFILE_STARTUP");
+  });
 });

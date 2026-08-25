@@ -34,7 +34,6 @@ import { isEnvTruthy } from "./envUtils.js";
 import { toError } from "./errors.js";
 import { logError } from "./log.js";
 import { getCurrentSessionTitle, sessionIdExists } from "./sessionStorage.js";
-import { profileReport } from "./startupProfiler.js";
 
 /**
  * Clean up terminal modes synchronously before process exit.
@@ -474,13 +473,6 @@ export async function gracefulShutdown(
     } catch {
       // Ignore SessionEnd hook exceptions (including AbortError on timeout)
     }
-  }
-
-  // Log startup perf during shutdown.
-  try {
-    profileReport();
-  } catch {
-    // Ignore profiling errors during shutdown
   }
 
   if (options?.finalMessage) {
