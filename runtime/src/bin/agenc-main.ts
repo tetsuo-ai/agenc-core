@@ -284,6 +284,7 @@ import {
   installAgenCShutdownSignalHandlers,
 } from "../lifecycle/signal-handlers.js";
 import { installGlobalErrorNet } from "../utils/gracefulShutdown.js";
+import { registerProcessOutputErrorHandlers } from "../utils/process.js";
 import { isRecord } from "../utils/record.js";
 import type { AgenCTuiBridgeSession } from "../tui/daemon-session.js";
 
@@ -1988,10 +1989,22 @@ function oneShotAbortExitCode(signal: AbortSignal): number {
 
 function oneShotAbortDescription(signal: AbortSignal): string {
   const reason = signal.reason;
+  if (
+    isJsonRecord(reason) &&
+    reason.reason === "broken_pipe" &&
+    (reason.stream === "stdout" || reason.stream === "stderr")
+  ) {
+    return `${reason.stream} closed`;
+  }
   if (isJsonRecord(reason) && typeof reason.signal === "string") {
     return `${reason.signal} during one-shot`;
   }
   return String(reason ?? "aborted");
+}
+
+function oneShotAbortedByBrokenPipe(signal: AbortSignal): boolean {
+  const reason = signal.reason;
+  return isJsonRecord(reason) && reason.reason === "broken_pipe";
 }
 
 /**
@@ -2406,6 +2419,13 @@ export async function oneShotCLI(
   const shutdownSignal = installAgenCShutdownSignalHandlers((event) => {
     lifecycleAbort.abort(event);
   });
+  const outputErrors = registerProcessOutputErrorHandlers(({ stream }) => {
+    lifecycleAbort.abort({
+      reason: "broken_pipe",
+      stream,
+      exitCode: 0,
+    });
+  });
 
   const throwIfAborted = (step: string) => {
     if (lifecycleAbort.signal.aborted) {
@@ -2544,7 +2564,10 @@ export async function oneShotCLI(
     });
   } catch (error) {
     if (lifecycleAbort.signal.aborted) {
-      if (error instanceof InitAbortedError) {
+      if (
+        error instanceof InitAbortedError &&
+        !oneShotAbortedByBrokenPipe(lifecycleAbort.signal)
+      ) {
         process.stderr.write(`agenc: ${error.message}\n`);
       }
       return oneShotAbortExitCode(lifecycleAbort.signal);
@@ -2563,6 +2586,7 @@ export async function oneShotCLI(
     process.stderr.write(`agenc: ${cliStartupErrorMessage(error)}\n`);
     return 1;
   } finally {
+    outputErrors.dispose();
     shutdownSignal.dispose();
   }
 }

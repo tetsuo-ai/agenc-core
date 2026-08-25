@@ -2171,6 +2171,124 @@ describe("main() smoke", () => {
     }
   });
 
+  it("oneShotCLI cancels an attached daemon run when stdout closes", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-epipe-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-epipe-cwd-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+
+    const agentId = "agent_epipe";
+    const sessionId = "session_epipe";
+    const daemon = installDaemonCliDepsForTest({
+      agentId,
+      sessionId,
+      cwd: tmpCwd,
+      oneShotEvents: [],
+    });
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    const destroySpy = vi
+      .spyOn(process.stdout, "destroy")
+      .mockImplementation(() => process.stdout);
+    const exitSpy = vi
+      .spyOn(process, "exit")
+      .mockImplementation((() => undefined) as never);
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      const run = oneShotCLI("wait for a daemon answer");
+      const subscription = await waitForValue(
+        "one-shot session subscription",
+        () =>
+          daemon.client.subscribeToSessionEvents.mock.calls[0] as
+            | [string, (event: unknown) => void]
+            | undefined,
+      );
+      const handlerState = Symbol.for(
+        "agenc.process-output-error-handler.state.v1",
+      );
+      const outputErrorHandler = process.stdout
+        .listeners("error")
+        .find((listener) => Reflect.get(listener, handlerState) !== undefined);
+
+      // Let the pre-fix implementation unwind instead of leaking its daemon
+      // wait when the canonical output handler is absent or fails to abort it.
+      if (outputErrorHandler === undefined) {
+        subscription[1]({
+          method: "event.agent_status",
+          params: {
+            sessionId,
+            eventId: "cleanup_after_missing_epipe_handler",
+            agentId,
+            status: "idle",
+            runStatus: "completed",
+          },
+        });
+        await run;
+      }
+      expect(outputErrorHandler).toBeDefined();
+      if (outputErrorHandler === undefined) return;
+
+      outputErrorHandler(
+        Object.assign(new Error("write EPIPE"), { code: "EPIPE" }),
+      );
+      const timeout = new Promise<"timeout">((resolve) => {
+        timeoutId = setTimeout(() => resolve("timeout"), 2_000);
+      });
+      const result = await Promise.race([run, timeout]);
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+
+      if (result === "timeout") {
+        subscription[1]({
+          method: "event.agent_status",
+          params: {
+            sessionId,
+            eventId: "cleanup_after_epipe_timeout",
+            agentId,
+            status: "idle",
+            runStatus: "completed",
+          },
+        });
+        await run;
+      }
+
+      expect(result).toBe(0);
+      expect(destroySpy).toHaveBeenCalledOnce();
+      expect(
+        daemon.requests.filter(({ method }) => method === "agent.stop"),
+      ).toEqual([
+        {
+          method: "agent.stop",
+          params: {
+            agentId,
+            reason: "one_shot_cancelled",
+          },
+        },
+      ]);
+      expect(daemon.client.close).toHaveBeenCalledOnce();
+      expect(daemon.stopPromptAgent).not.toHaveBeenCalled();
+      expect(exitSpy).not.toHaveBeenCalled();
+    } finally {
+      if (timeoutId !== undefined) clearTimeout(timeoutId);
+      exitSpy.mockRestore();
+      destroySpy.mockRestore();
+      stdoutSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
   it("oneShotCLI writes a single final JSON object for --output-format json", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-json-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-json-cwd-"));

@@ -89,6 +89,10 @@ describe("retired print relay architecture", () => {
       resolve(sourceRoot, "bin/agenc-main.ts"),
       "utf8",
     );
+    const processSource = readFileSync(
+      resolve(sourceRoot, "utils/process.ts"),
+      "utf8",
+    );
 
     expect(gracefulShutdownSource).not.toMatch(
       /\b(?:setupGracefulShutdown|orphanCheckInterval|tokenizeCliOptionRegion|getIsScrollDraining)\b/u,
@@ -103,6 +107,11 @@ describe("retired print relay architecture", () => {
     );
     expect(cliSource).toContain("installAgenCShutdownSignalHandlers");
     expect(cliSource).not.toContain("installInitSignalHandlers");
+    expect(cliSource).toContain("registerProcessOutputErrorHandlers");
+    expect(processSource).toContain(
+      "export function registerProcessOutputErrorHandlers",
+    );
+    expect(processSource).not.toContain("function handleEPIPE");
   });
 
   test("does not retain deleted-output cache slots, pollers, or environment controls", () => {
