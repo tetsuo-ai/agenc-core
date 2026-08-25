@@ -6,7 +6,7 @@ function source(path: string): string {
 }
 
 describe('Gemini credential authority', () => {
-  test('has no persisted Gemini credential channel', () => {
+  test('has no Gemini-specific persisted access-token channel', () => {
     expect(
       existsSync(new URL('../../src/utils/geminiCredentials.ts', import.meta.url)),
     ).toBe(false)

@@ -154,9 +154,9 @@ stores credential values.
   `xaiOauth`, and `agencAiOauth` namespaces. Their production APIs require an
   explicit `HomeContext`; cache/single-flight/refresh-lock state is isolated by
   home, and refresh writes compare-and-swap the exact credential version they
-  exchanged so a newer login always wins. Gemini uses explicit captured API-key
-  or access-token input, or Application Default Credentials; AgenC does not
-  persist Gemini credentials.
+  exchanged so a newer login always wins. Gemini access-token and Application
+  Default Credentials auth has no provider-specific vault namespace. Gemini API
+  keys explicitly saved through local BYOK live under `localAuth.byokKeys`.
 - **Discovery** — `agenc providers` reports readiness (credentials present, local
   server health for Ollama/LM Studio/openai-compatible, subscription tier)
   without changing the selected provider. It uses the same ordered registry
