@@ -34,6 +34,10 @@ import {
   resolveHomeContext,
 } from "./home.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
+import {
+  resolveProviderApiKeyEnvironment,
+  resolveProviderBaseURLEnvironment,
+} from "../llm/registry/provider-ingress.js";
 import { parseHeartbeatTarget } from "../heartbeat/config.js";
 
 // Writable mirror used internally to build override payloads; the public
@@ -270,8 +274,7 @@ export function assertNoObsoleteProviderSelectors(
 export function resolveApiKey(
   env: EnvSnapshot = process.env,
 ): string | undefined {
-  const e = readEnv(env);
-  return e.XAI_API_KEY || e.GROK_API_KEY || undefined;
+  return resolveProviderApiKeyEnvironment("grok", readEnv(env))?.value;
 }
 
 function readNonEmpty(
@@ -306,71 +309,14 @@ export function resolveProviderApiKey(
   provider: string,
   env: EnvSnapshot = process.env,
 ): string | undefined {
-  const e = readEnv(env);
-  switch (normalizeProviderIdentity(provider, "provider credential lookup")) {
-    case "grok":
-      return resolveApiKey(e);
-    case "openai":
-      return readNonEmpty(e.OPENAI_API_KEY);
-    case "anthropic":
-      return readNonEmpty(e.ANTHROPIC_API_KEY);
-    case "lmstudio":
-      return readNonEmpty(e.LMSTUDIO_API_KEY) ?? readNonEmpty(e.OPENAI_API_KEY);
-    case "openai-compatible":
-      return (
-        readNonEmpty(e.OPENAI_COMPATIBLE_API_KEY) ??
-        readNonEmpty(e.OPENAI_API_KEY)
-      );
-    case "openrouter":
-      return readNonEmpty(e.OPENROUTER_API_KEY);
-    case "groq":
-      return readNonEmpty(e.GROQ_API_KEY);
-    case "deepseek":
-      return readNonEmpty(e.DEEPSEEK_API_KEY);
-    case "gemini":
-      return readNonEmpty(e.GEMINI_API_KEY);
-    case "amazon-bedrock":
-      return (
-        readNonEmpty(e.AWS_BEDROCK_ACCESS_KEY_ID) ??
-        readNonEmpty(e.AWS_ACCESS_KEY_ID)
-      );
-    default:
-      return undefined;
-  }
+  return resolveProviderApiKeyEnvironment(provider, readEnv(env))?.value;
 }
 
 export function resolveProviderBaseURL(
   provider: string,
   env: EnvSnapshot = process.env,
 ): string | undefined {
-  const e = readEnv(env);
-  switch (normalizeProviderIdentity(provider, "provider endpoint lookup")) {
-    case "openai":
-      return readNonEmpty(e.OPENAI_BASE_URL);
-    case "anthropic":
-      return readNonEmpty(e.ANTHROPIC_BASE_URL);
-    case "lmstudio":
-      return (
-        readNonEmpty(e.LMSTUDIO_BASE_URL) ?? readNonEmpty(e.OPENAI_BASE_URL)
-      );
-    case "openai-compatible":
-      return (
-        readNonEmpty(e.OPENAI_COMPATIBLE_BASE_URL) ??
-        readNonEmpty(e.OPENAI_BASE_URL)
-      );
-    case "openrouter":
-      return readNonEmpty(e.OPENROUTER_BASE_URL);
-    case "groq":
-      return readNonEmpty(e.GROQ_BASE_URL);
-    case "deepseek":
-      return readNonEmpty(e.DEEPSEEK_BASE_URL);
-    case "gemini":
-      return readNonEmpty(e.GEMINI_BASE_URL);
-    case "amazon-bedrock":
-      return readNonEmpty(e.AWS_BEDROCK_BASE_URL);
-    default:
-      return undefined;
-  }
+  return resolveProviderBaseURLEnvironment(provider, readEnv(env))?.value;
 }
 
 /** Model slug from env, falling back to `defaultModel`. */

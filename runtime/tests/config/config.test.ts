@@ -1791,15 +1791,18 @@ describe("env: resolvers", () => {
     ).toThrow(/obsolete configuration environment variable.*AGENC_XAI_API_KEY/u);
   });
 
-  test("resolveProviderApiKey returns provider-specific keys", () => {
+  test("resolveProviderApiKey follows canonical provider alias order", () => {
     expect(resolveProviderApiKey("grok", { XAI_API_KEY: "x" })).toBe("x");
     expect(resolveProviderApiKey("openai", { OPENAI_API_KEY: "o" })).toBe("o");
     expect(resolveProviderApiKey("anthropic", { ANTHROPIC_API_KEY: "a" })).toBe(
       "a",
     );
-    expect(resolveProviderApiKey("lmstudio", { OPENAI_API_KEY: "local" })).toBe(
-      "local",
-    );
+    expect(resolveProviderApiKey("lmstudio", {
+      OPENAI_API_KEY: "unrelated",
+    })).toBeUndefined();
+    expect(resolveProviderApiKey("lmstudio", {
+      LMSTUDIO_API_KEY: "studio",
+    })).toBe("studio");
     expect(
       resolveProviderApiKey("openai-compatible", { OPENAI_API_KEY: "local" }),
     ).toBe("local");
@@ -1816,15 +1819,33 @@ describe("env: resolvers", () => {
       AWS_BEDROCK_ACCESS_KEY_ID: "bedrock-aws",
       AWS_ACCESS_KEY_ID: "aws",
     })).toBe("bedrock-aws");
+    expect(resolveProviderApiKey("gemini", {
+      GOOGLE_API_KEY: "google",
+    })).toBe("google");
+    expect(resolveProviderApiKey("mistral", {
+      MISTRAL_API_KEY: "mistral",
+    })).toBe("mistral");
+    expect(resolveProviderApiKey("nvidia-nim", {
+      NVIDIA_API_KEY: "nvidia",
+    })).toBe("nvidia");
+    expect(resolveProviderApiKey("minimax", {
+      MINIMAX_API_KEY: "minimax",
+    })).toBe("minimax");
+    expect(resolveProviderApiKey("github", {
+      GH_TOKEN: "github",
+    })).toBe("github");
     expect(resolveProviderApiKey("ollama", {})).toBeUndefined();
+    expect(resolveProviderApiKey("agenc", {
+      AGENC_API_KEY: "managed-auth",
+    })).toBeUndefined();
   });
 
-  test("resolveProviderBaseURL returns provider-specific URL or local compatible fallback", () => {
+  test("resolveProviderBaseURL follows canonical provider endpoint aliases", () => {
     expect(
       resolveProviderBaseURL("lmstudio", {
         OPENAI_BASE_URL: "http://127.0.0.1:8000/v1",
       }),
-    ).toBe("http://127.0.0.1:8000/v1");
+    ).toBeUndefined();
     expect(
       resolveProviderBaseURL("lmstudio", {
         LMSTUDIO_BASE_URL: "http://127.0.0.1:1234/v1",
@@ -1842,6 +1863,26 @@ describe("env: resolvers", () => {
         OPENAI_BASE_URL: "http://127.0.0.1:8000/v1",
       }),
     ).toBe("http://127.0.0.1:9000/v1");
+    expect(
+      resolveProviderBaseURL("openai-compatible", {
+        OPENAI_API_BASE: "http://127.0.0.1:7000/v1",
+      }),
+    ).toBe("http://127.0.0.1:7000/v1");
+    expect(resolveProviderBaseURL("openai", {
+      OPENAI_API_BASE: "https://openai-proxy.example/v1",
+    })).toBe("https://openai-proxy.example/v1");
+    expect(resolveProviderBaseURL("grok", {
+      GROK_BASE_URL: "https://grok-proxy.example/v1",
+    })).toBe("https://grok-proxy.example/v1");
+    expect(resolveProviderBaseURL("ollama", {
+      OLLAMA_BASE_URL: "http://127.0.0.1:11434",
+    })).toBe("http://127.0.0.1:11434");
+    expect(resolveProviderBaseURL("github", {
+      GITHUB_BASE_URL: "https://github-proxy.example",
+    })).toBe("https://github-proxy.example");
+    expect(resolveProviderBaseURL("agenc", {
+      AGENC_BASE_URL: "https://managed.example/v1",
+    })).toBe("https://managed.example/v1");
     expect(
       resolveProviderBaseURL("amazon-bedrock", {
         AWS_BEDROCK_BASE_URL:

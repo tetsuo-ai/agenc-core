@@ -2,8 +2,9 @@
 
 Built-in model providers for AgenC **0.17.0**. Source of truth:
 `runtime/src/llm/registry/provider-info.ts`
-(`BUILT_IN_PROVIDER_DEFAULT_MODELS`, base URLs, API key envs, and first-run
-access/order metadata).
+(`BUILT_IN_PROVIDER_DEFINITIONS`). Each row owns the display name, defaults,
+ordered environment ingress names, and first-run access metadata. Exported
+default maps are mechanically derived views of those rows.
 
 CLI: `agenc providers` · `agenc login` · `agenc config` · `/provider` and
 `/model` in the TUI.
@@ -92,35 +93,34 @@ they run only through the Grok Build CLI ACP path. See
 
 ## Built-in providers (16)
 
-| Slug | Display name | Default model | Base URL | API key env (primary) | Onboarding access |
-| --- | --- | --- | --- | --- | --- |
-| `grok` | xAI Grok | `grok-4.6` | `https://api.x.ai/v1` | `XAI_API_KEY` | `api-key` |
-| `openai` | OpenAI | `gpt-5` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `api-key` |
-| `anthropic` | Anthropic | `claude-opus-4-7` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` | `api-key` |
-| `ollama` | Ollama | `llama3.3` | `http://localhost:11434` | _(none required)_ | `local` |
-| `lmstudio` | LM Studio | `gpt-4o-mini` | `http://localhost:1234/v1` | `LMSTUDIO_API_KEY` (optional) | `local` |
-| `openai-compatible` | OpenAI-compatible | `local-model` | `http://localhost:8000/v1` | `OPENAI_COMPATIBLE_API_KEY` | `local` |
-| `openrouter` | OpenRouter | `x-ai/grok-4.5` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `api-key` |
-| `groq` | Groq | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `api-key` |
-| `deepseek` | DeepSeek | `deepseek-v4-flash` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `api-key` |
-| `gemini` | Gemini | `gemini-2.5-pro` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY` | `api-key` |
-| `mistral` | Mistral | `mistral-medium-latest` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | `api-key` |
-| `nvidia-nim` | NVIDIA NIM | `nvidia/llama-3.1-nemotron-70b-instruct` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | `api-key` |
-| `minimax` | MiniMax | `MiniMax-M2.5` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | `api-key` |
-| `github` | GitHub Copilot | `gpt-4o` | `https://api.githubcopilot.com` | `GITHUB_TOKEN` | `api-key` |
-| `amazon-bedrock` | Amazon Bedrock | `amazon.nova-pro-v1:0` | `https://bedrock-runtime.us-east-1.amazonaws.com` | `AWS_ACCESS_KEY_ID` (or Bedrock-specific) | `api-key` |
-| `agenc` | AgenC | `agenc` | `https://id.agenc.ag/v1` | managed auth (`requiresManagedAuth`) | `managed` |
+| Slug | Display name | Default model | Default base URL | Ordered API-key env aliases | Ordered endpoint env aliases | Onboarding access |
+| --- | --- | --- | --- | --- | --- | --- |
+| `grok` | xAI Grok | `grok-4.6` | `https://api.x.ai/v1` | `XAI_API_KEY`, `GROK_API_KEY` | `XAI_BASE_URL`, `GROK_BASE_URL` | `api-key` |
+| `openai` | OpenAI | `gpt-5` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`, `OPENAI_API_BASE` | `api-key` |
+| `anthropic` | Anthropic | `claude-opus-4-7` | `https://api.anthropic.com/v1` | `ANTHROPIC_API_KEY` | `ANTHROPIC_BASE_URL` | `api-key` |
+| `ollama` | Ollama | `llama3.3` | `http://localhost:11434` | _(none)_ | `OLLAMA_BASE_URL` | `local` |
+| `lmstudio` | LM Studio | `gpt-4o-mini` | `http://localhost:1234/v1` | `LMSTUDIO_API_KEY` (optional) | `LMSTUDIO_BASE_URL` | `local` |
+| `openai-compatible` | OpenAI-compatible | `local-model` | `http://localhost:8000/v1` | `OPENAI_COMPATIBLE_API_KEY`, `OPENAI_API_KEY` | `OPENAI_COMPATIBLE_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_BASE` | `local` |
+| `openrouter` | OpenRouter | `x-ai/grok-4.5` | `https://openrouter.ai/api/v1` | `OPENROUTER_API_KEY` | `OPENROUTER_BASE_URL` | `api-key` |
+| `groq` | Groq | `llama-3.3-70b-versatile` | `https://api.groq.com/openai/v1` | `GROQ_API_KEY` | `GROQ_BASE_URL` | `api-key` |
+| `deepseek` | DeepSeek | `deepseek-v4-flash` | `https://api.deepseek.com/v1` | `DEEPSEEK_API_KEY` | `DEEPSEEK_BASE_URL` | `api-key` |
+| `gemini` | Gemini | `gemini-2.5-pro` | `https://generativelanguage.googleapis.com/v1beta` | `GEMINI_API_KEY`, `GOOGLE_API_KEY` | `GEMINI_BASE_URL` | `api-key` |
+| `mistral` | Mistral | `mistral-medium-latest` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | `MISTRAL_BASE_URL` | `api-key` |
+| `nvidia-nim` | NVIDIA NIM | `nvidia/llama-3.1-nemotron-70b-instruct` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | `NVIDIA_BASE_URL` | `api-key` |
+| `minimax` | MiniMax | `MiniMax-M2.5` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | `MINIMAX_BASE_URL` | `api-key` |
+| `github` | GitHub Copilot | `gpt-4o` | `https://api.githubcopilot.com` | `GITHUB_TOKEN`, `GH_TOKEN` | `GITHUB_BASE_URL` | `api-key` |
+| `amazon-bedrock` | Amazon Bedrock | `amazon.nova-pro-v1:0` | `https://bedrock-runtime.us-east-1.amazonaws.com` | `AWS_BEDROCK_ACCESS_KEY_ID`, `AWS_ACCESS_KEY_ID` | `AWS_BEDROCK_BASE_URL` | `api-key` |
+| `agenc` | AgenC | `agenc` | `https://id.agenc.ag/v1` | _(managed auth; no BYOK key alias)_ | `AGENC_BASE_URL` | `managed` |
 
 `openrouter` remains an `api-key` first-run route, but a signed-in AgenC
 subscription can supply its managed key access when that feature is enabled.
 
 ## Auth model
 
-Provider credentials are owned by the **auth backend** / BYOK config, not by
-the provider registry. The registry stores **request and catalog metadata**
-plus non-secret first-run routing metadata (base URL, default model,
-retry/timeouts, catalog lists, onboarding access and order). It does not store
-credentials.
+Provider credential values are owned by the **auth backend** or transient BYOK
+ingress, not by the provider registry. The registry stores only non-secret
+metadata, including the ordered environment variable names above. It never
+stores credential values.
 
 - **Local BYOK** — explicit provider environment keys are transient inputs;
   keys saved through AgenC live only in the home-scoped native credential
@@ -176,19 +176,11 @@ export AGENC_MODEL=x-ai/grok-4.5
 export OPENROUTER_API_KEY=…
 ```
 
-Base URL overrides (examples; see `runtime/src/config/env.ts`):
-
-| Provider | Env |
-| --- | --- |
-| OpenAI | `OPENAI_BASE_URL` |
-| Anthropic | `ANTHROPIC_BASE_URL` |
-| LM Studio | `LMSTUDIO_BASE_URL` |
-| OpenAI-compatible | `OPENAI_COMPATIBLE_BASE_URL` |
-| OpenRouter | `OPENROUTER_BASE_URL` |
-| Groq | `GROQ_BASE_URL` |
-| DeepSeek | `DEEPSEEK_BASE_URL` |
-| Gemini | `GEMINI_BASE_URL` |
-| Bedrock | `AWS_BEDROCK_BASE_URL`, region via `AWS_BEDROCK_REGION` / `AWS_REGION` |
+The built-in table above is exhaustive and ordered. An alias is never borrowed
+by another provider unless that provider row explicitly lists it. LM Studio,
+for example, does not inherit OpenAI credentials or endpoints. Bedrock region
+selection remains separate: `AWS_BEDROCK_REGION`, then `AWS_REGION`, then
+`AWS_DEFAULT_REGION`.
 
 ## Wire layer
 

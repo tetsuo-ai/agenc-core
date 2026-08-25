@@ -27,7 +27,10 @@ import {
   type ProviderName,
 } from "./provider.js";
 import { resolveProviderFactoryOptions } from "./provider-options.js";
-import { resolveBuiltInProviderInfo } from "./registry/provider-info.js";
+import {
+  BUILT_IN_PROVIDER_DEFINITIONS,
+  resolveBuiltInProviderInfo,
+} from "./registry/provider-info.js";
 
 function withEnv<T>(
   overrides: Record<string, string | undefined>,
@@ -1649,6 +1652,37 @@ describe("createProvider", () => {
       baseURL: "https://generativelanguage.googleapis.com/v1beta",
       model: "gemini-2.5-pro",
     });
+  });
+
+  test("resolves factory credentials and endpoints from the canonical provider rows", () => {
+    for (const [provider, definition] of Object.entries(
+      BUILT_IN_PROVIDER_DEFINITIONS,
+    )) {
+      for (const envVar of definition.apiKeyEnvVars) {
+        const resolved = resolveProviderFactoryOptions(
+          provider as ProviderName,
+          {},
+          { [envVar]: `${provider}-key` },
+        );
+        expect(resolved.apiKey, `${provider} ${envVar}`).toBe(`${provider}-key`);
+      }
+      for (const envVar of definition.baseURLEnvVars) {
+        const resolved = resolveProviderFactoryOptions(
+          provider as ProviderName,
+          {},
+          { [envVar]: `https://${provider}.example/v1` },
+        );
+        expect(resolved.baseURL, `${provider} ${envVar}`).toBe(
+          `https://${provider}.example/v1`,
+        );
+      }
+    }
+
+    expect(
+      resolveProviderFactoryOptions("agenc", {}, {
+        AGENC_API_KEY: "managed-auth-not-byok",
+      }).apiKey,
+    ).toBeUndefined();
   });
 
   test("infers a Vertex Gemini base URL from bearer env credentials", () => {

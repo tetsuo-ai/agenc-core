@@ -391,6 +391,10 @@ and cost assumptions: [`reference/providers.md`](reference/providers.md).
 
 There are **16 built-in provider slugs**. Full table, env vars, and base URLs:
 [`reference/providers.md`](reference/providers.md).
+`runtime/src/llm/registry/provider-info.ts` contains one authored definition
+row per slug. That row owns its display name, default model and base URL,
+onboarding classification, and ordered API-key/base-URL environment names;
+the exported lookup maps are derived projections rather than parallel tables.
 
 `runtime/src/llm` is provider-neutral; concrete HTTP/SDK shims live under
 `llm/providers/` and `services/`.

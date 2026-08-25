@@ -24,6 +24,36 @@ function sourceFiles(path: string): string[] {
 }
 
 describe("provider authority architecture", () => {
+  test("provider metadata and ordered environment ingress have one authored table", () => {
+    const registry = readFileSync(
+      `${SRC}/llm/registry/provider-info.ts`,
+      "utf8",
+    );
+    expect(registry).toMatch(/BUILT_IN_PROVIDER_DEFINITIONS/u);
+    expect(registry).not.toMatch(/PROVIDER_DISPLAY_NAMES/u);
+    expect(registry).not.toMatch(/BUILT_IN_PROVIDER_ONBOARDING/u);
+
+    const providerOptions = readFileSync(
+      `${SRC}/llm/provider-options.ts`,
+      "utf8",
+    );
+    expect(providerOptions).not.toMatch(/const\s+(?:API_KEY_ENV|BASE_URL_ENV)\b/u);
+    expect(providerOptions).toMatch(/resolveProviderApiKeyEnvironment/u);
+    expect(providerOptions).toMatch(/resolveProviderBaseURLEnvironment/u);
+
+    const configEnv = readFileSync(`${SRC}/config/env.ts`, "utf8");
+    const providerKeyResolver = configEnv.match(
+      /export function resolveProviderApiKey[\s\S]*?\n\}/u,
+    )?.[0];
+    const providerBaseResolver = configEnv.match(
+      /export function resolveProviderBaseURL[\s\S]*?\n\}/u,
+    )?.[0];
+    expect(providerKeyResolver).toMatch(/resolveProviderApiKeyEnvironment/u);
+    expect(providerKeyResolver).not.toMatch(/switch\s*\(/u);
+    expect(providerBaseResolver).toMatch(/resolveProviderBaseURLEnvironment/u);
+    expect(providerBaseResolver).not.toMatch(/switch\s*\(/u);
+  });
+
   test("provider selector identity has one normalizer and one retired mapping", () => {
     const production = sourceFiles(SRC).filter(
       (path) => path.endsWith(".ts") || path.endsWith(".tsx"),

@@ -24,6 +24,10 @@ import {
   chatGptSubscriptionHeaders,
   resolveStoredChatGptSubscriptionCredentials,
 } from "./providers/openai/chatgpt-backend.js";
+import {
+  resolveProviderApiKeyEnvironment,
+  resolveProviderBaseURLEnvironment,
+} from "./registry/provider-ingress.js";
 import { BUILT_IN_PROVIDER_BASE_URLS } from "./registry/provider-info.js";
 import { resolveGrokProviderApiKey } from "./xai-capability-config.js";
 import type { ProviderFactoryOptions, ProviderName } from "./provider.js";
@@ -32,72 +36,9 @@ export type ProviderEnvironment = Readonly<
   Record<string, string | undefined>
 >;
 
-const API_KEY_ENV: Readonly<
-  Partial<Record<ProviderName, readonly string[]>>
-> = Object.freeze({
-  grok: Object.freeze(["XAI_API_KEY", "GROK_API_KEY"]),
-  openai: Object.freeze(["OPENAI_API_KEY"]),
-  anthropic: Object.freeze(["ANTHROPIC_API_KEY"]),
-  lmstudio: Object.freeze(["LMSTUDIO_API_KEY"]),
-  "openai-compatible": Object.freeze([
-    "OPENAI_COMPATIBLE_API_KEY",
-    "OPENAI_API_KEY",
-  ]),
-  openrouter: Object.freeze(["OPENROUTER_API_KEY"]),
-  groq: Object.freeze(["GROQ_API_KEY"]),
-  deepseek: Object.freeze(["DEEPSEEK_API_KEY"]),
-  gemini: Object.freeze(["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
-  mistral: Object.freeze(["MISTRAL_API_KEY"]),
-  "nvidia-nim": Object.freeze(["NVIDIA_API_KEY"]),
-  minimax: Object.freeze(["MINIMAX_API_KEY"]),
-  github: Object.freeze(["GITHUB_TOKEN", "GH_TOKEN"]),
-  "amazon-bedrock": Object.freeze([
-    "AWS_BEDROCK_ACCESS_KEY_ID",
-    "AWS_ACCESS_KEY_ID",
-  ]),
-  agenc: Object.freeze(["AGENC_API_KEY"]),
-});
-
-const BASE_URL_ENV: Readonly<
-  Partial<Record<ProviderName, readonly string[]>>
-> = Object.freeze({
-  grok: Object.freeze(["XAI_BASE_URL", "GROK_BASE_URL"]),
-  openai: Object.freeze(["OPENAI_BASE_URL"]),
-  anthropic: Object.freeze(["ANTHROPIC_BASE_URL"]),
-  ollama: Object.freeze(["OLLAMA_BASE_URL"]),
-  lmstudio: Object.freeze(["LMSTUDIO_BASE_URL"]),
-  "openai-compatible": Object.freeze([
-    "OPENAI_COMPATIBLE_BASE_URL",
-    "OPENAI_BASE_URL",
-    "OPENAI_API_BASE",
-  ]),
-  openrouter: Object.freeze(["OPENROUTER_BASE_URL"]),
-  groq: Object.freeze(["GROQ_BASE_URL"]),
-  deepseek: Object.freeze(["DEEPSEEK_BASE_URL"]),
-  gemini: Object.freeze(["GEMINI_BASE_URL"]),
-  mistral: Object.freeze(["MISTRAL_BASE_URL"]),
-  "nvidia-nim": Object.freeze(["NVIDIA_BASE_URL"]),
-  minimax: Object.freeze(["MINIMAX_BASE_URL"]),
-  github: Object.freeze(["GITHUB_BASE_URL"]),
-  "amazon-bedrock": Object.freeze(["AWS_BEDROCK_BASE_URL"]),
-  agenc: Object.freeze(["AGENC_BASE_URL"]),
-});
-
 function nonEmpty(value: string | undefined): string | undefined {
   const normalized = value?.trim();
   return normalized ? normalized : undefined;
-}
-
-function firstEnvironmentValue(
-  env: ProviderEnvironment,
-  names: readonly string[] | undefined,
-): string | undefined {
-  if (names === undefined) return undefined;
-  for (const name of names) {
-    const value = nonEmpty(env[name]);
-    if (value !== undefined) return value;
-  }
-  return undefined;
 }
 
 function mergeExtra(
@@ -156,7 +97,10 @@ export function resolveProviderFactoryOptions(
 ): ProviderFactoryOptions {
   const snapshot = snapshotProviderEnvironment(env);
   const home = requested.credentialHome;
-  const environmentApiKey = firstEnvironmentValue(snapshot, API_KEY_ENV[provider]);
+  const environmentApiKey = resolveProviderApiKeyEnvironment(
+    provider,
+    snapshot,
+  )?.value;
   let apiKey = provider === "grok" && home !== undefined
     ? resolveGrokProviderApiKey(
         home,
@@ -166,7 +110,7 @@ export function resolveProviderFactoryOptions(
     : nonEmpty(requested.apiKey) ?? environmentApiKey;
   let baseURL =
     nonEmpty(requested.baseURL) ??
-    firstEnvironmentValue(snapshot, BASE_URL_ENV[provider]);
+    resolveProviderBaseURLEnvironment(provider, snapshot)?.value;
 
   const resolvedExtra: Record<string, unknown> = {};
   const forcedExtra: Record<string, unknown> = {};

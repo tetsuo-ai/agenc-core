@@ -1,9 +1,9 @@
 /**
- * Ports upstream runtime provider defaults onto AgenC provider identities.
+ * Canonical metadata for every built-in AgenC provider.
  *
- * Shape difference from upstream:
- *   - AgenC keeps provider auth in `AuthBackend`/BYOK config, so this registry
- *     stores request/catalog metadata only.
+ * Provider selection is owned by the session configuration layer. This
+ * registry owns the metadata for an already-selected provider: display name,
+ * defaults, ordered environment ingress names, and onboarding classification.
  */
 
 import { deriveFlatCatalog } from "./model-catalog.js";
@@ -50,32 +50,6 @@ const DEFAULT_STREAM_MAX_RETRIES = 5;
 const DEFAULT_REQUEST_MAX_RETRIES = 4;
 const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;
 
-export const BUILT_IN_PROVIDER_DEFAULT_MODELS = Object.freeze({
-  grok: "grok-4.6",
-  openai: "gpt-5",
-  anthropic: "claude-opus-4-7",
-  ollama: "llama3.3",
-  lmstudio: "gpt-4o-mini",
-  "openai-compatible": "local-model",
-  openrouter: "x-ai/grok-4.5",
-  groq: "llama-3.3-70b-versatile",
-  // deepseek-reasoner was retired upstream on 2026-07-24; requests to it
-  // 400, which read as a silent dead provider. v4-flash is the current
-  // default-tier model.
-  deepseek: "deepseek-v4-flash",
-  gemini: "gemini-2.5-pro",
-  // devstral-latest is no longer a documented alias (Devstral 2 deprecated
-  // 2026-05-22); Mistral Medium is the documented replacement.
-  mistral: "mistral-medium-latest",
-  "nvidia-nim": "nvidia/llama-3.1-nemotron-70b-instruct",
-  minimax: "MiniMax-M2.5",
-  github: "gpt-4o",
-  "amazon-bedrock": "amazon.nova-pro-v1:0",
-  agenc: "agenc",
-} as const);
-
-export type BuiltInProviderSlug = keyof typeof BUILT_IN_PROVIDER_DEFAULT_MODELS;
-
 export type BuiltInProviderOnboardingAccess =
   | "api-key"
   | "local"
@@ -102,69 +76,191 @@ function onboardingInfo(
   });
 }
 
-/**
- * Canonical first-run classification for every built-in provider. Keeping this
- * beside the provider registry prevents onboarding from growing a second,
- * incomplete provider catalog or credential policy.
- */
-const BUILT_IN_PROVIDER_ONBOARDING = Object.freeze({
-  grok: onboardingInfo(10, "api-key"),
-  openai: onboardingInfo(20, "api-key"),
-  anthropic: onboardingInfo(30, "api-key"),
-  ollama: onboardingInfo(40, "local"),
-  lmstudio: onboardingInfo(50, "local"),
-  "openai-compatible": onboardingInfo(60, "local"),
-  openrouter: onboardingInfo(70, "api-key", true),
-  groq: onboardingInfo(80, "api-key"),
-  deepseek: onboardingInfo(90, "api-key"),
-  gemini: onboardingInfo(100, "api-key"),
-  mistral: onboardingInfo(110, "api-key"),
-  "nvidia-nim": onboardingInfo(120, "api-key"),
-  minimax: onboardingInfo(130, "api-key"),
-  github: onboardingInfo(140, "api-key"),
-  "amazon-bedrock": onboardingInfo(150, "api-key"),
-  agenc: onboardingInfo(160, "managed"),
-} satisfies Readonly<Record<BuiltInProviderSlug, BuiltInProviderOnboardingInfo>>);
+export interface BuiltInProviderDefinition {
+  readonly name: string;
+  readonly defaultModel: string;
+  readonly baseURL: string;
+  readonly apiKeyEnvVars: readonly string[];
+  readonly baseURLEnvVars: readonly string[];
+  readonly onboarding: BuiltInProviderOnboardingInfo;
+}
 
-export const BUILT_IN_PROVIDER_BASE_URLS = Object.freeze({
-  grok: "https://api.x.ai/v1",
-  openai: "https://api.openai.com/v1",
-  anthropic: "https://api.anthropic.com/v1",
-  ollama: "http://localhost:11434",
-  lmstudio: "http://localhost:1234/v1",
-  "openai-compatible": "http://localhost:8000/v1",
-  openrouter: "https://openrouter.ai/api/v1",
-  groq: "https://api.groq.com/openai/v1",
-  deepseek: "https://api.deepseek.com/v1",
-  gemini: "https://generativelanguage.googleapis.com/v1beta",
-  mistral: "https://api.mistral.ai/v1",
-  "nvidia-nim": "https://integrate.api.nvidia.com/v1",
-  minimax: "https://api.minimax.io/v1",
-  github: "https://api.githubcopilot.com",
-  "amazon-bedrock": "https://bedrock-runtime.us-east-1.amazonaws.com",
-  agenc: "https://id.agenc.ag/v1",
-} as const satisfies Readonly<Record<BuiltInProviderSlug, string>>);
+function providerDefinition<const T extends BuiltInProviderDefinition>(
+  definition: T,
+): T {
+  return Object.freeze({
+    ...definition,
+    apiKeyEnvVars: Object.freeze([...definition.apiKeyEnvVars]),
+    baseURLEnvVars: Object.freeze([...definition.baseURLEnvVars]),
+  }) as T;
+}
 
-export const BUILT_IN_PROVIDER_SCOPE_OMISSIONS = Object.freeze({} as const);
+/** The only authored provider metadata table. All exported maps are views. */
+export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
+  grok: providerDefinition({
+    name: "xAI Grok",
+    defaultModel: "grok-4.6",
+    baseURL: "https://api.x.ai/v1",
+    apiKeyEnvVars: ["XAI_API_KEY", "GROK_API_KEY"],
+    baseURLEnvVars: ["XAI_BASE_URL", "GROK_BASE_URL"],
+    onboarding: onboardingInfo(10, "api-key"),
+  }),
+  openai: providerDefinition({
+    name: "OpenAI", // branding-scan: allow real provider display name
+    defaultModel: "gpt-5",
+    baseURL: "https://api.openai.com/v1",
+    apiKeyEnvVars: ["OPENAI_API_KEY"],
+    baseURLEnvVars: ["OPENAI_BASE_URL", "OPENAI_API_BASE"],
+    onboarding: onboardingInfo(20, "api-key"),
+  }),
+  anthropic: providerDefinition({
+    name: "Anthropic", // branding-scan: allow real provider display name
+    defaultModel: "claude-opus-4-7",
+    baseURL: "https://api.anthropic.com/v1",
+    apiKeyEnvVars: ["ANTHROPIC_API_KEY"],
+    baseURLEnvVars: ["ANTHROPIC_BASE_URL"],
+    onboarding: onboardingInfo(30, "api-key"),
+  }),
+  ollama: providerDefinition({
+    name: "Ollama",
+    defaultModel: "llama3.3",
+    baseURL: "http://localhost:11434",
+    apiKeyEnvVars: [],
+    baseURLEnvVars: ["OLLAMA_BASE_URL"],
+    onboarding: onboardingInfo(40, "local"),
+  }),
+  lmstudio: providerDefinition({
+    name: "LM Studio",
+    defaultModel: "gpt-4o-mini",
+    baseURL: "http://localhost:1234/v1",
+    apiKeyEnvVars: ["LMSTUDIO_API_KEY"],
+    baseURLEnvVars: ["LMSTUDIO_BASE_URL"],
+    onboarding: onboardingInfo(50, "local"),
+  }),
+  "openai-compatible": providerDefinition({
+    name: "OpenAI-compatible", // branding-scan: allow provider category display name
+    defaultModel: "local-model",
+    baseURL: "http://localhost:8000/v1",
+    apiKeyEnvVars: ["OPENAI_COMPATIBLE_API_KEY", "OPENAI_API_KEY"],
+    baseURLEnvVars: [
+      "OPENAI_COMPATIBLE_BASE_URL",
+      "OPENAI_BASE_URL",
+      "OPENAI_API_BASE",
+    ],
+    onboarding: onboardingInfo(60, "local"),
+  }),
+  openrouter: providerDefinition({
+    name: "OpenRouter",
+    defaultModel: "x-ai/grok-4.5",
+    baseURL: "https://openrouter.ai/api/v1",
+    apiKeyEnvVars: ["OPENROUTER_API_KEY"],
+    baseURLEnvVars: ["OPENROUTER_BASE_URL"],
+    onboarding: onboardingInfo(70, "api-key", true),
+  }),
+  groq: providerDefinition({
+    name: "Groq",
+    defaultModel: "llama-3.3-70b-versatile",
+    baseURL: "https://api.groq.com/openai/v1",
+    apiKeyEnvVars: ["GROQ_API_KEY"],
+    baseURLEnvVars: ["GROQ_BASE_URL"],
+    onboarding: onboardingInfo(80, "api-key"),
+  }),
+  deepseek: providerDefinition({
+    name: "DeepSeek",
+    defaultModel: "deepseek-v4-flash",
+    baseURL: "https://api.deepseek.com/v1",
+    apiKeyEnvVars: ["DEEPSEEK_API_KEY"],
+    baseURLEnvVars: ["DEEPSEEK_BASE_URL"],
+    onboarding: onboardingInfo(90, "api-key"),
+  }),
+  gemini: providerDefinition({
+    name: "Gemini",
+    defaultModel: "gemini-2.5-pro",
+    baseURL: "https://generativelanguage.googleapis.com/v1beta",
+    apiKeyEnvVars: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+    baseURLEnvVars: ["GEMINI_BASE_URL"],
+    onboarding: onboardingInfo(100, "api-key"),
+  }),
+  mistral: providerDefinition({
+    name: "Mistral",
+    defaultModel: "mistral-medium-latest",
+    baseURL: "https://api.mistral.ai/v1",
+    apiKeyEnvVars: ["MISTRAL_API_KEY"],
+    baseURLEnvVars: ["MISTRAL_BASE_URL"],
+    onboarding: onboardingInfo(110, "api-key"),
+  }),
+  "nvidia-nim": providerDefinition({
+    name: "NVIDIA NIM",
+    defaultModel: "nvidia/llama-3.1-nemotron-70b-instruct",
+    baseURL: "https://integrate.api.nvidia.com/v1",
+    apiKeyEnvVars: ["NVIDIA_API_KEY"],
+    baseURLEnvVars: ["NVIDIA_BASE_URL"],
+    onboarding: onboardingInfo(120, "api-key"),
+  }),
+  minimax: providerDefinition({
+    name: "MiniMax",
+    defaultModel: "MiniMax-M2.5",
+    baseURL: "https://api.minimax.io/v1",
+    apiKeyEnvVars: ["MINIMAX_API_KEY"],
+    baseURLEnvVars: ["MINIMAX_BASE_URL"],
+    onboarding: onboardingInfo(130, "api-key"),
+  }),
+  github: providerDefinition({
+    name: "GitHub Copilot",
+    defaultModel: "gpt-4o",
+    baseURL: "https://api.githubcopilot.com",
+    apiKeyEnvVars: ["GITHUB_TOKEN", "GH_TOKEN"],
+    baseURLEnvVars: ["GITHUB_BASE_URL"],
+    onboarding: onboardingInfo(140, "api-key"),
+  }),
+  "amazon-bedrock": providerDefinition({
+    name: "Amazon Bedrock",
+    defaultModel: "amazon.nova-pro-v1:0",
+    baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
+    apiKeyEnvVars: ["AWS_BEDROCK_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"],
+    baseURLEnvVars: ["AWS_BEDROCK_BASE_URL"],
+    onboarding: onboardingInfo(150, "api-key"),
+  }),
+  agenc: providerDefinition({
+    name: "AgenC",
+    defaultModel: "agenc",
+    baseURL: "https://id.agenc.ag/v1",
+    apiKeyEnvVars: [],
+    baseURLEnvVars: ["AGENC_BASE_URL"],
+    onboarding: onboardingInfo(160, "managed"),
+  }),
+} as const);
 
+export type BuiltInProviderSlug = keyof typeof BUILT_IN_PROVIDER_DEFINITIONS;
+
+function projectProviderStrings(
+  field: "defaultModel" | "baseURL",
+): Readonly<Record<BuiltInProviderSlug, string>> {
+  return Object.freeze(
+    Object.fromEntries(
+      Object.entries(BUILT_IN_PROVIDER_DEFINITIONS).map(
+        ([provider, definition]) => [provider, definition[field]],
+      ),
+    ),
+  ) as Readonly<Record<BuiltInProviderSlug, string>>;
+}
+
+/** Read-only compatibility views, mechanically derived from the registry. */
+export const BUILT_IN_PROVIDER_DEFAULT_MODELS =
+  projectProviderStrings("defaultModel");
+export const BUILT_IN_PROVIDER_BASE_URLS = projectProviderStrings("baseURL");
 export const BUILT_IN_PROVIDER_API_KEY_ENVS: Readonly<
   Partial<Record<BuiltInProviderSlug, string>>
-> = Object.freeze({
-  grok: "XAI_API_KEY",
-  openai: "OPENAI_API_KEY",
-  anthropic: "ANTHROPIC_API_KEY",
-  lmstudio: "LMSTUDIO_API_KEY",
-  "openai-compatible": "OPENAI_COMPATIBLE_API_KEY",
-  openrouter: "OPENROUTER_API_KEY",
-  groq: "GROQ_API_KEY",
-  deepseek: "DEEPSEEK_API_KEY",
-  gemini: "GEMINI_API_KEY",
-  mistral: "MISTRAL_API_KEY",
-  "nvidia-nim": "NVIDIA_API_KEY",
-  minimax: "MINIMAX_API_KEY",
-  github: "GITHUB_TOKEN",
-  "amazon-bedrock": "AWS_ACCESS_KEY_ID",
-});
+> = Object.freeze(
+  Object.fromEntries(
+    Object.entries(BUILT_IN_PROVIDER_DEFINITIONS).flatMap(
+      ([provider, definition]) =>
+        definition.apiKeyEnvVars[0] === undefined
+          ? []
+          : [[provider, definition.apiKeyEnvVars[0]]],
+    ),
+  ),
+) as Readonly<Partial<Record<BuiltInProviderSlug, string>>>;
 
 export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   Record<BuiltInProviderSlug, readonly string[]>
@@ -242,6 +338,9 @@ export interface BuiltInProviderInfo {
   readonly name: string;
   readonly baseURL: string;
   readonly defaultModel: string;
+  readonly apiKeyEnvVars: readonly string[];
+  readonly baseURLEnvVars: readonly string[];
+  /** First ordered key alias, retained as a derived compatibility view. */
   readonly apiKeyEnvVar?: string;
   readonly requestMaxRetries: number;
   readonly streamMaxRetries: number;
@@ -252,30 +351,12 @@ export interface BuiltInProviderInfo {
   readonly onboarding: BuiltInProviderOnboardingInfo;
 }
 
-const PROVIDER_DISPLAY_NAMES: Readonly<Record<BuiltInProviderSlug, string>> =
-  Object.freeze({
-    grok: "xAI Grok",
-    openai: "OpenAI", // branding-scan: allow real provider display name
-    anthropic: "Anthropic", // branding-scan: allow real provider display name
-    ollama: "Ollama",
-    lmstudio: "LM Studio",
-    "openai-compatible": "OpenAI-compatible", // branding-scan: allow provider category display name
-    openrouter: "OpenRouter",
-    groq: "Groq",
-    deepseek: "DeepSeek",
-    gemini: "Gemini",
-    mistral: "Mistral",
-    "nvidia-nim": "NVIDIA NIM",
-    minimax: "MiniMax",
-    github: "GitHub Copilot",
-    "amazon-bedrock": "Amazon Bedrock",
-    agenc: "AgenC",
-  });
+const BUILT_IN_PROVIDER_IDS = Object.freeze(
+  Object.keys(BUILT_IN_PROVIDER_DEFINITIONS) as BuiltInProviderSlug[],
+);
 
 export function builtInProviderIds(): readonly BuiltInProviderSlug[] {
-  return Object.freeze(
-    Object.keys(BUILT_IN_PROVIDER_DEFAULT_MODELS) as BuiltInProviderSlug[],
-  );
+  return BUILT_IN_PROVIDER_IDS;
 }
 
 export function resolveBuiltInProviderInfo(
@@ -283,22 +364,25 @@ export function resolveBuiltInProviderInfo(
 ): BuiltInProviderInfo | undefined {
   const id = resolveBuiltInProviderSlug(provider);
   if (id === undefined) return undefined;
-  const onboarding = BUILT_IN_PROVIDER_ONBOARDING[id];
+  const definition = BUILT_IN_PROVIDER_DEFINITIONS[id];
+  const primaryApiKeyEnvVar = definition.apiKeyEnvVars[0];
   return {
     id,
-    name: PROVIDER_DISPLAY_NAMES[id],
-    baseURL: BUILT_IN_PROVIDER_BASE_URLS[id],
-    defaultModel: BUILT_IN_PROVIDER_DEFAULT_MODELS[id],
-    ...(BUILT_IN_PROVIDER_API_KEY_ENVS[id] !== undefined
-      ? { apiKeyEnvVar: BUILT_IN_PROVIDER_API_KEY_ENVS[id] }
+    name: definition.name,
+    baseURL: definition.baseURL,
+    defaultModel: definition.defaultModel,
+    apiKeyEnvVars: definition.apiKeyEnvVars,
+    baseURLEnvVars: definition.baseURLEnvVars,
+    ...(primaryApiKeyEnvVar !== undefined
+      ? { apiKeyEnvVar: primaryApiKeyEnvVar }
       : {}),
     requestMaxRetries: DEFAULT_REQUEST_MAX_RETRIES,
     streamMaxRetries: DEFAULT_STREAM_MAX_RETRIES,
     streamIdleTimeoutMs: DEFAULT_STREAM_IDLE_TIMEOUT_MS,
     websocketConnectTimeoutMs: DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS,
     supportsWebsockets: id === "openai",
-    requiresManagedAuth: onboarding.access === "managed",
-    onboarding,
+    requiresManagedAuth: definition.onboarding.access === "managed",
+    onboarding: definition.onboarding,
   };
 }
 
@@ -313,7 +397,7 @@ export function resolveBuiltInProviderSlug(
 ): BuiltInProviderSlug | undefined {
   const normalized = normalizeProviderIdentity(provider, "provider registry");
   if (!normalized) return undefined;
-  return normalized in BUILT_IN_PROVIDER_DEFAULT_MODELS
+  return normalized in BUILT_IN_PROVIDER_DEFINITIONS
     ? (normalized as BuiltInProviderSlug)
     : undefined;
 }

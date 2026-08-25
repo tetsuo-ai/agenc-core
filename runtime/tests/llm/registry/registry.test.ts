@@ -14,7 +14,6 @@ import {
   resolveRegisteredModelCatalogEntry,
 } from "./model-catalog.js";
 import {
-  BUILT_IN_PROVIDER_SCOPE_OMISSIONS,
   listBuiltInProviderInfo,
   resolveBuiltInProviderInfo,
 } from "./provider-info.js";
@@ -57,15 +56,11 @@ describe("LLM registry", () => {
       name: "Amazon Bedrock",
       defaultModel: "amazon.nova-pro-v1:0",
       baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
-      apiKeyEnvVar: "AWS_ACCESS_KEY_ID",
+      apiKeyEnvVar: "AWS_BEDROCK_ACCESS_KEY_ID",
     });
     expect(listBuiltInProviderInfo().map((entry) => entry.id)).toContain(
       "openai-compatible",
     );
-  });
-
-  it("does not carry unresolved built-in provider scope omissions", () => {
-    expect(BUILT_IN_PROVIDER_SCOPE_OMISSIONS).toEqual({});
   });
 
   it("resolves donor model catalog metadata by exact, prefix, and namespace", () => {
