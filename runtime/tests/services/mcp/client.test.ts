@@ -2081,9 +2081,9 @@ test('callIdeRpc reports binary persistence failures without exposing raw base64
   const [block] = content
   assert.equal(block?.type, 'text')
   if (block?.type === 'text') {
-    assert.match(
+    assert.equal(
       block.text,
-      /^\[Audio from ide\] Binary content \(audio\/wav, 5 bytes\) could not be saved to disk: ENOTDIR: not a directory, open '.+\.wav'$/,
+      `[Audio from ide] Binary content (audio/wav, 5 bytes) could not be saved to disk: artifact target has an unsafe parent path: ${toolResultsDir}`,
     )
     assert.doesNotMatch(block.text, /c291bmQ=/)
   }
