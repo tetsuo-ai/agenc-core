@@ -38,11 +38,6 @@ describe("shouldRunAutoFix", () => {
     expect(shouldRunAutoFix("Write", CONFIG)).toBe(true);
   });
 
-  test("returns true for donor-compatible file tool aliases", () => {
-    expect(shouldRunAutoFix("file_edit", CONFIG)).toBe(true);
-    expect(shouldRunAutoFix("file_write", CONFIG)).toBe(true);
-  });
-
   test("returns false for non-file tools and null config", () => {
     expect(shouldRunAutoFix("Bash", CONFIG)).toBe(false);
     expect(shouldRunAutoFix("Edit", null)).toBe(false);

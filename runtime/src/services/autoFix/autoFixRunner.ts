@@ -1,15 +1,6 @@
 /**
- * Ports the donor auto-fix command runner onto AgenC process
- * primitives.
- *
- * Why this lives here / shape difference from upstream:
- *   - The control flow is intentionally kept close to the donor
- *     service: lint runs first, test runs only after lint succeeds,
- *     command output is capped, and timeout/abort both terminate the
- *     spawned command tree.
- *
- * Cross-cuts deliberately NOT carried:
- *   - None. This file is the process runner for the live service.
+ * Runs sandbox-bounded auto-fix checks in lint-then-test order, with capped
+ * output and command-tree termination on timeout or abort.
  */
 
 import { spawn } from "node:child_process";
