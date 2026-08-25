@@ -13,9 +13,12 @@ import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  LINUX_SANDBOX_HELPER_REINSTALL_REMEDIATION,
+  LINUX_SANDBOX_HOME_WORKSPACE_REMEDIATION,
   SandboxExecutionBroker,
   SandboxExecutionError,
   attachSandboxExecutionBroker,
+  linuxSandboxHelperRemediation,
   linuxSandboxProbeRemediation,
   probeSandboxExecutionStatus,
   readSandboxExecutionBroker,
@@ -218,6 +221,201 @@ describe("SandboxExecutionBroker", () => {
     });
     expect(selectInitial).toHaveBeenCalledOnce();
     expect(transform).toHaveBeenCalledOnce();
+  });
+
+  describe("Landlock-fallback pre-flight", () => {
+    function fallbackStatus(): SandboxExecutionStatus {
+      return {
+        ...readyStatus("workspace_write"),
+        platform: "linux",
+        landlock: "full",
+        landlockFallback: {
+          reason: "probe: bubblewrap could not create the required namespaces",
+          remediation:
+            "Install AgenC's narrow per-command profile with: agenc doctor --apparmor-profile | sudo tee ...",
+        },
+      };
+    }
+    const fakeManager = {
+      selectInitial: vi.fn(() => "linux_seccomp" as const),
+      transform: vi.fn(() => ({
+        command: ["/sandbox/helper", "/bin/echo", "ok"],
+        cwd: "/",
+        env: {},
+        arg0: "sandbox-helper",
+      })),
+    } as never;
+
+    it("refuses an unexpressible policy with the precise reason and the probe-time remediation", () => {
+      const root = tempRoot("agenc-broker-preflight-");
+      mkdirSync(join(root, ".agenc"));
+      const broker = new SandboxExecutionBroker({
+        mode: "workspace_write",
+        cwd: root,
+        platform: "linux",
+        sandboxManager: fakeManager,
+        probe: fallbackStatus,
+      });
+
+      expect(() =>
+        broker.prepareSpawn("mcp_stdio", {
+          program: "/bin/echo",
+          args: ["ok"],
+          cwd: root,
+          env: {},
+        }),
+      ).toThrowError(
+        expect.objectContaining({
+          code: "sandbox_policy_unexpressible",
+          surface: "mcp_stdio",
+          message: expect.stringMatching(
+            /read-only subpath.*\.agenc.*agenc doctor --apparmor-profile/s,
+          ),
+        }),
+      );
+    });
+
+    it("rechecks carve-out existence on every spawn instead of memoizing", () => {
+      const root = tempRoot("agenc-broker-preflight-recheck-");
+      const broker = new SandboxExecutionBroker({
+        mode: "workspace_write",
+        cwd: root,
+        platform: "linux",
+        sandboxManager: fakeManager,
+        probe: fallbackStatus,
+      });
+      const command = {
+        program: "/bin/echo",
+        args: ["ok"],
+        cwd: root,
+        env: {},
+      };
+
+      expect(() => broker.prepareSpawn("tool", command)).not.toThrow();
+      mkdirSync(join(root, ".agenc"));
+      expect(() => broker.prepareSpawn("tool", command)).toThrowError(
+        expect.objectContaining({ code: "sandbox_policy_unexpressible" }),
+      );
+    });
+
+    it("skips the pre-flight for inherited read-only cwd spawns", () => {
+      const root = tempRoot("agenc-broker-preflight-inherited-");
+      mkdirSync(join(root, ".agenc"));
+      const broker = new SandboxExecutionBroker({
+        mode: "workspace_write",
+        cwd: root,
+        platform: "linux",
+        sandboxManager: fakeManager,
+        probe: fallbackStatus,
+      });
+
+      expect(() =>
+        broker.prepareSpawn("tool", {
+          program: "/bin/echo",
+          args: ["ok"],
+          cwd: root,
+          env: {},
+          cwdBinding: "inherited_readonly",
+        }),
+      ).not.toThrow();
+    });
+
+    it("never invokes the planner on a healthy bubblewrap host", () => {
+      const root = tempRoot("agenc-broker-preflight-healthy-");
+      mkdirSync(join(root, ".agenc"));
+      const planSpy = vi.fn(() => ({
+        kind: "refused" as const,
+        reason: "should never be consulted",
+      }));
+      const broker = new SandboxExecutionBroker({
+        mode: "workspace_write",
+        cwd: root,
+        platform: "linux",
+        sandboxManager: fakeManager,
+        probe: () => ({ ...readyStatus("workspace_write"), platform: "linux" }),
+        planLandlockPolicy: planSpy,
+      });
+
+      expect(() =>
+        broker.prepareSpawn("tool", {
+          program: "/bin/echo",
+          args: ["ok"],
+          cwd: root,
+          env: {},
+        }),
+      ).not.toThrow();
+      expect(planSpy).not.toHaveBeenCalled();
+    });
+
+    it("a tight profile override makes the same spawn expressible, and additionalPermissions still merge", () => {
+      const root = tempRoot("agenc-broker-preflight-override-");
+      mkdirSync(join(root, ".agenc"));
+      const dataDir = join(root, "plugin-data");
+      mkdirSync(dataDir);
+      const broker = new SandboxExecutionBroker({
+        mode: "workspace_write",
+        cwd: root,
+        platform: "linux",
+        sandboxManager: fakeManager,
+        probe: fallbackStatus,
+      });
+      const override = {
+        fileSystem: {
+          kind: "restricted",
+          entries: [
+            {
+              path: { kind: "special", value: { kind: "root" } },
+              access: "read",
+            },
+            { path: { kind: "path", path: dataDir }, access: "write" },
+          ],
+          includePlatformDefaults: true,
+        },
+        network: "disabled",
+      } as never;
+
+      // Default workspace profile refuses (existing .agenc carve-out) …
+      expect(() =>
+        broker.prepareSpawn("mcp_stdio", {
+          program: "/bin/echo",
+          args: ["ok"],
+          cwd: root,
+          env: {},
+        }),
+      ).toThrowError(
+        expect.objectContaining({ code: "sandbox_policy_unexpressible" }),
+      );
+      // … the tight override plans cleanly …
+      expect(() =>
+        broker.prepareSpawn("mcp_stdio", {
+          program: "/bin/echo",
+          args: ["ok"],
+          cwd: root,
+          env: {},
+          permissionProfileOverride: override,
+        }),
+      ).not.toThrow();
+      // … and additive surface grants still merge on top of the override:
+      // granting the project root back re-introduces the carve-out refusal.
+      expect(() =>
+        broker.prepareSpawn("mcp_stdio", {
+          program: "/bin/echo",
+          args: ["ok"],
+          cwd: root,
+          env: {},
+          permissionProfileOverride: override,
+          additionalPermissions: {
+            fileSystem: {
+              entries: [
+                { path: { kind: "path", path: root }, access: "write" },
+              ],
+            },
+          } as never,
+        }),
+      ).toThrowError(
+        expect.objectContaining({ code: "sandbox_policy_unexpressible" }),
+      );
+    });
   });
 
   it("rebases captured boundaries and forks independent child roots", async () => {
@@ -435,4 +633,79 @@ describe("SandboxExecutionBroker", () => {
       expect(String(error)).toContain("install the helper");
     }
   });
+});
+
+/**
+ * The default userland install puts the helper under ~/.agenc, and a bare
+ * `agenc` in a fresh terminal opens $HOME as the workspace -- so the helper is
+ * inside the writable workspace and startup fails closed. Observed live on
+ * 0.17.0: the refusal is correct, but it told the operator to reinstall the
+ * helper "outside the workspace", which is not the action that fixes it.
+ */
+describe("Linux sandbox helper remediation", () => {
+  it("names the home workspace instead of sending the operator to reinstall", () => {
+    const home = tempRoot("agenc-sandbox-home-");
+    expect(linuxSandboxHelperRemediation(home, { HOME: home })).toBe(
+      LINUX_SANDBOX_HOME_WORKSPACE_REMEDIATION,
+    );
+    expect(linuxSandboxHelperRemediation(home, { HOME: home })).toContain(
+      "project directory",
+    );
+  });
+
+  it("covers a workspace that merely contains the home directory", () => {
+    const root = tempRoot("agenc-sandbox-above-home-");
+    const home = join(root, "home", "operator");
+    mkdirSync(home, { recursive: true });
+    expect(linuxSandboxHelperRemediation(root, { HOME: home })).toBe(
+      LINUX_SANDBOX_HOME_WORKSPACE_REMEDIATION,
+    );
+  });
+
+  it("keeps the reinstall guidance when the workspace excludes the home", () => {
+    const root = tempRoot("agenc-sandbox-project-");
+    const workspace = join(root, "project");
+    const home = join(root, "home");
+    mkdirSync(workspace, { recursive: true });
+    mkdirSync(home, { recursive: true });
+    // A helper inside a project workspace is a genuine placement problem, so
+    // the original guidance is the right one to keep.
+    expect(linuxSandboxHelperRemediation(workspace, { HOME: home })).toBe(
+      LINUX_SANDBOX_HELPER_REINSTALL_REMEDIATION,
+    );
+  });
+
+  it("ignores a relative HOME rather than trusting it as a root", () => {
+    const root = tempRoot("agenc-sandbox-relative-home-");
+    // A relative HOME cannot anchor a containment test; the fallback is the
+    // process's real home, which is not under this temporary workspace.
+    expect(linuxSandboxHelperRemediation(root, { HOME: "relative/home" })).toBe(
+      LINUX_SANDBOX_HELPER_REINSTALL_REMEDIATION,
+    );
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "reaches the probe status an operator actually sees",
+    () => {
+      const home = tempRoot("agenc-sandbox-home-probe-");
+      const helper = join(home, ".agenc", "agenc-linux-sandbox");
+      mkdirSync(join(home, ".agenc"), { recursive: true });
+      writeFileSync(helper, "#!/bin/sh\nexit 0\n");
+      chmodSync(helper, 0o755);
+
+      const status = probeSandboxExecutionStatus({
+        mode: "workspace_write",
+        cwd: home,
+        env: { HOME: home },
+        platform: "linux",
+        agencLinuxSandboxExe: helper,
+      });
+
+      expect(status.kind).toBe("unavailable");
+      expect(status).toMatchObject({
+        reason: expect.stringContaining("outside the writable workspace"),
+        remediation: LINUX_SANDBOX_HOME_WORKSPACE_REMEDIATION,
+      });
+    },
+  );
 });

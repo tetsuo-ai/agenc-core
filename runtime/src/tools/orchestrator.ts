@@ -754,6 +754,9 @@ export async function orchestrateToolCall<T>(
   if (requirement.kind === "needs_approval") {
     const approvalCtx: ApprovalCtx = {
       ...opts.approvalCtx,
+      ...(opts.tool.requiresUserInteraction?.() === true
+        ? { requiresUserInteraction: true }
+        : {}),
       ...(requirement.reason !== undefined
         ? { retryReason: requirement.reason }
         : {}),
@@ -841,6 +844,9 @@ export async function orchestrateToolCall<T>(
     if (!alreadyApproved) {
       const escalationCtx: ApprovalCtx = {
         ...opts.approvalCtx,
+        ...(opts.tool.requiresUserInteraction?.() === true
+          ? { requiresUserInteraction: true }
+          : {}),
         retryReason:
           err.message || "command failed; retry without sandbox?",
       };

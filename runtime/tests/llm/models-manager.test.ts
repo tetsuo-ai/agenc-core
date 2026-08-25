@@ -104,7 +104,7 @@ describe("StaticModelsManager", () => {
     );
   });
 
-  it("lists built-in Groq Llama and Mixtral routes", async () => {
+  it("lists built-in Groq Llama routes", async () => {
     const manager = new StaticModelsManager({
       config: defaultConfig(),
       fallbackProvider: "groq",
@@ -115,7 +115,6 @@ describe("StaticModelsManager", () => {
       expect.arrayContaining([
         "llama-3.3-70b-versatile",
         "llama-3.1-8b-instant",
-        "mixtral-8x7b-32768",
       ]),
     );
   });

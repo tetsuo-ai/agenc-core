@@ -1,3 +1,5 @@
+import { readFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 import type { ValidationResult } from "../validation.js";
 import {
   disableAllPluginsOp,
@@ -107,6 +109,49 @@ export function parseAgenCPluginCliArgs(
   }
 }
 
+/**
+ * Names the plugin components a non-user-scope (repository-controlled)
+ * install will silently strip: hooks and MCP servers. Checks both the
+ * conventional component files and the manifest declarations.
+ */
+async function detectProvenanceStrippedComponents(
+  pluginRoot: string,
+): Promise<string[]> {
+  const exists = async (path: string): Promise<boolean> => {
+    try {
+      await stat(path);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  let manifest: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(
+      await readFile(join(pluginRoot, ".agenc-plugin", "plugin.json"), "utf8"),
+    );
+    if (parsed !== null && typeof parsed === "object") {
+      manifest = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // No readable manifest: fall back to the conventional file checks.
+  }
+  const stripped: string[] = [];
+  if (
+    (await exists(join(pluginRoot, "hooks", "hooks.json"))) ||
+    manifest.hooks !== undefined
+  ) {
+    stripped.push("hooks");
+  }
+  if (
+    (await exists(join(pluginRoot, ".mcp.json"))) ||
+    manifest.mcpServers !== undefined
+  ) {
+    stripped.push("MCP servers");
+  }
+  return stripped;
+}
+
 export async function runAgenCPluginCli(
   command: AgenCPluginCliCommand,
   options: AgenCPluginCliOptions = {},
@@ -148,6 +193,22 @@ export async function runAgenCPluginCli(
         io.stdout.write(
           `Installed plugin ${result.plugin.name} to ${result.scope} scope: ${result.destination}\n`,
         );
+        // Workspace-resident plugin content is repository-controlled, which
+        // strips hooks and MCP servers at load time (plugins/loader.ts). Say
+        // so at install time instead of letting those components vanish
+        // silently.
+        if (result.scope !== "user") {
+          const stripped = await detectProvenanceStrippedComponents(
+            result.destination,
+          );
+          if (stripped.length > 0) {
+            io.stderr.write(
+              `Warning: this plugin ships ${stripped.join(" and ")}, which do NOT load from ` +
+                `${result.scope} scope (workspace content is repository-controlled). ` +
+                `Install with --scope user to enable them.\n`,
+            );
+          }
+        }
         return 0;
       }
       case "uninstall": {

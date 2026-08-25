@@ -1500,7 +1500,7 @@ describe("createProvider", () => {
       apiKey: "deepseek-test",
       model: undefined,
       expectedBaseURL: "https://api.deepseek.com/v1",
-      expectedModel: "deepseek-reasoner",
+      expectedModel: "deepseek-v4-flash",
       expectedUseResponsesApi: false,
       assertApiKey: true,
       expectedApiKey: "deepseek-test",
@@ -1531,7 +1531,7 @@ describe("createProvider", () => {
       apiKey: "mistral-test",
       model: undefined,
       expectedBaseURL: "https://api.mistral.ai/v1",
-      expectedModel: "devstral-latest",
+      expectedModel: "mistral-medium-latest",
       expectedUseResponsesApi: false,
       expectedInstance: MistralProvider,
       assertApiKey: true,
@@ -1549,7 +1549,9 @@ describe("createProvider", () => {
       apiKey: "nvidia-test",
       model: undefined,
       expectedBaseURL: "https://integrate.api.nvidia.com/v1",
-      expectedModel: "nvidia/llama-3.1-nemotron-70b-instruct",
+      // The registry default, which moved off nemotron-70b when the curated
+      // set was checked against what NIM actually serves.
+      expectedModel: "meta/llama-3.1-8b-instruct",
       expectedUseResponsesApi: false,
       expectedInstance: NvidiaNimProvider,
       assertApiKey: true,

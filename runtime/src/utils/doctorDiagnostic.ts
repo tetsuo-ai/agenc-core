@@ -970,6 +970,28 @@ export function buildSandboxWarning(
   }
 }
 
+/**
+ * Ready-via-Landlock-fallback is degraded readiness: the fallback cannot
+ * express sandbox policies that protect .git/.agenc inside writable project
+ * roots, so shell in git projects and MCP stdio servers are refused
+ * per-spawn even though the probe reports ready. Surface that loudly with
+ * the cause-correct bubblewrap remedy computed at probe time.
+ */
+export function buildLandlockFallbackWarning(
+  status: SandboxExecutionStatus,
+): { issue: string; fix: string } | null {
+  if (status.kind !== 'ready' || status.landlockFallback === undefined) {
+    return null
+  }
+  return {
+    issue:
+      `[sandbox_landlock_fallback] bubblewrap is unusable (${status.landlockFallback.reason}); ` +
+      'the Landlock fallback cannot run sandbox policies that protect .git/.agenc inside ' +
+      'writable project roots (shell in git projects, MCP stdio servers)',
+    fix: status.landlockFallback.remediation,
+  }
+}
+
 export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
   const activeGeneratedWrapper = await findActiveGeneratedWrapper()
   const installationType = await getCurrentInstallationType({
@@ -1087,6 +1109,10 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
   const sandboxWarning = buildSandboxWarning(sandbox)
   if (sandboxWarning) {
     warnings.push(sandboxWarning)
+  }
+  const landlockFallbackWarning = buildLandlockFallbackWarning(sandbox)
+  if (landlockFallbackWarning) {
+    warnings.push(landlockFallbackWarning)
   }
 
   // Get package manager info if running from package manager

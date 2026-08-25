@@ -45,7 +45,7 @@ function validate(
 }
 
 describe("StateToolPairProjection", () => {
-  it("validates ordered many-call turns and persists exact resolution rows", () => {
+  it("validates reordered many-call results and persists exact resolution rows", () => {
     const outcome = validate([
       {
         role: "assistant",
@@ -55,8 +55,8 @@ describe("StateToolPairProjection", () => {
           { id: "call-b", name: "grep" },
         ],
       },
-      { role: "tool", content: "a", toolCallId: "call-a", toolName: "read" },
       { role: "tool", content: "b", toolCallId: "call-b", toolName: "grep" },
+      { role: "tool", content: "a", toolCallId: "call-a", toolName: "read" },
       { role: "assistant", content: "done" },
     ]);
 
@@ -73,7 +73,7 @@ describe("StateToolPairProjection", () => {
       callId: "call-a",
       toolName: "read",
       assistantIndex: 0,
-      resultIndex: 1,
+      resultIndex: 2,
     });
     expect(
       driver
@@ -117,7 +117,7 @@ describe("StateToolPairProjection", () => {
     ).toBeUndefined();
   });
 
-  it("distinguishes duplicate, orphan, unknown, and ordering failures", () => {
+  it("distinguishes duplicate, orphan, unknown, and missing-result failures", () => {
     expect(
       validate([
         {
@@ -169,7 +169,7 @@ describe("StateToolPairProjection", () => {
       ]),
     ).toMatchObject({
       status: "invalid",
-      failure: { code: "tool_result_out_of_order" },
+      failure: { code: "tool_result_missing" },
     });
     expect(
       validate([

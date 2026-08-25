@@ -29,6 +29,7 @@ import {
 export type ProviderAvailabilityStatus = "usable" | "unusable";
 export type ProviderKeyStatus =
   | "present"
+  | "oauth"
   | "missing"
   | "managed"
   | "unavailable"
@@ -222,7 +223,9 @@ async function resolveProviderAvailabilityEntry(params: {
     env: params.env,
     settingsApiKey: settings?.apiKey,
   });
-  const keyEnvVar = credential.sourceEnvVar ?? credential.primaryEnvVar;
+  const keyEnvVar = credential.kind === "oauth"
+    ? undefined
+    : credential.sourceEnvVar ?? credential.primaryEnvVar;
   const hasKey = credential.apiKey !== undefined;
   const hasRequiredAwsSecret = params.provider !== "amazon-bedrock" ||
     firstNonEmptyString(params.env.AWS_BEDROCK_SECRET_ACCESS_KEY) !== undefined ||
@@ -303,15 +306,18 @@ async function resolveProviderAvailabilityEntry(params: {
       });
     }
     if (hasKey) {
+      const usesOauth = credential.kind === "oauth";
       return buildEntry({
         provider: params.provider,
         model,
-        keyStatus: "present",
+        keyStatus: usesOauth ? "oauth" : "present",
         localProbe,
         subscription: params.subscription,
         usable: true,
-        detail: `BYOK credential found${keyEnvVar ? ` via ${keyEnvVar}` : ""}`,
-        ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
+        detail: usesOauth
+          ? "Grok OAuth credential found"
+          : `BYOK credential found${keyEnvVar ? ` via ${keyEnvVar}` : ""}`,
+        ...(!usesOauth && keyEnvVar !== undefined ? { keyEnvVar } : {}),
       });
     }
     if (
@@ -426,9 +432,20 @@ function resolveProviderCredential(params: {
   readonly settingsApiKey?: string;
 }): {
   readonly apiKey?: string;
+  readonly kind?: "api-key" | "oauth";
   readonly sourceEnvVar?: string;
   readonly primaryEnvVar?: string;
 } {
+  if (params.provider === "grok") {
+    // Keep discovery aligned with runtime resolution: a stored Grok OAuth
+    // grant wins over BYOK aliases. Apart from being truthful in `providers
+    // --json`, this prevents a leftover XAI_API_KEY from making subscription
+    // access look like an environment-backed API key.
+    const oauthBearer = readXaiOauthAccessToken();
+    if (oauthBearer !== undefined) {
+      return { apiKey: oauthBearer, kind: "oauth" };
+    }
+  }
   const configuredEnvVar = readProviderApiKeyEnvVar(
     params.config,
     params.provider,
@@ -436,7 +453,9 @@ function resolveProviderCredential(params: {
   if (configuredEnvVar !== undefined && params.env[configuredEnvVar] !== undefined) {
     const apiKey = firstNonEmptyString(params.env[configuredEnvVar]);
     return {
-      ...(apiKey !== undefined ? { apiKey, sourceEnvVar: configuredEnvVar } : {}),
+      ...(apiKey !== undefined
+        ? { apiKey, kind: "api-key" as const, sourceEnvVar: configuredEnvVar }
+        : {}),
       primaryEnvVar: configuredEnvVar,
     };
   }
@@ -446,25 +465,17 @@ function resolveProviderCredential(params: {
     if (apiKey !== undefined) {
       return {
         apiKey,
+        kind: "api-key",
         sourceEnvVar: candidate,
         primaryEnvVar: configuredEnvVar ?? candidates[0],
       };
     }
   }
   const settingsApiKey = firstNonEmptyString(params.settingsApiKey);
-  if (settingsApiKey === undefined && params.provider === "grok") {
-    // Sign in with X / xAI OAuth: a stored subscription bearer counts as a
-    // present credential so grok reports usable without XAI_API_KEY.
-    const oauthBearer = readXaiOauthAccessToken();
-    if (oauthBearer !== undefined) {
-      return {
-        apiKey: oauthBearer,
-        primaryEnvVar: configuredEnvVar ?? candidates[0],
-      };
-    }
-  }
   return {
-    ...(settingsApiKey !== undefined ? { apiKey: settingsApiKey } : {}),
+    ...(settingsApiKey !== undefined
+      ? { apiKey: settingsApiKey, kind: "api-key" as const }
+      : {}),
     primaryEnvVar: configuredEnvVar ?? candidates[0] ??
       BUILT_IN_PROVIDER_API_KEY_ENVS[params.provider],
   };

@@ -15,6 +15,7 @@ import {
 import { EventLog, type Event } from "../../src/session/event-log.js";
 import type { Session } from "../../src/session/session.js";
 import type { Tool } from "../../src/tools/types.js";
+import { createAskUserQuestionTool } from "../../src/tools/ask-user-question/tool.js";
 import { attachPendingPhysicalSettlement } from "../../src/tools/physical-settlement.js";
 
 function toolHarness() {
@@ -670,6 +671,78 @@ describe("runAdmittedToolCall", () => {
       throw new Error("missing unknown outcome");
     }
     expect(acknowledgement.msg.payload.outcome).toBe("unknown_outcome");
+  });
+
+  it("settles a missing interactive response and permits the next effect", async () => {
+    const state = toolHarness();
+    const askTool = createAskUserQuestionTool();
+    const questionInput = {
+      questions: [
+        {
+          header: "Research scope",
+          question: "Which market angle?",
+          options: [
+            {
+              label: "Current outlook (Recommended)",
+              description: "Focus on current conditions.",
+            },
+            {
+              label: "Long-term outlook",
+              description: "Focus on structural changes.",
+            },
+          ],
+        },
+      ],
+    };
+
+    const unanswered = await runAdmittedToolCall({
+      session: state.session,
+      turnId: "turn-1",
+      callId: "call-unanswered-question",
+      tool: askTool,
+      args: questionInput,
+      invoke: async ({ crossEffectBoundary }) => {
+        crossEffectBoundary();
+        return await askTool.execute(questionInput);
+      },
+    });
+
+    expect(unanswered).toMatchObject({
+      content: "User did not provide answers.",
+      isError: true,
+      effectDisposition: { disposition: "confirmed_no_effect" },
+    });
+    expect(
+      state.effectEvents.filter(
+        (event) => event.msg.type === "effect_unknown_outcome",
+      ),
+    ).toHaveLength(0);
+
+    const continueEffect = vi.fn(async () => ({ content: "continued" }));
+    const followupTool = {
+      name: "WebSearch",
+      recoveryCategory: "side-effecting",
+    } as unknown as Tool;
+    const continued = await runAdmittedToolCall({
+      session: state.session,
+      turnId: "turn-1",
+      callId: "call-followup-effect",
+      tool: followupTool,
+      args: { query: "oil markets" },
+      invoke: async ({ crossEffectBoundary }) => {
+        crossEffectBoundary();
+        return await continueEffect();
+      },
+    });
+
+    expect(continued).toMatchObject({ content: "continued" });
+    expect(continueEffect).toHaveBeenCalledOnce();
+    expect(state.effectEvents.map((event) => event.msg.type)).toEqual([
+      "effect_intent",
+      "effect_result",
+      "effect_intent",
+      "effect_result",
+    ]);
   });
 
   it("accepts typed adapter evidence that a crossed attempt made no effect", async () => {

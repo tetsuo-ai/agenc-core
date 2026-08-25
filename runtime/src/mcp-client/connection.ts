@@ -53,6 +53,9 @@ export async function createMCPConnection(
         ...(config.env_vars !== undefined ? { env_vars: config.env_vars } : {}),
         ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
         ...(config.timeout !== undefined ? { timeout: config.timeout } : {}),
+        ...(config.pluginSandbox !== undefined
+          ? { pluginSandbox: config.pluginSandbox }
+          : {}),
       },
       logger,
       elicitationHandlers,

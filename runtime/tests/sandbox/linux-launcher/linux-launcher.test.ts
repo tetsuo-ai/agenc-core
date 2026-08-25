@@ -409,6 +409,21 @@ describe("Linux sandbox launcher", () => {
     const program = createNetworkSeccompProgram("restricted", "x64");
     expect(program.length).toBeGreaterThan(8 * 10);
     expect(program.length % 8).toBe(0);
+    const restrictedDenied = deniedSyscalls(program);
+    // Connectivity stays closed …
+    expect(restrictedDenied).toContain(42); // connect
+    expect(restrictedDenied).toContain(49); // bind
+    expect(restrictedDenied).toContain(50); // listen
+    expect(restrictedDenied).toContain(44); // sendto
+    expect(restrictedDenied).toContain(54); // setsockopt
+    // … but read-only socket introspection must stay ALLOWED: node's libuv
+    // classifies inherited stdio with getsockname, and child_process "pipe"
+    // stdio are AF_UNIX socketpairs — denying it gave every node-spawned
+    // confined child (stdio MCP servers under the Landlock fallback)
+    // instant EOF on stdin.
+    expect(restrictedDenied).not.toContain(51); // getsockname
+    expect(restrictedDenied).not.toContain(52); // getpeername
+    expect(restrictedDenied).not.toContain(55); // getsockopt
     expect(networkSeccompMode("disabled", false, false)).toBe("restricted");
     expect(networkSeccompMode("enabled", false, false)).toBeNull();
     expect(networkSeccompMode("enabled", true, true)).toBe("proxy-routed");

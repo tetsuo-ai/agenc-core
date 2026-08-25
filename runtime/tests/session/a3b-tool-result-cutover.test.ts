@@ -292,8 +292,8 @@ describe("A3b raw checkpoint validation", () => {
   });
 });
 
-describe("A3b shared ordered validator cutover", () => {
-  it("rejects durable tool results that reverse the assistant's declared order", () => {
+describe("A3b shared tool-result validator cutover", () => {
+  it("pairs durable parallel tool results by id when they finish in reverse order", () => {
     const sessionId = "ordered-live-reversal-session";
     const store = openRollout({
       sessionId,
@@ -327,17 +327,23 @@ describe("A3b shared ordered validator cutover", () => {
         content: "result b",
       }),
     };
-
-    expect(() =>
-      store.appendRollout({ type: "response_item", payload: reversedResult }),
-    ).toThrowError(
-      expect.objectContaining<ToolPairHistoryBlockedError>({
-        outcome: expect.objectContaining({
-          status: "invalid",
-          failure: expect.objectContaining({ code: "tool_result_out_of_order" }),
-        }),
+    const firstResult: ResponseItem = {
+      role: "tool",
+      content: "result a",
+      toolCallId: "ordered-call-a",
+      toolName: "FileRead",
+      toolResultIntegrity: createToolResultIntegrity({
+        runId: sessionId,
+        toolCallId: "ordered-call-a",
+        content: "result a",
       }),
-    );
+    };
+
+    expect(() => {
+      store.appendRollout({ type: "response_item", payload: reversedResult });
+      store.appendRollout({ type: "response_item", payload: firstResult });
+      store.flushDurable();
+    }).not.toThrow();
     store.close();
   });
 

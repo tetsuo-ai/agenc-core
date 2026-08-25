@@ -220,6 +220,21 @@ sudo apparmor_parser -R /etc/apparmor.d/agenc-native-userns
 sudo rm /etc/apparmor.d/agenc-native-userns
 ```
 
+Until the profile is installed, AgenC runs on its Landlock fallback. Landlock
+is a pure allow-list: it cannot grant write access to a project while keeping
+`.git`, `.agenc`, and `.agents` read-only inside it, so sandboxed spawns that
+need a writable project root (shell in git projects, most stdio MCP servers)
+are refused with a `[sandbox_policy_unexpressible]` error naming the path.
+There is no safe partial waiver for this: any flag that made those paths
+writable would let a confined process install git hooks that execute outside
+the sandbox. The supported options are installing the AppArmor profile above
+(restores full bubblewrap confinement), `sandbox_mode = "read-only"`, or the
+explicit `danger-full-access` posture. Plugin-declared MCP servers are exempt:
+they run under a tighter profile confined to their plugin data directory,
+which the Landlock fallback can express. Note that `[sandbox_policy]`
+`writable_roots` in config is currently not consumed by the runtime and does
+not affect any of this.
+
 ## npm launcher
 
 ```bash

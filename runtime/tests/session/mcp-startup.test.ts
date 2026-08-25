@@ -679,6 +679,115 @@ describe("mcp-startup session-owned manager helpers", () => {
     }
   });
 
+  it("merges plugin-declared MCP servers into the session source list", async () => {
+    // The historical gap: plugin MCP servers were loaded and sandboxed by
+    // the plugin registration pipeline but never handed to the MCPManager,
+    // so their tools silently never reached the tool catalog.
+    const source = vi.fn().mockResolvedValue({
+      "plugin:sample:goal": {
+        command: "node",
+        args: ["goal-server.mjs"],
+      },
+    });
+    const config = {
+      mcp_servers: {
+        github: { command: "github-mcp" },
+      },
+      plugins: { enabled: true },
+    };
+    await expect(
+      resolveSessionMcpConfigFromSources(config, {} as NodeJS.ProcessEnv, {
+        cwd: "/workspace",
+        pluginMcpServerSource: source,
+      }),
+    ).resolves.toEqual([
+      expect.objectContaining({ name: "github", command: "github-mcp" }),
+      expect.objectContaining({
+        name: "plugin:sample:goal",
+        command: "node",
+        args: ["goal-server.mjs"],
+      }),
+    ]);
+    // The loader needs the config's plugins section to know what is
+    // enabled (else every plugin resolves as disabled) and the caller's
+    // env so AGENC_HOME resolution matches the session.
+    expect(source).toHaveBeenCalledWith({
+      cwd: "/workspace",
+      config,
+      env: {},
+    });
+  });
+
+  it("lets an explicit config entry override a plugin server of the same name", async () => {
+    await expect(
+      resolveSessionMcpConfigFromSources(
+        {
+          mcp_servers: {
+            "plugin:sample:goal": { command: "config-override" },
+          },
+        },
+        {} as NodeJS.ProcessEnv,
+        {
+          pluginMcpServerSource: async () => ({
+            "plugin:sample:goal": { command: "plugin-declared" },
+          }),
+        },
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({
+        name: "plugin:sample:goal",
+        command: "config-override",
+      }),
+    ]);
+  });
+
+  it("excludes plugin servers when includePluginMcpServers is false", async () => {
+    await expect(
+      resolveSessionMcpConfigFromSources(undefined, {} as NodeJS.ProcessEnv, {
+        includePluginMcpServers: false,
+        pluginMcpServerSource: async () => ({
+          "plugin:sample:goal": { command: "plugin-declared" },
+        }),
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  it("keeps AGENC_MCP_SERVERS as a complete override over plugin servers", async () => {
+    await expect(
+      resolveSessionMcpConfigFromSources(
+        undefined,
+        {
+          AGENC_MCP_SERVERS: JSON.stringify([
+            { name: "envOnly", command: "env-mcp" },
+          ]),
+        } as NodeJS.ProcessEnv,
+        {
+          pluginMcpServerSource: async () => ({
+            "plugin:sample:goal": { command: "plugin-declared" },
+          }),
+        },
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({ name: "envOnly", command: "env-mcp" }),
+    ]);
+  });
+
+  it("tolerates a broken plugin MCP source without failing session startup", async () => {
+    await expect(
+      resolveSessionMcpConfigFromSources(
+        { mcp_servers: { github: { command: "github-mcp" } } },
+        {} as NodeJS.ProcessEnv,
+        {
+          pluginMcpServerSource: async () => {
+            throw new Error("plugin loader exploded");
+          },
+        },
+      ),
+    ).resolves.toEqual([
+      expect.objectContaining({ name: "github", command: "github-mcp" }),
+    ]);
+  });
+
   it("keeps AGENC_MCP_SERVERS as a complete override over project .mcp.json", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "agenc-project-mcp-"));
     try {
@@ -921,6 +1030,40 @@ describe("mcp-startup session-owned manager helpers", () => {
       configuredServers: ["github", "filesystem"],
       requiredServers: ["github"],
     });
+  });
+
+  it("refresh keeps plugin servers instead of evicting them", async () => {
+    // Refresh used to rebuild the manager's list from config only, so any
+    // plugin server the manager held would be evicted on the first refresh.
+    const refreshServers = vi.fn().mockResolvedValue(undefined);
+    const manager = {
+      refreshServers,
+    } as unknown as MCPManager;
+
+    const result = await refreshMcpManagerFromConfig({
+      manager,
+      env: {} as NodeJS.ProcessEnv,
+      config: {
+        mcp_servers: {
+          github: { command: "github-mcp" },
+        },
+      },
+      pluginMcpServerSource: async () => ({
+        "plugin:sample:goal": { command: "node", args: ["goal-server.mjs"] },
+      }),
+    });
+
+    expect(refreshServers).toHaveBeenCalledWith(
+      [
+        expect.objectContaining({ name: "github" }),
+        expect.objectContaining({ name: "plugin:sample:goal" }),
+      ],
+      {},
+    );
+    expect(result.configuredServers).toEqual([
+      "github",
+      "plugin:sample:goal",
+    ]);
   });
 
   it("service refreshFromConfig preserves env override semantics", async () => {

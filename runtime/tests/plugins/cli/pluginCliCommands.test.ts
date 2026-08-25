@@ -222,6 +222,42 @@ describe("agenc plugin CLI", () => {
     });
   });
 
+  it("warns when a project-scope install ships hooks or MCP servers", async () => {
+    // Workspace-resident plugin content is repository-controlled, which
+    // strips hooks and MCP servers at load time; the install must say so
+    // instead of letting those components vanish silently.
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const source = await writePlugin(root, "withmcp");
+    await writeFile(
+      join(source, ".mcp.json"),
+      JSON.stringify({ mcpServers: { local: { command: "node", args: ["s.js"] } } }),
+    );
+    await mkdir(join(source, "hooks"), { recursive: true });
+    await writeFile(join(source, "hooks", "hooks.json"), JSON.stringify({ hooks: {} }));
+
+    const io = createIo();
+    const exit = await runAgenCPluginCli({
+      kind: "install",
+      source,
+      scope: "project",
+      force: false,
+    }, options(agencHome, workspaceRoot, io));
+    expect(exit).toBe(0);
+    expect(io.stderrText()).toContain("hooks and MCP servers");
+    expect(io.stderrText()).toContain("--scope user");
+
+    // The same plugin at user scope loads everything: no warning.
+    const userIo = createIo();
+    const userExit = await runAgenCPluginCli({
+      kind: "install",
+      source,
+      scope: "user",
+      force: true,
+    }, options(agencHome, workspaceRoot, userIo));
+    expect(userExit).toBe(0);
+    expect(userIo.stderrText()).toBe("");
+  });
+
   it("adds, upgrades, lists, and removes a local marketplace", async () => {
     const { agencHome, workspaceRoot, root } = await tempRuntime();
     const marketplaceRoot = join(root, "marketplace");

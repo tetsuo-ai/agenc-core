@@ -316,10 +316,16 @@ function resolvePluginTemplate(
     pluginDataDir ??= formatTemplatePath(getPluginDataDir(plugin.source));
     return pluginDataDir;
   };
+  // CLAUDE_* forms are accepted as aliases: plugins written for Claude Code
+  // (the ecosystem agenc installs from) template with ${CLAUDE_PLUGIN_ROOT}
+  // et al., and an unconsumed template previously fell through to env-var
+  // expansion and killed the component with "Missing environment variables".
   let out = value
-    .replace(/\$\{AGENC_PLUGIN_ROOT\}/g, () => formatTemplatePath(plugin.root))
-    .replace(/\$\{AGENC_PLUGIN_DATA\}/g, () => dataDir())
-    .replace(/\$\{AGENC_SESSION_ID\}/g, () => options.sessionId ?? "");
+    .replace(/\$\{(?:AGENC|CLAUDE)_PLUGIN_ROOT\}/g, () =>
+      formatTemplatePath(plugin.root),
+    )
+    .replace(/\$\{(?:AGENC|CLAUDE)_PLUGIN_DATA\}/g, () => dataDir())
+    .replace(/\$\{(?:AGENC|CLAUDE)_SESSION_ID\}/g, () => options.sessionId ?? "");
   out = out.replace(/\$\{user_config\.([A-Za-z_][\w.-]*)\}/g, (_match, key: string) => {
     const value = pluginSettingValue(plugin, key, {
       exposeSensitive: options.exposeSensitive,

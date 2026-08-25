@@ -64,7 +64,9 @@ import {
   type ProviderFallbackDecision,
 } from "../../api/fallback-ladder.js";
 import { getRetryDelay, sleepMs } from "../../api/retry.js";
-import { VERSION } from "../../../version.js";
+import {
+  CHATGPT_MODELS_CLIENT_VERSION,
+} from "../../../services/api/openAiChatGptBackend.js";
 
 const DEFAULT_BASE_URL = "https://api.openai.com/v1";
 const OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE =
@@ -74,6 +76,26 @@ const OPENAI_CHAT_COMPLETIONS_INVALID_TOOL_CALL_MESSAGE =
   "OpenAI chat-completions stream emitted invalid tool_call"; // branding-scan: allow real OpenAI provider identifier
 const CHAT_COMPLETIONS_CONTEXT_SAFETY_BUFFER_TOKENS = 1024;
 const CHAT_COMPLETIONS_MIN_OUTPUT_TOKENS = 256;
+
+export async function refreshAndSyncOpenAiSubscriptionBearer(options: {
+  readonly readSubscriptionAuth: () =>
+    | { readonly accessToken: string; readonly accountId: string }
+    | undefined;
+  readonly refreshSubscription: () => Promise<boolean>;
+  readonly applySubscriptionAuth: (auth: {
+    readonly accessToken: string;
+    readonly accountId: string;
+  }) => void;
+}): Promise<void> {
+  if (options.readSubscriptionAuth() === undefined) return;
+  await options.refreshSubscription();
+  // A sibling process may already have rotated secure storage, in which case
+  // refresh correctly returns false. The live client must still adopt the
+  // stored bearer instead of continuing indefinitely with its stale copy.
+  const auth = options.readSubscriptionAuth();
+  if (!auth?.accessToken.trim() || !auth.accountId.trim()) return;
+  options.applySubscriptionAuth(auth);
+}
 
 interface OpenAISseEvent {
   readonly event?: string;
@@ -102,33 +124,6 @@ function normalizePositiveInteger(
   if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
   const normalized = Math.floor(value);
   return normalized > 0 ? normalized : undefined;
-}
-
-/**
- * The ChatGPT backend requires a `client_version` on its model listing and
- * rejects the request without one, so the health check against a
- * subscription sign-in has always failed — reported as an unreachable
- * provider and logged as a request failure on every turn, while the turns
- * themselves worked fine.
- *
- * It wants a bare semver. Verified against the live endpoint: `0.17.0`
- * answers 200, while `1` and `agenc/0.17.0` are both refused with
- * `{"detail":"Invalid client_version format"}`.
- */
-function chatgptModelsQuery(baseURL: string | undefined): string {
-  if (baseURL === undefined) return "";
-  let host: string;
-  try {
-    host = new URL(baseURL).hostname.toLowerCase();
-  } catch {
-    return "";
-  }
-  // branding-scan: allow factual reference to real provider in endpoint
-  if (host !== "chatgpt.com" && !host.endsWith(".chatgpt.com")) return "";
-  const semver = /^\d+\.\d+\.\d+/.exec(VERSION)?.[0];
-  return semver === undefined
-    ? ""
-    : `?client_version=${encodeURIComponent(semver)}`;
 }
 
 function isLocalBaseURL(baseURL: string | undefined): boolean {
@@ -554,6 +549,7 @@ export class OpenAIProvider implements LLMProvider {
     messages: LLMMessage[],
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
+    await this.refreshSubscriptionBearerIfExpiring();
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
     const model = options?.model?.trim() || this.config.model;
     const requestTools = options?.tools
@@ -677,6 +673,7 @@ export class OpenAIProvider implements LLMProvider {
     onChunk: StreamProgressCallback,
     options?: LLMChatOptions,
   ): Promise<LLMResponse> {
+    await this.refreshSubscriptionBearerIfExpiring();
     const timeoutMs = resolveTimeoutMs(this.config.timeoutMs, options?.timeoutMs);
 
     try {
@@ -718,11 +715,15 @@ export class OpenAIProvider implements LLMProvider {
 
   async healthCheck(): Promise<boolean> {
     try {
+      await this.refreshSubscriptionBearerIfExpiring();
       const session = this.client.createTurnSession();
       await this.auth.withAuthorizedOperation(async () => {
         await session.requestJson<Record<string, unknown>>({
-          path: this.resolvePath(`/models${chatgptModelsQuery(this.config.baseURL)}`),
+          path: this.resolvePath("/models"),
           method: "GET",
+          ...(this.isChatGptBackend()
+            ? { query: { client_version: CHATGPT_MODELS_CLIENT_VERSION } }
+            : {}),
         });
       });
       return true;
@@ -925,25 +926,21 @@ export class OpenAIProvider implements LLMProvider {
   /**
    * A ChatGPT subscription bearer lives ~10 days and this adapter can
    * outlive that. Refresh in front of the request and swap the bearer on
-   * the live config + client, mirroring the grok adapter. Best-effort:
+   * the live auth session, mirroring the grok adapter. Best-effort:
    * on failure the current bearer stands and the wire reports the real
    * auth error rather than a local refresh crash.
    */
   private async refreshSubscriptionBearerIfExpiring(): Promise<void> {
+    if (!this.isChatGptBackend()) return;
     try {
       const { readOpenAiSubscriptionAuth, refreshOpenAiSubscriptionIfNeeded } =
         await import("../../../utils/openAiOauthCredentials.js");
-      if (readOpenAiSubscriptionAuth() === undefined) return;
-      if (!(await refreshOpenAiSubscriptionIfNeeded())) return;
-      const bearer = readOpenAiSubscriptionAuth()?.accessToken;
-      if (bearer === undefined) return;
-      (this.config as { apiKey?: string }).apiKey = bearer;
-      // The in-flight closures hold the already-constructed client, so
-      // the new bearer has to land on that instance too.
-      const client = this.client as { apiKey?: string } | null;
-      if (client && typeof client === "object" && "apiKey" in client) {
-        client.apiKey = bearer;
-      }
+      await refreshAndSyncOpenAiSubscriptionBearer({
+        readSubscriptionAuth: readOpenAiSubscriptionAuth,
+        refreshSubscription: refreshOpenAiSubscriptionIfNeeded,
+        applySubscriptionAuth: (auth) =>
+          this.auth.updateSubscriptionAuth(auth),
+      });
     } catch {
       // best-effort: the wire attempt surfaces its own auth failure
     }
@@ -965,7 +962,6 @@ export class OpenAIProvider implements LLMProvider {
     options: LLMChatOptions | undefined,
     timeoutMs: number | undefined,
   ): Promise<LLMResponse> {
-    await this.refreshSubscriptionBearerIfExpiring();
     const model = options?.model?.trim() || this.config.model;
     const requestOptions = {
       model,

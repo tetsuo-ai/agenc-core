@@ -227,6 +227,39 @@ describe("plugin registration", () => {
     }
   });
 
+  test("resolves CLAUDE_* template aliases for Claude Code ecosystem plugins", async () => {
+    // Plugins written for Claude Code template with ${CLAUDE_PLUGIN_ROOT};
+    // an unconsumed template used to fall through to env-var expansion and
+    // drop the MCP server with "Missing environment variables".
+    const root = await mkdtemp(join(tmpdir(), "agenc-plugin-claude-alias-"));
+    const agencHome = join(root, "home");
+    const workspaceRoot = join(root, "workspace");
+    const pluginRoot = join(agencHome, "plugins", "ccplugin");
+    try {
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "ccplugin",
+        mcpServers: {
+          goal: {
+            command: "node",
+            args: ["${CLAUDE_PLUGIN_ROOT}/server.mjs"],
+          },
+        },
+      });
+      const mcpServers = await loadPluginMcpServers({
+        cwd: workspaceRoot,
+        agencHome,
+        workspaceRoot,
+        extraPluginDirs: [pluginRoot],
+      });
+      expect(mcpServers["plugin:ccplugin:goal"]).toMatchObject({
+        command: "node",
+        args: [`${pluginRoot}/server.mjs`],
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   test("normalizes plugin output style identifiers before prompt headers use them", async () => {
     await withTempPlugin(async ({ pluginRoot, options }) => {
       await rm(join(pluginRoot, "output-styles", "terse.md"), { force: true });

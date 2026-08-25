@@ -672,6 +672,8 @@ export type XaiBrowserLoginResult = {
   tokenEndpoint: string
 }
 
+export type XaiBrowserLoginStage = 'callback_received' | 'exchanging_code'
+
 /**
  * Full browser PKCE login: discovery → loopback listener → authorize URL →
  * code exchange. `onAuthorizeUrl` receives the URL to open/display; the
@@ -679,6 +681,8 @@ export type XaiBrowserLoginResult = {
  */
 export async function runXaiBrowserLogin(params: {
   onAuthorizeUrl: (url: string) => void | Promise<void>
+  /** Progress reporting for headless callers such as the desktop app. */
+  onStage?: (stage: XaiBrowserLoginStage) => void
   timeoutMs?: number
   fetchImpl?: FetchLike
 }): Promise<XaiBrowserLoginResult> {
@@ -699,6 +703,8 @@ export async function runXaiBrowserLogin(params: {
     })
     await params.onAuthorizeUrl(authorizeUrl)
     const { code } = await callback.promise
+    params.onStage?.('callback_received')
+    params.onStage?.('exchanging_code')
     const tokens = await exchangeXaiAuthorizationCode({
       tokenEndpoint: endpoints.tokenEndpoint,
       code,

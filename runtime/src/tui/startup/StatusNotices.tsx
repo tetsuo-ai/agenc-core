@@ -35,6 +35,13 @@ function isDaemonAutostartDisabled(): boolean {
   return value === '0' || value === 'false' || value === 'off';
 }
 
+// Set by the CLI entrypoint when ensureAgenCDaemonAutostart failed but the
+// interactive TUI boots anyway (agenc-main runDefaultAgenCCliRoute).
+function daemonAutostartFailure(): string | undefined {
+  const value = process.env.AGENC_DAEMON_AUTOSTART_FAILURE?.trim();
+  return value !== undefined && value.length > 0 ? value : undefined;
+}
+
 const noticeChrome: Record<StatusNoticeType, {
   readonly backgroundColor: 'agencWash' | 'workerWash' | 'successWash' | 'errorWash';
   readonly color: 'agenc' | 'worker';
@@ -122,7 +129,8 @@ export function StatusNotices(t0: Props = {}) {
     agentDefinitions,
     memoryDiagnostics,
     daemonStatus: {
-      autostartDisabled: isDaemonAutostartDisabled()
+      autostartDisabled: isDaemonAutostartDisabled(),
+      autostartFailure: daemonAutostartFailure()
     }
   };
   const activeNotices = getActiveNotices(context);

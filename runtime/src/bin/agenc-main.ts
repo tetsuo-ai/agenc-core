@@ -159,9 +159,15 @@ import {
   runAgenCAuthCli,
 } from "./auth-cli.js";
 import {
+  formatOpenAiAuthCliHelpText,
   parseOpenAiAuthCliArgs,
   runOpenAiAuthCli,
 } from "./openai-auth-cli.js";
+import {
+  formatXaiAuthCliHelpText,
+  parseXaiAuthCliArgs,
+  runXaiAuthCli,
+} from "./xai-auth-cli.js";
 import {
   formatAgenCMcpCliHelpText,
   parseAgenCMcpCliArgs,
@@ -355,6 +361,9 @@ export function formatCliHelpText(): string {
     "       agenc run <start|status|result|replay|evidence|cancel> [<run-id>] [options]",
     "       agenc init [--force]",
     "       agenc <login|logout|whoami>",
+    "       agenc openai-<login|logout|auth-status|models> [--json]",
+    "       agenc grok-login [device] [--json]",
+    "       agenc grok-logout [--json]",
     "       agenc providers [--json] [--no-local-check]",
     "       agenc config <command> [args]",
     "       agenc plugin <command> [options]",
@@ -380,6 +389,8 @@ export function formatCliHelpText(): string {
     "  run                                     Start, inspect, replay, export, or cancel a durable run",
     "  init                                    Create .agenc/config.json and AGENC.md",
     "  login | logout | whoami                  Manage the configured auth session",
+    "  openai-models                           List models available to the stored OpenAI sign-in",
+    "  grok-login                              Sign in to X / xAI for Grok subscription access",
     "  providers                               Check provider readiness and local health",
     "  config                                  Show, mutate, validate, or edit config.toml",
     "  plugin                                  Manage local plugins and marketplaces",
@@ -444,6 +455,20 @@ export function formatCliHelpTopicText(topic: string): string | null {
     case "logout":
     case "whoami":
       return formatAgenCAuthCliHelpText();
+    case "openai-login":
+    case "chatgpt-login":
+    case "openai-logout":
+    case "chatgpt-logout":
+    case "openai-auth-status":
+    case "chatgpt-auth-status":
+    case "openai-models":
+    case "chatgpt-models":
+      return formatOpenAiAuthCliHelpText();
+    case "grok-login":
+    case "xai-login":
+    case "grok-logout":
+    case "xai-logout":
+      return formatXaiAuthCliHelpText();
     case "daemon":
       return formatAgenCDaemonCliHelpText();
     case "remote":
@@ -5297,6 +5322,11 @@ export async function main(): Promise<number> {
   if (openAiAuthCommand !== null) {
     return runOpenAiAuthCli(openAiAuthCommand);
   }
+  // Headless xAI sign-in/logout for Desktop and other non-TUI clients.
+  const xaiAuthCommand = parseXaiAuthCliArgs(argv);
+  if (xaiAuthCommand !== null) {
+    return runXaiAuthCli(xaiAuthCommand);
+  }
   const authCommand = parseAgenCAuthCliArgs(argv);
   if (authCommand !== null) {
     const code = await runAgenCAuthCli(authCommand);
@@ -5455,12 +5485,28 @@ async function runDefaultAgenCCliRoute(
     (await resolveAgenCDaemonAutostartEnabled(process.env))
   ) {
     try {
-      await ensureAgenCDaemonAutostart();
+      // Surface respawn reasons on stderr instead of the historical
+      // silentIo(): a failing autostart used to look like a frozen blank
+      // terminal. Keep stdout quiet so the daemon CLI banner stays out of
+      // interactive TUI rendering (mirrors defaultEnsureDaemonReady).
+      const silentStdout = { write: () => true } as Pick<
+        NodeJS.WriteStream,
+        "write"
+      >;
+      await ensureAgenCDaemonAutostart({
+        io: { stdout: silentStdout, stderr: process.stderr },
+      });
     } catch (error) {
-      process.stderr.write(
-        `agenc: daemon autostart failed: ${error instanceof Error ? error.message : String(error)}\n`,
-      );
-      return 1;
+      const message =
+        error instanceof Error ? error.message : String(error);
+      process.stderr.write(`agenc: daemon autostart failed: ${message}\n`);
+      if (!process.stdout.isTTY) {
+        return 1;
+      }
+      // Interactive sessions still get a working (daemon-less) TUI with a
+      // visible error notice rather than an exit back to the shell. The
+      // notice reads this env var at render time (StatusNotices).
+      process.env.AGENC_DAEMON_AUTOSTART_FAILURE = message;
     }
   }
   return routeCLI({

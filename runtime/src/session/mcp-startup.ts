@@ -48,6 +48,7 @@ import {
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
 import type { AgenCConfig, McpServerConfig as AgenCMcpServerConfig } from "../config/schema.js";
 import { McpJsonConfigSchema, type McpServerConfig as ServiceMcpServerConfig } from "../services/mcp/types.js";
+import { loadPluginMcpServers } from "../plugins/registration/mcp-plugin-integration.js";
 import {
   createUnavailableSamplingResult,
   type McpSamplingHandlers,
@@ -84,6 +85,15 @@ export interface CreateSessionMcpServiceOptions {
 export interface ResolveSessionMcpConfigSourcesOptions {
   readonly cwd?: string;
   readonly includeProjectMcpServers?: boolean;
+  /**
+   * Merge MCP servers declared by enabled (authority-controlled) plugins.
+   * Default true: plugin MCP servers were historically loaded and sandboxed
+   * by the plugin registration pipeline but never handed to the live
+   * MCPManager, so their tools silently never reached the tool catalog.
+   */
+  readonly includePluginMcpServers?: boolean;
+  /** Test seam for the plugin MCP server source. */
+  readonly pluginMcpServerSource?: typeof loadPluginMcpServers;
   readonly sandboxExecutionBroker?: import("../sandbox/execution-broker.js").SandboxExecutionBrokerLike;
 }
 
@@ -694,8 +704,40 @@ export function resolveSessionMcpConfig(
   return getMcpConfigFromConfig(config);
 }
 
+/**
+ * MCP servers declared by enabled plugins, already scoped
+ * (`plugin:<plugin>:<server>`), env-substituted, and sandbox-annotated by
+ * the plugin registration pipeline. Failure-safe: a broken plugin must not
+ * take the whole session's MCP startup down with it.
+ */
+async function getPluginMcpConfig(
+  config: Pick<AgenCConfig, "plugins" | "enabledPlugins"> | undefined,
+  env: NodeJS.ProcessEnv,
+  options: ResolveSessionMcpConfigSourcesOptions,
+): Promise<MCPServerConfig[]> {
+  try {
+    const source = options.pluginMcpServerSource ?? loadPluginMcpServers;
+    // The loader needs the config's plugins section to know what is
+    // enabled (without it every plugin resolves as disabled) and the
+    // caller's env so AGENC_HOME resolution matches the session, not
+    // whatever process.env happens to hold.
+    const servers = await source({
+      ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+      ...(config !== undefined ? { config } : {}),
+      env,
+    });
+    return Object.entries(servers).map(([name, server]) =>
+      toRuntimeMcpServerConfig(name, server),
+    );
+  } catch {
+    return [];
+  }
+}
+
 export async function resolveSessionMcpConfigFromSources(
-  config: Pick<AgenCConfig, "mcp_servers"> | undefined,
+  config:
+    | Pick<AgenCConfig, "mcp_servers" | "plugins" | "enabledPlugins">
+    | undefined,
   env: NodeJS.ProcessEnv = process.env,
   options: ResolveSessionMcpConfigSourcesOptions = {},
 ): Promise<MCPServerConfig[]> {
@@ -709,6 +751,15 @@ export async function resolveSessionMcpConfigFromSources(
   if (options.includeProjectMcpServers === true && options.cwd !== undefined) {
     for (const server of getProjectMcpConfigFromCwd(options.cwd)) {
       byName.set(server.name, server);
+    }
+  }
+  if (options.includePluginMcpServers !== false) {
+    // Plugin-scoped names never clobber config/project entries: an explicit
+    // config entry under the same scoped name is a deliberate override.
+    for (const server of await getPluginMcpConfig(config, env, options)) {
+      if (!byName.has(server.name)) {
+        byName.set(server.name, server);
+      }
     }
   }
   return [...byName.values()];
@@ -730,7 +781,9 @@ export function createSessionMcpManagerFromConfig(
 }
 
 export async function createSessionMcpManagerFromSources(
-  config: Pick<AgenCConfig, "mcp_servers"> | undefined,
+  config:
+    | Pick<AgenCConfig, "mcp_servers" | "plugins" | "enabledPlugins">
+    | undefined,
   env: NodeJS.ProcessEnv = process.env,
   options: ResolveSessionMcpConfigSourcesOptions = {},
 ): Promise<MCPManager> {
@@ -786,11 +839,31 @@ function withConfiguredRequiredServers(
 
 export async function refreshMcpManagerFromConfig(params: {
   readonly manager: MCPManager;
-  readonly config: Pick<AgenCConfig, "mcp_servers"> | undefined;
+  readonly config:
+    | Pick<AgenCConfig, "mcp_servers" | "plugins" | "enabledPlugins">
+    | undefined;
   readonly env?: NodeJS.ProcessEnv;
   readonly opts?: MCPManagerStartOpts;
+  readonly cwd?: string;
+  readonly includePluginMcpServers?: boolean;
+  /** Test seam for the plugin MCP server source. */
+  readonly pluginMcpServerSource?: typeof loadPluginMcpServers;
 }): Promise<McpRefreshResult> {
-  const configs = resolveSessionMcpConfig(params.config, params.env);
+  // Merge plugin-declared servers exactly like session startup does —
+  // otherwise a refresh would evict every plugin server the manager holds.
+  const configs = await resolveSessionMcpConfigFromSources(
+    params.config,
+    params.env,
+    {
+      ...(params.cwd !== undefined ? { cwd: params.cwd } : {}),
+      ...(params.includePluginMcpServers !== undefined
+        ? { includePluginMcpServers: params.includePluginMcpServers }
+        : {}),
+      ...(params.pluginMcpServerSource !== undefined
+        ? { pluginMcpServerSource: params.pluginMcpServerSource }
+        : {}),
+    },
+  );
   const requiredServers = requiredMcpServerNames(configs);
   await params.manager.refreshServers(
     configs,

@@ -12,6 +12,7 @@
 import { spawnSync } from "node:child_process";
 import { probeLandlock, resolveLandlockRun } from "./landlock-run.js";
 import { realpathSync, statSync } from "node:fs";
+import { homedir } from "node:os";
 import path, { basename, delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -22,6 +23,7 @@ import {
   type SandboxType,
 } from "./engine/index.js";
 import { effectivePermissionProfile } from "./engine/policy-transforms.js";
+import { planLandlockConfinement } from "./linux-launcher/landlock-exec.js";
 import {
   findSystemBubblewrapInPath,
   probeSystemBubblewrapNamespaces,
@@ -64,7 +66,8 @@ export type SandboxExecutionErrorCode =
   | "sandbox_required_unavailable"
   | "sandbox_probe_failed"
   | "sandbox_transform_failed"
-  | "sandbox_surface_uncovered";
+  | "sandbox_surface_uncovered"
+  | "sandbox_policy_unexpressible";
 
 export type SandboxExecutionStatusKind =
   | "ready"
@@ -86,6 +89,18 @@ export interface SandboxExecutionStatus {
    * bubblewrap namespace probe and selects this fallback rung when needed.
    */
   readonly landlock?: "full" | "partial" | "unusable";
+  /**
+   * Present when this ready-status was reached through the Landlock
+   * fallback because bubblewrap is unusable. Carries the bubblewrap
+   * failure cause and its cause-correct remediation (AppArmor profile vs
+   * install/upgrade bubblewrap vs enable user namespaces) so consumers
+   * (doctor warning, per-policy pre-flight errors) never have to
+   * recompute or string-sniff it.
+   */
+  readonly landlockFallback?: {
+    readonly reason: string;
+    readonly remediation: string;
+  };
 }
 
 export interface SandboxSpawnCommand {
@@ -100,6 +115,13 @@ export interface SandboxSpawnCommand {
   readonly additionalPermissions?: AdditionalPermissionProfile;
   /** Require the executable itself to be outside every sandbox-writable root. */
   readonly trustedExecutable?: boolean;
+  /**
+   * Replace the mode-derived permission profile for this spawn. Honored only
+   * under workspace-write (a surface may TIGHTEN its own boundary — e.g.
+   * plugin MCP servers confined to their data dir — never widen a stricter
+   * global mode). `additionalPermissions` still merge additively on top.
+   */
+  readonly permissionProfileOverride?: UnifiedExecRuntimeSandbox["permissionProfile"];
 }
 
 export type SandboxExecutionManager = Pick<
@@ -138,12 +160,15 @@ export class SandboxExecutionError extends Error {
     readonly surface: SandboxExecutionSurface;
     readonly status: SandboxExecutionStatus;
     readonly cause?: unknown;
+    /** Full pre-formatted message; overrides the blocked-surface template. */
+    readonly message?: string;
   }) {
     const reason = options.status.reason ?? "platform isolation is unavailable";
     const remediation = options.status.remediation ??
       "Run `agenc doctor`; select danger-full-access explicitly only when host execution is intended.";
     super(
-      `[${options.code}] required sandbox blocked ${options.surface}: ${reason}. ${remediation}`,
+      options.message ??
+        `[${options.code}] required sandbox blocked ${options.surface}: ${reason}. ${remediation}`,
       options.cause === undefined ? undefined : { cause: options.cause },
     );
     this.name = "SandboxExecutionError";
@@ -204,6 +229,8 @@ export interface SandboxExecutionBrokerOptions {
     readonly platform: NodeJS.Platform;
     readonly agencLinuxSandboxExe?: string;
   }) => SandboxExecutionStatus;
+  /** Injectable Landlock plan seam for deterministic pre-flight tests. */
+  readonly planLandlockPolicy?: typeof planLandlockConfinement;
 }
 
 const defaultSandboxManager = new SandboxManager();
@@ -224,6 +251,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   readonly #windowsSandboxPrivateDesktop: boolean;
   readonly #allowGpu: boolean;
   readonly #probe: NonNullable<SandboxExecutionBrokerOptions["probe"]>;
+  readonly #planLandlockPolicy: typeof planLandlockConfinement;
   #status: SandboxExecutionStatus | undefined;
 
   constructor(options: SandboxExecutionBrokerOptions) {
@@ -243,6 +271,8 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       options.windowsSandboxPrivateDesktop ?? false;
     this.#allowGpu = options.allowGpu ?? false;
     this.#probe = options.probe ?? probeSandboxExecutionStatus;
+    this.#planLandlockPolicy =
+      options.planLandlockPolicy ?? planLandlockConfinement;
   }
 
   get cwd(): string {
@@ -271,6 +301,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       platform: this.#platform,
       sandboxManager: this.#sandboxManager,
       probe: this.#probe,
+      planLandlockPolicy: this.#planLandlockPolicy,
       forkDepth: this.forkDepth + 1,
     });
   }
@@ -323,7 +354,19 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       // Establish the required boundary before examining or transforming the
       // command. When the sandbox probe failed, that is the primary failure;
       // no executable resolution or policy projection should mask it.
-      const runtimeSandbox = this.runtimeSandbox(surface);
+      const modeSandbox = this.runtimeSandbox(surface);
+      // A surface may TIGHTEN its own boundary (plugin MCP servers confined
+      // to their data dir) — never widen a stricter global mode, so the
+      // override applies only under workspace_write.
+      const runtimeSandbox =
+        modeSandbox !== undefined &&
+        command.permissionProfileOverride !== undefined &&
+        this.mode === "workspace_write"
+          ? {
+              ...modeSandbox,
+              permissionProfile: command.permissionProfileOverride,
+            }
+          : modeSandbox;
       const resolvedProgram = resolveSpawnExecutable({
         program: command.program,
         cwd: command.cwd,
@@ -335,9 +378,11 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
           command.additionalPermissions !== undefined) &&
         this.required
       ) {
-        const baseProfile = permissionProfileForSandboxMode(this.mode, {
-          cwd: this.#cwd,
-        });
+        const baseProfile =
+          runtimeSandbox?.permissionProfile ??
+          permissionProfileForSandboxMode(this.mode, {
+            cwd: this.#cwd,
+          });
         const effectiveProfile = effectivePermissionProfile(
           baseProfile,
           command.additionalPermissions,
@@ -355,6 +400,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
           );
         }
       }
+      this.#preflightLandlockPlan(surface, command, runtimeSandbox);
       const resolvedCommand: SandboxSpawnCommand = {
         ...command,
         program: resolvedProgram,
@@ -383,6 +429,56 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
           reason: error instanceof Error ? error.message : String(error),
         },
         cause: error,
+      });
+    }
+  }
+
+  /**
+   * When this host reached readiness only through the Landlock fallback,
+   * check whether the fallback can actually express this spawn's policy —
+   * the launcher would otherwise refuse at exec time with the reason buried
+   * in child stderr and the caller seeing a generic connection/exit failure.
+   *
+   * Best-effort by design: the launcher re-probes bubblewrap with the
+   * child's environment at spawn time, and `tmpdir` specials resolve from
+   * the resolving process's env, so verdicts can diverge on exotic
+   * environments; the stdio transport's stderr capture remains the backstop.
+   * No memoization: carve-out refusals hinge on path existence the launcher
+   * rechecks per spawn, so we do too (the plan is cheap and only runs on
+   * fallback machines).
+   */
+  #preflightLandlockPlan(
+    surface: SandboxExecutionSurface,
+    command: SandboxSpawnCommand,
+    runtimeSandbox: UnifiedExecRuntimeSandbox | undefined,
+  ): void {
+    if (runtimeSandbox === undefined) return;
+    if (this.#platform !== "linux") return;
+    // Glob/Grep-style spawns replace the profile with an inherited
+    // read-only policy in the engine — pre-flighting the workspace profile
+    // here would falsely refuse spawns that plan cleanly.
+    if (command.cwdBinding === "inherited_readonly") return;
+    if (command.env.AGENC_DISABLE_LANDLOCK_FALLBACK === "1") return;
+    const fallback = this.status().landlockFallback;
+    if (fallback === undefined) return;
+    const effectiveProfile = effectivePermissionProfile(
+      runtimeSandbox.permissionProfile,
+      command.additionalPermissions,
+    );
+    const plan = this.#planLandlockPolicy({
+      fileSystem: effectiveProfile.fileSystem,
+      sandboxPolicyCwd: this.#cwd,
+      allowNetworkForProxy: false,
+      inheritedCwd: false,
+    });
+    if (plan.kind === "refused") {
+      throw new SandboxExecutionError({
+        code: "sandbox_policy_unexpressible",
+        surface,
+        status: this.status(),
+        message:
+          `[sandbox_policy_unexpressible] required sandbox cannot express the ${surface} policy ` +
+          `without bubblewrap: ${plan.reason}. ${fallback.remediation}`,
       });
     }
   }
@@ -526,7 +622,7 @@ function probeLinuxSandbox(options: {
     return unavailableStatus(
       options,
       helper.error,
-      "Install AgenC with its executable sandbox helper outside the workspace, then run `agenc doctor` again.",
+      linuxSandboxHelperRemediation(options.cwd, options.env),
     );
   }
   // When any bubblewrap rung fails, the helper falls back to Landlock at
@@ -551,6 +647,10 @@ function probeLinuxSandbox(options: {
         isolationProgram: launcher,
         reason: `${bwrapReason}; the Landlock fallback is active`,
         landlock: "full",
+        landlockFallback: {
+          reason: bwrapReason,
+          remediation: bwrapRemediation,
+        },
       };
     }
     return unavailableStatus(
@@ -666,6 +766,36 @@ function unavailableStatus(
     ...(helperPath !== undefined ? { helperPath } : {}),
     ...(isolationProgram !== undefined ? { isolationProgram } : {}),
   };
+}
+
+export const LINUX_SANDBOX_HELPER_REINSTALL_REMEDIATION =
+  "Install AgenC with its executable sandbox helper outside the workspace, then run `agenc doctor` again.";
+
+export const LINUX_SANDBOX_HOME_WORKSPACE_REMEDIATION =
+  "This workspace contains your home directory, where AgenC installs its runtime, " +
+  "so the helper can never sit outside it. Open AgenC in a project directory instead, " +
+  "then run `agenc doctor` again.";
+
+/**
+ * A userland install puts the helper under ~/.agenc, so a workspace that
+ * contains the user's home can never satisfy the containment rule -- and a
+ * bare `agenc` in a fresh terminal opens exactly that workspace. Sending that
+ * user to reinstall the helper "outside the workspace" points at the wrong
+ * thing; the actionable fix is to open a project directory. The refusal itself
+ * is unchanged: a jailed process that can rewrite its own jailer is not jailed.
+ */
+export function linuxSandboxHelperRemediation(
+  workspaceRoot: string,
+  env: NodeJS.ProcessEnv,
+): string {
+  const configured = env.HOME;
+  const home = configured !== undefined && path.isAbsolute(configured)
+    ? configured
+    : homedir();
+  if (home.length === 0) return LINUX_SANDBOX_HELPER_REINSTALL_REMEDIATION;
+  return isPathUnder(safeRealpath(home), safeRealpath(workspaceRoot))
+    ? LINUX_SANDBOX_HOME_WORKSPACE_REMEDIATION
+    : LINUX_SANDBOX_HELPER_REINSTALL_REMEDIATION;
 }
 
 export function resolveTrustedLinuxSandboxExecutable(

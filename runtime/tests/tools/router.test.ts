@@ -11,10 +11,18 @@ import {
 } from "./router.js";
 import type { RouterResponseItem } from "./router.js";
 import type { ToolInvocation, ToolName } from "./context.js";
+import type { ApprovalCtx } from "./orchestrator.js";
 import type { Tool } from "./types.js";
 import { EventLog } from "../session/event-log.js";
+import { ApprovalStore } from "../permissions/approval-cache.js";
 import type { GuardianApprovalReviewOptions } from "../permissions/guardian/reviewer.js";
 import { buildGuardianApprovalRequest } from "../permissions/guardian/approval-request.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import {
+  clearAskUserQuestionResponsesForTest,
+  createAskUserQuestionTool,
+  recordAskUserQuestionResponse,
+} from "./ask-user-question/tool.js";
 import {
   sha256,
   workspaceMutationCoordinators,
@@ -24,6 +32,7 @@ const coherenceTemporaryPaths: string[] = [];
 const originalAgencHome = process.env.AGENC_HOME;
 
 afterEach(async () => {
+  clearAskUserQuestionResponsesForTest();
   if (originalAgencHome === undefined) delete process.env.AGENC_HOME;
   else process.env.AGENC_HOME = originalAgencHome;
   workspaceMutationCoordinators.clearForTests();
@@ -1042,6 +1051,120 @@ describe("ToolRouter.dispatchToolCallWithCodeMode", () => {
         turnId: "turn-approval-1",
       }),
     );
+  });
+
+  test("AskUserQuestion collects its answer even when the session bypasses permissions", async () => {
+    const questionInput = {
+      questions: [
+        {
+          header: "Research scope",
+          question: "Which oil-market research angle should I prioritize?",
+          options: [
+            {
+              label: "Current market outlook (Recommended)",
+              description: "Focus on the next 6-12 months.",
+            },
+            {
+              label: "Long-term industry outlook",
+              description: "Focus on structural fundamentals.",
+            },
+          ],
+        },
+      ],
+    };
+    const router = new ToolRouter([
+      {
+        tool: createAskUserQuestionTool(),
+        supportsParallelToolCalls: false,
+      },
+    ]);
+    const resolver = {
+      request: vi.fn(async (ctx: ApprovalCtx) => {
+        recordAskUserQuestionResponse(ctx.callId, {
+          ...questionInput,
+          answers: {
+            "Which oil-market research angle should I prioritize?":
+              "Current market outlook (Recommended)",
+          },
+        });
+        return { kind: "approved" as const };
+      }),
+    };
+    const guardian = {
+      reviewApprovalRequest: vi.fn(async () => ({
+        decision: { kind: "approved" as const },
+        reviewId: "auto-review-must-not-answer",
+        countedDenial: false,
+      })),
+    };
+    const permissionAllow = vi.fn(async () => ({ kind: "allow" as const }));
+    const canUseTool = vi.fn(async () => ({
+      behavior: "ask" as const,
+      message: "Answer questions?",
+      decisionReason: {
+        type: "permissionPromptTool" as const,
+        permissionPromptToolName: "AskUserQuestion",
+        toolResult: null,
+      },
+    }));
+    const permissionContext = {
+      getAppState: () => ({
+        toolPermissionContext: createEmptyToolPermissionContext({
+          mode: "bypassPermissions",
+        }),
+      }),
+    } as never;
+
+    const result = await router.dispatchModelToolCall(
+      {
+        id: "call-ask-bypass",
+        name: "AskUserQuestion",
+        arguments: JSON.stringify(questionInput),
+      },
+      {
+        session: {
+          eventLog: new EventLog(),
+          services: {
+            admissionRequired: false,
+            toolApprovals: new ApprovalStore<unknown>(),
+          },
+          permissionModeRegistry: {
+            current: () => ({ mode: "bypassPermissions" }),
+          },
+        } as never,
+        turn: {
+          subId: "turn-ask-bypass",
+          approvalPolicy: { value: "never" },
+          sandboxPolicy: { value: "danger_full_access" },
+        } as never,
+        tracker: {
+          appendFileDiff: () => {},
+          snapshot: () => [],
+          clear: () => {},
+        },
+        approvalPolicy: "never",
+        sandboxMode: "danger_full_access",
+        approvalResolver: resolver,
+        guardianApprovalReviewer: guardian,
+        permissionDecisionHooks: [permissionAllow],
+        canUseTool,
+        permissionContext,
+      },
+    );
+
+    expect(canUseTool).toHaveBeenCalled();
+    expect(permissionAllow).toHaveBeenCalledOnce();
+    expect(guardian.reviewApprovalRequest).not.toHaveBeenCalled();
+    expect(resolver.request).toHaveBeenCalledOnce();
+    expect(resolver.request).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callId: "call-ask-bypass",
+        requiresUserInteraction: true,
+      }),
+    );
+    expect(result.isError).toBeFalsy();
+    expect(result.content).toContain("User has answered your questions");
+    expect(result.content).toContain("Current market outlook (Recommended)");
   });
 
   test("dispatchModelToolCall routes evaluator ask through guardian without pre-hooks", async () => {

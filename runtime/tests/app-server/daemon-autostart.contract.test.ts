@@ -582,6 +582,59 @@ port = 0
     }
   });
 
+  it("gives up with a typed error when build skew persists across every restart cycle", async () => {
+    // Permanent-skew environment: every daemon this host spawns publishes a
+    // build identity that differs from the CLI's on-disk runtime, so the
+    // skew branch fires on every ensure cycle. Before the restart-cycle cap
+    // this recursed forever: respawn + full /proc scan + lifecycle lock at
+    // ~200% CPU behind a blank screen.
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const skewedBuild = {
+      runtimeVersion: "0.0.0-skewed",
+      commit: "skewed-commit",
+      buildTime: "1970-01-01T00:00:00.000Z",
+    };
+    const baseSpawn = host.spawnDetachedDaemon;
+    host.spawnDetachedDaemon = () => {
+      const pid = baseSpawn();
+      host.recordDaemon(pid, skewedBuild);
+      return pid;
+    };
+    const oldPid = 5480;
+    host.runningPids.add(oldPid);
+    await writeAgenCDaemonPid(pidPath, oldPid);
+    host.recordDaemon(oldPid, skewedBuild);
+    const sleeps: number[] = [];
+    host.sleep = async (ms: number) => {
+      sleeps.push(ms);
+    };
+
+    try {
+      await expect(
+        ensureAgenCDaemonAutostart({
+          host,
+          findOrphanDaemonPids: () => [],
+          findSupersededDaemonPids: () => [],
+          isReady: ({ pid }) => host.runningPids.has(pid),
+        }),
+      ).rejects.toThrowError(
+        expect.objectContaining({
+          name: "AgenCDaemonAutostartError",
+          message: expect.stringMatching(/gave up after 3 restart cycles/),
+        }),
+      );
+      // Bounded work: one spawn per cycle, never an unbounded respawn storm.
+      expect(host.spawnedPids.length).toBeLessThanOrEqual(4);
+      // Backoff between repeated restart cycles (the first restart stays
+      // immediate; escalation starts when the condition repeats).
+      expect(sleeps.filter((ms) => ms >= 250).length).toBeGreaterThanOrEqual(2);
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("replaces a different commit even when buildTime is unchanged", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);

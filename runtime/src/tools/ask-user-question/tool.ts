@@ -6,6 +6,7 @@
 
 import type { PermissionResult } from "../../permissions/types.js";
 import { asRecord } from "../../utils/record.js";
+import { validationErrorToolResult } from "../results.js";
 import type { Tool } from "../types.js";
 
 export const ASK_USER_QUESTION_TOOL_NAME = "AskUserQuestion";
@@ -390,7 +391,10 @@ export function createAskUserQuestionTool(): Tool {
     async execute(args) {
       const parsed = parseAskUserQuestionInput(args);
       if (!parsed.ok) {
-        return { content: parsed.error, isError: true };
+        return validationErrorToolResult(
+          "tool:ask-user-question:invalid-input",
+          parsed.error,
+        );
       }
       const answered = consumeAnsweredInput(args);
       if (answered !== null) {
@@ -430,10 +434,10 @@ export function createAskUserQuestionTool(): Tool {
             },
           };
         }
-        return {
-          content: "User did not provide answers.",
-          isError: true,
-        };
+        return validationErrorToolResult(
+          "tool:ask-user-question:missing-response",
+          "User did not provide answers.",
+        );
       }
       const answers = answered.answers ?? {};
       return {

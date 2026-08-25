@@ -15,7 +15,7 @@
 
 import { VERSION } from "../../version.js";
 import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve } from "node:path";
 import {
   deserializeMessage,
@@ -27,6 +27,8 @@ import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import type { Logger } from "../_deps/logger.js";
 import { silentLogger } from "../_deps/logger.js";
 import type { MCPElicitationHandlers } from "../types.js";
+import type { PluginMcpSandboxMetadata } from "../../config/schema.js";
+import { pluginMcpPermissionProfile } from "../../tools/runtimes/sandboxing.js";
 import { configureMcpElicitationClient } from "../../elicitation/mcp.js";
 import {
   buildMcpHostClientCapabilities,
@@ -58,6 +60,15 @@ export const AGENC_MCP_STDIO_MAX_FRAME_BYTES = 16 * 1024 * 1024;
  * preserving the existing newline-delimited line-splitting behavior.
  */
 const STDERR_BUFFER_MAX_BYTES = 1024 * 1024;
+
+/**
+ * Bounded ring of recent child stderr lines. The production manager runs
+ * with a silent logger, so without this the precise failure reason a dying
+ * server prints (e.g. the sandbox launcher's policy refusal) is discarded
+ * and the caller only ever sees the SDK's generic "Connection closed".
+ */
+const RECENT_STDERR_MAX_LINES = 8;
+const RECENT_STDERR_LINE_MAX_CHARS = 400;
 
 export const DEFAULT_STDIO_ENV_VARS: readonly string[] =
   process.platform === "win32"
@@ -98,6 +109,8 @@ export interface MCPServerStdioConfig {
   readonly env_vars?: readonly string[];
   readonly cwd?: string;
   readonly timeout?: number;
+  /** Plugin confinement metadata: selects the tight plugin spawn profile. */
+  readonly pluginSandbox?: PluginMcpSandboxMetadata;
 }
 
 export interface StdioTransportServerParameters {
@@ -105,6 +118,8 @@ export interface StdioTransportServerParameters {
   readonly args?: readonly string[];
   readonly env?: Readonly<Record<string, string>>;
   readonly cwd?: string;
+  /** Plugin confinement metadata: selects the tight plugin spawn profile. */
+  readonly pluginSandbox?: PluginMcpSandboxMetadata;
 }
 
 type NodeProcessEnv = Readonly<Record<string, string | undefined>>;
@@ -184,6 +199,7 @@ export class AgenCStdioClientTransport implements Transport {
   private stdoutChunks: Buffer[] = [];
   private stdoutFrameBytes = 0;
   private stderrBuffer = Buffer.alloc(0);
+  private recentStderrLines: string[] = [];
   private closedNotified = false;
   private stdoutProtocolFailed = false;
   private shutdownState:
@@ -219,11 +235,35 @@ export class AgenCStdioClientTransport implements Transport {
           ? this.server.cwd
           : resolve(broker.cwd, this.server.cwd);
     const command = resolveStdioProgram(this.server.command, env, cwd);
+    // Plugin-declared servers run under their intended tight profile: write
+    // access confined to the plugin data dir instead of the project root.
+    // Stricter under bubblewrap, and Landlock-expressible so plugin servers
+    // keep working on hosts where bubblewrap is unusable. TMPDIR points at
+    // a data-dir tmp because the profile deliberately has no writable /tmp
+    // and the `tmpdir` special silently vanishes when TMPDIR is unset.
+    let permissionProfileOverride:
+      | ReturnType<typeof pluginMcpPermissionProfile>
+      | undefined;
+    if (this.server.pluginSandbox?.mode === "stdio-child-process") {
+      const pluginTmpDir = join(this.server.pluginSandbox.pluginDataDir, "tmp");
+      try {
+        mkdirSync(pluginTmpDir, { recursive: true });
+      } catch {
+        // Non-fatal: the server just falls back to the host tmpdir grant.
+      }
+      env.TMPDIR ??= pluginTmpDir;
+      permissionProfileOverride = pluginMcpPermissionProfile(
+        this.server.pluginSandbox,
+      );
+    }
     const spawnCommand = broker.prepareSpawn("mcp_stdio", {
       program: command,
       args: this.server.args ?? [],
       cwd,
       env,
+      ...(permissionProfileOverride !== undefined
+        ? { permissionProfileOverride }
+        : {}),
     });
 
     this.resetStdoutFrame();
@@ -364,6 +404,7 @@ export class AgenCStdioClientTransport implements Transport {
         .toString("utf8")
         .replace(/\r$/, "");
       this.stderrBuffer = this.stderrBuffer.subarray(index + 1);
+      this.noteStderrLine(line);
       this.logger.info(`MCP server stderr (${this.server.command}): ${line}`);
     }
     // Defense-in-depth: a child that streams stderr without a newline would
@@ -386,7 +427,28 @@ export class AgenCStdioClientTransport implements Transport {
     if (this.stderrBuffer.length === 0) return;
     const line = this.stderrBuffer.toString("utf8").replace(/\r$/, "");
     this.stderrBuffer = Buffer.alloc(0);
+    this.noteStderrLine(line);
     this.logger.info(`MCP server stderr (${this.server.command}): ${line}`);
+  }
+
+  private noteStderrLine(line: string): void {
+    const cleaned = line
+      // eslint-disable-next-line no-control-regex
+      .replace(/\x1b\[[0-9;]*[a-zA-Z]/g, "")
+      // eslint-disable-next-line no-control-regex
+      .replace(/[\x00-\x08\x0b-\x1f\x7f]/g, "")
+      .slice(0, RECENT_STDERR_LINE_MAX_CHARS)
+      .trim();
+    if (cleaned.length === 0) return;
+    this.recentStderrLines.push(cleaned);
+    if (this.recentStderrLines.length > RECENT_STDERR_MAX_LINES) {
+      this.recentStderrLines.shift();
+    }
+  }
+
+  /** Recent child stderr, oldest first, for attaching to connect failures. */
+  recentStderr(): string {
+    return this.recentStderrLines.join(" | ");
   }
 
   private handleUnexpectedChildClose(child: ChildProcess): void {
@@ -474,6 +536,9 @@ function createStdioMCPTransport(
       args: config.args,
       env,
       cwd: config.cwd,
+      ...(config.pluginSandbox !== undefined
+        ? { pluginSandbox: config.pluginSandbox }
+        : {}),
     },
     logger,
     sandboxExecutionBroker,
@@ -516,10 +581,26 @@ export async function createStdioMCPConnection(
     ...(config.cwd !== undefined ? { cwd: config.cwd } : {}),
   });
 
-  await connectMCPClientWithCleanup(client, transport, {
-    description: `MCP stdio connect to "${config.name}"`,
-    timeoutMs: timeout,
-  });
+  try {
+    await connectMCPClientWithCleanup(client, transport, {
+      description: `MCP stdio connect to "${config.name}"`,
+      timeoutMs: timeout,
+    });
+  } catch (error) {
+    // A server that dies before the handshake surfaces as the SDK's generic
+    // "Connection closed"; the actual reason (sandbox launcher refusal,
+    // missing dependency, crash) is on the child's stderr. Attach the
+    // retained tail so /mcp and logs show the root cause. Covers reconnects
+    // too: every stdio (re)connect funnels through this factory.
+    const stderrTail = transport.recentStderr();
+    if (stderrTail.length > 0) {
+      const base = error instanceof Error ? error.message : String(error);
+      throw new Error(`${base}; server stderr: ${stderrTail}`, {
+        cause: error,
+      });
+    }
+    throw error;
+  }
 
   logger.info(`Connected to MCP stdio server "${config.name}"`);
   return client;

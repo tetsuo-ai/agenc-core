@@ -114,6 +114,35 @@ export function permissionProfileForSandboxMode(
   void options.cwd;
 }
 
+/**
+ * Tight profile for plugin-declared MCP stdio servers: read-everything plus
+ * write confined to the plugin's data dir (and its `tmp/` subdir, which the
+ * transport points TMPDIR at) and the host tmpdir. Deliberately NO writable
+ * project root: stricter than the workspace profile under bubblewrap, and —
+ * because the writable roots carry no existing `.git`/`.agenc` carve-outs —
+ * fully expressible by the Landlock fallback, so plugin MCP servers keep
+ * working on hosts where bubblewrap is unusable.
+ */
+export function pluginMcpPermissionProfile(metadata: {
+  readonly pluginDataDir: string;
+}): PermissionProfile {
+  return permissionProfileFromRuntimePermissions(
+    restrictedFileSystemPolicy(
+      [
+        rootEntry("read"),
+        { path: { kind: "path", path: metadata.pluginDataDir }, access: "write" },
+        {
+          path: { kind: "path", path: path.join(metadata.pluginDataDir, "tmp") },
+          access: "write",
+        },
+        tmpdirEntry(),
+      ],
+      { includePlatformDefaults: true },
+    ),
+    defaultNetworkForSandboxMode("workspace_write"),
+  );
+}
+
 function defaultNetworkForSandboxMode(mode: SandboxMode): NetworkSandboxPolicy {
   switch (mode) {
     case "danger_full_access":

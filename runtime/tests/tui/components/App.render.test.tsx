@@ -7239,21 +7239,21 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
 
           expect(session.setPendingProviderSwitch).toHaveBeenLastCalledWith({
             provider: "deepseek",
-            model: "deepseek-reasoner",
+            model: "deepseek-v4-flash",
           });
           await expect(
             new LocalAuthBackend({ agencHome }).readByokKey("deepseek"),
           ).resolves.toBe("sk-deepseek-onboarding-test");
           expect(
             JSON.parse(readFileSync(join(agencHome, "settings.json"), "utf8")),
-          ).toMatchObject({ model: "deepseek-reasoner" });
+          ).toMatchObject({ model: "deepseek-v4-flash" });
           const configToml = readFileSync(
             join(agencHome, "config.toml"),
             "utf8",
           );
           expect(configToml).toContain('"model_provider" = "deepseek"');
-          expect(configToml).toContain('"model" = "deepseek-reasoner"');
-          expect(configToml).toContain('"default_model" = "deepseek-reasoner"');
+          expect(configToml).toContain('"model" = "deepseek-v4-flash"');
+          expect(configToml).toContain('"default_model" = "deepseek-v4-flash"');
         },
       );
     } finally {

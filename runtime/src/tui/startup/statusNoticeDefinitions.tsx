@@ -17,6 +17,8 @@ export type StatusNoticeContext = {
   memoryDiagnostics: string[];
   daemonStatus: {
     autostartDisabled: boolean;
+    /** Set when daemon autostart failed at CLI startup (message text). */
+    autostartFailure?: string;
   };
 };
 export type StatusNoticeDefinition = {
@@ -158,6 +160,14 @@ const daemonAutostartNotice: StatusNoticeDefinition = {
     return 'AgenC daemon autostart is disabled. Background agents and reconnectable sessions require a running daemon. · agenc daemon start';
   }
 };
+const daemonAutostartFailedNotice: StatusNoticeDefinition = {
+  id: 'daemon-autostart-failed',
+  type: 'error',
+  isActive: context => Boolean(context.daemonStatus.autostartFailure),
+  render: context => {
+    return `AgenC daemon autostart failed: ${context.daemonStatus.autostartFailure}. Background agents and reconnectable sessions are unavailable. · agenc daemon start`;
+  }
+};
 const jetbrainsPluginNotice: StatusNoticeDefinition = {
   id: 'jetbrains-plugin-install',
   type: 'info',
@@ -183,7 +193,7 @@ const jetbrainsPluginNotice: StatusNoticeDefinition = {
 };
 
 // All notice definitions
-export const statusNoticeDefinitions: StatusNoticeDefinition[] = [largeMemoryFilesNotice, largeAgentDescriptionsNotice, daemonAutostartNotice, agencAccountExternalTokenNotice, apiKeyConflictNotice, bothAuthMethodsNotice, jetbrainsPluginNotice];
+export const statusNoticeDefinitions: StatusNoticeDefinition[] = [largeMemoryFilesNotice, largeAgentDescriptionsNotice, daemonAutostartNotice, daemonAutostartFailedNotice, agencAccountExternalTokenNotice, apiKeyConflictNotice, bothAuthMethodsNotice, jetbrainsPluginNotice];
 
 // Helper functions for external use
 export function getActiveNotices(context: StatusNoticeContext): StatusNoticeDefinition[] {

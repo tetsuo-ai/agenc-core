@@ -518,3 +518,119 @@ async function waitFor(
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
+
+describe("stdio connect failure diagnostics", () => {
+  it("attaches the child's stderr tail to a pre-handshake connect failure", async () => {
+    await expect(
+      createStdioMCPConnection(
+        {
+          name: "dies-before-handshake",
+          command: process.execPath,
+          args: [
+            "-e",
+            "process.stderr.write('helper refused: policy unexpressible at /proj/.agenc\\n'); process.exit(2);",
+          ],
+          env: createStdioMCPEnvironment(undefined, undefined),
+          timeout: 5_000,
+        },
+        undefined,
+        undefined,
+        undefined,
+        explicitDangerBroker,
+      ),
+    ).rejects.toThrowError(
+      expect.objectContaining({
+        message: expect.stringMatching(
+          /server stderr: .*helper refused: policy unexpressible at \/proj\/\.agenc/,
+        ),
+      }),
+    );
+  });
+
+  it("routes plugin sandbox metadata into the spawn as a tight profile override", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-mcp-stdio-plugin-"));
+    tempDirs.add(dir);
+    const dataDir = join(dir, "plugin-data");
+    await mkdir(dataDir);
+    const recorded: unknown[] = [];
+    const recordingBroker = {
+      mode: "workspace_write" as const,
+      required: true,
+      cwd: dir,
+      rebase: () => {},
+      forkForCwd: () => recordingBroker,
+      status: () => ({
+        kind: "ready" as const,
+        mode: "workspace_write" as const,
+        platform: process.platform,
+      }),
+      assertReady: () => ({
+        kind: "ready" as const,
+        mode: "workspace_write" as const,
+        platform: process.platform,
+      }),
+      runtimeSandbox: () => undefined,
+      prepareSpawn: (
+        _surface: string,
+        command: Record<string, unknown>,
+      ): Record<string, unknown> => {
+        recorded.push(command);
+        return command;
+      },
+    };
+    const transport = new AgenCStdioClientTransport(
+      {
+        command: process.execPath,
+        args: ["-e", "setTimeout(() => {}, 1000);"],
+        // No inherited TMPDIR: the transport must point the server at the
+        // data-dir tmp (an inherited TMPDIR would win and stays writable
+        // through the profile's tmpdir grant).
+        env: createStdioMCPEnvironment(undefined, undefined, {
+          PATH: process.env.PATH,
+        }),
+        pluginSandbox: {
+          mode: "stdio-child-process",
+          pluginName: "sample",
+          pluginRoot: dir,
+          pluginDataDir: dataDir,
+          serverName: "goal",
+          scopedServerName: "plugin:sample:goal",
+        },
+      },
+      undefined,
+      recordingBroker as never,
+    );
+
+    try {
+      await transport.start();
+    } finally {
+      await transport.close();
+    }
+
+    expect(recorded).toHaveLength(1);
+    const command = recorded[0] as {
+      env: Record<string, string>;
+      permissionProfileOverride?: {
+        fileSystem: { entries: ReadonlyArray<{ path: unknown }> };
+      };
+    };
+    // TMPDIR points into the data dir and the dir exists.
+    expect(command.env.TMPDIR).toBe(join(dataDir, "tmp"));
+    expect(existsSyncFor(join(dataDir, "tmp"))).toBe(true);
+    // The override confines writes to the plugin data dir.
+    const entryPaths = JSON.stringify(
+      command.permissionProfileOverride?.fileSystem.entries ?? [],
+    );
+    expect(entryPaths).toContain(dataDir);
+    expect(entryPaths).not.toContain('"project_roots"');
+  });
+});
+
+function existsSyncFor(path: string): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    return require("node:fs").existsSync(path) as boolean;
+  } catch {
+    return false;
+  }
+}
