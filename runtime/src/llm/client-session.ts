@@ -432,10 +432,18 @@ function errorMessageFromBody(status: number, body: unknown): string {
 function buildRequestUrl(baseURL: string, path: string): URL {
   const url = new URL(baseURL);
   const basePath = url.pathname.replace(/\/+$/, "");
-  const requestPath = path.replace(/^\/+/, "");
+  // A query on the path belongs on the search, not in it. Assigning the
+  // whole string to `pathname` percent-encodes the `?`, and the request
+  // goes out asking for a resource literally named `models%3Fclient_version=…`
+  // — which the server answers with "Invalid URL".
+  const queryAt = path.indexOf("?");
+  const search = queryAt === -1 ? "" : path.slice(queryAt + 1);
+  const rawPath = queryAt === -1 ? path : path.slice(0, queryAt);
+  const requestPath = rawPath.replace(/^\/+/, "");
   url.pathname = requestPath
     ? `${basePath}/${requestPath}`.replace(/\/{2,}/g, "/")
     : basePath || "/";
+  if (search.length > 0) url.search = search;
   return url;
 }
 

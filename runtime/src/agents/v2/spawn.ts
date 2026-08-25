@@ -135,10 +135,7 @@ function parseForkTurns(value: unknown): ToolResult | ForkMode | undefined {
       return { kind: "last_n_turns", n: parsed };
     }
   }
-  return json(
-    { error: "fork_turns must be `none`, `all`, or a positive integer string" },
-    true,
-  );
+  return jsonValidationError("spawn_agent:validation", { error: "fork_turns must be `none`, `all`, or a positive integer string" });
 }
 
 function normalizeSpawnTaskName(value: string | undefined): string | undefined {
@@ -206,12 +203,9 @@ async function validateSpawnModelOverrides(opts: {
       modelsManager.tryListModels() ?? (await modelsManager.listModels());
     if (!listed.some((candidate) => candidate.slug === opts.model)) {
       const available = listed.map((candidate) => candidate.slug).join(", ");
-      return json(
-        {
+      return jsonValidationError("spawn_agent:validation", {
           error: `Unknown model \`${opts.model}\` for spawn_agent. Available models: ${available}`,
-        },
-        true,
-      );
+        });
     }
   }
   if (
@@ -224,12 +218,9 @@ async function validateSpawnModelOverrides(opts: {
         : await modelsManager.getModelInfo(model);
     if (!modelInfo.supportedReasoningLevels.includes(opts.reasoningEffort)) {
       const supported = modelInfo.supportedReasoningLevels.join(", ");
-      return json(
-        {
+      return jsonValidationError("spawn_agent:validation", {
           error: `Reasoning effort \`${opts.reasoningEffort}\` is not supported for model \`${model}\`. Supported reasoning efforts: ${supported}`,
-        },
-        true,
-      );
+        });
     }
   }
   return null;
@@ -254,13 +245,10 @@ async function resolveSpawnServiceTier(opts: {
     opts.session.sessionConfiguration.collaborationMode.model ??
     opts.session.modelInfo.slug;
   if (!model) {
-    return json(
-      {
+    return jsonValidationError("spawn_agent:validation", {
         error:
           "spawn_agent could not resolve the child model for service tier validation",
-      },
-      true,
-    );
+      });
   }
   const modelInfo =
     model === opts.session.modelInfo.slug
@@ -270,12 +258,9 @@ async function resolveSpawnServiceTier(opts: {
     opts.requestedServiceTier !== undefined &&
     !modelSupportsServiceTier(modelInfo, opts.requestedServiceTier)
   ) {
-    return json(
-      {
+    return jsonValidationError("spawn_agent:validation", {
         error: `Service tier \`${opts.requestedServiceTier}\` is not supported for model \`${model}\`. Supported service tiers: ${formatSupportedServiceTiers(modelInfo)}`,
-      },
-      true,
-    );
+      });
   }
   for (const candidate of [
     opts.roleServiceTier,
@@ -521,10 +506,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       });
     }
     if (args.fork_context !== undefined) {
-      return json(
-        { error: "fork_context is not supported in MultiAgentV2; use fork_turns instead" },
-        true,
-      );
+      return jsonValidationError("spawn_agent:validation", { error: "fork_context is not supported in MultiAgentV2; use fork_turns instead" });
     }
     try {
       assertAgentRoleWorkspaceMatches(
@@ -532,19 +514,13 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
         opts.workspace.id,
       );
     } catch (error) {
-      return json(
-        { error: error instanceof Error ? error.message : String(error) },
-        true,
-      );
+      return jsonValidationError("spawn_agent:validation", { error: error instanceof Error ? error.message : String(error) });
     }
     const { control, registry } = opts.ensureAgentControl(session);
     try {
       control.assertRoleWorkspace(opts.workspace);
     } catch (error) {
-      return json(
-        { error: error instanceof Error ? error.message : String(error) },
-        true,
-      );
+      return jsonValidationError("spawn_agent:validation", { error: error instanceof Error ? error.message : String(error) });
     }
     const current = currentAgentContext(session, args, opts);
     if (isCurrentAgentContextError(current)) return current;
@@ -567,13 +543,10 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       forkMode?.kind === "full_history" &&
       (role !== undefined || model !== undefined || reasoningEffort !== undefined)
     ) {
-      return json(
-        {
+      return jsonValidationError("spawn_agent:validation", {
           error:
             "Full-history forked agents inherit the parent agent type, model, and reasoning effort; omit agent_type, model, and reasoning_effort, or spawn without a full-history fork.",
-        },
-        true,
-      );
+        });
     }
     const rawIsolation = stringValue(args.isolation);
     if (
@@ -587,13 +560,10 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     }
     const isolation = rawIsolation === "worktree" ? ("worktree" as const) : undefined;
     if (isolation !== undefined && (!taskName || taskName.length === 0)) {
-      return json(
-        {
+      return jsonValidationError("spawn_agent:validation", {
           error:
             "worktree isolation requires a non-empty task_name (it identifies the agent worktree)",
-        },
-        true,
-      );
+        });
     }
     const requestedServiceTier = stringValue(args.service_tier);
     const callId = callIdFromArgs(args, "agent");
