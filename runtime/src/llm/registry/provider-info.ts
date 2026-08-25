@@ -45,11 +45,6 @@ function mergeDerivedProviderModels(
   return Object.freeze(merged);
 }
 
-const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 0;
-const DEFAULT_STREAM_MAX_RETRIES = 5;
-const DEFAULT_REQUEST_MAX_RETRIES = 4;
-const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;
-
 export type BuiltInProviderOnboardingAccess =
   | "api-key"
   | "environment"
@@ -444,11 +439,6 @@ export interface BuiltInProviderInfo {
   readonly credentials: ProviderCredentialDefinition;
   readonly baseURLEnvVars: readonly string[];
   readonly supportsApiKeylessAuth: boolean;
-  readonly requestMaxRetries: number;
-  readonly streamMaxRetries: number;
-  readonly streamIdleTimeoutMs: number;
-  readonly websocketConnectTimeoutMs: number;
-  readonly supportsWebsockets: boolean;
   readonly requiresManagedAuth: boolean;
   readonly onboarding: BuiltInProviderOnboardingInfo;
 }
@@ -475,11 +465,6 @@ export function resolveBuiltInProviderInfo(
     credentials: definition.credentials,
     baseURLEnvVars: definition.baseURLEnvVars,
     supportsApiKeylessAuth: definition.supportsApiKeylessAuth,
-    requestMaxRetries: DEFAULT_REQUEST_MAX_RETRIES,
-    streamMaxRetries: DEFAULT_STREAM_MAX_RETRIES,
-    streamIdleTimeoutMs: DEFAULT_STREAM_IDLE_TIMEOUT_MS,
-    websocketConnectTimeoutMs: DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS,
-    supportsWebsockets: id === "openai",
     requiresManagedAuth: definition.onboarding.access === "managed",
     onboarding: definition.onboarding,
   };

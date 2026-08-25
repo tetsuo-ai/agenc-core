@@ -122,7 +122,6 @@ export interface ProviderHttpClientSessionConfig {
   readonly providerFallback?: ProviderFallbackLadderOptions;
   readonly streamIdleTimeoutMs?: number;
   readonly supportsStreaming?: boolean;
-  readonly supportsWebsockets?: boolean;
   readonly fetchImpl?: typeof fetch;
   readonly responsesContinuationState?: ResponsesContinuationState;
   readonly emitWarning?: (warning: {
@@ -858,10 +857,6 @@ export class ProviderHttpClientSession {
 
   get supportsStreaming(): boolean {
     return this.config.supportsStreaming !== false;
-  }
-
-  get supportsWebsockets(): boolean {
-    return this.config.supportsWebsockets === true;
   }
 
   get requestRetryBudget(): Readonly<NormalizedRetryBudget> {

@@ -244,6 +244,57 @@ describe("provider authority architecture", () => {
     );
   });
 
+  test("provider metadata does not invent transport policy or websocket support", () => {
+    const clientSession = readFileSync(
+      `${SRC}/llm/client-session.ts`,
+      "utf8",
+    );
+    const grokAdapter = readFileSync(
+      `${SRC}/llm/providers/grok/adapter.ts`,
+      "utf8",
+    );
+    const registry = readFileSync(
+      `${SRC}/llm/registry/provider-info.ts`,
+      "utf8",
+    );
+    const providerMenu = readFileSync(
+      `${SRC}/commands/provider-menu.tsx`,
+      "utf8",
+    );
+    const providersDoc = readFileSync(
+      `${RUNTIME}/../docs/reference/providers.md`,
+      "utf8",
+    );
+
+    expect(clientSession).toMatch(
+      /DEFAULT_REQUEST_MAX_RETRIES\s*=\s*4/u,
+    );
+    expect(clientSession).toMatch(
+      /DEFAULT_STREAM_MAX_RETRIES\s*=\s*5/u,
+    );
+    expect(clientSession).toMatch(/DEFAULT_RETRY_BASE_DELAY_MS\s*=\s*200/u);
+    expect(grokAdapter).toMatch(
+      /maxRetries:\s*this\.config\.maxRetries\s*\?\?\s*2/u,
+    );
+    expect(existsSync(`${SRC}/llm/transport-retry-policy.ts`)).toBe(false);
+
+    for (const source of [clientSession, registry, providerMenu]) {
+      expect(source).not.toMatch(
+        /supportsWebsockets|websocketConnectTimeoutMs/u,
+      );
+    }
+    expect(registry).not.toMatch(
+      /requestMaxRetries|streamMaxRetries|streamIdleTimeoutMs/u,
+    );
+    expect(providersDoc).not.toMatch(
+      /websocket connect timeout|websockets supported/iu,
+    );
+    expect(providersDoc).toMatch(/Model-provider streaming uses HTTP\/SSE/u);
+    expect(providersDoc).toMatch(
+      /Grok uses an SDK transport with a distinct retry contract/u,
+    );
+  });
+
   test("provider selector identity has one normalizer and one retired mapping", () => {
     const production = sourceFiles(SRC).filter(
       (path) => path.endsWith(".ts") || path.endsWith(".tsx"),

@@ -43,10 +43,6 @@ describe("LLM registry", () => {
           required: true,
         },
       },
-      requestMaxRetries: 4,
-      streamMaxRetries: 5,
-      streamIdleTimeoutMs: 0,
-      supportsWebsockets: false,
     });
 
     expect(resolveBuiltInProviderInfo("agenc")).toMatchObject({

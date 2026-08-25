@@ -200,23 +200,27 @@ the AWS SDK profile, shared-file, instance-metadata, or web-identity chains.
 
 | Layer | Path |
 | --- | --- |
-| Registry / defaults | `runtime/src/llm/registry/provider-info.ts` |
+| Registry / provider metadata | `runtime/src/llm/registry/provider-info.ts` |
 | Model catalog | `runtime/src/llm/registry/model-catalog.ts` |
-| Provider-neutral client | `runtime/src/llm/client.ts`, `provider.ts` |
+| Provider-neutral HTTP client / retry loop | `runtime/src/llm/client.ts`, `client-session.ts` |
+| Stream idle deadline | `runtime/src/llm/stream-watchdog.ts` |
 | Per-provider modules | `runtime/src/llm/providers/*` |
 | HTTP / SDK services | `runtime/src/services/` |
 | Capabilities | `runtime/src/llm/provider-capabilities.ts` |
 
-Default stream/request settings from the registry:
+`ProviderHttpClientSession` owns these defaults for adapters that use the
+provider-neutral HTTP client:
 
 - request max retries: **4**
 - stream max retries: **5**
 - stream idle timeout: **unset** (0). Silence does not end a turn unless you
   set `stream_watchdog_timeout_ms` or `AGENC_STREAM_IDLE_TIMEOUT_MS`
-- websocket connect timeout: **15_000** ms
-- websockets supported: **`openai` only** in built-in info
 
-Retry policy (`runtime/src/llm/client-session.ts`):
+Model-provider streaming uses HTTP/SSE. The daemon, realtime connector, MCP,
+and gateway have separate WebSocket transports; they are not provider
+capabilities and are not described by the LLM provider registry.
+
+Its retry behavior is:
 
 - **429 is not retried** (`retry429: false`). 5xx and transport (network/timeout)
   are. Caller abort is not. One extra TLS-cert retry on attempt 0 only.
@@ -224,8 +228,14 @@ Retry policy (`runtime/src/llm/client-session.ts`):
 - Session backoff base is **200 ms**.
 - After budget admission, model calls set `singleWireAttempt: true`: **no HTTP
   retry** on that lease. A retry needs a new reservation.
-- `AGENC_MAX_RETRIES` (default 10) applies only to the donor Anthropic helper
+- `AGENC_MAX_RETRIES` (default 10) applies only to the separate Anthropic helper
   in `services/api/withRetry.ts`. It does **not** drive `llm/` providers.
+
+Grok uses an SDK transport with a distinct retry contract: its default budget
+is **2**, `maxRetries` can override it, and the SDK owns retry eligibility and
+backoff. A `singleWireAttempt` still forces that SDK budget to **0**. Those are
+provider-specific transport semantics, not provider-registry metadata and not
+the `ProviderHttpClientSession` policy above.
 
 Grok OAuth: expired bearer is often **403**. Refresh on 401 and 403, two
 attempts, then quarantine a dead rotating refresh token. Admitted Grok turns

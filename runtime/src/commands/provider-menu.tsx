@@ -76,7 +76,6 @@ type ProviderMenuRow = {
   readonly auth: string;
   readonly credentialSource: string;
   readonly configured: boolean;
-  readonly supportsWebsockets: boolean;
   readonly detail: string;
   readonly error?: string;
 };
@@ -587,7 +586,6 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
         providerConfig !== undefined ||
         (config?.model_provider !== undefined &&
           resolveProviderSlug(config.model_provider) === provider),
-      supportsWebsockets: info.supportsWebsockets,
       detail: runtimeDetail({
         state: state.state,
         status,
@@ -671,7 +669,6 @@ function ProviderDetailView({
     { key: "auth", value: row.credentialSource, color: authColor(row.authState) },
     { key: "base url", value: row.baseURL },
     { key: "configured", value: row.configured ? "yes" : "no" },
-    { key: "websocket", value: row.supportsWebsockets ? "yes" : "no" },
     { key: "models", value: `${row.models.length}` },
     ...models.map((model, index) => ({
       key: index === 0 ? "catalog" : "",
