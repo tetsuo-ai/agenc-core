@@ -5,16 +5,13 @@ import {
   type ToolUseContext,
   type ToolPermissionContext,
 } from '../tools/Tool.js'
-import { runAdmittedSessionBoundToolCall } from '../budget/admitted-legacy-tool-call.js'
 import { CanonicalFileReadTool } from '../tools/canonicalToolSurface.js'
-import type { Tool } from '../tools/types.js'
 import { withSignedAllowedRoots } from '../tools/system/filesystem.js'
 import { FileTooLargeError, readFileInRange } from './readFileInRange.js'
 import { expandPath } from './path.js'
 import { countCharInString } from './stringUtils.js'
 import { uniq } from './array.js'
 import { extractLegacyAgentMentions } from './agentMentions.js'
-import { extractMcpResourceMentions } from './mcpResourceMentions.js'
 import { getSelectedProviderEnvironment } from './model/providers.js'
 import { getFsImplementation } from './fsOperations.js'
 import { readdir, stat } from 'fs/promises'
@@ -749,9 +746,6 @@ export async function getAttachments(
     ? [
         maybe('at_mentioned_files', () =>
           processAtMentionedFiles(input, context),
-        ),
-        maybe('mcp_resources', () =>
-          processMcpResourceAttachments(input, context),
         ),
         maybe('agent_mentions', () =>
           Promise.resolve(
@@ -1923,108 +1917,6 @@ function processAgentMentions(
   return results.filter(
     (result): result is NonNullable<typeof result> => result !== null,
   )
-}
-
-async function processMcpResourceAttachments(
-  input: string,
-  toolUseContext: ToolUseContext,
-): Promise<Attachment[]> {
-  const resourceMentions = extractMcpResourceMentions(input)
-  if (resourceMentions.length === 0) return []
-
-  const mcpClients = toolUseContext.options.mcpClients || []
-
-  const results = await Promise.all(
-    resourceMentions.map(async mention => {
-      try {
-        const [serverName, ...uriParts] = mention.split(':')
-        const uri = uriParts.join(':') // Rejoin in case URI contains colons
-
-        if (!serverName || !uri) {
-          return null
-        }
-
-        // Find the MCP client
-        const client = mcpClients.find(c => c.name === serverName)
-        if (!client || client.type !== 'connected') {
-          return null
-        }
-
-        // Find the resource in available resources to get its metadata
-        const serverResources =
-          toolUseContext.options.mcpResources?.[serverName] || []
-        const resourceInfo = serverResources.find(r => r.uri === uri)
-        if (!resourceInfo) {
-          return null
-        }
-
-        try {
-          const result = await runAdmittedSessionBoundToolCall({
-            tool: MCP_RESOURCE_ATTACHMENT_ADMISSION_TOOL,
-            args: { server: serverName, uri },
-            signal: toolUseContext.abortController.signal,
-            invoke: ({ signal }) =>
-              client.client.readResource(
-                { uri },
-                { signal, timeout: MCP_RESOURCE_ATTACHMENT_TIMEOUT_MS },
-              ),
-            toDispatchResult: () => ({ content: '' }),
-          })
-
-          return {
-            type: 'mcp_resource' as const,
-            server: serverName,
-            uri,
-            name: resourceInfo.name || uri,
-            description: resourceInfo.description,
-            content: result,
-          }
-        } catch (error) {
-          logError(error)
-          return null
-        }
-      } catch {
-        return null
-      }
-    }),
-  )
-
-  return results.filter(
-    (result): result is NonNullable<typeof result> => result !== null,
-  ) as Attachment[]
-}
-
-const MCP_RESOURCE_ATTACHMENT_TIMEOUT_MS = 1000
-const MCP_RESOURCE_ATTACHMENT_ADMISSION_TOOL: Tool = {
-  name: 'mcp.preflight.resource_attachment',
-  description: 'Read an MCP resource referenced by a user attachment.',
-  inputSchema: {
-    type: 'object',
-    properties: {
-      server: { type: 'string' },
-      uri: { type: 'string' },
-    },
-    required: ['server', 'uri'],
-    additionalProperties: false,
-  },
-  metadata: {
-    family: 'mcp',
-    source: 'mcp',
-    mutating: false,
-    hiddenByDefault: true,
-  },
-  isReadOnly: true,
-  recoveryCategory: 'idempotent',
-  admissionEstimate: () => ({
-    maxInputTokens: 0,
-    maxOutputTokens: 0,
-    maxCostUsd: 0,
-  }),
-  async execute() {
-    throw new Error(
-      'MCP resource attachment admission descriptor is not executable',
-    )
-  },
 }
 
 async function callCanonicalFileReadTool(

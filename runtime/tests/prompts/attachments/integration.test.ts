@@ -26,6 +26,9 @@ import {
   _resetAttachmentTrackingStateForTest,
   getAttachmentTrackingState,
 } from "../../session/attachment-state.js";
+import { runWithCurrentRuntimeSession } from "../../../src/session/current-session.js";
+import { resolveAgentRuntimeOptions } from "../../../src/session/runtime-options.js";
+import type { Session } from "../../../src/session/session.js";
 import { attachmentsToMessages } from "./messages.js";
 import { type GetAttachmentsOptions, getAttachments } from "./orchestrator.js";
 import {
@@ -352,20 +355,33 @@ describe("attachments orchestrator — live producer registry", () => {
       bytesReturned: 76,
     }));
     const sessionKey = {
+      conversationId: "mcp-resource-integration",
       services: {
         mcpManager: {
+          getConnectedServers: () => ["docs_resources_pipeline"],
           getResourcesByServer,
           readResource,
         },
+        admissionRequired: false,
+        runtimeOptions: resolveAgentRuntimeOptions({}),
       },
-    };
+    } as unknown as Session;
 
-    const out = await getAttachments(
-      makeOpts({
-        sessionKey,
-        signal,
-        userInput: "read @docs_resources_pipeline:guide",
-      }),
+    const attachmentOptions = makeOpts({
+      sessionKey,
+      signal,
+      userInput: "read @docs_resources_pipeline:guide",
+      turnProvenance: {
+        turnId: "turn-mcp-resource-integration",
+        rootHumanTurn: {
+          turnId: "turn-mcp-resource-integration",
+          text: "read @docs_resources_pipeline:guide",
+        },
+      },
+    });
+    const out = await runWithCurrentRuntimeSession(
+      sessionKey,
+      () => getAttachments(attachmentOptions),
     );
 
     expect(out).toEqual(
@@ -381,11 +397,11 @@ describe("attachments orchestrator — live producer registry", () => {
     );
     expect(getResourcesByServer).toHaveBeenCalledWith(
       "docs_resources_pipeline",
-      signal,
+      expect.any(AbortSignal),
     );
     expect(readResource).toHaveBeenCalledWith(
       "mcp.docs_resources_pipeline.guide",
-      signal,
+      getResourcesByServer.mock.calls[0]?.[1],
     );
     const attachment = out.find(
       (candidate) => candidate.kind === "mcp_resource",
@@ -421,6 +437,16 @@ describe("attachments orchestrator — live producer registry", () => {
     expect(content).toContain("appendix body");
     expect(content).toContain("[Binary content omitted: image/png]");
     expect(content).not.toContain("AAE=");
+
+    const continuation = await runWithCurrentRuntimeSession(
+      sessionKey,
+      () => getAttachments(attachmentOptions),
+    );
+    expect(
+      continuation.some((candidate) => candidate.kind === "mcp_resource"),
+    ).toBe(false);
+    expect(getResourcesByServer).toHaveBeenCalledOnce();
+    expect(readResource).toHaveBeenCalledOnce();
   });
 
   test("local-read-only turns do not contact MCP resource servers", async () => {

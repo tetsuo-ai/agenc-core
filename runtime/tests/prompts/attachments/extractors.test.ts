@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { createUserMessage, createAssistantMessage } from "../../../src/utils/messages.js";
 import type { ToolUseContext } from "../../../src/tools/Tool.js";
@@ -471,7 +471,8 @@ describe("attachment mention extractors", () => {
       });
     });
 
-    test("processes agent and MCP resource mentions from user input", async () => {
+    test("processes agent mentions and leaves MCP resources to the session producer", async () => {
+      const rawReadResource = vi.fn();
       const context = attachmentContext(new Map(), createEmptyToolPermissionContext(), {
         agentDefinitions: {
           activeAgents: [
@@ -484,9 +485,7 @@ describe("attachment mention extractors", () => {
             name: "docs",
             type: "connected",
             client: {
-              readResource: async ({ uri }: { uri: string }) => ({
-                contents: [{ uri, text: "resource text" }],
-              }),
+              readResource: rawReadResource,
             },
           },
         ] as never,
@@ -519,15 +518,12 @@ describe("attachment mention extractors", () => {
       expect(attachments).toEqual(
         expect.arrayContaining([
           { type: "agent_mention", agentType: "reviewer" },
-          expect.objectContaining({
-            type: "mcp_resource",
-            server: "docs",
-            uri: "guide",
-            name: "Project guide",
-            description: "Useful docs",
-          }),
         ]),
       );
+      expect(
+        attachments.some(attachment => attachment.type === "mcp_resource"),
+      ).toBe(false);
+      expect(rawReadResource).not.toHaveBeenCalled();
       expect(
         attachments.some(
           attachment =>
@@ -565,6 +561,17 @@ describe("attachment mention extractors", () => {
         ["asana-plugin:project-status/123"],
       ],
       ["an MCP mention inline in prose", "please check @server:res here", ["server:res"]],
+      [
+        "URIs ending in non-word characters",
+        "@docs:https://example.com/ @docs:query? @docs:fragment# @docs:key= @docs:version.",
+        [
+          "docs:https://example.com/",
+          "docs:query?",
+          "docs:fragment#",
+          "docs:key=",
+          "docs:version.",
+        ],
+      ],
     ];
 
     test.each(cases)("%s", (_label, input, expected) => {

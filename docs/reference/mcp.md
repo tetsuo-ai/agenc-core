@@ -110,6 +110,19 @@ model-facing read helper persists binary blocks in the session's private
 tool-results directory and returns file references; raw base64 is not inserted
 into model context.
 
+User-authored `@server:uri` resource mentions are resolved once at the session
+sampling boundary, and only from the exact authoritative root-human text for
+that turn. Continuation sampling cannot consume the same turn twice. AgenC
+matches the longest connected server-name prefix (so plugin-scoped names
+containing `:` remain valid), then admits the catalog lookup and resource read
+as one bounded, read-only effect through that session's MCP manager. A turn
+resolves at most 10 resource mentions under one shared 1-second deadline and
+retains at most 5 MiB across their encoded content and resource metadata. These
+reads never use `ToolUseContext.mcpClients` or the TUI preprocessing path; the
+passive status projection contains no executable client. Returned resource
+content keeps the canonical size, normalization, truncation, and untrusted-data
+framing rules above.
+
 ### Model-facing MCP tools
 
 There is **no** LIVE tool named `MCPTool`. External MCP tools appear as deferred

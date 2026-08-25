@@ -13,6 +13,8 @@
  *   - `lastDeferredToolsHash` — gates `deferred-tools-delta.ts`
  *   - `lastAgentListingHash` — gates `agent-listing-delta.ts`
  *   - `lastMcpInstructionsHash` — gates `mcp-delta.ts`
+ *   - `lastMcpResourceMentionTurnId` — makes MCP resource mentions one-shot
+ *     for the exact authoritative root-human turn
  *   - `pendingCriticalReminder` — one-shot, set by external producer,
  *     cleared by `critical-reminder.ts` on emission
  *   - `needsPlanModeExitAttachment` / `needsAutoModeExitAttachment` —
@@ -69,6 +71,8 @@ export interface AttachmentTrackingState {
   lastAgentListingSet?: ReadonlyMap<string, string>;
   /** Hash of the MCP server instructions last announced. */
   lastMcpInstructionsHash?: string;
+  /** Exact root-human turn whose MCP resource mentions were consumed. */
+  lastMcpResourceMentionTurnId?: string;
   /** Hash of the skill listing last announced to the model. */
   lastSkillListingHash?: string;
   /**
