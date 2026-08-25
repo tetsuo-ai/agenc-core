@@ -61,7 +61,6 @@ import {
   COMMAND_NAME_TAG,
 } from '../../constants/xml.js'
 import { escapeXml } from '../../utils/xml.js'
-import { queryCheckpoint } from '../../utils/queryProfiler.js'
 import { parseSlashCommand } from '../slash/slash-command-parsing.js'
 import { addInvokedSkill, getSessionId } from '../../bootstrap/state.js'
 import { parseToolRuleStringsFromCLI } from '../../permissions/settings.js'
@@ -171,8 +170,6 @@ export async function processPromptInput({
     setUserInputOnProcessing?.(inputString)
   }
 
-  queryCheckpoint('query_process_prompt_input_base_start')
-
   const appState = context.getAppState()
 
   const result = await processPromptInputBase(
@@ -194,14 +191,11 @@ export async function processPromptInput({
     skipAttachments,
     preExpansionInput,
   )
-  queryCheckpoint('query_process_prompt_input_base_end')
-
   if (!result.shouldQuery) {
     return result
   }
 
   // Execute UserPromptSubmit hooks and handle blocking
-  queryCheckpoint('query_hooks_start')
   const inputMessage = getContentText(routedInput) || ''
   const blockingContextMessages: AttachmentMessage[] = []
 
@@ -290,8 +284,6 @@ export async function processPromptInput({
       }
     }
   }
-  queryCheckpoint('query_hooks_end')
-
   // Happy path: onQuery will clear userInputOnProcessing via startTransition
   // so it resolves in the same frame as deferredMessages (no flicker gap).
   // Error paths are handled by handlePromptSubmit's finally block.
@@ -623,7 +615,6 @@ async function processPromptInputBase(
   if (typeof input === 'string') {
     inputString = input
   } else if (input.length > 0) {
-    queryCheckpoint('query_image_processing_start')
     const processedBlocks: ContentBlockParam[] = []
     for (const block of input) {
       if (block.type === 'image') {
@@ -641,7 +632,6 @@ async function processPromptInputBase(
       }
     }
     normalizedInput = processedBlocks
-    queryCheckpoint('query_image_processing_end')
     // Extract the input string from the last content block if it is text,
     // and keep track of the preceding content blocks
     const lastBlock = processedBlocks[processedBlocks.length - 1]
@@ -671,7 +661,6 @@ async function processPromptInputBase(
     : new Map<number, string>()
 
   // Resize pasted images to ensure they fit within API limits (parallel processing)
-  queryCheckpoint('query_pasted_image_processing_start')
   const imageProcessingResults = await Promise.all(
     imageContents.map(async pastedImage => {
       const imageBlock: ImageBlockParam = {
@@ -723,8 +712,6 @@ async function processPromptInputBase(
     }
     imageContentBlocks.push(resized.block)
   }
-  queryCheckpoint('query_pasted_image_processing_end')
-
   // Bridge-safe slash command override: mobile/web clients set bridgeOrigin
   // with skipSlashCommands still true (defense-in-depth against exit words and
   // immediate-command fast paths). Resolve the command here — if it passes
@@ -770,7 +757,6 @@ async function processPromptInputBase(
     inputString !== null &&
     (mode !== 'prompt' || effectiveSkipSlash || !inputString.startsWith('/'))
 
-  queryCheckpoint('query_attachment_loading_start')
   const attachmentMessages = shouldExtractAttachments
     ? await toArray(
         getAttachmentMessages(
@@ -783,8 +769,6 @@ async function processPromptInputBase(
         ),
       )
     : []
-  queryCheckpoint('query_attachment_loading_end')
-
   // Bash commands. The composer ships `mode: 'bash'` whenever the user
   // pressed `!` to enter bash mode. PromptInput today calls
   // processBashCommand directly (round-2 MD-NEW4), so in practice this

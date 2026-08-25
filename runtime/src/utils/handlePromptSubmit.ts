@@ -34,7 +34,6 @@ import {
 } from "../tui/input/processPromptInput.js";
 import type { VimRoutingState } from "../tui/input/processTextPrompt.js";
 import type { QueryGuard } from "./QueryGuard.js";
-import { queryCheckpoint, startQueryProfile } from "./queryProfiler.js";
 import { runWithWorkload } from "./workloadContext.js";
 
 function exit(): void {
@@ -160,7 +159,6 @@ export async function handlePromptSubmit(
   // Queue processor path: commands are pre-validated and ready to execute.
   // Skip all input validation, reference parsing, and queuing logic.
   if (queuedCommands?.length) {
-    startQueryProfile();
     await executeUserInput({
       queuedCommands,
       messages,
@@ -350,9 +348,6 @@ export async function handlePromptSubmit(
     return;
   }
 
-  // Start query profiling for this query
-  startQueryProfile();
-
   // Construct a QueuedCommand from the direct user input so both paths
   // go through the same executeUserInput loop. This ensures images get
   // resized via processPromptInput regardless of how the command arrives.
@@ -437,8 +432,6 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
     // of starting a second executeUserInput. This call is a no-op if the
     // guard is already in dispatching (compatibility queue-processor path).
     queryGuard.reserve();
-    queryCheckpoint("query_process_user_input_start");
-
     const newMessages: Message[] = [];
     let shouldQuery = false;
     let allowedTools: string[] | undefined;
@@ -524,9 +517,7 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
         }
       }
 
-      queryCheckpoint("query_process_user_input_end");
       if (fileHistoryEnabled()) {
-        queryCheckpoint("query_file_history_snapshot_start");
         newMessages.filter(selectableUserMessagesFilter).forEach((message) => {
           void fileHistoryMakeSnapshot(
             (updater: (prev: FileHistoryState) => FileHistoryState) => {
@@ -538,7 +529,6 @@ async function executeUserInput(params: ExecuteUserInputParams): Promise<void> {
             message.uuid,
           );
         });
-        queryCheckpoint("query_file_history_snapshot_end");
       }
 
       if (newMessages.length) {

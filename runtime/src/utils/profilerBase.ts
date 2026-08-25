@@ -1,14 +1,13 @@
 /**
- * Shared infrastructure for startupProfiler and queryProfiler. Both use the
- * same perf_hooks timeline and detailed-report line format.
+ * Shared timing and report formatting used by the startup profiler.
  */
 
 import { performance as nodePerformance } from 'node:perf_hooks'
 import type { performance as PerformanceType } from 'node:perf_hooks'
 import { formatFileSize } from './format.js'
 
-// Lazy-load performance API only when profiling is enabled.
-// Shared across all profilers — perf_hooks.performance is a process-wide singleton.
+// Lazy-load the performance API only when startup profiling is enabled.
+// perf_hooks.performance is a process-wide singleton.
 let performance: typeof PerformanceType | null = null
 
 export function getPerformance(): typeof PerformanceType {

@@ -188,7 +188,6 @@ import {
 import { returnValue } from 'src/utils/generators.js'
 import { isMcpInstructionsDeltaEnabled } from 'src/utils/mcpInstructionsDelta.js'
 import { calculateUSDCost } from 'src/utils/modelCost.js'
-import { endQueryProfile, queryCheckpoint } from 'src/utils/queryProfiler.js'
 import {
   modelSupportsAdaptiveThinking,
   modelSupportsThinking,
@@ -1232,7 +1231,6 @@ async function* queryModel(
 
   const resolvedModel = options.model
 
-  queryCheckpoint('query_tool_schema_build_start')
   const isAgenticQuery =
     options.querySource.startsWith('repl_main_thread') ||
     options.querySource.startsWith('agent:') ||
@@ -1432,12 +1430,8 @@ async function* queryModel(
     )
   }
 
-  queryCheckpoint('query_tool_schema_build_end')
-
   // Normalize messages before building system prompt (needed for fingerprinting)
-  queryCheckpoint('query_message_normalization_start')
   let messagesForAPI = normalizeMessagesForAPI(messages, filteredTools)
-  queryCheckpoint('query_message_normalization_end')
 
   // Apply hybrid context strategy for optimal cache/fresh balance
   if (feature('HYBRID_CONTEXT_STRATEGY')) {
@@ -1833,7 +1827,6 @@ async function* queryModel(
   let isFastModeRequest = isFastMode // Keep separate state as it may change if falling back
 
   try {
-    queryCheckpoint('query_client_creation_start')
     const generator = withRetry(
       () =>
         getproviderClient({
@@ -1848,21 +1841,11 @@ async function* queryModel(
         isFastModeRequest = context.fastMode ?? false
         start = Date.now()
         attemptStartTimes.push(start)
-        // Client has been created by withRetry's getClient() call. This fires
-        // once per attempt; on retries the client is usually cached (withRetry
-        // only calls getClient() again after auth errors), so the delta from
-        // client_creation_start is meaningful on attempt 1.
-        queryCheckpoint('query_client_creation_end')
-
         const params = paramsFromContext(context)
         captureAPIRequest(params, options.querySource) // Capture for bug reports
 
         maxOutputTokens = params.max_tokens
 
-        // Fire immediately before the fetch is dispatched. .withResponse() below
-        // awaits until response headers arrive, so this MUST be before the await
-        // or the "Network TTFB" phase measurement is wrong.
-        queryCheckpoint('query_api_request_sent')
         // Generate and track client request ID so timeouts (which return no
         // server request ID) can still be correlated with server logs.
         // First-party only — 3P providers don't log it (inc-4029 class).
@@ -1886,7 +1869,6 @@ async function* queryModel(
             },
           )
           .withResponse()
-        queryCheckpoint('query_response_headers_received')
         streamRequestId = result.request_id
         streamResponse = result.response
         return result.data
@@ -1988,8 +1970,6 @@ async function* queryModel(
 
         if (isFirstChunk) {
           logForDebugging('Stream started - received first chunk')
-          queryCheckpoint('query_first_chunk_received')
-          endQueryProfile()
           isFirstChunk = false
         }
 
