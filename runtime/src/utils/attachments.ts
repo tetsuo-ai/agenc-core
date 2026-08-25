@@ -58,7 +58,6 @@ import type {
 } from '@anthropic-ai/sdk/resources/messages.mjs'
 import { maybeResizeAndDownsampleImageBlock } from './imageResizer.js'
 import type { PastedContent } from './config.js'
-import type { ReadResourceResult } from '@modelcontextprotocol/sdk/types.js'
 import { getSkillToolCommands, getMcpSkillCommands } from '../commands.js'
 import type { Command } from '../types/command.js'
 import uniqBy from 'lodash-es/uniqBy.js'
@@ -405,6 +404,24 @@ export type HookNonBlockingErrorAttachment = {
   durationMs?: number
 }
 
+const RETIRED_ATTACHMENT_TYPES: ReadonlySet<string> = new Set([
+  'autocheckpointing',
+  'background_task_status',
+  'mcp_resource',
+  'todo',
+  'task_progress',
+  'ultramemory',
+])
+
+/**
+ * Persisted sessions can contain attachment discriminators that no current
+ * producer emits. Retired attachments are dropped at both model and TUI
+ * boundaries; they have no executable producer or renderer.
+ */
+export function isRetiredAttachmentType(type: string): boolean {
+  return RETIRED_ATTACHMENT_TYPES.has(type)
+}
+
 export type Attachment =
   /**
    * User at-mentioned the file
@@ -560,14 +577,6 @@ export type Attachment =
       type: 'plan_file_reference'
       planFilePath: string
       planContent: string
-    }
-  | {
-      type: 'mcp_resource'
-      server: string
-      uri: string
-      name: string
-      description?: string
-      content: ReadResourceResult
     }
   | {
       type: 'command_permissions'

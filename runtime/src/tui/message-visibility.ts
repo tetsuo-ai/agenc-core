@@ -1,5 +1,8 @@
 import type { Message, NormalizedMessage } from '../types/message.js'
-import type { Attachment } from '../utils/attachments.js'
+import {
+  isRetiredAttachmentType,
+  type Attachment,
+} from '../utils/attachments.js'
 
 /**
  * Attachment types that render no visible TUI row. The transcript pipeline
@@ -51,6 +54,7 @@ export function isNullRenderingAttachment(
 ): boolean {
   return (
     msg.type === 'attachment' &&
-    NULL_RENDERING_ATTACHMENT_TYPES.has(msg.attachment.type)
+    (NULL_RENDERING_ATTACHMENT_TYPES.has(msg.attachment.type) ||
+      isRetiredAttachmentType(msg.attachment.type))
   )
 }

@@ -1,21 +1,11 @@
 /**
- * Attachment-to-LLMMessage conversion.
- *
- * Hand-port of the upstream attachment-message helper
- * (`src/utils/attachments.ts:3221`) plus the model-facing attachment
- * normalization in `src/utils/messages.ts::normalizeAttachmentForAPI`.
+ * Canonical session attachment-to-LLMMessage conversion.
  *
  * Each attachment kind renders as one (or zero) `LLMMessage`. Attachments
  * are emitted on the user channel because AgenC's contract is that
  * the model treats them as user-context. System-reminder-style
  * attachments wrap their content in `<system-reminder>` tags inside the
  * user-channel message — matches AgenC's convention.
- *
- * AgenC branding substitutions use AgenC instruction filenames,
- * product names, and model-facing tool names. Unsupported
- * AgenC product surfaces (companion UI, bagel, teammate swarms, IDE/LSP)
- * do not render here until AgenC ships the matching producer/runtime
- * feature.
  *
  * @module
  */

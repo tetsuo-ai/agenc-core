@@ -520,9 +520,6 @@ describe("attachment mention extractors", () => {
           { type: "agent_mention", agentType: "reviewer" },
         ]),
       );
-      expect(
-        attachments.some(attachment => attachment.type === "mcp_resource"),
-      ).toBe(false);
       expect(rawReadResource).not.toHaveBeenCalled();
       expect(
         attachments.some(

@@ -249,11 +249,6 @@ export function AttachmentMessage({
       }
     case 'diagnostics':
       return <DiagnosticsDisplay attachment={attachment} verbose={verbose} />;
-    case 'mcp_resource':
-      return <Line>
-          Read MCP resource <Text bold>{attachment.name}</Text> from{' '}
-          {attachment.server}
-        </Line>;
     case 'command_permissions':
       // The skill success message is rendered by SkillTool's renderToolResultMessage,
       // so we don't render anything here to avoid duplicate messages.
