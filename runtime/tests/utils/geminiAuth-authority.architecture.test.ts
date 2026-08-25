@@ -16,7 +16,10 @@ describe('Gemini credential authority', () => {
   })
 
   test('credential resolution and the native provider never read process environment', () => {
-    expect(source('utils/geminiAuth.ts')).not.toContain('process.env')
+    const authSource = source('utils/geminiAuth.ts')
+    expect(authSource).not.toContain('process.env')
+    expect(authSource).not.toMatch(/new GoogleAuth\(\{\s*scopes:/u)
+    expect(authSource).toContain('keyFilename: input.credentialPath')
     expect(source('llm/providers/gemini/index.ts')).not.toContain('process.env')
   })
 

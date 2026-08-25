@@ -82,8 +82,21 @@ stored credential path.
 
 Gemini project identity has one ordered surface: `GEMINI_PROJECT_ID` wins over
 `GOOGLE_CLOUD_PROJECT`. Other Google project-name aliases are not consumed.
-Gemini auth and ADC resolution use the immutable environment captured for the
-session; they do not re-read the daemon process environment.
+An explicit Gemini API key passed by an embedding caller wins over captured
+environment credentials. Otherwise `GEMINI_AUTH_MODE` restricts resolution to
+exactly the named method and rejects values other than `api-key`,
+`access-token`, or `adc`. With no mode, the credential order is
+`GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_ACCESS_TOKEN`, then file-backed ADC.
+
+Gemini ADC uses only the immutable session context: a captured
+`GOOGLE_APPLICATION_CREDENTIALS` path, or the captured platform account's
+standard gcloud ADC file when no explicit path was supplied. An explicit path
+is authoritative and does not fall through when missing. AgenC gives the exact
+selected, operator-owned credential file to the Google auth library; it does
+not run gcloud, query a metadata server, or let the library rediscover ADC from
+the daemon process environment. Set `GEMINI_PROJECT_ID` or
+`GOOGLE_CLOUD_PROJECT` when the credential itself does not identify the Vertex
+project.
 
 Proxy routing uses `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and their lowercase
 forms `http_proxy`, `https_proxy`, `no_proxy`. `PATH` is captured so provider
