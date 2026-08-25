@@ -715,6 +715,8 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
       return failSpawn(error instanceof Error ? error.message : String(error));
     }
     let thread: AgentThread | undefined;
+    // Set when the delegate refuses before any agent exists; see below.
+    let rejectedBeforeSpawn = false;
     try {
       const childAgentPath = joinAgentPath(current.agentPath, taskName);
       const worktreeSlug =
@@ -752,6 +754,19 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           : {}),
       });
       if (outcome.kind === "rejected") {
+        /*
+         * The delegate refused. Everything but `spawn_failed` refuses
+         * before the agent is created — a bad request, or an environment
+         * that cannot host it, such as `git worktree add` on a folder that
+         * is not a repository. Nothing exists to be unsure about.
+         *
+         * That distinction has to survive the throw: without it a refusal
+         * reads as a side-effecting tool that died mid-flight, the runtime
+         * holds the session's mutation gate open waiting for a settlement
+         * that never comes, and every later spawn and write is refused
+         * with "live effect settlement is unresolved".
+         */
+        rejectedBeforeSpawn = outcome.category !== "spawn_failed";
         throw new Error(outcome.reason);
       }
       thread = outcome.thread;
@@ -777,10 +792,14 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
           },
         },
       });
-      return json({ error: reason }, true);
+      return rejectedBeforeSpawn
+        ? jsonValidationError("spawn_agent:rejected", { error: reason })
+        : json({ error: reason }, true);
     }
     if (thread === undefined) {
-      return json({ error: "spawn_agent did not return an agent thread" }, true);
+      return jsonValidationError("spawn_agent:no-thread", {
+        error: "spawn_agent did not return an agent thread",
+      });
     }
     const live = thread.live;
     const emitTaskStatus = (snapshot: BackgroundTaskSnapshot): void => {
