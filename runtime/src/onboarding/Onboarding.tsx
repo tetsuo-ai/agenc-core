@@ -28,15 +28,16 @@ import {
   type RemoteAuthSessionReadContext,
 } from "../auth/session-state.js";
 import {
-  BUILT_IN_PROVIDER_API_KEY_ENVS,
   BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   listBuiltInProviderInfo,
+  providerApiKeyEnvironmentLabel,
   resolveBuiltInProviderInfo,
   resolveBuiltInProviderSlug,
   type BuiltInProviderOnboardingInfo,
   type BuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
+import { resolveProviderApiKeyEnvironment } from "../llm/registry/provider-ingress.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
 import { ApproveApiKey, maskedApiKeyTail } from "./ApproveApiKey.js";
 import {
@@ -767,7 +768,7 @@ function verifiedApiKeyConnection(
     status: "ready",
     ok: true,
     detail: "Provider API key verified.",
-    keyEnvVar: BUILT_IN_PROVIDER_API_KEY_ENVS[provider],
+    keyEnvVar: providerApiKeyEnvironmentLabel(provider),
   };
 }
 
@@ -1032,11 +1033,17 @@ export async function checkOnboardingProviderConnection(
   provider: BuiltInProviderSlug,
   model: string,
 ): Promise<ProviderConnectionCheck> {
-  const settings = resolveProviderSettings(provider, context.config, context.env);
+  const environment = context.env ?? process.env;
+  const settings = resolveProviderSettings(
+    provider,
+    context.config,
+    environment,
+  );
   const baseURL =
     settings?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS[provider];
   const keyEnvVar =
-    BUILT_IN_PROVIDER_API_KEY_ENVS[provider];
+    resolveProviderApiKeyEnvironment(provider, environment)?.envVar ??
+    providerApiKeyEnvironmentLabel(provider);
   const onboarding = providerOnboardingInfo(provider);
 
   if (onboarding.access === "managed") {
@@ -1798,7 +1805,7 @@ function apiKeyInstructionForConnection(
 function apiKeyInstructionForProvider(
   provider: BuiltInProviderSlug,
 ): string {
-  const keyEnvVar = BUILT_IN_PROVIDER_API_KEY_ENVS[provider];
+  const keyEnvVar = providerApiKeyEnvironmentLabel(provider);
   const onboarding = providerOnboardingInfo(provider);
   if (onboarding.access === "managed") {
     return "This provider requires AgenC account auth. Choose the account sign-in option to continue.";
@@ -1870,7 +1877,7 @@ export function firstRunOnboardingInputPresentation(
       }
       if (state.modelAccessInput === "api-key") {
         const keyEnvVar =
-          BUILT_IN_PROVIDER_API_KEY_ENVS[state.selectedProvider] ?? "API key";
+          providerApiKeyEnvironmentLabel(state.selectedProvider) ?? "API key";
         return {
           placeholder: `Paste ${keyEnvVar}, type back, or press Enter to configure later`,
           footerHint:
@@ -1983,7 +1990,7 @@ export function detailLinesForStep(
       }
       if (state.modelAccessInput === "menu") {
         const keyEnvVar =
-          BUILT_IN_PROVIDER_API_KEY_ENVS[state.selectedProvider];
+          providerApiKeyEnvironmentLabel(state.selectedProvider);
         const billingProvider =
           state.selectedProvider === "grok" ? "xAI" : state.selectedProvider;
         const onboarding = providerOnboardingInfo(state.selectedProvider);

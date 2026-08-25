@@ -257,18 +257,6 @@ function projectProviderStrings(
 export const BUILT_IN_PROVIDER_DEFAULT_MODELS =
   projectProviderStrings("defaultModel");
 export const BUILT_IN_PROVIDER_BASE_URLS = projectProviderStrings("baseURL");
-export const BUILT_IN_PROVIDER_API_KEY_ENVS: Readonly<
-  Partial<Record<BuiltInProviderSlug, string>>
-> = Object.freeze(
-  Object.fromEntries(
-    Object.entries(BUILT_IN_PROVIDER_DEFINITIONS).flatMap(
-      ([provider, definition]) =>
-        definition.apiKeyEnvVars[0] === undefined
-          ? []
-          : [[provider, definition.apiKeyEnvVars[0]]],
-    ),
-  ),
-) as Readonly<Partial<Record<BuiltInProviderSlug, string>>>;
 
 export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   Record<BuiltInProviderSlug, readonly string[]>
@@ -349,8 +337,6 @@ export interface BuiltInProviderInfo {
   readonly apiKeyEnvVars: readonly string[];
   readonly baseURLEnvVars: readonly string[];
   readonly supportsApiKeylessAuth: boolean;
-  /** First ordered key alias, retained as a derived compatibility view. */
-  readonly apiKeyEnvVar?: string;
   readonly requestMaxRetries: number;
   readonly streamMaxRetries: number;
   readonly streamIdleTimeoutMs: number;
@@ -374,7 +360,6 @@ export function resolveBuiltInProviderInfo(
   const id = resolveBuiltInProviderSlug(provider);
   if (id === undefined) return undefined;
   const definition = BUILT_IN_PROVIDER_DEFINITIONS[id];
-  const primaryApiKeyEnvVar = definition.apiKeyEnvVars[0];
   return {
     id,
     name: definition.name,
@@ -383,9 +368,6 @@ export function resolveBuiltInProviderInfo(
     apiKeyEnvVars: definition.apiKeyEnvVars,
     baseURLEnvVars: definition.baseURLEnvVars,
     supportsApiKeylessAuth: definition.supportsApiKeylessAuth,
-    ...(primaryApiKeyEnvVar !== undefined
-      ? { apiKeyEnvVar: primaryApiKeyEnvVar }
-      : {}),
     requestMaxRetries: DEFAULT_REQUEST_MAX_RETRIES,
     streamMaxRetries: DEFAULT_STREAM_MAX_RETRIES,
     streamIdleTimeoutMs: DEFAULT_STREAM_IDLE_TIMEOUT_MS,

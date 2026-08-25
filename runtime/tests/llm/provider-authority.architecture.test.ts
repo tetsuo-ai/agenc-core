@@ -32,6 +32,15 @@ describe("provider authority architecture", () => {
     expect(registry).toMatch(/BUILT_IN_PROVIDER_DEFINITIONS/u);
     expect(registry).not.toMatch(/PROVIDER_DISPLAY_NAMES/u);
     expect(registry).not.toMatch(/BUILT_IN_PROVIDER_ONBOARDING/u);
+    expect(registry).not.toMatch(/BUILT_IN_PROVIDER_API_KEY_ENVS/u);
+
+    const production = sourceFiles(SRC).filter(
+      (path) => path.endsWith(".ts") || path.endsWith(".tsx"),
+    );
+    const singularKeyFacadeConsumers = production
+      .filter((path) => /\.apiKeyEnvVar\b/u.test(readFileSync(path, "utf8")))
+      .map((path) => relative(SRC, path));
+    expect(singularKeyFacadeConsumers).toEqual([]);
 
     const providerOptions = readFileSync(
       `${SRC}/llm/provider-options.ts`,

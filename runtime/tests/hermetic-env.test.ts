@@ -23,7 +23,7 @@ import {
   HERMETIC_STRIPPED_ENV_VARS,
   sanitizeHermeticEnv,
 } from "./helpers/hermetic-env.mjs";
-import { BUILT_IN_PROVIDER_API_KEY_ENVS } from "../src/llm/registry/provider-info.js";
+import { BUILT_IN_PROVIDER_DEFINITIONS } from "../src/llm/registry/provider-info.js";
 import { SUBPROCESS_SECRET_ENV } from "../src/utils/subprocessEnv.js";
 import { AGENC_PROXY_SOCKET_DIR_PREFIX } from "../src/sandbox/linux-launcher/config.js";
 
@@ -77,9 +77,11 @@ describe("suite-level hermetic env (vitest.setup.ts)", () => {
   it("covers canonical provider and subprocess secret registries", () => {
     const stripped = new Set<string>(HERMETIC_STRIPPED_ENV_VARS);
     const canonical = [
-      ...Object.values(BUILT_IN_PROVIDER_API_KEY_ENVS),
+      ...Object.values(BUILT_IN_PROVIDER_DEFINITIONS).flatMap(
+        (definition) => definition.apiKeyEnvVars,
+      ),
       ...SUBPROCESS_SECRET_ENV,
-    ].filter((name): name is string => typeof name === "string");
+    ];
     expect(canonical.filter((name) => !stripped.has(name))).toEqual([]);
   });
 

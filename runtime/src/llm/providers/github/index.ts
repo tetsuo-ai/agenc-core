@@ -1,8 +1,8 @@
 import { OpenAIProvider } from "../openai/adapter.js";
 import type { OpenAIProviderConfig } from "../openai/types.js";
 import {
-  BUILT_IN_PROVIDER_API_KEY_ENVS,
   BUILT_IN_PROVIDER_BASE_URLS,
+  providerApiKeyEnvironmentLabel,
 } from "../../registry/provider-info.js";
 
 export type GitHubProviderConfig = OpenAIProviderConfig;
@@ -41,7 +41,7 @@ export class GitHubProvider extends OpenAIProvider {
     super({
       ...config,
       providerName: "github",
-      apiKeyEnvLabel: BUILT_IN_PROVIDER_API_KEY_ENVS.github,
+      apiKeyEnvLabel: providerApiKeyEnvironmentLabel("github"),
       useResponsesApi: false,
       baseURL: config.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS.github,
       defaultHeaders: buildGitHubHeaders(config.defaultHeaders),

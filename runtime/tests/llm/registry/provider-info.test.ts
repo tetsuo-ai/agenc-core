@@ -88,7 +88,7 @@ describe("built-in provider info", () => {
       name: "Amazon Bedrock",
       defaultModel: "amazon.nova-pro-v1:0",
       baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
-      apiKeyEnvVar: "AWS_BEDROCK_ACCESS_KEY_ID",
+      apiKeyEnvVars: ["AWS_BEDROCK_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"],
     });
   });
 

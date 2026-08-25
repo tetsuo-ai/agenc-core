@@ -207,7 +207,7 @@ describe("createProvider", () => {
               secretAccessKey: "registry-secret-key",
             },
           }
-          : info?.apiKeyEnvVar !== undefined
+          : (info?.apiKeyEnvVars.length ?? 0) > 0
             ? { apiKey: "registry-test-key" }
             : {};
 

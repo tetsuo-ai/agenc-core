@@ -41,11 +41,10 @@ const HERMETIC_RUNTIME_MARKER_VERSION =
 /**
  * Provider credential env vars.
  *
- * Canonical source: BUILT_IN_PROVIDER_API_KEY_ENVS in
- * src/llm/registry/provider-info.ts (one env var per built-in provider slug,
- * including github -> GITHUB_TOKEN and amazon-bedrock -> AWS_ACCESS_KEY_ID),
- * unioned with the alias/companion names the codebase also resolves:
- *   - grok alias GROK_API_KEY plus retired AGENC_XAI_API_KEY, which remains in
+ * Canonical source: the ordered apiKeyEnvVars arrays in
+ * BUILT_IN_PROVIDER_DEFINITIONS (src/llm/registry/provider-info.ts), unioned
+ * with companion names the codebase also resolves:
+ *   - retired AGENC_XAI_API_KEY, which remains in
  *     this scrub list only so a developer's ambient obsolete value cannot
  *     contaminate rejection tests
  *   - SECRET_ENV_KEYS (src/utils/providerSecrets.ts): OPENAI_AUTH_HEADER_VALUE,
@@ -91,10 +90,10 @@ export const HERMETIC_PROVIDER_CREDENTIAL_ENV_VARS = Object.freeze([
   'GOOGLE_GENAI_API_KEY',
   'GOOGLE_GENERATIVE_AI_API_KEY',
   'GOOGLE_APPLICATION_CREDENTIALS',
-  // github provider key env (BUILT_IN_PROVIDER_API_KEY_ENVS.github) + alias
+  // github provider aliases
   'GITHUB_TOKEN',
   'GH_TOKEN',
-  // amazon-bedrock (BUILT_IN_PROVIDER_API_KEY_ENVS['amazon-bedrock']) + session creds
+  // amazon-bedrock aliases + session credentials
   'AWS_ACCESS_KEY_ID',
   'AWS_SECRET_ACCESS_KEY',
   'AWS_SESSION_TOKEN',

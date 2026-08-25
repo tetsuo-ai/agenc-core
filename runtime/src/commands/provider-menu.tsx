@@ -12,7 +12,11 @@ import {
 } from "../config/resolve-model.js";
 import type { AgenCConfig, ProviderConfig } from "../config/schema.js";
 import type { EnvSnapshot } from "../config/env.js";
-import { listBuiltInProviderInfo } from "../llm/registry/provider-info.js";
+import { resolveProviderApiKeyEnvironment } from "../llm/registry/provider-ingress.js";
+import {
+  listBuiltInProviderInfo,
+  providerApiKeyEnvironmentLabel,
+} from "../llm/registry/provider-info.js";
 import { readXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
 import type { HomeContext } from "../config/home.js";
 import { Box, useInput } from "../tui/ink.js";
@@ -216,8 +220,6 @@ function authState(params: {
   readonly environment: EnvSnapshot;
   readonly provider: ProviderSlug;
   readonly requiresManagedAuth: boolean;
-  readonly configuredEnvVar?: string;
-  readonly defaultEnvVar?: string;
   readonly baseURL: string;
   readonly config?: AgenCConfig;
   readonly managedSubscriptionAvailable: boolean;
@@ -250,8 +252,12 @@ function authState(params: {
     }
   }
 
-  const envVar = params.configuredEnvVar ?? params.defaultEnvVar;
-  if (envVar === undefined) {
+  const envMatch = resolveProviderApiKeyEnvironment(
+    params.provider,
+    params.environment,
+  );
+  const envLabel = providerApiKeyEnvironmentLabel(params.provider);
+  if (envLabel === undefined) {
     return {
       state: "optional",
       label: "local",
@@ -259,12 +265,11 @@ function authState(params: {
     };
   }
 
-  const hasValue = (params.environment[envVar]?.trim().length ?? 0) > 0;
-  if (hasValue) {
+  if (envMatch !== undefined) {
     return {
       state: "ready",
-      label: envVar,
-      source: `env ${envVar}`,
+      label: envMatch.envVar,
+      source: `env ${envMatch.envVar}`,
     };
   }
 
@@ -272,10 +277,10 @@ function authState(params: {
   if (localEndpoint) {
     return {
       state: "optional",
-      label: managedKeysEnabled ? "local only" : `${envVar} optional`,
+      label: managedKeysEnabled ? "local only" : `${envLabel} optional`,
       source: managedKeysEnabled
         ? `local endpoint; subscription is not used`
-        : `env ${envVar} optional for local endpoint`,
+        : `env ${envLabel} optional for local endpoint`,
     };
   }
 
@@ -287,22 +292,22 @@ function authState(params: {
     return {
       state: "managed",
       label: "subscription",
-      source: `AgenC subscription-managed key; ${envVar} optional`,
+      source: `AgenC subscription-managed key; ${envLabel} optional`,
     };
   }
 
   if (managedKeysEnabled && providerHasLiveSubscriptionRoute(params.provider)) {
     return {
       state: "missing",
-      label: `${envVar} or Pro login`,
-      source: `run /login or set env ${envVar}`,
+      label: `${envLabel} or Pro login`,
+      source: `run /login or set env ${envLabel}`,
     };
   }
 
   return {
     state: "missing",
-    label: `${envVar} missing`,
-    source: `set env ${envVar}`,
+    label: `${envLabel} missing`,
+    source: `set env ${envLabel}`,
   };
 }
 
@@ -480,7 +485,6 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
       environment,
       provider,
       requiresManagedAuth: info.requiresManagedAuth,
-      ...(info.apiKeyEnvVar ? { defaultEnvVar: info.apiKeyEnvVar } : {}),
       baseURL,
       ...(config ? { config } : {}),
       managedSubscriptionAvailable,

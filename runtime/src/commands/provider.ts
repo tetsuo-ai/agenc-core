@@ -25,8 +25,11 @@ import {
   configuredModelForProvider,
   defaultModelForProvider,
 } from "../config/resolve-model.js";
-import { resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
-import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
+import {
+  providerApiKeyEnvironmentLabel,
+  resolveBuiltInProviderInfo,
+  resolveBuiltInProviderSlug,
+} from "../llm/registry/provider-info.js";
 import { checkModelHistoryCompat, type HistoryCompatResult } from "./model.js";
 import {
   providerEnvironmentFromCommandContext,
@@ -290,7 +293,8 @@ function providerSwitchAuthError(
   const config = readCommandConfig(ctx);
   if (config?.auth?.managedKeys?.enabled !== true) return undefined;
   const info = resolveBuiltInProviderInfo(normalizedProvider);
-  if (info?.apiKeyEnvVar === undefined) return undefined;
+  const apiKeyEnvLabel = providerApiKeyEnvironmentLabel(normalizedProvider);
+  if (info === undefined || apiKeyEnvLabel === undefined) return undefined;
   const settings = resolveProviderSettings(
     normalizedProvider,
     config,
@@ -319,13 +323,13 @@ function providerSwitchAuthError(
     return (
       `Provider switch to "${normalizedProvider}" blocked: sign in with AgenC ` +
       `using /login for free hosted models, upgrade for paid hosted models, ` +
-      `or set ${info.apiKeyEnvVar} for BYOK.`
+      `or set ${apiKeyEnvLabel} for BYOK.`
     );
   }
   return (
     `Provider switch to "${normalizedProvider}" blocked: ` +
     `hosted subscription access is available through OpenRouter. ` +
-    `Run /provider openrouter, or set ${info.apiKeyEnvVar} for BYOK.`
+    `Run /provider openrouter, or set ${apiKeyEnvLabel} for BYOK.`
   );
 }
 

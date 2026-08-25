@@ -47,6 +47,7 @@ import { OpenAICompatibleProvider } from "./providers/openai-compatible/index.js
 import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
 import {
   builtInProviderIds,
+  providerApiKeyEnvironmentLabel,
   resolveBuiltInProviderSlug,
   resolveBuiltInProviderInfo,
   type BuiltInProviderInfo,
@@ -338,12 +339,12 @@ function defaultBaseURLFor(provider: ProviderName): string {
   return requireBuiltInProviderInfo(provider).baseURL;
 }
 
-function apiKeyEnvVarFor(provider: ProviderName): string {
-  const envVar = requireBuiltInProviderInfo(provider).apiKeyEnvVar;
-  if (envVar === undefined) {
+function apiKeyEnvironmentLabelFor(provider: ProviderName): string {
+  const label = providerApiKeyEnvironmentLabel(provider);
+  if (label === undefined) {
     throw new Error(`${provider} provider does not declare an API key env var`);
   }
-  return envVar;
+  return label;
 }
 
 function requireModel(
@@ -1159,7 +1160,7 @@ function buildOpenAICompatibleProvider(
   },
 ): LLMProvider {
   const extra = readRuntimeExtra(opts.extra);
-  const apiKeyEnvLabel = apiKeyEnvVarFor(provider);
+  const apiKeyEnvLabel = apiKeyEnvironmentLabelFor(provider);
   const model = requireModel(
     provider,
     opts.model,
@@ -1479,7 +1480,7 @@ export function createProvider(
       });
     }
     case "openai": {
-      const apiKeyEnvLabel = apiKeyEnvVarFor("openai");
+      const apiKeyEnvLabel = apiKeyEnvironmentLabelFor("openai");
       const model = requireModel(
         "openai",
         opts.model,
@@ -1660,7 +1661,7 @@ export function createProvider(
         providerCtor: GitHubProvider,
       });
     case "gemini": {
-      const apiKeyEnvLabel = apiKeyEnvVarFor("gemini");
+      const apiKeyEnvLabel = apiKeyEnvironmentLabelFor("gemini");
       const apiKey = resolveFactoryApiKey(opts);
       const model = requireModel(
         "gemini",

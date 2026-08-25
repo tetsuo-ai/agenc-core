@@ -7,7 +7,10 @@ import { defaultConfig } from "../config/schema.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
 import { RemoteAuthBackend } from "../auth/backends/remote.js";
 import type { RemoteAuthSessionReadContext } from "../auth/session-state.js";
-import { listBuiltInProviderInfo } from "../llm/registry/provider-info.js";
+import {
+  listBuiltInProviderInfo,
+  providerApiKeyEnvironmentLabel,
+} from "../llm/registry/provider-info.js";
 import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 import { MAX_ONBOARDING_INPUT_LENGTH } from "./inputPaste.js";
 import { hashPastedText, retrievePastedText } from "./pasteStore.js";
@@ -208,7 +211,7 @@ describe("first-run onboarding wizard", () => {
     state = (await submitFirstRunOnboardingInput(state, "test", context)).state;
     expect(state.currentStepId).toBe("security");
     expect(state.connection?.status).toBe("needs-key");
-    expect(state.connection?.keyEnvVar).toBe("XAI_API_KEY");
+    expect(state.connection?.keyEnvVar).toBe("XAI_API_KEY or GROK_API_KEY");
 
     state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
     expect(state.currentStepId).toBe("terminal-setup");
@@ -318,7 +321,7 @@ describe("first-run onboarding wizard", () => {
     ).resolves.toMatchObject({
       ok: false,
       status: "needs-key",
-      keyEnvVar: "XAI_API_KEY",
+      keyEnvVar: "XAI_API_KEY or GROK_API_KEY",
     });
 
     await expect(
@@ -372,6 +375,40 @@ describe("first-run onboarding wizard", () => {
     });
   });
 
+  test.each([
+    {
+      provider: "gemini",
+      model: "gemini-2.5-pro",
+      env: { GOOGLE_API_KEY: "google-test-key" },
+      keyEnvVar: "GOOGLE_API_KEY",
+    },
+    {
+      provider: "github",
+      model: "gpt-4o",
+      env: { GH_TOKEN: "github-test-token" },
+      keyEnvVar: "GH_TOKEN",
+    },
+  ] as const)(
+    "reports the actual winning fallback alias for $provider",
+    async ({ provider, model, env, keyEnvVar }) => {
+      await expect(
+        checkOnboardingProviderConnection(
+          {
+            config: defaultConfig(),
+            env,
+            fetchImpl: async () => new Response("{}", { status: 200 }),
+          },
+          provider,
+          model,
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        status: "ready",
+        keyEnvVar,
+      });
+    },
+  );
+
   test("lists every canonical built-in provider in the provider step", () => {
     const context = { config: defaultConfig(), env: {} };
     const state = {
@@ -414,7 +451,7 @@ describe("first-run onboarding wizard", () => {
     ).resolves.toMatchObject({
       ok: false,
       status: "needs-key",
-      keyEnvVar: info!.apiKeyEnvVar,
+      keyEnvVar: providerApiKeyEnvironmentLabel(provider),
     });
   });
 
@@ -1467,7 +1504,7 @@ describe("account sign-in from the model-access step", () => {
       "Sign in with X / xAI — use Grok through an eligible X or xAI subscription.",
     );
     expect(details).toContain(
-      "Use XAI_API_KEY — requests are billed by xAI.",
+      "Use XAI_API_KEY or GROK_API_KEY — requests are billed by xAI.",
     );
     expect(details).toContain(
       "Configure later — continue without signing in or saving a key.",
@@ -1584,7 +1621,7 @@ describe("account sign-in from the model-access step", () => {
     expect(keyEntry.state.currentStepId).toBe("api-key");
     expect(keyEntry.state.modelAccessInput).toBe("api-key");
     expect(firstRunOnboardingInputPresentation(keyEntry.state).placeholder).toContain(
-      "Paste XAI_API_KEY",
+      "Paste XAI_API_KEY or GROK_API_KEY",
     );
 
     const menu = await submitFirstRunOnboardingInput(
