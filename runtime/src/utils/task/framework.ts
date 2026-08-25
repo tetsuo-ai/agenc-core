@@ -1,11 +1,6 @@
 import type { AppState } from "../../tui/state/AppState.js";
-import {
-  isTerminalTaskStatus,
-  type TaskStatus,
-  type TaskType,
-} from "../../tasks/Task.js";
+import { isTerminalTaskStatus } from "../../tasks/Task.js";
 import type { TaskState } from "../../tasks/types.js";
-import type { SessionQueueOwner } from "../queueOwnership.js";
 import { getTaskOutputDelta } from "./diskOutput.js";
 
 // Duration to display killed tasks before eviction
@@ -21,18 +16,6 @@ export const STOPPED_DISPLAY_MS = 3_000;
 // AGENT rows only — killed shell/in-process background tasks use the much
 // shorter STOPPED_DISPLAY_MS above and are deliberately untouched.
 export const PANEL_GRACE_MS = 1_800_000;
-
-// Attachment type for task status updates
-export type TaskAttachment = {
-  queueOwner: SessionQueueOwner;
-  type: "task_status";
-  taskId: string;
-  toolUseId?: string;
-  taskType: TaskType;
-  status: TaskStatus;
-  description: string;
-  deltaSummary: string | null; // New output since last attachment
-};
 
 type SetAppState = (updater: (prev: AppState) => AppState) => void;
 
@@ -97,7 +80,7 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
  * Eagerly evict a terminal task from AppState.
  * The task must be in a terminal state (completed/failed/killed) with notified=true.
  * This allows memory to be freed without waiting for the next query loop iteration.
- * The lazy GC in generateTaskAttachments() remains as a safety net.
+ * The lazy GC in collectTaskStateMaintenance() remains as a safety net.
  */
 export function evictTerminalTask(
   taskId: string,
@@ -121,18 +104,17 @@ export function evictTerminalTask(
 }
 
 /**
- * Generate attachments for tasks with new output or status changes.
- * Called by the framework to create push notifications.
+ * Collect running-task output offsets and terminal-task eviction candidates.
+ * Completion notifications are owned by each task implementation; this pass
+ * only maintains AppState bookkeeping between turns.
  */
-export async function generateTaskAttachments(state: AppState): Promise<{
-  attachments: TaskAttachment[];
+export async function collectTaskStateMaintenance(state: AppState): Promise<{
   // Only the offset patch — NOT the full task. The task may transition to
   // completed during getTaskOutputDelta's async disk read, and spreading the
   // full stale snapshot would clobber that transition (zombifying the task).
   updatedTaskOffsets: Record<string, number>;
   evictedTaskIds: string[];
 }> {
-  const attachments: TaskAttachment[] = [];
   const updatedTaskOffsets: Record<string, number> = {};
   const evictedTaskIds: string[] = [];
   const tasks = state.tasks ?? {};
@@ -165,17 +147,16 @@ export async function generateTaskAttachments(state: AppState): Promise<{
       }
     }
 
-    // Completed tasks are NOT notified here — each task type handles its own
-    // completion notification via enqueuePendingNotification(). Generating
-    // attachments here would race with those per-type callbacks, causing
-    // dual delivery (one inline attachment + one separate API turn).
+    // Completion notification remains with each task implementation. Moving
+    // delivery into this maintenance pass would race those callbacks and
+    // create two independently scheduled notifications for one transition.
   }
 
-  return { attachments, updatedTaskOffsets, evictedTaskIds };
+  return { updatedTaskOffsets, evictedTaskIds };
 }
 
 /**
- * Apply the outputOffset patches and evictions from generateTaskAttachments.
+ * Apply the outputOffset patches and evictions from collectTaskStateMaintenance.
  * Merges patches against FRESH prev.tasks (not the stale pre-await snapshot),
  * so concurrent status transitions aren't clobbered.
  */
@@ -203,7 +184,7 @@ export function applyTaskOffsetsAndEvictions(
     for (const id of evictedTaskIds) {
       const fresh = newTasks[id];
       // Re-check terminal+notified on fresh state (TOCTOU: resume may have
-      // replaced the task during the generateTaskAttachments await)
+      // replaced the task during the collectTaskStateMaintenance await)
       if (!fresh || !isTerminalTaskStatus(fresh.status) || !fresh.notified) {
         continue;
       }

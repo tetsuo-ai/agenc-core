@@ -115,10 +115,9 @@ import {
   pathInAllowedWorkingPath,
 } from './permissions/filesystem.js'
 import {
-  generateTaskAttachments,
+  collectTaskStateMaintenance,
   applyTaskOffsetsAndEvictions,
 } from './task/framework.js'
-import { getTaskOutputPath } from './task/diskOutput.js'
 import { drainPendingMessages } from '../tasks/LocalAgentTask/LocalAgentTask.js'
 import type { TaskType, TaskStatus } from '../tasks/Task.js'
 import {
@@ -796,6 +795,13 @@ export async function getAttachments(
   // This ensures files are added to nestedMemoryAttachmentTriggers before nested_memory processes them
   const userAttachmentResults = await Promise.all(userInputAttachments)
 
+  // Task output offsets and terminal-task eviction are state maintenance,
+  // not model-facing attachments. Keep the work concurrent with attachment
+  // collection while preserving the same best-effort error boundary.
+  const taskStateMaintenance = isMainThread
+    ? maintainUnifiedTaskState(toolUseContext)
+    : Promise.resolve()
+
   // Thread-safe attachments available in sub-agents
   // NOTE: These must be created AFTER userInputAttachments completes to ensure
   // nestedMemoryAttachmentTriggers is populated before getNestedMemoryAttachments runs
@@ -929,9 +935,6 @@ export async function getAttachments(
         maybe('lsp_diagnostics', async () =>
           getLSPDiagnosticAttachments(toolUseContext),
         ),
-        maybe('unified_tasks', async () =>
-          getUnifiedTaskAttachments(toolUseContext),
-        ),
         maybe('async_hook_responses', async () =>
           getAsyncHookResponseAttachments(),
         ),
@@ -957,11 +960,13 @@ export async function getAttachments(
       ]
     : []
 
-  // Process thread and main thread attachments in parallel (no dependencies between them)
+  // Process maintenance, thread attachments, and main-thread attachments in
+  // parallel; none depends on another.
   const [threadAttachmentResults, mainThreadAttachmentResults] =
     await Promise.all([
       Promise.all(allThreadAttachments),
       Promise.all(mainThreadAttachments),
+      taskStateMaintenance,
     ])
 
   clearTimeout(timeoutId)
@@ -3124,34 +3129,23 @@ async function getTaskReminderAttachments(
   return []
 }
 
-/**
- * Get attachments for all unified tasks using the Task framework.
- * Replaces the old getBackgroundShellAttachments, getBackgroundRemoteSessionAttachments,
- * and getAsyncAgentAttachments functions.
- */
-async function getUnifiedTaskAttachments(
+async function maintainUnifiedTaskState(
   toolUseContext: ToolUseContext,
-): Promise<Attachment[]> {
-  const appState = toolUseContext.getAppState()
-  const { attachments, updatedTaskOffsets, evictedTaskIds } =
-    await generateTaskAttachments(appState)
+): Promise<void> {
+  try {
+    const appState = toolUseContext.getAppState()
+    const { updatedTaskOffsets, evictedTaskIds } =
+      await collectTaskStateMaintenance(appState)
 
-  applyTaskOffsetsAndEvictions(
-    toolUseContext.setAppState,
-    updatedTaskOffsets,
-    evictedTaskIds,
-  )
-
-  // Convert TaskAttachment to Attachment format
-  return attachments.map(taskAttachment => ({
-    type: 'task_status' as const,
-    taskId: taskAttachment.taskId,
-    taskType: taskAttachment.taskType,
-    status: taskAttachment.status,
-    description: taskAttachment.description,
-    deltaSummary: taskAttachment.deltaSummary,
-    outputFilePath: getTaskOutputPath(taskAttachment.taskId),
-  }))
+    applyTaskOffsetsAndEvictions(
+      toolUseContext.setAppState,
+      updatedTaskOffsets,
+      evictedTaskIds,
+    )
+  } catch (error) {
+    logError(error)
+    logAntError('Task state maintenance error', error)
+  }
 }
 
 async function getAsyncHookResponseAttachments(): Promise<Attachment[]> {

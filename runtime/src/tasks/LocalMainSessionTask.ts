@@ -224,8 +224,8 @@ export function completeMainSessionTask(
     }
   } else {
     // Foregrounded: no notification because the user is watching it directly.
-    // Set notified so evictTerminalTask/generateTaskAttachments eviction guards
-    // pass; the backgrounded path sets this in enqueueMainSessionNotification.
+    // Set notified so eager and between-turn terminal-eviction guards pass;
+    // the backgrounded path sets this in enqueueMainSessionNotification.
     updateTaskState(taskId, setAppState, (task) => ({
       ...task,
       notified: true,
