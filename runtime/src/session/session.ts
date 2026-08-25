@@ -1070,6 +1070,12 @@ export interface McpManager {
   enableServer?(name: string): Promise<McpServerMutationResult>;
   disableServer?(name: string): Promise<McpServerMutationResult>;
   addServer?(config: McpSessionServerConfig): Promise<McpServerMutationResult>;
+  /**
+   * Canonical live-manager tool boundary for callers that have already
+   * acquired session effect admission. Callers must propagate that admitted
+   * boundary's call id and signal through the manager options.
+   */
+  callTool?: MCPManager["callTool"];
   getTools?(): ReadonlyArray<McpSessionToolInfo>;
   getToolsByServer?(name: string): ReadonlyArray<McpSessionToolInfo>;
   getConfiguredServers?(): readonly McpSessionServerConfig[];

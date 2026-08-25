@@ -1772,6 +1772,10 @@ export function createSessionMcpService(
       enqueueServerMutation(config.name, () =>
         addSessionServerUnlocked(config),
       ),
+    callTool: (serverName, toolName, args, callOptions) => {
+      if (closed) return Promise.reject(closedError());
+      return manager.callTool(serverName, toolName, args, callOptions);
+    },
     getResources: (signal) => {
       if (closed) return Promise.reject(closedError());
       return manager.getResources(signal);

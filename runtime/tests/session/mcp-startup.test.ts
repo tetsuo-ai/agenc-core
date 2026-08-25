@@ -50,7 +50,8 @@ import {
 vi.mock("../mcp-client/connection.js", () => ({
   createMCPConnection: vi.fn(),
 }));
-vi.mock("../mcp-client/tools.js", () => ({
+vi.mock("../mcp-client/tools.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../mcp-client/tools.js")>()),
   createToolBridge: vi.fn(),
 }));
 vi.mock("../mcp-client/resources.js", () => ({
@@ -1216,6 +1217,90 @@ describe("mcp-startup session-owned manager helpers", () => {
     expect(service.getToolsByServer?.("github")).toEqual([
       { name: "mcp.github.search" },
     ]);
+  });
+
+  it("forwards admitted tool calls and rejects them after the session service closes", async () => {
+    const manager = makeManager();
+    const expectedResult = {
+      content: "canonical result",
+      metadata: { source: "canonical-manager" },
+    };
+    const callTool = vi
+      .spyOn(manager, "callTool")
+      .mockResolvedValue(expectedResult);
+    const service = createSessionMcpService(manager, TEST_SERVICE_OPTIONS);
+    const signal = new AbortController().signal;
+    const onProgress = vi.fn();
+    const callOptions = { signal, callId: "admitted-call", onProgress };
+
+    await expect(
+      service.callTool?.(
+        "alpha",
+        "summarize",
+        { topic: "AgenC" },
+        callOptions,
+      ),
+    ).resolves.toBe(expectedResult);
+    expect(callTool).toHaveBeenCalledWith(
+      "alpha",
+      "summarize",
+      { topic: "AgenC" },
+      callOptions,
+    );
+
+    await service.dispose?.();
+    await expect(
+      service.callTool?.("alpha", "summarize", {}, callOptions),
+    ).rejects.toThrow("MCP session service is closed");
+    expect(callTool).toHaveBeenCalledOnce();
+  });
+
+  it("keeps session-facade tool calls on the replacement bridge after reconnect", async () => {
+    const firstBridge = makeMockBridge("alpha");
+    const replacementBridge = makeMockBridge("alpha");
+    const firstExecute = vi.mocked(firstBridge.tools[0]!.execute);
+    const replacementExecute = vi.mocked(replacementBridge.tools[0]!.execute);
+    firstExecute.mockResolvedValue({ content: "before reconnect" });
+    replacementExecute.mockResolvedValue({ content: "after reconnect" });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(firstBridge as never)
+      .mockResolvedValueOnce(replacementBridge as never);
+    const manager = makeManager();
+    const service = createSessionMcpService(manager, TEST_SERVICE_OPTIONS);
+
+    try {
+      await manager.start();
+      expect(service.callTool).toBeTypeOf("function");
+      await expect(
+        service.callTool?.(
+          "alpha",
+          "echo",
+          { phase: "before" },
+          { callId: "before-reconnect" },
+        ),
+      ).resolves.toEqual({ content: "before reconnect" });
+
+      await expect(manager.reconnectServer("alpha")).resolves.toMatchObject({
+        serverName: "alpha",
+        success: true,
+        toolCount: 1,
+      });
+      await expect(
+        service.callTool?.(
+          "alpha",
+          "echo",
+          { phase: "after" },
+          { callId: "after-reconnect" },
+        ),
+      ).resolves.toEqual({ content: "after reconnect" });
+
+      expect(firstExecute).toHaveBeenCalledOnce();
+      expect(replacementExecute).toHaveBeenCalledOnce();
+      expect(mockCreateMCPConnection).toHaveBeenCalledTimes(2);
+      expect(mockCreateToolBridge).toHaveBeenCalledTimes(2);
+    } finally {
+      await service.dispose?.();
+    }
   });
 
   it("forwards resources and prompts through the real manager's existing bridges", async () => {
