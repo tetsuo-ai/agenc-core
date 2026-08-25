@@ -78,9 +78,6 @@ export interface SecureStorageData {
   remoteAuth?: RemoteAuthSecureStorage
   remoteRuntimeAuth?: RemoteRuntimeAuthSecureStorage
   gateway?: GatewaySecureStorage
-  gemini?: {
-    accessToken: string
-  }
   githubModels?: {
     accessToken: string
     oauthAccessToken?: string

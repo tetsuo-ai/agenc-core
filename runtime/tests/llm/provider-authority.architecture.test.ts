@@ -507,7 +507,6 @@ describe("provider authority architecture", () => {
 
   test("secure provider credentials are never hydrated into process env", () => {
     for (const relative of [
-      "utils/geminiCredentials.ts",
       "utils/githubModelsCredentials.ts",
     ]) {
       const source = readFileSync(`${SRC}/${relative}`, "utf8");

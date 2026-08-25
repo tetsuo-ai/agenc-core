@@ -31,7 +31,6 @@ import {
 import { logForDebugging } from 'src/utils/debug.js'
 import { isBareMode, isEnvTruthy } from '../../utils/envUtils.js'
 import { resolveGeminiCredential } from '../../utils/geminiAuth.js'
-import { readGeminiAccessToken } from '../../utils/geminiCredentials.js'
 import { readGithubModelsToken } from '../../utils/githubModelsCredentials.js'
 import {
   createThinkTagFilter,
@@ -286,7 +285,6 @@ function buildGithubProviderOverride(
 }
 
 function buildGeminiProviderOverride(
-  home: HomeContext,
   environment: ProviderEnvironment,
   selectedModel: string,
 ): {
@@ -305,8 +303,7 @@ function buildGeminiProviderOverride(
       'GEMINI_API_KEY, GOOGLE_API_KEY, or GEMINI_ACCESS_TOKEN',
       firstProviderEnvString(environment.GEMINI_API_KEY) ??
         firstProviderEnvString(environment.GOOGLE_API_KEY) ??
-        firstProviderEnvString(environment.GEMINI_ACCESS_TOKEN) ??
-        readGeminiAccessToken(home),
+        firstProviderEnvString(environment.GEMINI_ACCESS_TOKEN),
     ),
   }
 }
@@ -319,7 +316,7 @@ function resolveSelectedProviderOverride(
 ): { model: string; baseURL: string; apiKey: string } | undefined {
   switch (selectedProvider) {
     case 'gemini':
-      return buildGeminiProviderOverride(home, environment, selectedModel)
+      return buildGeminiProviderOverride(environment, selectedModel)
     case 'mistral':
       return buildMistralProviderOverride(environment, selectedModel)
     case 'nvidia-nim':

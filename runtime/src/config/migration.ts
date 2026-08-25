@@ -359,7 +359,6 @@ const LEGACY_CREDENTIAL_FIELDS = new Set<string>([
   "oauthAccountMetadata",
   "chromePairingIdentity",
   "apiKeyApprovals",
-  "gemini",
   "githubModels",
 ]);
 
@@ -402,19 +401,6 @@ function parseLegacyCredentialBlob(text: string, path: string): LegacyCredential
     ) {
       throw new ConfigMigrationError(
         `retired credential field ${field} must be an object: ${path}`,
-      );
-    }
-  }
-  if (parsed.gemini !== undefined) {
-    const gemini = parsed.gemini;
-    if (
-      !isPlainRecord(gemini) ||
-      Object.keys(gemini).some((field) => field !== "accessToken") ||
-      typeof gemini.accessToken !== "string" ||
-      gemini.accessToken.length === 0
-    ) {
-      throw new ConfigMigrationError(
-        `retired credential field gemini must contain exactly one non-empty accessToken string: ${path}`,
       );
     }
   }

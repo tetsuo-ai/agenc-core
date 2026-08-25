@@ -1,9 +1,8 @@
 /**
  * Persistence + refresh for xAI OAuth ("Sign in with X / Grok") credentials.
  *
- * Storage follows the githubModels/gemini credential pattern: one blob in
- * the shared secure-storage payload. Refresh follows the Hermes/opencode
- * rules for xAI's ROTATING refresh tokens:
+ * Storage uses one namespace in the shared secure-storage payload. Refresh
+ * follows the provider's rotating-token rules:
  *  - single-flight: concurrent callers share one refresh promise so a
  *    rotated refresh token is never replayed;
  *  - refresh ~1 h before expiry (~6 h access tokens);

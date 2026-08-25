@@ -148,7 +148,6 @@ describe("native secure-storage authority", () => {
 
   test("provider credential authorities use explicit-home native reads and serialized RMW", () => {
     const providerSources = [
-      "geminiCredentials.ts",
       "githubModelsCredentials.ts",
       "xaiOauthCredentials.ts",
     ].map((name) =>

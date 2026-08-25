@@ -149,12 +149,14 @@ stores credential values.
   retired native `agenc` credential field are explicit one-way migration
   inputs only. Reads, refreshes, and clears stay bound to the client's captured
   `HomeContext`, and refresh compare-and-swap preserves a newer login.
-- **Provider-native tokens** — Gemini, GitHub Models, xAI OAuth, and AgenC AI
-  subscription OAuth persist only in the home-scoped native `gemini`,
-  `githubModels`, `xaiOauth`, and `agencAiOauth` namespaces. Their production
-  APIs require an explicit `HomeContext`; cache/single-flight/refresh-lock
-  state is isolated by home, and refresh writes compare-and-swap the exact
-  credential version they exchanged so a newer login always wins.
+- **Provider-native tokens** — GitHub Models, xAI OAuth, and AgenC AI
+  subscription OAuth persist only in the home-scoped native `githubModels`,
+  `xaiOauth`, and `agencAiOauth` namespaces. Their production APIs require an
+  explicit `HomeContext`; cache/single-flight/refresh-lock state is isolated by
+  home, and refresh writes compare-and-swap the exact credential version they
+  exchanged so a newer login always wins. Gemini uses explicit captured API-key
+  or access-token input, or Application Default Credentials; AgenC does not
+  persist Gemini credentials.
 - **Discovery** — `agenc providers` reports readiness (credentials present, local
   server health for Ollama/LM Studio/openai-compatible, subscription tier)
   without changing the selected provider. It uses the same ordered registry

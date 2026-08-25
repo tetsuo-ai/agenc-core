@@ -580,6 +580,32 @@ describe("explicit plaintext credential migration", () => {
     expect(native.data).toEqual({});
   });
 
+  test("rejects removed Gemini token storage without changing the source or vault", async () => {
+    const root = temp();
+    const home = join(root, "home");
+    const source = join(home, ".credentials.json");
+    const legacy = JSON.stringify({
+      gemini: { accessToken: "removed-gemini-token" },
+    });
+    mkdirSync(home, { recursive: true });
+    writeFileSync(source, legacy, { mode: 0o600 });
+    native.data = { trustedDeviceToken: "unrelated" };
+
+    const plan = await checkConfigV2Migration(
+      options(home, "removed-gemini-token"),
+    );
+
+    expect(plan.conflicts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        field: "credentials",
+        reason: expect.stringMatching(/unsupported fields.*gemini/u),
+      }),
+    ]));
+    expect(plan.writes).toEqual([]);
+    expect(readFileSync(source, "utf8")).toBe(legacy);
+    expect(native.data).toEqual({ trustedDeviceToken: "unrelated" });
+  });
+
   test("moves secrets one-way into the native vault without a plaintext archive", async () => {
     const root = temp();
     const home = join(root, "home");
@@ -587,7 +613,6 @@ describe("explicit plaintext credential migration", () => {
     const legacy = JSON.stringify({
       primaryApiKey: "secret-key",
       apiKeyApprovals: { approved: ["sha256:approved"] },
-      gemini: { accessToken: "gemini-access-token" },
       githubModels: {
         accessToken: "github-access-token",
         oauthAccessToken: "github-oauth-token",
@@ -612,7 +637,6 @@ describe("explicit plaintext credential migration", () => {
       trustedDeviceToken: "unrelated",
       primaryApiKey: "secret-key",
       apiKeyApprovals: { approved: ["sha256:approved"] },
-      gemini: { accessToken: "gemini-access-token" },
       githubModels: {
         accessToken: "github-access-token",
         oauthAccessToken: "github-oauth-token",
@@ -630,7 +654,6 @@ describe("explicit plaintext credential migration", () => {
     const journal = readFileSync(applied.journalPath, "utf8");
     expect(journal).not.toContain("secret-key");
     expect(journal).not.toContain("sha256:approved");
-    expect(journal).not.toContain("gemini-access-token");
     expect(journal).not.toContain("github-access-token");
     expect(journal).not.toContain("github-oauth-token");
     expect(journal).not.toContain("openai-platform-key");
@@ -642,7 +665,6 @@ describe("explicit plaintext credential migration", () => {
       trustedDeviceToken: "unrelated",
       primaryApiKey: "secret-key",
       apiKeyApprovals: { approved: ["sha256:approved"] },
-      gemini: { accessToken: "gemini-access-token" },
       githubModels: {
         accessToken: "github-access-token",
         oauthAccessToken: "github-oauth-token",

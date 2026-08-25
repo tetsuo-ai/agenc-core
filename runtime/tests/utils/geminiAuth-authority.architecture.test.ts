@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { describe, expect, test } from 'vitest'
 
 function source(path: string): string {
@@ -6,6 +6,15 @@ function source(path: string): string {
 }
 
 describe('Gemini credential authority', () => {
+  test('has no persisted Gemini credential channel', () => {
+    expect(
+      existsSync(new URL('../../src/utils/geminiCredentials.ts', import.meta.url)),
+    ).toBe(false)
+    expect(source('services/api/openaiShim.ts')).not.toContain('geminiCredentials')
+    expect(source('utils/secureStorage/index.ts')).not.toMatch(/\bgemini\?\s*:/u)
+    expect(source('config/migration.ts')).not.toContain('parsed.gemini')
+  })
+
   test('credential resolution and the native provider never read process environment', () => {
     expect(source('utils/geminiAuth.ts')).not.toContain('process.env')
     expect(source('llm/providers/gemini/index.ts')).not.toContain('process.env')

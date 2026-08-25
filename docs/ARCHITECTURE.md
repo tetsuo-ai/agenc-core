@@ -145,9 +145,11 @@ Login tokens, provider BYOK keys, remote bearers, and persisted remote
 subprocess credentials are not file state. They live only in the native OS
 credential vault, in home-scoped `localAuth`, `remoteAuth`, and
 `remoteRuntimeAuth` namespaces; OpenAI/ChatGPT OAuth uses the separate
-`openAiOauth` namespace. Gemini access tokens, GitHub Models access/OAuth tokens, xAI OAuth,
-and AgenC AI subscription OAuth use the `gemini`, `githubModels`, `xaiOauth`,
-and `agencAiOauth` namespaces respectively. Native updates use a cross-process
+`openAiOauth` namespace. GitHub Models access/OAuth tokens, xAI OAuth, and
+AgenC AI subscription OAuth use the `githubModels`, `xaiOauth`, and
+`agencAiOauth` namespaces respectively. Gemini credentials are explicit
+captured-environment input or Application Default Credentials and are never
+persisted by AgenC. Native updates use a cross-process
 locked read-modify-write so one namespace cannot overwrite another, and an
 OAuth refresh compare-and-swaps the credential version it read before making
 the network request. Read caches, refresh single-flights, and refresh lock
