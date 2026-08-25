@@ -27,6 +27,7 @@ import {
   installFromGitSubdir,
   loadAllPlugins,
   loadAllPluginsCacheOnly,
+  loadAllPluginsStrictCacheOnly,
   loadPluginManifest,
   probeSeedCacheAnyVersion,
   resolvePluginPath,
@@ -1033,6 +1034,28 @@ describe("plugin loader orchestration", () => {
     const result = await loadAllPluginsCacheOnly();
 
     expect(result.enabled.map(plugin => plugin.name)).toEqual(["sync-inline"]);
+  });
+
+  test("strict cache-only inspection ignores synchronous install mode", async () => {
+    const configRoot = await tempDir("agenc-plugin-strict-cache-config-");
+    const pluginRoot = await tempDir("agenc-plugin-inline-strict-cache-");
+    process.env.AGENC_CONFIG_DIR = configRoot;
+    process.env.AGENC_SYNC_PLUGIN_INSTALL = "1";
+    resetSettingsCache();
+
+    await mkdir(join(pluginRoot, ".agenc-plugin"), { recursive: true });
+    await writeFile(
+      join(pluginRoot, ".agenc-plugin", "plugin.json"),
+      JSON.stringify({ name: "strict-cache-inline" }),
+      "utf8",
+    );
+    setInlinePlugins([pluginRoot]);
+
+    const result = await loadAllPluginsStrictCacheOnly();
+
+    expect(result.enabled.map(plugin => plugin.name)).toEqual([
+      "strict-cache-inline",
+    ]);
   });
 
   test("loadAllPluginsCacheOnly loads cached local marketplace plugins and reports missing marketplace components", async () => {

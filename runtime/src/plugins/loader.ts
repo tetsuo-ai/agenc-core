@@ -326,9 +326,11 @@ async function discoverRootsUnder(
 ): Promise<DiscoveredPluginRoot[]> {
   if (!(await pathIsDirectory(baseDir))) return [];
   if (await hasPluginShape(baseDir)) {
+    const installedIdentity = await installedPluginIdentity(baseDir);
     return [{
       path: await maybeRealpath(baseDir),
-      source: await installedPluginDependencyIdentity(baseDir) ?? baseDir,
+      source: installedIdentity.dependencyIdentity ?? baseDir,
+      ...(installedIdentity.id !== undefined ? { key: installedIdentity.id } : {}),
       enabled: true,
       contentProvenance,
     }];
@@ -344,9 +346,11 @@ async function discoverRootsUnder(
     if (!entry.isDirectory() || SKIP_PLUGIN_ROOTS.has(entry.name)) continue;
     const candidate = join(baseDir, entry.name);
     if (await hasPluginShape(candidate)) {
+      const installedIdentity = await installedPluginIdentity(candidate);
       roots.push({
         path: await maybeRealpath(candidate),
-        source: await installedPluginDependencyIdentity(candidate) ?? candidate,
+        source: installedIdentity.dependencyIdentity ?? candidate,
+        ...(installedIdentity.id !== undefined ? { key: installedIdentity.id } : {}),
         enabled: true,
         contentProvenance,
       });
@@ -379,20 +383,35 @@ function contentProvenanceForPath(
     : "authority-controlled";
 }
 
-async function installedPluginDependencyIdentity(pluginRoot: string): Promise<string | undefined> {
+async function installedPluginIdentity(pluginRoot: string): Promise<{
+  readonly id?: string;
+  readonly dependencyIdentity?: string;
+}> {
   let metadata: unknown;
   try {
     metadata = JSON.parse(await readFile(join(pluginRoot, ".agenc-plugin", INSTALL_METADATA_FILE), "utf8"));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    return undefined;
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+    return {};
   }
-  if (!isRecord(metadata)) return undefined;
+  if (!isRecord(metadata)) return {};
+  const id = typeof metadata.id === "string" && metadata.id.trim().length > 0
+    ? metadata.id
+    : undefined;
   if (typeof metadata.dependencyIdentity === "string") {
-    return pluginDependencyIdentityFromSource(metadata.dependencyIdentity);
+    const dependencyIdentity = pluginDependencyIdentityFromSource(metadata.dependencyIdentity);
+    return {
+      ...(id !== undefined ? { id } : {}),
+      ...(dependencyIdentity !== undefined ? { dependencyIdentity } : {}),
+    };
   }
-  if (metadata.sourceRedacted === true || typeof metadata.source !== "string") return undefined;
-  return pluginDependencyIdentityFromSource(metadata.source);
+  const dependencyIdentity = metadata.sourceRedacted === true || typeof metadata.source !== "string"
+    ? undefined
+    : pluginDependencyIdentityFromSource(metadata.source);
+  return {
+    ...(id !== undefined ? { id } : {}),
+    ...(dependencyIdentity !== undefined ? { dependencyIdentity } : {}),
+  };
 }
 
 async function findGitRepoRoot(start: string): Promise<string | undefined> {

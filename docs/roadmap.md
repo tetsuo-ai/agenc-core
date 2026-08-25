@@ -39,7 +39,7 @@ shipped / open summary.
   Fix/Edit/Refactor proposals, and consent-gated code prediction
 - Monochrome TUI workbench rails for project review, live agent progress, and
   daemon-backed todo visibility
-- Official Ledger Wallet CLI management and strict device-authenticity flow
+- Optional Wallet CLI Harness plugin for strict Ledger device workflows
 - Strict, bounded run recovery with corrupt-journal quarantine, restart-safe
   checkpoints, and explicit review for operations whose outcome is unknown
 - Transactional conversation compaction with integrity-bound payloads,

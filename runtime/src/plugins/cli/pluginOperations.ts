@@ -17,6 +17,7 @@ import {
   redactPluginSource,
   resolvePluginSource,
   shouldCopyPluginPayloadPath,
+  verifyResolvedPluginSignature,
   type PluginProcessRunner,
   type PluginResolutionKind,
   type ResolvedPluginSource,
@@ -38,6 +39,10 @@ export interface PluginOperationOptions {
 }
 
 export interface InstalledPluginSummary {
+  /** Stable manifest/marketplace identity; never inferred from the source URL. */
+  readonly id: string;
+  readonly operationId: string;
+  readonly scope: PluginScope;
   readonly name: string;
   readonly version?: string;
   readonly description?: string;
@@ -53,6 +58,12 @@ export interface PluginListResult {
 
 export interface InstallPluginInput extends PluginOperationOptions {
   readonly source: string;
+  /** Canonical identity (for example, name@marketplace) persisted at install. */
+  readonly pluginId?: string;
+  /** Structured Git coordinates retained from a marketplace catalog entry. */
+  readonly gitSubdir?: string;
+  readonly gitRef?: string;
+  readonly gitSha?: string;
   readonly scope?: PluginScope;
   readonly name?: string;
   readonly force?: boolean;
@@ -184,10 +195,15 @@ export async function listInstalledPlugins(
     workspaceRoot,
     config: loadedConfig.config,
   });
+  const plugins = await Promise.all(
+    [...loaded.enabled, ...loaded.disabled].map(async (plugin) =>
+      summarizeLoadedPlugin(
+        plugin,
+        await readInstalledPluginIdentity(plugin.root, plugin.name, options),
+      )),
+  );
   return {
-    plugins: [...loaded.enabled, ...loaded.disabled]
-      .map(summarizeLoadedPlugin)
-      .sort((a, b) => a.name.localeCompare(b.name)),
+    plugins: plugins.sort((a, b) => a.id.localeCompare(b.id)),
     errors: [
       ...warnings,
       ...loaded.errors.map((issue) => `${issue.source}: ${issue.message}`),
@@ -240,7 +256,15 @@ export async function installPluginOp(
   let source = localSource;
   let resolutionKind: PluginResolutionKind = "local";
   let signatureVerified = false;
-  if (!(await pathIsDirectory(localSource))) {
+  if (await pathIsDirectory(localSource)) {
+    if (input.requireSignature === true) {
+      const signature = await verifyResolvedPluginSignature(localSource, {
+        requireSignature: true,
+        publishersPath: input.publishersPath,
+      });
+      signatureVerified = signature.verified;
+    }
+  } else {
     resolved = await resolvePluginSource(input.source, {
       agencHome: resolvePluginAgencHome(input),
       workspaceRoot,
@@ -249,6 +273,9 @@ export async function installPluginOp(
       publishersPath: input.publishersPath,
       runProcess: input.runResolutionProcess,
       fetchBytes: input.fetchResolutionBytes,
+      ...(input.gitSubdir !== undefined ? { gitSubdir: input.gitSubdir } : {}),
+      ...(input.gitRef !== undefined ? { gitRef: input.gitRef } : {}),
+      ...(input.gitSha !== undefined ? { gitSha: input.gitSha } : {}),
     });
     source = resolved.pluginRoot;
     resolutionKind = resolved.kind;
@@ -270,6 +297,7 @@ export async function installPluginOp(
       );
     }
     const pluginName = input.name?.trim() || loaded.plugin.name || basename(source);
+    const pluginId = input.pluginId?.trim() || pluginName;
     const safeName = sanitizeInstallName(pluginName);
     const installRoot = pluginScopeRoot(scope, input);
     await mkdir(installRoot, { recursive: true, mode: 0o700 });
@@ -279,13 +307,19 @@ export async function installPluginOp(
     });
     await writeInstallMetadata(destination, {
       name: pluginName,
+      id: pluginId,
+      operationId: pluginOperationId(pluginId, scope),
       source: resolutionKind === "local" ? source : redactPluginSource(input.source),
+      ...(input.gitSubdir !== undefined ? { gitSubdir: input.gitSubdir } : {}),
+      ...(input.gitRef !== undefined ? { gitRef: input.gitRef } : {}),
+      ...(input.gitSha !== undefined ? { gitSha: input.gitSha } : {}),
       ...(resolutionKind !== "local" ? dependencyIdentityMetadata(input.source) : {}),
       ...(resolutionKind !== "local" && pluginSourceNeedsRedaction(input.source) ? { sourceRedacted: true } : {}),
       sourceRoot: source,
       scope,
       resolutionKind,
       signatureVerified,
+      signatureRequired: input.requireSignature ?? (resolutionKind !== "local"),
       installedAt: (input.now ?? (() => new Date()))().toISOString(),
     });
     const plugin = await createPluginFromPath(destination, {
@@ -293,9 +327,13 @@ export async function installPluginOp(
       enabled: true,
       fallbackName: safeName,
     });
-    await writePluginConfigEntry(pluginName, { enabled: true }, input);
+    await writePluginConfigEntry(pluginId, { enabled: true }, input);
     return {
-      plugin: summarizeLoadedPlugin(plugin.plugin),
+      plugin: summarizeLoadedPlugin(plugin.plugin, {
+        id: pluginId,
+        operationId: pluginOperationId(pluginId, scope),
+        scope,
+      }),
       destination,
       scope,
       resolutionKind,
@@ -354,7 +392,7 @@ export async function disableAllPluginsOp(
   options: PluginOperationOptions = {},
 ): Promise<DisableAllPluginsResult> {
   const listed = await listInstalledPlugins(options);
-  const names = listed.plugins.filter((plugin) => plugin.enabled).map((plugin) => plugin.name);
+  const names = listed.plugins.filter((plugin) => plugin.enabled).map((plugin) => plugin.id);
   let configPath = pluginConfigPath(options);
   for (const name of names) {
     configPath = await writePluginConfigEntry(name, { enabled: false }, options);
@@ -378,9 +416,11 @@ export async function updatePluginOp(
     throw new Error(`plugin resolves to multiple install roots in ${scope} scope: ${input.pluginId}`);
   }
   const previousRoot = roots[0]!;
+  const installMetadata = await readInstalledPluginMetadata(previousRoot);
+  const usingRecordedSource = input.source === undefined;
   const source = input.source !== undefined
     ? input.source
-    : await readInstalledPluginSource(previousRoot);
+    : installedPluginSourceFromMetadata(installMetadata);
   if (source === undefined) {
     throw new Error(
       `plugin ${input.pluginId} has no recorded source; rerun with --source <path>`,
@@ -397,7 +437,24 @@ export async function updatePluginOp(
   const installed = await installPluginOp({
     ...input,
     source,
-    name: input.pluginId,
+    name: typeof installMetadata?.name === "string"
+      ? installMetadata.name
+      : input.pluginId,
+    pluginId: typeof installMetadata?.id === "string"
+      ? installMetadata.id
+      : input.pluginId,
+    ...(usingRecordedSource && typeof installMetadata?.gitSubdir === "string"
+      ? { gitSubdir: installMetadata.gitSubdir }
+      : {}),
+    ...(usingRecordedSource && typeof installMetadata?.gitRef === "string"
+      ? { gitRef: installMetadata.gitRef }
+      : {}),
+    ...(usingRecordedSource && typeof installMetadata?.gitSha === "string"
+      ? { gitSha: installMetadata.gitSha }
+      : {}),
+    ...(installMetadata?.signatureRequired === true
+      ? { requireSignature: true }
+      : {}),
     scope,
     force: true,
     refreshCache: true,
@@ -460,8 +517,12 @@ function resolvePath(path: string, base: string): string {
   return isAbsolute(path) ? resolve(path) : resolve(base, path);
 }
 
-function summarizeLoadedPlugin(plugin: LoadedPlugin): InstalledPluginSummary {
+function summarizeLoadedPlugin(
+  plugin: LoadedPlugin,
+  identity: Pick<InstalledPluginSummary, "id" | "operationId" | "scope">,
+): InstalledPluginSummary {
   return {
+    ...identity,
     name: plugin.name,
     ...(plugin.version !== undefined ? { version: plugin.version } : {}),
     ...(plugin.description !== undefined ? { description: plugin.description } : {}),
@@ -579,12 +640,18 @@ async function writeInstallMetadata(
   pluginRoot: string,
   metadata: {
     readonly name: string;
+    readonly id: string;
+    readonly operationId: string;
     readonly source: string;
     readonly sourceRedacted?: boolean;
     readonly sourceRoot?: string;
+    readonly gitSubdir?: string;
+    readonly gitRef?: string;
+    readonly gitSha?: string;
     readonly scope: PluginScope;
     readonly resolutionKind?: PluginResolutionKind;
     readonly signatureVerified?: boolean;
+    readonly signatureRequired?: boolean;
     readonly installedAt: string;
   },
 ): Promise<void> {
@@ -592,16 +659,59 @@ async function writeInstallMetadata(
   await writeJsonAtomic(join(pluginRoot, ".agenc-plugin", INSTALL_METADATA_FILE), metadata);
 }
 
-async function readInstalledPluginSource(
+function installedPluginSourceFromMetadata(
+  metadata: Readonly<Record<string, unknown>> | undefined,
+): string | undefined {
+  return typeof metadata?.source === "string" && metadata.sourceRedacted !== true
+    ? metadata.source
+    : undefined;
+}
+
+async function readInstalledPluginIdentity(
   pluginRoot: string,
-): Promise<string | undefined> {
+  fallbackName: string,
+  options: PluginOperationOptions,
+): Promise<Pick<InstalledPluginSummary, "id" | "operationId" | "scope">> {
+  const metadata = await readInstalledPluginMetadata(pluginRoot);
+  const scope = isPluginScope(metadata?.scope)
+    ? metadata.scope
+    : inferInstalledPluginScope(pluginRoot, options);
+  const id = typeof metadata?.id === "string" && metadata.id.trim().length > 0
+    ? metadata.id
+    : fallbackName;
+  const operationId =
+    typeof metadata?.operationId === "string" && metadata.operationId.trim().length > 0
+      ? metadata.operationId
+      : pluginOperationId(id, scope);
+  return { id, operationId, scope };
+}
+
+async function readInstalledPluginMetadata(
+  pluginRoot: string,
+): Promise<Readonly<Record<string, unknown>> | undefined> {
   const metadata = await readJsonFile<unknown>(
     join(pluginRoot, ".agenc-plugin", INSTALL_METADATA_FILE),
     null,
   );
-  return isRecord(metadata) && typeof metadata.source === "string" && metadata.sourceRedacted !== true
-    ? metadata.source
-    : undefined;
+  return isRecord(metadata) ? metadata : undefined;
+}
+
+function pluginOperationId(id: string, scope: PluginScope): string {
+  return `plugin:${scope}:${id}`;
+}
+
+function isPluginScope(value: unknown): value is PluginScope {
+  return value === "user" || value === "project" || value === "local";
+}
+
+function inferInstalledPluginScope(
+  pluginRoot: string,
+  options: PluginOperationOptions,
+): PluginScope {
+  if (isPathInside(pluginRoot, pluginScopeRoot("user", options))) return "user";
+  // Project and local currently share the same filesystem root; new installs
+  // persist the exact scope, while legacy entries get the conservative project label.
+  return "project";
 }
 
 async function resolvePluginRootsForRemoval(
@@ -611,6 +721,7 @@ async function resolvePluginRootsForRemoval(
 ): Promise<string[]> {
   const roots = new Set<string>();
   const installRoot = pluginScopeRoot(scope, options);
+  const installRootReal = await realpath(installRoot).catch(() => resolve(installRoot));
   const directRoot = join(installRoot, sanitizeInstallName(pluginId));
   try {
     if ((await stat(directRoot)).isDirectory()) {
@@ -621,8 +732,12 @@ async function resolvePluginRootsForRemoval(
   }
   const listed = await listInstalledPlugins(options);
   for (const plugin of listed.plugins) {
-    if (plugin.name !== pluginId && basename(plugin.root) !== pluginId) continue;
-    if (isPathInside(plugin.root, installRoot)) {
+    if (
+      plugin.id !== pluginId &&
+      plugin.name !== pluginId &&
+      basename(plugin.root) !== pluginId
+    ) continue;
+    if (isPathInside(plugin.root, installRootReal)) {
       roots.add(await realpath(plugin.root));
     }
   }
@@ -839,13 +954,17 @@ function ensurePluginsFeatureEnabled(text: string): string {
   for (const [index, line] of lines.entries()) {
     const table = line.match(/^\s*\[([^\]]+)\]\s*(?:#.*)?$/u)?.[1]?.trim();
     if (table !== undefined) {
-      inPluginsTable = table === "plugins";
+      // The canonical serializer quotes all table segments, while the
+      // formatting-preserving writer historically emitted bare keys. Treat
+      // both spellings as the same table so reinstalling after a canonical
+      // config rewrite never appends a duplicate `[plugins]` declaration.
+      inPluginsTable = table === "plugins" || table === '"plugins"';
       if (inPluginsTable && pluginsHeaderIndex === -1) {
         pluginsHeaderIndex = index;
       }
       continue;
     }
-    if (inPluginsTable && /^\s*enabled\s*=/u.test(line)) {
+    if (inPluginsTable && /^\s*(?:enabled|"enabled")\s*=/u.test(line)) {
       enabledIndex = index;
       break;
     }

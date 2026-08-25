@@ -20,7 +20,11 @@ import {
   verifyPluginDependencyState,
   type PluginProcessRunner,
 } from "./resolution.js";
-import { installPluginOp, updatePluginOp } from "./cli/pluginOperations.js";
+import {
+  installPluginOp,
+  listInstalledPlugins,
+  updatePluginOp,
+} from "./cli/pluginOperations.js";
 import { loadPlugins, type LoadedPlugin } from "./loader.js";
 
 const execFileAsync = promisify(execFile);
@@ -184,6 +188,96 @@ describe("plugin source resolution", () => {
       expect(updated.source).toBe("@tetsuo-ai/remote-demo");
       expect(updated.resolutionKind).toBe("npm");
       expect(npmPacks).toBe(2);
+    });
+  });
+
+  test("marketplace installs and updates retain canonical identity and pinned git subdirectory", async () => {
+    await withTempDir(async (root) => {
+      const agencHome = join(root, "home");
+      const source = "https://github.com/tetsuo-ai/agenc-core.git";
+      const sha = "b".repeat(40);
+      const calls: Array<{
+        readonly args: readonly string[];
+        readonly cwd?: string;
+      }> = [];
+      const runProcess: PluginProcessRunner = async (command, args, options) => {
+        expect(command).toBe("git");
+        calls.push({ args: [...args], ...(options?.cwd ? { cwd: options.cwd } : {}) });
+        if (args[0] === "clone") {
+          const target = String(args.at(-1));
+          await writePlugin(join(target, "plugins", "iot-builder"), "iot-builder");
+        }
+        if (args[0] === "rev-parse") {
+          return { stdout: `${sha}\n`, stderr: "" };
+        }
+        return { stdout: "", stderr: "" };
+      };
+
+      const installed = await installPluginOp({
+        source,
+        pluginId: "iot-builder@agenc-first-party",
+        name: "iot-builder",
+        gitSubdir: "plugins/iot-builder",
+        gitRef: "stable",
+        gitSha: sha,
+        scope: "user",
+        agencHome,
+        workspaceRoot: root,
+        runResolutionProcess: runProcess,
+        requireSignature: false,
+      });
+      expect(installed.plugin).toMatchObject({
+        id: "iot-builder@agenc-first-party",
+        operationId: "plugin:user:iot-builder@agenc-first-party",
+        scope: "user",
+        name: "iot-builder",
+      });
+      const metadata = JSON.parse(await readFile(
+        join(installed.destination, ".agenc-plugin", "agenc-install.json"),
+        "utf8",
+      )) as Record<string, unknown>;
+      expect(metadata).toMatchObject({
+        id: "iot-builder@agenc-first-party",
+        operationId: "plugin:user:iot-builder@agenc-first-party",
+        scope: "user",
+        source,
+        gitSubdir: "plugins/iot-builder",
+        gitRef: "stable",
+        gitSha: sha,
+      });
+      expect(calls.some((call) =>
+        call.args[0] === "sparse-checkout" &&
+        call.args.includes("plugins/iot-builder") &&
+        call.cwd !== undefined)).toBe(true);
+      expect(calls.some((call) =>
+        call.args[0] === "checkout" && call.args.includes(sha))).toBe(true);
+
+      const listed = await listInstalledPlugins({ agencHome, workspaceRoot: root });
+      expect(listed.plugins).toEqual([
+        expect.objectContaining({
+          id: "iot-builder@agenc-first-party",
+          operationId: "plugin:user:iot-builder@agenc-first-party",
+          scope: "user",
+        }),
+      ]);
+
+      calls.length = 0;
+      const updated = await updatePluginOp({
+        pluginId: "iot-builder@agenc-first-party",
+        scope: "user",
+        agencHome,
+        workspaceRoot: root,
+        runResolutionProcess: runProcess,
+        requireSignature: false,
+      });
+      expect(updated.plugin.id).toBe("iot-builder@agenc-first-party");
+      expect(calls.some((call) =>
+        call.args[0] === "sparse-checkout" &&
+        call.args.includes("plugins/iot-builder"))).toBe(true);
+      expect(calls.some((call) =>
+        call.args[0] === "fetch" && call.args.includes("stable"))).toBe(true);
+      expect(calls.some((call) =>
+        call.args[0] === "fetch" && call.args.includes(sha))).toBe(true);
     });
   });
 

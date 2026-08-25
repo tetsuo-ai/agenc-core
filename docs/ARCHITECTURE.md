@@ -239,20 +239,17 @@ lock creation; Windows lock paths are NTFS-only and do not accept ReFS.
 
 Most conversation notifications are attachment-bound: a client attaches to a
 session and receives its transcript/tool stream. Authenticated initialize
-capabilities add two deliberate exceptions for mobile clients:
+capabilities add one deliberate exception for mobile clients:
 
 - `portal.mobile.status.push.v1` fans out global `event.agent_status` frames so
-  a background phone can observe completion without attaching every chat;
-- `portal.ledger.solana.sign.v1` selects one capable phone for a typed client
-  action and keeps a bounded replay while the daemon session is live.
+  a background phone can observe completion without attaching every chat.
 
 The client multiplexer deduplicates logical registrations by physical delivery
-key. Status is an observer feed; Ledger is a single-consumer action. Interactive
-responses (`tool.approve`, `tool.deny`, `elicitation.respond`) bypass the normal
+key. Interactive responses (`tool.approve`, `tool.deny`,
+`elicitation.respond`) bypass the normal
 per-connection FIFO because they may unblock its head request, but they remain
 subject to ordinary overload limits. Details:
-[`remote-control.md`](remote-control.md) and
-[`security/mobile-ledger-transfer.md`](security/mobile-ledger-transfer.md).
+[`remote-control.md`](remote-control.md).
 
 ## Tools, permissions & sandbox
 

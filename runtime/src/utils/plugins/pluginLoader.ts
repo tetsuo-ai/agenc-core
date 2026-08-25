@@ -3124,6 +3124,20 @@ export const loadAllPluginsCacheOnly = memoize(
 )
 
 /**
+ * Filesystem-only plugin snapshot for config inspection surfaces.
+ *
+ * Unlike loadAllPluginsCacheOnly, this intentionally ignores
+ * AGENC_SYNC_PLUGIN_INSTALL: an inspection command must never turn into a git
+ * clone/fetch merely because the parent runtime opted into synchronous plugin
+ * installation.
+ */
+export async function loadAllPluginsStrictCacheOnly(): Promise<PluginLoadResult> {
+  return assemblePluginLoadResult(() =>
+    loadPluginsFromMarketplaces({ cacheOnly: true }),
+  )
+}
+
+/**
  * Shared body of loadAllPlugins and loadAllPluginsCacheOnly.
  *
  * The only difference between the two is which marketplace loader runs —

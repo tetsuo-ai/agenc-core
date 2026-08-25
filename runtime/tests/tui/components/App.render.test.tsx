@@ -19,10 +19,6 @@ import type {
   McpUrlPending,
   PendingElicitation,
 } from "./App.js";
-import {
-  dismissLedgerVerification,
-  getLedgerVerificationSnapshot,
-} from "../../services/Ledger/ledgerVerification.js";
 
 if (process.versions.bun !== undefined) {
   test("App render suite requires Vitest module mocks", () => {
@@ -72,10 +68,6 @@ const apiKeyVerificationProbe = vi.hoisted(() => ({
   reverify: vi.fn(async () => {}),
   status: "valid" as "loading" | "valid" | "invalid" | "missing" | "error",
 }));
-const ledgerStatusProbe = vi.hoisted(() => ({
-  refresh: vi.fn(async () => {}),
-}));
-
 const providerProbe = {
   fpsGetters: [] as unknown[],
   costSummaryGetters: [] as unknown[],
@@ -252,13 +244,6 @@ vi.mock("../hooks/useApiKeyVerification.js", () => ({
 
 vi.mock("../../services/PromptSuggestion/promptSuggestion.js", () => ({
   shouldEnablePromptSuggestion: () => false,
-}));
-
-vi.mock("../../services/Ledger/ledgerStatus.js", async (importOriginal) => ({
-  ...(await importOriginal<
-    typeof import("../../services/Ledger/ledgerStatus.js")
-  >()),
-  refreshLedgerStatus: ledgerStatusProbe.refresh,
 }));
 
 vi.mock("../../tools/Tool.js", () => ({
@@ -795,8 +780,6 @@ function resetShellSurfaceProbe(): void {
   providerProbe.fileHistoryRewind.mockReset?.();
   providerProbe.processBashCommand.mockClear?.();
   providerProbe.historyEntries.length = 0;
-  ledgerStatusProbe.refresh.mockClear();
-  dismissLedgerVerification();
   mockTuiCommandList.length = 0;
   mockTotalCost = 0;
   mockHasConsoleBillingAccess = false;
@@ -1430,44 +1413,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     expect(prompt).not.toContain("<system>");
     expect(prompt).not.toContain("</system>");
     expect(prompt).not.toContain('<workspace_data authority="root">');
-  });
-
-  test("starts Ledger verification only from the Agent prompt surface", async () => {
-    const { AgenCTuiApp } = await import("./App.js");
-    const session = {
-      ...createSession(),
-      submit: vi.fn(async () => {}),
-    } satisfies AgenCBridgeSession;
-    resetShellSurfaceProbe();
-
-    try {
-      await withRenderedApp(
-        <AgenCTuiApp
-          session={session}
-          configStore={{}}
-          isInteractive={false}
-        />,
-        async () => {
-          const onSubmit = providerProbe.promptSubmits.at(-1);
-          expect(onSubmit).toBeDefined();
-
-          await onSubmit!("check whether my Ledger is authentic", {
-            clearBuffer: vi.fn(),
-            resetHistory: vi.fn(),
-            setCursorOffset: vi.fn(),
-          });
-
-          expect(ledgerStatusProbe.refresh).toHaveBeenCalledOnce();
-          expect(getLedgerVerificationSnapshot()).toMatchObject({
-            phase: "waiting",
-            source: "prompt",
-            transcriptStartIndex: 0,
-          });
-        },
-      );
-    } finally {
-      dismissLedgerVerification();
-    }
   });
 
   test("gates prompt input when another TUI surface owns input", async () => {
@@ -6286,8 +6231,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
               }),
             }),
           );
-          expect(ledgerStatusProbe.refresh).not.toHaveBeenCalled();
-          expect(getLedgerVerificationSnapshot().phase).toBe("idle");
           expect(providerProbe.historyEntries).toContainEqual(
             expect.objectContaining({
               display: "WORKBENCH-TRANSCRIPT-SCROLL",
@@ -6534,7 +6477,6 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           expect(JSON.stringify(providerProbe.historyEntries)).not.toContain(
             "<workspace_data",
           );
-          expect(ledgerStatusProbe.refresh).not.toHaveBeenCalled();
         },
       );
     } finally {

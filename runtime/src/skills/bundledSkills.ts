@@ -10,7 +10,6 @@ import type { HooksSettings } from '../utils/settings/types.js'
 // Pure data (type-only back-reference to this module — no runtime cycle).
 import { AGENC_MARKETPLACE_KIT_INSTALLER_SKILL } from './bundled/agencMarketplaceKitInstaller.js'
 import { BROWSER_AUTOMATION_SKILL } from './bundled/browserAutomation.js'
-import { IOT_BUILDER_SKILL } from './bundled/iotBuilder.js'
 
 /**
  * Definition for a bundled skill that ships with the CLI.
@@ -233,4 +232,3 @@ function prependBaseDir(
 // Register in-tree bundled skills once, at module load.
 registerBundledSkill(BROWSER_AUTOMATION_SKILL)
 registerBundledSkill(AGENC_MARKETPLACE_KIT_INSTALLER_SKILL)
-registerBundledSkill(IOT_BUILDER_SKILL)

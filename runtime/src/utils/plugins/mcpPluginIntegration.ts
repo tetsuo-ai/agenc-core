@@ -132,6 +132,7 @@ async function loadMcpServersFromMcpb(
 export async function loadPluginMcpServers(
   plugin: LoadedPlugin,
   errors: PluginError[] = [],
+  options: { configOnly?: boolean } = {},
 ): Promise<Record<string, McpServerConfig> | undefined> {
   let servers: Record<string, McpServerConfig> = {}
 
@@ -152,11 +153,12 @@ export async function loadPluginMcpServers(
     if (typeof mcpServersSpec === 'string') {
       // Check if it's an MCPB file
       if (isMcpbSource(mcpServersSpec)) {
-        const mcpbServers = await loadMcpServersFromMcpb(
-          plugin,
-          mcpServersSpec,
-          errors,
-        )
+        // A Desktop config snapshot is a strict no-network/no-process path.
+        // MCPB resolution may download or extract a bundle and may consult
+        // secure user configuration, so leave it to the live runtime loader.
+        const mcpbServers = options.configOnly
+          ? null
+          : await loadMcpServersFromMcpb(plugin, mcpServersSpec, errors)
         if (mcpbServers) {
           servers = { ...servers, ...mcpbServers }
         }
@@ -180,7 +182,9 @@ export async function loadPluginMcpServers(
             if (typeof spec === 'string') {
               // Check if it's an MCPB file
               if (isMcpbSource(spec)) {
-                return await loadMcpServersFromMcpb(plugin, spec, errors)
+                return options.configOnly
+                  ? null
+                  : await loadMcpServersFromMcpb(plugin, spec, errors)
               }
               // Path to JSON file
               return await loadMcpServersFromFile(plugin.path, spec)

@@ -55,6 +55,10 @@ const MCP_MANAGEMENT_COMMANDS = new Set([
   "approve-project",
   "reset-project-choices",
   "doctor",
+  "enable",
+  "disable",
+  "upsert",
+  "authenticate",
   "xaa",
 ]);
 
@@ -73,6 +77,10 @@ export function formatAgenCMcpCliHelpText(): string {
     "  approve-project          Approve the exact current project MCP definition",
     "  reset-project-choices    Reset project MCP approval choices",
     "  doctor                   Diagnose MCP configuration",
+    "  enable                   Enable a configured MCP server",
+    "  disable                  Disable a configured MCP server",
+    "  upsert                   Apply a structured MCP config PATCH from stdin",
+    "  authenticate             Start OAuth for an HTTP/SSE MCP server",
     "  xaa                      Manage XAA IdP authentication",
     "",
     "Options:",
@@ -82,6 +90,8 @@ export function formatAgenCMcpCliHelpText(): string {
     "  -e, --env <KEY=value>      Environment variable for stdio add",
     "  -H, --header <K: V>        Header for HTTP/SSE add",
     "  --client-secret           Prompt for remote MCP OAuth client secret",
+    "  list/get --config-only --json  Emit the Desktop-safe structured snapshot",
+    "  upsert --json             Read a versioned Desktop PATCH from stdin",
     "",
     "Examples:",
     "  agenc mcp serve --transport stdio",
@@ -208,24 +218,109 @@ async function runMcpManagementCommand(
   argv: readonly string[],
   io: AgenCMcpCliIo,
 ): Promise<number> {
+  const action = argv[0];
+  const structuredJsonRequested =
+    (action === "list" || action === "get" || action === "upsert") &&
+    argv.includes("--json");
   try {
-    const action = argv[0];
     const rest = argv.slice(1);
     switch (action) {
       case "add":
         await runMcpAddCommand(rest, io);
         return 0;
       case "list": {
-        assertNoPositionals(rest, "Usage: agenc mcp list");
+        const parsed = parseSimpleOptions(rest, {
+          boolean: new Set(["config-only", "json"]),
+        });
+        assertNoPositionals(
+          parsed.positionals,
+          "Usage: agenc mcp list [--config-only --json]",
+        );
+        if (parsed.flags.size > 0) {
+          if (
+            !parsed.flags.has("config-only") ||
+            !parsed.flags.has("json")
+          ) {
+            throw new Error(
+              "Usage: agenc mcp list --config-only --json",
+            );
+          }
+          const { mcpDesktopListHandler } = await import(
+            "../cli/handlers/mcp-desktop.js"
+          );
+          await mcpDesktopListHandler(io);
+          return 0;
+        }
         const { mcpListHandler } = await import("../cli/handlers/mcp.js");
         await mcpListHandler();
         return 0;
       }
       case "get": {
-        assertArity(rest, 1, "Usage: agenc mcp get <name>");
-        const [name] = rest;
+        const parsed = parseSimpleOptions(rest, {
+          boolean: new Set(["config-only", "json"]),
+        });
+        assertArity(
+          parsed.positionals,
+          1,
+          "Usage: agenc mcp get <name> [--config-only --json]",
+        );
+        const [name] = parsed.positionals;
+        if (parsed.flags.size > 0) {
+          if (
+            !parsed.flags.has("config-only") ||
+            !parsed.flags.has("json")
+          ) {
+            throw new Error(
+              "Usage: agenc mcp get <name> --config-only --json",
+            );
+          }
+          const { mcpDesktopGetHandler } = await import(
+            "../cli/handlers/mcp-desktop.js"
+          );
+          await mcpDesktopGetHandler(name!, io);
+          return 0;
+        }
         const { mcpGetHandler } = await import("../cli/handlers/mcp.js");
         await mcpGetHandler(name!);
+        return 0;
+      }
+      case "enable":
+      case "disable": {
+        assertArity(
+          rest,
+          1,
+          `Usage: agenc mcp ${action} <name>`,
+        );
+        const { mcpDesktopSetEnabledHandler } = await import(
+          "../cli/handlers/mcp-desktop.js"
+        );
+        await mcpDesktopSetEnabledHandler(
+          rest[0]!,
+          action === "enable",
+          io,
+        );
+        return 0;
+      }
+      case "upsert": {
+        const parsed = parseSimpleOptions(rest, {
+          boolean: new Set(["json"]),
+        });
+        assertNoPositionals(parsed.positionals, "Usage: agenc mcp upsert --json");
+        if (!parsed.flags.has("json")) {
+          throw new Error("Usage: agenc mcp upsert --json");
+        }
+        const { mcpDesktopUpsertHandler } = await import(
+          "../cli/handlers/mcp-desktop.js"
+        );
+        await mcpDesktopUpsertHandler(io);
+        return 0;
+      }
+      case "authenticate": {
+        assertArity(rest, 1, "Usage: agenc mcp authenticate <name>");
+        const { mcpDesktopAuthenticateHandler } = await import(
+          "../cli/handlers/mcp-desktop.js"
+        );
+        await mcpDesktopAuthenticateHandler(rest[0]!, io);
         return 0;
       }
       case "remove": {
@@ -297,6 +392,13 @@ async function runMcpManagementCommand(
     }
     return 0;
   } catch (error) {
+    if (structuredJsonRequested) {
+      const { writeMcpDesktopErrorEnvelope } = await import(
+        "../cli/handlers/mcp-desktop.js"
+      );
+      writeMcpDesktopErrorEnvelope(io, error);
+      return 1;
+    }
     io.stderr.write(
       `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
     );

@@ -406,8 +406,6 @@ describe("model-facing tools", () => {
         "NotebookRead",
         "NotebookEdit",
         "LSP",
-        "ledger_wallet_cli_status",
-        "install_ledger_wallet_cli",
         "TaskCreate",
         "TaskGet",
         "TaskUpdate",
@@ -452,8 +450,6 @@ describe("model-facing tools", () => {
         "web_fetch",
         "WebSearch",
         "Skill",
-        "ledger_wallet_cli_status",
-        "install_ledger_wallet_cli",
         "spawn_agent",
         "assign_task",
         "send_message",
@@ -464,6 +460,9 @@ describe("model-facing tools", () => {
       ]),
     );
     expect(visibleNames).not.toContain("WebFetch");
+    expect(allNames).not.toContain("ledger_wallet_cli_status");
+    expect(allNames).not.toContain("install_ledger_wallet_cli");
+    expect(allNames).not.toContain("request_ledger_transfer");
     expect(visibleNames).not.toContain("followup_task");
     expect(allNames).not.toContain("system.agent.delegate");
     expect(visibleNames).not.toContain("system.agent.delegate");

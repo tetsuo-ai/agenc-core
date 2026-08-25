@@ -57,6 +57,10 @@ export interface PluginResolverOptions {
   readonly requireSignature?: boolean;
   readonly publishersPath?: string;
   readonly runProcess?: PluginProcessRunner;
+  /** Optional Git subdirectory and pin supplied by a marketplace entry. */
+  readonly gitSubdir?: string;
+  readonly gitRef?: string;
+  readonly gitSha?: string;
   readonly fetchBytes?: (url: string) => Promise<Uint8Array>;
   readonly maxDownloadBytes?: number;
   readonly downloadTimeoutMs?: number;
@@ -160,7 +164,10 @@ export async function resolvePluginSource(
   const safeSource = redactPluginSource(source);
   let tempRoot: string | undefined;
   try {
-    const cacheRoot = pluginSourceCacheRoot(options.agencHome, source);
+    const cacheRoot = pluginSourceCacheRoot(
+      options.agencHome,
+      pluginResolutionCacheIdentity(source, kind, options),
+    );
     const materializeFresh = async (): Promise<ResolvedPluginSource> => {
       tempRoot = await mkdtemp(join(tmpdir(), "agenc-plugin-resolve-"));
       const resolvedRoot = await materializePluginSource(source, kind, tempRoot, options);
@@ -819,8 +826,114 @@ async function materializeGitSource(
 ): Promise<string> {
   assertSafeGitSource(source);
   const target = join(tempRoot, "git");
-  await runProcess(options, "git", ["clone", "--depth", "1", "--", source, target]);
-  return target;
+  const subdir = normalizePluginGitSubdir(options.gitSubdir);
+  const ref = normalizePluginGitRef(options.gitRef);
+  const sha = normalizePluginGitSha(options.gitSha);
+  if (subdir === undefined && ref === undefined && sha === undefined) {
+    await runProcess(options, "git", ["clone", "--depth", "1", "--", source, target]);
+    return target;
+  }
+
+  await runProcess(options, "git", [
+    "clone",
+    "--depth",
+    "1",
+    "--filter=blob:none",
+    "--no-checkout",
+    "--",
+    source,
+    target,
+  ]);
+  if (ref !== undefined) {
+    await runProcess(options, "git", ["fetch", "--depth", "1", "origin", ref], {
+      cwd: target,
+    });
+  }
+  if (sha !== undefined) {
+    await runProcess(options, "git", ["fetch", "--depth", "1", "origin", sha], {
+      cwd: target,
+    });
+  }
+  if (subdir !== undefined) {
+    await runProcess(
+      options,
+      "git",
+      ["sparse-checkout", "set", "--cone", "--", subdir],
+      { cwd: target },
+    );
+  }
+  await runProcess(options, "git", ["checkout", "--detach", sha ?? ref ?? "HEAD"], {
+    cwd: target,
+  });
+  if (sha !== undefined) {
+    const observed = (await runProcess(options, "git", ["rev-parse", "HEAD"], {
+      cwd: target,
+    })).stdout.trim().toLowerCase();
+    if (observed !== sha.toLowerCase()) {
+      throw new Error(`plugin Git source resolved ${observed || "no commit"}, expected ${sha}`);
+    }
+  }
+  return subdir === undefined ? target : join(target, ...subdir.split("/"));
+}
+
+function pluginResolutionCacheIdentity(
+  source: string,
+  kind: PluginResolutionKind,
+  options: PluginResolverOptions,
+): string {
+  if (
+    kind !== "git" ||
+    (options.gitSubdir === undefined &&
+      options.gitRef === undefined &&
+      options.gitSha === undefined)
+  ) {
+    return source;
+  }
+  return JSON.stringify({
+    source,
+    ...(options.gitSubdir !== undefined ? { path: options.gitSubdir } : {}),
+    ...(options.gitRef !== undefined ? { ref: options.gitRef } : {}),
+    ...(options.gitSha !== undefined ? { sha: options.gitSha } : {}),
+  });
+}
+
+function normalizePluginGitSubdir(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim().replace(/^\.\//u, "");
+  const parts = trimmed.split(/[\\/]+/u);
+  if (
+    trimmed.length === 0 ||
+    value.includes("\0") ||
+    isAbsolute(trimmed) ||
+    parts.some((part) => part.length === 0 || part === "." || part === "..")
+  ) {
+    throw new Error("plugin Git subdirectory must stay within the repository root");
+  }
+  return parts.join("/");
+}
+
+function normalizePluginGitRef(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (
+    trimmed.length === 0 ||
+    trimmed !== value ||
+    trimmed.startsWith("-") ||
+    trimmed.includes("\0") ||
+    /[\r\n]/u.test(trimmed)
+  ) {
+    throw new Error("plugin Git ref must be a safe non-empty ref");
+  }
+  return trimmed;
+}
+
+function normalizePluginGitSha(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  if (!/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/iu.test(trimmed)) {
+    throw new Error("plugin Git sha must be a full 40- or 64-character hexadecimal commit id");
+  }
+  return trimmed;
 }
 
 async function materializeTarballSource(
@@ -1160,10 +1273,14 @@ async function runProcess(
   options: PluginResolverOptions,
   command: string,
   args: readonly string[],
+  processOptions: {
+    readonly cwd?: string;
+  } = {},
 ): Promise<PluginProcessResult> {
   const runner = options.runProcess ?? defaultPluginProcessRunner;
   try {
     return await runner(command, args, {
+      ...processOptions,
       timeoutMs: DEFAULT_PROCESS_TIMEOUT_MS,
       maxOutputBytes: DEFAULT_PROCESS_MAX_OUTPUT_BYTES,
     });

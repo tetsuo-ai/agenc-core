@@ -5204,17 +5204,6 @@ export class Session {
     return this.activeTurn.unsafePeek()?.rootHumanTurn ?? null;
   }
 
-  /** Atomically consume the single Ledger-transfer authorization for a turn. */
-  async claimLedgerTransferAuthorization(turnId: string): Promise<boolean> {
-    const current = this.activeTurn.unsafePeek();
-    if (current === null || current.turnId !== turnId) return false;
-    return current.turnState.with((state) => {
-      if (state.ledgerTransferClaimed) return false;
-      state.ledgerTransferClaimed = true;
-      return true;
-    });
-  }
-
   async requestUserInput(
     callId: string,
     args: RequestUserInputArgs,
@@ -5229,9 +5218,6 @@ export class Session {
       callId,
       turnId,
       questions: args.questions,
-      ...(args.clientAction !== undefined
-        ? { clientAction: args.clientAction }
-        : {}),
     };
     const directResolver = this.services.requestUserInputResolver;
     if (directResolver !== undefined) {

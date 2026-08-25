@@ -141,8 +141,7 @@ function mergeAvailableSkills(
 }
 
 /**
- * Bundled skills registered in the runtime (browser-automation, iot-builder,
- * ...). They are invocable slash commands but not part of the local skill
+ * Bundled skills registered in the runtime. They are invocable slash commands but not part of the local skill
  * loader, so merge them into the listing with a `bundled` source tag.
  *
  * Dynamic literal import (esbuild-discoverable) with a catch: in tests the
@@ -160,21 +159,7 @@ async function bundledSkillsFromRegistry(): Promise<AvailableSkillSnapshot[]> {
     const getBundledSkills = loaded.getBundledSkills;
     if (typeof getBundledSkills !== "function") return [];
     const bundledCommands = (getBundledSkills as () => unknown)();
-    // Skills contributed by plugins shipped in the runtime package register
-    // through a separate registry; fold them in so /skills lists exactly what
-    // the Skill tool can load — the parity the model relies on.
-    const builtin = (await import(
-      "../plugins/builtin/index.js"
-    )) as unknown as Record<string, unknown>;
-    const getBuiltinSkills = builtin.getBuiltinPluginSkillCommands;
-    const builtinCommands =
-      typeof getBuiltinSkills === "function"
-        ? (getBuiltinSkills as () => unknown)()
-        : [];
-    const commands = [
-      ...(Array.isArray(bundledCommands) ? bundledCommands : []),
-      ...(Array.isArray(builtinCommands) ? builtinCommands : []),
-    ];
+    const commands = Array.isArray(bundledCommands) ? bundledCommands : [];
     return commands.flatMap((command): AvailableSkillSnapshot[] => {
       if (
         !isRecord(command) ||

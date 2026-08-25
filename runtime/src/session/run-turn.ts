@@ -75,14 +75,6 @@ import {
   classifyUntrustedToolResult,
   frameUntrustedToolResultContent,
 } from "../tools/untrusted-tool-result-framing.js";
-import {
-  hasExactLedgerMention,
-  LEDGER_ROOT_TURN_ROUTING_GUIDANCE,
-} from "../elicitation/request-ledger-transfer.js";
-import {
-  hasLedgerWalletCliMention,
-  LEDGER_WALLET_CLI_ROUTING_GUIDANCE,
-} from "../elicitation/ledger-wallet-cli.js";
 import type {
   CompactionResult,
   RuntimeMessage,
@@ -3843,14 +3835,6 @@ export async function* runTurnKernel(
         typeof userMessage === "string" ? userMessage : [...userMessage],
       ))
     : undefined;
-  const ledgerRootTurnGuidance =
-    rootHumanTurnText !== undefined && hasExactLedgerMention(rootHumanTurnText)
-      ? LEDGER_ROOT_TURN_ROUTING_GUIDANCE
-      : rootHumanTurnText !== undefined &&
-          hasLedgerWalletCliMention(rootHumanTurnText)
-        ? LEDGER_WALLET_CLI_ROUTING_GUIDANCE
-        : undefined;
-
   // agenc runtime: `if input.is_empty() && !sess.has_pending_input().await { return None }`
   // Empty/no-pending-input is a no-op turn, not a synthetic completed
   // turn. Callers that want to force work must enqueue pending input or
@@ -3905,9 +3889,6 @@ export async function* runTurnKernel(
         emitTurnAborted,
         referenceContextItem,
         sessionOwner,
-        ...(ledgerRootTurnGuidance !== undefined
-          ? { ledgerRootTurnGuidance }
-          : {}),
         signalCleanups,
       },
     );
@@ -3937,8 +3918,6 @@ interface RunTurnKernelCommons {
   readonly sessionOwner: Session & {
     consumePendingProviderSwitch?: () => Promise<void>;
   };
-  /** Trusted, non-durable system guidance scoped to an exact root @ledger turn. */
-  readonly ledgerRootTurnGuidance?: string;
   // Disposers for the merged abort signals built inside the kernel. The
   // outer `runTurnKernel` finally invokes these so listeners on long-lived
   // signals (the session-level abort) are removed on every turn exit.
@@ -3997,20 +3976,11 @@ async function* runTurnKernelInner(
     ...referenceContextItem,
     instructionEvidence: instructionEnvelope.evidence,
   };
-  const systemPromptWithTrustedTurnGuidance =
-    commons.ledgerRootTurnGuidance === undefined
-      ? instructionEnvelope.text
-      : [instructionEnvelope.text, commons.ledgerRootTurnGuidance]
-          .filter(
-            (value): value is string =>
-              typeof value === "string" && value.length > 0,
-          )
-          .join("\n\n");
   const effectiveSystemPrompt =
-    systemPromptWithTrustedTurnGuidance.length > 0
+    instructionEnvelope.text.length > 0
       ? resolveModelInstructionsForTurn(
           ctx,
-          systemPromptWithTrustedTurnGuidance,
+          instructionEnvelope.text,
         )
       : "";
   const { system, prior, user } = buildSeedMessages(

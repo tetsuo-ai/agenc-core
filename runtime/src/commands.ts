@@ -424,21 +424,17 @@ async function loadProductionCommandSources(
     import("./skills/loadSkillsDir.js") as unknown as Promise<Record<string, unknown>>;
   const loadBundledSkills = () =>
     import("./skills/bundledSkills.js") as unknown as Promise<Record<string, unknown>>;
-  const loadBuiltinPlugins = () =>
-    import("./plugins/builtin/index.js") as unknown as Promise<Record<string, unknown>>;
 
   const [
     skillDirCommands,
     dynamicSkills,
     bundledSkills,
-    builtinPluginSkills,
     pluginCommands,
     pluginSkills,
   ] = await Promise.all([
     callCommandSource(loadSkills, "getSkillDirCommands", cwd),
     callCommandSource(loadSkills, "getDynamicSkills"),
     callCommandSource(loadBundledSkills, "getBundledSkills"),
-    callCommandSource(loadBuiltinPlugins, "getBuiltinPluginSkillCommands"),
     loadPluginCommands({ cwd, config }),
     loadPluginSkills({ cwd, config }),
   ]);
@@ -452,7 +448,6 @@ async function loadProductionCommandSources(
 
   return [
     ...bundledSkills,
-    ...builtinPluginSkills,
     ...skillDirCommands,
     ...dynamicSkills,
     ...workflowCommands,

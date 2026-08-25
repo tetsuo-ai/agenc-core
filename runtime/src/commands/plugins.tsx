@@ -112,6 +112,15 @@ export function createPluginMenuActions(
         ...options,
         source,
         name: resolved.pluginName,
+        ...(resolved.source.type === "git" && resolved.source.path !== undefined
+          ? { gitSubdir: resolved.source.path }
+          : {}),
+        ...(resolved.source.type === "git" && resolved.source.ref !== undefined
+          ? { gitRef: resolved.source.ref }
+          : {}),
+        ...(resolved.source.type === "git" && resolved.source.sha !== undefined
+          ? { gitSha: resolved.source.sha }
+          : {}),
       });
       return installed.plugin;
     },

@@ -5444,9 +5444,6 @@ export function notificationFromDaemonEvent(
         callId: payload.callId,
         turnId: payload.turnId,
         questions: jsonObjectArray(payload.questions),
-        ...(isJsonObject(payload.clientAction)
-          ? { clientAction: payload.clientAction }
-          : {}),
       },
     };
   }
@@ -6301,9 +6298,6 @@ export function daemonEventFromUnboundSessionEvent(event: {
             : payload.callId,
         turnId: payload.turnId,
         questions: jsonObjectArray(payload.questions),
-        ...(isJsonObject(payload.clientAction)
-          ? { clientAction: payload.clientAction }
-          : {}),
       },
     };
   }

@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'vitest'
 
-import { addPluginScopeToServers } from '../../../src/utils/plugins/mcpPluginIntegration.js'
+import type { LoadedPlugin } from '../../../src/types/plugin.js'
+import {
+  addPluginScopeToServers,
+  loadPluginMcpServers,
+} from '../../../src/utils/plugins/mcpPluginIntegration.js'
 
 describe('addPluginScopeToServers', () => {
   test('normalizes active runtime plugin MCP scoped server names', () => {
@@ -22,5 +26,23 @@ describe('addPluginScopeToServers', () => {
       scope: 'dynamic',
       pluginSource: 'sample@official',
     })
+  })
+
+  test('config-only loading skips MCPB resolution entirely', async () => {
+    const plugin = {
+      name: 'remote-bundle',
+      manifest: {
+        name: 'remote-bundle',
+        mcpServers: 'https://example.test/server.mcpb',
+      },
+      path: '/definitely-not-an-installed-plugin',
+      source: 'remote-bundle@test',
+      repository: 'remote-bundle@test',
+      enabled: true,
+    } as LoadedPlugin
+
+    await expect(
+      loadPluginMcpServers(plugin, [], { configOnly: true }),
+    ).resolves.toBeUndefined()
   })
 })

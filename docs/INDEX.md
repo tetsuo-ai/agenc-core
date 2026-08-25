@@ -46,7 +46,6 @@ history; the linked pages below are current product truth.
 | [browser.md](browser.md) | Browser tool, Chromium profile, SSRF proxy, `[browser]` config |
 | [sdk.md](sdk.md) | Embed via `@tetsuo-ai/agenc-sdk` (socket + subprocess) |
 | [security/slm-transaction-guard.md](security/slm-transaction-guard.md) | Opt-in SLM CourtGuard for Solana-like tool calls |
-| [security/mobile-ledger-transfer.md](security/mobile-ledger-transfer.md) | Typed Android `@ledger` SOL handoff: trust boundary, schemas, idempotency, recovery |
 
 ## Reference
 
@@ -72,6 +71,7 @@ history; the linked pages below are current product truth.
 | Doc | Summary |
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Process model, subsystem map, turn phases, recovery ladder, on-disk state |
+| [design/optional-first-party-plugins.md](design/optional-first-party-plugins.md) | Optional first-party plugin distribution, clean-build boundary, and zero Core exceptions |
 | [design/critical-path/README.md](design/critical-path/README.md) | Accepted target decisions for critical-path remediation; implementation is pending |
 | [design/reproducible-installs-releases.md](design/reproducible-installs-releases.md) | M0 dependency, artifact, Docker, release, and crash-safe lock decisions |
 | [design/release-controller.md](design/release-controller.md) | Proposed one-command resumable release controller and automation safety contract |

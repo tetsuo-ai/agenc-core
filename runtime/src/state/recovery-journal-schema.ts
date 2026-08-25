@@ -351,21 +351,6 @@ const isRequestUserInputQuestion = objectShape(
   { options: arrayOf(isQuestionOption) },
 );
 
-const isClientAction = objectShape(
-  {
-    type: literal("ledger_solana_transfer_v1"),
-    source: literal("agenc-core"),
-    targetCapability: literal("portal.ledger.solana.sign.v1"),
-    network: literal("mainnet-beta"),
-    intentId: isString,
-    responseNonce: isString,
-    to: isString,
-    lamports: isString,
-    expiresAt: isString,
-  },
-  { note: isString },
-);
-
 const isMcpElicitationRequest: Validator<
   EventPayload<"mcp_elicitation_request">["request"]
 > = (value): value is EventPayload<"mcp_elicitation_request">["request"] => {
@@ -857,15 +842,12 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       reason: isString,
     },
   ),
-  request_user_input: objectShape(
-    {
-      requestId: isString,
-      callId: isString,
-      turnId: isString,
-      questions: arrayOf(isRequestUserInputQuestion),
-    },
-    { clientAction: isClientAction },
-  ),
+  request_user_input: objectShape({
+    requestId: isString,
+    callId: isString,
+    turnId: isString,
+    questions: arrayOf(isRequestUserInputQuestion),
+  }),
   mcp_elicitation_request: objectShape({
     turnId: isString,
     serverName: isString,

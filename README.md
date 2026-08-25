@@ -57,16 +57,14 @@ Documentation map: [`docs/INDEX.md`](docs/INDEX.md). Architecture:
   `recap` (personas, channels, budget/heartbeat/webhooks).
 - **Remote control** — pair iOS or Android with `agenc remote on|off|status`;
   co-drive chats, receive background completion/attention events, and settle
-  permissions from the phone. Android can route an explicit, physically
-  approved `@ledger` SOL transfer to a Ledger Flex. See
-  [`docs/remote-control.md`](docs/remote-control.md) and the
-  [Ledger security contract](docs/security/mobile-ledger-transfer.md).
-- **Ledger Wallet CLI** — Ledger hardware-wallet requests route through a
-  bundled skill and a read-only CLI status tool. If the official
-  `wallet-cli` is missing, AgenC asks before downloading anything; an approved
-  `/ledger install` (or agent install action) resolves
-  `@ledgerhq/wallet-cli@latest`, verifies the platform package's SHA-512
-  integrity, and installs it under `AGENC_HOME`.
+  permissions from the phone. See [`docs/remote-control.md`](docs/remote-control.md).
+- **Optional first-party plugins** — IoT Builder, Zero-day Hunter, and Wallet
+  CLI Harness live outside the runtime bundle and are available through a
+  remotely servable marketplace catalog. Nothing is installed or activated by
+  a clean build. All Ledger-specific commands, tools, skills, and workflows are
+  confined to the optional Wallet CLI Harness plugin; Core has no branded
+  Ledger routing exception. See the
+  [distribution contract](docs/design/optional-first-party-plugins.md).
 - **Built-in tools** — Bash, file read/write/edit, transactional `apply_patch`,
   web fetch/search, LSP, MCP, sub-agents; read-before-write and atomic-patch safety.
 - **Browser automation** — the `Browser` tool drives an isolated Chromium over a

@@ -248,8 +248,6 @@ export interface ActiveTurnState {
   // `on_task_finished` for turn-complete telemetry.
   /** Upstream `tool_calls` counter. WIRED-NOW (dispatchModelToolCall). */
   toolCalls: number;
-  /** One-shot claim preventing duplicate Ledger transfers in one human turn. */
-  ledgerTransferClaimed: boolean;
   // RESERVED: upstream agenc runtime session/mod.rs:3046
   // (record_memory_citation_for_turn write), tasks/mod.rs:485
   // (on_task_finished read). Gut has no memory subsystem yet.
@@ -284,7 +282,6 @@ export function createActiveTurnState(): ActiveTurnState {
     grantedPermissions: null,
     strictAutoReviewEnabled: false,
     toolCalls: 0,
-    ledgerTransferClaimed: false,
     hasMemoryCitation: false,
     tokenUsageAtTurnStart: {
       promptTokens: 0,

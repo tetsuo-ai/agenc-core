@@ -101,12 +101,62 @@ describe("plugin marketplace runtime", () => {
     const plugin = await findInstallableMarketplacePlugin(result.marketplace.manifestPath, "alpha");
     expect(plugin).toMatchObject({
       pluginId: "alpha@team",
+      version: "1.0.0",
+      description: "Test plugin",
+      components: ["commands"],
       policy: {
         installation: "AVAILABLE",
         authentication: "ON_USE",
       },
       interface: {
         category: "productivity",
+      },
+    });
+  });
+
+  it("normalizes remotely renderable plugin summaries without loading plugin code", async () => {
+    const { workspaceRoot } = await tempRuntime();
+    const marketplaceRoot = join(workspaceRoot, "remote-marketplace");
+    await mkdir(marketplaceRoot, { recursive: true });
+    await writeFile(
+      join(marketplaceRoot, "marketplace.json"),
+      JSON.stringify({
+        metadata: { name: "remote" },
+        plugins: [{
+          name: "alpha",
+          source: {
+            source: "git-subdir",
+            url: "https://github.com/agenc-org/plugins.git",
+            path: "plugins/alpha",
+          },
+          version: " 2.0.0 ",
+          description: "Remote summary",
+          components: ["skills", "mcp", "skills"],
+          interface: {
+            displayName: "Alpha",
+            shortDescription: "Visible before install.",
+            developerName: "AgenC",
+            capabilities: ["skills", "mcp"],
+            brandColor: "#123456",
+            screenshots: [],
+          },
+        }],
+      }, null, 2),
+    );
+
+    const marketplace = await loadMarketplace(join(marketplaceRoot, "marketplace.json"));
+    expect(marketplace.plugins[0]).toMatchObject({
+      name: "alpha",
+      version: "2.0.0",
+      description: "Remote summary",
+      components: ["skills", "mcp"],
+      interface: {
+        displayName: "Alpha",
+        shortDescription: "Visible before install.",
+        developerName: "AgenC",
+        capabilities: ["skills", "mcp"],
+        brandColor: "#123456",
+        screenshots: [],
       },
     });
   });
@@ -425,6 +475,42 @@ describe("plugin marketplace runtime", () => {
     );
     await expect(loadMarketplace(join(marketplaceRoot, "marketplace.json")))
       .rejects.toThrow("duplicate plugin names");
+
+    await writeFile(
+      join(marketplaceRoot, "marketplace.json"),
+      JSON.stringify({
+        metadata: { name: "bad" },
+        plugins: [{
+          name: "alpha",
+          source: {
+            source: "git-subdir",
+            url: "https://github.com/agenc-org/plugins.git",
+            path: "plugins/alpha",
+          },
+          interface: { capabilities: "skills" },
+        }],
+      }),
+    );
+    await expect(loadMarketplace(join(marketplaceRoot, "marketplace.json")))
+      .rejects.toThrow("has invalid interface");
+
+    await writeFile(
+      join(marketplaceRoot, "marketplace.json"),
+      JSON.stringify({
+        metadata: { name: "bad" },
+        plugins: [{
+          name: "alpha",
+          source: {
+            source: "git-subdir",
+            url: "https://github.com/agenc-org/plugins.git",
+            path: "plugins/alpha",
+          },
+          components: ["skills", "unsafe-component"],
+        }],
+      }),
+    );
+    await expect(loadMarketplace(join(marketplaceRoot, "marketplace.json")))
+      .rejects.toThrow("has invalid component 'unsafe-component'");
   });
 
   it("rejects invalid plugin source metadata during marketplace add before persistence", async () => {
