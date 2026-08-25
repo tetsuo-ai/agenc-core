@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   BUILT_IN_PROVIDER_DEFINITIONS,
   listBuiltInProviderInfo,
+  providerApiKeyEnvironmentLabel,
   resolveBuiltInProviderInfo,
 } from "./provider-info.js";
 
@@ -48,6 +49,9 @@ describe("built-in provider info", () => {
       expect(Object.isFrozen(provider.baseURLEnvVars)).toBe(true);
       expect(new Set(provider.apiKeyEnvVars).size).toBe(provider.apiKeyEnvVars.length);
       expect(new Set(provider.baseURLEnvVars).size).toBe(provider.baseURLEnvVars.length);
+      expect(provider.supportsApiKeylessAuth).toBe(
+        provider.id === "openai" || provider.id === "gemini",
+      );
       expect(provider.requiresManagedAuth).toBe(
         provider.onboarding.access === "managed",
       );
@@ -86,5 +90,15 @@ describe("built-in provider info", () => {
       baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
       apiKeyEnvVar: "AWS_BEDROCK_ACCESS_KEY_ID",
     });
+  });
+
+  it("formats API-key guidance from the ordered registry aliases", () => {
+    expect(providerApiKeyEnvironmentLabel("grok")).toBe(
+      "XAI_API_KEY or GROK_API_KEY",
+    );
+    expect(providerApiKeyEnvironmentLabel("github")).toBe(
+      "GITHUB_TOKEN or GH_TOKEN",
+    );
+    expect(providerApiKeyEnvironmentLabel("agenc")).toBeUndefined();
   });
 });

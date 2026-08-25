@@ -83,7 +83,7 @@ describe("ollamaShowUrlFromBaseUrl", () => {
   });
 });
 
-describe("upstream provider metadata identity", () => {
+describe("provider metadata identity", () => {
   test("accepts xAI metadata labels without reopening xai as a live selector", () => {
     const resolved = new ModelMetadataResolver({ env: {} }).resolveSync({
       provider: "xai",
@@ -196,6 +196,33 @@ describe("local providers resolve the real context window", () => {
     expect(resolved.contextWindow).toBe(8192);
     expect(calls.map((call) => call.url)).toEqual([
       "http://127.0.0.1:8000/v1/models",
+    ]);
+  });
+
+  test("LM Studio metadata never borrows the OpenAI endpoint", async () => {
+    const { impl, calls } = recordingFetch({
+      "http://localhost:1234/v1/models": {
+        json: {
+          object: "list",
+          data: [{ id: "studio-model", max_model_len: 16_384 }],
+        },
+      },
+    });
+    const resolved = await new ModelMetadataResolver({
+      fetchImpl: impl,
+      env: {
+        OPENAI_API_KEY: "unrelated-openai-key",
+        OPENAI_BASE_URL: "http://127.0.0.1:9999/v1",
+      },
+    }).resolve({
+      provider: "lmstudio",
+      model: "studio-model",
+      config: EMPTY_CONFIG,
+    });
+
+    expect(resolved.contextWindow).toBe(16_384);
+    expect(calls.map((call) => call.url)).toEqual([
+      "http://localhost:1234/v1/models",
     ]);
   });
 

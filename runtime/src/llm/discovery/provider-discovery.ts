@@ -1,13 +1,6 @@
 /**
- * Ports upstream `src/utils/providerDiscovery.ts` and
- * `src/utils/providerAutoDetect.ts` provider-readiness probes onto AgenC's
- * provider registry, BYOK config, and auth backend.
- *
- * Shape difference from upstream:
- *   - AgenC reports readiness for built-in runtime providers rather than
- *     writing profile environment files.
- *   - Hosted/managed-key readiness is checked through AuthBackend instead of
- *     local profile secrets.
+ * Reports built-in provider readiness from the canonical provider registry,
+ * session environment, BYOK state, local health probes, and auth backend.
  */
 
 import type { AuthBackend, AuthBackendKind, AuthSubscriptionTier } from "../../auth/backend.js";
@@ -17,9 +10,9 @@ import type { AgenCConfig } from "../../config/schema.js";
 import { readXaiOauthAccessToken } from "../../utils/xaiOauthCredentials.js";
 import type { HomeContext } from "../../config/home.js";
 import { captureSecureStorageIngress } from "../../utils/secureStorage/home.js";
+import { resolveProviderApiKeyEnvironment } from "../registry/provider-ingress.js";
 import {
-  BUILT_IN_PROVIDER_API_KEY_ENVS,
-  BUILT_IN_PROVIDER_BASE_URLS,
+  BUILT_IN_PROVIDER_DEFINITIONS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
 } from "../registry/provider-info.js";
 import {
@@ -36,31 +29,6 @@ export type ProviderKeyStatus =
   | "optional"
   | "not-required";
 export type ProviderLocalStatus = "up" | "down" | "unchecked" | "n/a";
-
-const PROVIDERS_REQUIRING_KEY = new Set<ProviderName>([
-  "grok",
-  "openai",
-  "anthropic",
-  "openrouter",
-  "groq",
-  "deepseek",
-  "gemini",
-  "mistral",
-  "nvidia-nim",
-  "minimax",
-  "github",
-  "amazon-bedrock",
-]);
-
-const MANAGED_KEY_PROVIDERS = new Set<ProviderName>([
-  "openrouter",
-]);
-
-const LOCAL_PROVIDERS = new Set<ProviderName>([
-  "ollama",
-  "lmstudio",
-  "openai-compatible",
-]);
 
 const HOSTED_AGENC_DELEGATE_PROVIDERS = new Set<ProviderName>([
   "grok",
@@ -223,7 +191,6 @@ async function resolveProviderAvailabilityEntry(params: {
     settings?.defaultModel ?? BUILT_IN_PROVIDER_DEFAULT_MODELS[params.provider];
   const credential = resolveProviderCredential({
     provider: params.provider,
-    config: params.config,
     home: params.home,
     env: params.env,
     settingsApiKey: settings?.apiKey,
@@ -239,8 +206,6 @@ async function resolveProviderAvailabilityEntry(params: {
     params.provider,
     resolveProviderBaseURLForDiscovery({
       provider: params.provider,
-      config: params.config,
-      env: params.env,
       settingsBaseURL: settings?.baseURL,
     }),
   );
@@ -295,7 +260,10 @@ async function resolveProviderAvailabilityEntry(params: {
     });
   }
 
-  if (PROVIDERS_REQUIRING_KEY.has(params.provider)) {
+  if (
+    BUILT_IN_PROVIDER_DEFINITIONS[params.provider].onboarding.access ===
+      "api-key"
+  ) {
     if (hasKey && !hasRequiredAwsSecret) {
       return buildEntry({
         provider: params.provider,
@@ -321,7 +289,8 @@ async function resolveProviderAvailabilityEntry(params: {
       });
     }
     if (
-      MANAGED_KEY_PROVIDERS.has(params.provider) &&
+      BUILT_IN_PROVIDER_DEFINITIONS[params.provider].onboarding
+        .supportsManagedKeyAccess &&
       params.subscription.authBackendKind === "remote" &&
       paidSubscription
     ) {
@@ -427,7 +396,6 @@ function localProviderKeyStatus(
 
 function resolveProviderCredential(params: {
   readonly provider: ProviderName;
-  readonly config: AgenCConfig;
   readonly home: HomeContext;
   readonly env: NodeJS.ProcessEnv;
   readonly settingsApiKey?: string;
@@ -436,123 +404,46 @@ function resolveProviderCredential(params: {
   readonly sourceEnvVar?: string;
   readonly primaryEnvVar?: string;
 } {
-  const candidates = providerApiKeyEnvCandidates(params.provider);
-  for (const candidate of candidates) {
-    const apiKey = firstNonEmptyString(params.env[candidate]);
-    if (apiKey !== undefined) {
-      return {
-        apiKey,
-        sourceEnvVar: candidate,
-        primaryEnvVar: candidates[0],
-      };
-    }
-  }
-  const settingsApiKey = firstNonEmptyString(params.settingsApiKey);
-  if (settingsApiKey === undefined && params.provider === "grok") {
+  const primaryEnvVar =
+    BUILT_IN_PROVIDER_DEFINITIONS[params.provider].apiKeyEnvVars[0];
+  if (params.provider === "grok") {
     // Sign in with X / xAI OAuth: a stored subscription bearer counts as a
-    // present credential so grok reports usable without XAI_API_KEY.
+    // present credential and outranks stale shell keys.
     const oauthBearer = readXaiOauthAccessToken(params.home);
     if (oauthBearer !== undefined) {
       return {
         apiKey: oauthBearer,
-        primaryEnvVar: candidates[0],
+        primaryEnvVar,
       };
     }
   }
+  const environmentMatch = resolveProviderApiKeyEnvironment(
+    params.provider,
+    params.env,
+  );
+  if (environmentMatch !== undefined) {
+    return {
+      apiKey: environmentMatch.value,
+      sourceEnvVar: environmentMatch.envVar,
+      primaryEnvVar,
+    };
+  }
+  const settingsApiKey = firstNonEmptyString(params.settingsApiKey);
   return {
     ...(settingsApiKey !== undefined ? { apiKey: settingsApiKey } : {}),
-    primaryEnvVar: candidates[0] ??
-      BUILT_IN_PROVIDER_API_KEY_ENVS[params.provider],
+    primaryEnvVar,
   };
-}
-
-function providerApiKeyEnvCandidates(provider: ProviderName): readonly string[] {
-  switch (provider) {
-    case "grok":
-      return ["XAI_API_KEY", "GROK_API_KEY"];
-    case "lmstudio":
-      return ["LMSTUDIO_API_KEY", "OPENAI_API_KEY"];
-    case "openai-compatible":
-      return ["OPENAI_COMPATIBLE_API_KEY", "OPENAI_API_KEY"];
-    case "openai":
-    case "anthropic":
-    case "openrouter":
-    case "groq":
-    case "deepseek":
-    case "gemini": {
-      const envVar = BUILT_IN_PROVIDER_API_KEY_ENVS[provider];
-      return envVar !== undefined ? [envVar] : [];
-    }
-    case "mistral":
-      return ["MISTRAL_API_KEY"];
-    case "nvidia-nim":
-      return ["NVIDIA_API_KEY"];
-    case "minimax":
-      return ["MINIMAX_API_KEY"];
-    case "github":
-      return ["GITHUB_TOKEN", "GH_TOKEN"];
-    case "amazon-bedrock":
-      return ["AWS_BEDROCK_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"];
-    case "agenc":
-    case "ollama":
-      return [];
-  }
 }
 
 function resolveProviderBaseURLForDiscovery(params: {
   readonly provider: ProviderName;
-  readonly config: AgenCConfig;
-  readonly env: NodeJS.ProcessEnv;
   readonly settingsBaseURL?: string;
 }): string | undefined {
-  const configuredBaseURL = readProviderBaseURL(params.config, params.provider);
-  switch (params.provider) {
-    case "ollama":
-      return normalizeOllamaHost(
-        firstNonEmptyString(params.env.OLLAMA_BASE_URL) ??
-          configuredBaseURL ??
-          BUILT_IN_PROVIDER_BASE_URLS.ollama,
-      );
-    case "lmstudio":
-      return firstNonEmptyString(params.env.LMSTUDIO_BASE_URL) ??
-        (!firstNonEmptyString(params.env.LMSTUDIO_API_KEY) &&
-            firstNonEmptyString(params.env.OPENAI_API_KEY)
-          ? firstNonEmptyString(params.env.OPENAI_BASE_URL)
-          : undefined) ??
-        configuredBaseURL ??
-        BUILT_IN_PROVIDER_BASE_URLS.lmstudio;
-    case "openai-compatible":
-      return firstNonEmptyString(params.env.OPENAI_COMPATIBLE_BASE_URL) ??
-        firstNonEmptyString(params.env.OPENAI_BASE_URL) ??
-        firstNonEmptyString(params.env.OPENAI_API_BASE) ??
-        configuredBaseURL ??
-        BUILT_IN_PROVIDER_BASE_URLS["openai-compatible"];
-    case "mistral":
-      return firstNonEmptyString(params.env.MISTRAL_BASE_URL) ??
-        configuredBaseURL ??
-        BUILT_IN_PROVIDER_BASE_URLS.mistral;
-    case "nvidia-nim":
-      return firstNonEmptyString(params.env.NVIDIA_BASE_URL) ??
-        configuredBaseURL ??
-        BUILT_IN_PROVIDER_BASE_URLS["nvidia-nim"];
-    case "minimax":
-      return firstNonEmptyString(params.env.MINIMAX_BASE_URL) ??
-        configuredBaseURL ??
-        BUILT_IN_PROVIDER_BASE_URLS.minimax;
-    case "github":
-      return firstNonEmptyString(params.env.GITHUB_BASE_URL) ??
-        configuredBaseURL ??
-        BUILT_IN_PROVIDER_BASE_URLS.github;
-    default:
-      return params.settingsBaseURL ?? BUILT_IN_PROVIDER_BASE_URLS[params.provider];
-  }
-}
-
-function readProviderBaseURL(
-  config: AgenCConfig,
-  provider: ProviderName,
-): string | undefined {
-  return firstNonEmptyString(config.providers?.[provider]?.base_url);
+  const baseURL = params.settingsBaseURL ??
+    BUILT_IN_PROVIDER_DEFINITIONS[params.provider].baseURL;
+  return params.provider === "ollama"
+    ? normalizeOllamaHost(baseURL)
+    : baseURL;
 }
 
 function localProbeApiKey(
@@ -575,7 +466,10 @@ function localProviderProbeUrl(
   provider: ProviderName,
   baseURL: string | undefined,
 ): string | undefined {
-  if (!LOCAL_PROVIDERS.has(provider) || baseURL === undefined) {
+  if (
+    BUILT_IN_PROVIDER_DEFINITIONS[provider].onboarding.access !== "local" ||
+    baseURL === undefined
+  ) {
     return undefined;
   }
   if (provider === "ollama") {

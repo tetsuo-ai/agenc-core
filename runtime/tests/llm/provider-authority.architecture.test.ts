@@ -52,6 +52,26 @@ describe("provider authority architecture", () => {
     expect(providerKeyResolver).not.toMatch(/switch\s*\(/u);
     expect(providerBaseResolver).toMatch(/resolveProviderBaseURLEnvironment/u);
     expect(providerBaseResolver).not.toMatch(/switch\s*\(/u);
+
+    const discovery = readFileSync(
+      `${SRC}/llm/discovery/provider-discovery.ts`,
+      "utf8",
+    );
+    expect(discovery).not.toMatch(/providerApiKeyEnvCandidates/u);
+    expect(discovery).not.toMatch(
+      /const\s+(?:PROVIDERS_REQUIRING_KEY|MANAGED_KEY_PROVIDERS|LOCAL_PROVIDERS)\b/u,
+    );
+    const bootstrap = readFileSync(`${SRC}/bin/bootstrap.ts`, "utf8");
+    expect(bootstrap).not.toMatch(/PROVIDER_API_KEY_ENV_HINTS/u);
+    expect(bootstrap).not.toMatch(/providerApiKeyEnvHint/u);
+
+    const modelMetadata = readFileSync(
+      `${SRC}/llm/model-metadata.ts`,
+      "utf8",
+    );
+    expect(modelMetadata).not.toMatch(/defaultProviderApiKeyEnv/u);
+    expect(modelMetadata).toMatch(/resolveProviderApiKeyEnvironment/u);
+    expect(modelMetadata).toMatch(/resolveProviderBaseURLEnvironment/u);
   });
 
   test("provider selector identity has one normalizer and one retired mapping", () => {
@@ -88,7 +108,7 @@ describe("provider authority architecture", () => {
     ]) {
       const source = readFileSync(`${SRC}/${path}`, "utf8");
       expect(source).toMatch(
-        /normalizeProviderIdentity|resolveBuiltInProviderSlug|resolveProviderSlug/u,
+        /normalizeProviderIdentity|resolveBuiltInProviderInfo|resolveBuiltInProviderSlug|resolveProviderSlug/u,
       );
     }
   });

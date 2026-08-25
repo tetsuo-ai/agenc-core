@@ -82,17 +82,23 @@ export interface BuiltInProviderDefinition {
   readonly baseURL: string;
   readonly apiKeyEnvVars: readonly string[];
   readonly baseURLEnvVars: readonly string[];
+  /** Factory can authenticate without receiving an API-key-shaped value. */
+  readonly supportsApiKeylessAuth: boolean;
   readonly onboarding: BuiltInProviderOnboardingInfo;
 }
 
-function providerDefinition<const T extends BuiltInProviderDefinition>(
+function providerDefinition<const T extends Omit<
+  BuiltInProviderDefinition,
+  "supportsApiKeylessAuth"
+> & { readonly supportsApiKeylessAuth?: boolean }>(
   definition: T,
-): T {
+): T & { readonly supportsApiKeylessAuth: boolean } {
   return Object.freeze({
     ...definition,
     apiKeyEnvVars: Object.freeze([...definition.apiKeyEnvVars]),
     baseURLEnvVars: Object.freeze([...definition.baseURLEnvVars]),
-  }) as T;
+    supportsApiKeylessAuth: definition.supportsApiKeylessAuth ?? false,
+  }) as T & { readonly supportsApiKeylessAuth: boolean };
 }
 
 /** The only authored provider metadata table. All exported maps are views. */
@@ -111,6 +117,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     baseURL: "https://api.openai.com/v1",
     apiKeyEnvVars: ["OPENAI_API_KEY"],
     baseURLEnvVars: ["OPENAI_BASE_URL", "OPENAI_API_BASE"],
+    supportsApiKeylessAuth: true,
     onboarding: onboardingInfo(20, "api-key"),
   }),
   anthropic: providerDefinition({
@@ -179,6 +186,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     baseURL: "https://generativelanguage.googleapis.com/v1beta",
     apiKeyEnvVars: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
     baseURLEnvVars: ["GEMINI_BASE_URL"],
+    supportsApiKeylessAuth: true,
     onboarding: onboardingInfo(100, "api-key"),
   }),
   mistral: providerDefinition({
@@ -340,6 +348,7 @@ export interface BuiltInProviderInfo {
   readonly defaultModel: string;
   readonly apiKeyEnvVars: readonly string[];
   readonly baseURLEnvVars: readonly string[];
+  readonly supportsApiKeylessAuth: boolean;
   /** First ordered key alias, retained as a derived compatibility view. */
   readonly apiKeyEnvVar?: string;
   readonly requestMaxRetries: number;
@@ -373,6 +382,7 @@ export function resolveBuiltInProviderInfo(
     defaultModel: definition.defaultModel,
     apiKeyEnvVars: definition.apiKeyEnvVars,
     baseURLEnvVars: definition.baseURLEnvVars,
+    supportsApiKeylessAuth: definition.supportsApiKeylessAuth,
     ...(primaryApiKeyEnvVar !== undefined
       ? { apiKeyEnvVar: primaryApiKeyEnvVar }
       : {}),
@@ -390,6 +400,13 @@ export function listBuiltInProviderInfo(): readonly BuiltInProviderInfo[] {
   return Object.freeze(
     builtInProviderIds().map((id) => resolveBuiltInProviderInfo(id)!),
   );
+}
+
+export function providerApiKeyEnvironmentLabel(
+  provider: string,
+): string | undefined {
+  const names = resolveBuiltInProviderInfo(provider)?.apiKeyEnvVars ?? [];
+  return names.length === 0 ? undefined : names.join(" or ");
 }
 
 export function resolveBuiltInProviderSlug(

@@ -14,7 +14,10 @@ import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed
 import type { LLMProvider } from "../llm/types.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
 import { createManagedFeatures } from "../llm/registry/features.js";
-import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
+import {
+  providerApiKeyEnvironmentLabel,
+  resolveBuiltInProviderInfo,
+} from "../llm/registry/provider-info.js";
 import {
   markCapabilityDrift,
   markCapabilityVerified,
@@ -283,7 +286,8 @@ function enforceRemoteSubscriptionGate(params: {
   if (
     params.managedKeysEnabled &&
     params.byokApiKey === undefined &&
-    providerApiKeyEnvHint(params.provider) !== undefined
+    resolveBuiltInProviderInfo(params.provider)?.onboarding
+      .supportsManagedKeyAccess === true
   ) {
     throw new Error(
       "Managed provider keys require an active AgenC subscription; configure BYOK provider credentials instead",
@@ -390,27 +394,20 @@ interface ManagedProviderKeyResult {
   readonly baseURL?: string;
 }
 
-const PROVIDER_API_KEY_ENV_HINTS: Readonly<
-  Partial<Record<ProviderName, string>>
-> = Object.freeze({
-  grok: "XAI_API_KEY",
-  openai: "OPENAI_API_KEY",
-  anthropic: "ANTHROPIC_API_KEY",
-  openrouter: "OPENROUTER_API_KEY",
-  groq: "GROQ_API_KEY",
-  deepseek: "DEEPSEEK_API_KEY",
-  gemini: "GEMINI_API_KEY",
-});
-
 function requireProviderApiKeyOrUndefined(params: {
   readonly provider: ProviderName;
   readonly apiKey: string | undefined;
   readonly managedKey: ManagedProviderKeyResult;
 }): string | undefined {
   if (params.apiKey !== undefined) return params.apiKey;
-  const envHint = providerApiKeyEnvHint(
-    params.provider,
-  );
+  const providerInfo = resolveBuiltInProviderInfo(params.provider);
+  if (
+    providerInfo?.onboarding.access !== "api-key" ||
+    providerInfo.supportsApiKeylessAuth
+  ) {
+    return undefined;
+  }
+  const envHint = providerApiKeyEnvironmentLabel(params.provider);
   if (envHint === undefined) return undefined;
   const managedKeyHint = !providerHasLiveManagedSubscriptionRoute(
     params.provider,
@@ -424,12 +421,6 @@ function requireProviderApiKeyOrUndefined(params: {
   throw new Error(
     `${params.provider} provider requires an API key. ${managedKeyHint} Set ${envHint}.`,
   );
-}
-
-function providerApiKeyEnvHint(
-  provider: ProviderName,
-): string | undefined {
-  return PROVIDER_API_KEY_ENV_HINTS[provider];
 }
 
 function parseWorkerEpoch(env: NodeJS.ProcessEnv): number | null {

@@ -152,7 +152,10 @@ stores credential values.
   credential version they exchanged so a newer login always wins.
 - **Discovery** — `agenc providers` reports readiness (key present, local
   server health for Ollama/LM Studio/openai-compatible, subscription tier)
-  without changing the selected provider.
+  without changing the selected provider. It uses the same ordered registry
+  aliases as provider construction and reports the alias that actually won.
+  A stored Grok OAuth bearer outranks stale shell keys; LM Studio never borrows
+  an OpenAI key or endpoint for discovery or model-metadata probes.
 
 See `runtime/src/auth/` and `runtime/src/llm/discovery/provider-discovery.ts`.
 `byok-keys.json`, bearer fields in `auth.json`, and `.agenc/remote` credential

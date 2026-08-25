@@ -70,9 +70,8 @@ describe("BYOK fallback", () => {
           },
         }),
       ).rejects.toThrow(
-        // Since e4a54ec1 ("route managed bootstrap through OpenRouter") grok
-        // has no live managed route, so the actionable error explains the
-        // OpenRouter-only managed surface plus both BYOK escape hatches.
+        // Grok has no managed-key route, so the error names the managed
+        // OpenRouter boundary and both canonical Grok key aliases.
         /grok provider requires an API key.*Subscription-managed access is currently live for OpenRouter only.*XAI_API_KEY/,
       );
       expect(calls).toEqual(["getSubscriptionTier:conv-no-key"]);

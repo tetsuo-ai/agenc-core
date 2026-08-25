@@ -18,8 +18,8 @@ describe("remote subscription gating", () => {
   it("rejects remote free-tier managed key startup before key vending", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-tier-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-tier-ws-"));
-    const keyVendor = vi.fn(() => ({
-      provider: "grok",
+    const keyVendor = vi.fn((provider: string) => ({
+      provider,
       sessionId: "conv-free-managed",
       apiKey: "managed-key",
     }));
@@ -37,10 +37,10 @@ describe("remote subscription gating", () => {
           env: {
             AGENC_HOME: agencHome,
             AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
+            AGENC_PROVIDER: "openrouter",
             AGENC_WORKSPACE: workspace,
-            GROK_API_KEY: "",
             HOME: agencHome,
-            XAI_API_KEY: "",
+            OPENROUTER_API_KEY: "",
           },
         }),
       ).rejects.toThrow(/Managed provider keys require an active AgenC subscription/);
@@ -54,8 +54,8 @@ describe("remote subscription gating", () => {
   it("rejects remote free-tier managed key startup through the daemon wrapper", async () => {
     const agencHome = await mkdtemp(join(tmpdir(), "agenc-tier-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-tier-ws-"));
-    const keyVendor = vi.fn(() => ({
-      provider: "grok",
+    const keyVendor = vi.fn((provider: string) => ({
+      provider,
       sessionId: "conv-free-daemon-managed",
       apiKey: "managed-key",
     }));
@@ -74,10 +74,10 @@ describe("remote subscription gating", () => {
           env: {
             AGENC_HOME: agencHome,
             AGENC_AUTH_MANAGED_KEYS_ENABLED: "true",
+            AGENC_PROVIDER: "openrouter",
             AGENC_WORKSPACE: workspace,
-            GROK_API_KEY: "",
             HOME: agencHome,
-            XAI_API_KEY: "",
+            OPENROUTER_API_KEY: "",
           },
         }),
       ).rejects.toThrow(/Managed provider keys require an active AgenC subscription/);

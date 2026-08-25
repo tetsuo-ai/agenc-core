@@ -118,9 +118,8 @@ describe("provider discovery", () => {
     });
     const entries = byProvider(report.entries);
 
-    // Managed subscription vending is OpenRouter-only (b461d139 "use
-    // OpenRouter for managed Pro models"); previously-managed providers such
-    // as openai now surface as plain BYOK-missing rows.
+    // Managed subscription vending is OpenRouter-only. Other remote providers
+    // remain explicit BYOK routes.
     expect(entries.get("openrouter")).toMatchObject({
       usable: true,
       keyStatus: "managed",
@@ -173,10 +172,11 @@ describe("provider discovery", () => {
       env: {
         GROK_API_KEY: "grok-key",
         OPENAI_API_KEY: "shared-local-key",
+        GOOGLE_API_KEY: "google-key",
         MISTRAL_API_KEY: "mistral-key",
         NVIDIA_API_KEY: "nvidia-key",
         MINIMAX_API_KEY: "minimax-key",
-        GITHUB_TOKEN: "github-key",
+        GH_TOKEN: "github-key",
       },
     });
     const entries = byProvider(report.entries);
@@ -187,9 +187,9 @@ describe("provider discovery", () => {
       keyEnvVar: "GROK_API_KEY",
     });
     expect(entries.get("lmstudio")).toMatchObject({
-      keyStatus: "present",
-      keyEnvVar: "OPENAI_API_KEY",
+      keyStatus: "optional",
     });
+    expect(entries.get("lmstudio")).not.toHaveProperty("keyEnvVar");
     expect(entries.get("openai-compatible")).toMatchObject({
       keyStatus: "present",
       keyEnvVar: "OPENAI_API_KEY",
@@ -206,9 +206,13 @@ describe("provider discovery", () => {
       keyStatus: "present",
       keyEnvVar: "MINIMAX_API_KEY",
     });
+    expect(entries.get("gemini")).toMatchObject({
+      keyStatus: "present",
+      keyEnvVar: "GOOGLE_API_KEY",
+    });
     expect(entries.get("github")).toMatchObject({
       keyStatus: "present",
-      keyEnvVar: "GITHUB_TOKEN",
+      keyEnvVar: "GH_TOKEN",
     });
   });
 

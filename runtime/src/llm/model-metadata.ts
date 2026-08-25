@@ -1,14 +1,14 @@
 import {
-  resolveProviderSlug,
   readProviderConfig,
   type AgenCConfig,
 } from "./_deps/config.js";
 import { resolveModelCatalogMetadata } from "./registry/model-catalog.js";
 import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
 import {
-  BUILT_IN_PROVIDER_API_KEY_ENVS,
-  BUILT_IN_PROVIDER_BASE_URLS,
-} from "./registry/provider-info.js";
+  resolveProviderApiKeyEnvironment,
+  resolveProviderBaseURLEnvironment,
+} from "./registry/provider-ingress.js";
+import { resolveBuiltInProviderInfo } from "./registry/provider-info.js";
 import {
   boundedOutputTokens,
   CAPPED_DEFAULT_MAX_OUTPUT_TOKENS,
@@ -816,57 +816,18 @@ function envBaseUrl(
   provider: string,
   env: Readonly<Record<string, string | undefined>>,
 ): string | undefined {
-  switch (provider) {
-    case "openai":
-      return nonEmpty(env.OPENAI_BASE_URL);
-    case "lmstudio":
-      return nonEmpty(env.LMSTUDIO_BASE_URL) ?? nonEmpty(env.OPENAI_BASE_URL);
-    // The provider factory already resolves OLLAMA_BASE_URL; without this the
-    // metadata lookup silently probed localhost while the session talked to a
-    // different host.
-    case "ollama":
-      return nonEmpty(env.OLLAMA_BASE_URL);
-    case "openai-compatible":
-      return (
-        nonEmpty(env.OPENAI_COMPATIBLE_BASE_URL) ??
-        nonEmpty(env.OPENAI_BASE_URL)
-      );
-    case "openrouter":
-      return nonEmpty(env.OPENROUTER_BASE_URL);
-    case "groq":
-      return nonEmpty(env.GROQ_BASE_URL);
-    case "deepseek":
-      return nonEmpty(env.DEEPSEEK_BASE_URL);
-    default:
-      return undefined;
-  }
+  return resolveProviderBaseURLEnvironment(provider, env)?.value;
 }
 
 function envApiKey(
   provider: string,
   env: Readonly<Record<string, string | undefined>>,
 ): string | undefined {
-  const primaryEnv = defaultProviderApiKeyEnv(provider);
-  const primary = primaryEnv ? nonEmpty(env[primaryEnv]) : undefined;
-  if (primary) return primary;
-  return provider === "lmstudio" || provider === "openai-compatible"
-    ? nonEmpty(env.OPENAI_API_KEY)
-    : undefined;
+  return resolveProviderApiKeyEnvironment(provider, env)?.value;
 }
 
 function defaultProviderBaseUrl(provider: string): string | undefined {
-  const slug = resolveProviderSlug(provider);
-  return slug === undefined ? undefined : BUILT_IN_PROVIDER_BASE_URLS[slug];
-}
-
-function defaultProviderApiKeyEnv(provider: string): string | undefined {
-  const slug = resolveProviderSlug(provider);
-  return slug === undefined ? undefined : BUILT_IN_PROVIDER_API_KEY_ENVS[slug];
-}
-
-function nonEmpty(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed ? trimmed : undefined;
+  return resolveBuiltInProviderInfo(provider)?.baseURL;
 }
 
 function readPositiveInteger(
