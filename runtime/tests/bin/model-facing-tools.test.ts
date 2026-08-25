@@ -66,12 +66,18 @@ const UNUSED_CSV_AGENT_JOBS_REPOSITORIES: CsvAgentJobsRepositoryProvider = {
   },
 };
 
-const { delegateMock } = vi.hoisted(() => ({
+const { delegateMock, persistBinaryContentMock } = vi.hoisted(() => ({
   delegateMock: vi.fn(),
+  persistBinaryContentMock: vi.fn(),
 }));
 
 vi.mock("../agents/delegate.js", () => ({
   delegate: delegateMock,
+}));
+
+vi.mock("../utils/mcpOutputStorage.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../utils/mcpOutputStorage.js")>()),
+  persistBinaryContent: persistBinaryContentMock,
 }));
 
 function fakeMcpManager() {
@@ -94,8 +100,14 @@ function fakeMcpManager() {
       },
     ],
     readResource: async (name: string) => ({
-      uri: name,
-      text: "resource body",
+      contents: [
+        {
+          uri: name,
+          text: "resource body",
+          truncated: false,
+          bytesReturned: 13,
+        },
+      ],
       truncated: false,
       bytesReturned: 13,
     }),
@@ -365,6 +377,12 @@ describe("model-facing tools", () => {
   beforeEach(() => {
     installDeterministicPublicWebFetchDns();
     delegateMock.mockReset();
+    persistBinaryContentMock.mockReset();
+    persistBinaryContentMock.mockResolvedValue({
+      filepath: "/tmp/agenc-mcp-resource.bin",
+      size: 6,
+      ext: "bin",
+    });
     resetAllLSPDiagnosticState();
     _resetLspManagerForTesting();
   });
@@ -400,8 +418,6 @@ describe("model-facing tools", () => {
         "Skill",
         "ListMcpResourcesTool",
         "ReadMcpResourceTool",
-        "ListMcpResources",
-        "ReadMcpResource",
         "NotebookRead",
         "NotebookEdit",
         "LSP",
@@ -422,6 +438,8 @@ describe("model-facing tools", () => {
         "StructuredOutput",
       ]),
     );
+    expect(allNames).not.toContain("ListMcpResources");
+    expect(allNames).not.toContain("ReadMcpResource");
     expect(allNames.some((name) => name.startsWith("system.http"))).toBe(false);
     expect(allNames).not.toContain("Agent");
     expect(allNames).not.toContain("SendMessage");
@@ -2740,15 +2758,64 @@ describe("model-facing tools", () => {
       server: "demo",
       uri: "resource://one",
     });
-    expect(JSON.parse(read.content).resource.text).toBe("resource body");
+    expect(JSON.parse(read.content).resource.contents[0].text).toBe(
+      "resource body",
+    );
+  });
+
+  it("persists MCP resource blobs without exposing base64 to the model", async () => {
+    const session = fakeSession();
+    session.services.mcpManager.readResource = vi.fn(async () => ({
+      contents: [
+        {
+          uri: "resource://binary",
+          mimeType: "application/octet-stream",
+          blob: Buffer.from("binary").toString("base64"),
+          truncated: false,
+          bytesReturned: 6,
+        },
+      ],
+      truncated: false,
+      bytesReturned: 6,
+    }));
+    const tool = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: () => session,
+    }).find((candidate) => candidate.name === "ReadMcpResourceTool")!;
+
+    const result = await tool.execute({
+      server: "demo",
+      uri: "resource://binary",
+    });
+    const parsed = JSON.parse(result.content);
+
+    expect(persistBinaryContentMock).toHaveBeenCalledWith(
+      Buffer.from("binary"),
+      "application/octet-stream",
+      expect.stringMatching(/^mcp-resource-[0-9a-f-]+-0$/u),
+    );
+    expect(parsed.resource.contents[0]).toMatchObject({
+      uri: "resource://binary",
+      blobSavedTo: "/tmp/agenc-mcp-resource.bin",
+      bytesReturned: 6,
+    });
+    expect(result.content).not.toContain(
+      Buffer.from("binary").toString("base64"),
+    );
   });
 
   it("forwards the admitted tool signal to MCP resource list and read RPCs", async () => {
     const getResources = vi.fn(async () => []);
     const getResourcesByServer = vi.fn(async () => []);
     const readResource = vi.fn(async () => ({
-      uri: "resource://one",
-      text: "resource body",
+      contents: [
+        {
+          uri: "resource://one",
+          text: "resource body",
+          truncated: false,
+          bytesReturned: 13,
+        },
+      ],
       truncated: false,
       bytesReturned: 13,
     }));

@@ -72,13 +72,29 @@ function classifierSession(
 
 describe("isAutoModeAllowlistedTool", () => {
   it("returns true for known safe tools", () => {
-    for (const name of ["FileRead", "Grep", "Glob", "TodoWrite", "Sleep"]) {
+    for (const name of [
+      "FileRead",
+      "Grep",
+      "Glob",
+      "TodoWrite",
+      "Sleep",
+      "ListMcpResourcesTool",
+      "ReadMcpResourceTool",
+    ]) {
       expect(isAutoModeAllowlistedTool(name)).toBe(true);
     }
   });
 
   it("returns false for tools not in the allowlist", () => {
-    for (const name of ["system.bash", "Edit", "Write", "Agent", "resume_agent"]) {
+    for (const name of [
+      "system.bash",
+      "Edit",
+      "Write",
+      "Agent",
+      "resume_agent",
+      "ListMcpResources",
+      "ReadMcpResource",
+    ]) {
       expect(isAutoModeAllowlistedTool(name)).toBe(false);
     }
   });

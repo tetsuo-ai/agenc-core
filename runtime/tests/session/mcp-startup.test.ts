@@ -157,7 +157,7 @@ beforeEach(() => {
         serverName,
         listResources: vi.fn().mockResolvedValue([]),
         readResource: vi.fn().mockResolvedValue({
-          uri: "",
+          contents: [],
           truncated: false,
           bytesReturned: 0,
         }),
@@ -1216,6 +1216,156 @@ describe("mcp-startup session-owned manager helpers", () => {
     expect(service.getToolsByServer?.("github")).toEqual([
       { name: "mcp.github.search" },
     ]);
+  });
+
+  it("forwards resources and prompts through the real manager's existing bridges", async () => {
+    const resourceSignal = new AbortController().signal;
+    const promptSignal = new AbortController().signal;
+    const resources = [
+      {
+        serverName: "alpha",
+        uri: "resource://guide",
+        namespacedName: "mcp.alpha.resource://guide",
+        name: "Guide",
+      },
+    ];
+    const resourceContent = {
+      contents: [
+        {
+          uri: "resource://guide",
+          text: "canonical resource",
+          truncated: false,
+          bytesReturned: 18,
+        },
+      ],
+      truncated: false,
+      bytesReturned: 18,
+    };
+    const prompts = [
+      {
+        serverName: "alpha",
+        name: "summarize",
+        namespacedName: "mcp.alpha.summarize",
+      },
+    ];
+    const renderedPrompt = {
+      promptName: "summarize",
+      messages: [{ role: "user" as const, text: "Summarize AgenC" }],
+    };
+    const listResources = vi.fn(
+      async (signal?: AbortSignal) => {
+        signal?.throwIfAborted();
+        return resources;
+      },
+    );
+    const readResource = vi.fn(
+      async (_uri: string, signal?: AbortSignal) => {
+        signal?.throwIfAborted();
+        return resourceContent;
+      },
+    );
+    const listPrompts = vi.fn(async () => prompts);
+    const renderPrompt = vi.fn(
+      async (
+        _name: string,
+        _args?: Record<string, unknown>,
+        signal?: AbortSignal,
+      ) => {
+        signal?.throwIfAborted();
+        return renderedPrompt;
+      },
+    );
+    mockCreateResourceBridge.mockResolvedValueOnce({
+      serverName: "alpha",
+      listResources,
+      readResource,
+      dispose: vi.fn().mockResolvedValue(undefined),
+    });
+    mockCreatePromptBridge.mockResolvedValueOnce({
+      serverName: "alpha",
+      listPrompts,
+      renderPrompt,
+      dispose: vi.fn().mockResolvedValue(undefined),
+    });
+    const manager = makeManager();
+    const service = createSessionMcpService(manager, TEST_SERVICE_OPTIONS);
+    await manager.start();
+    const connectionCount = mockCreateMCPConnection.mock.calls.length;
+
+    await expect(service.getResources?.(resourceSignal)).resolves.toEqual(
+      resources,
+    );
+    await expect(
+      service.getResourcesByServer?.("alpha", resourceSignal),
+    ).resolves.toEqual(resources);
+    await expect(
+      service.readResource?.("mcp.alpha.resource://guide", resourceSignal),
+    ).resolves.toEqual(resourceContent);
+    await expect(service.listPrompts?.()).resolves.toEqual(prompts);
+    await expect(service.listPromptsByServer?.("alpha")).resolves.toEqual(
+      prompts,
+    );
+    await expect(
+      service.renderPrompt?.(
+        "mcp.alpha.summarize",
+        { topic: "AgenC" },
+        promptSignal,
+      ),
+    ).resolves.toEqual(renderedPrompt);
+
+    expect(listResources).toHaveBeenNthCalledWith(1, resourceSignal);
+    expect(listResources).toHaveBeenNthCalledWith(2, resourceSignal);
+    expect(readResource).toHaveBeenCalledWith(
+      "resource://guide",
+      resourceSignal,
+    );
+    expect(listPrompts).toHaveBeenCalledTimes(2);
+    expect(renderPrompt).toHaveBeenCalledWith(
+      "summarize",
+      { topic: "AgenC" },
+      promptSignal,
+    );
+    expect(mockCreateMCPConnection).toHaveBeenCalledTimes(connectionCount);
+    expect(mockCreateResourceBridge).toHaveBeenCalledOnce();
+    expect(mockCreatePromptBridge).toHaveBeenCalledOnce();
+
+    const abortReason = new Error("caller cancelled MCP read");
+    const aborted = new AbortController();
+    aborted.abort(abortReason);
+    await expect(service.getResources?.(aborted.signal)).rejects.toBe(
+      abortReason,
+    );
+    await expect(
+      service.renderPrompt?.("mcp.alpha.summarize", {}, aborted.signal),
+    ).rejects.toBe(abortReason);
+
+    await service.dispose?.();
+  });
+
+  it("rejects resource and prompt operations after the session service closes", async () => {
+    const manager = makeManager();
+    const service = createSessionMcpService(manager, TEST_SERVICE_OPTIONS);
+    await manager.start();
+    await service.dispose?.();
+
+    await expect(service.getResources?.()).rejects.toThrow(
+      "MCP session service is closed",
+    );
+    await expect(service.getResourcesByServer?.("alpha")).rejects.toThrow(
+      "MCP session service is closed",
+    );
+    await expect(
+      service.readResource?.("mcp.alpha.resource://guide"),
+    ).rejects.toThrow("MCP session service is closed");
+    await expect(service.listPrompts?.()).rejects.toThrow(
+      "MCP session service is closed",
+    );
+    await expect(service.listPromptsByServer?.("alpha")).rejects.toThrow(
+      "MCP session service is closed",
+    );
+    await expect(
+      service.renderPrompt?.("mcp.alpha.summarize"),
+    ).rejects.toThrow("MCP session service is closed");
   });
 
   it("never projects raw MCP connection errors or endpoint credentials", () => {

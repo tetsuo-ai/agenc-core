@@ -6,6 +6,7 @@ import { lookup as dnsLookup } from "node:dns";
 import { isIP } from "node:net";
 import type { LookupFunction } from "node:net";
 import type * as undici from "undici";
+import pMap from "p-map";
 import { resolveHomeContext } from "../config/home.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
@@ -138,6 +139,15 @@ import { openStateDatabases } from "../state/sqlite-driver.js";
 import { resolveSecureStorageHome } from "../utils/secureStorage/home.js";
 import { getCACertificates } from "../utils/caCerts.js";
 import { getMTLSConfig } from "../utils/mtls.js";
+import {
+  LIST_MCP_RESOURCES_TOOL_NAME,
+  READ_MCP_RESOURCE_TOOL_NAME,
+} from "../mcp-client/resource-tool-names.js";
+import type { MCPResourceContent } from "../mcp-client/resources.js";
+import {
+  getBinaryBlobSavedMessage,
+  persistBinaryContent,
+} from "../utils/mcpOutputStorage.js";
 import {
   getNoProxy,
   getProxyFetchOptions,
@@ -2578,6 +2588,61 @@ function projectCsvJobItem(
   };
 }
 
+interface ModelFacingMcpResourceBlock {
+  readonly uri: string;
+  readonly mimeType?: string;
+  readonly text?: string;
+  readonly blobSavedTo?: string;
+  readonly truncated: boolean;
+  readonly bytesReturned: number;
+}
+
+type ModelFacingMcpResource = Omit<MCPResourceContent, "contents"> & {
+  readonly contents: ReadonlyArray<ModelFacingMcpResourceBlock>;
+};
+
+async function persistMcpResourceBlobs(
+  resource: MCPResourceContent,
+  serverName: string,
+): Promise<ModelFacingMcpResource> {
+  const contents = await pMap(
+    resource.contents,
+    async (block, index): Promise<ModelFacingMcpResourceBlock> => {
+      if (block.blob === undefined) return block;
+
+      const persisted = await persistBinaryContent(
+        Buffer.from(block.blob, "base64"),
+        block.mimeType,
+        `mcp-resource-${randomUUID()}-${index}`,
+      );
+      if ("error" in persisted) {
+        return {
+          uri: block.uri,
+          ...(block.mimeType !== undefined ? { mimeType: block.mimeType } : {}),
+          text: `Binary content could not be saved to disk: ${persisted.error}`,
+          truncated: block.truncated,
+          bytesReturned: block.bytesReturned,
+        };
+      }
+      return {
+        uri: block.uri,
+        ...(block.mimeType !== undefined ? { mimeType: block.mimeType } : {}),
+        text: getBinaryBlobSavedMessage(
+          persisted.filepath,
+          block.mimeType,
+          persisted.size,
+          `[MCP resource from ${serverName} at ${block.uri}] `,
+        ),
+        blobSavedTo: persisted.filepath,
+        truncated: block.truncated,
+        bytesReturned: block.bytesReturned,
+      };
+    },
+    { concurrency: 4 },
+  );
+  return { ...resource, contents };
+}
+
 function createMcpResourceTools(opts: ModelFacingToolOptions): readonly Tool[] {
   const listTool = (name: string): Tool => ({
     name,
@@ -2648,14 +2713,12 @@ function createMcpResourceTools(opts: ModelFacingToolOptions): readonly Tool[] {
       if (resource === null) {
         return json({ error: `resource not found: ${server} ${uri}` }, true);
       }
-      return json({ resource });
+      return json({ resource: await persistMcpResourceBlobs(resource, server) });
     },
   });
   return [
-    listTool("ListMcpResourcesTool"),
-    readTool("ReadMcpResourceTool"),
-    listTool("ListMcpResources"),
-    readTool("ReadMcpResource"),
+    listTool(LIST_MCP_RESOURCES_TOOL_NAME),
+    readTool(READ_MCP_RESOURCE_TOOL_NAME),
   ];
 }
 

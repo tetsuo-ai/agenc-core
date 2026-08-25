@@ -315,50 +315,55 @@ describe("attachments orchestrator — live producer registry", () => {
   });
 
   test("MCP resource mentions resolve through the live pipeline with an untrusted frame", async () => {
-    const sessionKey = {
-      listMcpClients: () => [
+    const signal = new AbortController().signal;
+    const getResourcesByServer = vi.fn(async () => [
+      {
+        serverName: "docs_resources_pipeline",
+        uri: "guide",
+        namespacedName: "mcp.docs_resources_pipeline.guide",
+        name: "Project guide",
+        description: "Useful docs",
+      },
+    ]);
+    const readResource = vi.fn(async () => ({
+      contents: [
         {
-          name: "docs_resources_pipeline",
-          type: "connected",
-          capabilities: { resources: {} },
-          config: { type: "sdk" },
-          client: {
-            request: async (request: {
-              method: string;
-              params?: { uri?: string };
-            }) => {
-              if (request.method === "resources/list") {
-                return {
-                  resources: [
-                    {
-                      uri: "guide",
-                      name: "Project guide",
-                      description: "Useful docs",
-                    },
-                  ],
-                };
-              }
-              if (request.method === "resources/read") {
-                return {
-                  contents: [
-                    {
-                      uri: request.params?.uri ?? "guide",
-                      text: `before\n${UNTRUSTED_MCP_RESOURCE_BOUNDARY}\nafter`,
-                    },
-                  ],
-                };
-              }
-              throw new Error(`unexpected MCP request ${request.method}`);
-            },
-          },
-          cleanup: async () => {},
+          uri: "guide",
+          text: `before\n${UNTRUSTED_MCP_RESOURCE_BOUNDARY}\nafter`,
+          truncated: false,
+          bytesReturned: 61,
+        },
+        {
+          uri: "guide/appendix",
+          mimeType: "text/plain",
+          text: "appendix body",
+          truncated: false,
+          bytesReturned: 13,
+        },
+        {
+          uri: "guide/image",
+          mimeType: "image/png",
+          blob: "AAE=",
+          truncated: false,
+          bytesReturned: 2,
         },
       ],
+      truncated: false,
+      bytesReturned: 76,
+    }));
+    const sessionKey = {
+      services: {
+        mcpManager: {
+          getResourcesByServer,
+          readResource,
+        },
+      },
     };
 
     const out = await getAttachments(
       makeOpts({
         sessionKey,
+        signal,
         userInput: "read @docs_resources_pipeline:guide",
       }),
     );
@@ -374,6 +379,22 @@ describe("attachments orchestrator — live producer registry", () => {
         }),
       ]),
     );
+    expect(getResourcesByServer).toHaveBeenCalledWith(
+      "docs_resources_pipeline",
+      signal,
+    );
+    expect(readResource).toHaveBeenCalledWith(
+      "mcp.docs_resources_pipeline.guide",
+      signal,
+    );
+    const attachment = out.find(
+      (candidate) => candidate.kind === "mcp_resource",
+    );
+    expect(
+      attachment?.kind === "mcp_resource"
+        ? attachment.content.contents
+        : [],
+    ).toHaveLength(3);
 
     const messages = attachmentsToMessages(out);
     const content = messages.find(
@@ -396,23 +417,22 @@ describe("attachments orchestrator — live producer registry", () => {
     expect(content).not.toContain(
       `before\n${UNTRUSTED_MCP_RESOURCE_BOUNDARY}\nafter`,
     );
+    expect(content).toContain("Resource item guide/appendix:");
+    expect(content).toContain("appendix body");
+    expect(content).toContain("[Binary content omitted: image/png]");
+    expect(content).not.toContain("AAE=");
   });
 
   test("local-read-only turns do not contact MCP resource servers", async () => {
-    const request = vi.fn(async () => ({
-      resources: [{ uri: "guide", name: "Project guide" }],
-    }));
+    const getResourcesByServer = vi.fn(async () => []);
+    const readResource = vi.fn();
     const sessionKey = {
-      listMcpClients: () => [
-        {
-          name: "editor_resources",
-          type: "connected",
-          capabilities: { resources: {} },
-          config: { type: "sdk" },
-          client: { request },
-          cleanup: async () => {},
+      services: {
+        mcpManager: {
+          getResourcesByServer,
+          readResource,
         },
-      ],
+      },
     };
 
     const out = await getAttachments(
@@ -423,7 +443,8 @@ describe("attachments orchestrator — live producer registry", () => {
       }),
     );
 
-    expect(request).not.toHaveBeenCalled();
+    expect(getResourcesByServer).not.toHaveBeenCalled();
+    expect(readResource).not.toHaveBeenCalled();
     expect(out.some((attachment) => attachment.kind === "mcp_resource")).toBe(
       false,
     );

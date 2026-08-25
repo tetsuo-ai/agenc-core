@@ -41,8 +41,6 @@ const getSendMessageTool = () =>
     .SendMessageTool as typeof import('./tools/SendMessageTool/SendMessageTool.js').SendMessageTool
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { AskUserQuestionTool } from 'src/tools/ask-user-question/tui-tool.js'
-import { ListMcpResourcesTool } from './tools/ListMcpResourcesTool/ListMcpResourcesTool.js'
-import { ReadMcpResourceTool } from './tools/ReadMcpResourceTool/ReadMcpResourceTool.js'
 import { ToolSearchTool } from './tools/ToolSearchTool/ToolSearchTool.js'
 import { CtxInspectTool as ContextCollapseInspectTool } from './tools/CtxInspectTool/CtxInspectTool.js'
 import { EnterPlanModeTool } from './tools/EnterPlanModeTool/EnterPlanModeTool.js'
@@ -159,8 +157,6 @@ export function getAllBaseTools(): Tools {
     CronCreateTool,
     CronDeleteTool,
     CronListTool,
-    ListMcpResourcesTool,
-    ReadMcpResourceTool,
     // Include ToolSearchTool when tool search might be enabled (optimistic check)
     // The actual decision to defer tools happens in the provider request builder.
     ...(isToolSearchEnabledOptimistic() ? [ToolSearchTool] : []),
@@ -207,8 +203,6 @@ const getTools = (permissionContext: ToolPermissionContext): Tools => {
 
   // Get all base tools and filter out special tools that get added conditionally
   const specialTools = new Set([
-    ListMcpResourcesTool.name,
-    ReadMcpResourceTool.name,
     SYNTHETIC_OUTPUT_TOOL_NAME,
   ])
 

@@ -44,6 +44,10 @@ import type { ToolPermissionContext } from "./types.js";
 import { peekAmbientRuntimeSession } from "../session/current-session.js";
 import type { Session } from "../session/session.js";
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
+import {
+  LIST_MCP_RESOURCES_TOOL_NAME,
+  READ_MCP_RESOURCE_TOOL_NAME,
+} from "../mcp-client/resource-tool-names.js";
 
 // ---------------------------------------------------------------------------
 // Safe-tool allowlist
@@ -80,10 +84,8 @@ const SAFE_YOLO_ALLOWLISTED_TOOLS: ReadonlySet<string> = Object.freeze(
     // prompt-injection / data-exfil-via-URL vector), so auto mode must route
     // them through the classifier instead of blanket auto-allowing them.
     // MCP resource read
-    "ListMcpResources",
-    "ReadMcpResource",
-    "ListMcpResourcesTool",
-    "ReadMcpResourceTool",
+    LIST_MCP_RESOURCES_TOOL_NAME,
+    READ_MCP_RESOURCE_TOOL_NAME,
     // Task/agent metadata
     "TodoWrite",
     "TaskCreate",

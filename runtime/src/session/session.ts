@@ -1075,15 +1075,12 @@ export interface McpManager {
   getConfiguredServers?(): readonly McpSessionServerConfig[];
   getConnectionState?(name: string): McpConnectionProjection | undefined;
   getConnectedConnection?(name: string): MCPServerConnection | undefined;
-  getResources?(signal?: AbortSignal): Promise<ReadonlyArray<unknown>>;
-  getResourcesByServer?(
-    name: string,
-    signal?: AbortSignal,
-  ): Promise<ReadonlyArray<unknown>>;
-  readResource?(
-    namespacedName: string,
-    signal?: AbortSignal,
-  ): Promise<unknown | null>;
+  getResources?: MCPManager["getResources"];
+  getResourcesByServer?: MCPManager["getResourcesByServer"];
+  readResource?: MCPManager["readResource"];
+  listPrompts?: MCPManager["listPrompts"];
+  listPromptsByServer?: MCPManager["listPromptsByServer"];
+  renderPrompt?: MCPManager["renderPrompt"];
   /**
    * Live runtime readiness seam used by the delegate/subagent path.
    * Optional so compatibility shims remain structurally valid, but the

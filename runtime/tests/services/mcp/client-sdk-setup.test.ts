@@ -1683,7 +1683,7 @@ test('reconnectMcpServerImpl rebuilds connected clients with tools and resource 
   assert.equal(result.client.type, 'connected')
   assert.deepEqual(
     result.tools.map(tool => tool.name),
-    ['mcp__stdio-demo__inspect', 'ListMcpResourcesTool', 'ReadMcpResourceTool'],
+    ['mcp__stdio-demo__inspect'],
   )
   assert.deepEqual(result.commands, [])
   assert.equal(fakeClients.length, 2)

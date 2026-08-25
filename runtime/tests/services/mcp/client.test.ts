@@ -792,7 +792,7 @@ test('prefetchAllMcpResources collects cached tools, commands, clients, and reso
   )
   assert.deepEqual(
     result.tools.map(tool => tool.name),
-    ['mcp__prefetch__search', 'ListMcpResourcesTool', 'ReadMcpResourceTool'],
+    ['mcp__prefetch__search'],
   )
   assert.deepEqual(
     result.commands.map(command => command.name),

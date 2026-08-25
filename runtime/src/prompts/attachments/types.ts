@@ -17,7 +17,7 @@
  */
 
 import type { DiagnosticFile } from "../../services/lsp/types.js";
-import type { ReadResourceResult } from "@modelcontextprotocol/sdk/types.js";
+import type { MCPResourceContent } from "../../mcp-client/resources.js";
 import type { FileMentionAttachment } from "../file-mentions.js";
 
 /**
@@ -308,7 +308,7 @@ export interface McpResourceAttachment {
   readonly uri: string;
   readonly name: string;
   readonly description?: string;
-  readonly content: ReadResourceResult;
+  readonly content: MCPResourceContent;
 }
 
 /**

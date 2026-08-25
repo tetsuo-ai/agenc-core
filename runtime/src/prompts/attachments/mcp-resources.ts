@@ -8,35 +8,28 @@
  * @module
  */
 
-import {
-  type ReadResourceResult,
-  ReadResourceResultSchema,
-} from "@modelcontextprotocol/sdk/types.js";
-
-import {
-  ensureConnectedClient,
-  fetchResourcesForClient,
-} from "../../services/mcp/client.js";
-import type {
-  MCPServerConnection,
-  ServerResource,
-} from "../../services/mcp/types.js";
+import type { MCPResourceDescriptor } from "../../mcp-client/resources.js";
+import type { McpManager } from "../../session/session.js";
 import {
   extractMcpResourceMentions,
   parseMcpResourceMention,
 } from "../../utils/mcpResourceMentions.js";
-import { findMcpResourceServer } from "../../utils/mcpServerLookup.js";
 import type { AttachmentProducer } from "./orchestrator.js";
 import type { McpResourceAttachment } from "./types.js";
 
 interface SessionLikeForMcpResources {
-  listMcpClients?(): readonly MCPServerConnection[];
+  readonly services?: {
+    readonly mcpManager?: Pick<
+      McpManager,
+      "getResourcesByServer" | "readResource"
+    >;
+  };
 }
 
 function resourceByUri(
-  resources: readonly ServerResource[],
+  resources: readonly MCPResourceDescriptor[],
   uri: string,
-): ServerResource | null {
+): MCPResourceDescriptor | null {
   return resources.find((resource) => resource.uri === uri) ?? null;
 }
 
@@ -45,8 +38,13 @@ export const mcpResourcesProducer: AttachmentProducer = async (opts) => {
   if (opts.signal.aborted || mentions.length === 0) return [];
 
   const session = opts.sessionKey as SessionLikeForMcpResources;
-  const clients = session.listMcpClients?.() ?? [];
-  if (clients.length === 0) return [];
+  const manager = session.services?.mcpManager;
+  if (
+    typeof manager?.getResourcesByServer !== "function" ||
+    typeof manager.readResource !== "function"
+  ) {
+    return [];
+  }
 
   const attachments: McpResourceAttachment[] = [];
 
@@ -54,22 +52,19 @@ export const mcpResourcesProducer: AttachmentProducer = async (opts) => {
     if (opts.signal.aborted) break;
     const parsed = parseMcpResourceMention(mention);
     if (parsed === null) continue;
-    const lookup = findMcpResourceServer(clients, parsed.serverName);
-    if (!lookup.ok) continue;
-    const client = lookup.client;
 
     try {
-      const connected = await ensureConnectedClient(client);
-      const resources = await fetchResourcesForClient(connected);
+      const resources = await manager.getResourcesByServer(
+        parsed.serverName,
+        opts.signal,
+      );
       const resource = resourceByUri(resources, parsed.uri);
       if (resource === null) continue;
-      const content = (await connected.client.request(
-        {
-          method: "resources/read",
-          params: { uri: parsed.uri },
-        },
-        ReadResourceResultSchema,
-      )) as ReadResourceResult;
+      const content = await manager.readResource(
+        resource.namespacedName,
+        opts.signal,
+      );
+      if (content === null) continue;
 
       attachments.push({
         kind: "mcp_resource",
@@ -81,7 +76,8 @@ export const mcpResourcesProducer: AttachmentProducer = async (opts) => {
           : {}),
         content,
       });
-    } catch {
+    } catch (error) {
+      if (opts.signal.aborted) throw opts.signal.reason ?? error;
       continue;
     }
   }

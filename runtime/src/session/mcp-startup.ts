@@ -1772,6 +1772,30 @@ export function createSessionMcpService(
       enqueueServerMutation(config.name, () =>
         addSessionServerUnlocked(config),
       ),
+    getResources: (signal) => {
+      if (closed) return Promise.reject(closedError());
+      return manager.getResources(signal);
+    },
+    getResourcesByServer: (name, signal) => {
+      if (closed) return Promise.reject(closedError());
+      return manager.getResourcesByServer(name, signal);
+    },
+    readResource: (namespacedName, signal) => {
+      if (closed) return Promise.reject(closedError());
+      return manager.readResource(namespacedName, signal);
+    },
+    listPrompts: () => {
+      if (closed) return Promise.reject(closedError());
+      return manager.listPrompts();
+    },
+    listPromptsByServer: (name) => {
+      if (closed) return Promise.reject(closedError());
+      return manager.listPromptsByServer(name);
+    },
+    renderPrompt: (namespacedName, args, signal) => {
+      if (closed) return Promise.reject(closedError());
+      return manager.renderPrompt(namespacedName, args, signal);
+    },
     mcpSurfaceSnapshot: () => surfaceSnapshot,
     subscribeMcpSurfaceInvalidations: (listener) => {
       if (closed) return () => {};

@@ -1,10 +1,14 @@
 import { writeFile } from 'fs/promises'
 import { join } from 'path'
-import type { MCPResultType } from '../services/mcp/client.js'
 import { toError } from './errors.js'
 import { formatFileSize } from './format.js'
 import { logError } from './log.js'
 import { ensureToolResultsDir, getToolResultsDir } from './toolResultStorage.js'
+
+export type MCPResultType =
+  | 'toolResult'
+  | 'structuredContent'
+  | 'contentArray'
 
 /**
  * Generates a format description string based on the MCP result type and schema.

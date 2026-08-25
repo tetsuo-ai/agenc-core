@@ -100,7 +100,15 @@ and must resolve to a directory before the endpoint starts. Foreground
   refuses to load if the advertised catalog drifts
 
 Resources (list/read) and prompts (list/render into message pairs) are bridged
-similarly, with a 5 MiB per-resource byte cap.
+through the same session-owned manager. Resource reads preserve multipart
+content in order, cap each block at 1 MiB and each aggregate read at 5 MiB,
+accept at most 256 content blocks, and mark truncation explicitly. Resource
+catalogs accept at most 100 cursor pages and 1,000 descriptors. Resource URIs
+are limited to 8 KiB; display names, descriptions, and MIME metadata are
+sanitized and bounded to 1 KiB, 8 KiB, and 256 bytes respectively. The
+model-facing read helper persists binary blocks in the session's private
+tool-results directory and returns file references; raw base64 is not inserted
+into model context.
 
 ### Model-facing MCP tools
 
@@ -109,8 +117,8 @@ registry entries under the namespace **`mcp.<server>.<tool>`**.
 
 Built-in helpers that help the agent work with MCP resources:
 
-- `ListMcpResources` / `ListMcpResourcesTool`
-- `ReadMcpResource` / `ReadMcpResourceTool`
+- `ListMcpResourcesTool`
+- `ReadMcpResourceTool`
 
 (`McpAuthTool` exists as an OAuth helper in the tools tree; it is
 not the primary LIVE bridge surface.)

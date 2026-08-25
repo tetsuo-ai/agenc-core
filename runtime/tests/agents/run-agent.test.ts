@@ -893,7 +893,7 @@ describe("runAgent", () => {
       metadata: { source: "mcp", family: "mcp" },
     };
     const resourceMcp = {
-      ...mkNamedTool("ListMcpResources"),
+      ...mkNamedTool("ListMcpResourcesTool"),
       metadata: { source: "builtin", family: "mcp" },
     };
     const registry = {

@@ -258,8 +258,8 @@ Canonical v2 surface (`runtime/src/agents/v2/`). Details:
 
 | Name | Notes |
 | --- | --- |
-| `ListMcpResourcesTool` / `ListMcpResources` | List MCP resources (deferred) |
-| `ReadMcpResourceTool` / `ReadMcpResource` | Read MCP resource (deferred) |
+| `ListMcpResourcesTool` | List MCP resources (deferred) |
+| `ReadMcpResourceTool` | Read MCP resource (deferred) |
 | `mcp.<server>.<tool>` | Live tools from configured MCP servers (usually deferred until discovery) |
 
 ### Structured output / code-mode

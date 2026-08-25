@@ -51,12 +51,9 @@ import type { AppState } from '../../tui/state/AppState.js'
 import {
   type Tool,
   type ToolCallProgress,
-  toolMatchesName,
 } from '../../tools/Tool.js'
-import { ListMcpResourcesTool } from '../../tools/ListMcpResourcesTool/ListMcpResourcesTool.js'
 import { type MCPProgress, MCPTool } from '../../tools/MCPTool/MCPTool.js'
 import { createMcpAuthTool } from '../../tools/McpAuthTool/McpAuthTool.js'
-import { ReadMcpResourceTool } from '../../tools/ReadMcpResourceTool/ReadMcpResourceTool.js'
 import { createAbortController } from '../../utils/abortController.js'
 import { AbortError, isAbortError } from '../../utils/errors.js'
 import { count } from '../../utils/array.js'
@@ -83,6 +80,7 @@ import {
   getFormatDescription,
   getLargeOutputInstructions,
   persistBinaryContent,
+  type MCPResultType,
 } from '../../utils/mcpOutputStorage.js'
 import {
   type MCPToolResult,
@@ -2564,21 +2562,9 @@ export async function reconnectMcpServerImpl(
     ])
     const commands = [...mcpCommands, ...mcpSkills]
 
-    // Check if we need to add resource tools
-    const resourceTools: Tool[] = []
-    if (supportsResources) {
-      // Only add resource tools if no other server has them
-      const hasResourceTools = [ListMcpResourcesTool, ReadMcpResourceTool].some(
-        tool => tools.some(t => toolMatchesName(t, tool.name)),
-      )
-      if (!hasResourceTools) {
-        resourceTools.push(ListMcpResourcesTool, ReadMcpResourceTool)
-      }
-    }
-
     return {
       client,
-      tools: [...tools, ...resourceTools],
+      tools,
       commands,
       resources: resources.length > 0 ? resources : undefined,
     }
@@ -2621,7 +2607,6 @@ async function getMcpToolsCommandsAndResources(
   }) => void,
   mcpConfigs: Record<string, ScopedMcpServerConfig>,
 ): Promise<void> {
-  let resourceToolsAdded = false
 
   const allConfigEntries = Object.entries(mcpConfigs)
 
@@ -2767,17 +2752,9 @@ async function getMcpToolsCommandsAndResources(
       ])
       const commands = [...mcpCommands, ...mcpSkills]
 
-      // If this server resources and we haven't added resource tools yet,
-      // include our resource tools with this client's tools
-      const resourceTools: Tool[] = []
-      if (supportsResources && !resourceToolsAdded) {
-        resourceToolsAdded = true
-        resourceTools.push(ListMcpResourcesTool, ReadMcpResourceTool)
-      }
-
       onConnectionAttempt({
         client,
-        tools: [...tools, ...resourceTools],
+        tools,
         commands,
         resources: resources.length > 0 ? resources : undefined,
       })
@@ -3033,8 +3010,6 @@ async function persistBlobToTextBlock(
 /**
  * Processes MCP tool result into a normalized format.
  */
-export type MCPResultType = 'toolResult' | 'structuredContent' | 'contentArray'
-
 export type TransformedMCPResult = {
   content: MCPToolResult
   type: MCPResultType
