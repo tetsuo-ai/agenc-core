@@ -39,9 +39,15 @@
  * @module
  */
 
+import {
+  audioMediaTypeFor,
+  transcribeAudio,
+  TranscriptionUnavailableError,
+} from "../../llm/transcribe-audio.js";
+
 import { createReadStream } from "node:fs";
 import { open, readFile, stat } from "node:fs/promises";
-import { dirname, extname, isAbsolute, resolve } from "node:path";
+import { basename, dirname, extname, isAbsolute, resolve } from "node:path";
 import { createInterface } from "node:readline";
 
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
@@ -1338,6 +1344,64 @@ async function readPDFFile(
   };
 }
 
+interface AudioReadOpts {
+  readonly displayPath: string;
+  readonly ext: string;
+  readonly maxAudioBytes: number;
+}
+
+/**
+ * A recording, turned into words.
+ *
+ * The models people run here do not take audio in, so the alternative was
+ * the generic binary refusal — which sent the agent looking for ffmpeg and
+ * whisper on the machine instead of answering. The transcript is text like
+ * any other file's contents, so every model can act on it.
+ */
+async function readAudioFile(
+  resolvedPath: { readonly canonical: string },
+  opts: AudioReadOpts,
+): Promise<ToolResult> {
+  const mediaType = audioMediaTypeFor(opts.ext) ?? "audio/webm";
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(resolvedPath.canonical);
+  } catch (error) {
+    return errorResult(
+      `Could not read ${opts.displayPath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (bytes.byteLength > opts.maxAudioBytes) {
+    return errorResult(
+      `Recording is ${formatBytes(bytes.byteLength)}, over the ${formatBytes(opts.maxAudioBytes)} limit for a single read.`,
+    );
+  }
+  try {
+    const { text, model } = await transcribeAudio({
+      bytes,
+      filename: basename(resolvedPath.canonical),
+      mimeType: mediaType,
+    });
+    return {
+      content: `Transcript of ${opts.displayPath} (${formatBytes(bytes.byteLength)}, ${mediaType}):\n\n${text}`,
+      metadata: {
+        filePath: opts.displayPath,
+        mediaType,
+        transcribedBy: model,
+      },
+    };
+  } catch (error) {
+    if (error instanceof TranscriptionUnavailableError) {
+      // Say what happened and what would fix it. The old message sent the
+      // agent hunting for a transcriber that was never going to be there.
+      return errorResult(
+        `${opts.displayPath} is an audio recording and this model cannot hear audio. ${error.message}`,
+      );
+    }
+    throw error;
+  }
+}
+
 async function readImageFile(
   resolvedPath: ResolvedPath,
   opts: ImageReadOpts,
@@ -1564,6 +1628,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
 
       const ext = extname(filePath).toLowerCase();
       const isImage = IMAGE_EXTENSIONS.has(ext);
+      const isAudio = audioMediaTypeFor(ext) !== undefined;
       const isPdf = ext === PDF_EXTENSION;
       const isNotebook = ext === NOTEBOOK_EXTENSION;
 
@@ -1597,6 +1662,13 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         }
         await config.__testAfterFinalPathCheck?.();
 
+        if (isAudio) {
+          return await readAudioFile(resolved, {
+            displayPath: filePath,
+            ext,
+            maxAudioBytes: maxImageBytes,
+          });
+        }
         if (isImage) {
           return await readImageFile(
             resolved,
