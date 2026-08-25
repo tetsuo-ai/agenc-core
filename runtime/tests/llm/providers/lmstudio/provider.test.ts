@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 
 import { LMStudioProvider } from "./index.js";
 import { withLmstudioHealthSidecar } from "./health.js";
+import { BUILT_IN_PROVIDER_BASE_URLS } from "../../registry/provider-info.js";
 
 function sseResponse(frames: string[]): Response {
   const encoder = new TextEncoder();
@@ -54,7 +55,7 @@ describe("LMStudioProvider", () => {
 
     const provider = new LMStudioProvider({
       model: "qwen2.5-coder:7b",
-      baseURL: "http://localhost:1234/v1",
+      baseURL: BUILT_IN_PROVIDER_BASE_URLS.lmstudio,
       fetchImpl,
     });
 
@@ -62,7 +63,9 @@ describe("LMStudioProvider", () => {
 
     expect(response.content).toBe("ok");
     const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(String(requestUrl)).toBe("http://localhost:1234/v1/chat/completions");
+    expect(String(requestUrl)).toBe(
+      `${BUILT_IN_PROVIDER_BASE_URLS.lmstudio}/chat/completions`,
+    );
     const headers = init?.headers as Headers;
     expect(headers.get("authorization")).toBeNull();
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
@@ -101,7 +104,7 @@ describe("LMStudioProvider", () => {
     const provider = new LMStudioProvider({
       apiKey: "lmstudio-test",
       model: "qwen2.5-coder:7b",
-      baseURL: "http://localhost:1234/v1",
+      baseURL: BUILT_IN_PROVIDER_BASE_URLS.lmstudio,
       fetchImpl,
     });
 
@@ -147,7 +150,9 @@ describe("LMStudioProvider", () => {
 
     expect(response.content).toBe("ok");
     const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(String(requestUrl)).toBe("http://localhost:1234/v1/chat/completions");
+    expect(String(requestUrl)).toBe(
+      `${BUILT_IN_PROVIDER_BASE_URLS.lmstudio}/chat/completions`,
+    );
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
     expect(requestBody.model).toBe("local-deepseek-r1:8b");
     expect(requestBody.stream).toBe(false);
@@ -187,7 +192,9 @@ describe("LMStudioProvider", () => {
       { content: "", done: true },
     ]);
     const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(String(requestUrl)).toBe("http://localhost:1234/v1/chat/completions");
+    expect(String(requestUrl)).toBe(
+      `${BUILT_IN_PROVIDER_BASE_URLS.lmstudio}/chat/completions`,
+    );
     const headers = init?.headers as Headers;
     expect(headers.get("accept")).toBe("text/event-stream");
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;

@@ -5,6 +5,7 @@ import { describe, expect, test } from "vitest";
 import { DAEMON_CLIENT_ENV_SNAPSHOT_KEYS } from "../../src/app-server/client-env-snapshot.js";
 import { CANONICAL_SESSION_ENV_KEYS } from "../../src/session/environment.js";
 import { getContextWindowForModelForContext } from "../../src/utils/context.js";
+import { BUILT_IN_PROVIDER_BASE_URLS } from "../../src/llm/registry/provider-info.js";
 
 const SRC = fileURLToPath(new URL("../../src/", import.meta.url));
 const TESTS = fileURLToPath(new URL("../", import.meta.url));
@@ -182,6 +183,65 @@ describe("provider authority architecture", () => {
         .filter((path) => retiredBedrockIngress.test(readFileSync(path, "utf8")))
         .map((path) => relative(SRC, path)),
     ).toEqual([]);
+  });
+
+  test("provider adapters derive built-in endpoints from the registry", () => {
+    const providerRoot = `${SRC}/llm/providers`;
+    const providerSources = sourceFiles(providerRoot)
+      .filter((path) => /\.tsx?$/u.test(path))
+      .map((path) => ({
+        name: relative(providerRoot, path),
+        source: readFileSync(path, "utf8"),
+      }));
+
+    for (const baseURL of new Set(Object.values(BUILT_IN_PROVIDER_BASE_URLS))) {
+      expect(
+        providerSources
+          .filter(({ source }) => source.includes(baseURL))
+          .map(({ name }) => name),
+        `adapter sources must not re-author registry endpoint ${baseURL}`,
+      ).toEqual([]);
+    }
+
+    const retiredAdapterDefaults =
+      /\b(?:DEFAULT_BASE_URL|DEFAULT_DEEPSEEK_BASE_URL|DEFAULT_LMSTUDIO_BASE_URL|DEFAULT_GEMINI_BASE_URL|OPENAI_COMPATIBLE_DEFAULT_BASE_URL|OPENAI_COMPATIBLE_DEFAULT_MODEL|DEFAULT_HOST|DEFAULT_MODEL)\b/u;
+    expect(
+      providerSources
+        .filter(({ source }) => retiredAdapterDefaults.test(source))
+        .map(({ name }) => name),
+    ).toEqual([]);
+
+    const openAIAdapter = readFileSync(
+      `${providerRoot}/openai/adapter.ts`,
+      "utf8",
+    );
+    expect(openAIAdapter).toMatch(/resolveBuiltInProviderInfo\(providerName\)/u);
+    expect(openAIAdapter).toMatch(/providerApiKeyEnvironmentLabel\(providerName\)/u);
+
+    for (const path of [
+      "deepseek/index.ts",
+      "github/index.ts",
+      "groq/index.ts",
+      "lmstudio/index.ts",
+      "minimax/index.ts",
+      "mistral/index.ts",
+      "nvidia-nim/index.ts",
+      "openai-compatible/index.ts",
+      "openrouter/index.ts",
+    ]) {
+      const source = readFileSync(`${providerRoot}/${path}`, "utf8");
+      expect(source).not.toMatch(/\bapiKeyEnvLabel\s*:/u);
+      expect(source).not.toMatch(/\bbaseURL\s*:/u);
+    }
+
+    const providerFactory = readFileSync(`${SRC}/llm/provider.ts`, "utf8");
+    expect(providerFactory).not.toMatch(/apiKeyEnvironmentLabelFor/u);
+    expect(providerFactory.match(/\bapiKeyEnvLabel\s*:/gu)).toEqual([
+      "apiKeyEnvLabel:",
+    ]);
+    expect(providerFactory).toMatch(
+      /apiKeyEnvLabel:\s*"AgenC subscription"/u,
+    );
   });
 
   test("provider selector identity has one normalizer and one retired mapping", () => {

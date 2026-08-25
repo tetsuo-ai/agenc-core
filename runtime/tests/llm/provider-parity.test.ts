@@ -878,8 +878,8 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
   {
     provider: "amazon-bedrock",
     model: "amazon.nova-pro-v1:0",
-    apiKey: "bedrock-test",
     extra: {
+      accessKeyId: "bedrock-test",
       secretAccessKey: "bedrock-secret",
     },
     env: {

@@ -50,7 +50,6 @@ import { OpenAICompatibleProvider } from "./providers/openai-compatible/index.js
 import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
 import {
   builtInProviderIds,
-  providerApiKeyEnvironmentLabel,
   resolveBuiltInProviderRegionalEndpoint,
   resolveBuiltInProviderSlug,
   resolveBuiltInProviderInfo,
@@ -341,14 +340,6 @@ function defaultModelFor(provider: ProviderName): string {
 
 function defaultBaseURLFor(provider: ProviderName): string {
   return requireBuiltInProviderInfo(provider).baseURL;
-}
-
-function apiKeyEnvironmentLabelFor(provider: ProviderName): string {
-  const label = providerApiKeyEnvironmentLabel(provider);
-  if (label === undefined) {
-    throw new Error(`${provider} provider does not declare an API key env var`);
-  }
-  return label;
 }
 
 function requireModel(
@@ -1190,7 +1181,6 @@ function buildOpenAICompatibleProvider(
   },
 ): LLMProvider {
   const extra = readRuntimeExtra(opts.extra);
-  const apiKeyEnvLabel = apiKeyEnvironmentLabelFor(provider);
   const model = requireModel(
     provider,
     opts.model,
@@ -1212,7 +1202,6 @@ function buildOpenAICompatibleProvider(
     ...(apiKey !== undefined ? { apiKey } : {}),
     model,
     providerName: provider,
-    apiKeyEnvLabel,
     tools: opts.tools ? [...opts.tools] : undefined,
     baseURL:
       normalizeBaseURL(opts.baseURL) ??
@@ -1515,7 +1504,6 @@ export function createProvider(
       });
     }
     case "openai": {
-      const apiKeyEnvLabel = apiKeyEnvironmentLabelFor("openai");
       const model = requireModel(
         "openai",
         opts.model,
@@ -1536,7 +1524,6 @@ export function createProvider(
         ...(apiKey !== undefined ? { apiKey } : {}),
         model,
         providerName: "openai",
-        apiKeyEnvLabel,
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL:
           normalizeBaseURL(opts.baseURL) ?? defaultBaseURLFor("openai"),
@@ -1696,7 +1683,6 @@ export function createProvider(
         providerCtor: GitHubProvider,
       });
     case "gemini": {
-      const apiKeyEnvLabel = apiKeyEnvironmentLabelFor("gemini");
       const apiKey = resolveFactoryApiKey(opts);
       const model = requireModel(
         "gemini",
@@ -1722,7 +1708,6 @@ export function createProvider(
         ...(apiKey !== undefined ? { apiKey } : {}),
         model,
         providerName: "gemini",
-        apiKeyEnvLabel,
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL: configuredBaseURL ?? inferredVertexBaseURL ?? defaultBaseURLFor("gemini"),
         useResponsesApi: false,

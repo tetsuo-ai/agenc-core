@@ -54,8 +54,10 @@ import {
   type ProviderFallbackDecision,
 } from "../../api/fallback-ladder.js";
 import { getRetryDelay, sleepMs } from "../../api/retry.js";
-
-const DEFAULT_BASE_URL = "https://api.anthropic.com/v1";
+import {
+  BUILT_IN_PROVIDER_BASE_URLS,
+  providerApiKeyEnvironmentLabel,
+} from "../../registry/provider-info.js";
 const DEFAULT_ANTHROPIC_VERSION = "2023-06-01";
 
 interface AnthropicSseEvent {
@@ -198,11 +200,15 @@ export class AnthropicProvider implements LLMProvider {
 
   constructor(config: AnthropicProviderConfig) {
     this.config = config;
+    const apiKeyEnvLabel = providerApiKeyEnvironmentLabel(this.name);
+    if (apiKeyEnvLabel === undefined) {
+      throw new Error("anthropic provider registry is missing API-key metadata");
+    }
     const authHeaders = buildBearerAuthHeaders({
       apiKey: assertNonEmptyApiKey(
         this.name,
         config.apiKey,
-        "ANTHROPIC_API_KEY",
+        apiKeyEnvLabel,
       ),
       headerName: "x-api-key",
       prefix: "",
@@ -214,7 +220,7 @@ export class AnthropicProvider implements LLMProvider {
     }
     this.client = new ProviderHttpClient({
       providerName: this.name,
-      baseURL: config.baseURL ?? DEFAULT_BASE_URL,
+      baseURL: config.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS.anthropic,
       model: config.model,
       defaultHeaders: {
         ...(config.defaultHeaders ?? {}),

@@ -1,9 +1,6 @@
 import { OpenAIProvider } from "../openai/adapter.js";
 import type { OpenAIProviderConfig } from "../openai/types.js";
-import {
-  BUILT_IN_PROVIDER_BASE_URLS,
-  providerApiKeyEnvironmentLabel,
-} from "../../registry/provider-info.js";
+import { BUILT_IN_PROVIDER_DEFAULT_MODELS } from "../../registry/provider-info.js";
 
 export type GitHubProviderConfig = OpenAIProviderConfig;
 
@@ -27,7 +24,7 @@ function normalizeGitHubModel(model: string | undefined): string | undefined {
   const trimmed = model?.trim();
   const lower = trimmed?.toLowerCase();
   if (!trimmed || lower === "github:copilot" || lower === "copilot") {
-    return "gpt-4o";
+    return BUILT_IN_PROVIDER_DEFAULT_MODELS.github;
   }
   const prefix = "github:copilot:";
   if (lower?.startsWith(prefix)) {
@@ -41,11 +38,11 @@ export class GitHubProvider extends OpenAIProvider {
     super({
       ...config,
       providerName: "github",
-      apiKeyEnvLabel: providerApiKeyEnvironmentLabel("github"),
       useResponsesApi: false,
-      baseURL: config.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS.github,
       defaultHeaders: buildGitHubHeaders(config.defaultHeaders),
-      model: normalizeGitHubModel(config.model) ?? "gpt-4o",
+      model:
+        normalizeGitHubModel(config.model) ??
+        BUILT_IN_PROVIDER_DEFAULT_MODELS.github,
     });
   }
 }

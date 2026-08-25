@@ -16,6 +16,7 @@ import {
 } from "../../oauth/refresh-loop.js";
 import type { ProviderAuthHeaderContext } from "../../client-session.js";
 import { LLMProviderError } from "../../errors.js";
+import { providerApiKeyEnvironmentLabel } from "../../registry/provider-info.js";
 import type { OpenAIProviderConfig } from "./types.js";
 
 export class OpenAIAuthSession {
@@ -28,7 +29,10 @@ export class OpenAIAuthSession {
   constructor(config: OpenAIProviderConfig) {
     this.config = config;
     this.providerName = config.providerName ?? "openai";
-    this.apiKeyEnvLabel = config.apiKeyEnvLabel ?? "OPENAI_API_KEY";
+    this.apiKeyEnvLabel =
+      config.apiKeyEnvLabel ??
+      providerApiKeyEnvironmentLabel(this.providerName) ??
+      "API key";
     this.oauthState =
       config.authMode === "oauth" && config.oauth
         ? {

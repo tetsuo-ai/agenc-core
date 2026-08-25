@@ -1,10 +1,10 @@
 import { describe, expect, test, vi } from "vitest";
 
+import { OpenAICompatibleProvider } from "./index.js";
 import {
-  OPENAI_COMPATIBLE_DEFAULT_BASE_URL,
-  OPENAI_COMPATIBLE_DEFAULT_MODEL,
-  OpenAICompatibleProvider,
-} from "./index.js";
+  BUILT_IN_PROVIDER_BASE_URLS,
+  BUILT_IN_PROVIDER_DEFAULT_MODELS,
+} from "../../registry/provider-info.js";
 
 describe("OpenAICompatibleProvider", () => {
   test("uses chat completions with no authorization by default", async () => {
@@ -12,7 +12,7 @@ describe("OpenAICompatibleProvider", () => {
       new Response(
         JSON.stringify({
           id: "chatcmpl_openai_compatible",
-          model: OPENAI_COMPATIBLE_DEFAULT_MODEL,
+          model: BUILT_IN_PROVIDER_DEFAULT_MODELS["openai-compatible"],
           choices: [
             {
               message: {
@@ -31,7 +31,7 @@ describe("OpenAICompatibleProvider", () => {
     );
 
     const provider = new OpenAICompatibleProvider({
-      model: OPENAI_COMPATIBLE_DEFAULT_MODEL,
+      model: BUILT_IN_PROVIDER_DEFAULT_MODELS["openai-compatible"],
       fetchImpl,
     });
 
@@ -40,12 +40,14 @@ describe("OpenAICompatibleProvider", () => {
     expect(response.content).toBe("ok");
     const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
     expect(String(requestUrl)).toBe(
-      `${OPENAI_COMPATIBLE_DEFAULT_BASE_URL}/chat/completions`,
+      `${BUILT_IN_PROVIDER_BASE_URLS["openai-compatible"]}/chat/completions`,
     );
     const headers = init?.headers as Headers;
     expect(headers.get("authorization")).toBeNull();
     const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    expect(requestBody.model).toBe(OPENAI_COMPATIBLE_DEFAULT_MODEL);
+    expect(requestBody.model).toBe(
+      BUILT_IN_PROVIDER_DEFAULT_MODELS["openai-compatible"],
+    );
     expect(requestBody.stream).toBe(false);
   });
 
@@ -74,7 +76,7 @@ describe("OpenAICompatibleProvider", () => {
 
     const provider = new OpenAICompatibleProvider({
       apiKey: "local-token",
-      model: OPENAI_COMPATIBLE_DEFAULT_MODEL,
+      model: BUILT_IN_PROVIDER_DEFAULT_MODELS["openai-compatible"],
       baseURL: "http://127.0.0.1:9000/v1",
       fetchImpl,
     });

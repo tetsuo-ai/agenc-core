@@ -1,9 +1,5 @@
 import { OpenAIProvider } from "../openai/adapter.js";
 import type { OpenAIProviderConfig } from "../openai/types.js";
-import {
-  BUILT_IN_PROVIDER_BASE_URLS,
-  providerApiKeyEnvironmentLabel,
-} from "../../registry/provider-info.js";
 
 export type OpenRouterProviderConfig = OpenAIProviderConfig;
 
@@ -29,9 +25,7 @@ export class OpenRouterProvider extends OpenAIProvider {
     super({
       ...config,
       providerName: "openrouter",
-      apiKeyEnvLabel: providerApiKeyEnvironmentLabel("openrouter"),
       useResponsesApi: false,
-      baseURL: config.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS.openrouter,
       defaultHeaders: buildOpenRouterHeaders(config.defaultHeaders),
     });
   }

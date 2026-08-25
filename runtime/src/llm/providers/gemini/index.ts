@@ -35,7 +35,10 @@ import {
   type TokenAccountingRequest,
 } from "../../token-accounting.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
-import { providerApiKeyEnvironmentLabel } from "../../registry/provider-info.js";
+import {
+  BUILT_IN_PROVIDER_BASE_URLS,
+  providerApiKeyEnvironmentLabel,
+} from "../../registry/provider-info.js";
 
 export interface GeminiProviderConfig extends OpenAIProviderConfig {
   readonly cachedContent?: string;
@@ -43,8 +46,6 @@ export interface GeminiProviderConfig extends OpenAIProviderConfig {
   readonly resolveCredential?: () => Promise<GeminiResolvedCredential>;
 }
 
-const DEFAULT_GEMINI_BASE_URL =
-  "https://generativelanguage.googleapis.com/v1beta";
 const DEFAULT_GEMINI_MAX_OUTPUT_TOKENS = 4096;
 const GEMINI_INVALID_FUNCTION_CALL_MESSAGE =
   "Gemini response emitted invalid functionCall";
@@ -64,7 +65,7 @@ interface GeminiParsedResponse {
 function normalizeGeminiBaseURL(baseURL: string | undefined): string {
   const normalized = baseURL?.trim();
   if (!normalized) {
-    return DEFAULT_GEMINI_BASE_URL;
+    return BUILT_IN_PROVIDER_BASE_URLS.gemini;
   }
   return normalized
     .replace(/\/openai\/?$/iu, "")
@@ -846,7 +847,7 @@ export class GeminiProvider implements LLMProvider {
   readonly name = "gemini";
   readonly tokenCountCapability: ProviderTokenCountCapability;
 
-  private readonly config: GeminiProviderConfig;
+  private readonly config: GeminiProviderConfig & { readonly baseURL: string };
   private readonly client: ProviderHttpClient;
 
   constructor(config: GeminiProviderConfig) {
@@ -860,7 +861,7 @@ export class GeminiProvider implements LLMProvider {
     };
     this.client = new ProviderHttpClient({
       providerName: this.name,
-      baseURL: this.config.baseURL ?? DEFAULT_GEMINI_BASE_URL,
+      baseURL: this.config.baseURL,
       model: this.config.model,
       defaultHeaders: this.config.defaultHeaders,
       resolveAuthHeaders: () => resolveGeminiAuthHeaders(this.config),

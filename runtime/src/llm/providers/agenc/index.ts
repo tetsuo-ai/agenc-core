@@ -24,6 +24,7 @@ import type {
 } from "../../types.js";
 import type { ProviderFactoryOptions, ProviderName } from "../../provider.js";
 import { normalizeProviderIdentity } from "../../../provider-identity.js";
+import { BUILT_IN_PROVIDER_DEFAULT_MODELS } from "../../registry/provider-info.js";
 
 type ConcreteProviderName = Exclude<ProviderName, "agenc">;
 
@@ -123,7 +124,9 @@ export class AgenCProvider implements LLMProvider {
     if (options.provider === undefined || options.provider === "agenc") {
       return new AgenCProvider({
         ...this.#config,
-        model: firstNonEmpty(options.model, this.#config.model) ?? "agenc",
+        model:
+          firstNonEmpty(options.model, this.#config.model) ??
+          BUILT_IN_PROVIDER_DEFAULT_MODELS.agenc,
         tools: [],
         timeoutMs: options.timeoutMs,
         maxTokens: options.maxOutputTokens,
@@ -230,7 +233,8 @@ export class AgenCProvider implements LLMProvider {
     options?: Pick<LLMChatOptions, "model">,
   ): Promise<ResolvedAgenCDelegate> {
     const requestedModel =
-      firstNonEmpty(options?.model, this.#config.model) ?? "agenc";
+      firstNonEmpty(options?.model, this.#config.model) ??
+      BUILT_IN_PROVIDER_DEFAULT_MODELS.agenc;
     const cacheKey = `${this.#config.subscriptionTier ?? ""}\0${requestedModel}`;
     const existing = this.#delegates.get(cacheKey);
     if (existing !== undefined) {

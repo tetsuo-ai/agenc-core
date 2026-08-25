@@ -64,8 +64,10 @@ import {
   type ProviderFallbackDecision,
 } from "../../api/fallback-ladder.js";
 import { getRetryDelay, sleepMs } from "../../api/retry.js";
-
-const DEFAULT_BASE_URL = "https://api.openai.com/v1";
+import {
+  providerApiKeyEnvironmentLabel,
+  resolveBuiltInProviderInfo,
+} from "../../registry/provider-info.js";
 const OPENAI_RESPONSES_INVALID_FUNCTION_CALL_MESSAGE =
   "OpenAI Responses stream emitted invalid function_call"; // branding-scan: allow real OpenAI provider identifier
 const OPENAI_STREAM_FAILED_MESSAGE = "OpenAI stream failed"; // branding-scan: allow real OpenAI provider identifier
@@ -452,28 +454,69 @@ type ProviderFallbackWaitDecision = Extract<
   { readonly kind: "wait" }
 >;
 
+type ResolvedOpenAIProviderConfig = OpenAIProviderConfig & {
+  readonly baseURL: string;
+  readonly providerName: string;
+};
+
+function resolveOpenAIProviderConfig(
+  config: OpenAIProviderConfig,
+): ResolvedOpenAIProviderConfig {
+  const providerName = config.providerName ?? "openai";
+  const providerInfo = resolveBuiltInProviderInfo(providerName);
+  const baseURL = config.baseURL ?? providerInfo?.baseURL;
+  if (baseURL === undefined || baseURL.trim().length === 0) {
+    throw new Error(
+      `${providerName} provider requires an explicit baseURL because it is not registered`,
+    );
+  }
+
+  const apiKeyEnvLabel =
+    config.apiKeyEnvLabel ?? providerApiKeyEnvironmentLabel(providerName);
+  const authStrategy = config.authStrategy ?? "bearer";
+  const hasOAuthCredential =
+    config.authMode === "oauth" &&
+    Boolean(config.oauth?.accessToken.trim());
+  if (
+    !hasOAuthCredential &&
+    (authStrategy === "bearer" || authStrategy === "google_api_key") &&
+    apiKeyEnvLabel === undefined
+  ) {
+    throw new Error(
+      `${providerName} provider requires an explicit apiKeyEnvLabel because it is not registered`,
+    );
+  }
+
+  return {
+    ...config,
+    providerName,
+    baseURL,
+    ...(apiKeyEnvLabel !== undefined ? { apiKeyEnvLabel } : {}),
+  };
+}
+
 export class OpenAIProvider implements LLMProvider {
   readonly name: string;
 
-  private readonly config: OpenAIProviderConfig;
+  private readonly config: ResolvedOpenAIProviderConfig;
   private readonly client: ProviderHttpClient;
   private readonly auth: OpenAIAuthSession;
 
   constructor(config: OpenAIProviderConfig) {
-    this.name = config.providerName ?? "openai";
-    this.config = config;
-    this.auth = new OpenAIAuthSession(config);
+    this.config = resolveOpenAIProviderConfig(config);
+    this.name = this.config.providerName;
+    this.auth = new OpenAIAuthSession(this.config);
     this.client = new ProviderHttpClient({
       providerName: this.name,
-      baseURL: config.baseURL ?? DEFAULT_BASE_URL,
-      model: config.model,
-      defaultHeaders: config.defaultHeaders,
+      baseURL: this.config.baseURL,
+      model: this.config.model,
+      defaultHeaders: this.config.defaultHeaders,
       resolveAuthHeaders: (context) => this.auth.resolveHeaders(context),
-      timeoutMs: config.timeoutMs,
-      fetchImpl: config.fetchImpl,
-      providerFallback: config.providerFallback,
-      emitWarning: config.emitWarning,
-      onCapabilityDrift: config.onCapabilityDrift,
+      timeoutMs: this.config.timeoutMs,
+      fetchImpl: this.config.fetchImpl,
+      providerFallback: this.config.providerFallback,
+      emitWarning: this.config.emitWarning,
+      onCapabilityDrift: this.config.onCapabilityDrift,
     });
   }
 
@@ -635,7 +678,7 @@ export class OpenAIProvider implements LLMProvider {
       const networkError = mapOpenAINetworkFailureToError({
         providerName: this.name,
         error,
-        url: this.config.baseURL ?? DEFAULT_BASE_URL,
+        url: this.config.baseURL,
       });
       if (networkError) {
         throw networkError;
@@ -679,7 +722,7 @@ export class OpenAIProvider implements LLMProvider {
       const networkError = mapOpenAINetworkFailureToError({
         providerName: this.name,
         error,
-        url: this.config.baseURL ?? DEFAULT_BASE_URL,
+        url: this.config.baseURL,
       });
       if (networkError) {
         throw networkError;

@@ -22,7 +22,7 @@ export interface GrokProviderConfig
   apiKey: string;
   /** Home-bound native OAuth authority for preflight refresh checks. */
   credentialHome?: HomeContext;
-  /** Base URL for the xAI API (default: 'https://api.x.ai/v1') */
+  /** API base URL; defaults to the canonical provider-registry endpoint. */
   baseURL?: string;
   /** Optional operator override for effective context window budgeting. */
   contextWindowTokens?: number;
