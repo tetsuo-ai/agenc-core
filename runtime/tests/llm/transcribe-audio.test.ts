@@ -49,7 +49,7 @@ describe("transcribing a recording", () => {
         env: {},
         fetchImpl: vi.fn() as unknown as typeof fetch,
       }),
-    ).rejects.toThrow(/OPENAI_API_KEY/);
+    ).rejects.toThrow(/OPENAI_API_KEY or GEMINI_API_KEY/);
   });
 
   test("carries the endpoint's own reason", async () => {
@@ -99,6 +99,51 @@ describe("transcribing a recording", () => {
     ];
     expect(url).toBe("http://127.0.0.1:9099/v1/audio/transcriptions");
     expect((init.body as FormData).get("model")).toBe("whisper-1");
+  });
+
+  test("falls to Gemini when that is the key present", async () => {
+    // A ChatGPT subscription login leaves no OPENAI_API_KEY behind, so for
+    // most sessions here Gemini is the only credential that can do this.
+    const fetchImpl = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            candidates: [{ content: { parts: [{ text: "spoken words" }] } }],
+          }),
+          { status: 200 },
+        ),
+    );
+    const result = await transcribeAudio({
+      bytes: BYTES,
+      filename: "voice.webm",
+      mimeType: "audio/webm",
+      env: { GEMINI_API_KEY: "g" },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+
+    expect(result.text).toBe("spoken words");
+    const [url, init] = fetchImpl.mock.calls[0] as unknown as [
+      string,
+      RequestInit,
+    ];
+    expect(url).toContain("gemini-3.5-flash:generateContent");
+    expect((init.headers as Record<string, string>)["x-goog-api-key"]).toBe("g");
+    const body = JSON.parse(init.body as string) as {
+      contents: { parts: { inlineData?: { mimeType: string } }[] }[];
+    };
+    expect(body.contents[0]?.parts[1]?.inlineData?.mimeType).toBe("audio/webm");
+  });
+
+  test("prefers an OpenAI key over Gemini when both are set", async () => {
+    const fetchImpl = vi.fn(async () => okResponse("from openai"));
+    await transcribeAudio({
+      bytes: BYTES,
+      filename: "voice.webm",
+      mimeType: "audio/webm",
+      env: { OPENAI_API_KEY: "k", GEMINI_API_KEY: "g" },
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(fetchImpl.mock.calls[0]?.[0]).toContain("/audio/transcriptions");
   });
 
   test("knows the extensions a recording arrives as", () => {

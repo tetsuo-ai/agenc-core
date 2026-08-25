@@ -17,6 +17,9 @@ const DEFAULT_ENDPOINT = "https://api.openai.com/v1";
 /** Cheap, fast, and current; whisper-1 remains the compatibility floor. */
 const DEFAULT_MODEL = "gpt-4o-transcribe"; // branding-scan: allow OpenAI model identifier
 
+/** What Gemini transcribes with when it is the credential that is present. */
+const DEFAULT_GEMINI_MODEL = "gemini-3.5-flash";
+
 /** Env names an OpenAI-compatible transcription key may arrive under. */
 const KEY_ENV_NAMES = [
   "OPENAI_API_KEY",
@@ -53,11 +56,79 @@ function resolveEndpoint(env: NodeJS.ProcessEnv): string {
 }
 
 /**
- * Post the recording to an OpenAI-compatible `/audio/transcriptions`.
+ * Gemini hears audio directly, so it transcribes through an ordinary
+ * generateContent call rather than a transcription endpoint. Worth trying
+ * first when its key is the one present: a ChatGPT subscription login
+ * leaves no OPENAI_API_KEY behind, so for most sessions here this is the
+ * only credential that can do the job.
+ */
+async function transcribeWithGemini(params: {
+  readonly bytes: Uint8Array;
+  readonly mimeType: string;
+  readonly key: string;
+  readonly model: string;
+  readonly signal?: AbortSignal;
+  readonly fetchImpl?: typeof fetch;
+}): Promise<TranscriptionResult> {
+  const doFetch = params.fetchImpl ?? fetch;
+  const response = await doFetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${params.model}:generateContent`,
+    {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-goog-api-key": params.key,
+      },
+      body: JSON.stringify({
+        contents: [
+          {
+            parts: [
+              {
+                text: "Transcribe this recording verbatim. Reply with the transcript and nothing else.",
+              },
+              {
+                inlineData: {
+                  mimeType: params.mimeType,
+                  data: Buffer.from(params.bytes).toString("base64"),
+                },
+              },
+            ],
+          },
+        ],
+      }),
+      ...(params.signal !== undefined ? { signal: params.signal } : {}),
+    },
+  );
+  if (!response.ok) {
+    const detail = (await response.text().catch(() => "")).slice(0, 400);
+    throw new TranscriptionUnavailableError(
+      `Transcription failed (${response.status})${detail ? `: ${detail}` : ""}`,
+    );
+  }
+  const payload = (await response.json()) as {
+    candidates?: {
+      content?: { parts?: { text?: string }[] };
+    }[];
+  };
+  const text = (payload.candidates?.[0]?.content?.parts ?? [])
+    .map((part) => part.text ?? "")
+    .join("")
+    .trim();
+  if (text.length === 0) {
+    throw new TranscriptionUnavailableError(
+      "The recording transcribed to nothing — it may be silent.",
+    );
+  }
+  return { text, model: params.model };
+}
+
+/**
+ * Words from a recording, by whichever credential is present.
  *
- * Multipart is built by hand through FormData/Blob rather than a helper so
- * this carries no dependency: the file is already in memory as the bytes the
- * read tool just took off disk.
+ * An OpenAI-compatible `/audio/transcriptions` when there is a key for one —
+ * multipart built by hand so this carries no dependency, since the bytes are
+ * already in memory from the read. Otherwise Gemini, which hears audio
+ * natively and is the key a session here usually has.
  */
 export async function transcribeAudio(params: {
   readonly bytes: Uint8Array;
@@ -70,8 +141,20 @@ export async function transcribeAudio(params: {
   const env = params.env ?? process.env;
   const key = resolveKey(env);
   if (key === undefined) {
+    const geminiKey =
+      env.GEMINI_API_KEY?.trim() || env.GOOGLE_API_KEY?.trim() || "";
+    if (geminiKey.length > 0) {
+      return await transcribeWithGemini({
+        bytes: params.bytes,
+        mimeType: params.mimeType,
+        key: geminiKey,
+        model: env.AGENC_TRANSCRIBE_MODEL?.trim() || DEFAULT_GEMINI_MODEL,
+        ...(params.signal !== undefined ? { signal: params.signal } : {}),
+        ...(params.fetchImpl !== undefined ? { fetchImpl: params.fetchImpl } : {}),
+      });
+    }
     throw new TranscriptionUnavailableError(
-      "No transcription credentials. Set OPENAI_API_KEY (or AGENC_OPENAI_API_KEY) to have voice notes transcribed.",
+      "No transcription credentials. Set OPENAI_API_KEY or GEMINI_API_KEY to have voice notes transcribed.",
     );
   }
   const model = env.AGENC_TRANSCRIBE_MODEL?.trim() || DEFAULT_MODEL;
