@@ -13,12 +13,12 @@
  */
 
 import type { GrokCapabilityConfig } from "../config/schema.js";
-import { resolveApiKey } from "../config/env.js";
 import { readXaiOauthAccessToken } from "../utils/xaiOauthCredentials.js";
 import type { HomeContext } from "../config/home.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
 import type { ProviderRuntimeExtra } from "./provider.js";
 import { isDynamicSessionCredentialEnvironmentKey } from "../session/environment.js";
+import { resolveProviderApiKeyEnvironment } from "./registry/provider-ingress.js";
 
 const DIRECT_XAI_HOST_SUFFIXES = [".x.ai", ".grok.com"] as const;
 
@@ -292,7 +292,7 @@ export function hasXaiCredentials(
   env?: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
 ): boolean {
   if (readXaiOauthAccessToken(home) !== undefined) return true;
-  return resolveApiKey(env as NodeJS.ProcessEnv | undefined) !== undefined;
+  return resolveProviderApiKeyEnvironment("grok", env ?? {}) !== undefined;
 }
 
 /**
@@ -321,7 +321,42 @@ export function resolveXaiBearerToken(
     // Still prefer OAuth-first: if no oauth, session then BYOK.
     return session;
   }
-  return resolveApiKey(env as NodeJS.ProcessEnv | undefined);
+  return resolveProviderApiKeyEnvironment("grok", env ?? {})?.value;
+}
+
+export interface ResolvedGrokProviderCredential {
+  readonly value?: string;
+  /** True only when the selected value came from stored xAI OAuth. */
+  readonly isOAuth: boolean;
+}
+
+/** Resolve Grok credentials and the only source distinction consumers need. */
+export function resolveGrokProviderCredential(
+  home: HomeContext,
+  explicitApiKey: string | undefined,
+  env: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>> = {},
+): ResolvedGrokProviderCredential {
+  const oauth = readXaiOauthAccessToken(home);
+  if (oauth !== undefined) {
+    return Object.freeze({
+      value: oauth,
+      isOAuth: true,
+    });
+  }
+  const explicit = explicitApiKey?.trim();
+  if (explicit && explicit.toLowerCase() !== "undefined") {
+    return Object.freeze({
+      value: explicit,
+      isOAuth: false,
+    });
+  }
+  const environment = resolveProviderApiKeyEnvironment("grok", env);
+  return environment === undefined
+    ? Object.freeze({ isOAuth: false })
+    : Object.freeze({
+        value: environment.value,
+        isOAuth: false,
+      });
 }
 
 /**
@@ -333,9 +368,5 @@ export function resolveGrokProviderApiKey(
   explicitApiKey: string | undefined,
   env?: NodeJS.ProcessEnv | Readonly<Record<string, string | undefined>>,
 ): string | undefined {
-  const oauth = readXaiOauthAccessToken(home);
-  if (oauth !== undefined) return oauth;
-  const explicit = explicitApiKey?.trim();
-  if (explicit) return explicit;
-  return resolveApiKey(env as NodeJS.ProcessEnv | undefined);
+  return resolveGrokProviderCredential(home, explicitApiKey, env).value;
 }

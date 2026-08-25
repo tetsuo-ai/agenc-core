@@ -41,9 +41,9 @@ const HERMETIC_RUNTIME_MARKER_VERSION =
 /**
  * Provider credential env vars.
  *
- * Canonical source: the ordered apiKeyEnvVars arrays in
- * BUILT_IN_PROVIDER_DEFINITIONS (src/llm/registry/provider-info.ts), unioned
- * with companion names the codebase also resolves:
+ * Canonical source: the credential fields in BUILT_IN_PROVIDER_DEFINITIONS
+ * (src/llm/registry/provider-info.ts), unioned with names the codebase also
+ * resolves outside built-in provider authentication:
  *   - retired AGENC_XAI_API_KEY, which remains in
  *     this scrub list only so a developer's ambient obsolete value cannot
  *     contaminate rejection tests

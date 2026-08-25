@@ -171,6 +171,7 @@ function makeAuthBackend(
     logout: vi.fn(() => ({ authenticated: false })),
     whoami: vi.fn(() => ({ authenticated: true, provider: kind })),
     vendKey: vi.fn((provider, sessionId) => ({
+      kind: "api-key",
       provider: String(provider),
       sessionId,
       apiKey,

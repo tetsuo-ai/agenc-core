@@ -7,21 +7,29 @@ import type { AuthBackend, AuthBackendKind, AuthSubscriptionTier } from "../../a
 import { loadCanonicalConfig } from "../../config/repository.js";
 import { resolveProviderSettings } from "../../config/resolve-provider.js";
 import type { AgenCConfig } from "../../config/schema.js";
-import { readXaiOauthAccessToken } from "../../utils/xaiOauthCredentials.js";
 import type { HomeContext } from "../../config/home.js";
 import { captureSecureStorageIngress } from "../../utils/secureStorage/home.js";
-import { resolveProviderApiKeyEnvironment } from "../registry/provider-ingress.js";
+import {
+  GROK_OAUTH_CREDENTIAL_PROVENANCE,
+  missingProviderCredentialEnvironmentLabel,
+  providerCredentialEnvironmentProvenance,
+  resolveProviderCredentialEnvironment,
+  type ProviderCredentialEnvironmentResolution,
+  type ProviderCredentialProvenance,
+} from "../registry/provider-ingress.js";
 import {
   BUILT_IN_PROVIDER_DEFINITIONS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
+  providerCredentialEnvironmentLabel,
 } from "../registry/provider-info.js";
 import {
   resolveBuiltInProviderSlug,
   type ProviderName,
 } from "../provider.js";
+import { resolveGrokProviderCredential } from "../xai-capability-config.js";
 
 export type ProviderAvailabilityStatus = "usable" | "unusable";
-export type ProviderKeyStatus =
+export type ProviderCredentialStatus =
   | "present"
   | "missing"
   | "managed"
@@ -54,8 +62,8 @@ export interface ProviderAvailabilityEntry {
   readonly model: string;
   readonly status: ProviderAvailabilityStatus;
   readonly usable: boolean;
-  readonly keyStatus: ProviderKeyStatus;
-  readonly keyEnvVar?: string;
+  readonly credentialStatus: ProviderCredentialStatus;
+  readonly credentialProvenance?: ProviderCredentialProvenance;
   readonly localStatus: ProviderLocalStatus;
   readonly localUrl?: string;
   readonly localStatusCode?: number;
@@ -136,12 +144,12 @@ export function formatProviderAvailabilityReport(
     "",
     "",
     table([
-      ["Provider", "Model", "Usable", "Key", "Local", "Tier", "Detail"],
+      ["Provider", "Model", "Usable", "Credential", "Local", "Tier", "Detail"],
       ...report.entries.map((entry) => [
         entry.provider,
         entry.model,
         entry.usable ? "yes" : "no",
-        formatKeyStatus(entry),
+        formatCredentialStatus(entry),
         formatLocalStatus(entry),
         entry.subscriptionTier ?? "unknown",
         entry.detail,
@@ -193,13 +201,11 @@ async function resolveProviderAvailabilityEntry(params: {
     provider: params.provider,
     home: params.home,
     env: params.env,
-    settingsApiKey: settings?.apiKey,
   });
-  const keyEnvVar = credential.sourceEnvVar ?? credential.primaryEnvVar;
-  const hasKey = credential.apiKey !== undefined;
-  const hasRequiredAwsSecret = params.provider !== "amazon-bedrock" ||
-    firstNonEmptyString(params.env.AWS_BEDROCK_SECRET_ACCESS_KEY) !== undefined ||
-    firstNonEmptyString(params.env.AWS_SECRET_ACCESS_KEY) !== undefined;
+  const credentialReady = credential.ready;
+  const missingRequired = credential.environment.kind === "aws-sigv4"
+    ? credential.environment.missingRequired
+    : [];
   const subscriptionTier = params.subscription.tier;
   const paidSubscription = isPaidSubscriptionTier(subscriptionTier);
   const localUrl = localProviderProbeUrl(
@@ -234,7 +240,7 @@ async function resolveProviderAvailabilityEntry(params: {
     return buildEntry({
       provider: params.provider,
       model,
-      keyStatus: "not-required",
+      credentialStatus: "not-required",
       localProbe,
       subscription: params.subscription,
       usable: hostedRoute.usable,
@@ -247,7 +253,10 @@ async function resolveProviderAvailabilityEntry(params: {
     return buildEntry({
       provider: params.provider,
       model,
-      keyStatus: localProviderKeyStatus(params.provider, hasKey),
+      credentialStatus: localProviderCredentialStatus(
+        params.provider,
+        credentialReady,
+      ),
       localProbe,
       subscription: params.subscription,
       usable,
@@ -256,36 +265,49 @@ async function resolveProviderAvailabilityEntry(params: {
         : params.checkLocal
           ? `start local server or check ${localUrl}`
           : "local server check skipped",
-      ...(hasKey && keyEnvVar !== undefined ? { keyEnvVar } : {}),
+      ...(credential.provenance !== undefined
+        ? { credentialProvenance: credential.provenance }
+        : {}),
     });
   }
 
   if (
-    BUILT_IN_PROVIDER_DEFINITIONS[params.provider].onboarding.access ===
-      "api-key"
+    ["api-key", "environment"].includes(
+      BUILT_IN_PROVIDER_DEFINITIONS[params.provider].onboarding.access,
+    )
   ) {
-    if (hasKey && !hasRequiredAwsSecret) {
+    if (missingRequired.length > 0) {
+      const missingLabel = missingProviderCredentialEnvironmentLabel(
+        params.provider,
+        params.env,
+      );
       return buildEntry({
         provider: params.provider,
         model,
-        keyStatus: "missing",
+        credentialStatus: "missing",
         localProbe,
         subscription: params.subscription,
         usable: false,
-        detail: "set AWS_SECRET_ACCESS_KEY for Amazon Bedrock SigV4 signing",
-        ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
+        detail: `set ${missingLabel ?? "the required provider credentials"}`,
+        ...(credential.provenance !== undefined
+          ? { credentialProvenance: credential.provenance }
+          : {}),
       });
     }
-    if (hasKey) {
+    if (credentialReady) {
       return buildEntry({
         provider: params.provider,
         model,
-        keyStatus: "present",
+        credentialStatus: "present",
         localProbe,
         subscription: params.subscription,
         usable: true,
-        detail: `BYOK credential found${keyEnvVar ? ` via ${keyEnvVar}` : ""}`,
-        ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
+        detail: credential.provenance?.kind === "oauth"
+          ? "xAI OAuth credential found"
+          : `BYOK credential found via ${credential.provenance?.fields.map((field) => field.envVar).join(" + ") ?? "canonical credential ingress"}`,
+        ...(credential.provenance !== undefined
+          ? { credentialProvenance: credential.provenance }
+          : {}),
       });
     }
     if (
@@ -302,29 +324,27 @@ async function resolveProviderAvailabilityEntry(params: {
         return buildEntry({
           provider: params.provider,
           model,
-          keyStatus: "unavailable",
+          credentialStatus: "unavailable",
           localProbe,
           subscription: params.subscription,
           usable: false,
           detail: managedKey.detail,
-          ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
         });
       }
       return buildEntry({
         provider: params.provider,
         model,
-        keyStatus: "managed",
+        credentialStatus: "managed",
         localProbe,
         subscription: params.subscription,
         usable: true,
         detail: "managed key available through AgenC subscription",
-        ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
       });
     }
     return buildEntry({
       provider: params.provider,
       model,
-      keyStatus: "missing",
+      credentialStatus: "missing",
       localProbe,
       subscription: params.subscription,
       usable: false,
@@ -332,15 +352,14 @@ async function resolveProviderAvailabilityEntry(params: {
         params.subscription.authBackendKind === "remote" &&
           subscriptionTier === "free"
           ? "set BYOK credential or upgrade subscription for managed keys"
-          : `set ${keyEnvVar ?? "provider API key"}`,
-      ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
+          : `set ${providerCredentialEnvironmentLabel(params.provider) ?? "provider credentials"}`,
     });
   }
 
   return buildEntry({
     provider: params.provider,
     model,
-    keyStatus: "not-required",
+    credentialStatus: "not-required",
     localProbe,
     subscription: params.subscription,
     usable: true,
@@ -351,7 +370,7 @@ async function resolveProviderAvailabilityEntry(params: {
 function buildEntry(params: {
   readonly provider: ProviderName;
   readonly model: string;
-  readonly keyStatus: ProviderKeyStatus;
+  readonly credentialStatus: ProviderCredentialStatus;
   readonly localProbe: {
     readonly localStatus: ProviderLocalStatus;
     readonly localStatusCode?: number;
@@ -360,15 +379,17 @@ function buildEntry(params: {
   readonly subscription: SubscriptionContext;
   readonly usable: boolean;
   readonly detail: string;
-  readonly keyEnvVar?: string;
+  readonly credentialProvenance?: ProviderCredentialProvenance;
 }): ProviderAvailabilityEntry {
   return {
     provider: params.provider,
     model: params.model,
     status: params.usable ? "usable" : "unusable",
     usable: params.usable,
-    keyStatus: params.keyStatus,
-    ...(params.keyEnvVar !== undefined ? { keyEnvVar: params.keyEnvVar } : {}),
+    credentialStatus: params.credentialStatus,
+    ...(params.credentialProvenance !== undefined
+      ? { credentialProvenance: params.credentialProvenance }
+      : {}),
     localStatus: params.localProbe.localStatus,
     ...(params.localProbe.localUrl !== undefined
       ? { localUrl: params.localProbe.localUrl }
@@ -386,52 +407,64 @@ function buildEntry(params: {
   };
 }
 
-function localProviderKeyStatus(
+function localProviderCredentialStatus(
   provider: ProviderName,
-  hasKey: boolean,
-): ProviderKeyStatus {
+  credentialReady: boolean,
+): ProviderCredentialStatus {
   if (provider === "ollama") return "not-required";
-  return hasKey ? "present" : "optional";
+  return credentialReady ? "present" : "optional";
 }
 
 function resolveProviderCredential(params: {
   readonly provider: ProviderName;
   readonly home: HomeContext;
   readonly env: NodeJS.ProcessEnv;
-  readonly settingsApiKey?: string;
 }): {
+  readonly ready: boolean;
   readonly apiKey?: string;
-  readonly sourceEnvVar?: string;
-  readonly primaryEnvVar?: string;
+  readonly provenance?: ProviderCredentialProvenance;
+  readonly environment: ProviderCredentialEnvironmentResolution;
 } {
-  const primaryEnvVar =
-    BUILT_IN_PROVIDER_DEFINITIONS[params.provider].apiKeyEnvVars[0];
+  const environment = resolveProviderCredentialEnvironment(
+    params.provider,
+    params.env,
+  ) ?? { kind: "none" as const, sources: [], missingRequired: [] };
   if (params.provider === "grok") {
-    // Sign in with X / xAI OAuth: a stored subscription bearer counts as a
-    // present credential and outranks stale shell keys.
-    const oauthBearer = readXaiOauthAccessToken(params.home);
-    if (oauthBearer !== undefined) {
+    const grok = resolveGrokProviderCredential(
+      params.home,
+      undefined,
+      params.env,
+    );
+    if (grok.value !== undefined && grok.isOAuth) {
       return {
-        apiKey: oauthBearer,
-        primaryEnvVar,
+        ready: true,
+        provenance: GROK_OAUTH_CREDENTIAL_PROVENANCE,
+        environment,
       };
     }
   }
-  const environmentMatch = resolveProviderApiKeyEnvironment(
-    params.provider,
-    params.env,
-  );
-  if (environmentMatch !== undefined) {
+  const environmentApiKey = environment.kind === "api-key"
+    ? environment.apiKey?.value
+    : undefined;
+  const ready = environment.kind === "api-key"
+    ? environmentApiKey !== undefined
+    : environment.kind === "aws-sigv4"
+      ? environment.missingRequired.length === 0
+      : false;
+  if (ready) {
+    const provenance = providerCredentialEnvironmentProvenance(environment);
     return {
-      apiKey: environmentMatch.value,
-      sourceEnvVar: environmentMatch.envVar,
-      primaryEnvVar,
+      ready: true,
+      ...(environmentApiKey !== undefined ? { apiKey: environmentApiKey } : {}),
+      ...(provenance !== undefined ? { provenance } : {}),
+      environment,
     };
   }
-  const settingsApiKey = firstNonEmptyString(params.settingsApiKey);
+  const provenance = providerCredentialEnvironmentProvenance(environment);
   return {
-    ...(settingsApiKey !== undefined ? { apiKey: settingsApiKey } : {}),
-    primaryEnvVar,
+    ready: false,
+    ...(provenance !== undefined ? { provenance } : {}),
+    environment,
   };
 }
 
@@ -555,6 +588,13 @@ async function verifyManagedProviderKey(params: {
       params.provider,
       PROVIDER_CHECK_SESSION_ID,
     );
+    if (key.kind !== "api-key") {
+      return {
+        usable: false,
+        detail:
+          `managed key unavailable: expected api-key credential for ${params.provider}, received ${key.kind}`,
+      };
+    }
     const apiKey = firstNonEmptyString(key.apiKey);
     if (apiKey === undefined) {
       return {
@@ -655,14 +695,19 @@ async function verifyHostedAgencRoute(params: {
   }
 }
 
-function formatKeyStatus(entry: ProviderAvailabilityEntry): string {
-  if (entry.keyStatus === "missing" && entry.keyEnvVar !== undefined) {
-    return `missing(${entry.keyEnvVar})`;
+function formatCredentialStatus(entry: ProviderAvailabilityEntry): string {
+  if (
+    entry.credentialStatus === "present" &&
+    entry.credentialProvenance !== undefined
+  ) {
+    if (entry.credentialProvenance.kind === "oauth") {
+      return "present(xAI OAuth)";
+    }
+    if (entry.credentialProvenance.kind === "environment") {
+      return `present(${entry.credentialProvenance.fields.map((field) => field.envVar).join("+")})`;
+    }
   }
-  if (entry.keyStatus === "present" && entry.keyEnvVar !== undefined) {
-    return `present(${entry.keyEnvVar})`;
-  }
-  return entry.keyStatus;
+  return entry.credentialStatus;
 }
 
 function formatLocalStatus(entry: ProviderAvailabilityEntry): string {

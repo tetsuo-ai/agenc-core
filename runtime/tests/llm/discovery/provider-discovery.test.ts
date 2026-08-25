@@ -1,11 +1,44 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it, vi } from "vitest";
 
 import type { AuthBackend, AuthSubscriptionTier } from "../../auth/backend.js";
+import { resolveHomeContext } from "../../config/home.js";
 import { defaultConfig } from "../../config/schema.js";
+import {
+  clearXaiOauthCredentials,
+  saveXaiOauthCredentials,
+} from "../../utils/xaiOauthCredentials.js";
 import {
   collectProviderAvailability,
   formatProviderAvailabilityReport,
 } from "./provider-discovery.js";
+
+type CredentialFieldRole =
+  | "apiKey"
+  | "accessKeyId"
+  | "secretAccessKey"
+  | "sessionToken"
+  | "region";
+
+function environmentCredentialProvenance(
+  ...fields: ReadonlyArray<
+    readonly [role: CredentialFieldRole, envVar: string]
+  >
+): {
+  readonly kind: "environment";
+  readonly fields: readonly {
+    readonly role: CredentialFieldRole;
+    readonly envVar: string;
+  }[];
+} {
+  return {
+    kind: "environment",
+    fields: fields.map(([role, envVar]) => ({ role, envVar })),
+  };
+}
 
 function authBackend(
   kind: "local" | "remote",
@@ -26,6 +59,7 @@ function authBackend(
       provider: kind,
     }),
     vendKey: overrides.vendKey ?? ((provider, sessionId) => ({
+      kind: "api-key",
       provider,
       sessionId,
       apiKey: "managed-key",
@@ -78,29 +112,35 @@ describe("provider discovery", () => {
     });
     expect(entries.get("grok")).toMatchObject({
       usable: true,
-      keyStatus: "present",
-      keyEnvVar: "XAI_API_KEY",
+      credentialStatus: "present",
     });
+    expect(entries.get("grok")?.credentialProvenance).toEqual(
+      environmentCredentialProvenance(["apiKey", "XAI_API_KEY"]),
+    );
     expect(entries.get("anthropic")).toMatchObject({
       usable: false,
-      keyStatus: "missing",
-      keyEnvVar: "ANTHROPIC_API_KEY",
+      credentialStatus: "missing",
     });
+    expect(entries.get("anthropic")).not.toHaveProperty("credentialProvenance");
     expect(entries.get("openai")).toMatchObject({
       usable: false,
-      keyStatus: "missing",
-      keyEnvVar: "OPENAI_API_KEY",
+      credentialStatus: "missing",
     });
+    expect(entries.get("openai")).not.toHaveProperty("credentialProvenance");
     expect(entries.get("ollama")).toMatchObject({
       usable: true,
-      keyStatus: "not-required",
+      credentialStatus: "not-required",
       localStatus: "up",
     });
+    expect(entries.get("ollama")).not.toHaveProperty("credentialProvenance");
     expect(entries.get("lmstudio")).toMatchObject({
       usable: true,
-      keyStatus: "present",
+      credentialStatus: "present",
       localStatus: "up",
     });
+    expect(entries.get("lmstudio")?.credentialProvenance).toEqual(
+      environmentCredentialProvenance(["apiKey", "LMSTUDIO_API_KEY"]),
+    );
   });
 
   it("detects subscription-managed provider keys", async () => {
@@ -109,7 +149,12 @@ describe("provider discovery", () => {
       authBackend: authBackend("remote", "team", {
         vendKey: (provider, sessionId) => {
           calls.push(`${provider}:${sessionId}`);
-          return { provider, sessionId, apiKey: `managed-${provider}` };
+          return {
+            kind: "api-key" as const,
+            provider,
+            sessionId,
+            apiKey: `managed-${provider}`,
+          };
         },
       }),
       checkLocal: false,
@@ -122,21 +167,47 @@ describe("provider discovery", () => {
     // remain explicit BYOK routes.
     expect(entries.get("openrouter")).toMatchObject({
       usable: true,
-      keyStatus: "managed",
+      credentialStatus: "managed",
       subscriptionTier: "team",
     });
     expect(entries.get("openai")).toMatchObject({
       usable: false,
-      keyStatus: "missing",
+      credentialStatus: "missing",
       subscriptionTier: "team",
     });
     expect(entries.get("agenc")).toMatchObject({
       usable: true,
-      keyStatus: "not-required",
+      credentialStatus: "not-required",
       subscriptionTier: "team",
     });
     expect(calls).toContain("openrouter:cli");
     expect(calls).not.toContain("openai:cli");
+  });
+
+  it("rejects a non-API-key credential from managed API-key discovery", async () => {
+    const report = await collectProviderAvailability({
+      authBackend: authBackend("remote", "team", {
+        vendKey: (provider, sessionId) => ({
+          kind: "aws-sigv4",
+          provider,
+          sessionId,
+          accessKeyId: "managed-access",
+          secretAccessKey: "managed-secret",
+        }),
+      }),
+      checkLocal: false,
+      config: defaultConfig(),
+      env: {},
+    });
+    const openrouter = byProvider(report.entries).get("openrouter");
+
+    expect(openrouter).toMatchObject({
+      usable: false,
+      credentialStatus: "unavailable",
+    });
+    expect(openrouter?.detail).toContain(
+      "expected api-key credential for openrouter, received aws-sigv4",
+    );
   });
 
   it("uses runtime local-provider env resolution for probe URLs", async () => {
@@ -183,37 +254,94 @@ describe("provider discovery", () => {
 
     expect(entries.get("grok")).toMatchObject({
       usable: true,
-      keyStatus: "present",
-      keyEnvVar: "GROK_API_KEY",
+      credentialStatus: "present",
     });
+    expect(entries.get("grok")?.credentialProvenance).toEqual(
+      environmentCredentialProvenance(["apiKey", "GROK_API_KEY"]),
+    );
     expect(entries.get("lmstudio")).toMatchObject({
-      keyStatus: "optional",
+      credentialStatus: "optional",
     });
-    expect(entries.get("lmstudio")).not.toHaveProperty("keyEnvVar");
+    expect(entries.get("lmstudio")).not.toHaveProperty("credentialProvenance");
     expect(entries.get("openai-compatible")).toMatchObject({
-      keyStatus: "present",
-      keyEnvVar: "OPENAI_API_KEY",
+      credentialStatus: "present",
     });
+    expect(entries.get("openai-compatible")?.credentialProvenance).toEqual(
+      environmentCredentialProvenance(["apiKey", "OPENAI_API_KEY"]),
+    );
     expect(entries.get("mistral")).toMatchObject({
-      keyStatus: "present",
-      keyEnvVar: "MISTRAL_API_KEY",
+      credentialStatus: "present",
     });
+    expect(entries.get("mistral")?.credentialProvenance).toEqual(
+      environmentCredentialProvenance(["apiKey", "MISTRAL_API_KEY"]),
+    );
     expect(entries.get("nvidia-nim")).toMatchObject({
-      keyStatus: "present",
-      keyEnvVar: "NVIDIA_API_KEY",
+      credentialStatus: "present",
     });
+    expect(entries.get("nvidia-nim")?.credentialProvenance).toEqual(
+      environmentCredentialProvenance(["apiKey", "NVIDIA_API_KEY"]),
+    );
     expect(entries.get("minimax")).toMatchObject({
-      keyStatus: "present",
-      keyEnvVar: "MINIMAX_API_KEY",
+      credentialStatus: "present",
     });
+    expect(entries.get("minimax")?.credentialProvenance).toEqual(
+      environmentCredentialProvenance(["apiKey", "MINIMAX_API_KEY"]),
+    );
     expect(entries.get("gemini")).toMatchObject({
-      keyStatus: "present",
-      keyEnvVar: "GOOGLE_API_KEY",
+      credentialStatus: "present",
     });
+    expect(entries.get("gemini")?.credentialProvenance).toEqual(
+      environmentCredentialProvenance(["apiKey", "GOOGLE_API_KEY"]),
+    );
     expect(entries.get("github")).toMatchObject({
-      keyStatus: "present",
-      keyEnvVar: "GH_TOKEN",
+      credentialStatus: "present",
     });
+    expect(entries.get("github")?.credentialProvenance).toEqual(
+      environmentCredentialProvenance(["apiKey", "GH_TOKEN"]),
+    );
+  });
+
+  it("reports OAuth provenance when OAuth wins over grok BYOK aliases", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-provider-oauth-"));
+    const env = {
+      AGENC_HOME: join(root, "home"),
+      HOME: root,
+      XAI_API_KEY: "xai-byok-key",
+      GROK_API_KEY: "grok-byok-key",
+    };
+    const home = resolveHomeContext(env, { platformHome: root });
+
+    try {
+      expect(
+        saveXaiOauthCredentials(home, {
+          accessToken: "xai-oauth-token",
+          accountLabel: "oauth@example.test",
+          expiresAt: Date.now() + 60_000,
+        }).success,
+      ).toBe(true);
+
+      const report = await collectProviderAvailability({
+        authBackend: authBackend("local", "free"),
+        checkLocal: false,
+        config: defaultConfig(),
+        env,
+      });
+      const grok = byProvider(report.entries).get("grok");
+
+      expect(grok).toMatchObject({
+        usable: true,
+        credentialStatus: "present",
+        detail: "xAI OAuth credential found",
+      });
+      expect(grok?.credentialProvenance).toEqual({
+        kind: "oauth",
+        provider: "grok",
+      });
+      expect(grok?.detail).not.toContain("BYOK");
+    } finally {
+      clearXaiOauthCredentials(home);
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("does not treat shared credentials as hosted provider credentials", async () => {
@@ -230,62 +358,153 @@ describe("provider discovery", () => {
 
     expect(entries.get("openai")).toMatchObject({
       usable: true,
-      keyStatus: "present",
-      keyEnvVar: "OPENAI_API_KEY",
+      credentialStatus: "present",
     });
+    expect(entries.get("openai")?.credentialProvenance).toEqual(
+      environmentCredentialProvenance(["apiKey", "OPENAI_API_KEY"]),
+    );
     expect(entries.get("mistral")).toMatchObject({
       usable: false,
-      keyStatus: "missing",
-      keyEnvVar: "MISTRAL_API_KEY",
+      credentialStatus: "missing",
+      detail: "set MISTRAL_API_KEY",
     });
+    expect(entries.get("mistral")).not.toHaveProperty("credentialProvenance");
     expect(entries.get("nvidia-nim")).toMatchObject({
       usable: false,
-      keyStatus: "missing",
-      keyEnvVar: "NVIDIA_API_KEY",
+      credentialStatus: "missing",
+      detail: "set NVIDIA_API_KEY",
     });
+    expect(entries.get("nvidia-nim")).not.toHaveProperty("credentialProvenance");
     expect(entries.get("minimax")).toMatchObject({
       usable: false,
-      keyStatus: "missing",
-      keyEnvVar: "MINIMAX_API_KEY",
+      credentialStatus: "missing",
+      detail: "set MINIMAX_API_KEY",
     });
+    expect(entries.get("minimax")).not.toHaveProperty("credentialProvenance");
     expect(entries.get("github")).toMatchObject({
       usable: false,
-      keyStatus: "missing",
-      keyEnvVar: "GITHUB_TOKEN",
+      credentialStatus: "missing",
+      detail: "set GITHUB_TOKEN or GH_TOKEN",
     });
+    expect(entries.get("github")).not.toHaveProperty("credentialProvenance");
   });
 
-  it("requires both Bedrock access and secret credentials", async () => {
-    const missingSecret = await collectProviderAvailability({
-      authBackend: authBackend("local", "free"),
-      checkLocal: false,
-      config: defaultConfig(),
+  it.each([
+    {
+      name: "no credentials",
+      env: {},
+      usable: false,
+      credentialStatus: "missing",
+      detail:
+        "set AWS_BEDROCK_ACCESS_KEY_ID or AWS_ACCESS_KEY_ID and AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY",
+      provenance: undefined,
+    },
+    {
+      name: "access-only generic alias",
+      env: { AWS_ACCESS_KEY_ID: "aws-access" },
+      usable: false,
+      credentialStatus: "missing",
+      detail:
+        "set AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY",
+      provenance: environmentCredentialProvenance([
+        "accessKeyId",
+        "AWS_ACCESS_KEY_ID",
+      ]),
+    },
+    {
+      name: "secret-only Bedrock alias",
+      env: { AWS_BEDROCK_SECRET_ACCESS_KEY: "aws-secret" },
+      usable: false,
+      credentialStatus: "missing",
+      detail: "set AWS_BEDROCK_ACCESS_KEY_ID or AWS_ACCESS_KEY_ID",
+      provenance: environmentCredentialProvenance([
+        "secretAccessKey",
+        "AWS_BEDROCK_SECRET_ACCESS_KEY",
+      ]),
+    },
+    {
+      name: "Bedrock aliases",
       env: {
-        AWS_ACCESS_KEY_ID: "aws-access",
+        AWS_BEDROCK_ACCESS_KEY_ID: "aws-access",
+        AWS_BEDROCK_SECRET_ACCESS_KEY: "aws-secret",
       },
-    });
-    const usable = await collectProviderAvailability({
-      authBackend: authBackend("local", "free"),
-      checkLocal: false,
-      config: defaultConfig(),
+      usable: true,
+      credentialStatus: "present",
+      detail:
+        "BYOK credential found via AWS_BEDROCK_ACCESS_KEY_ID + AWS_BEDROCK_SECRET_ACCESS_KEY",
+      provenance: environmentCredentialProvenance(
+        ["accessKeyId", "AWS_BEDROCK_ACCESS_KEY_ID"],
+        ["secretAccessKey", "AWS_BEDROCK_SECRET_ACCESS_KEY"],
+      ),
+    },
+    {
+      name: "Bedrock access and generic secret aliases",
       env: {
         AWS_BEDROCK_ACCESS_KEY_ID: "aws-access",
         AWS_SECRET_ACCESS_KEY: "aws-secret",
       },
-    });
-
-    expect(byProvider(missingSecret.entries).get("amazon-bedrock")).toMatchObject({
-      usable: false,
-      keyStatus: "missing",
-      keyEnvVar: "AWS_ACCESS_KEY_ID",
-      detail: expect.stringContaining("AWS_SECRET_ACCESS_KEY"),
-    });
-    expect(byProvider(usable.entries).get("amazon-bedrock")).toMatchObject({
       usable: true,
-      keyStatus: "present",
-      keyEnvVar: "AWS_BEDROCK_ACCESS_KEY_ID",
-    });
-  });
+      credentialStatus: "present",
+      detail:
+        "BYOK credential found via AWS_BEDROCK_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY",
+      provenance: environmentCredentialProvenance(
+        ["accessKeyId", "AWS_BEDROCK_ACCESS_KEY_ID"],
+        ["secretAccessKey", "AWS_SECRET_ACCESS_KEY"],
+      ),
+    },
+    {
+      name: "generic access and Bedrock secret aliases with optional fields",
+      env: {
+        AWS_ACCESS_KEY_ID: "aws-access",
+        AWS_BEDROCK_SECRET_ACCESS_KEY: "aws-secret",
+        AWS_SESSION_TOKEN: "aws-session",
+        AWS_DEFAULT_REGION: "us-west-2",
+      },
+      usable: true,
+      credentialStatus: "present",
+      detail:
+        "BYOK credential found via AWS_ACCESS_KEY_ID + AWS_BEDROCK_SECRET_ACCESS_KEY + AWS_SESSION_TOKEN + AWS_DEFAULT_REGION",
+      provenance: environmentCredentialProvenance(
+        ["accessKeyId", "AWS_ACCESS_KEY_ID"],
+        ["secretAccessKey", "AWS_BEDROCK_SECRET_ACCESS_KEY"],
+        ["sessionToken", "AWS_SESSION_TOKEN"],
+        ["region", "AWS_DEFAULT_REGION"],
+      ),
+    },
+    {
+      name: "generic aliases",
+      env: {
+        AWS_ACCESS_KEY_ID: "aws-access",
+        AWS_SECRET_ACCESS_KEY: "aws-secret",
+      },
+      usable: true,
+      credentialStatus: "present",
+      detail:
+        "BYOK credential found via AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY",
+      provenance: environmentCredentialProvenance(
+        ["accessKeyId", "AWS_ACCESS_KEY_ID"],
+        ["secretAccessKey", "AWS_SECRET_ACCESS_KEY"],
+      ),
+    },
+  ])(
+    "resolves the Bedrock credential matrix: $name",
+    async ({ env, usable, credentialStatus, detail, provenance }) => {
+      const report = await collectProviderAvailability({
+        authBackend: authBackend("local", "free"),
+        checkLocal: false,
+        config: defaultConfig(),
+        env,
+      });
+      const bedrock = byProvider(report.entries).get("amazon-bedrock");
+
+      expect(bedrock).toMatchObject({ usable, credentialStatus, detail });
+      if (provenance === undefined) {
+        expect(bedrock).not.toHaveProperty("credentialProvenance");
+      } else {
+        expect(bedrock?.credentialProvenance).toEqual(provenance);
+      }
+    },
+  );
 
   it("formats the discovery report for the providers CLI", async () => {
     const report = await collectProviderAvailability({
@@ -298,6 +517,10 @@ describe("provider discovery", () => {
     const text = formatProviderAvailabilityReport(report);
 
     expect(text).toContain("Auth: local; subscription: free");
+    expect(text).toMatch(
+      /Provider\s+Model\s+Usable\s+Credential\s+Local\s+Tier\s+Detail/u,
+    );
+    expect(text).not.toMatch(/Provider\s+Model\s+Usable\s+Key\s+Local/u);
     expect(text).toContain("openai");
     expect(text).toContain("present(OPENAI_API_KEY)");
   });

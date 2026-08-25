@@ -980,6 +980,7 @@ describe("RemoteAuthBackend", () => {
       agencHome,
       managedKeysEnabled: true,
       keyVendor: ({ provider, sessionId }) => ({
+        kind: "api-key",
         provider,
         sessionId,
         apiKey: `managed-${++vendCount}`,
@@ -1044,6 +1045,7 @@ describe("RemoteAuthBackend", () => {
   it("requests and caches managed keys per session and provider in memory", async () => {
     let vendCount = 0;
     const keyVendor = vi.fn(({ provider, sessionId }) => ({
+      kind: "api-key" as const,
       provider,
       sessionId,
       apiKey: ` managed-${++vendCount} `,
@@ -1061,13 +1063,20 @@ describe("RemoteAuthBackend", () => {
     const secondProvider = await backend.vendKey("openai", "session-1");
 
     expect(first).toEqual({
+      kind: "api-key",
       provider: "grok",
       sessionId: "session-1",
       apiKey: "managed-1",
     });
     expect(duplicate).toBe(first);
-    expect(secondSession.apiKey).toBe("managed-2");
-    expect(secondProvider.apiKey).toBe("managed-3");
+    expect(secondSession).toMatchObject({
+      kind: "api-key",
+      apiKey: "managed-2",
+    });
+    expect(secondProvider).toMatchObject({
+      kind: "api-key",
+      apiKey: "managed-3",
+    });
     expect(keyVendor).toHaveBeenCalledTimes(3);
     expect(keyVendor.mock.calls.map(([request]) => request)).toEqual([
       { provider: "grok", sessionId: "session-1" },
@@ -1078,6 +1087,7 @@ describe("RemoteAuthBackend", () => {
 
   it("does not request managed keys unless config selection enables them", async () => {
     const keyVendor = vi.fn(({ provider, sessionId }) => ({
+      kind: "api-key" as const,
       provider,
       sessionId,
       apiKey: "managed-key",
@@ -1096,6 +1106,7 @@ describe("RemoteAuthBackend", () => {
     let nowMs = 1_000;
     let vendCount = 0;
     const keyVendor = vi.fn(({ provider, sessionId }) => ({
+      kind: "api-key" as const,
       provider,
       sessionId,
       apiKey: `managed-${++vendCount}`,
@@ -1124,6 +1135,7 @@ describe("RemoteAuthBackend", () => {
   it("sweeps expired one-shot sessions when vending a different session", async () => {
     let nowMs = 1_000;
     const keyVendor = vi.fn(({ provider, sessionId }) => ({
+      kind: "api-key" as const,
       provider,
       sessionId,
       apiKey: `managed-${sessionId}`,
@@ -1155,7 +1167,12 @@ describe("RemoteAuthBackend", () => {
         if (attempts === 1) {
           throw new Error("remote key service unavailable");
         }
-        return { provider, sessionId, apiKey: "managed-key" };
+        return {
+          kind: "api-key",
+          provider,
+          sessionId,
+          apiKey: "managed-key",
+        };
       },
     });
 
@@ -1172,6 +1189,7 @@ describe("RemoteAuthBackend", () => {
     const backend = new RemoteAuthBackend({
       managedKeysEnabled: true,
       keyVendor: () => ({
+        kind: "api-key",
         provider: "openai",
         sessionId: "session-2",
         apiKey: "managed-key",
@@ -1180,6 +1198,35 @@ describe("RemoteAuthBackend", () => {
 
     await expect(backend.vendKey("grok", "session-1")).rejects.toThrow(
       /provider mismatch/,
+    );
+  });
+
+  it("rejects injected credential kinds that do not match the provider", async () => {
+    const bedrockBackend = new RemoteAuthBackend({
+      managedKeysEnabled: true,
+      keyVendor: ({ provider, sessionId }) => ({
+        kind: "api-key",
+        provider,
+        sessionId,
+        apiKey: "must-not-be-a-bedrock-facade",
+      }),
+    });
+    const apiBackend = new RemoteAuthBackend({
+      managedKeysEnabled: true,
+      keyVendor: ({ provider, sessionId }) => ({
+        kind: "aws-sigv4",
+        provider,
+        sessionId,
+        accessKeyId: "managed-aws-access",
+        secretAccessKey: "managed-aws-secret",
+      }),
+    });
+
+    await expect(
+      bedrockBackend.vendKey("amazon-bedrock", "session-1"),
+    ).rejects.toThrow("expected aws-sigv4");
+    await expect(apiBackend.vendKey("grok", "session-1")).rejects.toThrow(
+      "expected api-key",
     );
   });
 
@@ -1206,6 +1253,7 @@ describe("RemoteAuthBackend", () => {
     });
 
     await expect(backend.vendKey("grok", "session-1")).resolves.toEqual({
+      kind: "api-key",
       provider: "grok",
       sessionId: "session-1",
       apiKey: "managed-http-key",
@@ -1246,6 +1294,7 @@ describe("RemoteAuthBackend", () => {
     });
 
     await expect(backend.vendKey("grok", "session-1")).resolves.toEqual({
+      kind: "api-key",
       provider: "grok",
       sessionId: "session-1",
       apiKey: "hosted-litellm-key",
@@ -1268,13 +1317,13 @@ describe("RemoteAuthBackend", () => {
     );
   });
 
-  it("preserves Bedrock credential fields from HTTP key vending responses", async () => {
+  it("preserves structured Bedrock credentials from HTTP key vending responses", async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(
         JSON.stringify({
           provider: "amazon-bedrock",
           sessionId: "session-1",
-          apiKey: " managed-aws-access ",
+          accessKeyId: " managed-aws-access ",
           secretAccessKey: " managed-aws-secret ",
           sessionToken: " managed-aws-session ",
           region: " us-west-2 ",
@@ -1295,13 +1344,54 @@ describe("RemoteAuthBackend", () => {
     await expect(
       backend.vendKey("amazon-bedrock", "session-1"),
     ).resolves.toEqual({
+      kind: "aws-sigv4",
       provider: "amazon-bedrock",
       sessionId: "session-1",
-      apiKey: "managed-aws-access",
+      accessKeyId: "managed-aws-access",
       secretAccessKey: "managed-aws-secret",
       sessionToken: "managed-aws-session",
       region: "us-west-2",
     });
+  });
+
+  it("does not reinterpret API-key response fields as a Bedrock access key ID", async () => {
+    const backend = new RemoteAuthBackend({
+      agencHome: "/tmp/agenc-remote-auth-test",
+      managedKeysEnabled: true,
+      env: { [REMOTE_AUTH_TOKEN_ENV]: "remote-token" },
+      fetchImpl: vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            apiKey: "must-not-be-used-as-aws-access",
+            litellmKey: "must-not-be-used-as-aws-access-either",
+            secretAccessKey: "managed-aws-secret",
+          }),
+          { status: 200 },
+        ),
+      ),
+    });
+
+    await expect(
+      backend.vendKey("amazon-bedrock", "session-1"),
+    ).rejects.toThrow("missing accessKeyId");
+  });
+
+  it("requires a secret access key in Bedrock HTTP responses", async () => {
+    const backend = new RemoteAuthBackend({
+      agencHome: "/tmp/agenc-remote-auth-test",
+      managedKeysEnabled: true,
+      env: { [REMOTE_AUTH_TOKEN_ENV]: "remote-token" },
+      fetchImpl: vi.fn(async () =>
+        new Response(
+          JSON.stringify({ accessKeyId: "managed-aws-access" }),
+          { status: 200 },
+        ),
+      ),
+    });
+
+    await expect(
+      backend.vendKey("amazon-bedrock", "session-1"),
+    ).rejects.toThrow("missing secretAccessKey");
   });
 
   it("rejects remote key responses for a different session or provider", async () => {

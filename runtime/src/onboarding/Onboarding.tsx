@@ -32,12 +32,21 @@ import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   listBuiltInProviderInfo,
   providerApiKeyEnvironmentLabel,
+  providerCredentialEnvironmentLabel,
   resolveBuiltInProviderInfo,
   resolveBuiltInProviderSlug,
   type BuiltInProviderOnboardingInfo,
   type BuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
-import { resolveProviderApiKeyEnvironment } from "../llm/registry/provider-ingress.js";
+import {
+  GROK_OAUTH_CREDENTIAL_PROVENANCE,
+  missingProviderCredentialEnvironmentLabel,
+  providerCredentialEnvironmentProvenance,
+  resolveProviderCredentialEnvironment,
+  type ProviderCredentialProvenance,
+} from "../llm/registry/provider-ingress.js";
+import { resolveGrokProviderCredential } from "../llm/xai-capability-config.js";
+import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
 import { ApproveApiKey, maskedApiKeyTail } from "./ApproveApiKey.js";
 import {
@@ -84,13 +93,13 @@ export type FirstRunOnboardingStepId =
   | "theme"
   | "provider"
   | "connection-test"
-  | "api-key"
+  | "model-access"
   | "security"
   | "terminal-setup";
 
 export type ProviderConnectionStatus =
   | "ready"
-  | "needs-key"
+  | "credentials-required"
   | "auth-failed"
   | "provider-unreachable"
   | "local-unchecked"
@@ -109,10 +118,17 @@ export interface ProviderConnectionCheck {
   readonly status: ProviderConnectionStatus;
   readonly ok: boolean;
   readonly detail: string;
-  readonly keyEnvVar?: string;
+  /** Human-readable configuration guidance, never evidence of a winning source. */
+  readonly credentialLabel?: string;
+  /** Exact credential provenance, without credential values. */
+  readonly credentialProvenance?: ProviderConnectionCredentialProvenance;
   readonly baseURL?: string;
   readonly canSkip?: boolean;
 }
+
+export type ProviderConnectionCredentialProvenance =
+  | ProviderCredentialProvenance
+  | { readonly kind: "verified-input" };
 
 export interface PendingApiKeyApproval {
   readonly provider: BuiltInProviderSlug;
@@ -371,7 +387,7 @@ const FIRST_RUN_STEP_ORDER: readonly FirstRunOnboardingStepId[] = Object.freeze(
   "preflight",
   "theme",
   "provider",
-  "api-key",
+  "model-access",
   "connection-test",
   "security",
   "terminal-setup",
@@ -383,7 +399,7 @@ const STEP_TITLES: Readonly<Record<FirstRunOnboardingStepId, string>> =
     theme: "Theme",
     provider: "Provider",
     "connection-test": "Connection check",
-    "api-key": "Model access",
+    "model-access": "Model access",
     security: "Security",
     "terminal-setup": "Terminal setup",
   });
@@ -512,9 +528,9 @@ export function createInitialFirstRunOnboardingState(
 
 /**
  * Probe the well-known local runtimes (O-1, onboarding-plan-2026-07): a user
- * with Ollama or LM Studio already running has a ZERO-KEY path to a working
+ * with Ollama or LM Studio already running has a credential-free path to a working
  * agent — the provider step must say so instead of walling them at the
- * api-key step. Short-timeout, parallel, never throws.
+ * model-access step. Short-timeout, parallel, never throws.
  */
 export async function detectRunningLocalProviders(
   context: Pick<FirstRunOnboardingContext, "config" | "env" | "fetchImpl" | "checkLocalProviders">,
@@ -657,7 +673,7 @@ function lowerCommand(raw: string): string {
   return raw.trim().toLowerCase();
 }
 
-function isSkipApiKeyCommand(command: string): boolean {
+function isConfigureLaterCommand(command: string): boolean {
   return (
     command === "" ||
     command === "4" ||
@@ -696,12 +712,12 @@ function isApiKeyEntryCommand(command: string): boolean {
   );
 }
 
-function apiKeySkipError(
+function modelAccessSkipError(
   connection: ProviderConnectionCheck | null,
 ): string | null {
   if (connection?.canSkip !== false) return null;
   return (
-    `${connection.keyEnvVar ?? "A provider API key"} is required before continuing ` +
+    `${connection.credentialLabel ?? "A provider credential"} is required before continuing ` +
     `with ${connection.provider}. Paste a BYOK key or choose another provider.`
   );
 }
@@ -730,7 +746,7 @@ function defaultOnboardingCommand(
     case "theme":
     case "provider":
       return raw;
-    case "api-key":
+    case "model-access":
       // Empty input intentionally means "continue without saving" on the
       // ordinary credential step. Never choose for the user once a verified
       // key is awaiting the explicit yes/no persistence decision.
@@ -768,8 +784,18 @@ function verifiedApiKeyConnection(
     status: "ready",
     ok: true,
     detail: "Provider API key verified.",
-    keyEnvVar: providerApiKeyEnvironmentLabel(provider),
+    credentialLabel: providerApiKeyEnvironmentLabel(provider),
+    credentialProvenance: { kind: "verified-input" },
   };
+}
+
+function providerConnectionCredentialProvenanceLabel(
+  provenance: ProviderConnectionCredentialProvenance | undefined,
+): string | undefined {
+  if (provenance === undefined) return undefined;
+  if (provenance.kind === "oauth") return "xAI OAuth";
+  if (provenance.kind === "verified-input") return "pasted API key";
+  return provenance.fields.map((field) => field.envVar).join(" + ");
 }
 
 function authenticatedConnection(
@@ -1033,7 +1059,11 @@ export async function checkOnboardingProviderConnection(
   provider: BuiltInProviderSlug,
   model: string,
 ): Promise<ProviderConnectionCheck> {
-  const environment = context.env ?? process.env;
+  const ingress = captureSecureStorageIngress(
+    context.env ?? process.env,
+    context.agencHome,
+  );
+  const environment = ingress.environment;
   const settings = resolveProviderSettings(
     provider,
     context.config,
@@ -1041,16 +1071,21 @@ export async function checkOnboardingProviderConnection(
   );
   const baseURL =
     settings?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS[provider];
-  const keyEnvVar =
-    resolveProviderApiKeyEnvironment(provider, environment)?.envVar ??
-    providerApiKeyEnvironmentLabel(provider);
+  const credentialEnvironment = resolveProviderCredentialEnvironment(
+    provider,
+    environment,
+  );
+  const credentialLabel = providerCredentialEnvironmentLabel(provider);
+  const environmentProvenance = credentialEnvironment === undefined
+    ? undefined
+    : providerCredentialEnvironmentProvenance(credentialEnvironment);
   const onboarding = providerOnboardingInfo(provider);
 
   if (onboarding.access === "managed") {
     return {
       provider,
       model,
-      status: "needs-key",
+      status: "credentials-required",
       ok: false,
       detail: "Hosted AgenC requires account auth; choose a BYOK provider for this first-run path.",
     };
@@ -1115,6 +1150,51 @@ export async function checkOnboardingProviderConnection(
     };
   }
 
+  if (onboarding.access === "environment") {
+    if (credentialEnvironment?.kind !== "aws-sigv4") {
+      return {
+        provider,
+        model,
+        status: "credentials-required",
+        ok: false,
+        detail: "Provider credential metadata is unavailable.",
+        ...(credentialLabel !== undefined ? { credentialLabel } : {}),
+        baseURL,
+      };
+    }
+    if (credentialEnvironment.missingRequired.length > 0) {
+      const missingLabel = missingProviderCredentialEnvironmentLabel(
+        provider,
+        environment,
+      );
+      return {
+        provider,
+        model,
+        status: "credentials-required",
+        ok: false,
+        detail: `Set ${missingLabel ?? credentialLabel ?? "the required provider credentials"} before the first model turn.`,
+        ...(credentialLabel !== undefined ? { credentialLabel } : {}),
+        ...(environmentProvenance !== undefined
+          ? { credentialProvenance: environmentProvenance }
+          : {}),
+        baseURL,
+      };
+    }
+    return {
+      provider,
+      model,
+      status: "ready",
+      ok: true,
+      detail:
+        "Required AWS SigV4 credential fields are present. AgenC will verify them on the first signed Bedrock request.",
+      ...(credentialLabel !== undefined ? { credentialLabel } : {}),
+      ...(environmentProvenance !== undefined
+        ? { credentialProvenance: environmentProvenance }
+        : {}),
+      baseURL,
+    };
+  }
+
   if (
     onboarding.supportsManagedKeyAccess &&
     resolveAuthManagedKeysEnabled(context.config) &&
@@ -1139,16 +1219,16 @@ export async function checkOnboardingProviderConnection(
       };
     }
     if (!hasEntitledRemoteAuthSessionSync(context.remoteAuthSessionContext)) {
-      const keyLabel = keyEnvVar ?? "a BYOK API key";
+      const keyLabel = credentialLabel ?? "a BYOK API key";
       return {
         provider,
         model,
-        status: "needs-key",
+        status: "credentials-required",
         ok: false,
         detail:
           `AgenC account is signed in on the ${tier} plan. ` +
           `Managed provider keys require an active AgenC subscription; paste ${keyLabel} to continue.`,
-        ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
+        ...(credentialLabel !== undefined ? { credentialLabel } : {}),
         baseURL,
         canSkip: false,
       };
@@ -1163,8 +1243,39 @@ export async function checkOnboardingProviderConnection(
     };
   }
 
-  const apiKey = settings?.apiKey?.trim();
+  const grokCredential = provider === "grok"
+    ? resolveGrokProviderCredential(ingress.home, undefined, environment)
+    : undefined;
+  const apiKey = provider === "grok"
+    ? grokCredential?.value
+    : settings?.apiKey?.trim();
+  const credentialProvenance: ProviderConnectionCredentialProvenance | undefined =
+    grokCredential?.isOAuth
+      ? GROK_OAUTH_CREDENTIAL_PROVENANCE
+      : environmentProvenance !== undefined &&
+          apiKey !== undefined &&
+          credentialEnvironment?.kind === "api-key" &&
+          credentialEnvironment.apiKey?.value === apiKey
+        ? environmentProvenance
+        : undefined;
   if (apiKey !== undefined && apiKey.length > 0) {
+    if (
+      provider === "grok" &&
+      credentialProvenance?.kind === "oauth" &&
+      !isTrustedXaiOauthInferenceBaseUrl(baseURL)
+    ) {
+      return {
+        provider,
+        model,
+        status: "auth-failed",
+        ok: false,
+        detail:
+          "Refusing to send the stored xAI OAuth credential to a custom Grok base URL.",
+        ...(credentialLabel !== undefined ? { credentialLabel } : {}),
+        credentialProvenance,
+        baseURL,
+      };
+    }
     const remote = await probeRemoteProvider({
       provider,
       baseURL,
@@ -1180,9 +1291,12 @@ export async function checkOnboardingProviderConnection(
         status: authFailed ? "auth-failed" : "provider-unreachable",
         ok: false,
         detail: authFailed
-          ? `Provider rejected ${keyEnvVar ?? "the configured API key"}.`
+          ? `Provider rejected ${providerConnectionCredentialProvenanceLabel(credentialProvenance) ?? "the configured API key"}.`
           : "Provider readiness check did not complete; verify network access and retry.",
-        ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
+        ...(credentialLabel !== undefined ? { credentialLabel } : {}),
+        ...(credentialProvenance !== undefined
+          ? { credentialProvenance }
+          : {}),
         baseURL,
       };
     }
@@ -1191,10 +1305,11 @@ export async function checkOnboardingProviderConnection(
       model,
       status: "ready",
       ok: true,
-      detail: keyEnvVar === undefined
-        ? "Provider credential found in config."
-        : `Provider credential found via ${keyEnvVar}.`,
-      ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
+      detail: credentialProvenance === undefined
+        ? "Provider credential found."
+        : `Provider credential found via ${providerConnectionCredentialProvenanceLabel(credentialProvenance)}.`,
+      ...(credentialLabel !== undefined ? { credentialLabel } : {}),
+      ...(credentialProvenance !== undefined ? { credentialProvenance } : {}),
       baseURL,
     };
   }
@@ -1202,10 +1317,10 @@ export async function checkOnboardingProviderConnection(
   return {
     provider,
     model,
-    status: "needs-key",
+    status: "credentials-required",
     ok: false,
-    detail: `Set ${keyEnvVar ?? "the provider API key"} before the first model turn, or continue and add it later.`,
-    ...(keyEnvVar !== undefined ? { keyEnvVar } : {}),
+    detail: `Set ${credentialLabel ?? "the provider API key"} before the first model turn, or continue and add it later.`,
+    ...(credentialLabel !== undefined ? { credentialLabel } : {}),
     baseURL,
   };
 }
@@ -1286,7 +1401,7 @@ export async function submitFirstRunOnboardingInput(
             authPrompt: null,
           },
           "provider",
-          "api-key",
+          "model-access",
         ),
         completed: false,
       };
@@ -1316,7 +1431,7 @@ export async function submitFirstRunOnboardingInput(
         completed: false,
       };
     }
-    case "api-key":
+    case "model-access":
       if (state.pendingApiKeyApproval !== null) {
         const answer = approvalAnswer(lowerCommand(raw));
         if (answer === null) {
@@ -1332,7 +1447,7 @@ export async function submitFirstRunOnboardingInput(
           return {
             state: withCompletedStep(
               { ...state, pendingApiKeyApproval: null },
-              "api-key",
+              "model-access",
               "connection-test",
             ),
             completed: false,
@@ -1381,7 +1496,7 @@ export async function submitFirstRunOnboardingInput(
                 state.selectedModel,
               ),
             },
-            ["api-key", "connection-test"],
+            ["model-access", "connection-test"],
             "security",
           ),
           completed: false,
@@ -1458,7 +1573,7 @@ export async function submitFirstRunOnboardingInput(
                 modelAccessInput: "menu",
                 authPrompt: null,
               },
-              ["api-key", "connection-test"],
+              ["model-access", "connection-test"],
               "security",
             ),
             completed: false,
@@ -1495,16 +1610,27 @@ export async function submitFirstRunOnboardingInput(
                 modelAccessInput: "menu",
                 authPrompt: null,
               },
-              ["api-key", "connection-test"],
+              ["model-access", "connection-test"],
               "security",
             ),
             completed: false,
           };
         }
         if (isApiKeyEntryCommand(command)) {
-          if (
-            providerOnboardingInfo(state.selectedProvider).access !== "api-key"
-          ) {
+          const access = providerOnboardingInfo(state.selectedProvider).access;
+          if (access === "environment") {
+            return {
+              state: {
+                ...state,
+                modelAccessInput: "menu",
+                authPrompt: null,
+                error:
+                  `Amazon Bedrock uses AWS SigV4 credentials. Set ${providerCredentialEnvironmentLabel(state.selectedProvider) ?? "the required AWS credential fields"}; one-field API-key storage is not supported.`,
+              },
+              completed: false,
+            };
+          }
+          if (access !== "api-key") {
             return {
               state: withCompletedStep(
                 {
@@ -1512,7 +1638,7 @@ export async function submitFirstRunOnboardingInput(
                   modelAccessInput: "menu",
                   authPrompt: null,
                 },
-                "api-key",
+                "model-access",
                 "connection-test",
               ),
               completed: false,
@@ -1539,8 +1665,8 @@ export async function submitFirstRunOnboardingInput(
             completed: false,
           };
         }
-        if (isSkipApiKeyCommand(command)) {
-          const skipError = apiKeySkipError(state.connection);
+        if (isConfigureLaterCommand(command)) {
+          const skipError = modelAccessSkipError(state.connection);
           if (skipError !== null) {
             return {
               state: { ...state, error: skipError },
@@ -1554,9 +1680,24 @@ export async function submitFirstRunOnboardingInput(
                 modelAccessInput: "menu",
                 authPrompt: null,
               },
-              "api-key",
+              "model-access",
               "connection-test",
             ),
+            completed: false,
+          };
+        }
+        if (
+          providerOnboardingInfo(state.selectedProvider).access ===
+            "environment"
+        ) {
+          return {
+            state: {
+              ...state,
+              modelAccessInput: "menu",
+              authPrompt: null,
+              error:
+                `Amazon Bedrock uses AWS SigV4 credentials. Set ${providerCredentialEnvironmentLabel(state.selectedProvider) ?? "the required AWS credential fields"}; pasted one-field API keys cannot configure it.`,
+            },
             completed: false,
           };
         }
@@ -1775,48 +1916,65 @@ export function useFirstRunOnboardingController(
   };
 }
 
-function apiKeyInstructionForConnection(
+function credentialInstructionForConnection(
   connection: ProviderConnectionCheck | null,
 ): string {
   if (connection === null) {
     return "Paste an API key to verify it, or press Enter to continue without saving.";
   }
   if (connection.status === "ready") {
-    if (connection.keyEnvVar !== undefined) {
-      return `${connection.keyEnvVar} is present and verified. Press Enter to continue, or paste a replacement key.`;
+    if (
+      connection.credentialProvenance?.kind === "environment" &&
+      connection.credentialProvenance.fields.some(
+        (field) => field.role === "accessKeyId",
+      )
+    ) {
+      return "AWS SigV4 credential fields are present. AgenC will verify them on the first signed Bedrock request.";
+    }
+    const source = providerConnectionCredentialProvenanceLabel(
+      connection.credentialProvenance,
+    );
+    if (source !== undefined) {
+      return `${source} is present and verified. Press Enter to continue, or paste a replacement key.`;
     }
     return "Provider credential is verified. Press Enter to continue, or paste a replacement key.";
   }
-  if (connection.keyEnvVar === undefined) {
+  if (connection.credentialLabel === undefined) {
     return "Paste an API key to verify it, or press Enter to continue.";
   }
   if (connection.canSkip === false) {
-    return `Paste ${connection.keyEnvVar} to verify it before continuing.`;
+    return `Paste ${connection.credentialLabel} to verify it before continuing.`;
   }
   if (
     connection.status === "auth-failed" ||
     connection.status === "provider-unreachable"
   ) {
-    return `${connection.keyEnvVar} did not verify. Press Enter to continue without saving, or paste a replacement key.`;
+    const source = providerConnectionCredentialProvenanceLabel(
+      connection.credentialProvenance,
+    ) ?? connection.credentialLabel;
+    return `${source} did not verify. Press Enter to continue without saving, or paste a replacement key.`;
   }
-  return `Paste ${connection.keyEnvVar} to verify it, or press Enter to add it later.`;
+  return `Paste ${connection.credentialLabel} to verify it, or press Enter to add it later.`;
 }
 
-function apiKeyInstructionForProvider(
+function modelAccessInstructionForProvider(
   provider: BuiltInProviderSlug,
 ): string {
-  const keyEnvVar = providerApiKeyEnvironmentLabel(provider);
+  const credentialLabel = providerApiKeyEnvironmentLabel(provider);
   const onboarding = providerOnboardingInfo(provider);
   if (onboarding.access === "managed") {
     return "This provider requires AgenC account auth. Choose the account sign-in option to continue.";
   }
   if (onboarding.access !== "api-key") {
+    if (onboarding.access === "environment") {
+      return `Set ${providerCredentialEnvironmentLabel(provider) ?? "the required provider credential fields"} in the environment, then press Enter to continue.`;
+    }
     return "This provider can continue without a BYOK API key. Press Enter to continue.";
   }
-  if (keyEnvVar === undefined) {
+  if (credentialLabel === undefined) {
     return "Paste an API key to verify it, or press Enter to add it later.";
   }
-  return `Paste ${keyEnvVar} to verify it, or press Enter to add it later.`;
+  return `Paste ${credentialLabel} to verify it, or press Enter to add it later.`;
 }
 
 function securityLinesForContext(
@@ -1866,7 +2024,7 @@ export function firstRunOnboardingInputPresentation(
         footerHint: standardFooter,
         allowEmptySubmit: true,
       };
-    case "api-key":
+    case "model-access":
       if (state.pendingApiKeyApproval !== null) {
         return {
           placeholder: "Type yes to save this key, or no to discard it",
@@ -1876,10 +2034,10 @@ export function firstRunOnboardingInputPresentation(
         };
       }
       if (state.modelAccessInput === "api-key") {
-        const keyEnvVar =
+        const credentialLabel =
           providerApiKeyEnvironmentLabel(state.selectedProvider) ?? "API key";
         return {
-          placeholder: `Paste ${keyEnvVar}, type back, or press Enter to configure later`,
+          placeholder: `Paste ${credentialLabel}, type back, or press Enter to configure later`,
           footerHint:
             "Keys are verified before an explicit save confirmation · /exit leaves setup",
           allowEmptySubmit: true,
@@ -1973,7 +2131,7 @@ export function detailLinesForStep(
             `Model: ${state.selectedModel}`,
             "Press Enter to run the connection check (or type test).",
           ];
-    case "api-key": {
+    case "model-access": {
       if (state.pendingApiKeyApproval !== null) {
         return [];
       }
@@ -1989,7 +2147,7 @@ export function detailLinesForStep(
         ];
       }
       if (state.modelAccessInput === "menu") {
-        const keyEnvVar =
+        const credentialLabel =
           providerApiKeyEnvironmentLabel(state.selectedProvider);
         const billingProvider =
           state.selectedProvider === "grok" ? "xAI" : state.selectedProvider;
@@ -1997,7 +2155,9 @@ export function detailLinesForStep(
         const providerAccess = onboarding.access === "managed"
           ? `Use ${state.selectedProvider} through AgenC account auth.`
           : onboarding.access === "api-key"
-            ? `Use ${keyEnvVar ?? `a ${state.selectedProvider} API key`} — requests are billed by ${billingProvider}.`
+            ? `Use ${credentialLabel ?? `a ${state.selectedProvider} API key`} — requests are billed by ${billingProvider}.`
+            : onboarding.access === "environment"
+              ? `Use ${state.selectedProvider} with ${providerCredentialEnvironmentLabel(state.selectedProvider) ?? "its required environment credentials"} — one-field API-key storage is not supported.`
             : `Use ${state.selectedProvider} directly — no account sign-in or provider API key required.`;
         return [
           `Provider: ${state.selectedProvider}`,
@@ -2013,13 +2173,13 @@ export function detailLinesForStep(
       if (connection === null) {
         return [
           `Provider: ${state.selectedProvider}`,
-          apiKeyInstructionForProvider(state.selectedProvider),
+          modelAccessInstructionForProvider(state.selectedProvider),
           "Type back to choose a different access method.",
         ];
       }
       return [
         connection.detail,
-        apiKeyInstructionForConnection(connection),
+        credentialInstructionForConnection(connection),
         "Type back to choose a different access method.",
         ...(state.pastedContents.length > 0
           ? [`Captured ${state.pastedContents.length} large paste privately.`]
@@ -2181,7 +2341,8 @@ export function Onboarding({
   const cardWidth = Math.max(40, Math.min(84, columns - 2));
   const detailLines = detailLinesForStep(state, context);
   const showApproval =
-    state.currentStepId === "api-key" && state.pendingApiKeyApproval !== null;
+    state.currentStepId === "model-access" &&
+    state.pendingApiKeyApproval !== null;
 
   return (
     <Box flexDirection="column" width="100%" paddingX={1}>

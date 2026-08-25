@@ -33,22 +33,59 @@ describe("provider authority architecture", () => {
     expect(registry).not.toMatch(/PROVIDER_DISPLAY_NAMES/u);
     expect(registry).not.toMatch(/BUILT_IN_PROVIDER_ONBOARDING/u);
     expect(registry).not.toMatch(/BUILT_IN_PROVIDER_API_KEY_ENVS/u);
+    expect(registry).toMatch(/ProviderCredentialDefinition/u);
+    expect(registry).toMatch(/credentials:\s*awsSigV4Credentials/u);
 
     const production = sourceFiles(SRC).filter(
       (path) => path.endsWith(".ts") || path.endsWith(".tsx"),
     );
-    const singularKeyFacadeConsumers = production
-      .filter((path) => /\.apiKeyEnvVar\b/u.test(readFileSync(path, "utf8")))
+    const keyFacadeConsumers = production
+      .filter((path) =>
+        /\bapiKeyEnvVars?\b/u.test(readFileSync(path, "utf8"))
+      )
       .map((path) => relative(SRC, path));
-    expect(singularKeyFacadeConsumers).toEqual([]);
+    expect(keyFacadeConsumers).toEqual([]);
+
+    const positionalPrimaryAliasConsumers = production
+      .filter((path) =>
+        /(?:\.envVars|apiKeyEnvVars?)\s*\[\s*0\s*\]|\bprimaryEnvVar\b/u.test(
+          readFileSync(path, "utf8"),
+        )
+      )
+      .map((path) => relative(SRC, path));
+    expect(positionalPrimaryAliasConsumers).toEqual([]);
 
     const providerOptions = readFileSync(
       `${SRC}/llm/provider-options.ts`,
       "utf8",
     );
     expect(providerOptions).not.toMatch(/const\s+(?:API_KEY_ENV|BASE_URL_ENV)\b/u);
-    expect(providerOptions).toMatch(/resolveProviderApiKeyEnvironment/u);
+    expect(providerOptions).toMatch(/resolveProviderCredentialEnvironment/u);
+    expect(providerOptions).not.toMatch(/resolveProviderApiKeyEnvironment/u);
     expect(providerOptions).toMatch(/resolveProviderBaseURLEnvironment/u);
+
+    const providerCredentialConsumers = [
+      "commands/provider-menu.tsx",
+      "llm/discovery/provider-discovery.ts",
+      "llm/provider-options.ts",
+      "onboarding/Onboarding.tsx",
+    ];
+    const awsCredentialAlias =
+      /\bAWS_(?:BEDROCK_)?(?:ACCESS_KEY_ID|SECRET_ACCESS_KEY|SESSION_TOKEN|REGION)|\bAWS_DEFAULT_REGION\b/u;
+    const reauthoredAwsAliases = providerCredentialConsumers.filter(
+      (path) =>
+        awsCredentialAlias.test(readFileSync(`${SRC}/${path}`, "utf8")),
+    );
+    expect(reauthoredAwsAliases).toEqual([]);
+
+    const geminiProvider = readFileSync(
+      `${SRC}/llm/providers/gemini/index.ts`,
+      "utf8",
+    );
+    expect(geminiProvider).toMatch(/providerApiKeyEnvironmentLabel\("gemini"\)/u);
+    expect(geminiProvider).not.toMatch(
+      /GEMINI_API_KEY(?:\s*,|\s+or)\s*GOOGLE_API_KEY/u,
+    );
 
     const configEnv = readFileSync(`${SRC}/config/env.ts`, "utf8");
     const providerKeyResolver = configEnv.match(
@@ -66,6 +103,33 @@ describe("provider authority architecture", () => {
       `${SRC}/llm/discovery/provider-discovery.ts`,
       "utf8",
     );
+    const credentialIngress = readFileSync(
+      `${SRC}/llm/registry/provider-ingress.ts`,
+      "utf8",
+    );
+    const onboarding = readFileSync(
+      `${SRC}/onboarding/Onboarding.tsx`,
+      "utf8",
+    );
+    expect(credentialIngress).toMatch(/ProviderCredentialProvenance/u);
+    expect(credentialIngress).toMatch(
+      /providerCredentialEnvironmentProvenance/u,
+    );
+    expect(credentialIngress).toMatch(/GROK_OAUTH_CREDENTIAL_PROVENANCE/u);
+    expect(credentialIngress).not.toMatch(
+      /providerCredentialEnvironmentReferences/u,
+    );
+    expect(discovery).toMatch(/type ProviderCredentialProvenance/u);
+    expect(discovery).toMatch(/providerCredentialEnvironmentProvenance/u);
+    expect(discovery).not.toMatch(/ProviderAvailabilityCredentialSource/u);
+    expect(discovery).not.toMatch(/\bProviderKeyStatus\b|\bkeyStatus\b/u);
+    expect(discovery).not.toMatch(/\bcredentialSource\b/u);
+    expect(onboarding).toMatch(
+      /ProviderConnectionCredentialProvenance\s*=\s*\|\s*ProviderCredentialProvenance/u,
+    );
+    expect(onboarding).toMatch(/\|\s*"model-access"/u);
+    expect(onboarding).not.toMatch(/ProviderConnectionCredentialSource/u);
+    expect(onboarding).not.toMatch(/\bneeds-key\b|\bcredentialSource\b/u);
     expect(discovery).not.toMatch(/providerApiKeyEnvCandidates/u);
     expect(discovery).not.toMatch(
       /const\s+(?:PROVIDERS_REQUIRING_KEY|MANAGED_KEY_PROVIDERS|LOCAL_PROVIDERS)\b/u,
@@ -81,6 +145,31 @@ describe("provider authority architecture", () => {
     expect(modelMetadata).not.toMatch(/defaultProviderApiKeyEnv/u);
     expect(modelMetadata).toMatch(/resolveProviderApiKeyEnvironment/u);
     expect(modelMetadata).toMatch(/resolveProviderBaseURLEnvironment/u);
+  });
+
+  test("the provider registry alone authors direct Bedrock regional endpoints", () => {
+    const registry = readFileSync(
+      `${SRC}/llm/registry/provider-info.ts`,
+      "utf8",
+    );
+    expect(registry).toMatch(/AMAZON_BEDROCK_REGIONAL_ENDPOINT/u);
+    expect(registry).toMatch(
+      /https:\/\/bedrock-runtime\.\{region\}\.amazonaws\.com/u,
+    );
+    expect(registry).toMatch(/defaultRegion:\s*"us-east-1"/u);
+
+    for (const path of [
+      "llm/provider.ts",
+      "llm/providers/bedrock/index.ts",
+      "commands/provider-menu.tsx",
+    ]) {
+      const source = readFileSync(`${SRC}/${path}`, "utf8");
+      expect(source).toMatch(/resolveBuiltInProviderRegionalEndpoint/u);
+      expect(source).not.toMatch(/bedrockBaseURLForRegion/u);
+      expect(source).not.toMatch(/BEDROCK_RUNTIME_HOST_PREFIX/u);
+      expect(source).not.toMatch(/bedrock-runtime\./u);
+      expect(source).not.toMatch(/us-east-1/u);
+    }
   });
 
   test("provider selector identity has one normalizer and one retired mapping", () => {

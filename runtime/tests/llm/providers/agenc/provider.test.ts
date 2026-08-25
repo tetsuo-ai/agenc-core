@@ -55,6 +55,7 @@ describe("AgenCProvider", () => {
       logout: () => ({ authenticated: false }),
       whoami: () => ({ authenticated: true, provider: "remote" }),
       vendKey: (provider, sessionId) => ({
+        kind: "api-key",
         provider,
         sessionId,
         apiKey: "prediction-key",
@@ -132,7 +133,12 @@ describe("AgenCProvider", () => {
       whoami: () => ({ authenticated: true, provider: "remote" }),
       vendKey: (provider, sessionId) => {
         calls.push(`vendKey:${provider}:${sessionId}`);
-        return { provider, sessionId, apiKey: "managed-key" };
+        return {
+          kind: "api-key",
+          provider,
+          sessionId,
+          apiKey: "managed-key",
+        };
       },
       inferAgencModel: ({
         provider,
@@ -242,6 +248,7 @@ describe("AgenCProvider", () => {
         calls.push(`vendKey:${provider}:${sessionId}`);
         vendCount += 1;
         return {
+          kind: "api-key",
           provider,
           sessionId,
           apiKey: `managed-key-${vendCount}`,
@@ -316,6 +323,7 @@ describe("AgenCProvider", () => {
       whoami: () => ({ authenticated: true, provider: "remote" }),
       inferAgencModel,
       vendKey: (provider: string, sessionId: string) => ({
+        kind: "api-key",
         provider,
         sessionId,
         apiKey: "managed-key",
@@ -393,6 +401,7 @@ describe("AgenCProvider", () => {
         calls.push(`vendKey:${provider}:${sessionId}`);
         vendCount += 1;
         return {
+          kind: "api-key",
           provider,
           sessionId,
           apiKey: `managed-key-${vendCount}`,
@@ -456,6 +465,7 @@ describe("AgenCProvider", () => {
       logout: () => ({ authenticated: false }),
       whoami: () => ({ authenticated: true, provider: "remote" }),
       vendKey: (provider, sessionId) => ({
+        kind: "api-key",
         provider,
         sessionId,
         apiKey: "managed-key",

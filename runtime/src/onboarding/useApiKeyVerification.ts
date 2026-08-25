@@ -93,6 +93,13 @@ export async function verifyApiKey(
       error: "Hosted AgenC uses account auth instead of first-run BYOK keys.",
     };
   }
+  if (providerInfo.onboarding.access === "environment") {
+    return {
+      status: "error",
+      error:
+        "Amazon Bedrock uses an AWS SigV4 credential set and cannot be verified as a one-field API key.",
+    };
+  }
   if (PROVIDERS_WITHOUT_API_KEY_VERIFICATION.has(provider)) {
     return { status: "valid" };
   }

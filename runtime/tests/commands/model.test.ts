@@ -596,4 +596,97 @@ describe("modelCommand", () => {
       ),
     });
   });
+
+  it.each([
+    {
+      name: "no credentials",
+      environment: {},
+      missing:
+        "AWS_BEDROCK_ACCESS_KEY_ID or AWS_ACCESS_KEY_ID and AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY",
+    },
+    {
+      name: "access only",
+      environment: { AWS_ACCESS_KEY_ID: "access" },
+      missing: "AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY",
+    },
+    {
+      name: "secret only",
+      environment: { AWS_SECRET_ACCESS_KEY: "secret" },
+      missing: "AWS_BEDROCK_ACCESS_KEY_ID or AWS_ACCESS_KEY_ID",
+    },
+  ])(
+    "blocks a direct Bedrock model switch with $name",
+    async ({ environment, missing }) => {
+      const configStore = commandConfigStore(TEST_HOME, {
+        auth: { managedKeys: { enabled: true } },
+      });
+      const session = stubSession({
+        provider: "grok",
+        model: "grok-4.3",
+        configStore,
+        environment: Object.freeze({ ...TEST_ENVIRONMENT, ...environment }),
+      });
+
+      const result = await modelCommand.execute(
+        mkctx(session, "amazon-bedrock:amazon.nova-pro-v1:0"),
+      );
+
+      expect(result).toEqual({
+        kind: "text",
+        text: expect.stringContaining(`set ${missing}`),
+      });
+      expect(
+        (session as unknown as { pendingProviderSwitch: unknown })
+          .pendingProviderSwitch,
+      ).toBeNull();
+    },
+  );
+
+  it.each([
+    {
+      name: "primary aliases",
+      environment: {
+        AWS_BEDROCK_ACCESS_KEY_ID: "access",
+        AWS_BEDROCK_SECRET_ACCESS_KEY: "secret",
+      },
+    },
+    {
+      name: "mixed aliases",
+      environment: {
+        AWS_ACCESS_KEY_ID: "access",
+        AWS_BEDROCK_SECRET_ACCESS_KEY: "secret",
+      },
+    },
+  ])(
+    "allows a direct Bedrock model switch with complete $name",
+    async ({ environment }) => {
+      const configStore = commandConfigStore(TEST_HOME, {
+        auth: { managedKeys: { enabled: true } },
+      });
+      const session = stubSession({
+        provider: "grok",
+        model: "grok-4.3",
+        configStore,
+        environment: Object.freeze({ ...TEST_ENVIRONMENT, ...environment }),
+      });
+
+      const result = await modelCommand.execute(
+        mkctx(session, "amazon-bedrock:amazon.nova-pro-v1:0"),
+      );
+
+      expect(result).toEqual({
+        kind: "text",
+        text: expect.stringContaining(
+          'Model switched to "amazon.nova-pro-v1:0"',
+        ),
+      });
+      expect(
+        (session as unknown as { pendingProviderSwitch: unknown })
+          .pendingProviderSwitch,
+      ).toMatchObject({
+        provider: "amazon-bedrock",
+        model: "amazon.nova-pro-v1:0",
+      });
+    },
+  );
 });

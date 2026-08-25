@@ -43,7 +43,7 @@ export function formatAgenCProvidersCliHelpText(): string {
   return [
     "Usage: agenc providers [--json] [--no-local-check]",
     "",
-    "Shows provider readiness: BYOK key status, local server health, and AgenC subscription tier.",
+    "Shows provider readiness: credential status, local server health, and AgenC subscription tier.",
     "",
     "Options:",
     "  --json             Print machine-readable JSON",

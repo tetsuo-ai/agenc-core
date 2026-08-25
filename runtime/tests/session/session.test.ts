@@ -929,6 +929,7 @@ describe("Session.consumePendingProviderSwitch", () => {
           vendKey: (provider, sessionId) => {
             calls.push(`vendKey:${provider}:${sessionId}`);
             return {
+              kind: "api-key",
               provider,
               sessionId,
               apiKey: "managed-openrouter-key",
@@ -1011,6 +1012,7 @@ describe("Session.consumePendingProviderSwitch", () => {
           vendKey: (provider, sessionId) => {
             calls.push(`vendKey:${provider}:${sessionId}`);
             return {
+              kind: "api-key",
               provider,
               sessionId,
               apiKey: "managed-openrouter-key",
@@ -1145,6 +1147,7 @@ describe("Session.consumePendingProviderSwitch", () => {
       },
       async () => {
         const vendKey = vi.fn(() => ({
+          kind: "api-key" as const,
           provider: "openrouter",
           sessionId: "conv-test",
           apiKey: "managed-openrouter-key",
@@ -1195,6 +1198,7 @@ describe("Session.consumePendingProviderSwitch", () => {
 
   it("rejects free remote hosted AgenC model routing during provider switches", async () => {
     const vendKey = vi.fn(() => ({
+      kind: "api-key" as const,
       provider: "grok",
       sessionId: "conv-test",
       apiKey: "managed-grok-key",

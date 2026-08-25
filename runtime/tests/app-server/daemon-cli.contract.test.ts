@@ -673,6 +673,7 @@ describe("AgenC daemon CLI", () => {
       logout: vi.fn(() => ({ authenticated: false })),
       whoami: vi.fn(() => ({ authenticated: true, provider: "local" })),
       vendKey: vi.fn((provider, sessionId) => ({
+        kind: "api-key",
         provider: String(provider),
         sessionId,
         apiKey: `managed-${sessionId}`,

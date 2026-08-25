@@ -9,9 +9,10 @@ import { RemoteAuthBackend } from "../auth/backends/remote.js";
 import type { RemoteAuthSessionReadContext } from "../auth/session-state.js";
 import {
   listBuiltInProviderInfo,
-  providerApiKeyEnvironmentLabel,
+  providerCredentialEnvironmentLabel,
 } from "../llm/registry/provider-info.js";
 import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
+import { saveXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
 import { MAX_ONBOARDING_INPUT_LENGTH } from "./inputPaste.js";
 import { hashPastedText, retrievePastedText } from "./pasteStore.js";
 
@@ -172,7 +173,7 @@ describe("first-run onboarding state", () => {
 });
 
 describe("first-run onboarding wizard", () => {
-  async function advanceToApiKey(
+  async function advanceToModelAccess(
     context: Parameters<typeof createInitialFirstRunOnboardingState>[0] & {
       readonly checkLocalProviders?: boolean;
       readonly fetchImpl?: typeof fetch;
@@ -203,15 +204,17 @@ describe("first-run onboarding wizard", () => {
 
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
     expect(state.selectedProvider).toBe("grok");
-    expect(state.currentStepId).toBe("api-key");
+    expect(state.currentStepId).toBe("model-access");
 
     state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
     expect(state.currentStepId).toBe("connection-test");
 
     state = (await submitFirstRunOnboardingInput(state, "test", context)).state;
     expect(state.currentStepId).toBe("security");
-    expect(state.connection?.status).toBe("needs-key");
-    expect(state.connection?.keyEnvVar).toBe("XAI_API_KEY or GROK_API_KEY");
+    expect(state.connection?.status).toBe("credentials-required");
+    expect(state.connection?.credentialLabel).toBe(
+      "XAI_API_KEY or GROK_API_KEY",
+    );
 
     state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
     expect(state.currentStepId).toBe("terminal-setup");
@@ -239,7 +242,7 @@ describe("first-run onboarding wizard", () => {
     expect(state.currentStepId).toBe("provider");
 
     state = (await submitFirstRunOnboardingInput(state, "", context)).state;
-    expect(state.currentStepId).toBe("api-key");
+    expect(state.currentStepId).toBe("model-access");
 
     state = (await submitFirstRunOnboardingInput(state, "", context)).state;
     expect(state.currentStepId).toBe("connection-test");
@@ -276,7 +279,7 @@ describe("first-run onboarding wizard", () => {
 
     state = (await submitFirstRunOnboardingInput(state, "", context)).state;
     expect(state).toMatchObject({
-      currentStepId: "api-key",
+      currentStepId: "model-access",
       selectedProvider: "ollama",
       selectedModel: "llama4:latest",
     });
@@ -304,7 +307,11 @@ describe("first-run onboarding wizard", () => {
     ).resolves.toMatchObject({
       ok: true,
       status: "ready",
-      keyEnvVar: "XAI_API_KEY",
+      credentialLabel: "XAI_API_KEY or GROK_API_KEY",
+      credentialProvenance: {
+        kind: "environment",
+        fields: [{ role: "apiKey", envVar: "XAI_API_KEY" }],
+      },
     });
     const [requestUrl, requestInit] = remoteFetch.mock.calls[0] ?? [];
     expect(String(requestUrl)).toBe("https://api.x.ai/v1/models");
@@ -320,8 +327,8 @@ describe("first-run onboarding wizard", () => {
       ),
     ).resolves.toMatchObject({
       ok: false,
-      status: "needs-key",
-      keyEnvVar: "XAI_API_KEY or GROK_API_KEY",
+      status: "credentials-required",
+      credentialLabel: "XAI_API_KEY or GROK_API_KEY",
     });
 
     await expect(
@@ -337,7 +344,11 @@ describe("first-run onboarding wizard", () => {
     ).resolves.toMatchObject({
       ok: false,
       status: "auth-failed",
-      keyEnvVar: "XAI_API_KEY",
+      credentialLabel: "XAI_API_KEY or GROK_API_KEY",
+      credentialProvenance: {
+        kind: "environment",
+        fields: [{ role: "apiKey", envVar: "XAI_API_KEY" }],
+      },
     });
 
     await expect(
@@ -375,22 +386,118 @@ describe("first-run onboarding wizard", () => {
     });
   });
 
+  test("reports stored Grok OAuth as the winner over stale key aliases", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-oauth-"));
+    const env = {
+      AGENC_HOME: agencHome,
+      XAI_API_KEY: "stale-xai-key",
+      GROK_API_KEY: "stale-grok-key",
+    };
+    const ingress = captureSecureStorageIngress(env, agencHome);
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({ data: [] }), { status: 200 }),
+    );
+    try {
+      expect(
+        saveXaiOauthCredentials(ingress.home, {
+          accessToken: "current-oauth-token",
+          expiresAt: Date.now() + 60_000,
+        }).success,
+      ).toBe(true);
+
+      await expect(
+        checkOnboardingProviderConnection(
+          {
+            agencHome,
+            config: defaultConfig(),
+            env,
+            fetchImpl,
+          },
+          "grok",
+          "grok-4.3",
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        status: "ready",
+        detail: "Provider credential found via xAI OAuth.",
+        credentialLabel: "XAI_API_KEY or GROK_API_KEY",
+        credentialProvenance: { kind: "oauth", provider: "grok" },
+      });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({
+        headers: { Authorization: "Bearer current-oauth-token" },
+      });
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("never sends stored Grok OAuth to a custom base URL", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-oauth-host-"));
+    const env = { AGENC_HOME: agencHome };
+    const ingress = captureSecureStorageIngress(env, agencHome);
+    const fetchImpl = vi.fn<typeof fetch>();
+    const base = defaultConfig();
+    try {
+      expect(
+        saveXaiOauthCredentials(ingress.home, {
+          accessToken: "oauth-must-not-leave",
+          expiresAt: Date.now() + 60_000,
+        }).success,
+      ).toBe(true);
+
+      const result = await checkOnboardingProviderConnection(
+        {
+          agencHome,
+          config: {
+            ...base,
+            providers: {
+              ...base.providers,
+              grok: {
+                ...base.providers?.grok,
+                base_url: "https://untrusted.example/v1",
+              },
+            },
+          },
+          env,
+          fetchImpl,
+        },
+        "grok",
+        "grok-4.3",
+      );
+
+      expect(result).toMatchObject({
+        ok: false,
+        status: "auth-failed",
+        detail:
+          "Refusing to send the stored xAI OAuth credential to a custom Grok base URL.",
+        credentialProvenance: { kind: "oauth", provider: "grok" },
+        baseURL: "https://untrusted.example/v1",
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
   test.each([
     {
       provider: "gemini",
       model: "gemini-2.5-pro",
       env: { GOOGLE_API_KEY: "google-test-key" },
-      keyEnvVar: "GOOGLE_API_KEY",
+      credentialLabel: "GEMINI_API_KEY or GOOGLE_API_KEY",
+      sourceEnvVar: "GOOGLE_API_KEY",
     },
     {
       provider: "github",
       model: "gpt-4o",
       env: { GH_TOKEN: "github-test-token" },
-      keyEnvVar: "GH_TOKEN",
+      credentialLabel: "GITHUB_TOKEN or GH_TOKEN",
+      sourceEnvVar: "GH_TOKEN",
     },
   ] as const)(
     "reports the actual winning fallback alias for $provider",
-    async ({ provider, model, env, keyEnvVar }) => {
+    async ({ provider, model, env, credentialLabel, sourceEnvVar }) => {
       await expect(
         checkOnboardingProviderConnection(
           {
@@ -404,10 +511,103 @@ describe("first-run onboarding wizard", () => {
       ).resolves.toMatchObject({
         ok: true,
         status: "ready",
-        keyEnvVar,
+        credentialLabel,
+        credentialProvenance: {
+          kind: "environment",
+          fields: [{ role: "apiKey", envVar: sourceEnvVar }],
+        },
       });
     },
   );
+
+  test("checks complete Bedrock SigV4 structure without a network probe", async () => {
+    const incompleteFetch = vi.fn<typeof fetch>();
+    const incomplete = await checkOnboardingProviderConnection(
+      {
+        config: defaultConfig(),
+        env: { AWS_ACCESS_KEY_ID: "fallback-access" },
+        fetchImpl: incompleteFetch,
+      },
+      "amazon-bedrock",
+      "amazon.nova-pro-v1:0",
+    );
+
+    expect(incomplete).toMatchObject({
+      ok: false,
+      status: "credentials-required",
+      credentialLabel:
+        "AWS_BEDROCK_ACCESS_KEY_ID or AWS_ACCESS_KEY_ID and AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY",
+      credentialProvenance: {
+        kind: "environment",
+        fields: [{ role: "accessKeyId", envVar: "AWS_ACCESS_KEY_ID" }],
+      },
+    });
+    expect(incompleteFetch).not.toHaveBeenCalled();
+
+    const secretOnlyFetch = vi.fn<typeof fetch>();
+    const secretOnly = await checkOnboardingProviderConnection(
+      {
+        config: defaultConfig(),
+        env: { AWS_BEDROCK_SECRET_ACCESS_KEY: "bedrock-secret" },
+        fetchImpl: secretOnlyFetch,
+      },
+      "amazon-bedrock",
+      "amazon.nova-pro-v1:0",
+    );
+
+    expect(secretOnly).toMatchObject({
+      ok: false,
+      status: "credentials-required",
+      detail: expect.stringContaining(
+        "AWS_BEDROCK_ACCESS_KEY_ID or AWS_ACCESS_KEY_ID",
+      ),
+      credentialProvenance: {
+        kind: "environment",
+        fields: [
+          {
+            role: "secretAccessKey",
+            envVar: "AWS_BEDROCK_SECRET_ACCESS_KEY",
+          },
+        ],
+      },
+    });
+    expect(secretOnlyFetch).not.toHaveBeenCalled();
+
+    const completeFetch = vi.fn<typeof fetch>();
+    const complete = await checkOnboardingProviderConnection(
+      {
+        config: defaultConfig(),
+        env: {
+          AWS_ACCESS_KEY_ID: "fallback-access",
+          AWS_SECRET_ACCESS_KEY: "fallback-secret",
+          AWS_SESSION_TOKEN: "fallback-session",
+          AWS_REGION: "us-west-2",
+        },
+        fetchImpl: completeFetch,
+      },
+      "amazon-bedrock",
+      "amazon.nova-pro-v1:0",
+    );
+
+    expect(complete).toMatchObject({
+      ok: true,
+      status: "ready",
+      detail:
+        "Required AWS SigV4 credential fields are present. AgenC will verify them on the first signed Bedrock request.",
+      credentialLabel:
+        "AWS_BEDROCK_ACCESS_KEY_ID or AWS_ACCESS_KEY_ID and AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY",
+      credentialProvenance: {
+        kind: "environment",
+        fields: [
+          { role: "accessKeyId", envVar: "AWS_ACCESS_KEY_ID" },
+          { role: "secretAccessKey", envVar: "AWS_SECRET_ACCESS_KEY" },
+          { role: "sessionToken", envVar: "AWS_SESSION_TOKEN" },
+          { role: "region", envVar: "AWS_REGION" },
+        ],
+      },
+    });
+    expect(completeFetch).not.toHaveBeenCalled();
+  });
 
   test("lists every canonical built-in provider in the provider step", () => {
     const context = { config: defaultConfig(), env: {} };
@@ -450,8 +650,8 @@ describe("first-run onboarding wizard", () => {
       ),
     ).resolves.toMatchObject({
       ok: false,
-      status: "needs-key",
-      keyEnvVar: providerApiKeyEnvironmentLabel(provider),
+      status: "credentials-required",
+      credentialLabel: providerCredentialEnvironmentLabel(provider),
     });
   });
 
@@ -490,7 +690,7 @@ describe("first-run onboarding wizard", () => {
       ),
     ).resolves.toMatchObject({
       ok: false,
-      status: "needs-key",
+      status: "credentials-required",
       detail: expect.stringContaining("requires account auth"),
     });
   });
@@ -615,7 +815,7 @@ describe("first-run onboarding wizard", () => {
         ).toBe("1. openrouter (current)");
         expect(
           detailLinesForStep(
-            { ...state, currentStepId: "api-key" },
+            { ...state, currentStepId: "model-access" },
             context,
           ).join("\n"),
         ).toContain(
@@ -643,23 +843,23 @@ describe("first-run onboarding wizard", () => {
           ),
         ).resolves.toMatchObject({
           ok: false,
-          status: "needs-key",
-          keyEnvVar: "OPENROUTER_API_KEY",
+          status: "credentials-required",
+          credentialLabel: "OPENROUTER_API_KEY",
           canSkip: false,
         });
 
         const state = {
           ...createInitialFirstRunOnboardingState(context),
-          currentStepId: "api-key" as const,
+          currentStepId: "model-access" as const,
           selectedProvider: "openrouter" as const,
           selectedModel: "x-ai/grok-4.3",
           connection: {
             provider: "openrouter",
             model: "x-ai/grok-4.3",
-            status: "needs-key" as const,
+            status: "credentials-required" as const,
             ok: false,
             detail: "AgenC account is signed in on the free plan.",
-            keyEnvVar: "OPENROUTER_API_KEY",
+            credentialLabel: "OPENROUTER_API_KEY",
             canSkip: false,
           },
         };
@@ -671,7 +871,7 @@ describe("first-run onboarding wizard", () => {
         );
 
         expect(result.completed).toBe(false);
-        expect(result.state.currentStepId).toBe("api-key");
+        expect(result.state.currentStepId).toBe("model-access");
         expect(result.state.error).toContain("OPENROUTER_API_KEY is required");
       },
     );
@@ -716,7 +916,7 @@ describe("first-run onboarding wizard", () => {
     };
     const state = {
       ...createInitialFirstRunOnboardingState(context),
-      currentStepId: "api-key" as const,
+      currentStepId: "model-access" as const,
       modelAccessInput: "api-key" as const,
       connection: {
         provider: "grok",
@@ -724,7 +924,11 @@ describe("first-run onboarding wizard", () => {
         status: "ready" as const,
         ok: true,
         detail: "Provider credential found via XAI_API_KEY.",
-        keyEnvVar: "XAI_API_KEY",
+        credentialLabel: "XAI_API_KEY or GROK_API_KEY",
+        credentialProvenance: {
+          kind: "environment" as const,
+          fields: [{ role: "apiKey" as const, envVar: "XAI_API_KEY" }],
+        },
       },
     };
 
@@ -794,7 +998,7 @@ describe("first-run onboarding wizard", () => {
       "not-a-real-key",
       context,
     );
-    expect(result.state.currentStepId).toBe("api-key");
+    expect(result.state.currentStepId).toBe("model-access");
     expect(result.state.error).toContain("Press Enter");
     expect(fetchImpl).toHaveBeenCalledOnce();
 
@@ -802,6 +1006,72 @@ describe("first-run onboarding wizard", () => {
     result = await submitFirstRunOnboardingInput(state, "later", context);
     expect(result.state.currentStepId).toBe("connection-test");
     expect(result.state.error).toContain("connection check");
+  });
+
+  test("rejects a pasted one-field key for Bedrock without verification", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const context = {
+      config: defaultConfig(),
+      env: {},
+      checkLocalProviders: false,
+      fetchImpl,
+    };
+    let state = createInitialFirstRunOnboardingState(context);
+    state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    state = (
+      await submitFirstRunOnboardingInput(state, "amazon-bedrock", context)
+    ).state;
+
+    expect(state).toMatchObject({
+      currentStepId: "model-access",
+      selectedProvider: "amazon-bedrock",
+      pendingApiKeyApproval: null,
+    });
+    const result = await submitFirstRunOnboardingInput(
+      state,
+      "bedrock-one-field-key",
+      context,
+    );
+
+    expect(result.state).toMatchObject({
+      currentStepId: "model-access",
+      selectedProvider: "amazon-bedrock",
+      pendingApiKeyApproval: null,
+    });
+    expect(result.state.error).toContain(
+      "pasted one-field API keys cannot configure it",
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("rejects Bedrock API-key mode before accepting input", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+    const context = {
+      config: defaultConfig(),
+      env: {},
+      checkLocalProviders: false,
+      fetchImpl,
+    };
+    let state = createInitialFirstRunOnboardingState(context);
+    state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
+    state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
+    state = (
+      await submitFirstRunOnboardingInput(state, "amazon-bedrock", context)
+    ).state;
+
+    const result = await submitFirstRunOnboardingInput(state, "3", context);
+
+    expect(result.state).toMatchObject({
+      currentStepId: "model-access",
+      selectedProvider: "amazon-bedrock",
+      modelAccessInput: "menu",
+      pendingApiKeyApproval: null,
+    });
+    expect(result.state.error).toContain(
+      "one-field API-key storage is not supported",
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   test("verifies and saves approved BYOK API keys through local auth", async () => {
@@ -821,7 +1091,7 @@ describe("first-run onboarding wizard", () => {
         checkLocalProviders: false,
         fetchImpl,
       };
-      let state = await advanceToApiKey(context);
+      let state = await advanceToModelAccess(context);
 
       state = (
         await submitFirstRunOnboardingInput(
@@ -831,7 +1101,7 @@ describe("first-run onboarding wizard", () => {
         )
       ).state;
 
-      expect(state.currentStepId).toBe("api-key");
+      expect(state.currentStepId).toBe("model-access");
       expect(state.pendingApiKeyApproval).toMatchObject({
         provider: "grok",
         maskedTail: "...-key",
@@ -848,6 +1118,13 @@ describe("first-run onboarding wizard", () => {
 
       state = (await submitFirstRunOnboardingInput(state, "yes", context)).state;
       expect(state.currentStepId).toBe("security");
+      expect(state.connection).toMatchObject({
+        provider: "grok",
+        status: "ready",
+        ok: true,
+        credentialLabel: "XAI_API_KEY or GROK_API_KEY",
+        credentialProvenance: { kind: "verified-input" },
+      });
       await expect(
         new LocalAuthBackend({ agencHome }).readByokKey("grok"),
       ).resolves.toBe("xai-approved-key");
@@ -887,7 +1164,7 @@ describe("first-run onboarding wizard", () => {
         await submitFirstRunOnboardingInput(state, provider, context)
       ).state;
 
-      expect(state.currentStepId).toBe("api-key");
+      expect(state.currentStepId).toBe("model-access");
       expect(state.selectedProvider).toBe(provider);
 
       state = (
@@ -926,14 +1203,14 @@ describe("first-run onboarding wizard", () => {
         checkLocalProviders: false,
         fetchImpl,
       };
-      const state = await advanceToApiKey(context);
+      const state = await advanceToModelAccess(context);
       const result = await submitFirstRunOnboardingInput(
         state,
         "xai-invalid-key",
         context,
       );
 
-      expect(result.state.currentStepId).toBe("api-key");
+      expect(result.state.currentStepId).toBe("model-access");
       expect(result.state.pendingApiKeyApproval).toBeNull();
       expect(result.state.error).toContain("Provider rejected");
       expect(result.state.error).toContain("Press Enter");
@@ -957,7 +1234,7 @@ describe("first-run onboarding wizard", () => {
       ),
       checkLocalProviders: false,
     };
-    let state = await advanceToApiKey(context);
+    let state = await advanceToModelAccess(context);
 
     expect(detailLinesForStep(state, context).join("\n")).toContain(
       "Use XAI_API_KEY",
@@ -968,7 +1245,7 @@ describe("first-run onboarding wizard", () => {
       "xai-still-bad",
       context,
     );
-    expect(result.state.currentStepId).toBe("api-key");
+    expect(result.state.currentStepId).toBe("model-access");
     expect(result.state.error).toContain("Press Enter");
 
     result = await submitFirstRunOnboardingInput(
@@ -987,7 +1264,11 @@ describe("first-run onboarding wizard", () => {
     expect(result.state.connection).toMatchObject({
       ok: false,
       status: "auth-failed",
-      keyEnvVar: "XAI_API_KEY",
+      credentialLabel: "XAI_API_KEY or GROK_API_KEY",
+      credentialProvenance: {
+        kind: "environment",
+        fields: [{ role: "apiKey", envVar: "XAI_API_KEY" }],
+      },
     });
   });
 
@@ -1009,7 +1290,11 @@ describe("first-run onboarding wizard", () => {
     expect(connection).toMatchObject({
       ok: false,
       status: "provider-unreachable",
-      keyEnvVar: "XAI_API_KEY",
+      credentialLabel: "XAI_API_KEY or GROK_API_KEY",
+      credentialProvenance: {
+        kind: "environment",
+        fields: [{ role: "apiKey", envVar: "XAI_API_KEY" }],
+      },
     });
   });
 
@@ -1049,7 +1334,7 @@ describe("first-run onboarding wizard", () => {
         checkLocalProviders: false,
         fetchImpl,
       };
-      let state = await advanceToApiKey(context);
+      let state = await advanceToModelAccess(context);
 
       state = (
         await submitFirstRunOnboardingInput(
@@ -1068,7 +1353,7 @@ describe("first-run onboarding wizard", () => {
       });
 
       state = (await submitFirstRunOnboardingInput(state, "", context)).state;
-      expect(state.currentStepId).toBe("api-key");
+      expect(state.currentStepId).toBe("model-access");
       expect(state.error).toContain("yes");
 
       state = (await submitFirstRunOnboardingInput(state, "no", context)).state;
@@ -1098,7 +1383,7 @@ describe("first-run onboarding wizard", () => {
       const longKey = "x".repeat(MAX_ONBOARDING_INPUT_LENGTH + 10);
       const state = (
         await submitFirstRunOnboardingInput(
-          await advanceToApiKey(context),
+          await advanceToModelAccess(context),
           longKey,
           context,
         )
@@ -1147,7 +1432,7 @@ describe("first-run onboarding wizard", () => {
       };
       const pendingState = (
         await submitFirstRunOnboardingInput(
-          await advanceToApiKey(validContext),
+          await advanceToModelAccess(validContext),
           longKey,
           validContext,
         )
@@ -1169,7 +1454,7 @@ describe("first-run onboarding wizard", () => {
         ),
       };
       const invalid = await submitFirstRunOnboardingInput(
-        await advanceToApiKey(invalidContext),
+        await advanceToModelAccess(invalidContext),
         longKey,
         invalidContext,
       );
@@ -1203,7 +1488,7 @@ describe("first-run onboarding wizard", () => {
       const longKey = "z".repeat(MAX_ONBOARDING_INPUT_LENGTH + 10);
       const pendingState = (
         await submitFirstRunOnboardingInput(
-          await advanceToApiKey(context),
+          await advanceToModelAccess(context),
           longKey,
           context,
         )
@@ -1214,7 +1499,7 @@ describe("first-run onboarding wizard", () => {
         context,
       );
 
-      expect(failed.state.currentStepId).toBe("api-key");
+      expect(failed.state.currentStepId).toBe("model-access");
       expect(failed.state.error).toContain("disk unavailable");
       await expect(
         retrievePastedText({
@@ -1243,14 +1528,14 @@ describe("first-run onboarding wizard", () => {
     state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
-    expect(state.currentStepId).toBe("api-key");
+    expect(state.currentStepId).toBe("model-access");
 
     result = await submitFirstRunOnboardingInput(
       state,
       "continue with no key",
       context,
     );
-    expect(result.state.currentStepId).toBe("api-key");
+    expect(result.state.currentStepId).toBe("model-access");
     expect(result.state.error).toContain("Press Enter");
 
     state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
@@ -1481,12 +1766,12 @@ describe("theme step terminal-background awareness", () => {
 });
 
 describe("account sign-in from the model-access step", () => {
-  async function advanceToGrokApiKey(context: Parameters<typeof createInitialFirstRunOnboardingState>[0]) {
+  async function advanceToGrokModelAccess(context: Parameters<typeof createInitialFirstRunOnboardingState>[0]) {
     let state = createInitialFirstRunOnboardingState(context);
     state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
     state = (await submitFirstRunOnboardingInput(state, "1", context)).state;
-    expect(state.currentStepId).toBe("api-key");
+    expect(state.currentStepId).toBe("model-access");
     expect(state.selectedProvider).toBe("grok");
     return state;
   }
@@ -1494,7 +1779,7 @@ describe("account sign-in from the model-access step", () => {
   test("explains AgenC, X / xAI, API-key, and configure-later access without slash commands", async () => {
     const config = defaultConfig();
     const context = { config, env: {}, checkLocalProviders: false };
-    const state = await advanceToGrokApiKey(context);
+    const state = await advanceToGrokModelAccess(context);
     const details = detailLinesForStep(state, context).join("\n");
 
     expect(details).toContain(
@@ -1536,7 +1821,7 @@ describe("account sign-in from the model-access step", () => {
       checkLocalProviders: false,
       runAgenCAccountLogin,
     };
-    const state = await advanceToGrokApiKey(context);
+    const state = await advanceToGrokModelAccess(context);
 
     const result = await submitFirstRunOnboardingInput(state, "1", context);
 
@@ -1552,7 +1837,7 @@ describe("account sign-in from the model-access step", () => {
       "Free hosted model access is ready.",
     );
     expect(result.state.completedStepIds).toEqual(
-      expect.arrayContaining(["api-key", "connection-test"]),
+      expect.arrayContaining(["model-access", "connection-test"]),
     );
   });
 
@@ -1568,7 +1853,7 @@ describe("account sign-in from the model-access step", () => {
       runGrokOauthLogin,
     };
     const state = {
-      ...(await advanceToGrokApiKey(context)),
+      ...(await advanceToGrokModelAccess(context)),
       selectedProvider: "openai" as const,
       selectedModel: "gpt-4.1",
     };
@@ -1585,7 +1870,7 @@ describe("account sign-in from the model-access step", () => {
       "Grok subscription access is ready.",
     );
     expect(result.state.completedStepIds).toEqual(
-      expect.arrayContaining(["api-key", "connection-test"]),
+      expect.arrayContaining(["model-access", "connection-test"]),
     );
     expect(result.state.error).toBeNull();
   });
@@ -1601,10 +1886,10 @@ describe("account sign-in from the model-access step", () => {
         message: "Browser sign-in did not complete (timeout).",
       }),
     };
-    const state = await advanceToGrokApiKey(context);
+    const state = await advanceToGrokModelAccess(context);
 
     const result = await submitFirstRunOnboardingInput(state, "2", context);
-    expect(result.state.currentStepId).toBe("api-key");
+    expect(result.state.currentStepId).toBe("model-access");
     expect(result.state.error).toContain("Browser sign-in did not complete");
   });
 
@@ -1615,10 +1900,10 @@ describe("account sign-in from the model-access step", () => {
       env: {},
       checkLocalProviders: false,
     };
-    const state = await advanceToGrokApiKey(context);
+    const state = await advanceToGrokModelAccess(context);
 
     const keyEntry = await submitFirstRunOnboardingInput(state, "3", context);
-    expect(keyEntry.state.currentStepId).toBe("api-key");
+    expect(keyEntry.state.currentStepId).toBe("model-access");
     expect(keyEntry.state.modelAccessInput).toBe("api-key");
     expect(firstRunOnboardingInputPresentation(keyEntry.state).placeholder).toContain(
       "Paste XAI_API_KEY or GROK_API_KEY",
@@ -1639,7 +1924,7 @@ describe("account sign-in from the model-access step", () => {
       checkLocalProviders: false,
     };
     const state = {
-      ...(await advanceToGrokApiKey(context)),
+      ...(await advanceToGrokModelAccess(context)),
       authPrompt: {
         heading: "Sign in or create an AgenC account",
         detail: "Finish the browser sign-in.",

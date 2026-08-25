@@ -367,6 +367,35 @@ describe("providers/bedrock", () => {
     );
   });
 
+  it("keeps an explicit endpoint ahead of the registry-owned region URL", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      jsonResponse({
+        output: {
+          message: { role: "assistant", content: [{ text: "proxied" }] },
+        },
+        stopReason: "end_turn",
+      }),
+    );
+    const provider = new BedrockProvider({
+      accessKeyId: "AKIDEXAMPLE",
+      secretAccessKey: "secret",
+      region: "ca-central-1",
+      baseURL: "https://bedrock-proxy.example",
+      model: "amazon.nova-pro-v1:0",
+      fetchImpl,
+      now: () => new Date("2024-01-02T03:04:05Z"),
+    });
+
+    await provider.chat([{ role: "user", content: "hello" }]);
+
+    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(requestUrl)).toBe(
+      "https://bedrock-proxy.example/model/amazon.nova-pro-v1%3A0/converse",
+    );
+    expect(new Headers(init?.headers as HeadersInit).get("authorization"))
+      .toContain("/ca-central-1/bedrock/aws4_request");
+  });
+
   it("encodes dotted MCP tool names across tools, toolChoice, and replayed toolUse, and decodes responses", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       jsonResponse({
@@ -1087,7 +1116,9 @@ describe("providers/bedrock", () => {
 
     await expect(
       provider.chat([{ role: "user", content: "hello" }]),
-    ).rejects.toThrow(/AWS_ACCESS_KEY_ID.*AWS_SECRET_ACCESS_KEY/);
+    ).rejects.toThrow(
+      /AWS_BEDROCK_ACCESS_KEY_ID.*AWS_ACCESS_KEY_ID.*AWS_BEDROCK_SECRET_ACCESS_KEY.*AWS_SECRET_ACCESS_KEY/u,
+    );
     await expect(provider.healthCheck()).resolves.toBe(false);
   });
 });

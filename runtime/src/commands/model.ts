@@ -39,9 +39,12 @@ import {
 import { resolveDisambiguatedModelSelection } from "../config/resolve-model.js";
 import { resolveProviderCapabilityEntry } from "../llm/capabilities.js";
 import {
-  providerApiKeyEnvironmentLabel,
+  resolveBuiltInProviderInfo,
   resolveBuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
+import {
+  missingProviderCredentialEnvironmentLabel,
+} from "../llm/registry/provider-ingress.js";
 import {
   analyzeSessionHistoryRequirements,
   validateHistoryCompatibility,
@@ -337,12 +340,15 @@ function modelSwitchAuthError(
   if (provider === undefined) return undefined;
   const config = readCommandConfig(ctx);
   if (config?.auth?.managedKeys?.enabled !== true) return undefined;
-  const apiKeyEnvLabel = providerApiKeyEnvironmentLabel(provider);
-  if (apiKeyEnvLabel === undefined) return undefined;
   const environment = providerEnvironmentFromCommandContext(ctx);
   const authContext = remoteAuthContextFromCommandContext(ctx);
   const apiKey = resolveProviderSettings(provider, config, environment)?.apiKey;
   if (apiKey !== undefined && apiKey.trim().length > 0) return undefined;
+  const missingCredentialLabel = missingProviderCredentialEnvironmentLabel(
+    provider,
+    environment,
+  );
+  if (missingCredentialLabel === undefined) return undefined;
   if (
     providerHasLiveSubscriptionRoute(provider) &&
     hasEntitledRemoteAuthSessionSync(authContext)
@@ -356,15 +362,20 @@ function modelSwitchAuthError(
   ) {
     return undefined;
   }
+  if (
+    resolveBuiltInProviderInfo(provider)?.onboarding.access === "environment"
+  ) {
+    return `Model switch blocked: set ${missingCredentialLabel}.`;
+  }
   if (providerHasLiveSubscriptionRoute(provider)) {
     return (
       `Model switch blocked: sign in with AgenC using /login for free hosted models, upgrade for paid hosted models, ` +
-      `or set ${apiKeyEnvLabel} for BYOK.`
+      `or set ${missingCredentialLabel} for BYOK.`
     );
   }
   return (
     `Model switch blocked: hosted subscription access is available through ` +
-    `OpenRouter. Run /provider openrouter, or set ${apiKeyEnvLabel} for BYOK.`
+    `OpenRouter. Run /provider openrouter, or set ${missingCredentialLabel} for BYOK.`
   );
 }
 
@@ -379,11 +390,16 @@ function subscriptionManagedModelError(
   if (provider === undefined) return undefined;
   const config = readCommandConfig(ctx);
   if (config?.auth?.managedKeys?.enabled !== true) return undefined;
-  if (providerApiKeyEnvironmentLabel(provider) === undefined) return undefined;
   const environment = providerEnvironmentFromCommandContext(ctx);
   const authContext = remoteAuthContextFromCommandContext(ctx);
   const apiKey = resolveProviderSettings(provider, config, environment)?.apiKey;
   if (apiKey !== undefined && apiKey.trim().length > 0) return undefined;
+  if (
+    missingProviderCredentialEnvironmentLabel(provider, environment) ===
+      undefined
+  ) {
+    return undefined;
+  }
   if (!providerHasLiveSubscriptionRoute(provider)) return undefined;
   if (isSubscriptionManagedModel(provider, targetModel)) return undefined;
   const tier = remoteAuthSessionSubscriptionTierSync(authContext);

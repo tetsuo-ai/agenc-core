@@ -11,6 +11,7 @@ import {
   hasXaiCredentials,
   isDirectXaiInferenceHost,
   resolveGrokCapabilityConfig,
+  resolveGrokProviderCredential,
   resolveXaiBearerToken,
   resolveXaiCapabilityExtra as resolveXaiCapabilityExtraWithEnvironment,
   resolveXaiLiveWebSearchOptions,
@@ -253,6 +254,18 @@ describe("hasXaiCredentials / resolveXaiBearerToken (OAuth wins)", () => {
     expect(hasXaiCredentials(NO_OAUTH_HOME, { XAI_API_KEY: "k" })).toBe(true);
     // Without stored OAuth, BYOK is the bearer.
     expect(resolveXaiBearerToken(NO_OAUTH_HOME, { XAI_API_KEY: "byok" })).toBe("byok");
+  });
+
+  it("uses canonical BYOK ingress and skips sentinel values", () => {
+    expect(
+      resolveGrokProviderCredential(NO_OAUTH_HOME, undefined, {
+        XAI_API_KEY: " undefined ",
+        GROK_API_KEY: " fallback-key ",
+      }),
+    ).toEqual({
+      value: "fallback-key",
+      isOAuth: false,
+    });
   });
 
   it("falls back to session bearer when no OAuth store and no BYOK", () => {

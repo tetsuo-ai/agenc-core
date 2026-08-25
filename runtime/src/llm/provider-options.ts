@@ -25,11 +25,11 @@ import {
   resolveStoredChatGptSubscriptionCredentials,
 } from "./providers/openai/chatgpt-backend.js";
 import {
-  resolveProviderApiKeyEnvironment,
   resolveProviderBaseURLEnvironment,
+  resolveProviderCredentialEnvironment,
 } from "./registry/provider-ingress.js";
 import { BUILT_IN_PROVIDER_BASE_URLS } from "./registry/provider-info.js";
-import { resolveGrokProviderApiKey } from "./xai-capability-config.js";
+import { resolveGrokProviderCredential } from "./xai-capability-config.js";
 import type { ProviderFactoryOptions, ProviderName } from "./provider.js";
 
 export type ProviderEnvironment = Readonly<
@@ -95,18 +95,29 @@ export function resolveProviderFactoryOptions(
   requested: ProviderFactoryOptions,
   env: ProviderEnvironment,
 ): ProviderFactoryOptions {
+  if (
+    provider === "amazon-bedrock" &&
+    nonEmpty(requested.apiKey) !== undefined
+  ) {
+    throw new Error(
+      "amazon-bedrock does not accept the generic apiKey factory option; pass accessKeyId in factory options extra",
+    );
+  }
   const snapshot = snapshotProviderEnvironment(env);
   const home = requested.credentialHome;
-  const environmentApiKey = resolveProviderApiKeyEnvironment(
+  const credentialEnvironment = resolveProviderCredentialEnvironment(
     provider,
     snapshot,
-  )?.value;
+  );
+  const environmentApiKey = credentialEnvironment?.kind === "api-key"
+    ? credentialEnvironment.apiKey?.value
+    : undefined;
   let apiKey = provider === "grok" && home !== undefined
-    ? resolveGrokProviderApiKey(
+    ? resolveGrokProviderCredential(
         home,
-        requested.apiKey ?? environmentApiKey,
+        requested.apiKey,
         snapshot,
-      )
+      ).value
     : nonEmpty(requested.apiKey) ?? environmentApiKey;
   let baseURL =
     nonEmpty(requested.baseURL) ??
@@ -208,22 +219,19 @@ export function resolveProviderFactoryOptions(
   }
 
   if (provider === "amazon-bedrock") {
-    const secretAccessKey =
-      nonEmpty(snapshot.AWS_BEDROCK_SECRET_ACCESS_KEY) ??
-      nonEmpty(snapshot.AWS_SECRET_ACCESS_KEY);
-    const sessionToken =
-      nonEmpty(snapshot.AWS_BEDROCK_SESSION_TOKEN) ??
-      nonEmpty(snapshot.AWS_SESSION_TOKEN);
-    const region =
-      nonEmpty(snapshot.AWS_BEDROCK_REGION) ??
-      nonEmpty(snapshot.AWS_REGION) ??
-      nonEmpty(snapshot.AWS_DEFAULT_REGION);
+    const bedrock = credentialEnvironment?.kind === "aws-sigv4"
+      ? credentialEnvironment
+      : undefined;
+    const accessKeyId = bedrock?.accessKeyId?.value;
+    const secretAccessKey = bedrock?.secretAccessKey?.value;
+    const sessionToken = bedrock?.sessionToken?.value;
+    const region = bedrock?.region?.value;
+    if (accessKeyId !== undefined) resolvedExtra.accessKeyId = accessKeyId;
     if (secretAccessKey !== undefined) {
       resolvedExtra.secretAccessKey = secretAccessKey;
     }
     if (sessionToken !== undefined) resolvedExtra.sessionToken = sessionToken;
     if (region !== undefined) resolvedExtra.region = region;
-    if (apiKey !== undefined) resolvedExtra.accessKeyId = apiKey;
   }
 
   const extra = mergeExtra(requested.extra, resolvedExtra, forcedExtra);

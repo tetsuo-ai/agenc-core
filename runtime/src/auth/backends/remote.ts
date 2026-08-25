@@ -17,7 +17,7 @@ import type {
   AuthSessionId,
   AuthSessionRef,
   AuthSubscriptionTier,
-  AuthVendedKey,
+  AuthVendedCredential,
   AuthWhoamiParams,
   AuthWhoamiResult,
 } from "../backend.js";
@@ -93,7 +93,7 @@ export interface RemoteAuthVendKeyRequest {
 
 export type RemoteAuthKeyVendor = (
   request: RemoteAuthVendKeyRequest,
-) => AuthVendedKey | Promise<AuthVendedKey>;
+) => AuthVendedCredential | Promise<AuthVendedCredential>;
 
 export type RemoteAuthModelInferer = (
   request: AuthInferAgencModelParams,
@@ -172,7 +172,7 @@ export interface RemoteAuthBackendOptions {
 }
 
 interface CachedRemoteAuthKey {
-  readonly promise: Promise<AuthVendedKey>;
+  readonly promise: Promise<AuthVendedCredential>;
   readonly expiresAtMs: number;
 }
 
@@ -359,7 +359,7 @@ export class RemoteAuthBackend implements AuthBackend {
   vendKey(
     provider: AuthProviderSlug | string,
     sessionId: AuthSessionId,
-  ): Promise<AuthVendedKey> {
+  ): Promise<AuthVendedCredential> {
     if (!this.#managedKeysEnabled) {
       return Promise.reject(
         new Error(
@@ -436,14 +436,8 @@ export class RemoteAuthBackend implements AuthBackend {
   async #requestVendedKey(
     provider: AuthProviderSlug | string,
     sessionId: AuthSessionId,
-  ): Promise<AuthVendedKey> {
+  ): Promise<AuthVendedCredential> {
     const vended = await this.#keyVendor({ provider, sessionId });
-    const apiKey = vended.apiKey.trim();
-    if (apiKey.length === 0) {
-      throw new Error(
-        `RemoteAuthBackend returned an empty managed key for provider "${provider}" in session "${sessionId}"`,
-      );
-    }
     if (vended.provider !== provider) {
       throw new Error(
         `RemoteAuthBackend key vending response provider mismatch for "${provider}"`,
@@ -454,10 +448,50 @@ export class RemoteAuthBackend implements AuthBackend {
         `RemoteAuthBackend key vending response session mismatch for "${sessionId}"`,
       );
     }
-    return {
-      ...vended,
-      apiKey,
-    };
+    if (provider === "amazon-bedrock" && vended.kind !== "aws-sigv4") {
+      throw new Error(
+        `RemoteAuthBackend returned api-key credentials for provider "${provider}"; expected aws-sigv4`,
+      );
+    }
+    if (provider !== "amazon-bedrock" && vended.kind !== "api-key") {
+      throw new Error(
+        `RemoteAuthBackend returned aws-sigv4 credentials for provider "${provider}"; expected api-key`,
+      );
+    }
+    if (vended.kind === "api-key") {
+      const apiKey = vended.apiKey.trim();
+      if (apiKey.length === 0) {
+        throw new Error(
+          `RemoteAuthBackend returned an empty managed API key for provider "${provider}" in session "${sessionId}"`,
+        );
+      }
+      return {
+        ...vended,
+        apiKey,
+      };
+    }
+    if (vended.kind === "aws-sigv4") {
+      const accessKeyId = vended.accessKeyId.trim();
+      const secretAccessKey = vended.secretAccessKey.trim();
+      if (accessKeyId.length === 0) {
+        throw new Error(
+          `RemoteAuthBackend returned an empty AWS access key ID for provider "${provider}" in session "${sessionId}"`,
+        );
+      }
+      if (secretAccessKey.length === 0) {
+        throw new Error(
+          `RemoteAuthBackend returned an empty AWS secret access key for provider "${provider}" in session "${sessionId}"`,
+        );
+      }
+      return {
+        ...vended,
+        accessKeyId,
+        secretAccessKey,
+      };
+    }
+    throw new Error(
+      `RemoteAuthBackend returned an unsupported managed credential kind for provider "${provider}" in session "${sessionId}"`,
+    );
   }
 
   async #requestInferredModel(
@@ -901,7 +935,7 @@ function compactRemoteAuthSubscriptionTierRequest(
 function parseRemoteAuthVendKeyResponse(
   value: unknown,
   request: RemoteAuthVendKeyRequest,
-): AuthVendedKey {
+): AuthVendedCredential {
   if (!value || typeof value !== "object") {
     throw new Error("RemoteAuthBackend key vending returned a non-object response");
   }
@@ -916,28 +950,47 @@ function parseRemoteAuthVendKeyResponse(
       `RemoteAuthBackend key vending response session mismatch for "${request.sessionId}"`,
     );
   }
-  const apiKey = readTrimmedString(record.apiKey ?? record.litellmKey);
-  if (apiKey === undefined) {
-    throw new Error("RemoteAuthBackend key vending response missing apiKey");
-  }
   const baseUrl = readTrimmedString(record.baseUrl ?? record.baseURL);
-  return {
+  const common = {
     provider: request.provider,
     sessionId: request.sessionId,
-    apiKey,
     ...(baseUrl !== undefined ? { baseUrl } : {}),
     ...(typeof record.expiresAt === "string" && record.expiresAt.length > 0
       ? { expiresAt: record.expiresAt }
       : {}),
-    ...(readTrimmedString(record.secretAccessKey) !== undefined
-      ? { secretAccessKey: readTrimmedString(record.secretAccessKey) }
-      : {}),
-    ...(readTrimmedString(record.sessionToken) !== undefined
-      ? { sessionToken: readTrimmedString(record.sessionToken) }
-      : {}),
-    ...(readTrimmedString(record.region) !== undefined
-      ? { region: readTrimmedString(record.region) }
-      : {}),
+  };
+  if (request.provider === "amazon-bedrock") {
+    const accessKeyId = readTrimmedString(record.accessKeyId);
+    if (accessKeyId === undefined) {
+      throw new Error(
+        "RemoteAuthBackend key vending response missing accessKeyId",
+      );
+    }
+    const secretAccessKey = readTrimmedString(record.secretAccessKey);
+    if (secretAccessKey === undefined) {
+      throw new Error(
+        "RemoteAuthBackend key vending response missing secretAccessKey",
+      );
+    }
+    const sessionToken = readTrimmedString(record.sessionToken);
+    const region = readTrimmedString(record.region);
+    return {
+      ...common,
+      kind: "aws-sigv4",
+      accessKeyId,
+      secretAccessKey,
+      ...(sessionToken !== undefined ? { sessionToken } : {}),
+      ...(region !== undefined ? { region } : {}),
+    };
+  }
+  const apiKey = readTrimmedString(record.apiKey ?? record.litellmKey);
+  if (apiKey === undefined) {
+    throw new Error("RemoteAuthBackend key vending response missing apiKey");
+  }
+  return {
+    ...common,
+    kind: "api-key",
+    apiKey,
   };
 }
 
@@ -1384,7 +1437,7 @@ function positiveTtlMs(value: number | undefined): number {
 }
 
 function cacheExpiresAtMs(
-  key: AuthVendedKey,
+  key: AuthVendedCredential,
   nowMs: number,
   ttlMs: number,
 ): number {

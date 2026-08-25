@@ -78,7 +78,15 @@ describe("suite-level hermetic env (vitest.setup.ts)", () => {
     const stripped = new Set<string>(HERMETIC_STRIPPED_ENV_VARS);
     const canonical = [
       ...Object.values(BUILT_IN_PROVIDER_DEFINITIONS).flatMap(
-        (definition) => definition.apiKeyEnvVars,
+        (definition) => definition.credentials.kind === "none"
+          ? []
+          : definition.credentials.kind === "api-key"
+            ? definition.credentials.apiKey.envVars
+            : [
+                ...definition.credentials.accessKeyId.envVars,
+                ...definition.credentials.secretAccessKey.envVars,
+                ...definition.credentials.sessionToken.envVars,
+              ],
       ),
       ...SUBPROCESS_SECRET_ENV,
     ];

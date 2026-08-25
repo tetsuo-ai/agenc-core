@@ -754,6 +754,7 @@ describe("runAdmittedModelCall", () => {
       whoami: () => ({ authenticated: true, provider: "remote" }),
       inferAgencModel,
       vendKey: (provider: string, sessionId: string) => ({
+        kind: "api-key",
         provider,
         sessionId,
         apiKey: "managed-key",

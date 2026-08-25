@@ -12,12 +12,18 @@ import {
 } from "../config/resolve-model.js";
 import type { AgenCConfig, ProviderConfig } from "../config/schema.js";
 import type { EnvSnapshot } from "../config/env.js";
-import { resolveProviderApiKeyEnvironment } from "../llm/registry/provider-ingress.js";
+import {
+  missingProviderCredentialEnvironmentLabel,
+  resolveProviderBaseURLEnvironment,
+  resolveProviderCredentialEnvironment,
+} from "../llm/registry/provider-ingress.js";
 import {
   listBuiltInProviderInfo,
   providerApiKeyEnvironmentLabel,
+  resolveBuiltInProviderRegionalEndpoint,
 } from "../llm/registry/provider-info.js";
 import { readXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
+import { resolveGrokProviderCredential } from "../llm/xai-capability-config.js";
 import type { HomeContext } from "../config/home.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
@@ -186,10 +192,28 @@ function rowDetail(status: ProviderRowStatus): string {
 }
 
 function providerBaseURL(
+  provider: ProviderSlug,
   infoBaseURL: string,
   config: ProviderConfig | undefined,
+  environment: EnvSnapshot,
 ): string {
-  return config?.base_url?.trim() || infoBaseURL;
+  const credentialEnvironment = resolveProviderCredentialEnvironment(
+    provider,
+    environment,
+  );
+  const region = credentialEnvironment?.kind === "aws-sigv4"
+    ? credentialEnvironment.region?.value
+    : undefined;
+  const regionalEndpoint = resolveBuiltInProviderRegionalEndpoint(
+    provider,
+    region,
+  );
+  return (
+    resolveProviderBaseURLEnvironment(provider, environment)?.value ??
+    (config?.base_url?.trim() ||
+      regionalEndpoint?.baseURL ||
+      infoBaseURL)
+  );
 }
 
 function isLocalProviderEndpoint(baseURL: string): boolean {
@@ -242,8 +266,17 @@ function authState(params: {
   // who are fully signed in, making their OAuth account invisible in the
   // picker (and pushing them onto other providers such as OpenRouter).
   if (params.provider === "grok") {
+    const credential = resolveGrokProviderCredential(
+      params.home,
+      undefined,
+      params.environment,
+    );
     const oauth = readXaiOauthCredentials(params.home);
-    if (oauth !== undefined && oauth.quarantinedAt === undefined) {
+    if (
+      credential.isOAuth &&
+      oauth !== undefined &&
+      oauth.quarantinedAt === undefined
+    ) {
       return {
         state: "ready",
         label: "xAI OAuth",
@@ -252,10 +285,35 @@ function authState(params: {
     }
   }
 
-  const envMatch = resolveProviderApiKeyEnvironment(
+  const credentialEnvironment = resolveProviderCredentialEnvironment(
     params.provider,
     params.environment,
   );
+  if (credentialEnvironment?.kind === "aws-sigv4") {
+    if (credentialEnvironment.missingRequired.length > 0) {
+      const missingLabel =
+        missingProviderCredentialEnvironmentLabel(
+          params.provider,
+          params.environment,
+        ) ?? "required AWS SigV4 credentials";
+      return {
+        state: "missing",
+        label: `${missingLabel} missing`,
+        source: `set env ${missingLabel}`,
+      };
+    }
+    const exactSources = credentialEnvironment.sources.map(
+      (source) => source.envVar,
+    );
+    return {
+      state: "ready",
+      label: "AWS SigV4",
+      source: `env ${exactSources.join(" + ")}`,
+    };
+  }
+  const envMatch = credentialEnvironment?.kind === "api-key"
+    ? credentialEnvironment.apiKey
+    : undefined;
   const envLabel = providerApiKeyEnvironmentLabel(params.provider);
   if (envLabel === undefined) {
     return {
@@ -479,7 +537,12 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     const provider = info.id;
     const providerConfig = config ? readProviderConfig(config, provider) : undefined;
     const status = rowStatus({ config, provider, currentProvider });
-    const baseURL = providerBaseURL(info.baseURL, providerConfig);
+    const baseURL = providerBaseURL(
+      provider,
+      info.baseURL,
+      providerConfig,
+      environment,
+    );
     const auth = authState({
       home,
       environment,

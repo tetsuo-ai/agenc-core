@@ -35,6 +35,7 @@ import {
   type TokenAccountingRequest,
 } from "../../token-accounting.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
+import { providerApiKeyEnvironmentLabel } from "../../registry/provider-info.js";
 
 export interface GeminiProviderConfig extends OpenAIProviderConfig {
   readonly cachedContent?: string;
@@ -184,7 +185,7 @@ async function resolveGeminiAuthHeaders(
 
   throw new LLMProviderError(
     "gemini",
-    "Gemini provider requires credentials: set GEMINI_API_KEY, GOOGLE_API_KEY, GEMINI_ACCESS_TOKEN, or Google ADC credentials",
+    `Gemini provider requires credentials: set ${config.apiKeyEnvLabel ?? providerApiKeyEnvironmentLabel("gemini") ?? "a Gemini API key"}, GEMINI_ACCESS_TOKEN, or Google ADC credentials`,
     401,
   );
 }
@@ -852,7 +853,8 @@ export class GeminiProvider implements LLMProvider {
     this.config = {
       ...config,
       providerName: "gemini",
-      apiKeyEnvLabel: "GEMINI_API_KEY",
+      apiKeyEnvLabel:
+        config.apiKeyEnvLabel ?? providerApiKeyEnvironmentLabel("gemini"),
       useResponsesApi: false,
       baseURL: normalizeGeminiBaseURL(config.baseURL),
     };

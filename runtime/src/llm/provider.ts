@@ -4,7 +4,11 @@
  * @module
  */
 
-import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
+import type {
+  AuthBackend,
+  AuthSubscriptionTier,
+  AuthVendedCredential,
+} from "../auth/backend.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
 import { AgenCProvider } from "./providers/agenc/index.js";
 import { GrokProvider } from "./providers/grok/adapter.js";
@@ -32,7 +36,6 @@ import {
 } from "./providers/gemini/index.js";
 import {
   BedrockProvider,
-  bedrockBaseURLForRegion,
   type BedrockProviderConfig,
 } from "./providers/bedrock/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
@@ -48,6 +51,7 @@ import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
 import {
   builtInProviderIds,
   providerApiKeyEnvironmentLabel,
+  resolveBuiltInProviderRegionalEndpoint,
   resolveBuiltInProviderSlug,
   resolveBuiltInProviderInfo,
   type BuiltInProviderInfo,
@@ -531,22 +535,15 @@ class AuthVendedProvider implements LLMProvider {
         `${this.#provider} provider AuthBackend.vendKey() returned session "${vended.sessionId}"`,
       );
     }
-    const apiKey = firstNonEmpty(vended.apiKey);
-    if (apiKey === undefined) {
-      throw new Error(
-        `${this.#provider} provider AuthBackend.vendKey() returned an empty key`,
-      );
-    }
     const options = cloneProviderFactoryOptions(this.#opts);
-    const extra = mergeAuthVendedProviderExtra(
+    const credentialOptions = resolveAuthVendedProviderCredentialOptions(
       this.#provider,
       options.extra,
-      vended as Record<string, unknown>,
+      vended,
     );
     const baseURL = firstNonEmpty(
       options.baseURL,
-      readString(vended as Record<string, unknown>, "baseURL"),
-      readString(vended as Record<string, unknown>, "baseUrl"),
+      vended.baseUrl,
     );
     const model = baseURL !== undefined && options.model !== undefined
       ? normalizeManagedGatewayModel(this.#provider, options.model)
@@ -555,9 +552,8 @@ class AuthVendedProvider implements LLMProvider {
       instance: createProvider(this.#provider, {
         ...options,
         ...(model !== undefined ? { model } : {}),
-        apiKey,
+        ...credentialOptions,
         ...(baseURL !== undefined ? { baseURL } : {}),
-        ...(extra !== undefined ? { extra } : {}),
       }),
       expiresAtMs:
         parseAuthVendedExpiresAtMs(vended.expiresAt) ??
@@ -591,13 +587,15 @@ function parseAuthVendedExpiresAtMs(expiresAt: string | undefined): number | und
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function concreteProviderExplicitApiKey(
+function hasConcreteProviderCredentialInput(
   provider: ProviderName,
   opts: ProviderFactoryOptions,
-): string | undefined {
+): boolean {
   return provider === "amazon-bedrock"
-    ? firstNonEmpty(readString(opts.extra, "accessKeyId"), opts.apiKey)
-    : firstNonEmpty(opts.apiKey);
+    ? ["accessKeyId", "secretAccessKey", "sessionToken"].some(
+      (field) => firstNonEmpty(readString(opts.extra, field)) !== undefined,
+    )
+    : firstNonEmpty(opts.apiKey) !== undefined;
 }
 
 function stripConcreteProviderAuthExtra(
@@ -659,32 +657,64 @@ function resolveAuthVendedProviderModel(
   return firstNonEmpty(explicitModel) ?? defaultModelFor(provider);
 }
 
-function mergeAuthVendedProviderExtra(
+function resolveAuthVendedProviderCredentialOptions(
   provider: ProviderName,
   extra: Record<string, unknown> | undefined,
-  vended: Record<string, unknown>,
-): Record<string, unknown> | undefined {
-  if (provider !== "amazon-bedrock") return extra;
+  vended: AuthVendedCredential,
+): Pick<ProviderFactoryOptions, "apiKey" | "extra"> {
+  if (provider !== "amazon-bedrock") {
+    if (vended.kind !== "api-key") {
+      throw new Error(
+        `${provider} provider AuthBackend.vendKey() returned ${vended.kind} credentials; expected api-key`,
+      );
+    }
+    const apiKey = firstNonEmpty(vended.apiKey);
+    if (apiKey === undefined) {
+      throw new Error(
+        `${provider} provider AuthBackend.vendKey() returned an empty API key`,
+      );
+    }
+    return {
+      apiKey,
+      ...(extra !== undefined ? { extra } : {}),
+    };
+  }
+  if (vended.kind !== "aws-sigv4") {
+    throw new Error(
+      "amazon-bedrock provider AuthBackend.vendKey() returned api-key credentials; expected aws-sigv4",
+    );
+  }
+  const accessKeyId = firstNonEmpty(vended.accessKeyId);
+  const secretAccessKey = firstNonEmpty(vended.secretAccessKey);
+  if (accessKeyId === undefined || secretAccessKey === undefined) {
+    throw new Error(
+      "amazon-bedrock provider AuthBackend.vendKey() returned incomplete AWS SigV4 credentials",
+    );
+  }
   const nonCredentialExtra = extra
     ? Object.fromEntries(
       Object.entries(extra)
-        .filter(([key]) => key !== "accessKeyId")
+        .filter(
+          ([key]) =>
+            key !== "accessKeyId" &&
+            key !== "secretAccessKey" &&
+            key !== "sessionToken" &&
+            key !== "region",
+        )
         .map(([key, value]) => [key, cloneExtraValue(value)]),
     )
     : {};
-  const bedrockExtra = {
-    ...nonCredentialExtra,
-    ...(readString(vended, "secretAccessKey") !== undefined
-      ? { secretAccessKey: readString(vended, "secretAccessKey") }
-      : {}),
-    ...(readString(vended, "sessionToken") !== undefined
-      ? { sessionToken: readString(vended, "sessionToken") }
-      : {}),
-    ...(readString(vended, "region") !== undefined
-      ? { region: readString(vended, "region") }
-      : {}),
+  const sessionToken = firstNonEmpty(vended.sessionToken);
+  const region = firstNonEmpty(vended.region, readString(extra, "region"));
+  return {
+    extra: {
+      ...nonCredentialExtra,
+      accessKeyId,
+      secretAccessKey,
+      ...(sessionToken !== undefined ? { sessionToken } : {}),
+      ...(region !== undefined ? { region } : {}),
+    },
   };
-  return Object.keys(bedrockExtra).length > 0 ? bedrockExtra : undefined;
 }
 
 function createAuthVendedProviderIfNeeded(
@@ -693,7 +723,7 @@ function createAuthVendedProviderIfNeeded(
 ): LLMProvider | undefined {
   if (!AUTH_VENDED_PROVIDER_NAMES.has(provider)) return undefined;
   if (providerTargetsLocalEndpoint(provider, opts)) return undefined;
-  if (concreteProviderExplicitApiKey(provider, opts) !== undefined) {
+  if (hasConcreteProviderCredentialInput(provider, opts)) {
     return undefined;
   }
   if (hasFactoryOAuthAccessToken(opts)) return undefined;
@@ -1285,6 +1315,11 @@ export function createProvider(
   // Keep the runtime boundary fail-closed even when JavaScript or an unsafe
   // cast bypasses the canonical ProviderName type.
   normalizeProviderIdentity(String(name), "provider factory");
+  if (name === "amazon-bedrock" && firstNonEmpty(opts.apiKey) !== undefined) {
+    throw new Error(
+      "amazon-bedrock does not accept the generic apiKey factory option; pass accessKeyId in factory options extra",
+    );
+  }
   const authVendedProvider = createAuthVendedProviderIfNeeded(name, opts);
   if (authVendedProvider !== undefined) return authVendedProvider;
   const extra = readRuntimeExtra(opts.extra);
@@ -1716,12 +1751,22 @@ export function createProvider(
       });
     }
     case "amazon-bedrock": {
-      const region = firstNonEmpty(extra.region) ?? "us-east-1";
-      const accessKeyId = requireFactoryApiKey(
+      const endpoint = resolveBuiltInProviderRegionalEndpoint(
         "amazon-bedrock",
-        opts,
-        extra.accessKeyId,
+        firstNonEmpty(extra.region),
       );
+      if (endpoint === undefined) {
+        throw new Error(
+          "amazon-bedrock registry metadata is missing a regional endpoint",
+        );
+      }
+      const region = endpoint.region;
+      const accessKeyId = firstNonEmpty(extra.accessKeyId);
+      if (accessKeyId === undefined) {
+        throw new Error(
+          "amazon-bedrock provider requires accessKeyId in factory options extra",
+        );
+      }
       const secretAccessKey = firstNonEmpty(extra.secretAccessKey);
       if (secretAccessKey === undefined) {
         throw new Error(
@@ -1744,7 +1789,7 @@ export function createProvider(
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL:
           normalizeBaseURL(opts.baseURL) ??
-          bedrockBaseURLForRegion(region),
+          endpoint.baseURL,
         ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       };

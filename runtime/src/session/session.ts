@@ -1629,6 +1629,7 @@ async function vendManagedProviderKey(params: {
     params.provider,
     params.sessionId,
   );
+  if (key.kind !== "api-key") return undefined;
   const apiKey = firstNonEmpty(key.apiKey);
   if (apiKey === undefined) return undefined;
   const baseURL = firstNonEmpty(key.baseUrl);

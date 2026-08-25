@@ -18,6 +18,7 @@ import type { EnvSnapshot } from "../config/env.js";
 import type { ConfigStore } from "../config/store.js";
 import { resolveHomeContext, type HomeContext } from "../config/home.js";
 import { RemoteAuthBackend } from "../auth/backends/remote.js";
+import { saveXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
 
 const TEST_ENVIRONMENT: EnvSnapshot = Object.freeze({
   AGENC_HOME: "/tmp/agenc-provider-command-test",
@@ -117,6 +118,27 @@ function mkctx(
     home: "/home/test",
     ...(appState ? { appState } : {}),
   };
+}
+
+function bedrockProviderMenuRow(environment: EnvSnapshot) {
+  const snapshot = readProviderMenuSnapshot(
+    mkctx(
+      stubSession({
+        environment: Object.freeze({
+          ...TEST_ENVIRONMENT,
+          ...environment,
+        }),
+      }),
+      "",
+    ),
+  );
+  const row = snapshot.rows.find(
+    (candidate) => candidate.provider === "amazon-bedrock",
+  );
+  if (row === undefined) {
+    throw new Error("Amazon Bedrock provider row is missing");
+  }
+  return row;
 }
 
 async function withProAuthSession<T>(
@@ -418,6 +440,143 @@ describe("providerCommand", () => {
     expect(openai?.credentialSource).toContain("OPENAI_API_KEY");
   });
 
+  it.each([
+    {
+      name: "access-only generic alias",
+      environment: { AWS_ACCESS_KEY_ID: "aws-access" },
+      auth:
+        "AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY missing",
+      credentialSource:
+        "set env AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY",
+    },
+    {
+      name: "secret-only Bedrock alias",
+      environment: {
+        AWS_BEDROCK_SECRET_ACCESS_KEY: "aws-secret",
+      },
+      auth: "AWS_BEDROCK_ACCESS_KEY_ID or AWS_ACCESS_KEY_ID missing",
+      credentialSource:
+        "set env AWS_BEDROCK_ACCESS_KEY_ID or AWS_ACCESS_KEY_ID",
+    },
+  ])(
+    "keeps the Bedrock provider menu unavailable for $name",
+    ({ environment, auth, credentialSource }) => {
+      expect(bedrockProviderMenuRow(environment)).toMatchObject({
+        runtimeState: "unauthenticated",
+        authState: "missing",
+        auth,
+        credentialSource,
+      });
+    },
+  );
+
+  it("marks Bedrock ready with its complete primary credential aliases", () => {
+    expect(
+      bedrockProviderMenuRow({
+        AWS_BEDROCK_ACCESS_KEY_ID: "aws-access",
+        AWS_BEDROCK_SECRET_ACCESS_KEY: "aws-secret",
+        AWS_BEDROCK_SESSION_TOKEN: "aws-session",
+        AWS_BEDROCK_REGION: "ca-central-1",
+      }),
+    ).toMatchObject({
+      runtimeState: "available",
+      authState: "ready",
+      auth: "AWS SigV4",
+      baseURL: "https://bedrock-runtime.ca-central-1.amazonaws.com",
+      credentialSource:
+        "env AWS_BEDROCK_ACCESS_KEY_ID + AWS_BEDROCK_SECRET_ACCESS_KEY + AWS_BEDROCK_SESSION_TOKEN + AWS_BEDROCK_REGION",
+    });
+  });
+
+  it("uses the canonical endpoint alias in the provider menu", () => {
+    expect(
+      bedrockProviderMenuRow({
+        AWS_BEDROCK_ACCESS_KEY_ID: "aws-access",
+        AWS_BEDROCK_SECRET_ACCESS_KEY: "aws-secret",
+        AWS_BEDROCK_REGION: "ca-central-1",
+        AWS_BEDROCK_BASE_URL: "https://bedrock-proxy.example/v1",
+      }),
+    ).toMatchObject({
+      baseURL: "https://bedrock-proxy.example/v1",
+    });
+  });
+
+  it("shows stored Grok OAuth ahead of stale environment keys", () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-provider-oauth-"));
+    const environment: EnvSnapshot = Object.freeze({
+      AGENC_HOME: agencHome,
+      XAI_API_KEY: "stale-xai-key",
+      GROK_API_KEY: "stale-grok-key",
+    });
+    const home = resolveHomeContext(environment, { platformHome: tmpdir() });
+    try {
+      expect(
+        saveXaiOauthCredentials(home, {
+          accessToken: "current-oauth-token",
+          expiresAt: Date.now() + 60_000,
+          accountLabel: "operator@example.com",
+        }).success,
+      ).toBe(true);
+      const snapshot = readProviderMenuSnapshot(
+        mkctx(
+          stubSession({
+            configStore: commandConfigStore(home),
+            environment,
+          }),
+        ),
+      );
+      expect(
+        snapshot.rows.find((row) => row.provider === "grok"),
+      ).toMatchObject({
+        authState: "ready",
+        auth: "xAI OAuth",
+        credentialSource:
+          "signed in as operator@example.com via /grok-login",
+      });
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      name: "Bedrock access and generic secret aliases",
+      environment: {
+        AWS_BEDROCK_ACCESS_KEY_ID: "aws-access",
+        AWS_SECRET_ACCESS_KEY: "aws-secret",
+      },
+      credentialSource:
+        "env AWS_BEDROCK_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY",
+    },
+    {
+      name: "generic access and Bedrock secret aliases",
+      environment: {
+        AWS_ACCESS_KEY_ID: "aws-access",
+        AWS_BEDROCK_SECRET_ACCESS_KEY: "aws-secret",
+      },
+      credentialSource:
+        "env AWS_ACCESS_KEY_ID + AWS_BEDROCK_SECRET_ACCESS_KEY",
+    },
+    {
+      name: "generic aliases",
+      environment: {
+        AWS_ACCESS_KEY_ID: "aws-access",
+        AWS_SECRET_ACCESS_KEY: "aws-secret",
+      },
+      credentialSource: "env AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY",
+    },
+  ])(
+    "marks Bedrock ready with $name and reports exact provenance",
+    ({ environment, credentialSource }) => {
+      expect(bedrockProviderMenuRow(environment)).toMatchObject({
+        runtimeState: "available",
+        authState: "ready",
+        auth: "AWS SigV4",
+        credentialSource,
+      });
+    },
+  );
+
   it("shows subscription-managed auth when managed keys are enabled and BYOK is absent", async () => {
     await withProAuthSession(({ configStore, environment }) => {
       const snapshot = readProviderMenuSnapshot(
@@ -590,4 +749,92 @@ describe("providerCommand", () => {
       ),
     });
   });
+
+  it.each([
+    {
+      name: "no credentials",
+      environment: {},
+      missing:
+        "AWS_BEDROCK_ACCESS_KEY_ID or AWS_ACCESS_KEY_ID and AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY",
+    },
+    {
+      name: "access only",
+      environment: { AWS_ACCESS_KEY_ID: "access" },
+      missing: "AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY",
+    },
+    {
+      name: "secret only",
+      environment: { AWS_BEDROCK_SECRET_ACCESS_KEY: "secret" },
+      missing: "AWS_BEDROCK_ACCESS_KEY_ID or AWS_ACCESS_KEY_ID",
+    },
+  ])(
+    "blocks a direct Bedrock provider switch with $name",
+    async ({ environment, missing }) => {
+      const configStore = commandConfigStore(TEST_HOME, {
+        auth: { managedKeys: { enabled: true } },
+      });
+      const session = stubSession({
+        provider: "grok",
+        model: "grok-4.3",
+        configStore,
+        environment: Object.freeze({ ...TEST_ENVIRONMENT, ...environment }),
+      });
+
+      const result = await providerCommand.execute(
+        mkctx(session, "amazon-bedrock"),
+      );
+
+      expect(result).toEqual({
+        kind: "text",
+        text: expect.stringContaining(`set ${missing}`),
+      });
+      expect(
+        (session as unknown as { pendingProviderSwitch: unknown })
+          .pendingProviderSwitch,
+      ).toBeNull();
+    },
+  );
+
+  it.each([
+    {
+      name: "primary aliases",
+      environment: {
+        AWS_BEDROCK_ACCESS_KEY_ID: "access",
+        AWS_BEDROCK_SECRET_ACCESS_KEY: "secret",
+      },
+    },
+    {
+      name: "mixed aliases",
+      environment: {
+        AWS_ACCESS_KEY_ID: "access",
+        AWS_BEDROCK_SECRET_ACCESS_KEY: "secret",
+      },
+    },
+  ])(
+    "allows a direct Bedrock provider switch with complete $name",
+    async ({ environment }) => {
+      const configStore = commandConfigStore(TEST_HOME, {
+        auth: { managedKeys: { enabled: true } },
+      });
+      const session = stubSession({
+        provider: "grok",
+        model: "grok-4.3",
+        configStore,
+        environment: Object.freeze({ ...TEST_ENVIRONMENT, ...environment }),
+      });
+
+      const result = await providerCommand.execute(
+        mkctx(session, "amazon-bedrock"),
+      );
+
+      expect(result).toEqual({
+        kind: "text",
+        text: expect.stringContaining('Provider switched to "amazon-bedrock"'),
+      });
+      expect(
+        (session as unknown as { pendingProviderSwitch: unknown })
+          .pendingProviderSwitch,
+      ).toMatchObject({ provider: "amazon-bedrock" });
+    },
+  );
 });

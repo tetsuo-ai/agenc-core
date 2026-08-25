@@ -454,6 +454,12 @@ export class PolicyLimitsService {
         this.#providerName ?? "agenc",
         this.#sessionId,
       );
+      if (key.kind !== "api-key") {
+        return {
+          headers: {},
+          error: "Authentication required for policy limits",
+        };
+      }
       const apiKey = trimNonEmpty(key.apiKey);
       if (apiKey === undefined) {
         return {

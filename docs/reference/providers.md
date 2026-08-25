@@ -3,8 +3,9 @@
 Built-in model providers for AgenC **0.17.0**. Source of truth:
 `runtime/src/llm/registry/provider-info.ts`
 (`BUILT_IN_PROVIDER_DEFINITIONS`). Each row owns the display name, defaults,
-ordered environment ingress names, and first-run access metadata. Exported
-default maps are mechanically derived views of those rows.
+ordered credential and endpoint environment ingress names, and first-run
+access metadata. Exported default maps are mechanically derived views of
+those rows.
 
 CLI: `agenc providers` · `agenc login` · `agenc config` · `/provider` and
 `/model` in the TUI.
@@ -30,8 +31,8 @@ separate provider route and its paid default remains **`x-ai/grok-4.5`**.
 Startup provider selection is explicit and layered: `--provider` wins over
 `AGENC_PROVIDER`, which wins over `model_provider` in the selected profile or
 `config.toml`; the final fallback is `grok`. A provider-qualified `--model`
-selection is resolved as one provider/model pair. API keys, OAuth tokens, base
-URLs, and local endpoint availability never choose a provider.
+selection is resolved as one provider/model pair. Credentials, OAuth tokens,
+base URLs, and local endpoint availability never choose a provider.
 
 The client captures this selection once and binds it to a session-owned
 provider service before daemon work begins. `/provider` replaces that binding
@@ -93,7 +94,7 @@ they run only through the Grok Build CLI ACP path. See
 
 ## Built-in providers (16)
 
-| Slug | Display name | Default model | Default base URL | Ordered API-key env aliases | Ordered endpoint env aliases | Onboarding access |
+| Slug | Display name | Default model | Default base URL | Ordered credential env aliases | Ordered endpoint env aliases | Onboarding access |
 | --- | --- | --- | --- | --- | --- | --- |
 | `grok` | xAI Grok | `grok-4.6` | `https://api.x.ai/v1` | `XAI_API_KEY`, `GROK_API_KEY` | `XAI_BASE_URL`, `GROK_BASE_URL` | `api-key` |
 | `openai` | OpenAI | `gpt-5` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `OPENAI_BASE_URL`, `OPENAI_API_BASE` | `api-key` |
@@ -109,11 +110,15 @@ they run only through the Grok Build CLI ACP path. See
 | `nvidia-nim` | NVIDIA NIM | `nvidia/llama-3.1-nemotron-70b-instruct` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | `NVIDIA_BASE_URL` | `api-key` |
 | `minimax` | MiniMax | `MiniMax-M2.5` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | `MINIMAX_BASE_URL` | `api-key` |
 | `github` | GitHub Copilot | `gpt-4o` | `https://api.githubcopilot.com` | `GITHUB_TOKEN`, `GH_TOKEN` | `GITHUB_BASE_URL` | `api-key` |
-| `amazon-bedrock` | Amazon Bedrock | `amazon.nova-pro-v1:0` | `https://bedrock-runtime.us-east-1.amazonaws.com` | `AWS_BEDROCK_ACCESS_KEY_ID`, `AWS_ACCESS_KEY_ID` | `AWS_BEDROCK_BASE_URL` | `api-key` |
+| `amazon-bedrock` | Amazon Bedrock | `amazon.nova-pro-v1:0` | `https://bedrock-runtime.us-east-1.amazonaws.com` | access: `AWS_BEDROCK_ACCESS_KEY_ID`, `AWS_ACCESS_KEY_ID`; secret: `AWS_BEDROCK_SECRET_ACCESS_KEY`, `AWS_SECRET_ACCESS_KEY`; optional session: `AWS_BEDROCK_SESSION_TOKEN`, `AWS_SESSION_TOKEN` | `AWS_BEDROCK_BASE_URL` | `environment` |
 | `agenc` | AgenC | `agenc` | `https://id.agenc.ag/v1` | _(managed auth; no BYOK key alias)_ | `AGENC_BASE_URL` | `managed` |
 
 `openrouter` remains an `api-key` first-run route, but a signed-in AgenC
 subscription can supply its managed key access when that feature is enabled.
+Amazon Bedrock is an environment-only first-run route because SigV4 requires
+both an access-key ID and secret access key. The optional session token is used
+when present. AgenC's one-field BYOK paste/store path does not accept or persist
+a partial Bedrock credential set.
 
 ## Auth model
 
@@ -150,7 +155,7 @@ stores credential values.
   APIs require an explicit `HomeContext`; cache/single-flight/refresh-lock
   state is isolated by home, and refresh writes compare-and-swap the exact
   credential version they exchanged so a newer login always wins.
-- **Discovery** — `agenc providers` reports readiness (key present, local
+- **Discovery** — `agenc providers` reports readiness (credentials present, local
   server health for Ollama/LM Studio/openai-compatible, subscription tier)
   without changing the selected provider. It uses the same ordered registry
   aliases as provider construction and reports the alias that actually won.
@@ -181,9 +186,13 @@ export OPENROUTER_API_KEY=…
 
 The built-in table above is exhaustive and ordered. An alias is never borrowed
 by another provider unless that provider row explicitly lists it. LM Studio,
-for example, does not inherit OpenAI credentials or endpoints. Bedrock region
-selection remains separate: `AWS_BEDROCK_REGION`, then `AWS_REGION`, then
-`AWS_DEFAULT_REGION`.
+for example, does not inherit OpenAI credentials or endpoints. Bedrock supports
+only the access, secret, optional session-token, endpoint, and region variables
+listed here. Region selection is `AWS_BEDROCK_REGION`, then `AWS_REGION`, then
+`AWS_DEFAULT_REGION`. Without `AWS_BEDROCK_BASE_URL`, that resolved region
+produces `https://bedrock-runtime.<region>.amazonaws.com`; without a region,
+the registry default is `us-east-1`. No additional AWS credential sources are
+consumed by this direct SigV4 provider.
 
 ## Wire layer
 

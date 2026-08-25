@@ -96,6 +96,24 @@ describe("verifyApiKey", () => {
     );
   });
 
+  test("rejects one-field Bedrock verification without making a request", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+
+    await expect(
+      verifyApiKey({
+        provider: "amazon-bedrock",
+        apiKey: "bedrock-one-field-key",
+        config: defaultConfig(),
+        fetchImpl,
+      }),
+    ).resolves.toEqual({
+      status: "error",
+      error:
+        "Amazon Bedrock uses an AWS SigV4 credential set and cannot be verified as a one-field API key.",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   test("distinguishes rejected keys from provider verification errors", async () => {
     await expect(
       verifyApiKey({

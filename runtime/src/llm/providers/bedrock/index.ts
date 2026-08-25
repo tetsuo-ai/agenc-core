@@ -35,10 +35,13 @@ import {
   type TokenAccountingRequest,
 } from "../../token-accounting.js";
 import { validateAgentInvocationMessageSequence } from "../../../contracts/agent-invocation-envelope.js";
+import {
+  providerCredentialEnvironmentLabel,
+  resolveBuiltInProviderRegionalEndpoint,
+} from "../../registry/provider-info.js";
 
-const DEFAULT_REGION = "us-east-1";
+const BEDROCK_PROVIDER_ID = "amazon-bedrock";
 const BEDROCK_SERVICE = "bedrock";
-const BEDROCK_RUNTIME_HOST_PREFIX = "bedrock-runtime";
 const JSON_CONTENT_TYPE = "application/json";
 const EMPTY_TEXT_PLACEHOLDER = "[empty message]";
 
@@ -167,18 +170,6 @@ function formatAmzDate(date: Date): { readonly dateStamp: string; readonly amzDa
     dateStamp: iso.slice(0, 8),
     amzDate: iso,
   };
-}
-
-export function bedrockBaseURLForRegion(region: string): string {
-  return `https://${BEDROCK_RUNTIME_HOST_PREFIX}.${region}.amazonaws.com`;
-}
-
-function normalizeRegion(region: string | undefined): string {
-  return firstNonEmpty(region) ?? DEFAULT_REGION;
-}
-
-function normalizeBaseURL(baseURL: string | undefined, region: string): string {
-  return firstNonEmpty(baseURL) ?? bedrockBaseURLForRegion(region);
 }
 
 function normalizeHeaderValue(value: string): string {
@@ -899,8 +890,11 @@ function resolveCredentials(config: BedrockProviderConfig): BedrockCredentials {
   const accessKeyId = firstNonEmpty(config.accessKeyId);
   const secretAccessKey = firstNonEmpty(config.secretAccessKey);
   if (!accessKeyId || !secretAccessKey) {
+    const environmentLabel =
+      providerCredentialEnvironmentLabel("amazon-bedrock") ??
+      "the required AWS SigV4 credential fields";
     throw new Error(
-      "amazon-bedrock provider requires AWS credentials — set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY or pass accessKeyId/secretAccessKey",
+      `amazon-bedrock provider requires AWS credentials — set ${environmentLabel} or pass accessKeyId/secretAccessKey`,
     );
   }
   return {
@@ -955,8 +949,15 @@ export class BedrockProvider implements LLMProvider {
   private readonly baseURL: string;
 
   constructor(config: BedrockProviderConfig) {
-    this.region = normalizeRegion(config.region);
-    this.baseURL = normalizeBaseURL(config.baseURL, this.region);
+    const endpoint = resolveBuiltInProviderRegionalEndpoint(
+      BEDROCK_PROVIDER_ID,
+      firstNonEmpty(config.region),
+    );
+    if (endpoint === undefined) {
+      throw new Error("amazon-bedrock registry metadata is missing a regional endpoint");
+    }
+    this.region = endpoint.region;
+    this.baseURL = firstNonEmpty(config.baseURL) ?? endpoint.baseURL;
     this.config = {
       ...config,
       region: this.region,

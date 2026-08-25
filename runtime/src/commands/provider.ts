@@ -26,10 +26,12 @@ import {
   defaultModelForProvider,
 } from "../config/resolve-model.js";
 import {
-  providerApiKeyEnvironmentLabel,
   resolveBuiltInProviderInfo,
   resolveBuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
+import {
+  missingProviderCredentialEnvironmentLabel,
+} from "../llm/registry/provider-ingress.js";
 import { checkModelHistoryCompat, type HistoryCompatResult } from "./model.js";
 import {
   providerEnvironmentFromCommandContext,
@@ -293,18 +295,27 @@ function providerSwitchAuthError(
   const config = readCommandConfig(ctx);
   if (config?.auth?.managedKeys?.enabled !== true) return undefined;
   const info = resolveBuiltInProviderInfo(normalizedProvider);
-  const apiKeyEnvLabel = providerApiKeyEnvironmentLabel(normalizedProvider);
-  if (info === undefined || apiKeyEnvLabel === undefined) return undefined;
+  if (info === undefined) return undefined;
+  const environment = providerEnvironmentFromCommandContext(ctx);
   const settings = resolveProviderSettings(
     normalizedProvider,
     config,
-    providerEnvironmentFromCommandContext(ctx),
+    environment,
   );
   const authContext = remoteAuthContextFromCommandContext(ctx);
-  if (isLocalProviderEndpoint(settings?.baseURL ?? info.baseURL))
+  if (
+    info.onboarding.access !== "environment" &&
+    isLocalProviderEndpoint(settings?.baseURL ?? info.baseURL)
+  ) {
     return undefined;
+  }
   const apiKey = settings?.apiKey;
   if (apiKey !== undefined && apiKey.trim().length > 0) return undefined;
+  const missingCredentialLabel = missingProviderCredentialEnvironmentLabel(
+    normalizedProvider,
+    environment,
+  );
+  if (missingCredentialLabel === undefined) return undefined;
   if (
     providerHasLiveSubscriptionRoute(normalizedProvider) &&
     hasEntitledRemoteAuthSessionSync(authContext)
@@ -319,17 +330,23 @@ function providerSwitchAuthError(
   ) {
     return undefined;
   }
+  if (info.onboarding.access === "environment") {
+    return (
+      `Provider switch to "${normalizedProvider}" blocked: ` +
+      `set ${missingCredentialLabel}.`
+    );
+  }
   if (providerHasLiveSubscriptionRoute(normalizedProvider)) {
     return (
       `Provider switch to "${normalizedProvider}" blocked: sign in with AgenC ` +
       `using /login for free hosted models, upgrade for paid hosted models, ` +
-      `or set ${apiKeyEnvLabel} for BYOK.`
+      `or set ${missingCredentialLabel} for BYOK.`
     );
   }
   return (
     `Provider switch to "${normalizedProvider}" blocked: ` +
     `hosted subscription access is available through OpenRouter. ` +
-    `Run /provider openrouter, or set ${apiKeyEnvLabel} for BYOK.`
+    `Run /provider openrouter, or set ${missingCredentialLabel} for BYOK.`
   );
 }
 

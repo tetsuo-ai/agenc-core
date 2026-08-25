@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { AuthBackend, AuthVendedKey } from "../auth/backend.js";
+import type { AuthBackend, AuthVendedCredential } from "../auth/backend.js";
 import { createAgenCDaemonRuntimeAuthBackend } from "./provider-key-vending.js";
 
 function makeAuthBackend(vendKey: AuthBackend["vendKey"]): AuthBackend {
@@ -21,6 +21,7 @@ describe("AgenC daemon provider-key vending expiry", () => {
     const backend = makeAuthBackend((provider, sessionId) => {
       count += 1;
       return {
+        kind: "api-key",
         provider: String(provider),
         sessionId,
         apiKey: `managed-key-${count}`,
@@ -46,6 +47,7 @@ describe("AgenC daemon provider-key vending expiry", () => {
     const backend = makeAuthBackend((provider, sessionId) => {
       count += 1;
       return {
+        kind: "api-key",
         provider: String(provider),
         sessionId,
         apiKey: `managed-key-${count}`,
@@ -57,12 +59,12 @@ describe("AgenC daemon provider-key vending expiry", () => {
     });
 
     const first = await wrapped.vendKey("grok", "session-1");
-    expect(first.apiKey).toBe("managed-key-1");
+    expect(first).toMatchObject({ kind: "api-key", apiKey: "managed-key-1" });
 
     now += 120_000;
     const second = await wrapped.vendKey("grok", "session-1");
 
-    expect(second.apiKey).toBe("managed-key-2");
+    expect(second).toMatchObject({ kind: "api-key", apiKey: "managed-key-2" });
     expect(backend.vendKey).toHaveBeenCalledTimes(2);
   });
 
@@ -73,6 +75,7 @@ describe("AgenC daemon provider-key vending expiry", () => {
     const backend = makeAuthBackend((provider, sessionId) => {
       count += 1;
       return {
+        kind: "api-key",
         provider: String(provider),
         sessionId,
         apiKey: `managed-key-${count}`,
@@ -88,7 +91,7 @@ describe("AgenC daemon provider-key vending expiry", () => {
     now = 6_000;
     const second = await wrapped.vendKey("grok", "session-1");
 
-    expect(second.apiKey).toBe("managed-key-2");
+    expect(second).toMatchObject({ kind: "api-key", apiKey: "managed-key-2" });
     expect(backend.vendKey).toHaveBeenCalledTimes(2);
   });
 
@@ -98,6 +101,7 @@ describe("AgenC daemon provider-key vending expiry", () => {
     const backend = makeAuthBackend((provider, sessionId) => {
       count += 1;
       return {
+        kind: "api-key",
         provider: String(provider),
         sessionId,
         apiKey: `managed-key-${count}`,
@@ -117,16 +121,21 @@ describe("AgenC daemon provider-key vending expiry", () => {
 
   it("shares the in-flight vend among concurrent callers", async () => {
     let now = 0;
-    let resolveFirst: ((value: AuthVendedKey) => void) | undefined;
+    let resolveFirst: ((value: AuthVendedCredential) => void) | undefined;
     let count = 0;
     const backend = makeAuthBackend((provider, sessionId) => {
       count += 1;
       if (count === 1) {
-        return new Promise<AuthVendedKey>((resolve) => {
+        return new Promise<AuthVendedCredential>((resolve) => {
           resolveFirst = resolve;
         });
       }
-      return { provider: String(provider), sessionId, apiKey: `managed-key-${count}` };
+      return {
+        kind: "api-key",
+        provider: String(provider),
+        sessionId,
+        apiKey: `managed-key-${count}`,
+      };
     });
     const wrapped = createAgenCDaemonRuntimeAuthBackend(backend, {
       nowMs: () => now,
@@ -136,16 +145,32 @@ describe("AgenC daemon provider-key vending expiry", () => {
     const p2 = wrapped.vendKey("grok", "session-1");
     expect(backend.vendKey).toHaveBeenCalledTimes(1);
 
-    resolveFirst?.({ provider: "grok", sessionId: "session-1", apiKey: "managed-key-1" });
-    expect((await p1).apiKey).toBe("managed-key-1");
-    expect((await p2).apiKey).toBe("managed-key-1");
+    resolveFirst?.({
+      kind: "api-key",
+      provider: "grok",
+      sessionId: "session-1",
+      apiKey: "managed-key-1",
+    });
+    await expect(p1).resolves.toMatchObject({
+      kind: "api-key",
+      apiKey: "managed-key-1",
+    });
+    await expect(p2).resolves.toMatchObject({
+      kind: "api-key",
+      apiKey: "managed-key-1",
+    });
   });
 
   it("clearVendedKeyCache forces a fresh vend on the next call", async () => {
     let count = 0;
     const backend = makeAuthBackend((provider, sessionId) => {
       count += 1;
-      return { provider: String(provider), sessionId, apiKey: `managed-key-${count}` };
+      return {
+        kind: "api-key",
+        provider: String(provider),
+        sessionId,
+        apiKey: `managed-key-${count}`,
+      };
     });
     const wrapped = createAgenCDaemonRuntimeAuthBackend(backend);
 
@@ -153,7 +178,7 @@ describe("AgenC daemon provider-key vending expiry", () => {
     wrapped.clearVendedKeyCache();
     const second = await wrapped.vendKey("grok", "session-1");
 
-    expect(second.apiKey).toBe("managed-key-2");
+    expect(second).toMatchObject({ kind: "api-key", apiKey: "managed-key-2" });
     expect(backend.vendKey).toHaveBeenCalledTimes(2);
   });
 });

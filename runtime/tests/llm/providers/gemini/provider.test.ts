@@ -61,6 +61,21 @@ const echoTool: LLMTool = {
 };
 
 describe("GeminiProvider", () => {
+  test("derives all accepted API-key aliases without overwriting a caller label", async () => {
+    const canonical = new GeminiProvider({ model: "gemini-2.5-pro" });
+    await expect(
+      canonical.chat([{ role: "user", content: "hello" }]),
+    ).rejects.toThrow(/GEMINI_API_KEY or GOOGLE_API_KEY/u);
+
+    const custom = new GeminiProvider({
+      model: "gemini-2.5-pro",
+      apiKeyEnvLabel: "CUSTOM_GEMINI_CREDENTIAL",
+    });
+    await expect(
+      custom.chat([{ role: "user", content: "hello" }]),
+    ).rejects.toThrow(/CUSTOM_GEMINI_CREDENTIAL/u);
+  });
+
   test("refuses invocation-looking content without durable authority metadata", async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const provider = new GeminiProvider({

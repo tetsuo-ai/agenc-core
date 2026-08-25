@@ -543,7 +543,7 @@ describe("provider resolution (T13)", () => {
     });
   });
 
-  test("resolveProviderSettings uses the canonical Bedrock access-key env", () => {
+  test("resolveProviderSettings does not project Bedrock access IDs as API keys", () => {
     const config = mergeConfigs(defaultConfig(), {
       providers: {
         "amazon-bedrock": {
@@ -558,9 +558,9 @@ describe("provider resolution (T13)", () => {
 
     expect(settings).toMatchObject({
       provider: "amazon-bedrock",
-      apiKey: "default-bedrock-access-key",
       defaultModel: "amazon.nova-lite-v1:0",
     });
+    expect(settings?.apiKey).toBeUndefined();
   });
 
   test("resolveProviderSettings canonicalizes provider fallback targets", () => {
@@ -1814,11 +1814,11 @@ describe("env: resolvers", () => {
     ).toBe("specific");
     expect(resolveProviderApiKey("amazon-bedrock", {
       AWS_ACCESS_KEY_ID: "aws",
-    })).toBe("aws");
+    })).toBeUndefined();
     expect(resolveProviderApiKey("amazon-bedrock", {
       AWS_BEDROCK_ACCESS_KEY_ID: "bedrock-aws",
       AWS_ACCESS_KEY_ID: "aws",
-    })).toBe("bedrock-aws");
+    })).toBeUndefined();
     expect(resolveProviderApiKey("gemini", {
       GOOGLE_API_KEY: "google",
     })).toBe("google");

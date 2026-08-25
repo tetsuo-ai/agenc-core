@@ -418,7 +418,10 @@ Aliases: `chatgpt-login`, `chatgpt-logout`, and `chatgpt-auth-status`.
 agenc providers [--json] [--no-local-check]
 ```
 
-Provider readiness: BYOK key status, local server health, AgenC subscription tier.
+Provider readiness: credential status, local server health, and AgenC
+subscription tier. `--json` reports `credentialStatus` and, when an exact
+source won, redacted `credentialProvenance`; credential values are never
+included.
 
 | Option | Meaning |
 | --- | --- |

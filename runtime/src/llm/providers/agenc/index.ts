@@ -11,6 +11,7 @@ import type {
   AuthBackend,
   AuthSessionId,
   AuthSubscriptionTier,
+  AuthVendedCredential,
 } from "../../../auth/backend.js";
 import type {
   LLMChatOptions,
@@ -138,12 +139,10 @@ export class AgenCProvider implements LLMProvider {
     if (key.provider !== provider || key.sessionId !== this.#config.sessionId) {
       throw new Error(`prediction credential route mismatch for ${provider}`);
     }
-    const apiKey = firstNonEmpty(key.apiKey);
-    if (apiKey === undefined) {
-      throw new Error(
-        `prediction credential vending returned an empty key for ${provider}`,
-      );
-    }
+    const apiKey = requireVendedApiKey(
+      key,
+      `prediction credential vending for ${provider}`,
+    );
     const baseURL = firstNonEmpty(
       key.baseUrl,
       this.#config.providerOptions?.baseURL,
@@ -280,12 +279,10 @@ export class AgenCProvider implements LLMProvider {
       provider,
       this.#config.sessionId,
     );
-    const apiKey = firstNonEmpty(key.apiKey);
-    if (apiKey === undefined) {
-      throw new Error(
-        "AgenCProvider managed key vending returned an empty key",
-      );
-    }
+    const apiKey = requireVendedApiKey(
+      key,
+      "AgenCProvider managed credential vending",
+    );
     const baseURL = firstNonEmpty(key.baseUrl);
     const expiresAtMs =
       parseExpiresAtMs(key.expiresAt) ??
@@ -375,6 +372,20 @@ function firstNonEmpty(
     }
   }
   return undefined;
+}
+
+function requireVendedApiKey(
+  credential: AuthVendedCredential,
+  operation: string,
+): string {
+  if (credential.kind !== "api-key") {
+    throw new Error(`${operation} returned non-API-key credentials`);
+  }
+  const apiKey = firstNonEmpty(credential.apiKey);
+  if (apiKey === undefined) {
+    throw new Error(`${operation} returned an empty API key`);
+  }
+  return apiKey;
 }
 
 function parseExpiresAtMs(expiresAt: string | undefined): number | undefined {

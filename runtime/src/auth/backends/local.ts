@@ -27,7 +27,7 @@ import type {
   AuthSessionId,
   AuthSessionRef,
   AuthSubscriptionTier,
-  AuthVendedKey,
+  AuthVendedCredential,
   AuthWhoamiParams,
   AuthWhoamiResult,
 } from "../backend.js";
@@ -181,7 +181,7 @@ export class LocalAuthBackend implements AuthBackend {
   vendKey(
     provider: AuthProviderSlug | string,
     sessionId: AuthSessionId,
-  ): AuthVendedKey {
+  ): AuthVendedCredential {
     throw new Error(
       `LocalAuthBackend cannot vend managed keys for provider "${provider}" in session "${sessionId}"; use BYOK fallback`,
     );

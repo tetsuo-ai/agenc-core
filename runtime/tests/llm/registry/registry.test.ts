@@ -36,7 +36,13 @@ describe("LLM registry", () => {
       id: "grok",
       name: "xAI Grok",
       defaultModel: "grok-4.6",
-      apiKeyEnvVars: ["XAI_API_KEY", "GROK_API_KEY"],
+      credentials: {
+        kind: "api-key",
+        apiKey: {
+          envVars: ["XAI_API_KEY", "GROK_API_KEY"],
+          required: true,
+        },
+      },
       requestMaxRetries: 4,
       streamMaxRetries: 5,
       streamIdleTimeoutMs: 0,
@@ -56,7 +62,20 @@ describe("LLM registry", () => {
       name: "Amazon Bedrock",
       defaultModel: "amazon.nova-pro-v1:0",
       baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
-      apiKeyEnvVars: ["AWS_BEDROCK_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"],
+      credentials: {
+        kind: "aws-sigv4",
+        accessKeyId: {
+          envVars: ["AWS_BEDROCK_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"],
+          required: true,
+        },
+        secretAccessKey: {
+          envVars: [
+            "AWS_BEDROCK_SECRET_ACCESS_KEY",
+            "AWS_SECRET_ACCESS_KEY",
+          ],
+          required: true,
+        },
+      },
     });
     expect(listBuiltInProviderInfo().map((entry) => entry.id)).toContain(
       "openai-compatible",

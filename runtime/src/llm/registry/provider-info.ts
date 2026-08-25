@@ -52,6 +52,7 @@ const DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS = 15_000;
 
 export type BuiltInProviderOnboardingAccess =
   | "api-key"
+  | "environment"
   | "local"
   | "managed";
 
@@ -63,6 +64,90 @@ export interface BuiltInProviderOnboardingInfo {
   /** A signed-in AgenC subscription may supply this provider's key. */
   readonly supportsManagedKeyAccess: boolean;
 }
+
+export interface ProviderCredentialFieldDefinition {
+  /** Ordered aliases for one credential field. The first non-empty value wins. */
+  readonly envVars: readonly string[];
+  /** Whether this field must be present for this credential kind to be usable. */
+  readonly required: boolean;
+}
+
+export interface BuiltInProviderRegionalEndpointDefinition {
+  /** Region used when neither explicit nor environment ingress supplies one. */
+  readonly defaultRegion: string;
+  /** URL template containing exactly one `{region}` placeholder. */
+  readonly baseURLTemplate: string;
+}
+
+export interface ResolvedBuiltInProviderRegionalEndpoint {
+  readonly region: string;
+  readonly baseURL: string;
+}
+
+export type ProviderCredentialDefinition =
+  | { readonly kind: "none" }
+  | {
+      readonly kind: "api-key";
+      readonly apiKey: ProviderCredentialFieldDefinition;
+    }
+  | {
+      readonly kind: "aws-sigv4";
+      readonly accessKeyId: ProviderCredentialFieldDefinition;
+      readonly secretAccessKey: ProviderCredentialFieldDefinition;
+      readonly sessionToken: ProviderCredentialFieldDefinition;
+      readonly regionEnvVars: readonly string[];
+    };
+
+function credentialField(
+  envVars: readonly string[],
+  required: boolean,
+): ProviderCredentialFieldDefinition {
+  return Object.freeze({
+    envVars: Object.freeze([...envVars]),
+    required,
+  });
+}
+
+function noCredentials(): ProviderCredentialDefinition {
+  return Object.freeze({ kind: "none" });
+}
+
+function apiKeyCredentials(
+  envVars: readonly string[],
+  required = true,
+): ProviderCredentialDefinition {
+  return Object.freeze({
+    kind: "api-key",
+    apiKey: credentialField(envVars, required),
+  });
+}
+
+function awsSigV4Credentials(params: {
+  readonly accessKeyIdEnvVars: readonly string[];
+  readonly secretAccessKeyEnvVars: readonly string[];
+  readonly sessionTokenEnvVars: readonly string[];
+  readonly regionEnvVars: readonly string[];
+}): ProviderCredentialDefinition {
+  return Object.freeze({
+    kind: "aws-sigv4",
+    accessKeyId: credentialField(params.accessKeyIdEnvVars, true),
+    secretAccessKey: credentialField(params.secretAccessKeyEnvVars, true),
+    sessionToken: credentialField(params.sessionTokenEnvVars, false),
+    regionEnvVars: Object.freeze([...params.regionEnvVars]),
+  });
+}
+
+function regionalEndpointBaseURL(
+  endpoint: BuiltInProviderRegionalEndpointDefinition,
+  region: string,
+): string {
+  return endpoint.baseURLTemplate.replace("{region}", region);
+}
+
+const AMAZON_BEDROCK_REGIONAL_ENDPOINT = Object.freeze({
+  defaultRegion: "us-east-1",
+  baseURLTemplate: "https://bedrock-runtime.{region}.amazonaws.com",
+});
 
 function onboardingInfo(
   order: number,
@@ -80,8 +165,9 @@ export interface BuiltInProviderDefinition {
   readonly name: string;
   readonly defaultModel: string;
   readonly baseURL: string;
-  readonly apiKeyEnvVars: readonly string[];
+  readonly credentials: ProviderCredentialDefinition;
   readonly baseURLEnvVars: readonly string[];
+  readonly regionalEndpoint?: BuiltInProviderRegionalEndpointDefinition;
   /** Factory can authenticate without receiving an API-key-shaped value. */
   readonly supportsApiKeylessAuth: boolean;
   readonly onboarding: BuiltInProviderOnboardingInfo;
@@ -95,7 +181,6 @@ function providerDefinition<const T extends Omit<
 ): T & { readonly supportsApiKeylessAuth: boolean } {
   return Object.freeze({
     ...definition,
-    apiKeyEnvVars: Object.freeze([...definition.apiKeyEnvVars]),
     baseURLEnvVars: Object.freeze([...definition.baseURLEnvVars]),
     supportsApiKeylessAuth: definition.supportsApiKeylessAuth ?? false,
   }) as T & { readonly supportsApiKeylessAuth: boolean };
@@ -107,7 +192,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     name: "xAI Grok",
     defaultModel: "grok-4.6",
     baseURL: "https://api.x.ai/v1",
-    apiKeyEnvVars: ["XAI_API_KEY", "GROK_API_KEY"],
+    credentials: apiKeyCredentials(["XAI_API_KEY", "GROK_API_KEY"]),
     baseURLEnvVars: ["XAI_BASE_URL", "GROK_BASE_URL"],
     onboarding: onboardingInfo(10, "api-key"),
   }),
@@ -115,7 +200,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     name: "OpenAI", // branding-scan: allow real provider display name
     defaultModel: "gpt-5",
     baseURL: "https://api.openai.com/v1",
-    apiKeyEnvVars: ["OPENAI_API_KEY"],
+    credentials: apiKeyCredentials(["OPENAI_API_KEY"]),
     baseURLEnvVars: ["OPENAI_BASE_URL", "OPENAI_API_BASE"],
     supportsApiKeylessAuth: true,
     onboarding: onboardingInfo(20, "api-key"),
@@ -124,7 +209,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     name: "Anthropic", // branding-scan: allow real provider display name
     defaultModel: "claude-opus-4-7",
     baseURL: "https://api.anthropic.com/v1",
-    apiKeyEnvVars: ["ANTHROPIC_API_KEY"],
+    credentials: apiKeyCredentials(["ANTHROPIC_API_KEY"]),
     baseURLEnvVars: ["ANTHROPIC_BASE_URL"],
     onboarding: onboardingInfo(30, "api-key"),
   }),
@@ -132,7 +217,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     name: "Ollama",
     defaultModel: "llama3.3",
     baseURL: "http://localhost:11434",
-    apiKeyEnvVars: [],
+    credentials: noCredentials(),
     baseURLEnvVars: ["OLLAMA_BASE_URL"],
     onboarding: onboardingInfo(40, "local"),
   }),
@@ -140,7 +225,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     name: "LM Studio",
     defaultModel: "gpt-4o-mini",
     baseURL: "http://localhost:1234/v1",
-    apiKeyEnvVars: ["LMSTUDIO_API_KEY"],
+    credentials: apiKeyCredentials(["LMSTUDIO_API_KEY"], false),
     baseURLEnvVars: ["LMSTUDIO_BASE_URL"],
     onboarding: onboardingInfo(50, "local"),
   }),
@@ -148,7 +233,10 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     name: "OpenAI-compatible", // branding-scan: allow provider category display name
     defaultModel: "local-model",
     baseURL: "http://localhost:8000/v1",
-    apiKeyEnvVars: ["OPENAI_COMPATIBLE_API_KEY", "OPENAI_API_KEY"],
+    credentials: apiKeyCredentials(
+      ["OPENAI_COMPATIBLE_API_KEY", "OPENAI_API_KEY"],
+      false,
+    ),
     baseURLEnvVars: [
       "OPENAI_COMPATIBLE_BASE_URL",
       "OPENAI_BASE_URL",
@@ -160,7 +248,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     name: "OpenRouter",
     defaultModel: "x-ai/grok-4.5",
     baseURL: "https://openrouter.ai/api/v1",
-    apiKeyEnvVars: ["OPENROUTER_API_KEY"],
+    credentials: apiKeyCredentials(["OPENROUTER_API_KEY"]),
     baseURLEnvVars: ["OPENROUTER_BASE_URL"],
     onboarding: onboardingInfo(70, "api-key", true),
   }),
@@ -168,7 +256,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     name: "Groq",
     defaultModel: "llama-3.3-70b-versatile",
     baseURL: "https://api.groq.com/openai/v1",
-    apiKeyEnvVars: ["GROQ_API_KEY"],
+    credentials: apiKeyCredentials(["GROQ_API_KEY"]),
     baseURLEnvVars: ["GROQ_BASE_URL"],
     onboarding: onboardingInfo(80, "api-key"),
   }),
@@ -176,7 +264,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     name: "DeepSeek",
     defaultModel: "deepseek-v4-flash",
     baseURL: "https://api.deepseek.com/v1",
-    apiKeyEnvVars: ["DEEPSEEK_API_KEY"],
+    credentials: apiKeyCredentials(["DEEPSEEK_API_KEY"]),
     baseURLEnvVars: ["DEEPSEEK_BASE_URL"],
     onboarding: onboardingInfo(90, "api-key"),
   }),
@@ -184,7 +272,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     name: "Gemini",
     defaultModel: "gemini-2.5-pro",
     baseURL: "https://generativelanguage.googleapis.com/v1beta",
-    apiKeyEnvVars: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
+    credentials: apiKeyCredentials(["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
     baseURLEnvVars: ["GEMINI_BASE_URL"],
     supportsApiKeylessAuth: true,
     onboarding: onboardingInfo(100, "api-key"),
@@ -193,7 +281,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     name: "Mistral",
     defaultModel: "mistral-medium-latest",
     baseURL: "https://api.mistral.ai/v1",
-    apiKeyEnvVars: ["MISTRAL_API_KEY"],
+    credentials: apiKeyCredentials(["MISTRAL_API_KEY"]),
     baseURLEnvVars: ["MISTRAL_BASE_URL"],
     onboarding: onboardingInfo(110, "api-key"),
   }),
@@ -201,7 +289,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     name: "NVIDIA NIM",
     defaultModel: "nvidia/llama-3.1-nemotron-70b-instruct",
     baseURL: "https://integrate.api.nvidia.com/v1",
-    apiKeyEnvVars: ["NVIDIA_API_KEY"],
+    credentials: apiKeyCredentials(["NVIDIA_API_KEY"]),
     baseURLEnvVars: ["NVIDIA_BASE_URL"],
     onboarding: onboardingInfo(120, "api-key"),
   }),
@@ -209,7 +297,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     name: "MiniMax",
     defaultModel: "MiniMax-M2.5",
     baseURL: "https://api.minimax.io/v1",
-    apiKeyEnvVars: ["MINIMAX_API_KEY"],
+    credentials: apiKeyCredentials(["MINIMAX_API_KEY"]),
     baseURLEnvVars: ["MINIMAX_BASE_URL"],
     onboarding: onboardingInfo(130, "api-key"),
   }),
@@ -217,23 +305,42 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
     name: "GitHub Copilot",
     defaultModel: "gpt-4o",
     baseURL: "https://api.githubcopilot.com",
-    apiKeyEnvVars: ["GITHUB_TOKEN", "GH_TOKEN"],
+    credentials: apiKeyCredentials(["GITHUB_TOKEN", "GH_TOKEN"]),
     baseURLEnvVars: ["GITHUB_BASE_URL"],
     onboarding: onboardingInfo(140, "api-key"),
   }),
   "amazon-bedrock": providerDefinition({
     name: "Amazon Bedrock",
     defaultModel: "amazon.nova-pro-v1:0",
-    baseURL: "https://bedrock-runtime.us-east-1.amazonaws.com",
-    apiKeyEnvVars: ["AWS_BEDROCK_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"],
+    baseURL: regionalEndpointBaseURL(
+      AMAZON_BEDROCK_REGIONAL_ENDPOINT,
+      AMAZON_BEDROCK_REGIONAL_ENDPOINT.defaultRegion,
+    ),
+    regionalEndpoint: AMAZON_BEDROCK_REGIONAL_ENDPOINT,
+    credentials: awsSigV4Credentials({
+      accessKeyIdEnvVars: ["AWS_BEDROCK_ACCESS_KEY_ID", "AWS_ACCESS_KEY_ID"],
+      secretAccessKeyEnvVars: [
+        "AWS_BEDROCK_SECRET_ACCESS_KEY",
+        "AWS_SECRET_ACCESS_KEY",
+      ],
+      sessionTokenEnvVars: [
+        "AWS_BEDROCK_SESSION_TOKEN",
+        "AWS_SESSION_TOKEN",
+      ],
+      regionEnvVars: [
+        "AWS_BEDROCK_REGION",
+        "AWS_REGION",
+        "AWS_DEFAULT_REGION",
+      ],
+    }),
     baseURLEnvVars: ["AWS_BEDROCK_BASE_URL"],
-    onboarding: onboardingInfo(150, "api-key"),
+    onboarding: onboardingInfo(150, "environment"),
   }),
   agenc: providerDefinition({
     name: "AgenC",
     defaultModel: "agenc",
     baseURL: "https://id.agenc.ag/v1",
-    apiKeyEnvVars: [],
+    credentials: noCredentials(),
     baseURLEnvVars: ["AGENC_BASE_URL"],
     onboarding: onboardingInfo(160, "managed"),
   }),
@@ -334,7 +441,7 @@ export interface BuiltInProviderInfo {
   readonly name: string;
   readonly baseURL: string;
   readonly defaultModel: string;
-  readonly apiKeyEnvVars: readonly string[];
+  readonly credentials: ProviderCredentialDefinition;
   readonly baseURLEnvVars: readonly string[];
   readonly supportsApiKeylessAuth: boolean;
   readonly requestMaxRetries: number;
@@ -365,7 +472,7 @@ export function resolveBuiltInProviderInfo(
     name: definition.name,
     baseURL: definition.baseURL,
     defaultModel: definition.defaultModel,
-    apiKeyEnvVars: definition.apiKeyEnvVars,
+    credentials: definition.credentials,
     baseURLEnvVars: definition.baseURLEnvVars,
     supportsApiKeylessAuth: definition.supportsApiKeylessAuth,
     requestMaxRetries: DEFAULT_REQUEST_MAX_RETRIES,
@@ -378,6 +485,23 @@ export function resolveBuiltInProviderInfo(
   };
 }
 
+/** Resolve a registry-owned regional endpoint and its effective region. */
+export function resolveBuiltInProviderRegionalEndpoint(
+  provider: string | undefined,
+  region?: string,
+): ResolvedBuiltInProviderRegionalEndpoint | undefined {
+  const id = resolveBuiltInProviderSlug(provider);
+  if (id === undefined) return undefined;
+  const definition = BUILT_IN_PROVIDER_DEFINITIONS[id];
+  if (!("regionalEndpoint" in definition)) return undefined;
+  const endpoint = definition.regionalEndpoint;
+  const normalizedRegion = region?.trim() || endpoint.defaultRegion;
+  return Object.freeze({
+    region: normalizedRegion,
+    baseURL: regionalEndpointBaseURL(endpoint, normalizedRegion),
+  });
+}
+
 export function listBuiltInProviderInfo(): readonly BuiltInProviderInfo[] {
   return Object.freeze(
     builtInProviderIds().map((id) => resolveBuiltInProviderInfo(id)!),
@@ -387,8 +511,32 @@ export function listBuiltInProviderInfo(): readonly BuiltInProviderInfo[] {
 export function providerApiKeyEnvironmentLabel(
   provider: string,
 ): string | undefined {
-  const names = resolveBuiltInProviderInfo(provider)?.apiKeyEnvVars ?? [];
-  return names.length === 0 ? undefined : names.join(" or ");
+  const credentials = resolveBuiltInProviderInfo(provider)?.credentials;
+  return credentials?.kind === "api-key"
+    ? providerCredentialFieldEnvironmentLabel(credentials.apiKey)
+    : undefined;
+}
+
+export function providerCredentialFieldEnvironmentLabel(
+  field: ProviderCredentialFieldDefinition,
+): string {
+  return field.envVars.join(" or ");
+}
+
+export function providerCredentialEnvironmentLabel(
+  provider: string,
+): string | undefined {
+  const credentials = resolveBuiltInProviderInfo(provider)?.credentials;
+  if (credentials === undefined || credentials.kind === "none") {
+    return undefined;
+  }
+  if (credentials.kind === "api-key") {
+    return providerCredentialFieldEnvironmentLabel(credentials.apiKey);
+  }
+  return [credentials.accessKeyId, credentials.secretAccessKey]
+    .filter((field) => field.required)
+    .map(providerCredentialFieldEnvironmentLabel)
+    .join(" and ");
 }
 
 export function resolveBuiltInProviderSlug(

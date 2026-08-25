@@ -21,6 +21,7 @@ describe("remote subscription gating", () => {
     const keyVendor = vi.fn((provider: string) => ({
       provider,
       sessionId: "conv-free-managed",
+      kind: "api-key" as const,
       apiKey: "managed-key",
     }));
     const authBackend = new RemoteAuthBackend({
@@ -57,6 +58,7 @@ describe("remote subscription gating", () => {
     const keyVendor = vi.fn((provider: string) => ({
       provider,
       sessionId: "conv-free-daemon-managed",
+      kind: "api-key" as const,
       apiKey: "managed-key",
     }));
     const authBackend = createAgenCDaemonRuntimeAuthBackend(
@@ -128,6 +130,7 @@ describe("remote subscription gating", () => {
     const keyVendor = vi.fn(() => ({
       provider: "openrouter",
       sessionId: "conv-free-openrouter",
+      kind: "api-key" as const,
       apiKey: "managed-free-key",
       baseUrl: "https://llm.agenc.tech",
     }));

@@ -5284,6 +5284,11 @@ export function createAgenCDaemonRealtimeHeaderResolver(
       throw new Error("realtime provider key vending requires a session id");
     }
     const vended = await authBackend.vendKey("openai", sessionId);
+    if (vended.kind !== "api-key") {
+      throw new Error(
+        "realtime provider credential vending returned non-API-key credentials",
+      );
+    }
     return { authorization: `Bearer ${vended.apiKey}` };
   };
 }

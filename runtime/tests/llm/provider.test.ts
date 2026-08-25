@@ -57,7 +57,12 @@ describe("createProvider", () => {
     login: () => ({ authenticated: true, provider: "remote" }),
     logout: () => ({ authenticated: false }),
     whoami: () => ({ authenticated: true, provider: "remote" }),
-    vendKey: (provider, sessionId) => ({ provider, sessionId, apiKey: "key" }),
+    vendKey: (provider, sessionId) => ({
+      provider,
+      sessionId,
+      kind: "api-key",
+      apiKey: "key",
+    }),
     inferAgencModel: () => ({
       provider: "grok",
       model: "grok-4.3",
@@ -202,12 +207,12 @@ describe("createProvider", () => {
         }
         : name === "amazon-bedrock"
           ? {
-            apiKey: "registry-test-key",
             extra: {
+              accessKeyId: "registry-test-key",
               secretAccessKey: "registry-secret-key",
             },
           }
-          : (info?.apiKeyEnvVars.length ?? 0) > 0
+          : info?.credentials.kind === "api-key"
             ? { apiKey: "registry-test-key" }
             : {};
 
@@ -259,18 +264,24 @@ describe("createProvider", () => {
       const { name, model } = entry;
       const extra = "extra" in entry ? entry.extra : undefined;
       const baseURL = "baseURL" in entry ? entry.baseURL : undefined;
-      const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
-        provider,
-        sessionId,
-        apiKey: `vended-${provider}-key`,
-        ...(provider === "amazon-bedrock"
+      const vendKey = vi.fn(async (provider: string, sessionId: string) =>
+        provider === "amazon-bedrock"
           ? {
+            provider,
+            sessionId,
+            kind: "aws-sigv4" as const,
+            accessKeyId: "vended-aws-access",
             secretAccessKey: "vended-aws-secret",
             sessionToken: "vended-aws-session",
             region: "us-west-2",
           }
-          : {}),
-      }));
+          : {
+            provider,
+            sessionId,
+            kind: "api-key" as const,
+            apiKey: `vended-${provider}-key`,
+          }
+      );
       const vendingAuthBackend: AuthBackend = {
         ...authBackend,
         vendKey,
@@ -346,6 +357,7 @@ describe("createProvider", () => {
     const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
       provider,
       sessionId,
+      kind: "api-key" as const,
       apiKey: "vended-gateway-key",
       baseUrl: "https://llm.agenc.tech",
     }));
@@ -479,6 +491,7 @@ describe("createProvider", () => {
     const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
       provider,
       sessionId,
+      kind: "api-key" as const,
       apiKey: "vended-openrouter-key",
       baseUrl: "https://llm.agenc.tech/v1",
     }));
@@ -527,7 +540,8 @@ describe("createProvider", () => {
     const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
       provider,
       sessionId,
-      apiKey: "vended-aws-access",
+      kind: "aws-sigv4" as const,
+      accessKeyId: "vended-aws-access",
       secretAccessKey: "vended-aws-secret",
       sessionToken: "vended-aws-session",
       region: "us-west-2",
@@ -541,8 +555,6 @@ describe("createProvider", () => {
       extra: {
         authBackend: vendingAuthBackend,
         sessionId: "session-bedrock",
-        secretAccessKey: "stale-aws-secret",
-        sessionToken: "stale-aws-session",
         region: "us-east-1",
         fetchImpl,
       },
@@ -563,61 +575,31 @@ describe("createProvider", () => {
     );
   });
 
-  test("uses AuthBackend-vended Bedrock access key with explicit non-access credentials", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          output: {
-            message: {
-              role: "assistant",
-              content: [{ text: "bedrock real contract" }],
-            },
-          },
-          stopReason: "end_turn",
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        },
-      ),
-    );
+  test("does not combine partial explicit Bedrock credentials with managed vending", () => {
     const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
       provider,
       sessionId,
-      apiKey: "vended-aws-access",
+      kind: "aws-sigv4" as const,
+      accessKeyId: "vended-aws-access",
+      secretAccessKey: "vended-aws-secret",
     }));
     const vendingAuthBackend: AuthBackend = {
       ...authBackend,
       vendKey,
     };
-    const provider = createProvider("amazon-bedrock", {
-      model: "amazon.nova-pro-v1:0",
-      extra: {
-        authBackend: vendingAuthBackend,
-        sessionId: "session-bedrock-real-contract",
-        secretAccessKey: "explicit-aws-secret",
-        sessionToken: "explicit-aws-session",
-        region: "us-west-2",
-        fetchImpl,
-      },
-    });
-
-    const response = await provider.chat([{ role: "user", content: "hello" }]);
-
-    expect(response.content).toBe("bedrock real contract");
-    expect(vendKey).toHaveBeenCalledWith(
-      "amazon-bedrock",
-      "session-bedrock-real-contract",
-    );
-    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(String(requestUrl)).toBe(
-      "https://bedrock-runtime.us-west-2.amazonaws.com/model/amazon.nova-pro-v1%3A0/converse",
-    );
-    const headers = new Headers(init?.headers as HeadersInit);
-    expect(headers.get("x-amz-security-token")).toBe("explicit-aws-session");
-    expect(headers.get("authorization")).toContain(
-      "Credential=vended-aws-access/",
-    );
+    expect(() =>
+      createProvider("amazon-bedrock", {
+        model: "amazon.nova-pro-v1:0",
+        extra: {
+          authBackend: vendingAuthBackend,
+          sessionId: "session-bedrock-partial",
+          secretAccessKey: "explicit-aws-secret",
+          sessionToken: "explicit-aws-session",
+          region: "us-west-2",
+        },
+      })
+    ).toThrow(/requires accessKeyId/u);
+    expect(vendKey).not.toHaveBeenCalled();
   });
 
   test.each([
@@ -626,6 +608,7 @@ describe("createProvider", () => {
       vended: {
         provider: "anthropic",
         sessionId: "session-mismatch",
+        kind: "api-key" as const,
         apiKey: "vended-openai-key",
       },
       expected: /returned provider "anthropic"/,
@@ -635,6 +618,7 @@ describe("createProvider", () => {
       vended: {
         provider: "openai",
         sessionId: "other-session",
+        kind: "api-key" as const,
         apiKey: "vended-openai-key",
       },
       expected: /returned session "other-session"/,
@@ -658,10 +642,53 @@ describe("createProvider", () => {
     },
   );
 
+  test.each([
+    {
+      provider: "openai" as const,
+      model: "gpt-5.4",
+      vended: {
+        provider: "openai",
+        sessionId: "session-kind",
+        kind: "aws-sigv4" as const,
+        accessKeyId: "aws-access",
+        secretAccessKey: "aws-secret",
+      },
+      expected: /expected api-key/u,
+    },
+    {
+      provider: "amazon-bedrock" as const,
+      model: "amazon.nova-pro-v1:0",
+      vended: {
+        provider: "amazon-bedrock",
+        sessionId: "session-kind",
+        kind: "api-key" as const,
+        apiKey: "not-an-aws-access-key",
+      },
+      expected: /expected aws-sigv4/u,
+    },
+  ])(
+    "rejects $provider managed credentials of the wrong kind",
+    async ({ provider: name, model, vended, expected }) => {
+      const provider = createProvider(name, {
+        model,
+        extra: {
+          authBackend: {
+            ...authBackend,
+            vendKey: vi.fn(async () => vended),
+          },
+          sessionId: "session-kind",
+        },
+      });
+
+      await expect(provider.getExecutionProfile?.()).rejects.toThrow(expected);
+    },
+  );
+
   test("rejects empty AuthBackend-vended provider keys", async () => {
     const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
       provider,
       sessionId,
+      kind: "api-key" as const,
       apiKey: " ",
     }));
     const vendingAuthBackend: AuthBackend = {
@@ -677,7 +704,7 @@ describe("createProvider", () => {
     });
 
     await expect(provider.getExecutionProfile?.()).rejects.toThrow(
-      /AuthBackend\.vendKey\(\) returned an empty key/,
+      /AuthBackend\.vendKey\(\) returned an empty API key/,
     );
   });
 
@@ -687,6 +714,7 @@ describe("createProvider", () => {
       .mockResolvedValueOnce({
         provider: "openai",
         sessionId: "session-retry",
+        kind: "api-key" as const,
         apiKey: "vended-openai-key",
       });
     const vendingAuthBackend: AuthBackend = {
@@ -718,6 +746,7 @@ describe("createProvider", () => {
       const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
         provider,
         sessionId,
+        kind: "api-key" as const,
         apiKey: `vended-openai-key-${vendKey.mock.calls.length}`,
         expiresAt: new Date(Date.now() + 1_000).toISOString(),
       }));
@@ -803,6 +832,7 @@ describe("createProvider", () => {
     const vendKey = vi.fn(async (provider: string, sessionId: string) => ({
       provider,
       sessionId,
+      kind: "api-key" as const,
       apiKey: "vended-openrouter-key",
     }));
     const vendingAuthBackend: AuthBackend = {
@@ -840,6 +870,7 @@ describe("createProvider", () => {
           resolve({
             provider,
             sessionId,
+            kind: "api-key",
             apiKey: "vended-openai-key",
           });
       }),
@@ -1097,9 +1128,9 @@ describe("createProvider", () => {
       },
       () =>
         createProvider("amazon-bedrock", {
-          apiKey: "aws-access",
           model: "amazon.nova-lite-v1:0",
           extra: {
+            accessKeyId: "aws-access",
             secretAccessKey: "aws-secret",
             sessionToken: "aws-session",
             region: "us-west-2",
@@ -1122,8 +1153,25 @@ describe("createProvider", () => {
     });
   });
 
-  test("routes generic apiKey to Bedrock accessKeyId", () => {
-    const provider = withEnv(
+  test("keeps an explicit Bedrock endpoint ahead of regional derivation", () => {
+    const provider = createProvider("amazon-bedrock", {
+      baseURL: "https://bedrock-proxy.example/v1",
+      model: "amazon.nova-lite-v1:0",
+      extra: {
+        accessKeyId: "aws-access",
+        secretAccessKey: "aws-secret",
+        region: "ca-central-1",
+      },
+    });
+
+    expect(readProviderFactoryOptions(provider)).toMatchObject({
+      baseURL: "https://bedrock-proxy.example/v1",
+      extra: { region: "ca-central-1" },
+    });
+  });
+
+  test("rejects the generic apiKey facade for Bedrock", () => {
+    expect(() => withEnv(
       {
         AWS_BEDROCK_ACCESS_KEY_ID: undefined,
         AWS_ACCESS_KEY_ID: undefined,
@@ -1139,46 +1187,9 @@ describe("createProvider", () => {
             region: "us-east-2",
           },
         }),
+    )).toThrow(
+      /amazon-bedrock does not accept the generic apiKey factory option/u,
     );
-
-    expect(provider).toBeInstanceOf(BedrockProvider);
-    expect(readProviderFactoryOptions(provider)).toMatchObject({
-      model: "amazon.nova-micro-v1:0",
-      extra: {
-        accessKeyId: "configured-access-key",
-        secretAccessKey: "configured-secret-key",
-        region: "us-east-2",
-      },
-    });
-  });
-
-  test("keeps Bedrock accessKeyId precedence over generic apiKey", () => {
-    const provider = withEnv(
-      {
-        AWS_BEDROCK_ACCESS_KEY_ID: undefined,
-        AWS_ACCESS_KEY_ID: undefined,
-        AWS_BEDROCK_SECRET_ACCESS_KEY: undefined,
-        AWS_SECRET_ACCESS_KEY: undefined,
-      },
-      () =>
-        createProvider("amazon-bedrock", {
-          apiKey: "generic-access-key",
-          model: "amazon.nova-micro-v1:0",
-          extra: {
-            accessKeyId: "specific-access-key",
-            secretAccessKey: "configured-secret-key",
-            region: "us-east-2",
-          },
-        }),
-    );
-
-    expect(readProviderFactoryOptions(provider)).toMatchObject({
-      extra: {
-        accessKeyId: "specific-access-key",
-        secretAccessKey: "configured-secret-key",
-        region: "us-east-2",
-      },
-    });
   });
 
   test("recreates Bedrock provider from factory options with explicit credentials", async () => {
@@ -1207,9 +1218,9 @@ describe("createProvider", () => {
       },
       () =>
         createProvider("amazon-bedrock", {
-          apiKey: "configured-access-key",
           model: "amazon.nova-pro-v1:0",
           extra: {
+            accessKeyId: "configured-access-key",
             secretAccessKey: "configured-secret-key",
             sessionToken: "configured-session-token",
             region: "us-west-2",
@@ -1658,7 +1669,10 @@ describe("createProvider", () => {
     for (const [provider, definition] of Object.entries(
       BUILT_IN_PROVIDER_DEFINITIONS,
     )) {
-      for (const envVar of definition.apiKeyEnvVars) {
+      const primaryCredentialEnvVars = definition.credentials.kind === "api-key"
+        ? definition.credentials.apiKey.envVars
+        : [];
+      for (const envVar of primaryCredentialEnvVars) {
         const resolved = resolveProviderFactoryOptions(
           provider as ProviderName,
           {},
@@ -1683,6 +1697,76 @@ describe("createProvider", () => {
         AGENC_API_KEY: "managed-auth-not-byok",
       }).apiKey,
     ).toBeUndefined();
+  });
+
+  test("resolves every Bedrock SigV4 field through registry alias order", () => {
+    const resolved = resolveProviderFactoryOptions(
+      "amazon-bedrock",
+      {},
+      {
+        AWS_BEDROCK_ACCESS_KEY_ID: " undefined ",
+        AWS_ACCESS_KEY_ID: " fallback-access ",
+        AWS_BEDROCK_SECRET_ACCESS_KEY: "undefined",
+        AWS_SECRET_ACCESS_KEY: " fallback-secret ",
+        AWS_BEDROCK_SESSION_TOKEN: " ",
+        AWS_SESSION_TOKEN: " fallback-session ",
+        AWS_BEDROCK_REGION: "UNDEFINED",
+        AWS_REGION: " fallback-region ",
+      },
+    );
+
+    expect(resolved).toMatchObject({
+      extra: {
+        accessKeyId: "fallback-access",
+        secretAccessKey: "fallback-secret",
+        sessionToken: "fallback-session",
+        region: "fallback-region",
+      },
+    });
+  });
+
+  test("keeps explicit Bedrock fields ahead of environment credentials", () => {
+    const resolved = resolveProviderFactoryOptions(
+      "amazon-bedrock",
+      {
+        extra: {
+          accessKeyId: "explicit-access",
+          secretAccessKey: "explicit-secret",
+          sessionToken: "explicit-session",
+          region: "explicit-region",
+        },
+      },
+      {
+        AWS_BEDROCK_ACCESS_KEY_ID: "environment-access",
+        AWS_BEDROCK_SECRET_ACCESS_KEY: "environment-secret",
+        AWS_BEDROCK_SESSION_TOKEN: "environment-session",
+        AWS_BEDROCK_REGION: "environment-region",
+      },
+    );
+
+    expect(resolved).toMatchObject({
+      extra: {
+        accessKeyId: "explicit-access",
+        secretAccessKey: "explicit-secret",
+        sessionToken: "explicit-session",
+        region: "explicit-region",
+      },
+    });
+    expect(resolved.apiKey).toBeUndefined();
+  });
+
+  test("rejects generic apiKey input before resolving Bedrock options", () => {
+    expect(() =>
+      resolveProviderFactoryOptions(
+        "amazon-bedrock",
+        { apiKey: "singular-access-key" },
+        {
+          AWS_BEDROCK_SECRET_ACCESS_KEY: "environment-secret",
+        },
+      )
+    ).toThrow(
+      /amazon-bedrock does not accept the generic apiKey factory option/u,
+    );
   });
 
   test("infers a Vertex Gemini base URL from bearer env credentials", () => {

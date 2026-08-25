@@ -2108,6 +2108,7 @@ describe("bootstrapLocalRuntimeSession", () => {
       vendKey: (provider, sessionId) => {
         calls.push(`vendKey:${provider}:${sessionId}`);
         return {
+          kind: "api-key",
           provider,
           sessionId,
           apiKey: "managed-key",
@@ -2199,7 +2200,12 @@ describe("bootstrapLocalRuntimeSession", () => {
       whoami: () => ({ authenticated: true, provider: "local" }),
       vendKey: (provider, sessionId) => {
         calls.push(`vendKey:${provider}:${sessionId}`);
-        return { provider, sessionId, apiKey: "managed-key" };
+        return {
+          kind: "api-key",
+          provider,
+          sessionId,
+          apiKey: "managed-key",
+        };
       },
       inferAgencModel: () => {
         calls.push("inferAgencModel");
@@ -2625,7 +2631,12 @@ describe("bootstrapLocalRuntimeSession", () => {
       whoami: () => ({ authenticated: true, provider: "local" }),
       vendKey: (provider, sessionId) => {
         calls.push(`vendKey:${provider}:${sessionId}`);
-        return { provider, sessionId, apiKey: "managed-key" };
+        return {
+          kind: "api-key",
+          provider,
+          sessionId,
+          apiKey: "managed-key",
+        };
       },
       inferAgencModel: ({ provider, requestedModel, subscriptionTier } = {}) => {
         calls.push(
@@ -2739,7 +2750,12 @@ describe("bootstrapLocalRuntimeSession", () => {
       whoami: () => ({ authenticated: true, provider: "local" }),
       vendKey: (provider, sessionId) => {
         calls.push(`vendKey:${provider}:${sessionId}`);
-        return { provider, sessionId, apiKey: "managed-key" };
+        return {
+          kind: "api-key",
+          provider,
+          sessionId,
+          apiKey: "managed-key",
+        };
       },
       inferAgencModel: ({ provider, requestedModel, subscriptionTier } = {}) => {
         calls.push(

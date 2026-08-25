@@ -373,6 +373,7 @@ async function vendProviderKeyOrUndefined(params: {
       params.provider,
       params.sessionId,
     );
+    if (key.kind !== "api-key") return { attempted: true };
     const apiKey = key.apiKey.trim();
     const baseURL = key.baseUrl?.trim();
     return apiKey.length > 0
