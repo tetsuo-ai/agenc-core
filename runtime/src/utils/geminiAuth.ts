@@ -1,12 +1,15 @@
 import { existsSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { realpath } from 'node:fs/promises'
+import { userInfo } from 'node:os'
+import { posix, win32 } from 'node:path'
 
 import type { EnvSnapshot } from '../config/env.js'
+import { readBoundedRegularFile } from './bounded-regular-file.js'
 import { memoizeWithTTLAsync } from './memoize.js'
 
 const GEMINI_ADC_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
 const GEMINI_ADC_CACHE_TTL_MS = 5 * 60 * 1000
+const GEMINI_ADC_FILE_MAX_BYTES = 1024 * 1024
 
 export type GeminiAuthMode = 'api-key' | 'access-token' | 'adc'
 
@@ -17,6 +20,13 @@ export type GeminiCredentialSource =
   | 'GEMINI_ACCESS_TOKEN'
   | 'GOOGLE_APPLICATION_CREDENTIALS'
   | 'well-known-adc'
+
+export type GeminiMissingCredentialPlan = {
+  kind: 'none'
+  mode: GeminiAuthMode | 'auto'
+  expected: GeminiAuthMode | 'any'
+  configuredPath?: string
+}
 
 export type GeminiCredentialPlan =
   | {
@@ -31,20 +41,20 @@ export type GeminiCredentialPlan =
       kind: 'access-token'
       credential: string
       projectId?: string
+      quotaProjectId?: string
       source: 'GEMINI_ACCESS_TOKEN'
     }
   | {
       kind: 'adc'
       credentialPath: string
       projectId?: string
+      quotaProjectId?: string
       source: Extract<
         GeminiCredentialSource,
         'GOOGLE_APPLICATION_CREDENTIALS' | 'well-known-adc'
       >
     }
-  | {
-      kind: 'none'
-    }
+  | GeminiMissingCredentialPlan
 
 type GoogleAccessTokenResult =
   | string
@@ -57,10 +67,7 @@ type GoogleAccessTokenResult =
 type GoogleAuthClientLike = {
   getAccessToken(): Promise<GoogleAccessTokenResult> | GoogleAccessTokenResult
   projectId?: string | null
-}
-
-type GoogleAuthLike = {
-  getClient(): Promise<GoogleAuthClientLike>
+  quotaProjectId?: string | null
 }
 
 type GeminiAdcInput = Extract<GeminiCredentialPlan, { kind: 'adc' }>
@@ -68,9 +75,11 @@ type GeminiAdcInput = Extract<GeminiCredentialPlan, { kind: 'adc' }>
 export type ResolveGeminiCredentialOptions = {
   /** An explicit factory credential; it outranks captured environment input. */
   apiKey?: string
-  createGoogleAuth?: (input: GeminiAdcInput) => Promise<GoogleAuthLike>
+  createGoogleAuthClient?: (
+    input: GeminiAdcInput,
+  ) => Promise<GoogleAuthClientLike>
   fileExists?: (path: string) => boolean
-  /** Operating-system account home used only for the standard ADC path. */
+  /** Trusted operating-system account home for the standard ADC path. */
   platformHome?: string
   platform?: NodeJS.Platform
 }
@@ -81,15 +90,33 @@ export type GeminiResolvedCredential =
       kind: 'adc'
       credential: string
       projectId?: string
+      quotaProjectId?: string
       source: GeminiAdcInput['source']
     }
-  | {
-      kind: 'none'
-    }
+  | GeminiMissingCredentialPlan
 
 function sanitizeCredential(value: string | undefined | null): string | undefined {
   const trimmed = value?.trim()
   return trimmed && trimmed !== 'undefined' ? trimmed : undefined
+}
+
+function optionalDocumentString(
+  document: Readonly<Record<string, unknown>>,
+  name: string,
+): string | undefined {
+  const value = document[name]
+  return typeof value === 'string' ? sanitizeCredential(value) : undefined
+}
+
+function requiredDocumentString(
+  document: Readonly<Record<string, unknown>>,
+  name: string,
+): string {
+  const value = optionalDocumentString(document, name)
+  if (value === undefined) {
+    throw new Error(`Gemini ADC credential file is missing ${name}`)
+  }
+  return value
 }
 
 export function getGeminiProjectIdHint(env: EnvSnapshot): string | undefined {
@@ -97,6 +124,12 @@ export function getGeminiProjectIdHint(env: EnvSnapshot): string | undefined {
     sanitizeCredential(env.GEMINI_PROJECT_ID) ??
     sanitizeCredential(env.GOOGLE_CLOUD_PROJECT)
   )
+}
+
+export function getGeminiQuotaProjectIdHint(
+  env: EnvSnapshot,
+): string | undefined {
+  return sanitizeCredential(env.GOOGLE_CLOUD_QUOTA_PROJECT)
 }
 
 export function getGeminiAuthMode(env: EnvSnapshot): GeminiAuthMode | undefined {
@@ -114,60 +147,65 @@ export function getGeminiAuthMode(env: EnvSnapshot): GeminiAuthMode | undefined 
   )
 }
 
-/**
- * Return the one file-backed ADC search path allowed by the captured runtime
- * context. An explicit GOOGLE_APPLICATION_CREDENTIALS path is authoritative;
- * it never falls through to a well-known file when missing.
- */
-export function getGeminiAdcCredentialPaths(
+function missingCredentialPlan(
+  authMode: GeminiAuthMode | undefined,
+  configuredPath?: string,
+): GeminiMissingCredentialPlan {
+  return {
+    kind: 'none',
+    mode: authMode ?? 'auto',
+    expected: authMode ?? 'any',
+    ...(configuredPath !== undefined ? { configuredPath } : {}),
+  }
+}
+
+/** Resolve the sole file-backed ADC candidate from captured/trusted context. */
+function getGeminiAdcCredentialPath(
   env: EnvSnapshot,
   platformHome: string,
-  platform: NodeJS.Platform = process.platform,
-): string[] {
+  platform: NodeJS.Platform,
+): string | undefined {
   const explicit = sanitizeCredential(env.GOOGLE_APPLICATION_CREDENTIALS)
-  if (explicit !== undefined) return [explicit]
+  if (explicit !== undefined) return explicit
 
   if (platform === 'win32') {
     const appData = sanitizeCredential(env.APPDATA)
     return appData === undefined
-      ? []
-      : [join(appData, 'gcloud', 'application_default_credentials.json')]
+      ? undefined
+      : win32.join(
+          appData,
+          'gcloud',
+          'application_default_credentials.json',
+        )
   }
 
-  return [
-    join(
-      platformHome,
-      '.config',
-      'gcloud',
-      'application_default_credentials.json',
-    ),
-  ]
-}
-
-export function mayHaveGeminiAdcCredentials(
-  env: EnvSnapshot,
-  platformHome: string,
-  platform: NodeJS.Platform = process.platform,
-): boolean {
-  return getGeminiAdcCredentialPaths(env, platformHome, platform).some(path =>
-    existsSync(path),
+  return posix.join(
+    platformHome,
+    '.config',
+    'gcloud',
+    'application_default_credentials.json',
   )
 }
 
 function resolveGeminiAdcPlan(
   env: EnvSnapshot,
+  authMode: GeminiAuthMode | undefined,
   options: ResolveGeminiCredentialOptions,
-): GeminiAdcInput | { kind: 'none' } {
-  const platformHome =
-    options.platformHome ?? sanitizeCredential(env.HOME) ?? homedir()
-  const credentialPath = getGeminiAdcCredentialPaths(
+): GeminiAdcInput | GeminiMissingCredentialPlan {
+  const credentialPath = getGeminiAdcCredentialPath(
     env,
-    platformHome,
+    options.platformHome ?? userInfo().homedir,
     options.platform ?? process.platform,
-  ).find(options.fileExists ?? existsSync)
-  if (credentialPath === undefined) return { kind: 'none' }
+  )
+  if (
+    credentialPath === undefined ||
+    !(options.fileExists ?? existsSync)(credentialPath)
+  ) {
+    return missingCredentialPlan(authMode, credentialPath)
+  }
 
   const projectId = getGeminiProjectIdHint(env)
+  const quotaProjectId = getGeminiQuotaProjectIdHint(env)
   return {
     kind: 'adc',
     credentialPath,
@@ -175,12 +213,13 @@ function resolveGeminiAdcPlan(
       ? 'GOOGLE_APPLICATION_CREDENTIALS'
       : 'well-known-adc',
     ...(projectId !== undefined ? { projectId } : {}),
+    ...(quotaProjectId !== undefined ? { quotaProjectId } : {}),
   }
 }
 
 /**
- * Select exactly one Gemini credential source without performing I/O beyond
- * checking the selected ADC file. All Gemini transports consume this plan.
+ * Select exactly one Gemini credential source without exchanging a token.
+ * Every Gemini transport consumes this immutable plan.
  */
 export function resolveGeminiCredentialPlan(
   env: EnvSnapshot,
@@ -201,6 +240,7 @@ export function resolveGeminiCredentialPlan(
   const googleApiKey = sanitizeCredential(env.GOOGLE_API_KEY)
   const accessToken = sanitizeCredential(env.GEMINI_ACCESS_TOKEN)
   const projectId = getGeminiProjectIdHint(env)
+  const quotaProjectId = getGeminiQuotaProjectIdHint(env)
 
   if (authMode === undefined || authMode === 'api-key') {
     if (geminiApiKey !== undefined) {
@@ -217,7 +257,7 @@ export function resolveGeminiCredentialPlan(
         source: 'GOOGLE_API_KEY',
       }
     }
-    if (authMode === 'api-key') return { kind: 'none' }
+    if (authMode === 'api-key') return missingCredentialPlan(authMode)
   }
 
   if (authMode === undefined || authMode === 'access-token') {
@@ -227,98 +267,156 @@ export function resolveGeminiCredentialPlan(
         credential: accessToken,
         source: 'GEMINI_ACCESS_TOKEN',
         ...(projectId !== undefined ? { projectId } : {}),
+        ...(quotaProjectId !== undefined ? { quotaProjectId } : {}),
       }
     }
-    if (authMode === 'access-token') return { kind: 'none' }
+    if (authMode === 'access-token') return missingCredentialPlan(authMode)
   }
 
-  return resolveGeminiAdcPlan(env, options)
+  return resolveGeminiAdcPlan(env, authMode, options)
 }
 
 function normalizeAccessToken(
   value: GoogleAccessTokenResult,
 ): string | undefined {
-  if (typeof value === 'string') {
-    return sanitizeCredential(value)
-  }
+  if (typeof value === 'string') return sanitizeCredential(value)
   return sanitizeCredential(value?.token)
 }
 
-async function createDefaultGoogleAuth(
-  input: GeminiAdcInput,
-): Promise<GoogleAuthLike> {
-  const { GoogleAuth } = await import('google-auth-library')
-  // The selected path is operator-owned credential input. Supplying it
-  // explicitly prevents GoogleAuth from consulting ambient variables, gcloud,
-  // or the metadata server after AgenC has captured the session environment.
-  return new GoogleAuth({
-    keyFilename: input.credentialPath,
-    scopes: [GEMINI_ADC_SCOPE],
-    ...(input.projectId !== undefined ? { projectId: input.projectId } : {}),
-  }) as GoogleAuthLike
+function parseCredentialDocument(
+  raw: string,
+): Readonly<Record<string, unknown>> {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    throw new Error('Gemini ADC credential file is not valid JSON', {
+      cause: error,
+    })
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Gemini ADC credential file must contain a JSON object')
+  }
+  return parsed as Readonly<Record<string, unknown>>
 }
 
-async function resolveGeminiAdcCredentialUncached(
+async function createDefaultGoogleAuthClient(
   input: GeminiAdcInput,
-  createGoogleAuth: NonNullable<
-    ResolveGeminiCredentialOptions['createGoogleAuth']
-  >,
-): Promise<Extract<GeminiResolvedCredential, { kind: 'adc' }>> {
+): Promise<GoogleAuthClientLike> {
+  const canonicalPath = await realpath(input.credentialPath)
+  const raw = await readBoundedRegularFile(
+    canonicalPath,
+    GEMINI_ADC_FILE_MAX_BYTES,
+  )
+  const document = parseCredentialDocument(raw)
+  const credentialType = requiredDocumentString(document, 'type')
+  const universeDomain = optionalDocumentString(document, 'universe_domain')
+  if (universeDomain !== undefined && universeDomain !== 'googleapis.com') {
+    throw new Error(
+      'Gemini ADC supports only the googleapis.com credential universe',
+    )
+  }
+
+  const projectId =
+    input.projectId ?? optionalDocumentString(document, 'project_id')
+  const quotaProjectId =
+    input.quotaProjectId ?? optionalDocumentString(document, 'quota_project_id')
+  const commonOptions = {
+    ...(projectId !== undefined ? { projectId } : {}),
+    ...(quotaProjectId !== undefined ? { quotaProjectId } : {}),
+  }
+
+  const { JWT, UserRefreshClient } = await import('google-auth-library')
+  if (credentialType === 'service_account') {
+    const keyId = optionalDocumentString(document, 'private_key_id')
+    return new JWT({
+      ...commonOptions,
+      email: requiredDocumentString(document, 'client_email'),
+      key: requiredDocumentString(document, 'private_key'),
+      ...(keyId !== undefined ? { keyId } : {}),
+      scopes: [GEMINI_ADC_SCOPE],
+    })
+  }
+  if (credentialType === 'authorized_user') {
+    return new UserRefreshClient({
+      ...commonOptions,
+      clientId: requiredDocumentString(document, 'client_id'),
+      clientSecret: requiredDocumentString(document, 'client_secret'),
+      refreshToken: requiredDocumentString(document, 'refresh_token'),
+    })
+  }
+
+  throw new Error(
+    `Unsupported Gemini ADC credential type ${JSON.stringify(credentialType)}; expected authorized_user or service_account`,
+  )
+}
+
+const resolveDefaultGeminiAdcClient = memoizeWithTTLAsync(
+  async (
+    credentialPath: string,
+    projectId: string | undefined,
+    quotaProjectId: string | undefined,
+    source: GeminiAdcInput['source'],
+  ) =>
+    createDefaultGoogleAuthClient({
+      kind: 'adc',
+      credentialPath,
+      source,
+      ...(projectId !== undefined ? { projectId } : {}),
+      ...(quotaProjectId !== undefined ? { quotaProjectId } : {}),
+    }),
+  GEMINI_ADC_CACHE_TTL_MS,
+)
+
+/** Exchange the already-selected credential plan without selecting again. */
+export async function materializeGeminiCredentialPlan(
+  plan: GeminiCredentialPlan,
+  options: ResolveGeminiCredentialOptions = {},
+): Promise<GeminiResolvedCredential> {
+  if (plan.kind !== 'adc') return plan
+
   try {
-    const auth = await createGoogleAuth(input)
-    const client = await auth.getClient()
+    const client = options.createGoogleAuthClient === undefined
+      ? await resolveDefaultGeminiAdcClient(
+          plan.credentialPath,
+          plan.projectId,
+          plan.quotaProjectId,
+          plan.source,
+        )
+      : await options.createGoogleAuthClient(plan)
+    // Deliberately request the token on every materialization. The auth client
+    // owns expiry and refresh; AgenC caches the client, never a raw bearer.
     const accessToken = normalizeAccessToken(await client.getAccessToken())
     if (accessToken === undefined) {
       throw new Error('Google auth returned an empty access token')
     }
 
-    const projectId = input.projectId ?? sanitizeCredential(client.projectId)
+    const projectId = plan.projectId ?? sanitizeCredential(client.projectId)
+    const quotaProjectId =
+      plan.quotaProjectId ?? sanitizeCredential(client.quotaProjectId)
     return {
       kind: 'adc',
       credential: accessToken,
-      source: input.source,
+      source: plan.source,
       ...(projectId !== undefined ? { projectId } : {}),
+      ...(quotaProjectId !== undefined ? { quotaProjectId } : {}),
     }
   } catch (error) {
+    const detail = error instanceof Error ? `: ${error.message}` : ''
     throw new Error(
-      `Gemini ADC credential resolution failed for ${input.credentialPath}`,
+      `Gemini ADC credential resolution failed for ${plan.credentialPath}${detail}`,
       { cause: error },
     )
   }
 }
 
-const resolveDefaultGeminiAdcCredential = memoizeWithTTLAsync(
-  async (
-    credentialPath: string,
-    projectId: string | undefined,
-    source: GeminiAdcInput['source'],
-  ) =>
-    resolveGeminiAdcCredentialUncached(
-      {
-        kind: 'adc',
-        credentialPath,
-        source,
-        ...(projectId !== undefined ? { projectId } : {}),
-      },
-      createDefaultGoogleAuth,
-    ),
-  GEMINI_ADC_CACHE_TTL_MS,
-)
-
+/** Compatibility wrapper for call sites not yet migrated to plan propagation. */
 export async function resolveGeminiCredential(
   env: EnvSnapshot,
   options: ResolveGeminiCredentialOptions = {},
 ): Promise<GeminiResolvedCredential> {
-  const plan = resolveGeminiCredentialPlan(env, options)
-  if (plan.kind !== 'adc') return plan
-
-  if (options.createGoogleAuth !== undefined) {
-    return resolveGeminiAdcCredentialUncached(plan, options.createGoogleAuth)
-  }
-
-  return resolveDefaultGeminiAdcCredential(
-    plan.credentialPath,
-    plan.projectId,
-    plan.source,
+  return materializeGeminiCredentialPlan(
+    resolveGeminiCredentialPlan(env, options),
+    options,
   )
 }

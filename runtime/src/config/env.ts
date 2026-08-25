@@ -111,6 +111,7 @@ export interface EnvSnapshot {
   readonly GEMINI_AUTH_MODE?: string;
   readonly GEMINI_PROJECT_ID?: string;
   readonly GOOGLE_CLOUD_PROJECT?: string;
+  readonly GOOGLE_CLOUD_QUOTA_PROJECT?: string;
   readonly GOOGLE_APPLICATION_CREDENTIALS?: string;
   readonly APPDATA?: string;
   readonly AWS_ACCESS_KEY_ID?: string;

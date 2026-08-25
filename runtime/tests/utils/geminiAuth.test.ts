@@ -1,14 +1,17 @@
 import { describe, expect, test } from 'bun:test'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import type { EnvSnapshot } from '../../src/config/env.ts'
 import {
-  getGeminiAdcCredentialPaths,
   getGeminiAuthMode,
   getGeminiProjectIdHint,
-  mayHaveGeminiAdcCredentials,
+  materializeGeminiCredentialPlan,
   resolveGeminiCredential,
   resolveGeminiCredentialPlan,
+  type GeminiCredentialPlan,
 } from '../../src/utils/geminiAuth.ts'
 
 const existingFilePath = fileURLToPath(import.meta.url)
@@ -46,95 +49,89 @@ describe('resolveGeminiCredential', () => {
     })
   })
 
-  test('uses only the captured access token and canonical project hint', async () => {
+  test('uses only the captured access token and canonical project hints', async () => {
     await expect(resolveGeminiCredential(environment({
       GEMINI_AUTH_MODE: 'access-token',
       GEMINI_ACCESS_TOKEN: 'token-123',
       GEMINI_PROJECT_ID: 'test-project',
+      GOOGLE_CLOUD_QUOTA_PROJECT: 'quota-project',
     }))).resolves.toEqual({
       kind: 'access-token',
       credential: 'token-123',
       projectId: 'test-project',
+      quotaProjectId: 'quota-project',
       source: 'GEMINI_ACCESS_TOKEN',
     })
   })
 
-  test('falls back to ADC when the captured environment selects it', async () => {
-    const fakeAuth = {
-      async getClient() {
+  test('materializes the exact selected ADC file and client metadata', async () => {
+    let selectedPath: string | undefined
+    await expect(resolveGeminiCredential(environment({
+      GEMINI_AUTH_MODE: 'adc',
+      GOOGLE_APPLICATION_CREDENTIALS: existingFilePath,
+    }), {
+      createGoogleAuthClient: async input => {
+        selectedPath = input.credentialPath
         return {
           async getAccessToken() {
             return { token: 'adc-token' }
           },
           projectId: 'adc-project',
+          quotaProjectId: 'adc-quota-project',
         }
-      },
-    }
-
-    let selectedPath: string | undefined
-
-    await expect(resolveGeminiCredential(environment({
-      GEMINI_AUTH_MODE: 'adc',
-      GOOGLE_APPLICATION_CREDENTIALS: existingFilePath,
-    }), {
-      createGoogleAuth: async input => {
-        selectedPath = input.credentialPath
-        return fakeAuth
       },
       platformHome: missingPlatformHome,
     })).resolves.toEqual({
       kind: 'adc',
       credential: 'adc-token',
       projectId: 'adc-project',
+      quotaProjectId: 'adc-quota-project',
       source: 'GOOGLE_APPLICATION_CREDENTIALS',
     })
     expect(selectedPath).toBe(existingFilePath)
   })
 
-  test('returns none when the captured environment has no auth source', async () => {
+  test('returns a diagnostic plan when the captured environment has no auth source', async () => {
     await expect(resolveGeminiCredential(environment(), {
       platformHome: missingPlatformHome,
-    })).resolves.toEqual({ kind: 'none' })
+      platform: 'linux',
+    })).resolves.toEqual({
+      kind: 'none',
+      mode: 'auto',
+      expected: 'any',
+      configuredPath:
+        '/agenc-test/missing-platform-home/.config/gcloud/application_default_credentials.json',
+    })
   })
 
   test('access-token mode does not silently fall back to ADC', async () => {
-    const fakeAuth = {
-      async getClient() {
-        return {
-          async getAccessToken() {
-            return { token: 'adc-token' }
-          },
-        }
-      },
-    }
-
     await expect(resolveGeminiCredential(environment({
       GEMINI_AUTH_MODE: 'access-token',
       GOOGLE_APPLICATION_CREDENTIALS: existingFilePath,
     }), {
-      createGoogleAuth: async () => fakeAuth,
+      createGoogleAuthClient: async () => {
+        throw new Error('must not materialize ADC')
+      },
       platformHome: missingPlatformHome,
-    })).resolves.toEqual({ kind: 'none' })
+    })).resolves.toEqual({
+      kind: 'none',
+      mode: 'access-token',
+      expected: 'access-token',
+    })
   })
 
   test('adc mode ignores a captured access token', async () => {
-    const fakeAuth = {
-      async getClient() {
-        return {
-          async getAccessToken() {
-            return { token: 'adc-token' }
-          },
-          projectId: 'adc-project',
-        }
-      },
-    }
-
     await expect(resolveGeminiCredential(environment({
       GEMINI_AUTH_MODE: 'adc',
       GEMINI_ACCESS_TOKEN: 'token-123',
       GOOGLE_APPLICATION_CREDENTIALS: existingFilePath,
     }), {
-      createGoogleAuth: async () => fakeAuth,
+      createGoogleAuthClient: async () => ({
+        async getAccessToken() {
+          return { token: 'adc-token' }
+        },
+        projectId: 'adc-project',
+      }),
       platformHome: missingPlatformHome,
     })).resolves.toEqual({
       kind: 'adc',
@@ -159,18 +156,67 @@ describe('resolveGeminiCredential', () => {
       GEMINI_AUTH_MODE: 'adc',
       GOOGLE_APPLICATION_CREDENTIALS: existingFilePath,
     }), {
-      createGoogleAuth: async () => {
+      createGoogleAuthClient: async () => {
         throw rootCause
       },
       platformHome: missingPlatformHome,
     })
 
     await expect(promise).rejects.toThrow(
-      `Gemini ADC credential resolution failed for ${existingFilePath}`,
+      `Gemini ADC credential resolution failed for ${existingFilePath}: bad credential document`,
     )
     await promise.catch(error => {
       expect(error.cause).toBe(rootCause)
     })
+  })
+})
+
+describe('Gemini credential plan materialization', () => {
+  test('requests a token on every materialization instead of caching a bearer', async () => {
+    const plan: GeminiCredentialPlan = {
+      kind: 'adc',
+      credentialPath: existingFilePath,
+      source: 'GOOGLE_APPLICATION_CREDENTIALS',
+    }
+    let tokenRequests = 0
+    const options = {
+      createGoogleAuthClient: async () => ({
+        async getAccessToken() {
+          tokenRequests += 1
+          return { token: `adc-token-${tokenRequests}` }
+        },
+      }),
+    }
+
+    await expect(materializeGeminiCredentialPlan(plan, options)).resolves
+      .toMatchObject({ credential: 'adc-token-1' })
+    await expect(materializeGeminiCredentialPlan(plan, options)).resolves
+      .toMatchObject({ credential: 'adc-token-2' })
+    expect(tokenRequests).toBe(2)
+  })
+
+  test('rejects URL-bearing external-account credential documents', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'agenc-gemini-adc-'))
+    const credentialPath = join(directory, 'external-account.json')
+    writeFileSync(credentialPath, JSON.stringify({
+      type: 'external_account',
+      audience: 'malicious-audience',
+      token_url: 'https://attacker.invalid/token',
+      credential_source: {
+        executable: { command: '/attacker-controlled-helper' },
+      },
+    }))
+
+    try {
+      await expect(resolveGeminiCredential(environment({
+        GEMINI_AUTH_MODE: 'adc',
+        GOOGLE_APPLICATION_CREDENTIALS: credentialPath,
+      }))).rejects.toThrow(
+        'Unsupported Gemini ADC credential type "external_account"; expected authorized_user or service_account',
+      )
+    } finally {
+      rmSync(directory, { force: true, recursive: true })
+    }
   })
 })
 
@@ -192,39 +238,55 @@ describe('Gemini auth helpers', () => {
     }))).toBeUndefined()
   })
 
-  test('only treats paths from the captured ADC context as valid hints', () => {
-    expect(mayHaveGeminiAdcCredentials(environment({
-      GOOGLE_APPLICATION_CREDENTIALS: existingFilePath,
-    }), missingPlatformHome)).toBe(true)
-
-    expect(mayHaveGeminiAdcCredentials(environment({
-      GOOGLE_APPLICATION_CREDENTIALS: `${existingFilePath}.missing`,
-    }), missingPlatformHome)).toBe(false)
-  })
-
   test('an explicit missing ADC path does not fall through to a well-known file', () => {
     expect(resolveGeminiCredentialPlan(environment({
       GEMINI_AUTH_MODE: 'adc',
       GOOGLE_APPLICATION_CREDENTIALS: '/captured/missing.json',
-      HOME: '/captured/home',
     }), {
       fileExists: path => path ===
         '/captured/home/.config/gcloud/application_default_credentials.json',
+      platformHome: '/captured/home',
       platform: 'linux',
-    })).toEqual({ kind: 'none' })
+    })).toEqual({
+      kind: 'none',
+      mode: 'adc',
+      expected: 'adc',
+      configuredPath: '/captured/missing.json',
+    })
   })
 
-  test('uses only the platform-appropriate captured well-known ADC path', () => {
-    expect(getGeminiAdcCredentialPaths(environment({
+  test('uses only the platform-appropriate well-known ADC path', () => {
+    let windowsPath: string | undefined
+    expect(resolveGeminiCredentialPlan(environment({
+      GEMINI_AUTH_MODE: 'adc',
       APPDATA: 'C:\\Captured\\AppData',
-    }), '/captured/home', 'win32')).toEqual([
-      'C:\\Captured\\AppData/gcloud/application_default_credentials.json',
-    ])
-    expect(getGeminiAdcCredentialPaths(environment({
+    }), {
+      fileExists: path => {
+        windowsPath = path
+        return true
+      },
+      platformHome: '/ignored/home',
+      platform: 'win32',
+    })).toMatchObject({ kind: 'adc', source: 'well-known-adc' })
+    expect(windowsPath).toBe(
+      'C:\\Captured\\AppData\\gcloud\\application_default_credentials.json',
+    )
+
+    let linuxPath: string | undefined
+    expect(resolveGeminiCredentialPlan(environment({
+      GEMINI_AUTH_MODE: 'adc',
       APPDATA: '/ignored/appdata',
-    }), '/captured/home', 'linux')).toEqual([
+    }), {
+      fileExists: path => {
+        linuxPath = path
+        return true
+      },
+      platformHome: '/captured/home',
+      platform: 'linux',
+    })).toMatchObject({ kind: 'adc', source: 'well-known-adc' })
+    expect(linuxPath).toBe(
       '/captured/home/.config/gcloud/application_default_credentials.json',
-    ])
+    )
   })
 
   test('rejects unsupported modes after trimming and accepts documented modes case-insensitively', () => {

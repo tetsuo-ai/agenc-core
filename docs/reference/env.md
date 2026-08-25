@@ -51,7 +51,7 @@ Credential values are not written into the canonical config snapshot.
 | OpenRouter | `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, `AGENC_OPENROUTER_HTTP_REFERER`, `AGENC_OPENROUTER_TITLE` |
 | Groq | `GROQ_API_KEY`, `GROQ_BASE_URL` |
 | DeepSeek | `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL` |
-| Gemini | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_ACCESS_TOKEN`, `GEMINI_AUTH_MODE` (`api-key`, `access-token`, or `adc`), `GEMINI_BASE_URL`, `GEMINI_PROJECT_ID`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_APPLICATION_CREDENTIALS`, `GEMINI_VERTEX_LOCATION`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_CLOUD_REGION`, `CLOUD_ML_REGION`, `GEMINI_CACHED_CONTENT` |
+| Gemini | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_ACCESS_TOKEN`, `GEMINI_AUTH_MODE` (`api-key`, `access-token`, or `adc`), `GEMINI_BASE_URL`, `GEMINI_PROJECT_ID`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_QUOTA_PROJECT`, `GOOGLE_APPLICATION_CREDENTIALS`, `GEMINI_VERTEX_LOCATION`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_CLOUD_REGION`, `CLOUD_ML_REGION`, `GEMINI_CACHED_CONTENT` |
 | Mistral | `MISTRAL_API_KEY`, `MISTRAL_BASE_URL` |
 | NVIDIA NIM | `NVIDIA_API_KEY`, `NVIDIA_BASE_URL` |
 | MiniMax | `MINIMAX_API_KEY`, `MINIMAX_BASE_URL` |
@@ -88,15 +88,20 @@ exactly the named method and rejects values other than `api-key`,
 `access-token`, or `adc`. With no mode, the credential order is
 `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_ACCESS_TOKEN`, then file-backed ADC.
 
-Gemini ADC uses only the immutable session context: a captured
-`GOOGLE_APPLICATION_CREDENTIALS` path, or the captured platform account's
-standard gcloud ADC file when no explicit path was supplied. An explicit path
-is authoritative and does not fall through when missing. AgenC gives the exact
-selected, operator-owned credential file to the Google auth library; it does
-not run gcloud, query a metadata server, or let the library rediscover ADC from
-the daemon process environment. Set `GEMINI_PROJECT_ID` or
-`GOOGLE_CLOUD_PROJECT` when the credential itself does not identify the Vertex
-project.
+Gemini ADC uses one file from immutable/trusted runtime context: a captured
+`GOOGLE_APPLICATION_CREDENTIALS` path, or the standard gcloud ADC file for the
+platform account when no explicit path was supplied. An explicit path is
+authoritative and does not fall through when missing. Only
+`authorized_user` and `service_account` credential documents in the public
+`googleapis.com` universe are accepted. AgenC does not load external-account,
+impersonation, executable, or URL-bearing credential configurations; run
+gcloud or a workload-identity helper outside AgenC and provide a captured
+`GEMINI_ACCESS_TOKEN` when those flows are required. AgenC also does not run
+gcloud or query a metadata server during ADC resolution.
+
+Set `GEMINI_PROJECT_ID` or `GOOGLE_CLOUD_PROJECT` when the credential does not
+identify the Vertex resource project. `GOOGLE_CLOUD_QUOTA_PROJECT` is the
+separate quota/billing project and never replaces resource-project selection.
 
 Proxy routing uses `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and their lowercase
 forms `http_proxy`, `https_proxy`, `no_proxy`. `PATH` is captured so provider

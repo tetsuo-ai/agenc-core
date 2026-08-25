@@ -18,9 +18,21 @@ describe('Gemini credential authority', () => {
   test('credential resolution and the native provider never read process environment', () => {
     const authSource = source('utils/geminiAuth.ts')
     expect(authSource).not.toContain('process.env')
-    expect(authSource).not.toMatch(/new GoogleAuth\(\{\s*scopes:/u)
-    expect(authSource).toContain('keyFilename: input.credentialPath')
+    expect(authSource).not.toContain('new GoogleAuth')
+    expect(authSource).not.toContain('keyFilename')
+    expect(authSource).not.toContain('ExternalAccountClient')
+    expect(authSource).toContain('new JWT')
+    expect(authSource).toContain('new UserRefreshClient')
     expect(source('llm/providers/gemini/index.ts')).not.toContain('process.env')
+  })
+
+  test('caches the ADC client but materializes a token for each request', () => {
+    const authSource = source('utils/geminiAuth.ts')
+    expect(authSource).toContain('resolveDefaultGeminiAdcClient')
+    expect(authSource).not.toContain('resolveDefaultGeminiAdcCredential')
+    expect(authSource).toContain(
+      'normalizeAccessToken(await client.getAccessToken())',
+    )
   })
 
   test('only the documented project identifiers participate in resolution', () => {

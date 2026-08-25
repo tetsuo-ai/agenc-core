@@ -179,8 +179,15 @@ async function resolveGeminiAuthHeaders(
   }
 
   const resolved = config.resolveCredential === undefined
-    ? { kind: "none" as const }
+    ? undefined
     : await config.resolveCredential();
+  if (resolved === undefined) {
+    throw new LLMProviderError(
+      "gemini",
+      `Gemini provider requires credentials: set ${config.apiKeyEnvLabel ?? providerApiKeyEnvironmentLabel("gemini") ?? "a Gemini API key"}, GEMINI_ACCESS_TOKEN, or Google ADC credentials`,
+      401,
+    );
+  }
   const headers = authHeadersForCredential(resolved, config.project);
   if (headers) return headers;
 
