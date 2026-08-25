@@ -433,6 +433,13 @@ describe('AgentTool loadAgentsDir adapter', () => {
     expect(jsonAgent).not.toHaveProperty('hooks')
     expect(jsonAgent).not.toHaveProperty('mcpServers')
 
+    const retiredTransportAgent = parseAgentFromJson('retired-transport', {
+      description: 'Retired transport',
+      prompt: 'Reject retired MCP configuration.',
+      mcpServers: [{ retired: { type: 'sdk', name: 'retired' } }],
+    })
+    expect(retiredTransportAgent).not.toHaveProperty('mcpServers')
+
     const markdownAgent = parseAgentFromMarkdown(
       '/repo/.agenc/agents/bad-config.md',
       '/repo/.agenc/agents',

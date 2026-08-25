@@ -461,24 +461,8 @@ function isMcpServerAllowedByPolicy(
  * Used by execution-safe named lookups so every entry point applies the same
  * managed allow/deny policy as the canonical resolver.
  *
- * SDK-type servers are exempt — they are SDK-managed transport placeholders,
- * not CLI-managed connections. The CLI never spawns a process or opens a
- * network connection for them; tool calls route back to the SDK via
- * mcp_tool_call. URL/command-based allowlist entries are meaningless for them
- * (no url, no command), and gating by name would silently drop them during
- * installPluginsAndApplyMcpInBackground's sdkMcpConfigs carry-forward.
- *
- * The generic has no type constraint because the two callsites use different
- * config type families: main.tsx uses ScopedMcpServerConfig (service type,
- * args: string[] required), print.ts uses McpServerConfigForProcessTransport
- * (SDK wire type, args?: string[] optional). Both are structurally compatible
- * with what isMcpServerAllowedByPolicy actually reads (type/url/command/args)
- * — the policy check only reads, never requires any field to be present.
- * The `as McpServerConfig` widening is safe for that reason; the downstream
- * checks tolerate missing/undefined fields: `config` is optional, and
- * `getServerCommandArray` defaults `args` to `[]` via `?? []`.
  */
-export function filterMcpServersByPolicy<T>(
+export function filterMcpServersByPolicy<T extends McpServerConfig>(
   authority: CanonicalSettingsAuthority,
   configs: Record<string, T>,
 ): {
@@ -488,8 +472,7 @@ export function filterMcpServersByPolicy<T>(
   const allowed: Record<string, T> = {}
   const blocked: string[] = []
   for (const [name, config] of Object.entries(configs)) {
-    const c = config as McpServerConfig
-    if (c.type === 'sdk' || isMcpServerAllowedByPolicy(authority, name, c)) {
+    if (isMcpServerAllowedByPolicy(authority, name, config)) {
       allowed[name] = config
     } else {
       blocked.push(name)
@@ -553,9 +536,6 @@ function expandEnvVars(
     }
     case 'sse-ide':
     case 'ws-ide':
-      expanded = config
-      break
-    case 'sdk':
       expanded = config
       break
     case 'agencai-proxy':
@@ -1544,21 +1524,6 @@ export function shouldAllowManagedMcpServersOnly(
   return (
     getSettingsForSource('policySettings', authority)
       ?.allowManagedMcpServersOnly === true
-  )
-}
-
-/**
- * Check if all MCP servers in a config are allowed with enterprise MCP config.
- */
-export function areMcpConfigsAllowedWithEnterpriseMcpConfig(
-  configs: Record<string, ScopedMcpServerConfig>,
-): boolean {
-  // NOTE: While all SDK MCP servers should be safe from a security perspective, we are still discussing
-  // what the best way to do this is. In the meantime, we are limiting this to agenc-vscode currently to
-  // unbreak the VSCode extension for certain enterprise customers who have enterprise MCP config enabled.
-  // https://anthropic.slack.com/archives/C093UA0KLD7/p1764975463670109
-  return Object.values(configs).every(
-    c => c.type === 'sdk' && c.name === 'agenc-vscode',
   )
 }
 

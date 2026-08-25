@@ -24,7 +24,6 @@ import {
   type ElicitRequestURLParams,
   type ElicitResult,
   ErrorCode,
-  type JSONRPCMessage,
   ListResourcesResultSchema,
   type ListToolsResult,
   ListToolsResultSchema,
@@ -55,7 +54,7 @@ import {
 } from '../../utils/auth.js'
 import { registerCleanup } from '../../utils/cleanupRegistry.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isEnvDefinedFalsy, isEnvTruthy } from '../../utils/envUtils.js'
+import { isEnvDefinedFalsy } from '../../utils/envUtils.js'
 import {
   errorMessage,
   LogSafeError_I_VERIFIED_THIS_IS_NOT_CODE_OR_FILEPATHS,
@@ -107,7 +106,6 @@ import { classifyMcpToolForCollapse } from '../../tools/MCPTool/classifyForColla
 import { sleep } from '../../utils/sleep.js'
 import { AgenCAuthProvider, wrapFetchWithStepUpDetection } from './auth.js'
 import { getMcpServerHeaders } from './headersHelper.js'
-import { SdkControlClientTransport } from './SdkControlTransport.js'
 import {
   buildMcpHostClientCapabilities,
   configureMcpHostRequestHandlers,
@@ -116,7 +114,6 @@ import {
 import type {
   ConnectedMCPServer,
   MCPServerConnection,
-  McpSdkServerConfig,
   ScopedMcpServerConfig,
   ServerResource,
 } from './types.js'
@@ -196,8 +193,8 @@ const MCP_SDK_UNBOUNDED_WINDOW_MS = 2_147_483_647
  */
 const MAX_MCP_DESCRIPTION_LENGTH = 2048
 
-// SDK MCP servers use this older Tool surface instead of the newer
-// mcp-client/tools.ts bridge. Keep the same model-facing trust boundary here:
+// Agent-scoped MCP connections use the runtime Tool surface here. Keep the
+// same model-facing trust boundary as the session-owned MCP bridge:
 // server-provided descriptions, search hints, and schema annotations are
 // untrusted metadata, not instructions.
 const MAX_MCP_TOOL_DESCRIPTION_BYTES = MAX_MCP_DESCRIPTION_LENGTH
@@ -256,7 +253,7 @@ function truncateUtf8WithMarker(text: string, maxBytes: number): string {
   return `${truncateUtf8(text, budget).trimEnd()}${marker}`
 }
 
-function modelFacingSdkMcpToolDescription(
+function modelFacingMcpToolDescription(
   modelFacingName: string,
   rawToolName: string,
   rawDescription: string | undefined,
@@ -287,7 +284,7 @@ function sanitizeMcpSearchHint(value: unknown): string | undefined {
     : undefined
 }
 
-function sanitizeSdkMcpSchemaNodeForModel(
+function sanitizeMcpSchemaNodeForModel(
   value: unknown,
   depth = 0,
   parentKey?: string,
@@ -297,7 +294,7 @@ function sanitizeSdkMcpSchemaNodeForModel(
   if (Array.isArray(value)) {
     return value
       .slice(0, MAX_MCP_SCHEMA_ARRAY_ITEMS)
-      .map(item => sanitizeSdkMcpSchemaNodeForModel(item, depth + 1, parentKey))
+      .map(item => sanitizeMcpSchemaNodeForModel(item, depth + 1, parentKey))
       .filter(item => item !== undefined)
   }
 
@@ -308,7 +305,7 @@ function sanitizeSdkMcpSchemaNodeForModel(
       parentKey !== undefined && MCP_SCHEMA_MAP_KEYS.has(parentKey)
     for (const [key, field] of Object.entries(record)) {
       if (!isSchemaMap && MCP_SCHEMA_METADATA_KEYS.has(key)) continue
-      const sanitized = sanitizeSdkMcpSchemaNodeForModel(field, depth + 1, key)
+      const sanitized = sanitizeMcpSchemaNodeForModel(field, depth + 1, key)
       if (sanitized !== undefined) output[key] = sanitized
     }
     return output
@@ -329,12 +326,12 @@ function sanitizeSdkMcpSchemaNodeForModel(
   return undefined
 }
 
-function sanitizeSdkMcpInputSchemaForModel(
+function sanitizeMcpInputSchemaForModel(
   serverName: string,
   toolName: string,
   inputSchema: unknown,
 ): Tool['inputJSONSchema'] {
-  const sanitized = sanitizeSdkMcpSchemaNodeForModel(inputSchema)
+  const sanitized = sanitizeMcpSchemaNodeForModel(inputSchema)
   const record = asRecord(sanitized)
   if (!record) return { type: 'object', properties: {} }
 
@@ -1015,8 +1012,6 @@ export const connectToServer = memoize(
           transportOptions,
         )
         logMCPDebug(name, `HTTP transport created successfully`)
-      } else if (serverRef.type === 'sdk') {
-        throw new Error('SDK servers should be handled in print.ts')
       } else if (serverRef.type === 'agencai-proxy') {
         logMCPDebug(
           name,
@@ -1785,9 +1780,6 @@ export async function clearServerCache(
  * if the cache was cleared (e.g., after onclose). This ensures tool/resource
  * calls always use a valid connection.
  *
- * SDK MCP servers run in-process and are handled separately via setupSdkMcpClients,
- * so they are returned as-is without going through connectToServer.
- *
  * @param client The connected MCP server client
  * @returns Connected MCP server client (same or reconnected)
  * @throws Error if server cannot be connected
@@ -1795,10 +1787,6 @@ export async function clearServerCache(
 export async function ensureConnectedClient(
   client: ConnectedMCPServer,
 ): Promise<ConnectedMCPServer> {
-  // SDK MCP servers run in-process and are handled separately via setupSdkMcpClients
-  if (client.config.type === 'sdk') {
-    return client
-  }
   const authority = mcpConnectionAuthority(client)
 
   const connectedClient = await connectToServer(
@@ -1880,28 +1868,18 @@ export const fetchToolsForClient = memoizeWithLRU(
       // Sanitize tool data from MCP server
       const toolsToProcess = recursivelySanitizeUnicode(result.tools)
 
-      // Check if we should skip the mcp__ prefix for SDK MCP servers
-      const skipPrefix =
-        client.config.type === 'sdk' &&
-        isEnvTruthy(
-          mcpConnectionAuthority(client).environment
-            .AGENC_AGENT_SDK_MCP_NO_PREFIX,
-        )
-
       // Convert MCP tools to our Tool format
       return toolsToProcess
         .map((tool): Tool => {
           const fullyQualifiedName = buildMcpToolName(client.name, tool.name)
-          const modelFacingDescription = modelFacingSdkMcpToolDescription(
-            skipPrefix ? tool.name : fullyQualifiedName,
+          const modelFacingDescription = modelFacingMcpToolDescription(
+            fullyQualifiedName,
             tool.name,
             tool.description,
           )
           return {
             ...MCPTool,
-            // In skip-prefix mode, use the original name for model invocation so MCP tools
-            // can override builtins by name. mcpInfo is used for permission checking.
-            name: skipPrefix ? tool.name : fullyQualifiedName,
+            name: fullyQualifiedName,
             mcpInfo: { serverName: client.name, toolName: tool.name },
             isMcp: true,
             // Collapse whitespace: _meta is open to external MCP servers, and
@@ -1935,7 +1913,7 @@ export const fetchToolsForClient = memoizeWithLRU(
             isSearchOrReadCommand() {
               return classifyMcpToolForCollapse(client.name, tool.name)
             },
-            inputJSONSchema: sanitizeSdkMcpInputSchemaForModel(
+            inputJSONSchema: sanitizeMcpInputSchemaForModel(
               client.name,
               tool.name,
               tool.inputSchema,
@@ -2956,110 +2934,4 @@ function extractToolUseId(message: AssistantMessage): string | undefined {
     return undefined
   }
   return message.message.content[0].id
-}
-
-/**
- * Sets up SDK MCP clients by creating transports and connecting them.
- * This is used for SDK MCP servers that run in the same process as the SDK.
- *
- * @param sdkMcpConfigs - The SDK MCP server configurations
- * @param sendMcpMessage - Callback to send MCP messages through the control channel
- * @returns Connected clients, their tools, and transport map for message routing
- */
-export async function setupSdkMcpClients(
-  sdkMcpConfigs: Record<string, McpSdkServerConfig>,
-  sendMcpMessage: (
-    serverName: string,
-    message: JSONRPCMessage,
-  ) => Promise<JSONRPCMessage>,
-  options: {
-    readonly samplingHandlers?: McpSamplingHandlers
-    readonly environment?: ProviderEnvironment
-  } = {},
-): Promise<{
-  clients: MCPServerConnection[]
-  tools: Tool[]
-}> {
-  const clients: MCPServerConnection[] = []
-  const tools: Tool[] = []
-
-  // Connect to all servers in parallel
-  const results = await Promise.allSettled(
-    Object.entries(sdkMcpConfigs).map(async ([name, config]) => {
-      const transport = new SdkControlClientTransport(name, sendMcpMessage)
-
-      const client = new Client(
-        {
-          // name stays 'agenc-code' for compatibility with MCP servers that
-          // gate features on the upstream client identifier.
-          name: 'agenc-code',
-          title: 'AgenC',
-          version: MACRO.VERSION ?? 'unknown',
-          description: 'AgenC — coding-agent CLI for any LLM provider',
-          websiteUrl: PRODUCT_URL,
-        },
-        {
-          capabilities: buildMcpHostClientCapabilities('none'),
-        },
-      )
-      configureMcpHostRequestHandlers(client, name, {
-        rootPath: getOriginalCwd(),
-        ...(options.samplingHandlers !== undefined
-          ? { samplingHandlers: options.samplingHandlers }
-          : {}),
-      })
-
-      try {
-        // Connect the client
-        await client.connect(transport)
-
-        // Get capabilities from the server
-        const capabilities = client.getServerCapabilities()
-
-        // Create the connected client object
-        const connectedClient = bindMcpConnectionAuthority({
-          type: 'connected',
-          name,
-          capabilities: capabilities || {},
-          client,
-          config: { ...config, scope: 'dynamic' as const },
-          cleanup: async () => {
-            await client.close()
-          },
-        }, options.environment ?? EMPTY_MCP_ENVIRONMENT, undefined)
-
-        // Fetch tools if the server has them
-        const serverTools: Tool[] = []
-        if (capabilities?.tools) {
-          const sdkTools = await fetchToolsForClient(connectedClient)
-          serverTools.push(...sdkTools)
-        }
-
-        return {
-          client: connectedClient,
-          tools: serverTools,
-        }
-      } catch (error) {
-        // If connection fails, return failed server
-        logMCPError(name, `Failed to connect SDK MCP server: ${error}`)
-        return {
-          client: {
-            type: 'failed' as const,
-            name,
-            config: { ...config, scope: 'user' as const },
-          },
-          tools: [],
-        }
-      }
-    }),
-  )
-  // Process results and collect clients and tools
-  for (const result of results) {
-    if (result.status === 'fulfilled') {
-      clients.push(result.value.client)
-      tools.push(...result.value.tools)
-    }
-    // If rejected (unexpected), the error was already logged inside the promise
-  }
-  return { clients, tools }
 }

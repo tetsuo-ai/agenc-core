@@ -107,14 +107,6 @@ const McpIdeServerConfigSchema = (type: 'sse-ide' | 'ws-ide') =>
     })
     .passthrough()
 
-const McpSdkServerConfigSchema = () =>
-  z
-    .object({
-      type: z.literal('sdk'),
-      name: z.string().min(1),
-    })
-    .passthrough()
-
 const McpServerConfigSchema = () =>
   z.union([
     McpStdioServerConfigSchema(),
@@ -123,7 +115,6 @@ const McpServerConfigSchema = () =>
     McpUrlServerConfigSchema('ws'),
     McpIdeServerConfigSchema('sse-ide'),
     McpIdeServerConfigSchema('ws-ide'),
-    McpSdkServerConfigSchema(),
   ])
 
 const AgentMcpServerSpecSchema = () =>

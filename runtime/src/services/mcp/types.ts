@@ -22,11 +22,6 @@ export const ConfigScopeSchema = lazySchema(() =>
 )
 export type ConfigScope = z.infer<ReturnType<typeof ConfigScopeSchema>>
 
-export const TransportSchema = lazySchema(() =>
-  z.enum(['stdio', 'sse', 'sse-ide', 'http', 'ws', 'sdk']),
-)
-export type Transport = z.infer<ReturnType<typeof TransportSchema>>
-
 const PermissionDefaultModeSchema = lazySchema(() =>
   z.enum(['untrusted', 'on-failure', 'on-request', 'never']),
 )
@@ -138,13 +133,6 @@ export const McpWebSocketServerConfigSchema = lazySchema(() =>
   }),
 )
 
-export const McpSdkServerConfigSchema = lazySchema(() =>
-  z.object({
-    type: z.literal('sdk'),
-    name: z.string(),
-  }),
-)
-
 // Config type for AgenC.ai proxy servers
 export const McpAgenCAIProxyServerConfigSchema = lazySchema(() =>
   z.object({
@@ -162,7 +150,6 @@ export const McpServerConfigSchema = lazySchema(() =>
     McpWebSocketIDEServerConfigSchema(),
     McpHTTPServerConfigSchema(),
     McpWebSocketServerConfigSchema(),
-    McpSdkServerConfigSchema(),
     McpAgenCAIProxyServerConfigSchema(),
   ]),
 )
@@ -184,9 +171,6 @@ export type McpHTTPServerConfig = z.infer<
 >
 export type McpWebSocketServerConfig = z.infer<
   ReturnType<typeof McpWebSocketServerConfigSchema>
->
-export type McpSdkServerConfig = z.infer<
-  ReturnType<typeof McpSdkServerConfigSchema>
 >
 export type McpAgenCAIProxyServerConfig = z.infer<
   ReturnType<typeof McpAgenCAIProxyServerConfigSchema>

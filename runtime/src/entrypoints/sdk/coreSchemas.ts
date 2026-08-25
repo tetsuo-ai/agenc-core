@@ -132,107 +132,12 @@ const McpHttpServerConfigSchema = lazySchema(() =>
   }),
 )
 
-const McpSdkServerConfigSchema = lazySchema(() =>
-  z.object({
-    type: z.literal('sdk'),
-    name: z.string(),
-  }),
-)
-
 const McpServerConfigForProcessTransportSchema = lazySchema(() =>
   z.union([
     McpStdioServerConfigSchema(),
     McpSSEServerConfigSchema(),
     McpHttpServerConfigSchema(),
-    McpSdkServerConfigSchema(),
   ]),
-)
-
-const McpAgenCAIProxyServerConfigSchema = lazySchema(() =>
-  z.object({
-    type: z.literal('agencai-proxy'),
-    url: z.string(),
-    id: z.string(),
-  }),
-)
-
-// Broader config type for status responses (includes agencai-proxy which is output-only)
-const McpServerStatusConfigSchema = lazySchema(() =>
-  z.union([
-    McpServerConfigForProcessTransportSchema(),
-    McpAgenCAIProxyServerConfigSchema(),
-  ]),
-)
-
-export const McpServerStatusSchema = lazySchema(() =>
-  z
-    .object({
-      name: z.string().describe('Server name as configured'),
-      status: z
-        .enum(['connected', 'failed', 'needs-auth', 'pending', 'disabled'])
-        .describe('Current connection status'),
-      serverInfo: z
-        .object({
-          name: z.string(),
-          version: z.string(),
-        })
-        .optional()
-        .describe('Server information (available when connected)'),
-      error: z
-        .string()
-        .optional()
-        .describe("Error message (available when status is 'failed')"),
-      config: McpServerStatusConfigSchema()
-        .optional()
-        .describe('Server configuration (includes URL for HTTP/SSE servers)'),
-      scope: z
-        .string()
-        .optional()
-        .describe(
-          'Configuration scope (e.g., project, user, local, agencai, managed)',
-        ),
-      tools: z
-        .array(
-          z.object({
-            name: z.string(),
-            description: z.string().optional(),
-            annotations: z
-              .object({
-                readOnly: z.boolean().optional(),
-                destructive: z.boolean().optional(),
-                openWorld: z.boolean().optional(),
-              })
-              .optional(),
-          }),
-        )
-        .optional()
-        .describe('Tools provided by this server (available when connected)'),
-      capabilities: z
-        .object({
-          experimental: z.record(z.string(), z.unknown()).optional(),
-        })
-        .optional()
-        .describe(
-          "@internal Server capabilities (available when connected). experimental['agenc/channel'] is only present if the server's plugin is on the approved channels allowlist — use its presence to decide whether to show an Enable-channel prompt.",
-        ),
-    })
-    .describe('Status information for an MCP server connection.'),
-)
-
-export const McpSetServersResultSchema = lazySchema(() =>
-  z
-    .object({
-      added: z.array(z.string()).describe('Names of servers that were added'),
-      removed: z
-        .array(z.string())
-        .describe('Names of servers that were removed'),
-      errors: z
-        .record(z.string(), z.string())
-        .describe(
-          'Map of server names to error messages for servers that failed to connect',
-        ),
-    })
-    .describe('Result of a setMcpServers operation.'),
 )
 
 // ============================================================================

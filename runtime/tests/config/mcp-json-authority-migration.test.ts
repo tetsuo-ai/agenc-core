@@ -227,7 +227,7 @@ describe("retired MCP JSON authority migration", () => {
       ]),
     );
     expect(plan.conflicts.map((item) => item.reason).join("\n")).toMatch(
-      /unsupported top-level fields|no lossless canonical TOML transform|runtime-only/u,
+      /unsupported top-level fields|no lossless canonical TOML transform|unsupported MCP transport/u,
     );
     expect(plan.writes).toEqual([]);
   });

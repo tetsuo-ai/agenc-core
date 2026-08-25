@@ -15,7 +15,6 @@ import {
   getOriginalCwd,
   getSessionId,
 } from "src/bootstrap/state.js";
-import { notifyVscodeFileUpdated } from "src/services/mcp/vscodeSdkMcp.js";
 import type { LogOption } from "src/types/logs.js";
 import { inspect } from "util";
 import { logForDebugging } from "src/utils/debug.js";
@@ -291,10 +290,6 @@ export async function fileHistoryMakeSnapshot(
         snapshotSequence: (state.snapshotSequence ?? 0) + 1,
       };
       maybeDumpStateForDebug(updatedState);
-
-      void notifyVscodeSnapshotFilesUpdated(state, updatedState).catch(
-        logError,
-      );
 
       // Record the file history snapshot to session storage for resume support
       void recordFileHistorySnapshot(
@@ -1009,58 +1004,6 @@ export async function copyFileHistoryForResume(log: LogOption): Promise<void> {
     );
   } catch (error) {
     logError(error);
-  }
-}
-
-/**
- * Notifies VSCode about files that have changed between snapshots.
- * Compares the previous snapshot with the new snapshot and sends file_updated
- * notifications for any files whose content has changed.
- * Fire-and-forget (void-dispatched from fileHistoryMakeSnapshot).
- */
-async function notifyVscodeSnapshotFilesUpdated(
-  oldState: FileHistoryState,
-  newState: FileHistoryState,
-): Promise<void> {
-  const oldSnapshot = oldState.snapshots.at(-1);
-  const newSnapshot = newState.snapshots.at(-1);
-
-  if (!newSnapshot) {
-    return;
-  }
-
-  for (const trackingPath of newState.trackedFiles) {
-    const filePath = maybeExpandFilePath(trackingPath);
-    const oldBackup = oldSnapshot?.trackedFileBackups[trackingPath];
-    const newBackup = newSnapshot.trackedFileBackups[trackingPath];
-
-    // Skip if both backups reference the same version (no change)
-    if (
-      oldBackup?.backupFileName === newBackup?.backupFileName &&
-      oldBackup?.version === newBackup?.version
-    ) {
-      continue;
-    }
-
-    // Get old content from the previous backup
-    let oldContent: string | null = null;
-    if (oldBackup?.backupFileName) {
-      const backupPath = resolveBackupPath(oldBackup.backupFileName);
-      oldContent = await readFileAsyncOrNull(backupPath);
-    }
-
-    // Get new content from the new backup or current file
-    let newContent: string | null = null;
-    if (newBackup?.backupFileName) {
-      const backupPath = resolveBackupPath(newBackup.backupFileName);
-      newContent = await readFileAsyncOrNull(backupPath);
-    }
-    // If newBackup?.backupFileName === null, the file was deleted; newContent stays null.
-
-    // Only notify if content actually changed
-    if (oldContent !== newContent) {
-      notifyVscodeFileUpdated(filePath, oldContent, newContent);
-    }
   }
 }
 

@@ -11,7 +11,6 @@ import type { AppState } from "../../tui/state/AppState.js";
 import { z } from "zod/v4";
 import { getKairosActive } from "../../bootstrap/state.js";
 import { TOOL_SUMMARY_MAX_LENGTH } from "../../constants/toolLimits.js";
-import { notifyVscodeFileUpdated } from "../../services/mcp/vscodeSdkMcp.js";
 import type {
   SetToolJSXFn,
   ToolCallProgress,
@@ -415,11 +414,10 @@ async function applySedEdit(
   const absoluteFilePath = expandPath(filePath);
   const fs = getFsImplementation();
 
-  // Read original content for VS Code notification
+  // Verify that the target is readable before applying the simulated edit.
   const encoding = detectFileEncoding(absoluteFilePath);
-  let originalContent: string;
   try {
-    originalContent = await fs.readFile(absoluteFilePath, {
+    await fs.readFile(absoluteFilePath, {
       encoding,
     });
   } catch (e) {
@@ -447,9 +445,6 @@ async function applySedEdit(
   // Detect line endings and write new content
   const endings = detectLineEndings(absoluteFilePath);
   writeTextContent(absoluteFilePath, newContent, encoding, endings);
-
-  // Notify VS Code about the file change
-  notifyVscodeFileUpdated(absoluteFilePath, originalContent, newContent);
 
   // Update read timestamp to invalidate stale writes
   toolUseContext.readFileState.set(absoluteFilePath, {

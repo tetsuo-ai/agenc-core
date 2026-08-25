@@ -28,7 +28,6 @@ const intentionalEntryPointIssueIgnores = {
   "src/entrypoints/sdk/coreTypes.generated.ts": ["types"],
   // SDK control protocol types are public declaration surfaces even when no
   // production runtime file imports them directly.
-  "src/entrypoints/sdk/controlTypes.ts": ["types"],
 };
 const serviceTestContractExportFiles = [
   // Contract tests and service-level harnesses import these directly; the
@@ -77,7 +76,6 @@ const servicePublicContractExportFiles = [
   "src/services/api/sessionIngress.ts",
   "src/services/api/withRetry.ts",
   "src/services/github/deviceFlow.ts",
-  "src/services/mcp/SdkControlTransport.ts",
   "src/services/mcp/auth.ts",
   "src/services/mcp/client.ts",
   "src/services/mcp/config.ts",

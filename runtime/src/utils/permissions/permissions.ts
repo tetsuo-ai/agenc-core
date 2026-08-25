@@ -226,10 +226,8 @@ function toolMatchesRule(
     return false
   }
 
-  // MCP tools are matched by their fully qualified mcp__server__tool name. In
-  // skip-prefix mode (AGENC_AGENT_SDK_MCP_NO_PREFIX), MCP tools have unprefixed
-  // display names (e.g., "Write") that collide with builtin names; rules targeting
-  // builtins should not match their MCP replacements.
+  // MCP tools are matched by their fully qualified mcp__server__tool identity,
+  // so permission rules cannot confuse them with similarly named builtins.
   const nameForRuleMatch = getToolNameForPermissionCheck(tool)
 
   // Direct canonical tool-name match, including distinct tools in the same

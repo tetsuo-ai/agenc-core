@@ -8,7 +8,7 @@ import type { McpSamplingHandlers } from './hostCapabilities.js'
 import { resolveHomeContext } from '../../../src/config/home.js'
 
 const TEST_HOME = resolveHomeContext(
-  { AGENC_HOME: '/tmp/agenc-mcp-client-sdk-test' },
+  { AGENC_HOME: '/tmp/agenc-mcp-client-transports-test' },
   { platformHome: '/tmp' },
 )
 
@@ -18,7 +18,7 @@ type FakeTransport = {
   close?: () => Promise<void>
 }
 
-type FakeSdkTransport =
+type FakeClientTransport =
   | FakeTransport
   | FakeStdioTransport
   | FakeSseTransport
@@ -43,7 +43,6 @@ const fakeChromeMcpServers: Array<{
 }> = []
 let nextClientOnerror: ((error: Error) => void) | undefined
 let nextClientOnclose: (() => void) | undefined
-const requestLog: Array<{ serverName: string; method: string }> = []
 const fetchLog: Array<{ url: string; method: string; accept?: string | null }> =
   []
 const nativeFetchLog: Array<{
@@ -95,7 +94,7 @@ class FakeClient {
     fakeClients.push(this)
   }
 
-  async connect(transport: FakeSdkTransport): Promise<void> {
+  async connect(transport: FakeClientTransport): Promise<void> {
     this.serverName =
       'serverName' in transport
         ? transport.serverName
@@ -131,7 +130,7 @@ class FakeClient {
   }
 
   getServerCapabilities(): Record<string, unknown> {
-    return this.serverName === 'tooling' || this.serverName === 'stdio-demo'
+    return this.serverName === 'stdio-demo'
       ? { tools: {}, resources: { subscribe: true } }
       : {}
   }
@@ -152,16 +151,6 @@ class FakeClient {
     handler: (request?: unknown, extra?: unknown) => unknown,
   ): void {
     this.handlers.push({ schema, handler })
-  }
-
-  async request(request: { method: string }): Promise<unknown> {
-    requestLog.push({ serverName: this.serverName, method: request.method })
-    if (request.method === 'tools/list') {
-      return {
-        tools: [{ name: 'inspect', inputSchema: { type: 'object' } }],
-      }
-    }
-    throw new Error(`unexpected request ${request.method}`)
   }
 
   async notification(): Promise<void> {}
@@ -272,7 +261,6 @@ afterEach(async () => {
   fakeChromeMcpServers.length = 0
   nextClientOnerror = undefined
   nextClientOnclose = undefined
-  requestLog.length = 0
   fetchLog.length = 0
   nativeFetchLog.length = 0
   if (originalBun === undefined) {
@@ -316,120 +304,6 @@ afterEach(async () => {
   vi.restoreAllMocks()
   vi.useRealTimers()
   vi.resetModules()
-})
-
-test('setupSdkMcpClients connects SDK clients, fetches tools, and reports failed servers', async () => {
-  vi.resetModules()
-  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
-    Client: FakeClient,
-  }))
-
-  const { setupSdkMcpClients } = await import('./client.js')
-  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
-    { VERSION: 'test' }
-
-  const result = await setupSdkMcpClients(
-    {
-      tooling: { type: 'sdk', name: 'tooling' },
-      passive: { type: 'sdk', name: 'passive' },
-      broken: { type: 'sdk', name: 'broken' },
-    },
-    async (_serverName, message) => message,
-  )
-
-  assert.deepEqual(
-    result.clients.map(client => `${client.name}:${client.type}`),
-    ['tooling:connected', 'passive:connected', 'broken:failed'],
-  )
-  assert.deepEqual(
-    result.tools.map(tool => tool.name),
-    ['mcp__tooling__inspect'],
-  )
-  assert.deepEqual(requestLog, [
-    { serverName: 'tooling', method: 'tools/list' },
-  ])
-
-  const connected = result.clients.find(client => client.name === 'tooling')
-  assert.equal(connected?.type, 'connected')
-  if (connected?.type === 'connected') {
-    await connected.cleanup()
-  }
-  assert.equal(fakeClients[0]?.closed, true)
-})
-
-test('setupSdkMcpClients routes sampling requests through supplied handlers', async () => {
-  vi.resetModules()
-  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
-    Client: FakeClient,
-  }))
-
-  const { setupSdkMcpClients } = await import('./client.js')
-  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
-    { VERSION: 'test' }
-
-  let captured: unknown
-  const samplingHandlers: McpSamplingHandlers = {
-    async createMessage(params) {
-      captured = params
-      return {
-        role: 'assistant',
-        model: 'sdk-sampler',
-        stopReason: 'endTurn',
-        content: { type: 'text', text: 'sampled via sdk stack' },
-      }
-    },
-  }
-
-  const result = await setupSdkMcpClients(
-    {
-      tooling: { type: 'sdk', name: 'tooling' },
-    },
-    async (_serverName, message) => message,
-    { samplingHandlers },
-  )
-
-  assert.deepEqual(
-    result.clients.map(client => `${client.name}:${client.type}`),
-    ['tooling:connected'],
-  )
-
-  const abort = new AbortController()
-  const request = {
-    method: 'sampling/createMessage',
-    params: {
-      messages: [
-        {
-          role: 'user',
-          content: { type: 'text', text: 'sdk sample' },
-        },
-      ],
-      maxTokens: 8,
-    },
-  }
-  const response = await fakeClients[0]!.handlers[1]!.handler(request, {
-    requestId: 'sdk-sampling-request',
-    signal: abort.signal,
-    _meta: { origin: 'sdk-control' },
-  })
-
-  assert.deepEqual(response, {
-    role: 'assistant',
-    model: 'sdk-sampler',
-    stopReason: 'endTurn',
-    content: { type: 'text', text: 'sampled via sdk stack' },
-  })
-  assert.deepEqual(captured, {
-    serverName: 'tooling',
-    requestId: 'sdk-sampling-request',
-    request,
-    contextMeta: { origin: 'sdk-control' },
-    signal: abort.signal,
-  })
-
-  const connected = result.clients[0]
-  if (connected?.type === 'connected') {
-    await connected.cleanup()
-  }
 })
 
 test('connectToServer creates stdio clients with lifecycle handlers and cleanup', async () => {
@@ -534,9 +408,9 @@ test('connectToServer routes sampling requests through supplied handlers', async
       captured = params
       return {
         role: 'assistant',
-        model: 'legacy-sampler',
+        model: 'test-sampler',
         stopReason: 'endTurn',
-        content: { type: 'text', text: 'sampled via legacy stack' },
+        content: { type: 'text', text: 'sampled via transport stack' },
       }
     },
   }
@@ -575,20 +449,20 @@ test('connectToServer routes sampling requests through supplied handlers', async
   const response = await fakeClients[0]!.handlers[1]!.handler(request, {
     requestId: 'sampling-request',
     signal: abort.signal,
-    _meta: { origin: 'legacy' },
+    _meta: { origin: 'transport-test' },
   })
 
   assert.deepEqual(response, {
     role: 'assistant',
-    model: 'legacy-sampler',
+    model: 'test-sampler',
     stopReason: 'endTurn',
-    content: { type: 'text', text: 'sampled via legacy stack' },
+    content: { type: 'text', text: 'sampled via transport stack' },
   })
   assert.deepEqual(captured, {
     serverName: 'sampling-stdio',
     requestId: 'sampling-request',
     request,
-    contextMeta: { origin: 'legacy' },
+    contextMeta: { origin: 'transport-test' },
     signal: abort.signal,
   })
 
@@ -2051,16 +1925,6 @@ test('connectToServer returns failed connections for unsupported direct paths', 
   ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
     { VERSION: 'test' }
 
-  const sdk = await connectToServer('sdk-wrong-path', {
-    type: 'sdk',
-    name: 'sdk-wrong-path',
-    scope: 'local',
-  })
-  assert.equal(sdk.type, 'failed')
-  if (sdk.type === 'failed') {
-    assert.equal(sdk.error, 'SDK servers should be handled in print.ts')
-  }
-
   const proxy = await connectToServer('proxy-no-token', {
     type: 'agencai-proxy',
     url: 'https://example.test/proxy',
@@ -2488,14 +2352,21 @@ test('MCP tool calls persist large non-image output and fall back when disabled'
     },
   }))
 
-  const { bindMcpConnectionAuthority, fetchToolsForClient } = await import(
-    './client.js'
-  )
+  const {
+    bindMcpConnectionAuthority,
+    connectToServer,
+    fetchToolsForClient,
+  } = await import('./client.js')
+  const config = {
+    type: 'stdio',
+    command: 'large-output-server',
+    scope: 'local',
+  } as const
   const client = bindMcpConnectionAuthority({
     name: 'large-output',
     type: 'connected',
     capabilities: { tools: {} },
-    config: { type: 'sdk', name: 'large-output', scope: 'local' },
+    config,
     cleanup: async () => {},
     client: {
       request: async () => ({
@@ -2531,6 +2402,12 @@ test('MCP tool calls persist large non-image output and fall back when disabled'
       },
     },
   } as never, {}, undefined)
+  const connectionCache = connectToServer.cache as {
+    has: (key: string) => boolean
+    get: (key: string) => Promise<unknown> | undefined
+  }
+  vi.spyOn(connectionCache, 'has').mockReturnValue(true)
+  vi.spyOn(connectionCache, 'get').mockReturnValue(Promise.resolve(client))
 
   const tools = await fetchToolsForClient(client)
   const toolByName = new Map(tools.map(tool => [tool.mcpInfo?.toolName, tool]))

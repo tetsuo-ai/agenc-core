@@ -5,7 +5,6 @@ import { clearDeliveredDiagnosticsForFile } from '../../services/lsp/LSPDiagnost
 import { getLspServerManager } from '../../services/lsp/manager.js'
 import { peekAmbientRuntimeSession } from '../../session/current-session.js'
 import type { SandboxExecutionBrokerLike } from '../../sandbox/execution-broker.js'
-import { notifyVscodeFileUpdated } from '../../services/mcp/vscodeSdkMcp.js'
 import { checkTeamMemSecrets } from '../../memory/index.js'
 import {
   activateConditionalSkillsForPaths,
@@ -339,9 +338,6 @@ export const FileWriteTool = buildTool({
         logError(err)
       })
     }
-
-    // Notify VSCode about the file change for diff view
-    notifyVscodeFileUpdated(fullFilePath, oldContent, content)
 
     // Update read timestamp, to invalidate stale writes
     readFileState.set(fullFilePath, {

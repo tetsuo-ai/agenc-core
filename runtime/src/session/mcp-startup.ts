@@ -743,7 +743,6 @@ function toRuntimeMcpServerConfig(
       break;
     case "sse-ide":
     case "ws-ide":
-    case "sdk":
     case "agencai-proxy":
       throw new Error(
         `Unsupported MCP server type reached canonical startup: ${type}`,

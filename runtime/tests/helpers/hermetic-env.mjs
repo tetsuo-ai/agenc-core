@@ -237,7 +237,6 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'MCP_TOOL_TIMEOUT',
   'MCP_SERVER_CONNECTION_BATCH_SIZE',
   'AGENC_MCP_INSTR_DELTA',
-  'AGENC_AGENT_SDK_MCP_NO_PREFIX',
   'ENABLE_MCP_LARGE_OUTPUT_FILES',
   'MAX_MCP_OUTPUT_TOKENS',
   // transaction-guard behavior and live wallet/RPC inputs (the live config

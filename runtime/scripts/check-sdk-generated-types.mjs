@@ -163,6 +163,13 @@ async function main() {
     `${paths.generated} contains adjacent duplicate object property ${duplicatedObjectProperty?.[1]}`,
   );
 
+  expectCondition(
+    failures,
+    !schemas.includes("McpSdkServerConfig") &&
+      !generated.includes("McpSdkServerConfig"),
+    "committed SDK types reintroduced removed MCP surface McpSdkServerConfig",
+  );
+
   if (failures.length > 0) {
     process.stderr.write(
       `[sdk generated types] found ${failures.length} issue(s):\n- ${failures.join("\n- ")}\n`,

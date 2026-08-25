@@ -103,7 +103,11 @@ function slackConnection(callTool: ReturnType<typeof vi.fn>): MCPServerConnectio
     name: 'workspace-slack',
     type: 'connected',
     capabilities: { tools: {} },
-    config: { type: 'sdk', name: 'workspace-slack', scope: 'dynamic' },
+    config: {
+      type: 'stdio',
+      command: 'workspace-slack-server',
+      scope: 'dynamic',
+    },
     client: { callTool },
     cleanup: async () => {},
   } as unknown as MCPServerConnection

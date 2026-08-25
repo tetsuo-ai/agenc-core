@@ -485,7 +485,7 @@ export type Tool<
   /**
    * For MCP tools: the server and tool names as received from the MCP server (unnormalized).
    * Present on all MCP tools regardless of whether `name` is prefixed (mcp__server__tool)
-   * or unprefixed (AGENC_AGENT_SDK_MCP_NO_PREFIX mode).
+   * Permission checks use this canonical identity independently of display metadata.
    */
   mcpInfo?: { serverName: string; toolName: string };
   readonly name: string;

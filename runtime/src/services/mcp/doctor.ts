@@ -214,8 +214,6 @@ function getConfigSignature(config: ScopedMcpServerConfig): string {
     case 'ws-ide':
     case 'agencai-proxy':
       return `${config.scope}:${config.type}:${config.url}`
-    case 'sdk':
-      return `${config.scope}:${config.type}:${config.name}`
     case 'stdio':
     case undefined:
       return `${config.scope}:${config.type ?? 'stdio'}:${config.command}:${JSON.stringify(config.args ?? [])}`

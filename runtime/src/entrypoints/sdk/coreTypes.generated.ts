@@ -82,11 +82,6 @@ export type McpHttpServerConfig = {
   headers?: Record<string, string>
 }
 
-export type McpSdkServerConfig = {
-  type: "sdk"
-  name: string
-}
-
 export type McpServerConfigForProcessTransport = ({
   type?: "stdio"
   command: string
@@ -100,90 +95,7 @@ export type McpServerConfigForProcessTransport = ({
   type: "http"
   url: string
   headers?: Record<string, string>
-}) | ({
-  type: "sdk"
-  name: string
 })
-
-export type McpAgenCAIProxyServerConfig = {
-  type: "agencai-proxy"
-  url: string
-  id: string
-}
-
-export type McpServerStatusConfig = (({
-  type?: "stdio"
-  command: string
-  args?: string[]
-  env?: Record<string, string>
-}) | ({
-  type: "sse"
-  url: string
-  headers?: Record<string, string>
-}) | ({
-  type: "http"
-  url: string
-  headers?: Record<string, string>
-}) | ({
-  type: "sdk"
-  name: string
-})) | ({
-  type: "agencai-proxy"
-  url: string
-  id: string
-})
-
-/** Status information for an MCP server connection. */
-export type McpServerStatus = {
-  name: string
-  status: "connected" | "failed" | "needs-auth" | "pending" | "disabled"
-  serverInfo?: {
-    name: string
-    version: string
-  }
-  error?: string
-  config?: (({
-    type?: "stdio"
-    command: string
-    args?: string[]
-    env?: Record<string, string>
-  }) | ({
-    type: "sse"
-    url: string
-    headers?: Record<string, string>
-  }) | ({
-    type: "http"
-    url: string
-    headers?: Record<string, string>
-  }) | ({
-    type: "sdk"
-    name: string
-  })) | ({
-    type: "agencai-proxy"
-    url: string
-    id: string
-  })
-  scope?: string
-  tools?: {
-    name: string
-    description?: string
-    annotations?: {
-      readOnly?: boolean
-      destructive?: boolean
-      openWorld?: boolean
-    }
-  }[]
-  capabilities?: {
-    experimental?: Record<string, unknown>
-  }
-}
-
-/** Result of a setMcpServers operation. */
-export type McpSetServersResult = {
-  added: string[]
-  removed: string[]
-  errors: Record<string, string>
-}
 
 export type PermissionUpdateDestination = "userSettings" | "projectSettings" | "localSettings" | "session" | "cliArg"
 
@@ -1283,9 +1195,6 @@ export type AgentMcpServerSpec = string | (Record<string, ({
   type: "http"
   url: string
   headers?: Record<string, string>
-}) | ({
-  type: "sdk"
-  name: string
 })>)
 
 /** Definition for a custom subagent that can be invoked via the Agent tool. */
@@ -1308,9 +1217,6 @@ export type AgentDefinition = {
     type: "http"
     url: string
     headers?: Record<string, string>
-  }) | ({
-    type: "sdk"
-    name: string
   })>)[]
   criticalSystemReminder_EXPERIMENTAL?: string
   skills?: string[]

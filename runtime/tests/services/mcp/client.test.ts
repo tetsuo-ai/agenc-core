@@ -56,6 +56,7 @@ function restoreOptionalEnv(name: string, value: string | undefined): void {
 }
 
 afterEach(async () => {
+  vi.restoreAllMocks()
   restoreOptionalEnv('AGENC_HOME', originalAgenCHome)
   resetProjectForTesting()
   resetStateForTests()
@@ -326,7 +327,7 @@ test('fetchToolsForClient maps MCP tool metadata onto runtime tools', async () =
   })
 })
 
-test('fetchToolsForClient cleans untrusted SDK MCP model-facing metadata', async () => {
+test('fetchToolsForClient cleans untrusted MCP model-facing metadata', async () => {
   const client = connectedClient({
     name: 'poisoned',
     capabilities: { tools: {} },
@@ -388,7 +389,7 @@ test('fetchToolsForClient cleans untrusted SDK MCP model-facing metadata', async
   })
 })
 
-test('fetchToolsForClient rejects array-shaped SDK MCP input schemas', async () => {
+test('fetchToolsForClient rejects array-shaped MCP input schemas', async () => {
   const client = connectedClient({
     name: 'array-schema',
     capabilities: { tools: {} },
@@ -411,7 +412,7 @@ test('fetchToolsForClient rejects array-shaped SDK MCP input schemas', async () 
   })
 })
 
-test('fetchToolsForClient truncates SDK MCP descriptions on UTF-8 boundaries', async () => {
+test('fetchToolsForClient truncates MCP descriptions on UTF-8 boundaries', async () => {
   const client = connectedClient({
     name: 'emoji',
     capabilities: { tools: {} },
@@ -432,7 +433,7 @@ test('fetchToolsForClient truncates SDK MCP descriptions on UTF-8 boundaries', a
   assert.doesNotMatch(prompt, /\uFFFD/u)
 })
 
-test('fetchToolsForClient falls back when sanitized SDK MCP schemas stay large', async () => {
+test('fetchToolsForClient falls back when sanitized MCP schemas stay large', async () => {
   const properties = Object.fromEntries(
     Array.from({ length: 200 }, (_, index) => [
       `field_${index}`,
@@ -460,21 +461,19 @@ test('fetchToolsForClient falls back when sanitized SDK MCP schemas stay large',
   })
 })
 
-test('fetchToolsForClient supports SDK no-prefix mode and filters IDE tools', async () => {
-  const sdkTools = await fetchToolsForClient(
+test('fetchToolsForClient namespaces MCP tools and filters IDE tools', async () => {
+  const serverTools = await fetchToolsForClient(
     connectedClient({
-      name: 'sdk-server',
+      name: 'tool-server',
       capabilities: { tools: {} },
-      config: { type: 'sdk', name: 'sdk-server', scope: 'local' },
-      environment: { AGENC_AGENT_SDK_MCP_NO_PREFIX: '1' },
       request: async () => ({
         tools: [{ name: 'override', inputSchema: { type: 'object' } }],
       }),
     }),
   )
-  assert.equal(sdkTools[0]?.name, 'override')
-  assert.deepEqual(sdkTools[0]?.mcpInfo, {
-    serverName: 'sdk-server',
+  assert.equal(serverTools[0]?.name, 'mcp__tool-server__override')
+  assert.deepEqual(serverTools[0]?.mcpInfo, {
+    serverName: 'tool-server',
     toolName: 'override',
   })
 
@@ -604,10 +603,9 @@ test('clearServerCache cleans up a cached connected server and invalidates its c
 
 test('connection cache keeps distinct empty session environment authorities isolated', async () => {
   const config = {
-    type: 'sdk',
-    name: 'session-isolation',
+    type: 'unsupported',
     scope: 'local',
-  } as const
+  } as never
   const environmentA = Object.freeze({})
   const environmentB = Object.freeze({})
 
@@ -650,10 +648,15 @@ test('MCP tool call passes metadata, progress, structured content, and result me
   let toolRequest: unknown
   let toolOptions: unknown
   const progress: unknown[] = []
+  const config = {
+    type: 'stdio',
+    command: 'tool-server',
+    scope: 'local',
+  } as const
   const client = connectedClient({
-    name: 'sdk-tools',
+    name: 'tool-server',
     capabilities: { tools: {} },
-    config: { type: 'sdk', name: 'sdk-tools', scope: 'local' },
+    config,
     client: {
       request: async () => ({
         tools: [{ name: 'summarize', inputSchema: { type: 'object' } }],
@@ -674,6 +677,7 @@ test('MCP tool call passes metadata, progress, structured content, and result me
       },
     } as never,
   })
+  seedConnectionCache('tool-server', config, client)
 
   const [tool] = await fetchToolsForClient(client)
   assert.ok(tool)
@@ -720,7 +724,7 @@ test('MCP tool call passes metadata, progress, structured content, and result me
     data: {
       type: 'mcp_progress',
       status: 'progress',
-      serverName: 'sdk-tools',
+      serverName: 'tool-server',
       toolName: 'summarize',
       progress: 2,
       total: 5,
@@ -731,10 +735,15 @@ test('MCP tool call passes metadata, progress, structured content, and result me
 
 test('MCP tool call wraps generic and protocol errors with log-safe errors', async () => {
   const genericProgress: unknown[] = []
+  const genericConfig = {
+    type: 'stdio',
+    command: 'error-server',
+    scope: 'local',
+  } as const
   const genericClient = connectedClient({
-    name: 'sdk-errors',
+    name: 'error-server',
     capabilities: { tools: {} },
-    config: { type: 'sdk', name: 'sdk-errors', scope: 'local' },
+    config: genericConfig,
     client: {
       request: async () => ({
         tools: [{ name: 'explode', inputSchema: { type: 'object' } }],
@@ -744,6 +753,7 @@ test('MCP tool call wraps generic and protocol errors with log-safe errors', asy
       },
     } as never,
   })
+  seedConnectionCache('error-server', genericConfig, genericClient)
 
   const [genericTool] = await fetchToolsForClient(genericClient)
   await assert.rejects(
@@ -778,16 +788,21 @@ test('MCP tool call wraps generic and protocol errors with log-safe errors', asy
   assert.deepEqual(failedProgressData, {
     type: 'mcp_progress',
     status: 'failed',
-    serverName: 'sdk-errors',
+    serverName: 'error-server',
     toolName: 'explode',
   })
   assert.equal(typeof elapsedTimeMs, 'number')
 
   fetchToolsForClient.cache.clear()
+  const protocolConfig = {
+    type: 'stdio',
+    command: 'protocol-error-server',
+    scope: 'local',
+  } as const
   const mcpClient = connectedClient({
-    name: 'sdk-mcp-errors',
+    name: 'protocol-error-server',
     capabilities: { tools: {} },
-    config: { type: 'sdk', name: 'sdk-mcp-errors', scope: 'local' },
+    config: protocolConfig,
     client: {
       request: async () => ({
         tools: [{ name: 'protocol', inputSchema: { type: 'object' } }],
@@ -797,6 +812,7 @@ test('MCP tool call wraps generic and protocol errors with log-safe errors', asy
       },
     } as never,
   })
+  seedConnectionCache('protocol-error-server', protocolConfig, mcpClient)
 
   const [mcpTool] = await fetchToolsForClient(mcpClient)
   await assert.rejects(
@@ -818,10 +834,15 @@ test('MCP tool call wraps generic and protocol errors with log-safe errors', asy
 })
 
 test('MCP tool call retries once after HTTP session expiry clears the connection cache', async () => {
-  let calls = 0
-  const config = { type: 'sdk', name: 'sdk-session', scope: 'local' } as const
+  let initialCalls = 0
+  let replacementCalls = 0
+  const config = {
+    type: 'http',
+    url: 'https://mcp.example.test/rpc',
+    scope: 'local',
+  } as const
   const client = connectedClient({
-    name: 'sdk-session',
+    name: 'session-server',
     capabilities: { tools: {} },
     config,
     client: {
@@ -829,18 +850,35 @@ test('MCP tool call retries once after HTTP session expiry clears the connection
         tools: [{ name: 'recover', inputSchema: { type: 'object' } }],
       }),
       callTool: async () => {
-        calls += 1
-        if (calls === 1) {
-          const expired = new Error('{"error":{"code":-32001,"message":"Session not found"}}') as Error & {
-            code: number
-          }
-          expired.code = 404
-          throw expired
+        initialCalls += 1
+        const expired = new Error('{"error":{"code":-32001,"message":"Session not found"}}') as Error & {
+          code: number
         }
+        expired.code = 404
+        throw expired
+      },
+    } as never,
+  })
+  const replacement = connectedClient({
+    name: 'session-server',
+    capabilities: { tools: {} },
+    config,
+    client: {
+      callTool: async () => {
+        replacementCalls += 1
         return { content: [{ type: 'text', text: 'recovered' }] }
       },
     } as never,
   })
+  const connectionCache = connectToServer.cache as {
+    has: (key: string) => boolean
+    get: (key: string) => Promise<MCPServerConnection> | undefined
+  }
+  vi.spyOn(connectionCache, 'has').mockReturnValue(true)
+  vi.spyOn(connectionCache, 'get')
+    .mockReturnValueOnce(Promise.resolve(client))
+    .mockReturnValueOnce(Promise.resolve(client))
+    .mockReturnValue(Promise.resolve(replacement))
 
   const [tool] = await fetchToolsForClient(client)
   const result = await tool!.call(
@@ -854,14 +892,20 @@ test('MCP tool call retries once after HTTP session expiry clears the connection
   )
 
   assert.deepEqual(result, { data: [{ type: 'text', text: 'recovered' }] })
-  assert.equal(calls, 2)
+  assert.equal(initialCalls, 1)
+  assert.equal(replacementCalls, 1)
 })
 
 test('MCP tool call timeout uses MCP_TOOL_TIMEOUT and reports a log-safe timeout', async () => {
+  const config = {
+    type: 'stdio',
+    command: 'slow-server',
+    scope: 'local',
+  } as const
   const client = connectedClient({
-    name: 'slow-sdk',
+    name: 'slow-server',
     capabilities: { tools: {} },
-    config: { type: 'sdk', name: 'slow-sdk', scope: 'local' },
+    config,
     environment: { MCP_TOOL_TIMEOUT: '1' },
     client: {
       request: async () => ({
@@ -881,6 +925,12 @@ test('MCP tool call timeout uses MCP_TOOL_TIMEOUT and reports a log-safe timeout
         }),
     } as never,
   })
+  const connectionCache = connectToServer.cache as {
+    has: (key: string) => boolean
+    get: (key: string) => Promise<MCPServerConnection> | undefined
+  }
+  vi.spyOn(connectionCache, 'has').mockReturnValue(true)
+  vi.spyOn(connectionCache, 'get').mockReturnValue(Promise.resolve(client))
 
   const [tool] = await fetchToolsForClient(client)
   await assert.rejects(
@@ -893,7 +943,7 @@ test('MCP tool call timeout uses MCP_TOOL_TIMEOUT and reports a log-safe timeout
       undefined as never,
       { message: { content: [] } } as never,
     ),
-    /MCP server "slow-sdk" tool "slow" timed out after 0s/,
+    /MCP server "slow-server" tool "slow" timed out after 0s/,
   )
 })
 
@@ -911,7 +961,7 @@ test('MCP tool calls have no implicit five-minute deadline', async () => {
         }
       | undefined
     const client = connectedClient({
-      name: 'long-sdk',
+      name: 'long-server',
       client: {
         callTool: async (
           _params: unknown,
@@ -951,10 +1001,15 @@ test('MCP tool calls have no implicit five-minute deadline', async () => {
 test('MCP tool calls log progress while waiting before timing out', async () => {
   vi.useFakeTimers()
   try {
+    const config = {
+      type: 'stdio',
+      command: 'slow-progress-server',
+      scope: 'local',
+    } as const
     const client = connectedClient({
-      name: 'slow-progress-sdk',
+      name: 'slow-progress-server',
       capabilities: { tools: {} },
-      config: { type: 'sdk', name: 'slow-progress-sdk', scope: 'local' },
+      config,
       environment: { MCP_TOOL_TIMEOUT: '31000' },
       client: {
         request: async () => ({
@@ -974,6 +1029,12 @@ test('MCP tool calls log progress while waiting before timing out', async () => 
           }),
       } as never,
     })
+    const connectionCache = connectToServer.cache as {
+      has: (key: string) => boolean
+      get: (key: string) => Promise<MCPServerConnection> | undefined
+    }
+    vi.spyOn(connectionCache, 'has').mockReturnValue(true)
+    vi.spyOn(connectionCache, 'get').mockReturnValue(Promise.resolve(client))
 
     const [tool] = await fetchToolsForClient(client)
     const rejection = assert.rejects(
@@ -986,7 +1047,7 @@ test('MCP tool calls log progress while waiting before timing out', async () => 
         undefined as never,
         { message: { content: [] } } as never,
       ),
-      /MCP server "slow-progress-sdk" tool "slow-progress" timed out after 31s/,
+      /MCP server "slow-progress-server" tool "slow-progress" timed out after 31s/,
     )
 
     await vi.advanceTimersByTimeAsync(31_000)
@@ -1368,15 +1429,6 @@ test('callMCPToolWithUrlElicitationRetry returns a user-facing decline message',
   )
 })
 
-test('ensureConnectedClient returns SDK clients without reconnecting', async () => {
-  const sdkClient = connectedClient({
-    name: 'sdk-direct',
-    config: { type: 'sdk', name: 'sdk-direct', scope: 'local' },
-  })
-
-  assert.equal(await ensureConnectedClient(sdkClient), sdkClient)
-})
-
 test('callIdeRpc returns transformed MCP text content', async () => {
   const calls: unknown[] = []
   const client = connectedClient({
@@ -1419,7 +1471,7 @@ test('MCP tool cancellation retains the admitted call until the raw RPC settles'
   }>()
   let rpcSignal: AbortSignal | undefined
   const client = connectedClient({
-    config: { type: 'sdk', name: 'demo' } as never,
+    config: { type: 'stdio', command: 'demo' },
     client: {
       callTool: async (
         _params: unknown,
@@ -1432,7 +1484,7 @@ test('MCP tool cancellation retains the admitted call until the raw RPC settles'
     } as never,
   })
   const caller = new AbortController()
-  const reason = new Error('kernel cancelled abort-ignoring legacy MCP call')
+  const reason = new Error('kernel cancelled abort-ignoring MCP call')
   let settled = false
 
   const running = callMCPToolWithUrlElicitationRetry({

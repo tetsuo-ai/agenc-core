@@ -10,7 +10,6 @@ const MCP_AUTHORITY_SOURCES = [
   'config.ts',
   'envExpansion.ts',
   'headersHelper.ts',
-  'vscodeSdkMcp.ts',
 ].map(name => readFileSync(
   new URL(`../../../src/services/mcp/${name}`, import.meta.url),
   'utf8',

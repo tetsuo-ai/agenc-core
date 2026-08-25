@@ -3922,7 +3922,7 @@ function convertRetiredMcpServer(
       conflicts,
       scope,
       sourcePath,
-      "runtime-only MCP transport has no canonical persisted representation",
+      "unsupported MCP transport has no canonical persisted representation",
       `mcpServers.${serverName}.type`,
     );
     return null;
