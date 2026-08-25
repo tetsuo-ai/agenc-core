@@ -481,9 +481,13 @@ test('doctorServer converts needs-auth live checks into warning findings', async
 
   assert.equal(report.summary.warnings, 1)
   assert.equal(report.summary.blocking, 0)
+  const finding = report.servers[0]?.findings.find(
+    candidate => candidate.code === 'auth.needs_auth',
+  )
+  assert.equal(finding?.severity, 'warn')
   assert.equal(
-    report.servers[0]?.findings.some(finding => finding.code === 'auth.needs_auth' && finding.severity === 'warn'),
-    true,
+    finding?.remediation,
+    "Configure credentials supported by the server, then rerun the doctor command. For XAA, run 'agenc mcp xaa login'.",
   )
 })
 

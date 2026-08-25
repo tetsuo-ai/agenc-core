@@ -1191,6 +1191,12 @@ describe("retired-field migration manifest", () => {
       authority: "removed",
       action: "drop",
     });
+    expect(
+      classifyRetiredField("global-state", "agencAiMcpEverConnected"),
+    ).toMatchObject({
+      authority: "removed",
+      action: "drop",
+    });
     expect(classifyRetiredField("settings-json", "future-key")).toMatchObject({
       authority: "unclassified",
       action: "block",

@@ -428,32 +428,28 @@ describe("AgenC MCP management CLI parsing", () => {
     expect(output().stdout).not.toContain("Bearer token");
   });
 
-  test("mcp add rejects malformed callback ports before writing config", async () => {
-    for (const [index, badPort] of ["123abc", "0", "-1", "65536"].entries()) {
-      const { io, output } = captureIo();
+  test("mcp add rejects the removed per-server OAuth callback-port option", async () => {
+    const { io, output } = captureIo();
 
-      await expect(
-        runAgenCMcpCli(
-          {
-            kind: "management",
-            argv: [
-              "add",
-              "--transport",
-              "http",
-              "--callback-port",
-              badPort,
-              `docs${index}`,
-              "https://agenc.tech/mcp",
-            ],
-          },
-          { io },
-        ),
-      ).resolves.toBe(1);
+    await expect(
+      runAgenCMcpCli(
+        {
+          kind: "management",
+          argv: [
+            "add",
+            "--transport",
+            "http",
+            "--callback-port",
+            "3456",
+            "docs",
+            "https://agenc.tech/mcp",
+          ],
+        },
+        { io },
+      ),
+    ).resolves.toBe(1);
 
-      expect(output().stderr).toContain(
-        "Error: --callback-port must be a valid TCP port",
-      );
-    }
+    expect(output().stderr).toContain("Unknown option: --callback-port");
 
     await expect(readFile(join(agencHome, "config.toml"), "utf8")).rejects
       .toThrow();

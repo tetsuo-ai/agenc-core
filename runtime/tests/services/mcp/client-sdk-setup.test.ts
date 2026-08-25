@@ -1,8 +1,5 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { UnauthorizedError } from '@modelcontextprotocol/sdk/client/auth.js'
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js'
@@ -54,7 +51,6 @@ const nativeFetchLog: Array<{
   headers: Record<string, string>
   dispatcher?: unknown
 }> = []
-const tempDirs: string[] = []
 const mutableGlobal = globalThis as unknown as {
   Bun?: unknown
   WebSocket?: unknown
@@ -300,37 +296,26 @@ afterEach(async () => {
   vi.doUnmock('@modelcontextprotocol/sdk/client/streamableHttp.js')
   vi.doUnmock('@modelcontextprotocol/sdk/shared/transport.js')
   vi.doUnmock('ws')
-  vi.doUnmock('bun:bundle')
   vi.doUnmock('@ant/agenc-for-chrome-mcp')
   vi.doUnmock('../../../src/bootstrap/state.js')
   vi.doUnmock('../../../src/constants/oauth.js')
-  vi.doUnmock('../../../src/services/mcp/config.js')
   vi.doUnmock('../../../src/services/mcp/elicitationHandler.js')
   vi.doUnmock('../../../src/services/mcp/InProcessTransport.js')
-  vi.doUnmock('../../../src/services/mcp/agencai.js')
-  vi.doUnmock('../../../src/skills/mcpSkills.js')
   vi.doUnmock('../../../src/utils/agencInChrome/common.js')
   vi.doUnmock('../../../src/utils/agencInChrome/mcpServer.js')
   vi.doUnmock('../../../src/utils/agencInChrome/toolRendering.js')
   vi.doUnmock('../../../src/utils/agencInChrome/toolRendering.tsx')
   vi.doUnmock('../../../src/utils/auth.js')
   vi.doUnmock('../../../src/utils/proxy.js')
-  vi.doUnmock('../../../src/utils/envUtils.js')
   vi.doUnmock('../../../src/utils/ide.js')
 	  vi.doUnmock('../../../src/utils/mcpNodeWsClient.js')
 	  vi.doUnmock('../../../src/utils/mcpWebSocketTransport.js')
 	  vi.doUnmock('../../../src/utils/mcpValidation.js')
-	  vi.doUnmock('../../../src/utils/secureStorage/macOsKeychainHelpers.js')
 	  vi.doUnmock('../../../src/utils/sleep.js')
 	  vi.doUnmock('../../../src/utils/toolResultStorage.js')
   vi.restoreAllMocks()
   vi.useRealTimers()
   vi.resetModules()
-  await Promise.all(
-    tempDirs
-      .splice(0)
-      .map(dir => rm(dir, { recursive: true, force: true }).catch(() => {})),
-  )
 })
 
 test('setupSdkMcpClients connects SDK clients, fetches tools, and reports failed servers', async () => {
@@ -445,315 +430,6 @@ test('setupSdkMcpClients routes sampling requests through supplied handlers', as
   if (connected?.type === 'connected') {
     await connected.cleanup()
   }
-})
-
-test('prefetchAllMcpResources includes MCP skill commands when feature enabled', async () => {
-  vi.resetModules()
-  const skillCalls: string[] = []
-  const deletedSkillCacheKeys: string[] = []
-  const fetchMcpSkillsForClient = Object.assign(
-    async (client: { name: string }) => {
-      skillCalls.push(client.name)
-      return [
-        {
-          type: 'prompt',
-          name: `mcp__${client.name}__skill`,
-          description: 'Skill command',
-          hasUserSpecifiedDescription: false,
-          contentLength: 0,
-          isEnabled: () => true,
-          isHidden: false,
-          isMcp: true,
-          progressMessage: 'running',
-          userFacingName: () => `${client.name}:skill (MCP)`,
-          argNames: [],
-          source: 'mcp',
-          getPromptForCommand: async () => [],
-        },
-      ]
-    },
-    {
-      cache: {
-        delete: (name: string) => {
-          deletedSkillCacheKeys.push(name)
-        },
-      },
-    },
-  )
-  vi.doMock('bun:bundle', () => ({
-    feature: (name: string) => name === 'MCP_SKILLS',
-  }))
-  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
-    Client: FakeClient,
-  }))
-  vi.doMock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
-    StdioClientTransport: FakeStdioTransport,
-  }))
-  vi.doMock('../../../src/skills/mcpSkills.js', () => ({
-    fetchMcpSkillsForClient,
-  }))
-
-  const { prefetchAllMcpResources } = await import('./client.js')
-  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
-    { VERSION: 'test' }
-  const config = {
-    type: 'stdio',
-    command: 'demo-server',
-    args: [],
-    scope: 'local',
-  } as const
-
-  const first = await prefetchAllMcpResources(TEST_HOME, { 'stdio-demo': config })
-  const second = await prefetchAllMcpResources(TEST_HOME, { 'stdio-demo': config })
-
-  assert.deepEqual(
-    first.commands.map(command => command.name),
-    ['mcp__stdio-demo__skill'],
-  )
-  assert.deepEqual(
-    second.commands.map(command => command.name),
-    ['mcp__stdio-demo__skill'],
-  )
-  assert.deepEqual(skillCalls, ['stdio-demo', 'stdio-demo'])
-  const connected = second.clients[0]
-  assert.equal(connected?.type, 'connected')
-  if (connected?.type === 'connected') {
-    await connected.cleanup()
-  }
-  assert.deepEqual(deletedSkillCacheKeys, ['stdio-demo'])
-})
-
-test('prefetchAllMcpResources reports disabled servers before connecting', async () => {
-  vi.resetModules()
-  const disabledChecks = new Map<string, number>()
-  vi.doMock('../../../src/services/mcp/config.js', async importOriginal => ({
-    ...(await importOriginal<typeof import('../../../src/services/mcp/config.js')>()),
-    isMcpServerDisabled: (name: string) => {
-      const count = disabledChecks.get(name) ?? 0
-      disabledChecks.set(name, count + 1)
-      return name === 'early-disabled' || (name === 'late-disabled' && count > 0)
-    },
-  }))
-
-  const { prefetchAllMcpResources } = await import('./client.js')
-
-  const result = await prefetchAllMcpResources(TEST_HOME, {
-    'early-disabled': {
-      type: 'http',
-      url: 'https://example.test/early',
-      scope: 'local',
-    },
-    'late-disabled': {
-      type: 'stdio',
-      command: 'should-not-spawn',
-      args: [],
-      scope: 'local',
-    },
-  })
-
-  assert.deepEqual(
-    result.clients.map(client => `${client.name}:${client.type}`),
-    ['early-disabled:disabled', 'late-disabled:disabled'],
-  )
-  assert.deepEqual(result.tools, [])
-  assert.deepEqual(result.commands, [])
-  assert.deepEqual(Object.fromEntries(disabledChecks), {
-    'early-disabled': 1,
-    'late-disabled': 2,
-  })
-  assert.equal(fakeClients.length, 0)
-  assert.equal(fakeStdioTransports.length, 0)
-})
-
-test('prefetchAllMcpResources reports a failed client when a server disable check throws during processing', async () => {
-  vi.resetModules()
-  const disabledChecks = new Map<string, number>()
-  vi.doMock('../../../src/services/mcp/config.js', async importOriginal => ({
-    ...(await importOriginal<typeof import('../../../src/services/mcp/config.js')>()),
-    isMcpServerDisabled: (name: string) => {
-      const count = disabledChecks.get(name) ?? 0
-      disabledChecks.set(name, count + 1)
-      if (name === 'throw-late' && count > 0) {
-        throw new Error('disabled check failed')
-      }
-      return false
-    },
-  }))
-
-  const { prefetchAllMcpResources } = await import('./client.js')
-  const result = await prefetchAllMcpResources(TEST_HOME, {
-    'throw-late': {
-      type: 'stdio',
-      command: 'demo-server',
-      args: [],
-      scope: 'local',
-    },
-  })
-
-  assert.deepEqual(
-    result.clients.map(client => `${client.name}:${client.type}`),
-    ['throw-late:failed'],
-  )
-  assert.deepEqual(result.tools, [])
-  assert.deepEqual(result.commands, [])
-  assert.deepEqual(Object.fromEntries(disabledChecks), { 'throw-late': 2 })
-})
-
-test('prefetchAllMcpResources resolves empty results when batch setup throws', async () => {
-  vi.resetModules()
-  vi.doMock('../../../src/services/mcp/config.js', async importOriginal => ({
-    ...(await importOriginal<typeof import('../../../src/services/mcp/config.js')>()),
-    isMcpServerDisabled: () => {
-      throw new Error('partition failed')
-    },
-  }))
-
-  const { prefetchAllMcpResources } = await import('./client.js')
-  const result = await prefetchAllMcpResources(TEST_HOME, {
-    'throw-early': {
-      type: 'stdio',
-      command: 'demo-server',
-      args: [],
-      scope: 'local',
-    },
-  })
-
-  assert.deepEqual(result, {
-    clients: [],
-    tools: [],
-    commands: [],
-  })
-})
-
-test('reconnectMcpServerImpl handles MCP skills being disabled during lazy lookup', async () => {
-  vi.resetModules()
-  let mcpSkillFeatureCalls = 0
-  vi.doMock('bun:bundle', () => ({
-    feature: (name: string) => {
-      if (name !== 'MCP_SKILLS') return false
-      mcpSkillFeatureCalls += 1
-      return mcpSkillFeatureCalls === 3
-    },
-  }))
-  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
-    Client: FakeClient,
-  }))
-  vi.doMock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
-    StdioClientTransport: FakeStdioTransport,
-  }))
-
-  const { clearServerCache, reconnectMcpServerImpl } = await import('./client.js')
-  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
-    { VERSION: 'test' }
-  const config = {
-    type: 'stdio',
-    command: 'demo-server',
-    args: [],
-    scope: 'local',
-  } as const
-
-  await clearServerCache('stdio-demo', config)
-  const result = await reconnectMcpServerImpl(TEST_HOME, 'stdio-demo', config)
-
-  assert.equal(result.client.type, 'connected')
-  assert.deepEqual(result.commands, [])
-  assert.equal(mcpSkillFeatureCalls >= 4, true)
-  if (result.client.type === 'connected') {
-    await result.client.cleanup()
-  }
-})
-
-test('prefetchAllMcpResources skips lazy MCP skills when feature disables before import', async () => {
-  vi.resetModules()
-  let mcpSkillFeatureCalls = 0
-  vi.doMock('bun:bundle', () => ({
-    feature: (name: string) => {
-      if (name !== 'MCP_SKILLS') return false
-      mcpSkillFeatureCalls += 1
-      return mcpSkillFeatureCalls === 1
-    },
-  }))
-  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
-    Client: FakeClient,
-  }))
-  vi.doMock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
-    StdioClientTransport: FakeStdioTransport,
-  }))
-
-  const { prefetchAllMcpResources } = await import('./client.js')
-  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
-    { VERSION: 'test' }
-  const result = await prefetchAllMcpResources(TEST_HOME, {
-    'stdio-demo': {
-      type: 'stdio',
-      command: 'demo-server',
-      args: [],
-      scope: 'local',
-    },
-  })
-
-  assert.equal(result.clients[0]?.type, 'connected')
-  assert.deepEqual(result.commands, [])
-  assert.equal(mcpSkillFeatureCalls >= 2, true)
-  const connected = result.clients[0]
-  if (connected?.type === 'connected') {
-    await connected.cleanup()
-  }
-})
-
-test('clearServerCache clears pending lazy MCP skills cache after import resolves', async () => {
-  vi.resetModules()
-  let resolveSkillsModule:
-    | ((module: { fetchMcpSkillsForClient: unknown }) => void)
-    | undefined
-  const deletedSkillCacheKeys: string[] = []
-  const fetchMcpSkillsForClient = Object.assign(
-    async () => [],
-    {
-      cache: {
-        delete: (name: string) => {
-          deletedSkillCacheKeys.push(name)
-        },
-      },
-    },
-  )
-  vi.doMock('bun:bundle', () => ({
-    feature: (name: string) => name === 'MCP_SKILLS',
-  }))
-  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
-    Client: FakeClient,
-  }))
-  vi.doMock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
-    StdioClientTransport: FakeStdioTransport,
-  }))
-  vi.doMock('../../../src/skills/mcpSkills.js', async () => {
-    return await new Promise(resolve => {
-      resolveSkillsModule = resolve
-    })
-  })
-
-  const { clearServerCache, prefetchAllMcpResources } = await import('./client.js')
-  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
-    { VERSION: 'test' }
-  const config = {
-    type: 'stdio',
-    command: 'demo-server',
-    args: [],
-    scope: 'local',
-  } as const
-
-  const prefetchPromise = prefetchAllMcpResources(TEST_HOME, { 'stdio-demo': config })
-  for (let attempt = 0; attempt < 50 && !resolveSkillsModule; attempt++) {
-    await Promise.resolve()
-  }
-  assert.ok(resolveSkillsModule)
-  await clearServerCache('stdio-demo', config)
-  resolveSkillsModule({ fetchMcpSkillsForClient })
-  const result = await prefetchPromise
-
-  assert.equal(result.clients[0]?.type, 'connected')
-  assert.equal(deletedSkillCacheKeys.length >= 1, true)
-  assert.equal(deletedSkillCacheKeys.every(name => name === 'stdio-demo'), true)
 })
 
 test('connectToServer creates stdio clients with lifecycle handlers and cleanup', async () => {
@@ -1656,44 +1332,6 @@ test('callMCPToolWithUrlElicitationRetry retries hook-accepted URL elicitations 
   assert.equal(calls, 2)
 })
 
-test('reconnectMcpServerImpl rebuilds connected clients with tools and resource tools', async () => {
-  vi.resetModules()
-  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
-    Client: FakeClient,
-  }))
-  vi.doMock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
-    StdioClientTransport: FakeStdioTransport,
-  }))
-
-  const { connectToServer, reconnectMcpServerImpl } = await import('./client.js')
-  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
-    { VERSION: 'test' }
-  const config = {
-    type: 'stdio',
-    command: 'demo-server',
-    args: [],
-    scope: 'local',
-  } as const
-
-  const initial = await connectToServer('stdio-demo', config)
-  assert.equal(initial.type, 'connected')
-
-  const result = await reconnectMcpServerImpl(TEST_HOME, 'stdio-demo', config)
-
-  assert.equal(result.client.type, 'connected')
-  assert.deepEqual(
-    result.tools.map(tool => tool.name),
-    ['mcp__stdio-demo__inspect'],
-  )
-  assert.deepEqual(result.commands, [])
-  assert.equal(fakeClients.length, 2)
-  assert.equal(fakeClients[0]?.closed, true)
-  if (result.client.type === 'connected') {
-    await result.client.cleanup()
-  }
-  assert.equal(fakeClients[1]?.closed, true)
-})
-
 test('connectToServer creates in-process Chrome MCP clients without spawning stdio', async () => {
   vi.resetModules()
   const linkedClientTransport: FakeTransport = {
@@ -2446,8 +2084,6 @@ test('connectToServer returns failed connections for unsupported direct paths', 
 
 test('connectToServer returns needs-auth for unauthorized SSE and HTTP connections', async () => {
   vi.resetModules()
-  const configDir = await mkdtemp(join(tmpdir(), 'agenc-mcp-auth-cache-'))
-  tempDirs.push(configDir)
   vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
     Client: FakeClient,
   }))
@@ -2457,12 +2093,7 @@ test('connectToServer returns needs-auth for unauthorized SSE and HTTP connectio
   vi.doMock('@modelcontextprotocol/sdk/client/streamableHttp.js', () => ({
     StreamableHTTPClientTransport: FakeHttpTransport,
   }))
-  vi.doMock('../../../src/utils/envUtils.js', async importOriginal => ({
-    ...(await importOriginal<typeof import('../../../src/utils/envUtils.js')>()),
-    getAgenCHomeDir: () => configDir,
-  }))
-
-  const { clearMcpAuthCache, connectToServer } = await import('./client.js')
+  const { connectToServer } = await import('./client.js')
   ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
     { VERSION: 'test' }
 
@@ -2479,9 +2110,6 @@ test('connectToServer returns needs-auth for unauthorized SSE and HTTP connectio
     scope: 'local',
   }, undefined, { home: TEST_HOME })
   assert.equal(http.type, 'needs-auth')
-
-  await new Promise(resolve => setTimeout(resolve, 0))
-  clearMcpAuthCache(TEST_HOME)
 })
 
 test('connectToServer creates WebSocket and WebSocket IDE transports without real sockets', async () => {
@@ -2610,8 +2238,6 @@ test('connectToServer creates Node WebSocket transports without real sockets', a
 test('connectToServer creates agenc.tech proxy transports and retries bearer fetch 401s', async () => {
   vi.resetModules()
   const fakeDispatcher = { name: 'agenc-proxy-session-dispatcher' }
-  const configDir = await mkdtemp(join(tmpdir(), 'agenc-mcp-proxy-auth-cache-'))
-  tempDirs.push(configDir)
   let oauthTokens: { accessToken: string } | null = {
     accessToken: 'first-token',
   }
@@ -2624,7 +2250,6 @@ test('connectToServer creates agenc.tech proxy transports and retries bearer fet
     | 'throw' = 'refresh'
   const statuses: number[] = [200, 401, 200]
   const fetchFailures: boolean[] = []
-  const markedProxyConnections: string[] = []
   mutableGlobal.fetch = (async (
     input: Parameters<typeof fetch>[0],
     init?: RequestInit,
@@ -2684,22 +2309,12 @@ test('connectToServer creates agenc.tech proxy transports and retries bearer fet
     ...(await importOriginal<typeof import('../../../src/bootstrap/state.js')>()),
     getSessionId: () => 'session-123',
   }))
-  vi.doMock('../../../src/services/mcp/agencai.js', () => ({
-    markAgenCAiMcpConnected: (name: string) => {
-      markedProxyConnections.push(name)
-    },
-  }))
-  vi.doMock('../../../src/utils/envUtils.js', async importOriginal => ({
-    ...(await importOriginal<typeof import('../../../src/utils/envUtils.js')>()),
-    getAgenCHomeDir: () => configDir,
-  }))
   vi.doMock('../../../src/utils/proxy.js', async importOriginal => ({
     ...(await importOriginal<typeof import('../../../src/utils/proxy.js')>()),
     getProxyFetchOptions: () => ({ dispatcher: fakeDispatcher }),
   }))
 
-  const { connectToServer, prefetchAllMcpResources, reconnectMcpServerImpl } =
-    await import('./client.js')
+  const { connectToServer } = await import('./client.js')
   ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
     { VERSION: 'test' }
 
@@ -2796,62 +2411,10 @@ test('connectToServer creates agenc.tech proxy transports and retries bearer fet
   } as never, undefined, { home: TEST_HOME })
   assert.equal(needsAuth.type, 'needs-auth')
 
-  oauthTokens = { accessToken: 'reconnect-token' }
-  const reconnectResult = await reconnectMcpServerImpl(TEST_HOME, 'proxy-reconnect', {
-    type: 'agencai-proxy',
-    id: 'reconnect-42',
-    url: 'https://unused.example.test',
-    scope: 'agencai',
-  } as never)
-  assert.equal(reconnectResult.client.type, 'connected')
-  if (reconnectResult.client.type === 'connected') {
-    await reconnectResult.client.cleanup()
-  }
-
-  oauthTokens = { accessToken: 'prefetch-token' }
-  const prefetchResult = await prefetchAllMcpResources(TEST_HOME, {
-    'proxy-prefetch': {
-      type: 'agencai-proxy',
-      id: 'prefetch-42',
-      url: 'https://unused.example.test',
-      scope: 'agencai',
-    } as never,
-  })
-  assert.equal(prefetchResult.clients[0]?.type, 'connected')
-  const prefetchClient = prefetchResult.clients[0]
-  if (prefetchClient?.type === 'connected') {
-    await prefetchClient.cleanup()
-  }
-  assert.deepEqual(markedProxyConnections, [
-    'proxy-reconnect',
-    'proxy-prefetch',
-  ])
-
   if (result.type === 'connected') {
     await result.cleanup()
   }
   assert.equal(fakeClients[0]?.closed, true)
-})
-
-test('reconnectMcpServerImpl returns a failed client when cache invalidation throws', async () => {
-  vi.resetModules()
-  vi.doMock('../../../src/utils/secureStorage/macOsKeychainHelpers.js', () => ({
-    clearKeychainCache: () => {
-      throw new Error('keychain unavailable')
-    },
-  }))
-
-  const { reconnectMcpServerImpl } = await import('./client.js')
-  const result = await reconnectMcpServerImpl(TEST_HOME, 'keychain-fail', {
-    type: 'stdio',
-    command: 'unused',
-    args: [],
-    scope: 'local',
-  })
-
-  assert.equal(result.client.type, 'failed')
-  assert.deepEqual(result.tools, [])
-  assert.deepEqual(result.commands, [])
 })
 
 test('connectToServer truncates oversized server instructions', async () => {

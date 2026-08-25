@@ -73,7 +73,6 @@ export type GlobalRuntimeState = {
   projects?: Record<string, ProjectRuntimeState>;
   installMethod?: InstallMethod;
   userID?: string;
-  agencAiMcpEverConnected?: string[];
   hasAcknowledgedCostThreshold?: boolean;
   hasUsedBackslashReturn?: boolean;
   hasSeenTasksHint?: boolean;

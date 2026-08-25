@@ -7,7 +7,6 @@ import { getIsRemoteMode } from '../../../bootstrap/state';
 import { Text } from '../../ink.js';
 import type { MCPServerConnection } from '../../../services/mcp/types';
 import type { McpSurfaceServer } from '../../../session/session.js';
-import { hasAgenCAiMcpEverConnected } from '../../../services/mcp/agencai.js';
 type Props = {
   mcpClients?: readonly MCPServerConnection[];
   /** Credential-free daemon status; these entries never contain live SDK clients. */
@@ -103,13 +102,13 @@ export function useMcpConnectivityStatus(t0: Props) {
   useEffect(t3, t4);
 }
 function _temp4(client_2) {
-  return client_2.type === "needs-auth" && client_2.config.type === "agencai-proxy" && hasAgenCAiMcpEverConnected(client_2.name);
+  return client_2.type === "needs-auth" && client_2.config.type === "agencai-proxy";
 }
 function _temp3(client_1) {
   return client_1.type === "needs-auth" && client_1.config.type !== "agencai-proxy";
 }
 function _temp2(client_0) {
-  return client_0.type === "failed" && client_0.config.type === "agencai-proxy" && hasAgenCAiMcpEverConnected(client_0.name);
+  return client_0.type === "failed" && client_0.config.type === "agencai-proxy";
 }
 function _temp(client) {
   return client.type === "failed" && client.config.type !== "sse-ide" && client.config.type !== "ws-ide" && client.config.type !== "agencai-proxy";

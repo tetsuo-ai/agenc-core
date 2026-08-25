@@ -18,4 +18,48 @@ describe('native secure-storage decoder', () => {
       decodeSecureStorageData('{"primaryApiKey":"secret"}', 'test vault'),
     ).toEqual({ primaryApiKey: 'secret' })
   })
+
+  test('drops retired MCP step-up state without disturbing other credentials', () => {
+    expect(
+      decodeSecureStorageData(
+        JSON.stringify({
+          primaryApiKey: 'unrelated-secret',
+          mcpOAuth: {
+            retired: {
+              serverName: 'retired',
+              serverUrl: 'https://retired.example.test/mcp',
+              accessToken: 'retired-access-token',
+              expiresAt: 1,
+              scope: 'read',
+              stepUpScope: 'write',
+            },
+            current: {
+              serverName: 'current',
+              serverUrl: 'https://current.example.test/mcp',
+              accessToken: 'current-access-token',
+              expiresAt: 2,
+            },
+          },
+        }),
+        'test vault',
+      ),
+    ).toEqual({
+      primaryApiKey: 'unrelated-secret',
+      mcpOAuth: {
+        retired: {
+          serverName: 'retired',
+          serverUrl: 'https://retired.example.test/mcp',
+          accessToken: 'retired-access-token',
+          expiresAt: 1,
+          scope: 'read',
+        },
+        current: {
+          serverName: 'current',
+          serverUrl: 'https://current.example.test/mcp',
+          accessToken: 'current-access-token',
+          expiresAt: 2,
+        },
+      },
+    })
+  })
 })

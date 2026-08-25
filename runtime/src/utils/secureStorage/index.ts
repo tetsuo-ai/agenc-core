@@ -109,7 +109,6 @@ export interface SecureStorageData {
         authorizationServerUrl: string
         resourceMetadataUrl?: string
       }
-      stepUpScope?: string
     }
   >
   mcpOAuthClientConfig?: Record<string, { clientSecret: string }>

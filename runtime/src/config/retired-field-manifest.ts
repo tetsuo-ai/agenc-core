@@ -461,7 +461,6 @@ const GLOBAL_STATE_FIELDS = new Set<string>([
   "projects",
   "installMethod",
   "userID",
-  "agencAiMcpEverConnected",
   "hasAcknowledgedCostThreshold",
   "hasUsedBackslashReturn",
   "hasSeenTasksHint",

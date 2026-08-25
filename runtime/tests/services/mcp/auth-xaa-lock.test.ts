@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { InvalidGrantError } from '@modelcontextprotocol/sdk/server/auth/errors.js'
 import type { SecureStorageData } from '../../utils/secureStorage/index.js'
-import { AgenCAuthProvider, getServerKey } from './auth.js'
+import {
+  AgenCAuthProvider,
+  getServerKey,
+  wrapFetchWithStepUpDetection,
+} from './auth.js'
 import type { McpSSEServerConfig } from './types.js'
 import { performCrossAppAccess } from './xaa.js'
 import * as lockfile from '../../utils/lockfile.js'
@@ -35,6 +40,7 @@ const probes = vi.hoisted(() => {
       client_id: 'idp-client',
     })),
     clearIdpIdToken: vi.fn(),
+    refreshAuthorization: vi.fn(),
     logMCPDebug: vi.fn(),
     sleep: vi.fn(async () => {}),
   }
@@ -42,6 +48,13 @@ const probes = vi.hoisted(() => {
 
 vi.mock('bun:bundle', () => ({
   feature: () => false,
+}))
+
+vi.mock('@modelcontextprotocol/sdk/client/auth.js', async importOriginal => ({
+  ...(await importOriginal<
+    typeof import('@modelcontextprotocol/sdk/client/auth.js')
+  >()),
+  refreshAuthorization: probes.refreshAuthorization,
 }))
 
 vi.mock('../../utils/envUtils.js', async importOriginal => ({
@@ -123,10 +136,6 @@ function makeProvider(config = serverConfig()): AgenCAuthProvider {
     TEST_HOME,
     'github',
     config,
-    'http://127.0.0.1:3000/callback',
-    false,
-    undefined,
-    true,
   )
 }
 
@@ -183,6 +192,7 @@ describe('AgenCAuthProvider XAA refresh locking', () => {
     probes.discoverOidc.mockResolvedValue({
       token_endpoint: 'https://agenc.tech/idp/token',
     })
+    probes.refreshAuthorization.mockReset()
   })
 
   it('reuses tokens another process refreshed while waiting for the lock', async () => {
@@ -290,5 +300,154 @@ describe('AgenCAuthProvider XAA refresh locking', () => {
     expect(probes.update).not.toHaveBeenCalled()
     expect(probes.release).not.toHaveBeenCalled()
     expect(probes.sleep).toHaveBeenCalled()
+  })
+
+  it('refreshes an expiring standard OAuth token and stores the replacement', async () => {
+    const config: McpSSEServerConfig = {
+      type: 'sse',
+      url: 'https://mcp.example.test/sse',
+      oauth: { clientId: 'mcp-client' },
+    }
+    const key = getServerKey('github', config)
+    probes.storageData = clientSecretStorage(key, {
+      [key]: {
+        serverName: 'github',
+        serverUrl: config.url,
+        accessToken: 'expiring-access',
+        refreshToken: 'current-refresh',
+        expiresAt: Date.now() + 60_000,
+        scope: 'read',
+      },
+    })
+    probes.refreshAuthorization.mockResolvedValue({
+      access_token: 'fresh-access',
+      refresh_token: 'fresh-refresh',
+      expires_in: 3600,
+      scope: 'read write',
+      token_type: 'Bearer',
+    })
+    const provider = makeProvider(config)
+    provider.setMetadata({
+      issuer: 'https://auth.example.test',
+      authorization_endpoint: 'https://auth.example.test/authorize',
+      token_endpoint: 'https://auth.example.test/token',
+      response_types_supported: ['code'],
+    })
+
+    await expect(provider.tokens()).resolves.toEqual(
+      expect.objectContaining({
+        access_token: 'fresh-access',
+        refresh_token: 'fresh-refresh',
+      }),
+    )
+
+    expect(probes.refreshAuthorization).toHaveBeenCalledWith(
+      new URL(config.url),
+      expect.objectContaining({
+        clientInformation: {
+          client_id: 'mcp-client',
+          client_secret: 'mcp-secret',
+        },
+        refreshToken: 'current-refresh',
+      }),
+    )
+    expect(probes.storageData?.mcpOAuth?.[key]).toEqual(
+      expect.objectContaining({
+        accessToken: 'fresh-access',
+        refreshToken: 'fresh-refresh',
+        scope: 'read write',
+      }),
+    )
+    expect(probes.release).toHaveBeenCalledOnce()
+  })
+
+  it('clears invalid standard OAuth tokens while preserving client identity', async () => {
+    const config: McpSSEServerConfig = {
+      type: 'sse',
+      url: 'https://mcp.example.test/sse',
+      oauth: { clientId: 'mcp-client' },
+    }
+    const key = getServerKey('github', config)
+    probes.storageData = clientSecretStorage(key, {
+      [key]: {
+        serverName: 'github',
+        serverUrl: config.url,
+        accessToken: 'expired-access',
+        refreshToken: 'revoked-refresh',
+        expiresAt: 0,
+        scope: 'read',
+        clientId: 'stored-client',
+        clientSecret: 'stored-secret',
+      },
+    })
+    probes.refreshAuthorization.mockRejectedValue(
+      new InvalidGrantError('refresh token revoked'),
+    )
+    const provider = makeProvider(config)
+    provider.setMetadata({
+      issuer: 'https://auth.example.test',
+      authorization_endpoint: 'https://auth.example.test/authorize',
+      token_endpoint: 'https://auth.example.test/token',
+      response_types_supported: ['code'],
+    })
+
+    await expect(
+      provider.refreshAuthorization('revoked-refresh'),
+    ).resolves.toBeUndefined()
+
+    expect(probes.storageData?.mcpOAuth?.[key]).toEqual(
+      expect.objectContaining({
+        accessToken: '',
+        expiresAt: 0,
+        clientId: 'stored-client',
+        clientSecret: 'stored-secret',
+      }),
+    )
+    expect(probes.storageData?.mcpOAuth?.[key]?.refreshToken).toBeUndefined()
+    expect(probes.release).toHaveBeenCalledOnce()
+  })
+
+  it('turns insufficient-scope responses into in-memory needs-auth tokens', async () => {
+    const config: McpSSEServerConfig = {
+      type: 'sse',
+      url: 'https://mcp.example.test/sse',
+      oauth: { clientId: 'mcp-client' },
+    }
+    const key = getServerKey('github', config)
+    probes.storageData = clientSecretStorage(key, {
+      [key]: {
+        serverName: 'github',
+        serverUrl: config.url,
+        accessToken: 'current-access',
+        refreshToken: 'current-refresh',
+        expiresAt: Date.now() + 3_600_000,
+        scope: 'read',
+      },
+    })
+    const provider = makeProvider(config)
+    const fetchWithStepUpDetection = wrapFetchWithStepUpDetection(
+      vi.fn(async () =>
+        new Response(null, {
+          status: 403,
+          headers: {
+            'WWW-Authenticate':
+              'Bearer error="insufficient_scope", scope="read write"',
+          },
+        })),
+      provider,
+    )
+
+    await fetchWithStepUpDetection('https://mcp.example.test/sse')
+    await expect(provider.tokens()).resolves.toEqual(
+      expect.objectContaining({
+        access_token: 'current-access',
+        refresh_token: undefined,
+        scope: 'read',
+      }),
+    )
+    expect(probes.refreshAuthorization).not.toHaveBeenCalled()
+    expect(probes.storageData?.mcpOAuth?.[key]?.refreshToken).toBe(
+      'current-refresh',
+    )
   })
 })

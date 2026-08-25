@@ -495,7 +495,8 @@ function buildLiveFindings(
         blocking: false,
         code: 'auth.needs_auth',
         message: `${name} requires authentication before it can be used.`,
-        remediation: 'Authenticate the server and then rerun the doctor command.',
+        remediation:
+          "Configure credentials supported by the server, then rerun the doctor command. For XAA, run 'agenc mcp xaa login'.",
         serverName: name,
         severity: 'warn',
         sourcePath: activeDefinition?.sourcePath,

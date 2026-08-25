@@ -420,8 +420,8 @@ export type XaaConfig = {
 
 /**
  * Full XAA flow: PRM → AS metadata → token-exchange → jwt-bearer → access_token.
- * Thin composition of the four Layer-2 ops. Used by performMCPXaaAuth,
- * AgenCAuthProvider.xaaRefresh, and the try-xaa*.ts debug scripts.
+ * Thin composition of the four Layer-2 ops. Used by
+ * AgenCAuthProvider.xaaRefresh and the try-xaa*.ts debug scripts.
  *
  * @param serverUrl The MCP server URL (e.g. `https://mcp.example.com/mcp`)
  * @param config IdP + AS credentials

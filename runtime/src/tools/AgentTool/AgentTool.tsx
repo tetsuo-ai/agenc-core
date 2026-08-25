@@ -688,7 +688,8 @@ export const AgentTool = buildTool({
         throw new Error(
           `Agent '${selectedAgent.agentType}' requires MCP servers matching: ${missing.join(", ")}. ` +
             `MCP servers with tools: ${serversWithTools.length > 0 ? serversWithTools.join(", ") : "none"}. ` +
-            `Use /mcp to configure and authenticate the required MCP servers.`,
+            `Use /mcp to configure or reconnect the required MCP servers. ` +
+            `If an XAA server reports needs-auth, run 'agenc mcp xaa login'.`,
         );
       }
     }

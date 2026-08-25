@@ -133,12 +133,16 @@ Built-in helpers that help the agent work with MCP resources:
 - `ListMcpResourcesTool`
 - `ReadMcpResourceTool`
 
-(`McpAuthTool` exists as an OAuth helper in the tools tree; it is
-not the primary LIVE bridge surface.)
-
-Slash: `/mcp` opens the MCP connection menu in the TUI. In daemon mode the menu
-reads the passive status projection and sends mutations back to the daemon; it
-does not own transports or executable MCP clients.
+Slash: `/mcp` opens the MCP connection menu in the TUI. `/mcp status` and
+`/mcp list` show server state; `/mcp tools [server]` inspects tools; and
+`/mcp reconnect|enable|disable <server>` applies session-scoped connection
+changes. `/mcp add <server> <command> [args...]` imports a session-scoped stdio
+server without editing `config.toml`. `/mcp new` (alias `/mcp create`) scaffolds
+a dependency-free project-local stdio server and connects it for the session.
+The command and menu do not provide an authentication action; `needs-auth` is
+only a displayed connection state. In daemon mode the menu reads the passive
+status projection and sends mutations back to the daemon; it does not own
+transports or executable MCP clients.
 
 ### CLI
 

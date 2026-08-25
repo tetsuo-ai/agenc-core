@@ -3,7 +3,6 @@
  * auth.ts ↔ xaaIdpLogin.ts circular dependency.
  */
 import { createServer } from 'http'
-import type { ProviderEnvironment } from '../../llm/provider-options.js'
 import { getPlatform } from '../../utils/platform.js'
 
 // Windows dynamic port range 49152-65535 is reserved
@@ -25,26 +24,11 @@ export function buildRedirectUri(
   return `http://localhost:${port}/callback`
 }
 
-function getMcpOAuthCallbackPort(
-  environment: ProviderEnvironment,
-): number | undefined {
-  const port = parseInt(environment.MCP_OAUTH_CALLBACK_PORT || '', 10)
-  return port > 0 ? port : undefined
-}
-
 /**
  * Finds an available port in the specified range for OAuth redirect
  * Uses random selection for better security
  */
-export async function findAvailablePort(
-  environment: ProviderEnvironment,
-): Promise<number> {
-  // First, try the configured port if specified
-  const configuredPort = getMcpOAuthCallbackPort(environment)
-  if (configuredPort) {
-    return configuredPort
-  }
-
+export async function findAvailablePort(): Promise<number> {
   const { min, max } = REDIRECT_PORT_RANGE
   const range = max - min + 1
   const maxAttempts = Math.min(range, 100) // Don't try forever

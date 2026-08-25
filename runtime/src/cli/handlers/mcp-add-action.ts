@@ -29,7 +29,6 @@ export interface McpAddActionOptions {
   readonly header?: string[];
   readonly clientId?: string;
   readonly clientSecret?: boolean;
-  readonly callbackPort?: string;
   readonly xaa?: boolean;
   readonly stdout?: Writable;
   readonly stderr?: Writable;
@@ -72,14 +71,10 @@ export async function runMcpAddAction(
 
   if (transport === "sse" || transport === "http") {
     const headers = options.header ? parseHeaders(options.header) : undefined;
-    const callbackPort = options.callbackPort
-      ? parseCallbackPort(options.callbackPort)
-      : undefined;
     const oauth =
-      options.clientId || callbackPort || xaa
+      options.clientId || xaa
         ? {
             ...(options.clientId ? { clientId: options.clientId } : {}),
-            ...(callbackPort ? { callbackPort } : {}),
             ...(xaa ? { xaa: true } : {}),
           }
         : undefined;
@@ -119,9 +114,9 @@ export async function runMcpAddAction(
     return;
   }
 
-  if (options.clientId || options.clientSecret || options.callbackPort || options.xaa) {
+  if (options.clientId || options.clientSecret || options.xaa) {
     stderr.write(
-      "Warning: --client-id, --client-secret, --callback-port, and --xaa are only supported for HTTP/SSE transports and will be ignored for stdio.\n",
+      "Warning: --client-id, --client-secret, and --xaa are only supported for HTTP/SSE transports and will be ignored for stdio.\n",
     );
   }
 
@@ -150,12 +145,4 @@ export async function runMcpAddAction(
   stdout.write(
     `File modified: ${describeMcpConfigFilePath(scope, options.authority)}\n`,
   );
-}
-
-function parseCallbackPort(value: string): number {
-  const parsed = Number(value);
-  if (!Number.isInteger(parsed) || parsed <= 0 || parsed > 65535) {
-    throw new Error("Error: --callback-port must be a valid TCP port");
-  }
-  return parsed;
 }

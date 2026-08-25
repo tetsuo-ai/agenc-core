@@ -188,14 +188,6 @@ describe("session home authority architecture", () => {
     for (const [name, key] of expectedHomeKeys) {
       expect(source(name), name).toContain(key);
     }
-
-    const mcpClient = source("services/mcp/client.ts");
-    expect(mcpClient).toContain(
-      "const authCachePromises = new Map<string, Promise<McpAuthCacheData>>()",
-    );
-    expect(mcpClient).toContain("function getMcpAuthCache(home: HomeContext)");
-    expect(mcpClient).toContain("getMcpAuthCachePath(home)");
-    expect(mcpClient).not.toContain("getAgenCHomeDir");
   });
 
   test("passes canonical home into every production rollout writer", () => {

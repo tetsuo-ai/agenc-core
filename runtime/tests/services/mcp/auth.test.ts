@@ -13,7 +13,6 @@ vi.mock('../../utils/log.js', () => ({
 import {
   AgenCAuthProvider,
   validateMcpOAuthAuthorizationServerMetadata,
-  validateOAuthCallbackParams,
 } from './auth.js'
 import type { McpSSEServerConfig } from './types.js'
 import { clearProxyCache } from '../../utils/proxy.js'
@@ -64,10 +63,6 @@ test('MCP OAuth discovery keeps A/B session transports isolated', async () => {
           'https://auth-a.example.test/.well-known/oauth-authorization-server',
       },
     },
-    undefined,
-    false,
-    undefined,
-    undefined,
     mutableEnvironmentA,
   )
   const providerB = new AgenCAuthProvider(
@@ -81,10 +76,6 @@ test('MCP OAuth discovery keeps A/B session transports isolated', async () => {
           'https://auth-b.example.test/.well-known/oauth-authorization-server',
       },
     },
-    undefined,
-    false,
-    undefined,
-    undefined,
     Object.freeze({}),
   )
   delete mutableEnvironmentA.HTTPS_PROXY
@@ -100,63 +91,6 @@ test('MCP OAuth discovery keeps A/B session transports isolated', async () => {
   expect(dispatcherA?.constructor.name).toBe('EnvHttpProxyAgent')
   expect(dispatcherB?.constructor.name).toBe('Agent')
   expect(dispatcherA).not.toBe(dispatcherB)
-})
-
-test('OAuth callback rejects error parameters before state validation can be bypassed', () => {
-  const result = validateOAuthCallbackParams(
-    {
-      error: 'access_denied',
-      error_description: 'denied by provider',
-    },
-    'expected-state',
-  )
-
-  assert.deepEqual(result, { type: 'state_mismatch' })
-})
-
-test('OAuth callback accepts provider errors only when state matches', () => {
-  const result = validateOAuthCallbackParams(
-    {
-      state: 'expected-state',
-      error: 'access_denied',
-      error_description: 'denied by provider',
-      error_uri: 'https://example.test/error',
-    },
-    'expected-state',
-  )
-
-  assert.deepEqual(result, {
-    type: 'error',
-    error: 'access_denied',
-    errorDescription: 'denied by provider',
-    errorUri: 'https://example.test/error',
-    message:
-      'OAuth error: access_denied - denied by provider (See: https://example.test/error)',
-  })
-})
-
-test('OAuth callback accepts authorization codes only when state matches', () => {
-  assert.deepEqual(
-    validateOAuthCallbackParams(
-      {
-        state: 'expected-state',
-        code: 'auth-code',
-      },
-      'expected-state',
-    ),
-    { type: 'code', code: 'auth-code' },
-  )
-
-  assert.deepEqual(
-    validateOAuthCallbackParams(
-      {
-        state: 'wrong-state',
-        code: 'auth-code',
-      },
-      'expected-state',
-    ),
-    { type: 'state_mismatch' },
-  )
 })
 
 test('configured auth metadata invalid JSON is logged as a controlled discovery failure', async () => {
@@ -213,32 +147,6 @@ test('MCP OAuth metadata rejects plaintext authorization server endpoints', () =
       }),
     /registration_endpoint must use https:\/\//,
   )
-})
-
-test('MCP OAuth metadata requires S256 PKCE before authorization redirect', async () => {
-  const provider = new AgenCAuthProvider(
-    TEST_HOME,
-    'pkce-auth',
-    {
-      type: 'sse',
-      url: 'https://mcp.example.test/sse',
-    },
-    'http://127.0.0.1:3000/callback',
-    true,
-    vi.fn(),
-    true,
-  )
-
-  provider.setMetadata({
-    ...validOAuthMetadata,
-    code_challenge_methods_supported: undefined,
-  })
-
-  await expect(
-    provider.redirectToAuthorization(
-      new URL('https://auth.example.test/authorize'),
-    ),
-  ).rejects.toThrow(/code_challenge_methods_supported must include S256/)
 })
 
 test('configured auth metadata with plaintext endpoints is logged as a controlled discovery failure', async () => {

@@ -433,7 +433,7 @@ async function runMcpAddCommand(
   environment: ProviderEnvironment,
 ): Promise<void> {
   const parsed = parseSimpleOptions(argv, {
-    value: new Set(["scope", "s", "transport", "t", "client-id", "callback-port"]),
+    value: new Set(["scope", "s", "transport", "t", "client-id"]),
     repeated: new Set(["env", "e", "header", "H"]),
     boolean: new Set(["client-secret", "xaa"]),
   });
@@ -450,7 +450,6 @@ async function runMcpAddCommand(
     header: parsed.repeated.header,
     clientId: parsed.options["client-id"],
     clientSecret: parsed.flags.has("client-secret"),
-    callbackPort: parsed.options["callback-port"],
     xaa: parsed.flags.has("xaa"),
     stdout: io.stdout,
     stderr: io.stderr,

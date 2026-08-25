@@ -29,5 +29,22 @@ export function decodeSecureStorageData(
       `${backendLabel} credential record must be a non-null JSON object`,
     )
   }
-  return parsed as SecureStorageData
+  const mcpOAuth = parsed.mcpOAuth
+  if (!isPlainRecord(mcpOAuth)) return parsed as SecureStorageData
+
+  let changed = false
+  const normalizedMcpOAuth = Object.fromEntries(
+    Object.entries(mcpOAuth).map(([serverKey, value]) => {
+      if (!isPlainRecord(value) || !Object.hasOwn(value, 'stepUpScope')) {
+        return [serverKey, value]
+      }
+      const normalized = { ...value }
+      delete normalized.stepUpScope
+      changed = true
+      return [serverKey, normalized]
+    }),
+  )
+  return (changed
+    ? { ...parsed, mcpOAuth: normalizedMcpOAuth }
+    : parsed) as SecureStorageData
 }

@@ -324,14 +324,9 @@ export async function mcpGetHandler(
         console.log(`    ${key}: ${redactMcpDisplayValue(key, value)}`);
       }
     }
-    if (server.oauth?.clientId || server.oauth?.callbackPort) {
-      const parts: string[] = [];
-      if (server.oauth.clientId) {
-        parts.push('oauth client configured');
-      }
-      if (server.oauth.callbackPort) parts.push('callback port configured');
+    if (server.oauth?.clientId) {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
-      console.log(`  OAuth: ${parts.join(', ')}`);
+      console.log('  OAuth: oauth client configured');
     }
   } else if (server.type === 'http') {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
@@ -346,14 +341,9 @@ export async function mcpGetHandler(
         console.log(`    ${key}: ${redactMcpDisplayValue(key, value)}`);
       }
     }
-    if (server.oauth?.clientId || server.oauth?.callbackPort) {
-      const parts: string[] = [];
-      if (server.oauth.clientId) {
-        parts.push('oauth client configured');
-      }
-      if (server.oauth.callbackPort) parts.push('callback port configured');
+    if (server.oauth?.clientId) {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
-      console.log(`  OAuth: ${parts.join(', ')}`);
+      console.log('  OAuth: oauth client configured');
     }
   } else if (server.type === 'stdio') {
     // biome-ignore lint/suspicious/noConsole:: intentional console output

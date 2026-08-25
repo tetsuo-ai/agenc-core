@@ -91,6 +91,7 @@ describe('home and runtime-state authority boundary', () => {
     )
     const retired = [
       'cachedChangelog',
+      'agencAiMcpEverConnected',
       'customNotifyCommand',
       'iterm2KeyBindingInstalled',
       'subscriptionUpsellShownCount',

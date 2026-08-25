@@ -8,7 +8,6 @@ const probes = vi.hoisted(() => ({
   removeNotification: vi.fn(),
   logError: vi.fn(),
   remoteMode: false,
-  agencAiConnected: false,
 }));
 
 vi.mock("react-compiler-runtime", () => ({
@@ -44,10 +43,6 @@ vi.mock("../../../bootstrap/state", () => ({
   getIsRemoteMode: () => probes.remoteMode,
 }));
 
-vi.mock("../../../services/mcp/agencai.js", () => ({
-  hasAgenCAiMcpEverConnected: () => probes.agencAiConnected,
-}));
-
 vi.mock("../../../utils/log.js", () => ({
   logError: probes.logError,
 }));
@@ -68,7 +63,6 @@ describe("useMcpConnectivityStatus", () => {
     probes.removeNotification.mockReset();
     probes.logError.mockReset();
     probes.remoteMode = false;
-    probes.agencAiConnected = false;
   });
 
   it("adds the MCP failed notification for failed local server connections", () => {

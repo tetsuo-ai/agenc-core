@@ -685,7 +685,10 @@ Do not start.
         isolation: 'worktree',
       }),
     ).rejects.toThrow(
-      "Agent 'scanner' requires MCP servers matching: exact-plugin-server",
+      "Agent 'scanner' requires MCP servers matching: exact-plugin-server. " +
+        "MCP servers with tools: none. " +
+        "Use /mcp to configure or reconnect the required MCP servers. " +
+        "If an XAA server reports needs-auth, run 'agenc mcp xaa login'.",
     )
   })
 })

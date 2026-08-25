@@ -91,7 +91,6 @@ export const GLOBAL_RUNTIME_STATE_FIELDS = Object.freeze([
   "projects",
   "installMethod",
   "userID",
-  "agencAiMcpEverConnected",
   "hasAcknowledgedCostThreshold",
   "hasUsedBackslashReturn",
   "hasSeenTasksHint",

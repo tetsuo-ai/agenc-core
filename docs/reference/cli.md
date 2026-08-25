@@ -735,7 +735,6 @@ agenc mcp xaa setup|login|show|clear
 | `-H, --header <K: V>` | Header for HTTP/SSE add |
 | `--client-secret` | Prompt for remote MCP OAuth client secret |
 | `--client-id` | OAuth client id for `mcp add` |
-| `--callback-port` | OAuth callback port for `mcp add` |
 | `--xaa` | Mark the added server as XAA |
 
 ```bash
