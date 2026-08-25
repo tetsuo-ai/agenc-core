@@ -641,6 +641,7 @@ describe("createToolBridge — T6 gap #119 observer wiring", () => {
     expect(callTool.mock.calls[0]?.[0]).toEqual({
       name: "echo",
       arguments: { value: 1 },
+      _meta: { "agenccode/toolUseId": admittedCallId },
     });
     expect(observer.onBegin).toHaveBeenCalledWith(
       expect.objectContaining({ callId: admittedCallId }),

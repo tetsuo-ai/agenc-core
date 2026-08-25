@@ -17,7 +17,7 @@ import type {
   ConnectedMCPServer,
   ScopedMcpServerConfig,
 } from "../services/mcp/types.js";
-import type { Tool } from "./_deps/tools-types.js";
+import type { Tool, ToolResult } from "./_deps/tools-types.js";
 import type { Logger } from "./_deps/logger.js";
 import { silentLogger } from "./_deps/logger.js";
 import { createMCPConnection } from "./connection.js";
@@ -26,13 +26,17 @@ import {
   EMPTY_MCP_REQUEST_ENVIRONMENT,
   snapshotMcpRequestEnvironment,
 } from "./environment.js";
-import { createToolBridge } from "./tools.js";
+import {
+  createToolBridge,
+  withoutMcpExecutionOnlyArgs,
+} from "./tools.js";
 import {
   ResilientMCPBridge,
   toToolCatalogPolicyConfig,
 } from "./resilient-client.js";
 import type {
   MCPCallObserver,
+  MCPProgressCallback,
   MCPToolBridgePermissionOptions,
 } from "./tools.js";
 import {
@@ -68,6 +72,38 @@ export interface MCPManagerStartOpts {
   /** I-20: require THESE named servers to come up. Overrides
    *  `requireOneReady` when both set. */
   readonly requiredServers?: ReadonlyArray<string>;
+}
+
+/**
+ * Execution context propagated from an already-admitted internal caller.
+ * `MCPManager.callTool` does not acquire session effect admission itself.
+ */
+export interface MCPManagerToolCallOptions {
+  /** Cancel the physical MCP request; the call settles with the transport. */
+  readonly signal?: AbortSignal;
+  /** Trusted runtime call identity used by observers, persistence, and request metadata. */
+  readonly callId?: string;
+  /** Receives only the canonical bridge's bounded, sanitized progress events. */
+  readonly onProgress?: MCPProgressCallback;
+}
+
+type MCPExecutionArgumentName =
+  | "__abortSignal"
+  | "__callId"
+  | "__onProgress";
+
+function defineMcpExecutionArgument(
+  args: Record<string, unknown>,
+  name: MCPExecutionArgumentName,
+  value: unknown,
+): void {
+  if (value === undefined) return;
+  Object.defineProperty(args, name, {
+    value,
+    enumerable: false,
+    configurable: false,
+    writable: false,
+  });
 }
 
 function withoutStartSignal(
@@ -980,6 +1016,59 @@ export class MCPManager {
    */
   getToolsByServer(name: string): Tool[] {
     return this.bridges.get(name)?.tools ?? [];
+  }
+
+  /**
+   * Execute one raw MCP tool through the connected server's canonical bridge.
+   *
+   * This is the manager-owned RPC surface for internal callers that already
+   * know the server and raw MCP tool name. It deliberately delegates to the
+   * same resilient, permission-checked, output-normalizing Tool proxy exposed
+   * to the runtime registry; callers never receive or retain an SDK client.
+   * Production callers must already be inside the canonical admitted boundary
+   * and propagate that boundary's call id and signal through `options`.
+   * Expected MCP failures resolve with `isError`; aborts and unexpected bridge
+   * failures may reject.
+   */
+  async callTool(
+    serverName: string,
+    toolName: string,
+    args: Readonly<Record<string, unknown>>,
+    options: MCPManagerToolCallOptions = {},
+  ): Promise<ToolResult> {
+    options.signal?.throwIfAborted();
+    const bridge = this.bridges.get(serverName);
+    if (bridge === undefined) {
+      return {
+        content: `MCP server ${JSON.stringify(serverName)} is not connected`,
+        isError: true,
+      };
+    }
+
+    const namespacedName = `mcp.${serverName}.${toolName}`;
+    const tool = bridge.tools.find(
+      (candidate) => candidate.name === namespacedName,
+    );
+    if (tool === undefined) {
+      return {
+        content: `MCP tool ${JSON.stringify(toolName)} is not available on server ${JSON.stringify(serverName)}`,
+        isError: true,
+      };
+    }
+
+    const executionArgs = withoutMcpExecutionOnlyArgs(args);
+    defineMcpExecutionArgument(
+      executionArgs,
+      "__abortSignal",
+      options.signal,
+    );
+    defineMcpExecutionArgument(executionArgs, "__callId", options.callId);
+    defineMcpExecutionArgument(
+      executionArgs,
+      "__onProgress",
+      options.onProgress,
+    );
+    return tool.execute(executionArgs);
   }
 
   /**

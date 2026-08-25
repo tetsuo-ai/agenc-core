@@ -15,9 +15,13 @@ import { MCPTransportCleanupError } from "./transports/connect-with-cleanup.js";
 vi.mock("./connection.js", () => ({
   createMCPConnection: vi.fn(),
 }));
-vi.mock("./tools.js", () => ({
-  createToolBridge: vi.fn(),
-}));
+vi.mock("./tools.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./tools.js")>();
+  return {
+    ...actual,
+    createToolBridge: vi.fn(),
+  };
+});
 vi.mock("./resources.js", () => ({
   createResourceBridge: vi.fn(),
 }));
@@ -969,6 +973,173 @@ describe("MCPManager", () => {
 
     expect(manager.getToolsByServer("srv1")).toHaveLength(2);
     expect(manager.getToolsByServer("unknown")).toEqual([]);
+  });
+
+  it("calls an exact raw tool through the canonical bridge without exposing its client", async () => {
+    const bridge = makeMockBridge("srv1", [
+      "toolA_extra",
+      "x_toolA",
+      "toolA",
+    ]);
+    const prefixExecute = vi.mocked(bridge.tools[0]!.execute);
+    const suffixExecute = vi.mocked(bridge.tools[1]!.execute);
+    const exactExecute = vi.mocked(bridge.tools[2]!.execute);
+    const canonicalResult = {
+      content: "ok",
+      codeModeResult: { rows: [1, 2, 3] },
+      metadata: { source: "canonical-normalizer" },
+    };
+    exactExecute.mockResolvedValue(canonicalResult);
+    const controller = new AbortController();
+    const onProgress = vi.fn();
+    const callId = "manager-call-1";
+    const spoofedSignal = new AbortController().signal;
+    const spoofedProgress = vi.fn();
+    const args = {
+      value: 42,
+      __abortSignal: spoofedSignal,
+      __callId: "model-visible-spoof",
+      __onProgress: spoofedProgress,
+      __sandboxExecutionBroker: { execute: vi.fn() },
+      __agencFutureSecret: "must-not-cross-manager-boundary",
+    };
+    mockCreateMCPConnection.mockResolvedValueOnce("client1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    try {
+      await manager.start();
+
+      const result = await manager.callTool(
+        "srv1",
+        "toolA",
+        args,
+        { signal: controller.signal, callId, onProgress },
+      );
+      expect(result).toBe(canonicalResult);
+      expect(exactExecute).toHaveBeenCalledOnce();
+      expect(prefixExecute).not.toHaveBeenCalled();
+      expect(suffixExecute).not.toHaveBeenCalled();
+      const executionArgs = exactExecute.mock.calls[0]?.[0];
+      expect(executionArgs).not.toBe(args);
+      expect(executionArgs).toEqual({ value: 42 });
+      expect(Object.keys(executionArgs ?? {})).toEqual(["value"]);
+      expect(
+        Object.hasOwn(executionArgs ?? {}, "__sandboxExecutionBroker"),
+      ).toBe(false);
+      expect(
+        Object.hasOwn(executionArgs ?? {}, "__agencFutureSecret"),
+      ).toBe(false);
+      expect(
+        Object.getOwnPropertyDescriptor(executionArgs, "__abortSignal"),
+      ).toEqual(
+        expect.objectContaining({
+          value: controller.signal,
+          enumerable: false,
+          writable: false,
+        }),
+      );
+      expect(
+        Object.getOwnPropertyDescriptor(executionArgs, "__callId"),
+      ).toEqual(
+        expect.objectContaining({
+          value: callId,
+          enumerable: false,
+          writable: false,
+        }),
+      );
+      expect(
+        Object.getOwnPropertyDescriptor(executionArgs, "__onProgress"),
+      ).toEqual(
+        expect.objectContaining({
+          value: onProgress,
+          enumerable: false,
+          writable: false,
+        }),
+      );
+      expect(args.__abortSignal).toBe(spoofedSignal);
+      expect(args.__callId).toBe("model-visible-spoof");
+      expect(args.__onProgress).toBe(spoofedProgress);
+      expect(args.__agencFutureSecret).toBe(
+        "must-not-cross-manager-boundary",
+      );
+    } finally {
+      await manager.stop();
+    }
+  });
+
+  it("keeps manager-owned tool calls on the replacement bridge after automatic reconnect", async () => {
+    vi.useFakeTimers();
+    const initialExecute = vi.fn().mockResolvedValue({
+      content: "transport closed",
+      isError: true,
+    });
+    const replacementExecute = vi
+      .fn()
+      .mockResolvedValue({ content: "from replacement" });
+    const initialBridge = makeMockBridge("srv1", ["tool"]);
+    initialBridge.tools[0]!.execute = initialExecute;
+    const replacementBridge = makeMockBridge("srv1", ["tool"]);
+    replacementBridge.tools[0]!.execute = replacementExecute;
+    mockCreateMCPConnection
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) })
+      .mockResolvedValueOnce({ close: vi.fn().mockResolvedValue(undefined) });
+    mockCreateToolBridge
+      .mockResolvedValueOnce(initialBridge)
+      .mockResolvedValueOnce(replacementBridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    try {
+      await manager.start();
+
+      await expect(manager.callTool("srv1", "tool", {})).resolves.toEqual({
+        content: 'MCP server "srv1" lost connection — reconnecting...',
+        isError: true,
+      });
+      await vi.advanceTimersByTimeAsync(1_000);
+      await expect(manager.callTool("srv1", "tool", {})).resolves.toEqual({
+        content: "from replacement",
+      });
+
+      expect(initialExecute).toHaveBeenCalledOnce();
+      expect(replacementExecute).toHaveBeenCalledOnce();
+    } finally {
+      await manager.stop();
+      vi.useRealTimers();
+    }
+  });
+
+  it("fails closed when a manager-owned MCP call has no exact live tool", async () => {
+    const bridge = makeMockBridge("srv1", ["known"]);
+    const execute = vi.mocked(bridge.tools[0]!.execute);
+    mockCreateMCPConnection.mockResolvedValueOnce("client1");
+    mockCreateToolBridge.mockResolvedValueOnce(bridge);
+
+    const manager = new MCPManager([makeConfig("srv1")]);
+    try {
+      await manager.start();
+
+      await expect(manager.callTool("srv1", "unknown", {})).resolves.toEqual({
+        content: 'MCP tool "unknown" is not available on server "srv1"',
+        isError: true,
+      });
+      await expect(manager.callTool("missing", "known", {})).resolves.toEqual({
+        content: 'MCP server "missing" is not connected',
+        isError: true,
+      });
+      const cancellation = new Error("cancelled before MCP dispatch");
+      const controller = new AbortController();
+      controller.abort(cancellation);
+      await expect(
+        manager.callTool("srv1", "known", {}, { signal: controller.signal }),
+      ).rejects.toBe(cancellation);
+      await expect(
+        manager.callTool("missing", "known", {}, { signal: controller.signal }),
+      ).rejects.toBe(cancellation);
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await manager.stop();
+    }
   });
 
   it("getConnectedServers returns server names", async () => {

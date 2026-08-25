@@ -397,8 +397,8 @@ function safeStringifyArgs(args: Record<string, unknown>): string {
   }
 }
 
-function withoutMcpExecutionOnlyArgs(
-  args: Record<string, unknown>,
+export function withoutMcpExecutionOnlyArgs(
+  args: Readonly<Record<string, unknown>>,
 ): Record<string, unknown> {
   const outbound: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(args)) {
@@ -871,7 +871,7 @@ function abortSignalFromArgs(
   return signal instanceof AbortSignal ? signal : undefined;
 }
 
-type MCPProgressCallback = (event: {
+export type MCPProgressCallback = (event: {
   readonly chunk: string;
   readonly stream?: "stdout" | "stderr" | "status";
   readonly processId?: number;
@@ -886,10 +886,9 @@ function progressCallbackFromArgs(
     : undefined;
 }
 
-function callIdFromArgs(
+function trustedCallIdFromArgs(
   args: Record<string, unknown>,
-  fallback: string,
-): string {
+): string | undefined {
   const descriptor = Object.getOwnPropertyDescriptor(args, "__callId");
   const value = descriptor?.value;
   return descriptor?.enumerable === false &&
@@ -897,7 +896,7 @@ function callIdFromArgs(
       value.trim().length > 0 &&
       Buffer.byteLength(value, "utf8") <= MAX_TOOL_CALL_ID_UTF8_BYTES
     ? value
-    : fallback;
+    : undefined;
 }
 
 function renderMcpProgress(raw: unknown): string | undefined {
@@ -1052,10 +1051,9 @@ export async function createToolBridge(
         // T6 gap #119: notify observer of call start. Prefer the admitted
         // executor call id so persistence, progress, and events share one
         // identity; standalone bridge callers get a local fallback.
-        const callId = callIdFromArgs(
-          args,
-          `mcp-${serverName}-${mcpTool.name}-${randomCallId()}`,
-        );
+        const trustedCallId = trustedCallIdFromArgs(args);
+        const callId = trustedCallId ??
+          `mcp-${serverName}-${mcpTool.name}-${randomCallId()}`;
         const progressCallback = progressCallbackFromArgs(args);
         if (
           mcpTool.name === MCP_REQUEST_PERMISSIONS_TOOL_NAME &&
@@ -1097,6 +1095,13 @@ export async function createToolBridge(
                 {
                   name: mcpTool.name,
                   arguments: executionArgs,
+                  ...(trustedCallId !== undefined
+                    ? {
+                        _meta: {
+                          "agenccode/toolUseId": trustedCallId,
+                        },
+                      }
+                    : {}),
                 },
                 undefined,
                 {
