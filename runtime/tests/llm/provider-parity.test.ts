@@ -13,6 +13,7 @@ import { AnthropicProvider } from "./providers/anthropic/adapter.js";
 import { BedrockProvider } from "./providers/bedrock/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
 import { GeminiProvider } from "./providers/gemini/index.js";
+import { createGeminiEndpointPlan } from "./providers/gemini/endpoint-plan.js";
 import { GrokProvider } from "./providers/grok/adapter.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { GitHubProvider } from "./providers/github/index.js";
@@ -70,6 +71,8 @@ const ECHO_TOOL: LLMTool = {
     },
   },
 };
+
+const GEMINI_ENDPOINT_PLAN = createGeminiEndpointPlan();
 
 /**
  * Wire form of `system.echo` under the bijective MCP tool-name encoding
@@ -790,13 +793,27 @@ const PROVIDERS: readonly ProviderParityEntry[] = [
   {
     provider: "gemini",
     model: "gemini-2.5-pro",
-    apiKey: "gemini-test",
+    extra: {
+      gemini: {
+        credentialPlan: {
+          kind: "api-key",
+          credential: "gemini-test",
+          source: "factory",
+        },
+        endpointPlan: GEMINI_ENDPOINT_PLAN,
+      },
+    },
     env: { GEMINI_API_KEY: undefined },
     createHarness: (parityCase) =>
       createFetchHarness({
         factory: (fetchImpl) =>
           new GeminiProvider({
-            apiKey: "gemini-test",
+            credentialPlan: {
+              kind: "api-key",
+              credential: "gemini-test",
+              source: "factory",
+            },
+            endpointPlan: GEMINI_ENDPOINT_PLAN,
             model: "gemini-2.5-pro",
             tools: parityCase.tools ? [...parityCase.tools] : [],
             fetchImpl,

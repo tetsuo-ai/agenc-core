@@ -1281,6 +1281,70 @@ describe("runAgenCReviewOneShot happy-path review", () => {
     }
   });
 
+  it("round-trips canonical provider identity and factory state through the delegate wrapper", async () => {
+    const parentProvider = mkScriptedProvider();
+    Object.defineProperty(
+      parentProvider,
+      providerFactory.FACTORY_PROVIDER_MARKER,
+      { value: true },
+    );
+    Object.defineProperty(
+      parentProvider,
+      providerFactory.FACTORY_PROVIDER_STATE,
+      {
+        value: {
+          provider: "openai-compatible",
+          options: {
+            apiKey: "delegate-key",
+            baseURL: "https://delegate.example/v1",
+            model: "parent-model",
+            extra: {
+              defaultHeaders: { "x-parent-extra": "preserved" },
+            },
+          },
+        },
+      },
+    );
+    const session = mkSession(parentProvider);
+    const req = mkOneShotRequest(session, { reviewerModel: "reviewer-5" });
+    const thread = await spawnAgenCDelegateThread(
+      session,
+      req,
+      "reviewer-5",
+      mkModelInfo("reviewer-5"),
+      new AbortController(),
+    );
+
+    try {
+      expect(thread.childSession.providerBinding).toMatchObject({
+        provider: "openai-compatible",
+        model: "reviewer-5",
+        factoryOptions: {
+          apiKey: "delegate-key",
+          baseURL: "https://delegate.example/v1",
+          model: "reviewer-5",
+          extra: {
+            defaultHeaders: { "x-parent-extra": "preserved" },
+          },
+        },
+      });
+      expect(
+        providerFactory.readProviderIdentity(thread.childSession.provider),
+      ).toBe("openai-compatible");
+      expect(
+        providerFactory.readProviderFactoryOptions(
+          thread.childSession.provider,
+        ),
+      ).toMatchObject({
+        model: "reviewer-5",
+        baseURL: "https://delegate.example/v1",
+      });
+    } finally {
+      await thread.shutdown("test complete");
+      await session.shutdown();
+    }
+  });
+
   it("runs through the child Session streaming path instead of direct provider.chat", async () => {
     let chatCalls = 0;
     let streamCalls = 0;

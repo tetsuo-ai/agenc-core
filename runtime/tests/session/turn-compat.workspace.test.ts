@@ -5,6 +5,14 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createAgentRoleWorkspace } from '../../src/agents/role.js'
+import {
+  createProvider,
+  preserveProviderFactoryState,
+  readProviderFactoryOptions,
+  readProviderIdentity,
+} from '../../src/llm/provider.js'
+import { createGeminiEndpointPlan } from '../../src/llm/providers/gemini/endpoint-plan.js'
+import type { LLMProvider } from '../../src/llm/types.js'
 import { createEmptyToolPermissionContext } from '../../src/permissions/types.js'
 import { SandboxExecutionBroker } from '../../src/sandbox/execution-broker.js'
 import { runWithCurrentRuntimeSession } from '../../src/session/current-session.js'
@@ -170,6 +178,136 @@ describe('turn compatibility catalog boundary', () => {
 
     expect(turn.session.conversationId).toBe('child-run')
     expect(turn.session.services.executionAdmission).toBe(childAdmission)
+  })
+
+  it('rebuilds exact canonical Gemini and Anthropic snapshots into independent providers', async () => {
+    const cwd = tempRoot('provider-inheritance')
+    const providers = [
+      createProvider('gemini', {
+        model: 'gemini-2.5-pro',
+        extra: {
+          gemini: {
+            credentialPlan: {
+              kind: 'api-key',
+              credential: 'saved-gemini-key',
+              source: 'saved-byok',
+            },
+            endpointPlan: createGeminiEndpointPlan(),
+          },
+        },
+      }),
+      createProvider('anthropic', {
+        apiKey: 'anthropic-test-key',
+        baseURL: 'https://api.anthropic.com',
+        model: 'claude-opus-4-7',
+      }),
+    ]
+
+    for (const [index, provider] of providers.entries()) {
+      const parentProvider = providers[(index + 1) % providers.length]!
+      const parent = mkRuntimeSession({ cwd, provider: parentProvider }).session
+      const factoryOptions = readProviderFactoryOptions(provider)
+      const selectedConversationBefore = providerConversationId(provider)
+      const parentConversationBefore = providerConversationId(parentProvider)
+      const toolUseContext = foregroundToolContext(cwd, [], undefined)
+      toolUseContext.provider = provider
+      const turn = await createTurnCompatSession(parent, {
+        messages: [],
+        systemPrompt: asSystemPrompt(['system']),
+        userContext: {},
+        systemContext: {},
+        canUseTool: async () => ({ behavior: 'allow' }),
+        toolUseContext,
+        querySource: 'repl_main_thread',
+      })
+
+      expect(turn.session.services.provider).not.toBe(provider)
+      expect(readProviderIdentity(turn.session.services.provider)).toBe(
+        readProviderIdentity(provider),
+      )
+      expect(
+        readProviderFactoryOptions(turn.session.services.provider),
+      ).toEqual(factoryOptions)
+      expect(providerConversationId(provider)).toBe(selectedConversationBefore)
+      expect(providerConversationId(parentProvider)).toBe(
+        parentConversationBefore,
+      )
+      expect(providerConversationId(turn.session.services.provider)).toBe(
+        turn.session.conversationId,
+      )
+
+      await turn.session.shutdown()
+      await parent.shutdown()
+    }
+  })
+
+  it('forks a stateful provider onto the child sandbox and owns only the fork', async () => {
+    const cwd = tempRoot('provider-fork')
+    const childDispose = vi.fn().mockResolvedValue(undefined)
+    const parentDispose = vi.fn().mockResolvedValue(undefined)
+    const childProvider = testProvider('child-provider', childDispose)
+    const forkForSession = vi.fn(() => childProvider)
+    const canonicalProvider = createProvider('gemini', {
+      model: 'gemini-2.5-pro',
+      extra: {
+        gemini: {
+          credentialPlan: {
+            kind: 'api-key',
+            credential: 'saved-gemini-key',
+            source: 'saved-byok',
+          },
+          endpointPlan: createGeminiEndpointPlan({
+            baseURL: 'https://gemini.example/v1beta',
+          }),
+        },
+      },
+    })
+    const parentProvider = preserveProviderFactoryState(
+      {
+        ...testProvider('parent-provider', parentDispose),
+        forkForSession,
+      },
+      canonicalProvider,
+    )
+    const canonicalFactoryOptions = readProviderFactoryOptions(parentProvider)
+    const parent = mkRuntimeSession({ cwd, provider: parentProvider }).session
+    const parentBroker = new SandboxExecutionBroker({
+      mode: 'danger_full_access',
+      cwd,
+    })
+    ;(
+      parent.services as { sandboxExecutionBroker?: SandboxExecutionBroker }
+    ).sandboxExecutionBroker = parentBroker
+
+    const turn = await createTurnCompatSession(parent, {
+      messages: [],
+      systemPrompt: asSystemPrompt(['system']),
+      userContext: {},
+      systemContext: {},
+      canUseTool: async () => ({ behavior: 'allow' }),
+      toolUseContext: foregroundToolContext(cwd, [], undefined),
+      querySource: 'repl_main_thread',
+    })
+
+    expect(turn.session.services.provider).toBe(childProvider)
+    expect(turn.session.services.provider).not.toBe(parentProvider)
+    expect(readProviderIdentity(turn.session.services.provider)).toBe('gemini')
+    expect(
+      readProviderFactoryOptions(turn.session.services.provider),
+    ).toEqual(canonicalFactoryOptions)
+    expect(forkForSession).toHaveBeenCalledOnce()
+    expect(forkForSession).toHaveBeenCalledWith({
+      cwd,
+      sandboxExecutionBroker: turn.session.services.sandboxExecutionBroker,
+    })
+
+    await turn.disposeOwnedProvider()
+    await turn.disposeOwnedProvider()
+    expect(childDispose).toHaveBeenCalledOnce()
+    expect(parentDispose).not.toHaveBeenCalled()
+
+    await turn.session.shutdown()
+    await parent.shutdown()
   })
 
   it('does not let a compat child cancel or dispose the parent MCP authority', async () => {
@@ -417,6 +555,46 @@ function memoryAgentDefinition(
 
 function foregroundParent(cwd: string): Session {
   return mkRuntimeSession({ cwd }).session
+}
+
+function providerConversationId(provider: LLMProvider): string | undefined {
+  return (
+    provider as unknown as {
+      readonly client?: {
+        readonly responsesContinuationState?: {
+          readonly conversationId?: string
+        }
+      }
+    }
+  ).client?.responsesContinuationState?.conversationId
+}
+
+function testProvider(
+  name: string,
+  dispose: () => Promise<void>,
+): LLMProvider {
+  return {
+    name,
+    chat: async () => ({
+      content: 'ok',
+      toolCalls: [],
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      model: 'test-model',
+      finishReason: 'stop',
+    }),
+    chatStream: async (_messages, onChunk) => {
+      onChunk({ content: 'ok', done: true })
+      return {
+        content: 'ok',
+        toolCalls: [],
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+        model: 'test-model',
+        finishReason: 'stop',
+      }
+    },
+    healthCheck: async () => true,
+    dispose,
+  }
 }
 
 function foregroundToolContext(

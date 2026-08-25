@@ -40,12 +40,11 @@ describe('extractCacheMetrics — provider (firstParty)', () => {
   })
 })
 
-// NOTE: OpenAi/ProviderCode/Kimi/DeepSeek/Gemini raw shapes are now tested through
-// extractCacheReadFromRawUsage (below). extractCacheMetrics sees the
-// post-shim provider shape for every provider, so the tests here verify
-// that the shape lookup works uniformly against the shimmed fields.
+// OpenAi/ProviderCode/Kimi/DeepSeek raw shapes are tested through
+// extractCacheReadFromRawUsage below. extractCacheMetrics sees the same
+// canonical provider shape from native adapters and compatibility shims.
 
-describe('extractCacheMetrics — post-shim provider shape (applies to all providers)', () => {
+describe('extractCacheMetrics — canonical provider shape', () => {
   test('OpenAi post-shim (openai bucket) — reads provider fields injected by convertChunkUsage', () => {
     // This is what cost-tracker actually sees for OpenAi upstreams: the
     // shim has already subtracted cached from prompt_tokens and moved it
@@ -100,13 +99,13 @@ describe('extractCacheMetrics — post-shim provider shape (applies to all provi
     expect(m.hitRate).toBe(0.7)
   })
 
-  test('Gemini post-shim — cached_content_token_count moved to cache_read_input_tokens', () => {
-    const shimmed = {
-      input_tokens: 800, // 4000 - 3200
+  test('Gemini native usage keeps cached input visible downstream', () => {
+    const usage = {
+      input_tokens: 800,
       cache_creation_input_tokens: 0,
       cache_read_input_tokens: 3_200,
     }
-    const m = extractCacheMetrics(shimmed, 'gemini')
+    const m = extractCacheMetrics(usage, 'gemini')
     expect(m.read).toBe(3_200)
     expect(m.total).toBe(4_000)
     expect(m.hitRate).toBe(0.8)
@@ -153,13 +152,13 @@ describe('extractCacheReadFromRawUsage — single source of truth for shim layer
     ).toBe(700)
   })
 
-  test('Gemini: cached_content_token_count', () => {
+  test('native-only usage fields stay outside compatibility-shim normalization', () => {
     expect(
       extractCacheReadFromRawUsage({
         prompt_token_count: 4_000,
         cached_content_token_count: 3_200,
       }),
-    ).toBe(3_200)
+    ).toBe(0)
   })
 
   test('no cache fields at all → 0 (Copilot/Ollama/unknown shape)', () => {
@@ -496,7 +495,7 @@ describe('extractCacheMetrics — self-hosted bucket (data-driven)', () => {
   test('internal reverse proxy forwarding real cache data → supported', () => {
     // Review-blocker regression guard: an enterprise setup with an
     // internal proxy on a private URL (e.g. `http://llm.internal:5000/v1`)
-    // forwarding to OpenAi / Kimi / DeepSeek / Gemini WILL deliver real
+    // forwarding to OpenAi / Kimi / DeepSeek WILL deliver real
     // cache fields via the shim. Pre-fix we would discard them because
     // the URL heuristic classified the endpoint as 'self-hosted'. Now
     // the data itself decides: any non-zero cache activity flows through

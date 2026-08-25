@@ -2,7 +2,7 @@
  * Tests for Bug Fixes applied to agenc.
  *
  * Covers:
- * 1. Gemini `store: false` rejection fix
+ * 1. Compatibility-shim `store` handling
  * 2. Long-running model streams have no implicit idle timeout
  * 3. Agent loop continuation nudge
  * 4. Web search result count improvements
@@ -15,25 +15,15 @@ const SRC = resolve(import.meta.dir, '..', '..', '..', 'src')
 const file = (relative: string) => Bun.file(resolve(SRC, relative))
 
 // ---------------------------------------------------------------------------
-// Fix 1: Gemini `store: false` rejection
+// Fix 1: Compatibility-shim `store` handling
 // ---------------------------------------------------------------------------
-describe('Gemini store field fix', () => {
-  test('isGeminiMode is imported and used in openaiShim', async () => {
-    const content = await file('services/api/openaiShim.ts').text()
-
-    // Verify the fix: store deletion should check for Gemini mode
-    expect(content).toContain('isGeminiMode()')
-    expect(content).toContain("mistral and gemini don't recognize body.store")
-    // Ensure the delete body.store is guarded for both Mistral and Gemini
-    expect(content).toMatch(/isMistral\s*\|\|\s*isGeminiMode\(\)/)
-  })
-
+describe('Compatibility-shim store field handling', () => {
   test('store: false is still set by default (OpenAi needs it)', async () => {
     const content = await file('services/api/openaiShim.ts').text()
 
     // The body should still have store: false by default
     expect(content).toMatch(/store:\s*false/)
-    // But it should be deleted for non-OpenAi providers
+    // Compatibility targets that reject it remove it before dispatch.
     expect(content).toMatch(/delete body\.store/)
   })
 })

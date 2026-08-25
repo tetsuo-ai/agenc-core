@@ -520,6 +520,145 @@ describe("first-run onboarding wizard", () => {
     },
   );
 
+  test("probes forced Gemini access tokens through the canonical Vertex endpoint", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("{}", { status: 200 }),
+    );
+
+    const connection = await checkOnboardingProviderConnection(
+      {
+        config: defaultConfig(),
+        env: {
+          GEMINI_AUTH_MODE: "access-token",
+          GEMINI_ACCESS_TOKEN: "gemini-access-token",
+          GEMINI_API_KEY: "must-not-win",
+          GEMINI_PROJECT_ID: "authority-project",
+          GEMINI_VERTEX_LOCATION: "us-central1",
+        },
+        fetchImpl,
+      },
+      "gemini",
+      "gemini-2.5-pro",
+    );
+
+    expect(connection).toMatchObject({
+      ok: true,
+      status: "ready",
+      detail: "Gemini credential found via GEMINI_ACCESS_TOKEN.",
+      credentialLabel: "GEMINI_ACCESS_TOKEN",
+      baseURL:
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/authority-project/locations/us-central1/publishers/google",
+    });
+    expect(fetchImpl).toHaveBeenCalledOnce();
+    const [url, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(String(url)).toBe(
+      "https://us-central1-aiplatform.googleapis.com/v1/projects/authority-project/locations/us-central1/publishers/google/models",
+    );
+    expect(new Headers(init?.headers).get("authorization")).toBe(
+      "Bearer gemini-access-token",
+    );
+  });
+
+  test("does not fall back to a Gemini API key when access-token mode is forced", async () => {
+    const fetchImpl = vi.fn<typeof fetch>();
+
+    await expect(
+      checkOnboardingProviderConnection(
+        {
+          config: defaultConfig(),
+          env: {
+            GEMINI_AUTH_MODE: "access-token",
+            GEMINI_API_KEY: "must-not-fallback",
+            GEMINI_PROJECT_ID: "forced-project",
+            GEMINI_VERTEX_LOCATION: "us-central1",
+          },
+          fetchImpl,
+        },
+        "gemini",
+        "gemini-2.5-pro",
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      status: "credentials-required",
+      credentialLabel: "GEMINI_ACCESS_TOKEN",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  test("reports forced Gemini ADC readiness without an API-key probe", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-onboarding-gemini-adc-"));
+    const adcPath = join(root, "application-default.json");
+    writeFileSync(adcPath, "{}", { mode: 0o600 });
+    const fetchImpl = vi.fn<typeof fetch>();
+    try {
+      await expect(
+        checkOnboardingProviderConnection(
+          {
+            config: defaultConfig(),
+            env: {
+              GEMINI_AUTH_MODE: "adc",
+              GOOGLE_APPLICATION_CREDENTIALS: adcPath,
+              GOOGLE_API_KEY: "must-not-win",
+              GEMINI_PROJECT_ID: "authority-project",
+              GEMINI_VERTEX_LOCATION: "global",
+            },
+            fetchImpl,
+          },
+          "gemini",
+          "gemini-2.5-pro",
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        status: "ready",
+        detail: expect.stringContaining(
+          "Google ADC credential file selected via GOOGLE_APPLICATION_CREDENTIALS",
+        ),
+        credentialLabel: "GOOGLE_APPLICATION_CREDENTIALS",
+        baseURL:
+          "https://aiplatform.googleapis.com/v1/projects/authority-project/locations/global/publishers/google",
+      });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("probes the saved Gemini BYOK selected from the native vault", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-gemini-byok-"));
+    const env = { AGENC_HOME: agencHome, GEMINI_AUTH_MODE: "api-key" };
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response("{}", { status: 200 }),
+    );
+    try {
+      await new LocalAuthBackend({ agencHome, env }).saveByokKey({
+        provider: "gemini",
+        apiKey: "saved-gemini-key",
+      });
+
+      await expect(
+        checkOnboardingProviderConnection(
+          { agencHome, config: defaultConfig(), env, fetchImpl },
+          "gemini",
+          "gemini-2.5-pro",
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        status: "ready",
+        detail: "Gemini credential found via saved Gemini BYOK.",
+      });
+      expect(fetchImpl).toHaveBeenCalledOnce();
+      const [url, init] = fetchImpl.mock.calls[0] ?? [];
+      expect(String(url)).toBe(
+        "https://generativelanguage.googleapis.com/v1beta/models",
+      );
+      expect(new Headers(init?.headers).get("x-goog-api-key")).toBe(
+        "saved-gemini-key",
+      );
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
   test("checks complete Bedrock SigV4 structure without a network probe", async () => {
     const incompleteFetch = vi.fn<typeof fetch>();
     const incomplete = await checkOnboardingProviderConnection(
@@ -651,7 +790,9 @@ describe("first-run onboarding wizard", () => {
     ).resolves.toMatchObject({
       ok: false,
       status: "credentials-required",
-      credentialLabel: providerCredentialEnvironmentLabel(provider),
+      credentialLabel: provider === "gemini"
+        ? "a Gemini API key, GEMINI_ACCESS_TOKEN, or Google ADC credentials"
+        : providerCredentialEnvironmentLabel(provider),
     });
   });
 
@@ -939,6 +1080,63 @@ describe("first-run onboarding wizard", () => {
       "XAI_API_KEY is present and verified. Press Enter to continue, or paste a replacement key.",
     );
     expect(lines.join("\n")).not.toContain("add it later");
+  });
+
+  test("does not offer pasted BYOK as an override for forced Gemini auth", async () => {
+    const context = {
+      config: defaultConfig(),
+      env: { GEMINI_AUTH_MODE: "access-token" },
+    };
+    const state = {
+      ...createInitialFirstRunOnboardingState(context),
+      currentStepId: "model-access" as const,
+      selectedProvider: "gemini" as const,
+      selectedModel: "gemini-2.5-pro",
+      modelAccessInput: "menu" as const,
+    };
+
+    const lines = detailLinesForStep(state, context).join("\n");
+    expect(lines).toContain("Use Gemini with GEMINI_ACCESS_TOKEN");
+    expect(lines).toContain(
+      "Configure the forced Gemini credential source before testing.",
+    );
+    expect(lines).not.toContain("paste a provider API key directly");
+
+    const result = await submitFirstRunOnboardingInput(state, "3", context);
+    expect(result.state).toMatchObject({
+      currentStepId: "model-access",
+      modelAccessInput: "menu",
+      error: expect.stringContaining(
+        "A pasted API key cannot override GEMINI_AUTH_MODE=access-token",
+      ),
+    });
+  });
+
+  test("uses an already selected Gemini access-token plan without prompting for BYOK", async () => {
+    const context = {
+      config: defaultConfig(),
+      env: {
+        GEMINI_AUTH_MODE: "access-token",
+        GEMINI_ACCESS_TOKEN: "configured-access-token",
+      },
+    };
+    const state = {
+      ...createInitialFirstRunOnboardingState(context),
+      currentStepId: "model-access" as const,
+      selectedProvider: "gemini" as const,
+      selectedModel: "gemini-2.5-pro",
+      modelAccessInput: "menu" as const,
+    };
+
+    expect(detailLinesForStep(state, context).join("\n")).toContain(
+      "Use Gemini with configured GEMINI_ACCESS_TOKEN",
+    );
+    const result = await submitFirstRunOnboardingInput(state, "3", context);
+    expect(result.state).toMatchObject({
+      currentStepId: "connection-test",
+      modelAccessInput: "menu",
+      error: null,
+    });
   });
 
   test("makes --dangerously-bypass-approvals-and-sandbox permission and sandbox behavior explicit", () => {

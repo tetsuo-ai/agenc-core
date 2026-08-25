@@ -51,7 +51,7 @@ Credential values are not written into the canonical config snapshot.
 | OpenRouter | `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, `AGENC_OPENROUTER_HTTP_REFERER`, `AGENC_OPENROUTER_TITLE` |
 | Groq | `GROQ_API_KEY`, `GROQ_BASE_URL` |
 | DeepSeek | `DEEPSEEK_API_KEY`, `DEEPSEEK_BASE_URL` |
-| Gemini | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_ACCESS_TOKEN`, `GEMINI_AUTH_MODE` (`api-key`, `access-token`, or `adc`), `GEMINI_BASE_URL`, `GEMINI_PROJECT_ID`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_QUOTA_PROJECT`, `GOOGLE_APPLICATION_CREDENTIALS`, `GEMINI_VERTEX_LOCATION`, `GOOGLE_CLOUD_LOCATION`, `GOOGLE_CLOUD_REGION`, `CLOUD_ML_REGION`, `GEMINI_CACHED_CONTENT` |
+| Gemini | `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_ACCESS_TOKEN`, `GEMINI_AUTH_MODE` (`api-key`, `access-token`, or `adc`), `GEMINI_BASE_URL`, `GEMINI_PROJECT_ID`, `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_QUOTA_PROJECT`, `GOOGLE_APPLICATION_CREDENTIALS`, `GEMINI_VERTEX_LOCATION`, `GOOGLE_CLOUD_LOCATION`, `GEMINI_CACHED_CONTENT` |
 | Mistral | `MISTRAL_API_KEY`, `MISTRAL_BASE_URL` |
 | NVIDIA NIM | `NVIDIA_API_KEY`, `NVIDIA_BASE_URL` |
 | MiniMax | `MINIMAX_API_KEY`, `MINIMAX_BASE_URL` |
@@ -82,11 +82,15 @@ stored credential path.
 
 Gemini project identity has one ordered surface: `GEMINI_PROJECT_ID` wins over
 `GOOGLE_CLOUD_PROJECT`. Other Google project-name aliases are not consumed.
-An explicit Gemini API key passed by an embedding caller wins over captured
-environment credentials. Otherwise `GEMINI_AUTH_MODE` restricts resolution to
-exactly the named method and rejects values other than `api-key`,
-`access-token`, or `adc`. With no mode, the credential order is
-`GEMINI_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_ACCESS_TOKEN`, then file-backed ADC.
+`GEMINI_AUTH_MODE` restricts resolution to exactly the named method and rejects
+values other than `api-key`, `access-token`, or `adc`. An explicit Gemini API
+key passed by an embedding caller wins over captured API-key inputs only in
+automatic or `api-key` mode; it cannot override forced `access-token` or `adc`
+mode. With no mode, the credential order is
+`GEMINI_API_KEY`, `GOOGLE_API_KEY`, a saved Gemini BYOK key,
+`GEMINI_ACCESS_TOKEN`, then file-backed ADC. A saved BYOK key participates only
+in automatic or `api-key` mode; forcing `access-token` or `adc` cannot be
+overridden by a stale saved key.
 
 Gemini ADC uses one file from immutable/trusted runtime context: a captured
 `GOOGLE_APPLICATION_CREDENTIALS` path, or the standard gcloud ADC file for the
@@ -100,8 +104,18 @@ gcloud or a workload-identity helper outside AgenC and provide a captured
 gcloud or query a metadata server during ADC resolution.
 
 Set `GEMINI_PROJECT_ID` or `GOOGLE_CLOUD_PROJECT` when the credential does not
-identify the Vertex resource project. `GOOGLE_CLOUD_QUOTA_PROJECT` is the
-separate quota/billing project and never replaces resource-project selection.
+identify the Vertex resource project. Set `GEMINI_VERTEX_LOCATION` or its
+documented fallback `GOOGLE_CLOUD_LOCATION` for the Vertex location.
+`GOOGLE_CLOUD_QUOTA_PROJECT` is the separate quota/billing project and never
+replaces resource-project selection.
+
+`GEMINI_BASE_URL` is a native Gemini-protocol API root. AgenC does not infer,
+append, or strip an OpenAI-compatible `/openai` surface. Developer API roots
+must use `/v1beta`; Vertex roots must identify the matching
+`projects/{project}/locations/{location}` native publisher resource. A custom
+root must directly accept native `models/*:generateContent` requests. Without
+an explicit base URL, access-token and ADC modes require both the resource
+project and Vertex location so AgenC can derive one unambiguous native root.
 
 Proxy routing uses `HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY` and their lowercase
 forms `http_proxy`, `https_proxy`, `no_proxy`. `PATH` is captured so provider
@@ -336,10 +350,13 @@ launcher, child process, integration, or test harness.
 | MCP transport and OAuth tuning | `ENABLE_MCP_LARGE_OUTPUT_FILES`, `MAX_MCP_OUTPUT_TOKENS`, `MCP_CLIENT_SECRET`, `MCP_OAUTH_CLIENT_METADATA_URL`, `MCP_SERVER_CONNECTION_BATCH_SIZE`, `MCP_TIMEOUT`, `MCP_TOOL_TIMEOUT`, `MCP_XAA_IDP_CLIENT_SECRET` |
 | Runtime, update, and test controls | `ATOMIC_CHAT_BASE_URL`, `BASH_MAX_OUTPUT_LENGTH`, `DEBUG`, `DEBUG_SDK`, `DISABLE_AUTOUPDATER`, `DISABLE_COST_WARNINGS`, `DISABLE_ERROR_REPORTING`, `DISABLE_EXTRA_USAGE_COMMAND`, `DISABLE_INSTALLATION_CHECKS`, `DISABLE_INTERLEAVED_THINKING`, `DISABLE_PROMPT_CACHING`, `DISABLE_PROMPT_CACHING_HAIKU`, `DISABLE_PROMPT_CACHING_OPUS`, `DISABLE_PROMPT_CACHING_SONNET`, `ENABLE_LOCKLESS_UPDATES`, `ENABLE_PID_BASED_VERSION_LOCKING`, `ENABLE_SESSION_PERSISTENCE`, `FORCE_AUTOUPDATE_PLUGINS`, `FORCE_CODE_TERMINAL`, `FORCE_VCR`, `IS_DEMO`, `IS_SANDBOX`, `LOCAL_BRIDGE`, `SESSION_INGRESS_URL`, `SLASH_COMMAND_TOOL_CHAR_BUDGET`, `TASK_MAX_OUTPUT_LENGTH`, `TEST_ENABLE_SESSION_PERSISTENCE`, `USE_BUILTIN_RIPGREP`, `USE_LOCAL_OAUTH`, `USE_STAGING_OAUTH`, `UV_THREADPOOL_SIZE`, `VCR_RECORD`, `WALLET_PASS` |
 | Auth and hosted integration metadata | `CURSOR_TRACE_ID`, `GITHUB_DEVICE_FLOW_CLIENT_ID`, `SESSIONNAME`, `SPACE_CREATOR_USER_ID`, `USER_TYPE` |
+| Google/Vertex helper region inputs | `CLOUD_ML_REGION`, `GOOGLE_CLOUD_REGION` |
 
 MCP transport tuning, helper execution, interpolation, and reconnection use
 the creating client's immutable session snapshot. The daemon does not re-read
 these values from its startup environment after a connection is created.
+`CLOUD_ML_REGION` and `GOOGLE_CLOUD_REGION` do not select Gemini's canonical
+native endpoint; that route uses the Gemini location names documented above.
 
 Standard process and desktop discovery inputs:
 

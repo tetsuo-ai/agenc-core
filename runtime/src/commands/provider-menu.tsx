@@ -12,6 +12,7 @@ import {
 } from "../config/resolve-model.js";
 import type { AgenCConfig, ProviderConfig } from "../config/schema.js";
 import type { EnvSnapshot } from "../config/env.js";
+import { readLocalByokCredential } from "../auth/native-credentials.js";
 import {
   missingProviderCredentialEnvironmentLabel,
   resolveProviderBaseURLEnvironment,
@@ -24,6 +25,10 @@ import {
 } from "../llm/registry/provider-info.js";
 import { readXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
 import { resolveGrokProviderCredential } from "../llm/xai-capability-config.js";
+import type { GeminiCredentialPlan } from "../utils/geminiAuth.js";
+import { resolveProviderFactoryOptions } from "../llm/provider-options.js";
+import { readGeminiRuntimeOptions } from "../llm/providers/gemini/runtime-options.js";
+import { geminiEndpointFor } from "../llm/providers/gemini/endpoint-plan.js";
 import type { HomeContext } from "../config/home.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
@@ -196,10 +201,9 @@ function providerBaseURL(
   config: ProviderConfig | undefined,
   environment: EnvSnapshot,
 ): string {
-  const credentialEnvironment = resolveProviderCredentialEnvironment(
-    provider,
-    environment,
-  );
+  const credentialEnvironment = provider === "amazon-bedrock"
+    ? resolveProviderCredentialEnvironment(provider, environment)
+    : undefined;
   const region = credentialEnvironment?.kind === "aws-sigv4"
     ? credentialEnvironment.region?.value
     : undefined;
@@ -246,6 +250,7 @@ function authState(params: {
   readonly baseURL: string;
   readonly config?: AgenCConfig;
   readonly managedSubscriptionAvailable: boolean;
+  readonly geminiCredentialPlan?: GeminiCredentialPlan;
 }): {
   readonly state: ProviderAuthState;
   readonly label: string;
@@ -282,6 +287,16 @@ function authState(params: {
         source: `signed in as ${oauth.accountLabel ?? "xAI account"} via /grok-login`,
       };
     }
+  }
+
+  if (params.provider === "gemini") {
+    return params.geminiCredentialPlan === undefined
+      ? {
+          state: "missing",
+          label: "Gemini configuration",
+          source: "canonical Gemini configuration could not be resolved",
+        }
+      : geminiAuthState(params.geminiCredentialPlan);
   }
 
   const credentialEnvironment = resolveProviderCredentialEnvironment(
@@ -368,12 +383,63 @@ function authState(params: {
   };
 }
 
+function geminiAuthState(plan: GeminiCredentialPlan): {
+  readonly state: ProviderAuthState;
+  readonly label: string;
+  readonly source: string;
+} {
+  if (plan.kind === "api-key") {
+    const label = plan.source === "saved-byok" ? "saved BYOK" : plan.source;
+    return {
+      state: "ready",
+      label,
+      source: plan.source === "saved-byok"
+        ? "native vault saved Gemini BYOK"
+        : `env ${plan.source}`,
+    };
+  }
+  if (plan.kind === "access-token") {
+    return {
+      state: "ready",
+      label: plan.source,
+      source: `env ${plan.source}`,
+    };
+  }
+  if (plan.kind === "adc") {
+    return {
+      state: "ready",
+      label: "Google ADC",
+      source: plan.source === "GOOGLE_APPLICATION_CREDENTIALS"
+        ? `env ${plan.source}`
+        : `well-known ADC file ${plan.credentialPath}`,
+    };
+  }
+  const missing = plan.expected === "access-token"
+    ? "GEMINI_ACCESS_TOKEN"
+    : plan.expected === "adc"
+      ? plan.configuredPath === undefined
+        ? "Google ADC credentials"
+        : `ADC file ${plan.configuredPath}`
+      : plan.expected === "api-key"
+        ? "GEMINI_API_KEY or GOOGLE_API_KEY or saved BYOK"
+        : "Gemini API key, access token, or ADC credentials";
+  return {
+    state: "missing",
+    label: `${missing} missing`,
+    source: `set ${missing}`,
+  };
+}
+
 function runtimeState(params: {
   readonly status: ProviderRowStatus;
   readonly authState: ProviderAuthState;
   readonly models: readonly string[];
   readonly baseURL: string;
+  readonly configurationError?: string;
 }): { readonly state: ProviderRuntimeState; readonly error?: string } {
+  if (params.configurationError !== undefined) {
+    return { state: "error", error: params.configurationError };
+  }
   const baseError = baseURLError(params.baseURL);
   if (baseError !== undefined) {
     return { state: "error", error: baseError };
@@ -536,12 +602,52 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     const provider = info.id;
     const providerConfig = config ? readProviderConfig(config, provider) : undefined;
     const status = rowStatus({ config, provider, currentProvider });
-    const baseURL = providerBaseURL(
+    const configuredBaseURL = providerBaseURL(
       provider,
       info.baseURL,
       providerConfig,
       environment,
     );
+    const model = providerModel({
+      config,
+      provider,
+      currentProvider,
+      currentModel,
+      managedKeysEnabled,
+      managedSubscriptionAvailable,
+      managedSubscriptionTier,
+    });
+    let baseURL = configuredBaseURL;
+    let geminiCredentialPlan: GeminiCredentialPlan | undefined;
+    let configurationError: string | undefined;
+    if (provider === "gemini") {
+      try {
+        const explicitBaseURL =
+          resolveProviderBaseURLEnvironment(provider, environment)?.value ??
+          providerConfig?.base_url?.trim();
+        const resolved = resolveProviderFactoryOptions(
+          "gemini",
+          {
+            model,
+            ...(explicitBaseURL ? { baseURL: explicitBaseURL } : {}),
+          },
+          environment,
+          {
+            savedApiKey: readLocalByokCredential(home, "gemini")?.apiKey,
+          },
+        );
+        const runtime = readGeminiRuntimeOptions(resolved.extra);
+        if (runtime === undefined) {
+          throw new Error("Gemini runtime authority was not resolved");
+        }
+        baseURL = geminiEndpointFor(runtime.endpointPlan);
+        geminiCredentialPlan = runtime.credentialPlan;
+      } catch (error) {
+        configurationError = error instanceof Error
+          ? error.message
+          : String(error);
+      }
+    }
     const auth = authState({
       home,
       environment,
@@ -550,6 +656,9 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
       baseURL,
       ...(config ? { config } : {}),
       managedSubscriptionAvailable,
+      ...(geminiCredentialPlan !== undefined
+        ? { geminiCredentialPlan }
+        : {}),
     });
     const rawModels = modelCatalog[provider] ?? [];
     const managedModels =
@@ -562,19 +671,12 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
       authState: auth.state,
       models,
       baseURL,
+      ...(configurationError !== undefined ? { configurationError } : {}),
     });
     return {
       provider,
       name: info.name,
-      model: providerModel({
-        config,
-        provider,
-        currentProvider,
-        currentModel,
-        managedKeysEnabled,
-        managedSubscriptionAvailable,
-        managedSubscriptionTier,
-      }),
+      model,
       models,
       baseURL,
       status,

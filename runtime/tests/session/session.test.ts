@@ -65,6 +65,7 @@ import {
   readProviderFactoryOptions,
   readProviderIdentity,
 } from "../llm/provider.js";
+import { createGeminiEndpointPlan } from "../llm/providers/gemini/endpoint-plan.js";
 import type { AuthBackend } from "../auth/backend.js";
 import { clearSession } from "../commands/clear.js";
 import {
@@ -912,6 +913,70 @@ describe("Session.consumePendingProviderSwitch", () => {
         expect(vendKey).not.toHaveBeenCalled();
       },
     );
+  });
+
+  it("retains a canonical saved Gemini plan across a switch away and back", async () => {
+    const nativeBaseURL = "https://gateway.example/gemini-native";
+    const session = buildSession({
+      services: {
+        provider: createProvider("gemini", {
+          model: "gemini-2.5-pro",
+          extra: {
+            gemini: {
+              credentialPlan: {
+                kind: "api-key",
+                credential: "saved-key",
+                source: "saved-byok",
+              },
+              endpointPlan: createGeminiEndpointPlan({ baseURL: nativeBaseURL }),
+            },
+          },
+        }),
+        providerEnvironment: { GEMINI_BASE_URL: nativeBaseURL },
+        configStore: { current: () => ({}) },
+      },
+    });
+
+    session.setPendingProviderSwitch({
+      provider: "ollama",
+      model: "llama3.2",
+    });
+    await expect(session.consumePendingProviderSwitch()).resolves.toMatchObject({
+      applied: true,
+      provider: "ollama",
+    });
+
+    session.setPendingProviderSwitch({
+      provider: "gemini",
+      model: "gemini-2.5-flash",
+    });
+    await expect(session.consumePendingProviderSwitch()).resolves.toEqual({
+      applied: true,
+      provider: "gemini",
+      model: "gemini-2.5-flash",
+    });
+    expect(readProviderFactoryOptions(session.services.provider)).toMatchObject({
+      model: "gemini-2.5-flash",
+      extra: {
+        gemini: {
+          credentialPlan: {
+            kind: "api-key",
+            credential: "saved-key",
+            source: "saved-byok",
+          },
+          endpointPlan: {
+            kind: "custom",
+            nativeBaseURL,
+          },
+        },
+      },
+    });
+    expect(
+      readProviderFactoryOptions(session.services.provider).apiKey,
+    ).toBeUndefined();
+    expect(
+      readProviderFactoryOptions(session.services.provider).baseURL,
+    ).toBeUndefined();
   });
 
   it("caps managed OpenRouter switches to the hosted output-token default", async () => {

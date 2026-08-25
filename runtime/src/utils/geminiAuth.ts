@@ -15,6 +15,7 @@ export type GeminiAuthMode = 'api-key' | 'access-token' | 'adc'
 
 export type GeminiCredentialSource =
   | 'factory'
+  | 'saved-byok'
   | 'GEMINI_API_KEY'
   | 'GOOGLE_API_KEY'
   | 'GEMINI_ACCESS_TOKEN'
@@ -34,7 +35,7 @@ export type GeminiCredentialPlan =
       credential: string
       source: Extract<
         GeminiCredentialSource,
-        'factory' | 'GEMINI_API_KEY' | 'GOOGLE_API_KEY'
+        'factory' | 'saved-byok' | 'GEMINI_API_KEY' | 'GOOGLE_API_KEY'
       >
     }
   | {
@@ -73,8 +74,10 @@ type GoogleAuthClientLike = {
 type GeminiAdcInput = Extract<GeminiCredentialPlan, { kind: 'adc' }>
 
 export type ResolveGeminiCredentialOptions = {
-  /** An explicit factory credential; it outranks captured environment input. */
+  /** An explicit factory credential; it outranks API-key environment input. */
   apiKey?: string
+  /** A native-vault BYOK candidate, subject to API-key mode precedence. */
+  savedApiKey?: string
   createGoogleAuthClient?: (
     input: GeminiAdcInput,
   ) => Promise<GoogleAuthClientLike>
@@ -94,6 +97,162 @@ export type GeminiResolvedCredential =
       source: GeminiAdcInput['source']
     }
   | GeminiMissingCredentialPlan
+
+/** Build the sole native-transport header projection of a resolved plan. */
+export function geminiCredentialHeaders(
+  credential: GeminiResolvedCredential,
+): Record<string, string> | undefined {
+  if (credential.kind === 'none') return undefined
+  if (credential.kind === 'api-key') {
+    return { 'x-goog-api-key': credential.credential }
+  }
+  return {
+    authorization: `Bearer ${credential.credential}`,
+    ...(credential.quotaProjectId !== undefined
+      ? { 'x-goog-user-project': credential.quotaProjectId }
+      : {}),
+  }
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function assertOnlyCredentialPlanKeys(
+  value: Readonly<Record<string, unknown>>,
+  allowed: readonly string[],
+): void {
+  const allowedSet = new Set(allowed)
+  if (Object.keys(value).some((key) => !allowedSet.has(key))) {
+    throw new Error('Gemini credential plan contains unsupported fields')
+  }
+}
+
+function optionalPlanString(
+  value: Readonly<Record<string, unknown>>,
+  key: string,
+): string | undefined {
+  const candidate = value[key]
+  if (candidate === undefined) return undefined
+  if (
+    typeof candidate !== 'string' ||
+    candidate.trim().length === 0 ||
+    candidate.trim() === 'undefined'
+  ) {
+    throw new Error(`Gemini credential plan requires a non-empty ${key}`)
+  }
+  return candidate.trim()
+}
+
+function requiredPlanString(
+  value: Readonly<Record<string, unknown>>,
+  key: string,
+): string {
+  const candidate = optionalPlanString(value, key)
+  if (candidate === undefined) {
+    throw new Error(`Gemini credential plan requires a non-empty ${key}`)
+  }
+  return candidate
+}
+
+/** Validate and clone a credential plan crossing an untyped runtime boundary. */
+export function parseGeminiCredentialPlan(value: unknown): GeminiCredentialPlan {
+  if (!isRecord(value)) {
+    throw new Error('Gemini runtime options require a credentialPlan')
+  }
+  switch (value.kind) {
+    case 'api-key': {
+      assertOnlyCredentialPlanKeys(value, ['kind', 'credential', 'source'])
+      const source = value.source
+      if (
+        source !== 'factory' &&
+        source !== 'saved-byok' &&
+        source !== 'GEMINI_API_KEY' &&
+        source !== 'GOOGLE_API_KEY'
+      ) {
+        throw new Error('Gemini API-key credential plan has an invalid source')
+      }
+      return Object.freeze({
+        kind: 'api-key',
+        credential: requiredPlanString(value, 'credential'),
+        source,
+      })
+    }
+    case 'access-token': {
+      assertOnlyCredentialPlanKeys(value, [
+        'kind',
+        'credential',
+        'projectId',
+        'quotaProjectId',
+        'source',
+      ])
+      if (value.source !== 'GEMINI_ACCESS_TOKEN') {
+        throw new Error('Gemini access-token credential plan has an invalid source')
+      }
+      const projectId = optionalPlanString(value, 'projectId')
+      const quotaProjectId = optionalPlanString(value, 'quotaProjectId')
+      return Object.freeze({
+        kind: 'access-token',
+        credential: requiredPlanString(value, 'credential'),
+        source: 'GEMINI_ACCESS_TOKEN',
+        ...(projectId !== undefined ? { projectId } : {}),
+        ...(quotaProjectId !== undefined ? { quotaProjectId } : {}),
+      })
+    }
+    case 'adc': {
+      assertOnlyCredentialPlanKeys(value, [
+        'kind',
+        'credentialPath',
+        'projectId',
+        'quotaProjectId',
+        'source',
+      ])
+      const source = value.source
+      if (
+        source !== 'GOOGLE_APPLICATION_CREDENTIALS' &&
+        source !== 'well-known-adc'
+      ) {
+        throw new Error('Gemini ADC credential plan has an invalid source')
+      }
+      const projectId = optionalPlanString(value, 'projectId')
+      const quotaProjectId = optionalPlanString(value, 'quotaProjectId')
+      return Object.freeze({
+        kind: 'adc',
+        credentialPath: requiredPlanString(value, 'credentialPath'),
+        source,
+        ...(projectId !== undefined ? { projectId } : {}),
+        ...(quotaProjectId !== undefined ? { quotaProjectId } : {}),
+      })
+    }
+    case 'none': {
+      assertOnlyCredentialPlanKeys(value, [
+        'kind',
+        'mode',
+        'expected',
+        'configuredPath',
+      ])
+      const mode = value.mode
+      const expected = value.expected
+      const valid =
+        (mode === 'auto' && expected === 'any') ||
+        (mode === 'api-key' && expected === 'api-key') ||
+        (mode === 'access-token' && expected === 'access-token') ||
+        (mode === 'adc' && expected === 'adc')
+      if (!valid) {
+        throw new Error('Gemini missing-credential plan is inconsistent')
+      }
+      const configuredPath = optionalPlanString(value, 'configuredPath')
+      return Object.freeze({
+        kind: 'none',
+        mode,
+        expected,
+        ...(configuredPath !== undefined ? { configuredPath } : {}),
+      })
+    }
+    default:
+      throw new Error('Gemini credential plan has an invalid kind')
+  }
+}
 
 function sanitizeCredential(value: string | undefined | null): string | undefined {
   const trimmed = value?.trim()
@@ -228,21 +387,21 @@ export function resolveGeminiCredentialPlan(
   // Parse first so an invalid mode is never hidden by another credential.
   const authMode = getGeminiAuthMode(env)
   const explicitApiKey = sanitizeCredential(options.apiKey)
-  if (explicitApiKey !== undefined) {
-    return {
-      kind: 'api-key',
-      credential: explicitApiKey,
-      source: 'factory',
-    }
-  }
-
   const geminiApiKey = sanitizeCredential(env.GEMINI_API_KEY)
   const googleApiKey = sanitizeCredential(env.GOOGLE_API_KEY)
+  const savedApiKey = sanitizeCredential(options.savedApiKey)
   const accessToken = sanitizeCredential(env.GEMINI_ACCESS_TOKEN)
   const projectId = getGeminiProjectIdHint(env)
   const quotaProjectId = getGeminiQuotaProjectIdHint(env)
 
   if (authMode === undefined || authMode === 'api-key') {
+    if (explicitApiKey !== undefined) {
+      return {
+        kind: 'api-key',
+        credential: explicitApiKey,
+        source: 'factory',
+      }
+    }
     if (geminiApiKey !== undefined) {
       return {
         kind: 'api-key',
@@ -255,6 +414,13 @@ export function resolveGeminiCredentialPlan(
         kind: 'api-key',
         credential: googleApiKey,
         source: 'GOOGLE_API_KEY',
+      }
+    }
+    if (savedApiKey !== undefined) {
+      return {
+        kind: 'api-key',
+        credential: savedApiKey,
+        source: 'saved-byok',
       }
     }
     if (authMode === 'api-key') return missingCredentialPlan(authMode)
@@ -408,15 +574,4 @@ export async function materializeGeminiCredentialPlan(
       { cause: error },
     )
   }
-}
-
-/** Compatibility wrapper for call sites not yet migrated to plan propagation. */
-export async function resolveGeminiCredential(
-  env: EnvSnapshot,
-  options: ResolveGeminiCredentialOptions = {},
-): Promise<GeminiResolvedCredential> {
-  return materializeGeminiCredentialPlan(
-    resolveGeminiCredentialPlan(env, options),
-    options,
-  )
 }

@@ -42,4 +42,108 @@ describe('Gemini credential authority', () => {
     expect(authSource).not.toContain('env.GCLOUD_PROJECT')
     expect(authSource).not.toContain('env.GOOGLE_PROJECT_ID')
   })
+
+  test('propagates one typed plan through options, factory state, and native requests', () => {
+    const optionsSource = source('llm/provider-options.ts')
+    const factorySource = source('llm/provider.ts')
+    const nativeSource = source('llm/providers/gemini/index.ts')
+
+    expect(optionsSource).toContain('resolveGeminiCredentialPlan')
+    expect(optionsSource).toContain('createGeminiEndpointPlan')
+    expect(optionsSource).toContain('forcedExtra.gemini')
+    expect(factorySource).toContain('readonly gemini?: GeminiRuntimeOptions')
+    expect(factorySource).toContain('credentialPlan: gemini.credentialPlan')
+    expect(factorySource).toContain('endpointPlan: gemini.endpointPlan')
+    expect(nativeSource).toContain(
+      'export interface GeminiProviderConfig extends Omit<LLMProviderConfig, "baseURL">',
+    )
+    expect(nativeSource).toContain('materializeGeminiCredentialPlan')
+    expect(nativeSource).toContain('geminiEndpointFor(this.config.endpointPlan')
+    expect(nativeSource).not.toMatch(
+      /config\.(?:apiKey|accessToken|authMode|oauth|resolveCredential|project)/u,
+    )
+  })
+
+  test('keeps Gemini out of the compatibility shim and preserves wrapped factory state', () => {
+    const authSource = source('utils/geminiAuth.ts')
+    const shimSource = source('services/api/openaiShim.ts')
+    const agentSource = source('agents/run-agent.ts')
+    const compatSource = source('session/turn-compat.ts')
+    const endpointSource = source('llm/providers/gemini/endpoint-plan.ts')
+    const menuSource = source('commands/provider-menu.tsx')
+    const discoverySource = source('llm/discovery/provider-discovery.ts')
+    const verificationSource = source('onboarding/useApiKeyVerification.ts')
+
+    expect(authSource).not.toContain('export function resolveGeminiCredential(')
+    expect(shimSource).toContain(
+      'Gemini requests require the canonical native Gemini provider',
+    )
+    expect(shimSource).not.toContain('materializeGeminiCredentialPlan')
+    expect(shimSource).not.toContain('geminiCredentialHeaders')
+    expect(shimSource).not.toContain('resolveGeminiCredential(')
+    expect(shimSource).not.toMatch(
+      /environment\.(?:GEMINI_API_KEY|GOOGLE_API_KEY|GEMINI_ACCESS_TOKEN)/u,
+    )
+    expect(agentSource).toContain('preserveProviderFactoryState')
+    expect(agentSource).not.toContain('buildAgentProviderOverride')
+    expect(agentSource).not.toMatch(
+      /process\.env\.(?:GEMINI_API_KEY|GOOGLE_API_KEY|GEMINI_ACCESS_TOKEN)/u,
+    )
+    expect(compatSource).toContain('createTurnCompatProviderLease')
+    expect(compatSource).toContain('readProviderFactoryOptions(source)')
+    expect(compatSource).toContain('createProvider(')
+    expect(endpointSource).not.toContain('openAiCompatibleBaseURL')
+    expect(endpointSource).not.toContain('GEMINI_DEVELOPER_OPENAI')
+    for (const canonicalConsumer of [menuSource, discoverySource, verificationSource]) {
+      expect(canonicalConsumer).toContain('resolveProviderFactoryOptions')
+    }
+  })
+
+  test('has no second provider transport override channel', () => {
+    expect(
+      existsSync(new URL('../../src/llm/provider-override.ts', import.meta.url)),
+    ).toBe(false)
+
+    for (const path of [
+      'agents/run-agent.ts',
+      'services/api/anthropic.ts',
+      'services/api/client.ts',
+      'services/api/openaiShim.ts',
+      'tools/Tool.ts',
+    ]) {
+      const runtimeSource = source(path)
+      expect(runtimeSource, path).not.toContain('ProviderTransportOverride')
+      expect(runtimeSource, path).not.toMatch(/\bproviderOverride\s*[?:]/u)
+    }
+  })
+
+  test('keeps cached-content and saved-BYOK state inside canonical owners', () => {
+    for (const path of [
+      'budget/admitted-model-call.ts',
+      'services/compact/_deps/runtime.ts',
+    ]) {
+      const runtimeSource = source(path)
+      expect(runtimeSource, path).toContain('readGeminiRuntimeOptions')
+      expect(runtimeSource, path).not.toMatch(/extra\?*\.cachedContent/u)
+    }
+
+    for (const path of [
+      'session/session.ts',
+      'session/provider-service.ts',
+    ]) {
+      const sessionSource = source(path)
+      expect(sessionSource, path).not.toContain('readByokKey')
+      expect(sessionSource, path).not.toContain('LocalAuthBackend')
+    }
+  })
+
+  test('routes external providers before first-party OAuth storage access', () => {
+    const clientSource = source('services/api/client.ts')
+    const externalRoute = clientSource.indexOf("if (apiProvider !== 'firstParty')")
+    const oauthRead = clientSource.indexOf(
+      'await checkAndRefreshOAuthTokenIfNeeded',
+    )
+    expect(externalRoute).toBeGreaterThan(-1)
+    expect(oauthRead).toBeGreaterThan(externalRoute)
+  })
 })

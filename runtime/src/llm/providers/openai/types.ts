@@ -15,8 +15,7 @@ export interface OpenAIOAuthConfig extends OAuthRefreshCallbacks {
 export type OpenAIProviderAuthStrategy =
   | "bearer"
   | "optional_bearer"
-  | "none"
-  | "google_api_key";
+  | "none";
 
 export interface OpenAIProviderConfig extends LLMProviderConfig {
   readonly apiKey?: string;

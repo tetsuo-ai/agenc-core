@@ -6,7 +6,6 @@ import {
   LLMServerError,
   LLMTimeoutError,
 } from "../../errors.js";
-import { GeminiProvider } from "../gemini/index.js";
 import { LMStudioProvider } from "../lmstudio/index.js";
 import { BUILT_IN_PROVIDER_BASE_URLS } from "../../registry/provider-info.js";
 import { OpenAIProvider } from "./adapter.js";
@@ -1726,49 +1725,4 @@ describe("OpenAIProvider", () => {
     expect(headers.get("authorization")).toBeNull();
   });
 
-  test("normalizes Gemini /openai base URLs to native generateContent", async () => {
-    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          model: "gemini-2.5-pro",
-          candidates: [
-            {
-              content: {
-                role: "model",
-                parts: [{ text: "ok" }],
-              },
-              finishReason: "STOP",
-            },
-          ],
-          usageMetadata: {
-            promptTokenCount: 4,
-            candidatesTokenCount: 1,
-            totalTokenCount: 5,
-          },
-        }),
-        {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        },
-      ),
-    );
-    const provider = new GeminiProvider({
-      apiKey: "gemini-test",
-      model: "gemini-2.5-pro",
-      baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
-      fetchImpl,
-    });
-
-    await provider.chat([{ role: "user", content: "hello" }]);
-
-    const [requestUrl, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(String(requestUrl)).toBe(
-      "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent",
-    );
-    const headers = init?.headers as Headers;
-    expect(headers.get("x-goog-api-key")).toBe("gemini-test");
-    expect(headers.get("authorization")).toBeNull();
-    const requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
-    expect("store" in requestBody).toBe(false);
-  });
 });

@@ -885,7 +885,6 @@ export type Options = {
   // so the model can pace itself. `remaining` is computed by the caller
   // (query.ts decrements across the agentic loop).
   taskBudget?: { total: number; remaining?: number }
-  providerOverride?: { model: string; baseURL: string; apiKey: string }
 }
 
 function assertLegacyAnthropicModelApiIsTestOnly(): void {
@@ -1011,7 +1010,6 @@ async function* executeNonStreamingRequest(
     model: string
     fetchOverride?: Options['fetchOverride']
     source: string
-    providerOverride?: Options['providerOverride']
   },
   retryOptions: {
     model: string
@@ -1039,7 +1037,6 @@ async function* executeNonStreamingRequest(
         model: clientOptions.model,
         fetchOverride: clientOptions.fetchOverride,
         source: clientOptions.source,
-        providerOverride: clientOptions.providerOverride,
       }),
     async (anthropic, attempt, context) => {
       const start = Date.now()
@@ -1834,7 +1831,6 @@ async function* queryModel(
           model: options.model,
           fetchOverride: options.fetchOverride,
           source: options.querySource,
-          providerOverride: options.providerOverride,
         }),
       async (anthropic, attempt, context) => {
         attemptNumber = attempt
@@ -2361,7 +2357,7 @@ async function* queryModel(
       // fallback event firing but the call itself hanging at dispatch).
       logForDiagnosticsNoPII('info', 'cli_nonstreaming_fallback_started')
       const result = yield* executeNonStreamingRequest(
-        { model: options.model, source: options.querySource, providerOverride: options.providerOverride },
+        { model: options.model, source: options.querySource },
         {
           model: options.model,
           fallbackModel: options.fallbackModel,

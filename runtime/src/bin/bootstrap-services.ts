@@ -99,7 +99,10 @@ import { isRecord } from "../utils/record.js";
 import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import { bindExecutionAdmissionJournal } from "../session/execution-admission-journal.js";
 import type { AgentRuntimeOptions } from "../session/runtime-options.js";
-import { SessionProviderService } from "../session/provider-service.js";
+import {
+  SessionProviderService,
+  type ReadSavedProviderApiKey,
+} from "../session/provider-service.js";
 import { snapshotProviderEnvironment } from "../llm/provider-options.js";
 
 export { bindExecutionAdmissionJournal } from "../session/execution-admission-journal.js";
@@ -131,6 +134,7 @@ export interface BootstrapSessionServicesOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly conversationId: string;
   readonly model: string;
+  readonly readSavedApiKey?: ReadSavedProviderApiKey;
   readonly sessionConfiguration: SessionConfiguration;
   readonly runtimeOptions: AgentRuntimeOptions;
   readonly codeModeService?: CodeModeService;
@@ -748,6 +752,9 @@ export function buildBootstrapSessionServices(
     initialProviderName: opts.providerName,
     initialModel: opts.model,
     environment: providerEnvironment,
+    ...(opts.readSavedApiKey !== undefined
+      ? { readSavedApiKey: opts.readSavedApiKey }
+      : {}),
   });
 
   const services: SessionServices = {

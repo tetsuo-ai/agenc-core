@@ -2,11 +2,18 @@ import { useEffect, useState } from "react";
 
 import { resolveProviderSettings } from "../config/resolve-provider.js";
 import type { AgenCConfig } from "../config/schema.js";
+import { resolveProviderFactoryOptions } from "../llm/provider-options.js";
+import { geminiEndpointFor } from "../llm/providers/gemini/endpoint-plan.js";
+import { readGeminiRuntimeOptions } from "../llm/providers/gemini/runtime-options.js";
 import {
   BUILT_IN_PROVIDER_BASE_URLS,
   resolveBuiltInProviderInfo,
   type BuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
+import {
+  geminiCredentialHeaders,
+  materializeGeminiCredentialPlan,
+} from "../utils/geminiAuth.js";
 import type { OnboardingEnv } from "./projectOnboardingState.js";
 
 export type VerificationStatus =
@@ -34,6 +41,11 @@ export interface UseApiKeyVerificationOptions extends VerifyApiKeyParams {
   readonly enabled?: boolean;
 }
 
+type GenericApiKeyVerificationProvider = Exclude<
+  BuiltInProviderSlug,
+  "gemini"
+>;
+
 // This is provider verification-protocol behavior, not the onboarding access
 // classification: an OpenAI-compatible local endpoint can authenticate its
 // models route, while Ollama and LM Studio have no stable key-check contract.
@@ -54,8 +66,8 @@ export const DEFAULT_PROVIDER_VERIFY_TIMEOUT_MS = 5_000;
 /**
  * Providers that reject bad API keys with HTTP 400 instead of 401/403 on
  * their models endpoint (verified live): x.ai returns 400 for both
- * malformed and well-formed-but-wrong keys, and Gemini's OpenAI-compat
- * surface does the same. For these, 400 on a bare authenticated GET means
+ * malformed and well-formed-but-wrong keys, and the Gemini Developer API
+ * does the same. For these, 400 on a bare authenticated GET means
  * "key rejected", not "request malformed".
  */
 const PROVIDERS_REJECTING_KEYS_WITH_400 = new Set<BuiltInProviderSlug>([
@@ -112,7 +124,63 @@ export async function verifyApiKey(
     params.config,
     params.env,
   );
-  const baseURL = settings?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS[provider];
+  let factoryOptions: ReturnType<typeof resolveProviderFactoryOptions>;
+  try {
+    factoryOptions = resolveProviderFactoryOptions(
+      provider,
+      {
+        apiKey,
+        baseURL: settings?.baseURL,
+        model: settings?.defaultModel ?? providerInfo.defaultModel,
+      },
+      params.env ?? process.env,
+    );
+  } catch (error) {
+    return {
+      status: "error",
+      error: error instanceof Error
+        ? error.message
+        : "Provider verification configuration is invalid.",
+    };
+  }
+  let verificationURL: string;
+  let headers: Readonly<Record<string, string>>;
+  if (provider === "gemini") {
+    const runtime = readGeminiRuntimeOptions(factoryOptions.extra);
+    if (runtime === undefined) {
+      return {
+        status: "error",
+        error: "Gemini verification requires canonical runtime options.",
+      };
+    }
+    if (runtime.credentialPlan.kind !== "api-key") {
+      return {
+        status: "error",
+        error:
+          "Gemini API-key verification is blocked by the configured non-API-key auth mode.",
+      };
+    }
+    const credential = await materializeGeminiCredentialPlan(
+      runtime.credentialPlan,
+    );
+    const canonicalHeaders = geminiCredentialHeaders(credential);
+    if (canonicalHeaders === undefined) {
+      return {
+        status: "error",
+        error: "Gemini API-key verification could not materialize credentials.",
+      };
+    }
+    const nativeBaseURL = geminiEndpointFor(runtime.endpointPlan)
+      .replace(/\/+$/, "");
+    verificationURL = `${nativeBaseURL}/models`;
+    headers = canonicalHeaders;
+  } else {
+    verificationURL = providerVerificationUrl(
+      provider,
+      factoryOptions.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS[provider],
+    );
+    headers = apiKeyHeaders(provider, factoryOptions.apiKey ?? apiKey);
+  }
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(),
@@ -122,9 +190,9 @@ export async function verifyApiKey(
     (timer as { unref: () => void }).unref();
   }
   try {
-    const response = await fetchImpl(providerVerificationUrl(provider, baseURL), {
+    const response = await fetchImpl(verificationURL, {
       method: "GET",
-      headers: apiKeyHeaders(provider, apiKey),
+      headers,
       signal: controller.signal,
     });
     if (response.ok) return { status: "valid" };
@@ -182,21 +250,17 @@ export function useApiKeyVerification(
 
 /**
  * URL used to verify a provider API key. This is the models listing for
- * most providers, with two exceptions: Gemini keys are checked against the
- * OpenAI-compat surface, and OpenRouter's models endpoint is PUBLIC (it
- * returns 200 for any Authorization header, verified live) so its key-info
- * endpoint `/auth/key` is used instead — that one actually authenticates.
+ * most providers, except OpenRouter: its models endpoint is public (it returns
+ * 200 for any Authorization header, verified live), so its authenticated
+ * key-info endpoint `/auth/key` is used instead.
  */
 export function providerVerificationUrl(
-  provider: BuiltInProviderSlug,
+  provider: GenericApiKeyVerificationProvider,
   baseURL: string,
 ): string {
   const trimmed = baseURL.replace(/\/+$/, "");
   if (provider === "openrouter" && !/\/auth\/key$/i.test(trimmed)) {
     return `${trimmed}/auth/key`;
-  }
-  if (provider === "gemini" && !/\/openai$/i.test(trimmed)) {
-    return `${trimmed}/openai/models`;
   }
   if (trimmed.endsWith("/models")) return trimmed;
   if (/\/(?:v\d+(?:beta)?|api\/v\d+)$/i.test(trimmed)) {
@@ -206,7 +270,7 @@ export function providerVerificationUrl(
 }
 
 function apiKeyHeaders(
-  provider: BuiltInProviderSlug,
+  provider: GenericApiKeyVerificationProvider,
   apiKey: string,
 ): Readonly<Record<string, string>> {
   if (provider === "anthropic") {

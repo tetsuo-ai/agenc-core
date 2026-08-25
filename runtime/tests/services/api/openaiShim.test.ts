@@ -5,6 +5,19 @@ type FetchType = typeof globalThis.fetch
 
 type ShimOptions = Parameters<typeof createOpenAiShimClientImpl>[0]
 
+const TEST_HOME = Object.freeze({
+  path: '/tmp/agenc-openai-shim-test-home',
+  identityKey: '/tmp/agenc-openai-shim-test-home',
+  secureStorageAccount: 'test-account',
+  oauthFileSuffix: '',
+  source: 'agenc-home' as const,
+  isDefault: false,
+  configTomlPath: '/tmp/agenc-openai-shim-test-home/config.toml',
+  statePath: '/tmp/agenc-openai-shim-test-home/state.json',
+  authPath: '/tmp/agenc-openai-shim-test-home/auth.json',
+  trustedProjectsPath: '/tmp/agenc-openai-shim-test-home/trusted-projects.json',
+})
+
 function createOpenAiShimClient(options: ShimOptions): unknown {
   const providerEnvironment = Object.freeze({
     ...(options.providerEnvironment ?? process.env),
@@ -25,6 +38,7 @@ function createOpenAiShimClient(options: ShimOptions): unknown {
     selectedProvider,
     model,
     providerEnvironment,
+    home: options.home ?? TEST_HOME,
   })
 }
 
@@ -45,6 +59,7 @@ const originalEnv = {
   GEMINI_AUTH_MODE: process.env.GEMINI_AUTH_MODE,
   GEMINI_BASE_URL: process.env.GEMINI_BASE_URL,
   GOOGLE_CLOUD_PROJECT: process.env.GOOGLE_CLOUD_PROJECT,
+  GOOGLE_CLOUD_QUOTA_PROJECT: process.env.GOOGLE_CLOUD_QUOTA_PROJECT,
   ANTHROPIC_CUSTOM_HEADERS: process.env.ANTHROPIC_CUSTOM_HEADERS,
 }
 
@@ -114,6 +129,7 @@ beforeEach(() => {
   delete process.env.GEMINI_AUTH_MODE
   delete process.env.GEMINI_BASE_URL
   delete process.env.GOOGLE_CLOUD_PROJECT
+  delete process.env.GOOGLE_CLOUD_QUOTA_PROJECT
   delete process.env.ANTHROPIC_CUSTOM_HEADERS
 })
 
@@ -134,6 +150,10 @@ afterEach(() => {
   restoreEnv('GEMINI_AUTH_MODE', originalEnv.GEMINI_AUTH_MODE)
   restoreEnv('GEMINI_BASE_URL', originalEnv.GEMINI_BASE_URL)
   restoreEnv('GOOGLE_CLOUD_PROJECT', originalEnv.GOOGLE_CLOUD_PROJECT)
+  restoreEnv(
+    'GOOGLE_CLOUD_QUOTA_PROJECT',
+    originalEnv.GOOGLE_CLOUD_QUOTA_PROJECT,
+  )
   restoreEnv('ANTHROPIC_CUSTOM_HEADERS', originalEnv.ANTHROPIC_CUSTOM_HEADERS)
   globalThis.fetch = originalFetch
 })
@@ -587,57 +607,6 @@ test('strips provider-specific headers on GitHub ProviderCode transport requests
   expect(capturedHeaders?.get('editor-plugin-version')).toBe('copilot-chat/0.26.7')
 })
 
-test('strips provider-specific headers on GitHub ProviderCode transport with providerOverride API key', async () => {
-  let capturedHeaders: Headers | undefined
-
-  process.env.AGENC_PROVIDER = 'github'
-  process.env.OPENAI_API_KEY = 'env-should-not-win'
-  delete process.env.OPENAI_BASE_URL
-  delete process.env.AGENC_MODEL
-
-  globalThis.fetch = (async (_input, init) => {
-    capturedHeaders = new Headers(init?.headers)
-
-    return new Response('', {
-      status: 200,
-      headers: {
-        'Content-Type': 'text/event-stream',
-      },
-    })
-  }) as FetchType
-
-  const client = createOpenAiShimClient({
-    providerOverride: {
-      model: 'github:gpt-5-providerCode',
-      baseURL: 'https://api.githubcopilot.com',
-      apiKey: 'provider-override-key',
-    },
-  }) as OpenAiShimClient
-
-  await client.beta.messages.create(
-    {
-      model: 'ignored',
-      system: 'test system',
-      messages: [{ role: 'user', content: 'hello' }],
-      max_tokens: 64,
-      stream: true,
-    },
-    {
-      headers: {
-        'anthropic-version': '2023-06-01',
-        'x-agenc-remote-session-id': 'remote-123',
-        'x-safe-header': 'keep-me',
-      },
-    },
-  )
-
-  expect(capturedHeaders?.get('anthropic-version')).toBeNull()
-  expect(capturedHeaders?.get('x-agenc-remote-session-id')).toBeNull()
-  expect(capturedHeaders?.get('x-safe-header')).toBe('keep-me')
-  expect(capturedHeaders?.get('authorization')).toBe('Bearer provider-override-key')
-  expect(capturedHeaders?.get('editor-plugin-version')).toBe('copilot-chat/0.26.7')
-})
-
 test('preserves usage from final OpenAi stream chunk with empty choices', async () => {
   globalThis.fetch = (async (_input, init) => {
     const url = typeof _input === 'string' ? _input : _input.url
@@ -966,7 +935,7 @@ test('does not infer Gemini mode from OPENAI_BASE_URL path substrings', async ()
   let capturedAuthorization: string | null = null
 
   process.env.OPENAI_BASE_URL =
-    'https://evil.example/generativelanguage.googleapis.com/v1beta/openai'
+    'https://evil.example/generativelanguage.googleapis.com/v1beta'
   delete process.env.OPENAI_API_KEY
   process.env.GEMINI_API_KEY = 'gemini-secret'
 
@@ -1204,74 +1173,38 @@ test('preserves mixed text and image tool results as multipart content', async (
   })
 })
 
-test('uses GEMINI_ACCESS_TOKEN for Gemini provider-compatible requests', async () => {
-  let capturedAuthorization: string | null = null
-  let capturedProject: string | null = null
-  let requestUrl: string | undefined
-
-  process.env.AGENC_PROVIDER = 'gemini'
-  process.env.GEMINI_AUTH_MODE = 'access-token'
-  process.env.GEMINI_ACCESS_TOKEN = 'gemini-access-token'
-  process.env.GOOGLE_CLOUD_PROJECT = 'gemini-project'
-  process.env.GEMINI_BASE_URL =
-    'https://generativelanguage.googleapis.com/v1beta/openai'
-  process.env.AGENC_MODEL = 'gemini-2.0-flash'
-  delete process.env.OPENAI_BASE_URL
-  delete process.env.OPENAI_API_KEY
-  delete process.env.GEMINI_API_KEY
-  delete process.env.GOOGLE_API_KEY
-
-  globalThis.fetch = (async (input, init) => {
-    requestUrl = typeof input === 'string' ? input : input.url
-    const headers = init?.headers as Record<string, string> | undefined
-    capturedAuthorization =
-      headers?.Authorization ?? headers?.authorization ?? null
-    capturedProject =
-      headers?.['x-goog-user-project'] ??
-      headers?.['X-Goog-User-Project'] ??
-      null
-
-    return new Response(
-      JSON.stringify({
-        id: 'chatcmpl-gemini',
-        model: 'gemini-2.0-flash',
-        choices: [
-          {
-            message: {
-              role: 'assistant',
-              content: 'ok',
-            },
-            finish_reason: 'stop',
-          },
-        ],
-        usage: {
-          prompt_tokens: 3,
-          completion_tokens: 1,
-          total_tokens: 4,
-        },
-      }),
-      {
-        headers: {
-          'Content-Type': 'application/json',
-        },
+test('fails closed for Gemini without selecting shim credentials or endpoints', () => {
+  const authorityReads: string[] = []
+  const providerEnvironment = new Proxy(
+    {
+      AGENC_PROVIDER: 'gemini',
+      AGENC_MODEL: 'gemini-2.0-flash',
+    },
+    {
+      get(target, property, receiver) {
+        if (
+          typeof property === 'string' &&
+          (property.startsWith('GEMINI_') || property.startsWith('GOOGLE_'))
+        ) {
+          authorityReads.push(property)
+          throw new Error(`compatibility shim read ${property}`)
+        }
+        return Reflect.get(target, property, receiver)
       },
-    )
-  }) as FetchType
-
-  const client = createOpenAiShimClient({}) as OpenAiShimClient
-
-  await client.beta.messages.create({
-    model: 'gemini-2.0-flash',
-    messages: [{ role: 'user', content: 'hello' }],
-    max_tokens: 32,
-    stream: false,
-  })
-
-  expect(requestUrl).toBe(
-    'https://generativelanguage.googleapis.com/v1beta/openai/chat/completions',
+    },
   )
-  expect(capturedAuthorization).toBe('Bearer gemini-access-token')
-  expect(capturedProject).toBe('gemini-project')
+
+  expect(() =>
+    createOpenAiShimClientImpl({
+      selectedProvider: 'gemini',
+      model: 'gemini-2.0-flash',
+      providerEnvironment,
+      home: TEST_HOME,
+    }),
+  ).toThrow(
+    'Gemini requests require the canonical native Gemini provider',
+  )
+  expect(authorityReads).toEqual([])
 })
 
 test('preserves Gemini tool call extra_content from streaming chunks', async () => {

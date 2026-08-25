@@ -11,6 +11,7 @@ import type { z } from "zod/v4";
 import type { Command } from "../commands.js";
 import type { CanUseToolFn } from "../tui/hooks/useCanUseTool.js";
 import type { ThinkingConfig } from "../utils/thinking.js";
+import type { LLMProvider } from "../llm/types.js";
 import type {
   ToolAdmissionEstimate,
   ToolAdmissionUsage,
@@ -195,9 +196,9 @@ export type ToolUseContext = {
     querySource?: QuerySource;
     /** Optional callback to get the latest tools (e.g., after MCP servers connect mid-query) */
     refreshTools?: () => Tools;
-    /** Explicit provider override for this agent invocation. */
-    providerOverride?: { model: string; baseURL: string; apiKey: string };
   };
+  /** Canonical provider selected for this tool/fork context. */
+  provider?: LLMProvider;
   abortController: AbortController;
   readFileState: FileStateCache;
   getAppState(): AppState;

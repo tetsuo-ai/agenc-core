@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
 import type { AuthBackend, AuthSubscriptionTier } from "../../auth/backend.js";
+import { LocalAuthBackend } from "../../auth/backends/local.js";
 import { resolveHomeContext } from "../../config/home.js";
 import { defaultConfig } from "../../config/schema.js";
 import {
@@ -299,6 +300,108 @@ describe("provider discovery", () => {
     expect(entries.get("github")?.credentialProvenance).toEqual(
       environmentCredentialProvenance(["apiKey", "GH_TOKEN"]),
     );
+  });
+
+  it("projects forced Gemini access-token and ADC plans instead of API-key aliases", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-provider-gemini-plan-"));
+    const adcPath = join(root, "application-default.json");
+    writeFileSync(adcPath, "{}", { mode: 0o600 });
+    try {
+      const accessTokenReport = await collectProviderAvailability({
+        authBackend: authBackend("local", "free"),
+        checkLocal: false,
+        config: defaultConfig(),
+        env: {
+          GEMINI_AUTH_MODE: "access-token",
+          GEMINI_ACCESS_TOKEN: "gemini-access-token",
+          GEMINI_API_KEY: "must-not-win",
+          GEMINI_PROJECT_ID: "authority-project",
+          GEMINI_VERTEX_LOCATION: "us-central1",
+        },
+      });
+      expect(byProvider(accessTokenReport.entries).get("gemini")).toMatchObject({
+        usable: true,
+        credentialStatus: "present",
+        detail: "Gemini credential found via GEMINI_ACCESS_TOKEN",
+      });
+
+      const adcReport = await collectProviderAvailability({
+        authBackend: authBackend("local", "free"),
+        checkLocal: false,
+        config: defaultConfig(),
+        env: {
+          GEMINI_AUTH_MODE: "adc",
+          GOOGLE_APPLICATION_CREDENTIALS: adcPath,
+          GOOGLE_API_KEY: "must-not-win",
+          GEMINI_PROJECT_ID: "authority-project",
+          GEMINI_VERTEX_LOCATION: "global",
+        },
+      });
+      expect(byProvider(adcReport.entries).get("gemini")).toMatchObject({
+        usable: true,
+        credentialStatus: "present",
+        detail: "Gemini credential found via GOOGLE_APPLICATION_CREDENTIALS",
+      });
+
+      const missingForcedReport = await collectProviderAvailability({
+        authBackend: authBackend("local", "free"),
+        checkLocal: false,
+        config: defaultConfig(),
+        env: {
+          GEMINI_AUTH_MODE: "access-token",
+          GEMINI_API_KEY: "must-not-fallback",
+          GEMINI_PROJECT_ID: "authority-project",
+          GEMINI_VERTEX_LOCATION: "us-central1",
+        },
+      });
+      expect(byProvider(missingForcedReport.entries).get("gemini")).toMatchObject({
+        usable: false,
+        credentialStatus: "missing",
+        detail: "set GEMINI_ACCESS_TOKEN",
+      });
+
+      const missingTargetReport = await collectProviderAvailability({
+        authBackend: authBackend("local", "free"),
+        checkLocal: false,
+        config: defaultConfig(),
+        env: {
+          GEMINI_AUTH_MODE: "access-token",
+          GEMINI_ACCESS_TOKEN: "token-without-vertex-target",
+        },
+      });
+      expect(byProvider(missingTargetReport.entries).get("gemini")).toMatchObject({
+        usable: false,
+        credentialStatus: "unavailable",
+        detail: expect.stringContaining("requires both project and location"),
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("reports the saved Gemini BYOK selected by the canonical credential plan", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-provider-gemini-byok-"));
+    const env = { AGENC_HOME: agencHome, GEMINI_AUTH_MODE: "api-key" };
+    try {
+      await new LocalAuthBackend({ agencHome, env }).saveByokKey({
+        provider: "gemini",
+        apiKey: "saved-gemini-key",
+      });
+      const report = await collectProviderAvailability({
+        authBackend: authBackend("local", "free"),
+        checkLocal: false,
+        config: defaultConfig(),
+        env,
+      });
+
+      expect(byProvider(report.entries).get("gemini")).toMatchObject({
+        usable: true,
+        credentialStatus: "present",
+        detail: "Gemini credential found via saved Gemini BYOK",
+      });
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
   });
 
   it("reports OAuth provenance when OAuth wins over grok BYOK aliases", async () => {

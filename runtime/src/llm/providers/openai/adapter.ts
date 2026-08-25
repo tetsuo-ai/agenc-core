@@ -479,7 +479,7 @@ function resolveOpenAIProviderConfig(
     Boolean(config.oauth?.accessToken.trim());
   if (
     !hasOAuthCredential &&
-    (authStrategy === "bearer" || authStrategy === "google_api_key") &&
+    authStrategy === "bearer" &&
     apiKeyEnvLabel === undefined
   ) {
     throw new Error(

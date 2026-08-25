@@ -1971,6 +1971,168 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
+  it("keeps Gemini environment keys out of explicit factory precedence", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        fetchImpl: offlineFetchFixture(),
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_PROVIDER: "gemini",
+          AGENC_MODEL: "gemini-2.5-pro",
+          AGENC_WORKSPACE: workspace,
+          GEMINI_AUTH_MODE: "access-token",
+          GEMINI_ACCESS_TOKEN: "captured-access-token",
+          GEMINI_API_KEY: "captured-api-key",
+          GEMINI_BASE_URL: undefined,
+          GOOGLE_API_KEY: "captured-google-key",
+          GOOGLE_CLOUD_LOCATION: "us-central1",
+          GOOGLE_CLOUD_PROJECT: "captured-project",
+          HOME: home,
+        },
+        argv: ["node", "agenc", "--provider", "gemini"],
+      });
+      shutdown = boot.shutdown;
+
+      const options = createProviderSpy.mock.calls[0]?.[1];
+      expect(options?.apiKey).toBeUndefined();
+      expect(options?.extra).toMatchObject({
+        gemini: {
+          credentialPlan: {
+            kind: "access-token",
+            credential: "captured-access-token",
+            source: "GEMINI_ACCESS_TOKEN",
+          },
+          endpointPlan: {
+            kind: "vertex",
+            project: "captured-project",
+            location: "us-central1",
+            nativeBaseURL:
+              "https://us-central1-aiplatform.googleapis.com/v1/projects/captured-project/locations/us-central1/publishers/google",
+          },
+        },
+      });
+      expect(options?.baseURL).toBeUndefined();
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the Gemini credential plan bound to the startup environment snapshot", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const env: NodeJS.ProcessEnv = {
+      ...process.env,
+      AGENC_HOME: home,
+      AGENC_PROVIDER: "gemini",
+      AGENC_MODEL: "gemini-2.5-pro",
+      AGENC_WORKSPACE: workspace,
+      GEMINI_AUTH_MODE: "access-token",
+      GEMINI_ACCESS_TOKEN: "captured-access-token",
+      GEMINI_BASE_URL: undefined,
+      GOOGLE_CLOUD_LOCATION: "us-central1",
+      GOOGLE_CLOUD_PROJECT: "captured-project",
+      HOME: home,
+    };
+    const authBackend: AuthBackend = {
+      login: () => ({ authenticated: true, provider: "local" }),
+      logout: () => ({ authenticated: false }),
+      whoami: () => ({ authenticated: true, provider: "local" }),
+      vendKey: () => {
+        throw new Error("vendKey should not run");
+      },
+      inferAgencModel: () => {
+        throw new Error("inferAgencModel should not run");
+      },
+      getSubscriptionTier: () => {
+        env.GEMINI_ACCESS_TOKEN = "mutated-after-snapshot";
+        return "free";
+      },
+    };
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        authBackend,
+        env,
+        fetchImpl: offlineFetchFixture(),
+        argv: ["node", "agenc", "--provider", "gemini"],
+      });
+      shutdown = boot.shutdown;
+
+      expect(env.GEMINI_ACCESS_TOKEN).toBe("mutated-after-snapshot");
+      const options = createProviderSpy.mock.calls[0]?.[1];
+      expect(options?.extra).toMatchObject({
+        gemini: {
+          credentialPlan: {
+            kind: "access-token",
+            credential: "captured-access-token",
+            source: "GEMINI_ACCESS_TOKEN",
+          },
+          endpointPlan: {
+            kind: "vertex",
+            project: "captured-project",
+            location: "us-central1",
+          },
+        },
+      });
+      expect(options?.apiKey).toBeUndefined();
+      expect(options?.baseURL).toBeUndefined();
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
   // branding-scan: allow real provider identifier in test title
   it("classifies no-key generic OpenAI-compatible startup as local no-auth", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
@@ -2029,6 +2191,79 @@ describe("bootstrapLocalRuntimeSession", () => {
         /* best effort */
       });
       restoreEnv();
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("lazily reads vault-only Gemini BYOK on the first Ollama to Gemini switch", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+    const readByokSpy = vi
+      .spyOn(LocalAuthBackend.prototype, "readByokKey")
+      .mockImplementation(async (provider) =>
+        provider === "gemini" ? "saved-gemini-key" : undefined,
+      );
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        env: {
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          AGENC_PROVIDER: "ollama",
+          AGENC_MODEL: "llama3.3",
+          HOME: home,
+          SHELL: "/bin/sh",
+        },
+        fetchImpl: offlineFetchFixture(),
+        argv: ["node", "agenc"],
+      });
+      shutdown = boot.shutdown;
+
+      expect(boot.resolvedProvider).toBe("ollama");
+      expect(readByokSpy).not.toHaveBeenCalled();
+      boot.session.setPendingProviderSwitch({
+        provider: "gemini",
+        model: "gemini-2.5-pro",
+      });
+
+      await expect(
+        boot.session.consumePendingProviderSwitch(),
+      ).resolves.toEqual({
+        applied: true,
+        provider: "gemini",
+        model: "gemini-2.5-pro",
+      });
+      expect(readByokSpy).toHaveBeenCalledOnce();
+      expect(readByokSpy).toHaveBeenCalledWith("gemini");
+      expect(boot.session.providerBinding.factoryOptions).toMatchObject({
+        extra: {
+          gemini: {
+            credentialPlan: {
+              kind: "api-key",
+              credential: "saved-gemini-key",
+              source: "saved-byok",
+            },
+            endpointPlan: {
+              kind: "developer",
+              nativeBaseURL:
+                "https://generativelanguage.googleapis.com/v1beta",
+            },
+          },
+        },
+      });
+      expect(
+        boot.session.providerBinding.factoryOptions.apiKey,
+      ).toBeUndefined();
+      expect(
+        boot.session.providerBinding.factoryOptions.baseURL,
+      ).toBeUndefined();
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
       await rm(home, { recursive: true, force: true });
       await rm(workspace, { recursive: true, force: true });
     }
@@ -2448,6 +2683,77 @@ describe("bootstrapLocalRuntimeSession", () => {
           model: "grok-4.6",
         }),
       );
+    } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves saved Gemini BYOK provenance in the canonical plan", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    await new LocalAuthBackend({ agencHome: home }).saveByokKey({
+      provider: "gemini",
+      apiKey: "saved-gemini-key",
+    });
+    const providerMod = await import("../llm/provider.js");
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_PROVIDER: "gemini",
+          AGENC_MODEL: "gemini-2.5-pro",
+          AGENC_WORKSPACE: workspace,
+          GEMINI_AUTH_MODE: "api-key",
+          GEMINI_API_KEY: "",
+          GOOGLE_API_KEY: "",
+          HOME: home,
+        },
+        argv: ["node", "agenc", "--provider", "gemini"],
+      });
+      shutdown = boot.shutdown;
+
+      const options = createProviderSpy.mock.calls[0]?.[1];
+      expect(options?.apiKey).toBeUndefined();
+      expect(options?.extra).toMatchObject({
+        gemini: {
+          credentialPlan: {
+            kind: "api-key",
+            credential: "saved-gemini-key",
+            source: "saved-byok",
+          },
+          endpointPlan: {
+            kind: "developer",
+            nativeBaseURL:
+              "https://generativelanguage.googleapis.com/v1beta",
+          },
+        },
+      });
+      expect(options?.baseURL).toBeUndefined();
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */

@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { resolveHomeContext } from "../../src/config/home.js";
+import { resolveProviderFactoryOptions } from "../../src/llm/provider-options.js";
 import { createProvider } from "../../src/llm/provider.js";
 import {
   clearCurrentRuntimeSession,
@@ -40,7 +41,7 @@ function completion(label: string): Response {
 }
 
 describe("SessionProviderService", () => {
-  test("retains the explicit credential home in every provider binding", () => {
+  test("retains the explicit credential home in every provider binding", async () => {
     const home = resolveHomeContext(
       { AGENC_HOME: "/tmp/agenc-provider-home-a" },
       { platformHome: "/tmp" },
@@ -54,7 +55,7 @@ describe("SessionProviderService", () => {
     });
 
     expect(service.current().factoryOptions.credentialHome).toBe(home);
-    const prepared = service.prepare(
+    const prepared = await service.prepare(
       { provider: "openai-compatible", model: "next" },
       { credentialHome: home },
     );
@@ -105,13 +106,21 @@ describe("SessionProviderService", () => {
 
   test("keeps concurrent sessions on their own endpoint, credential, and model", async () => {
     const fetchA = vi.fn<typeof fetch>(async (input, init) => {
-      expect(String(input)).toBe("https://provider-a.example/v1/chat/completions");
-      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer key-a");
+      expect(String(input)).toBe(
+        "https://provider-a.example/v1/chat/completions",
+      );
+      expect(new Headers(init?.headers).get("authorization")).toBe(
+        "Bearer key-a",
+      );
       return completion("a");
     });
     const fetchB = vi.fn<typeof fetch>(async (input, init) => {
-      expect(String(input)).toBe("https://provider-b.example/v1/chat/completions");
-      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer key-b");
+      expect(String(input)).toBe(
+        "https://provider-b.example/v1/chat/completions",
+      );
+      expect(new Headers(init?.headers).get("authorization")).toBe(
+        "Bearer key-b",
+      );
       return completion("b");
     });
     const serviceA = new SessionProviderService({
@@ -130,13 +139,13 @@ describe("SessionProviderService", () => {
     });
 
     serviceA.commit(
-      serviceA.prepare(
+      await serviceA.prepare(
         { provider: "openai-compatible", model: "model-a" },
         { extra: { fetchImpl: fetchA } },
       ),
     );
     serviceB.commit(
-      serviceB.prepare(
+      await serviceB.prepare(
         { provider: "openai-compatible", model: "model-b" },
         { extra: { fetchImpl: fetchB } },
       ),
@@ -238,12 +247,12 @@ describe("SessionProviderService", () => {
     }
   });
 
-  test("credentials never change an explicit provider selection", () => {
+  test("credentials never change an explicit provider selection", async () => {
     const service = new SessionProviderService({
       initialProvider: initialProvider("initial"),
       environment: { MINIMAX_API_KEY: "minimax-only-key" },
     });
-    const prepared = service.prepare(
+    const prepared = await service.prepare(
       { provider: "openai-compatible", model: "local-model" },
       {},
     );
@@ -251,24 +260,207 @@ describe("SessionProviderService", () => {
     expect(prepared.binding.factoryOptions.apiKey).toBeUndefined();
   });
 
-  test("rejects obsolete selectors even when set to a historically false value", () => {
-    expect(() =>
-      new SessionProviderService({
-        initialProvider: initialProvider("initial"),
-        environment: { AGENC_USE_OPENAI: "0" },
-      }),
-    ).toThrow(/obsolete provider selector.*AGENC_USE_OPENAI.*AGENC_PROVIDER=openai/i);
+  test("preserves Gemini plan precedence and nested cloning across prepare", async () => {
+    const service = new SessionProviderService({
+      initialProvider: createProvider(
+        "gemini",
+        resolveProviderFactoryOptions(
+          "gemini",
+          { apiKey: "initial-key", model: "gemini-2.5-pro" },
+          {},
+        ),
+      ),
+      environment: {
+        GEMINI_AUTH_MODE: "adc",
+        GEMINI_VERTEX_LOCATION: "us-central1",
+        GEMINI_PROJECT_ID: "session-project",
+        GOOGLE_API_KEY: "ambient-key",
+        GOOGLE_APPLICATION_CREDENTIALS: "/missing/session-adc.json",
+      },
+    });
+
+    const forcedAdc = await service.prepare(
+      { provider: "gemini", model: "gemini-2.5-flash" },
+      {},
+    );
+    expect(forcedAdc.binding.factoryOptions.apiKey).toBeUndefined();
+    expect(forcedAdc.binding.factoryOptions.extra).toMatchObject({
+      gemini: {
+        credentialPlan: {
+          kind: "none",
+          mode: "adc",
+          expected: "adc",
+          configuredPath: "/missing/session-adc.json",
+        },
+      },
+    });
+
+    const explicitDuringForcedAdc = await service.prepare(
+      { provider: "gemini", model: "gemini-2.5-flash" },
+      { apiKey: "explicit-key" },
+    );
+    expect(explicitDuringForcedAdc.binding.factoryOptions.apiKey).toBeUndefined();
+    expect(explicitDuringForcedAdc.binding.factoryOptions.extra).toMatchObject({
+      gemini: {
+        credentialPlan: {
+          kind: "none",
+          mode: "adc",
+          expected: "adc",
+          configuredPath: "/missing/session-adc.json",
+        },
+      },
+    });
+    expect(explicitDuringForcedAdc.binding.factoryOptions.extra?.gemini).not.toBe(
+      service.current().factoryOptions.extra?.gemini,
+    );
   });
 
-  test("fails closed when two switches were prepared from the same revision", () => {
+  test("retains only committed provider snapshots for switch-away and back", async () => {
+    const service = new SessionProviderService({
+      initialProvider: createProvider(
+        "gemini",
+        resolveProviderFactoryOptions(
+          "gemini",
+          { model: "gemini-2.5-pro" },
+          {},
+          { savedApiKey: "saved-key" },
+        ),
+      ),
+    });
+    const original = service.committedFactoryOptions("gemini");
+    expect(original).toMatchObject({
+      extra: {
+        gemini: {
+          credentialPlan: {
+            kind: "api-key",
+            credential: "saved-key",
+            source: "saved-byok",
+          },
+        },
+      },
+    });
+    expect(service.committedFactoryOptions("gemini")).not.toBe(original);
+
+    const away = await service.prepare(
+      { provider: "openai-compatible", model: "local-model" },
+      { baseURL: "http://127.0.0.1:18000/v1" },
+    );
+    const staleReplacement = await service.prepare(
+      { provider: "gemini", model: "gemini-2.5-flash" },
+      { apiKey: "uncommitted-key" },
+    );
+    service.commit(away);
+    expect(() => service.commit(staleReplacement)).toThrow(
+      /changed while.*prepared/i,
+    );
+
+    const retained = service.committedFactoryOptions("gemini");
+    const back = await service.prepare(
+      { provider: "gemini", model: "gemini-2.5-flash" },
+      retained ?? {},
+    );
+    expect(back.binding.factoryOptions).toMatchObject({
+      extra: {
+        gemini: {
+          credentialPlan: {
+            kind: "api-key",
+            credential: "saved-key",
+            source: "saved-byok",
+          },
+        },
+      },
+    });
+  });
+
+  test("lazily consumes vault-only BYOK on the first Ollama to Gemini switch", async () => {
+    const readSavedApiKey = vi.fn(async (provider: string) =>
+      provider === "gemini" ? "saved-gemini-key" : undefined,
+    );
+    const service = new SessionProviderService({
+      initialProvider: createProvider("ollama", {
+        baseURL: "http://127.0.0.1:11434",
+        model: "llama3.3",
+      }),
+      readSavedApiKey,
+    });
+
+    expect(readSavedApiKey).not.toHaveBeenCalled();
+    const prepared = await service.prepare(
+      { provider: "gemini", model: "gemini-2.5-pro" },
+      {},
+    );
+
+    expect(readSavedApiKey).toHaveBeenCalledOnce();
+    expect(readSavedApiKey).toHaveBeenCalledWith("gemini");
+    expect(prepared.binding.factoryOptions).toMatchObject({
+      model: "gemini-2.5-pro",
+      extra: {
+        gemini: {
+          credentialPlan: {
+            kind: "api-key",
+            credential: "saved-gemini-key",
+            source: "saved-byok",
+          },
+        },
+      },
+    });
+    expect(prepared.binding.factoryOptions.apiKey).toBeUndefined();
+  });
+
+  test("captures the switch revision before an asynchronous vault read", async () => {
+    let releaseVaultRead: (() => void) | undefined;
+    const vaultReadBlocked = new Promise<void>((resolve) => {
+      releaseVaultRead = resolve;
+    });
+    const readSavedApiKey = vi.fn(async () => {
+      await vaultReadBlocked;
+      return "saved-gemini-key";
+    });
+    const service = new SessionProviderService({
+      initialProvider: initialProvider("initial"),
+      readSavedApiKey,
+    });
+
+    const pendingGemini = service.prepare(
+      { provider: "gemini", model: "gemini-2.5-pro" },
+      {},
+    );
+    await vi.waitFor(() => expect(readSavedApiKey).toHaveBeenCalledOnce());
+    const replacement = await service.prepare(
+      { provider: "openai-compatible", model: "replacement" },
+      {},
+    );
+    service.commit(replacement);
+    releaseVaultRead?.();
+
+    const staleGemini = await pendingGemini;
+    expect(() => service.commit(staleGemini)).toThrow(
+      /changed while.*prepared/i,
+    );
+    expect(service.current().model).toBe("replacement");
+  });
+
+  test("rejects obsolete selectors even when set to a historically false value", () => {
+    expect(
+      () =>
+        new SessionProviderService({
+          initialProvider: initialProvider("initial"),
+          environment: { AGENC_USE_OPENAI: "0" },
+        }),
+    ).toThrow(
+      /obsolete provider selector.*AGENC_USE_OPENAI.*AGENC_PROVIDER=openai/i,
+    );
+  });
+
+  test("fails closed when two switches were prepared from the same revision", async () => {
     const service = new SessionProviderService({
       initialProvider: initialProvider("initial"),
     });
-    const first = service.prepare(
+    const first = await service.prepare(
       { provider: "openai-compatible", model: "first" },
       {},
     );
-    const stale = service.prepare(
+    const stale = await service.prepare(
       { provider: "openai-compatible", model: "stale" },
       {},
     );

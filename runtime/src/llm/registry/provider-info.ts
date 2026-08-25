@@ -10,6 +10,9 @@ import { deriveFlatCatalog } from "./model-catalog.js";
 import { OPENROUTER_FREE_MODEL_IDS } from "./openrouter-free-models.js";
 import { normalizeProviderIdentity } from "../../provider-identity.js";
 
+export const GEMINI_DEVELOPER_NATIVE_BASE_URL =
+  "https://generativelanguage.googleapis.com/v1beta";
+
 // Single source of truth: model lists for providers that have entries in
 // REGISTERED_MODEL_CATALOG are computed from it. model-catalog.ts does not
 // import this module, so this one-directional import introduces no cycle.
@@ -266,7 +269,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
   gemini: providerDefinition({
     name: "Gemini",
     defaultModel: "gemini-2.5-pro",
-    baseURL: "https://generativelanguage.googleapis.com/v1beta",
+    baseURL: GEMINI_DEVELOPER_NATIVE_BASE_URL,
     credentials: apiKeyCredentials(["GEMINI_API_KEY", "GOOGLE_API_KEY"]),
     baseURLEnvVars: ["GEMINI_BASE_URL"],
     supportsApiKeylessAuth: true,

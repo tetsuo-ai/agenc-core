@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -18,6 +18,7 @@ import type { EnvSnapshot } from "../config/env.js";
 import type { ConfigStore } from "../config/store.js";
 import { resolveHomeContext, type HomeContext } from "../config/home.js";
 import { RemoteAuthBackend } from "../auth/backends/remote.js";
+import { LocalAuthBackend } from "../auth/backends/local.js";
 import { saveXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
 
 const TEST_ENVIRONMENT: EnvSnapshot = Object.freeze({
@@ -532,6 +533,112 @@ describe("providerCommand", () => {
         auth: "xAI OAuth",
         credentialSource:
           "signed in as operator@example.com via /grok-login",
+      });
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("shows the canonical forced Gemini access-token and ADC sources", () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-provider-menu-gemini-"));
+    const adcPath = join(root, "application-default.json");
+    writeFileSync(adcPath, "{}", { mode: 0o600 });
+    const home = resolveHomeContext(
+      { AGENC_HOME: join(root, "home") },
+      { platformHome: root },
+    );
+    const row = (environment: EnvSnapshot) => {
+      const snapshot = readProviderMenuSnapshot(
+        mkctx(
+          stubSession({
+            configStore: commandConfigStore(home),
+            environment,
+          }),
+        ),
+      );
+      return snapshot.rows.find((candidate) => candidate.provider === "gemini");
+    };
+    try {
+      expect(row(Object.freeze({
+        AGENC_HOME: home.path,
+        GEMINI_AUTH_MODE: "access-token",
+        GEMINI_ACCESS_TOKEN: "access-token",
+        GEMINI_API_KEY: "must-not-win",
+        GEMINI_PROJECT_ID: "authority-project",
+        GEMINI_VERTEX_LOCATION: "us-central1",
+      }))).toMatchObject({
+        runtimeState: "available",
+        authState: "ready",
+        auth: "GEMINI_ACCESS_TOKEN",
+        credentialSource: "env GEMINI_ACCESS_TOKEN",
+        baseURL:
+          "https://us-central1-aiplatform.googleapis.com/v1/projects/authority-project/locations/us-central1/publishers/google",
+      });
+      expect(row(Object.freeze({
+        AGENC_HOME: home.path,
+        GEMINI_AUTH_MODE: "adc",
+        GOOGLE_APPLICATION_CREDENTIALS: adcPath,
+        GOOGLE_API_KEY: "must-not-win",
+        GEMINI_PROJECT_ID: "authority-project",
+        GEMINI_VERTEX_LOCATION: "global",
+      }))).toMatchObject({
+        runtimeState: "available",
+        authState: "ready",
+        auth: "Google ADC",
+        credentialSource: "env GOOGLE_APPLICATION_CREDENTIALS",
+        baseURL:
+          "https://aiplatform.googleapis.com/v1/projects/authority-project/locations/global/publishers/google",
+      });
+      expect(row(Object.freeze({
+        AGENC_HOME: home.path,
+        GEMINI_AUTH_MODE: "access-token",
+        GEMINI_API_KEY: "must-not-fallback",
+        GEMINI_PROJECT_ID: "authority-project",
+        GEMINI_VERTEX_LOCATION: "us-central1",
+      }))).toMatchObject({
+        runtimeState: "unauthenticated",
+        authState: "missing",
+        auth: "GEMINI_ACCESS_TOKEN missing",
+      });
+      expect(row(Object.freeze({
+        AGENC_HOME: home.path,
+        GEMINI_AUTH_MODE: "access-token",
+        GEMINI_ACCESS_TOKEN: "access-token-without-target",
+      }))).toMatchObject({
+        runtimeState: "error",
+        authState: "missing",
+        detail: expect.stringContaining("requires both project and location"),
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("shows saved Gemini BYOK from the existing native vault", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-provider-menu-byok-"));
+    const environment: EnvSnapshot = Object.freeze({
+      AGENC_HOME: agencHome,
+      GEMINI_AUTH_MODE: "api-key",
+    });
+    const home = resolveHomeContext(environment, { platformHome: tmpdir() });
+    try {
+      await new LocalAuthBackend({ agencHome, env: environment }).saveByokKey({
+        provider: "gemini",
+        apiKey: "saved-gemini-key",
+      });
+      const snapshot = readProviderMenuSnapshot(
+        mkctx(
+          stubSession({
+            configStore: commandConfigStore(home),
+            environment,
+          }),
+        ),
+      );
+
+      expect(snapshot.rows.find((row) => row.provider === "gemini")).toMatchObject({
+        authState: "ready",
+        auth: "saved BYOK",
+        credentialSource: "native vault saved Gemini BYOK",
       });
     } finally {
       rmSync(agencHome, { recursive: true, force: true });

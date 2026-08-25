@@ -33,6 +33,10 @@ export interface PreparedProviderBinding {
   readonly expectedRevision: number;
 }
 
+export type ReadSavedProviderApiKey = (
+  provider: ProviderName,
+) => Promise<string | undefined>;
+
 function firstNonEmpty(
   ...values: Array<string | undefined>
 ): string | undefined {
@@ -52,7 +56,9 @@ function cloneOptions(options: ProviderFactoryOptions): ProviderFactoryOptions {
     ...(options.baseURL !== undefined ? { baseURL: options.baseURL } : {}),
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.tools !== undefined ? { tools: [...options.tools] } : {}),
-    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.timeoutMs !== undefined
+      ? { timeoutMs: options.timeoutMs }
+      : {}),
     ...(options.extra !== undefined
       ? { extra: Object.freeze({ ...options.extra }) }
       : {}),
@@ -86,13 +92,18 @@ export function bindingFromProvider(params: {
 }
 
 /**
- * Owns the active provider for exactly one session. Preparing a switch is
- * side-effect free; commit rejects a stale preparation instead of allowing
- * two concurrent switch attempts to overwrite one another.
+ * Owns the active provider for exactly one session. Preparing a switch never
+ * mutates the active binding; commit rejects a stale preparation instead of
+ * allowing two concurrent switch attempts to overwrite one another.
  */
 export class SessionProviderService {
   readonly #environment: ProviderEnvironment;
   readonly #credentialHome: ProviderFactoryOptions["credentialHome"];
+  readonly #readSavedApiKey: ReadSavedProviderApiKey | undefined;
+  readonly #committedFactoryOptionsByProvider = new Map<
+    ProviderName,
+    ProviderFactoryOptions
+  >();
   #binding: ProviderBinding;
 
   constructor(params: {
@@ -100,6 +111,7 @@ export class SessionProviderService {
     readonly initialProviderName?: string;
     readonly initialModel?: string;
     readonly environment?: ProviderEnvironment;
+    readonly readSavedApiKey?: ReadSavedProviderApiKey;
   }) {
     this.#environment = snapshotProviderEnvironment(params.environment ?? {});
     this.#binding = bindingFromProvider({
@@ -107,9 +119,19 @@ export class SessionProviderService {
       ...(params.initialProviderName !== undefined
         ? { providerName: params.initialProviderName }
         : {}),
-      ...(params.initialModel !== undefined ? { model: params.initialModel } : {}),
+      ...(params.initialModel !== undefined
+        ? { model: params.initialModel }
+        : {}),
     });
     this.#credentialHome = this.#binding.factoryOptions.credentialHome;
+    this.#readSavedApiKey = params.readSavedApiKey;
+    const initialProvider = resolveBuiltInProviderSlug(this.#binding.provider);
+    if (initialProvider !== undefined) {
+      this.#committedFactoryOptionsByProvider.set(
+        initialProvider,
+        cloneOptions(this.#binding.factoryOptions),
+      );
+    }
   }
 
   current(): ProviderBinding {
@@ -120,10 +142,19 @@ export class SessionProviderService {
     return this.#environment;
   }
 
-  prepare(
+  committedFactoryOptions(
+    provider: string,
+  ): ProviderFactoryOptions | undefined {
+    const normalized = resolveBuiltInProviderSlug(provider);
+    if (normalized === undefined) return undefined;
+    const options = this.#committedFactoryOptionsByProvider.get(normalized);
+    return options === undefined ? undefined : cloneOptions(options);
+  }
+
+  async prepare(
     selection: ProviderSelection,
     requested: ProviderFactoryOptions,
-  ): PreparedProviderBinding {
+  ): Promise<PreparedProviderBinding> {
     const provider = resolveBuiltInProviderSlug(selection.provider);
     if (provider === undefined) {
       throw new Error(`unknown provider "${selection.provider.trim()}"`);
@@ -132,26 +163,31 @@ export class SessionProviderService {
     if (model.length === 0) {
       throw new Error(`${provider} provider switch requires an explicit model`);
     }
+    const expectedRevision = this.#binding.revision;
+    const savedApiKey =
+      this.#readSavedApiKey === undefined ||
+      this.#committedFactoryOptionsByProvider.has(provider)
+        ? undefined
+        : await this.#readSavedApiKey(provider);
     const credentialHome = requested.credentialHome ?? this.#credentialHome;
     const resolved = resolveProviderFactoryOptions(
       provider,
       {
         ...requested,
-        ...(credentialHome !== undefined
-          ? { credentialHome }
-          : {}),
+        ...(credentialHome !== undefined ? { credentialHome } : {}),
         model,
       },
       this.#environment,
+      savedApiKey === undefined ? {} : { savedApiKey },
     );
     const instance = createProvider(provider, resolved);
     return Object.freeze({
-      expectedRevision: this.#binding.revision,
+      expectedRevision,
       binding: bindingFromProvider({
         provider: instance,
         providerName: provider,
         model,
-        revision: this.#binding.revision + 1,
+        revision: expectedRevision + 1,
       }),
     });
   }
@@ -163,9 +199,13 @@ export class SessionProviderService {
       );
     }
     this.#binding = prepared.binding;
+    const provider = assertBuiltInProviderBinding(this.#binding);
+    this.#committedFactoryOptionsByProvider.set(
+      provider,
+      cloneOptions(this.#binding.factoryOptions),
+    );
     return this.#binding;
   }
-
 }
 
 export function assertBuiltInProviderBinding(

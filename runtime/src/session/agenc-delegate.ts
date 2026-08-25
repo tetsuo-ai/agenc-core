@@ -19,6 +19,7 @@ import { createHash } from "node:crypto";
 import type { LLMChatOptions, LLMMessage, LLMProvider } from "../llm/types.js";
 import {
   createProvider,
+  preserveProviderFactoryState,
   readProviderFactoryOptions,
   readProviderIdentity,
 } from "../llm/provider.js";
@@ -602,7 +603,7 @@ function createDelegateProvider(
       : {}),
   };
   return {
-    provider: delegatedProvider,
+    provider: preserveProviderFactoryState(delegatedProvider, provider),
     ...(provider !== parentProvider ? { ownedProvider: provider } : {}),
   };
 }

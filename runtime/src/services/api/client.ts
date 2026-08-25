@@ -59,7 +59,9 @@ function stripForwardedAuthHeaders(
     if (
       lower === 'authorization' ||
       lower === 'x-api-key' ||
-      lower === 'api-key'
+      lower === 'api-key' ||
+      lower === 'x-goog-api-key' ||
+      lower === 'x-goog-user-project'
     ) {
       continue
     }
@@ -74,14 +76,12 @@ export async function getproviderClient({
   model,
   fetchOverride,
   source,
-  providerOverride,
 }: {
   apiKey?: string
   maxRetries: number
   model?: string
   fetchOverride?: ClientOptions['fetch']
   source?: string
-  providerOverride?: { model: string; baseURL: string; apiKey: string }
 }): Promise<ProviderSdk> {
   const providerEnvironment = getSelectedProviderEnvironment()
   const credentialHome = resolveSecureStorageHome()
@@ -115,21 +115,6 @@ export async function getproviderClient({
     defaultHeaders['x-anthropic-additional-protection'] = 'true'
   }
 
-  logForDebugging('[API:auth] OAuth token check starting')
-  await checkAndRefreshOAuthTokenIfNeeded(
-    credentialHome,
-    providerEnvironment,
-  )
-  logForDebugging('[API:auth] OAuth token check complete')
-
-  if (!isAgenCAISubscriber(credentialHome)) {
-    await configureApiKeyHeaders(
-      defaultHeaders,
-      getIsNonInteractiveSession(),
-      providerEnvironment,
-    )
-  }
-
   const resolvedFetch = buildFetch(fetchOverride, source)
 
   const ARGS = {
@@ -147,21 +132,6 @@ export async function getproviderClient({
     ...(resolvedFetch && {
       fetch: resolvedFetch,
     }),
-  }
-  // Agent routing override: use per-agent provider when configured.
-  // Strip auth-related headers to prevent leaking provider credentials
-  // to third-party endpoints (SSRF / credential forwarding mitigation).
-  if (providerOverride) {
-    const { createOpenAiShimClient } = await import('./openaiShim.js')
-    return createOpenAiShimClient({
-      home: credentialHome,
-      model: providerOverride.model,
-      providerEnvironment,
-      defaultHeaders: stripForwardedAuthHeaders(defaultHeaders),
-      maxRetries,
-      timeout: parseInt(providerEnvironment.API_TIMEOUT_MS || String(600 * 1000), 10),
-      providerOverride,
-    }) as unknown as ProviderSdk
   }
   // GitHub provider in native provider API mode: send requests in provider
   // format so cache_control blocks are honoured and prompt caching works.
@@ -185,6 +155,11 @@ export async function getproviderClient({
   }
   const apiProvider = getAPIProvider()
   if (apiProvider !== 'firstParty') {
+    if (apiProvider === 'gemini') {
+      throw new Error(
+        'Gemini requests must use the canonical native provider transport',
+      )
+    }
     const { createOpenAiShimClient } = await import('./openaiShim.js')
     return createOpenAiShimClient({
       home: credentialHome,
@@ -196,6 +171,26 @@ export async function getproviderClient({
       selectedProvider: apiProvider,
     }) as unknown as ProviderSdk
   }
+
+  // First-party OAuth and API-key state is irrelevant to explicitly selected
+  // external providers. Keep native-vault access behind the first-party
+  // routing boundary so third-party requests cannot acquire a second auth
+  // authority or fail because unrelated first-party storage is unavailable.
+  logForDebugging('[API:auth] OAuth token check starting')
+  await checkAndRefreshOAuthTokenIfNeeded(
+    credentialHome,
+    providerEnvironment,
+  )
+  logForDebugging('[API:auth] OAuth token check complete')
+
+  if (!isAgenCAISubscriber(credentialHome)) {
+    await configureApiKeyHeaders(
+      defaultHeaders,
+      getIsNonInteractiveSession(),
+      providerEnvironment,
+    )
+  }
+
   // Determine authentication method based on available tokens
   const clientConfig: ConstructorParameters<typeof ProviderSdk>[0] = {
     apiKey: isAgenCAISubscriber(credentialHome) ? null : apiKey || getproviderApiKey(),

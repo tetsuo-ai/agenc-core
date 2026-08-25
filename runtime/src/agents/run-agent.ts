@@ -37,7 +37,7 @@ import type {
 import { createCacheSafeParams } from "../services/PromptSuggestion/runtime.js";
 import { llmMessageToAgentSummaryMessage } from "../services/AgentSummary/transcript.js";
 import {
-  readProviderFactoryOptions,
+  preserveProviderFactoryState,
   readProviderIdentity,
 } from "../llm/provider.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
@@ -532,7 +532,7 @@ function wrapStartupPrewarmHandleForAgentSummary(
   };
 }
 
-function wrapProviderForAgentSummary(
+export function wrapProviderForAgentSummary(
   provider: LLMProvider,
   capture: AgentSummaryProviderRequestCapture,
 ): LLMProvider {
@@ -599,7 +599,7 @@ function wrapProviderForAgentSummary(
       ? { dispose: () => provider.dispose!() }
       : {}),
   };
-  return wrapped;
+  return preserveProviderFactoryState(wrapped, provider);
 }
 
 interface AgentRunContext {
@@ -612,11 +612,6 @@ interface AgentRunContext {
     readonly mcpClients: readonly unknown[];
     readonly contextWindowTokens: number;
     readonly maxOutputTokens?: number;
-    readonly providerOverride?: {
-      readonly model: string;
-      readonly baseURL: string;
-      readonly apiKey: string;
-    };
     readonly querySource?: string;
     readonly agentDefinitions: {
       readonly agentRoleWorkspaceId?: string;
@@ -705,7 +700,6 @@ function buildAgentRunContext(
   opts: { readonly querySource?: string; readonly verbose?: boolean } = {},
 ): AgentRunContext {
   const model = toAgentModelContext(ctx);
-  const providerOverride = buildAgentProviderOverride(session, model.model);
   const surface = readAgentSessionSurface(session);
   const agentDefinitions = {
     ...(firstNonEmpty(surface.agentDefinitions?.agentRoleWorkspaceId) !==
@@ -738,7 +732,6 @@ function buildAgentRunContext(
       ...(model.maxOutputTokens !== undefined
         ? { maxOutputTokens: model.maxOutputTokens }
         : {}),
-      ...(providerOverride !== undefined ? { providerOverride } : {}),
       ...(opts.querySource !== undefined
         ? { querySource: opts.querySource }
         : {}),
@@ -819,22 +812,6 @@ function toAgentRuntimeTools(tools: readonly LLMTool[]): AgentRuntimeTool[] {
       maxResultSizeChars: DEFAULT_MAX_RESULT_SIZE_CHARS,
     };
   });
-}
-
-function buildAgentProviderOverride(
-  session: Session,
-  fallbackModel: string,
-): AgentRunContext["options"]["providerOverride"] | undefined {
-  const provider = session.services.provider;
-  const options = readProviderFactoryOptions(provider);
-  const model = firstNonEmpty(options.model, fallbackModel);
-  const baseURL = firstNonEmpty(options.baseURL);
-  if (!model || !baseURL) return undefined;
-  return {
-    model,
-    baseURL,
-    apiKey: options.apiKey ?? "",
-  };
 }
 
 function firstNonEmpty(

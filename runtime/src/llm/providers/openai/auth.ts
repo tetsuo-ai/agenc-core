@@ -99,19 +99,6 @@ export class OpenAIAuthSession {
         const token = this.config.apiKey?.trim();
         return token ? this.headersForBearerToken(token) : {};
       }
-      case "google_api_key": {
-        const apiKey = assertNonEmptyApiKey(
-          this.providerName,
-          this.config.apiKey,
-          this.apiKeyEnvLabel,
-        );
-        return {
-          "x-goog-api-key": apiKey,
-          ...(this.config.project
-            ? { "x-goog-user-project": this.config.project }
-            : {}),
-        };
-      }
       case "bearer":
       default: {
         const apiKey = assertNonEmptyApiKey(

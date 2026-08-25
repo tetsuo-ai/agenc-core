@@ -34,9 +34,16 @@ import {
   runAgent,
   setParentNotificationOutboxLimitsForTesting,
   TEST_ONLY_ALLOW_UNADMITTED_CHILD_REGISTRY_DISPATCH,
+  wrapProviderForAgentSummary,
   type RunAgentProgressEvent,
   type RunAgentResult,
 } from "./run-agent.js";
+import {
+  createProvider,
+  readProviderFactoryOptions,
+  readProviderIdentity,
+} from "../llm/provider.js";
+import { createGeminiEndpointPlan } from "../llm/providers/gemini/endpoint-plan.js";
 import {
   _resetAgentRolesForTesting,
   _resetNicknamePoolForTesting,
@@ -615,6 +622,42 @@ afterEach(() => {
 // ─────────────────────────────────────────────────────────────────────
 // runAgent
 // ─────────────────────────────────────────────────────────────────────
+
+describe("wrapProviderForAgentSummary", () => {
+  it("preserves canonical Gemini and Anthropic factory state", () => {
+    const providers = [
+      createProvider("gemini", {
+        model: "gemini-2.5-pro",
+        extra: {
+          gemini: {
+            credentialPlan: {
+              kind: "api-key",
+              credential: "saved-key",
+              source: "saved-byok",
+            },
+            endpointPlan: createGeminiEndpointPlan(),
+          },
+        },
+      }),
+      createProvider("anthropic", {
+        apiKey: "anthropic-test-key",
+        baseURL: "https://api.anthropic.com",
+        model: "claude-opus-4-7",
+      }),
+    ];
+
+    for (const provider of providers) {
+      const factoryOptions = readProviderFactoryOptions(provider);
+      const wrapped = wrapProviderForAgentSummary(provider, () => {});
+
+      expect(wrapped).not.toBe(provider);
+      expect(readProviderIdentity(wrapped)).toBe(
+        readProviderIdentity(provider),
+      );
+      expect(readProviderFactoryOptions(wrapped)).toEqual(factoryOptions);
+    }
+  });
+});
 
 describe("runAgent", () => {
   it.each([

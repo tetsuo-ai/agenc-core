@@ -5,14 +5,22 @@
 
 import type { AuthBackend, AuthBackendKind, AuthSubscriptionTier } from "../../auth/backend.js";
 import { loadCanonicalConfig } from "../../config/repository.js";
-import { resolveProviderSettings } from "../../config/resolve-provider.js";
+import {
+  readProviderConfig,
+  resolveProviderSettings,
+} from "../../config/resolve-provider.js";
 import type { AgenCConfig } from "../../config/schema.js";
 import type { HomeContext } from "../../config/home.js";
+import { readLocalByokCredential } from "../../auth/native-credentials.js";
 import { captureSecureStorageIngress } from "../../utils/secureStorage/home.js";
+import {
+  type GeminiCredentialPlan,
+} from "../../utils/geminiAuth.js";
 import {
   GROK_OAUTH_CREDENTIAL_PROVENANCE,
   missingProviderCredentialEnvironmentLabel,
   providerCredentialEnvironmentProvenance,
+  resolveProviderBaseURLEnvironment,
   resolveProviderCredentialEnvironment,
   type ProviderCredentialEnvironmentResolution,
   type ProviderCredentialProvenance,
@@ -27,6 +35,8 @@ import {
   type ProviderName,
 } from "../provider.js";
 import { resolveGrokProviderCredential } from "../xai-capability-config.js";
+import { resolveProviderFactoryOptions } from "../provider-options.js";
+import { readGeminiRuntimeOptions } from "../providers/gemini/runtime-options.js";
 
 export type ProviderAvailabilityStatus = "usable" | "unusable";
 export type ProviderCredentialStatus =
@@ -190,18 +200,56 @@ async function resolveProviderAvailabilityEntry(params: {
   readonly fetchImpl?: typeof fetch;
   readonly localProbeTimeoutMs: number;
 }): Promise<ProviderAvailabilityEntry> {
-  const settings = resolveProviderSettings(
-    params.provider,
-    params.config,
-    params.env,
-  );
+  const settings = params.provider === "gemini"
+    ? undefined
+    : resolveProviderSettings(params.provider, params.config, params.env);
+  const geminiConfig = params.provider === "gemini"
+    ? readProviderConfig(params.config, params.provider)
+    : undefined;
   const model =
-    settings?.defaultModel ?? BUILT_IN_PROVIDER_DEFAULT_MODELS[params.provider];
-  const credential = resolveProviderCredential({
-    provider: params.provider,
-    home: params.home,
-    env: params.env,
-  });
+    settings?.defaultModel ??
+    geminiConfig?.default_model?.trim() ??
+    BUILT_IN_PROVIDER_DEFAULT_MODELS[params.provider];
+  let credential: ReturnType<typeof resolveProviderCredential>;
+  if (params.provider === "gemini") {
+    try {
+      const explicitBaseURL =
+        resolveProviderBaseURLEnvironment("gemini", params.env)?.value ??
+        geminiConfig?.base_url?.trim();
+      const resolved = resolveProviderFactoryOptions(
+        "gemini",
+        {
+          model,
+          ...(explicitBaseURL ? { baseURL: explicitBaseURL } : {}),
+        },
+        params.env,
+        {
+          savedApiKey: readLocalByokCredential(params.home, "gemini")?.apiKey,
+        },
+      );
+      const runtime = readGeminiRuntimeOptions(resolved.extra);
+      if (runtime === undefined) {
+        throw new Error("Gemini runtime authority was not resolved");
+      }
+      credential = geminiDiscoveryCredential(runtime.credentialPlan);
+    } catch (error) {
+      return buildEntry({
+        provider: params.provider,
+        model,
+        credentialStatus: "unavailable",
+        localProbe: { localStatus: "n/a" },
+        subscription: params.subscription,
+        usable: false,
+        detail: error instanceof Error ? error.message : String(error),
+      });
+    }
+  } else {
+    credential = resolveProviderCredential({
+      provider: params.provider,
+      home: params.home,
+      env: params.env,
+    });
+  }
   const credentialReady = credential.ready;
   const missingRequired = credential.environment.kind === "aws-sigv4"
     ? credential.environment.missingRequired
@@ -302,9 +350,11 @@ async function resolveProviderAvailabilityEntry(params: {
         localProbe,
         subscription: params.subscription,
         usable: true,
-        detail: credential.provenance?.kind === "oauth"
-          ? "xAI OAuth credential found"
-          : `BYOK credential found via ${credential.provenance?.fields.map((field) => field.envVar).join(" + ") ?? "canonical credential ingress"}`,
+        detail: params.provider === "gemini"
+          ? `Gemini credential found via ${credential.sourceLabel ?? "canonical credential ingress"}`
+          : credential.provenance?.kind === "oauth"
+            ? "xAI OAuth credential found"
+            : `BYOK credential found via ${credential.provenance?.fields.map((field) => field.envVar).join(" + ") ?? "canonical credential ingress"}`,
         ...(credential.provenance !== undefined
           ? { credentialProvenance: credential.provenance }
           : {}),
@@ -352,7 +402,7 @@ async function resolveProviderAvailabilityEntry(params: {
         params.subscription.authBackendKind === "remote" &&
           subscriptionTier === "free"
           ? "set BYOK credential or upgrade subscription for managed keys"
-          : `set ${providerCredentialEnvironmentLabel(params.provider) ?? "provider credentials"}`,
+          : `set ${credential.missingLabel ?? providerCredentialEnvironmentLabel(params.provider) ?? "provider credentials"}`,
     });
   }
 
@@ -423,6 +473,8 @@ function resolveProviderCredential(params: {
   readonly ready: boolean;
   readonly apiKey?: string;
   readonly provenance?: ProviderCredentialProvenance;
+  readonly sourceLabel?: string;
+  readonly missingLabel?: string;
   readonly environment: ProviderCredentialEnvironmentResolution;
 } {
   const environment = resolveProviderCredentialEnvironment(
@@ -464,6 +516,54 @@ function resolveProviderCredential(params: {
   return {
     ready: false,
     ...(provenance !== undefined ? { provenance } : {}),
+    environment,
+  };
+}
+
+function geminiDiscoveryCredential(plan: GeminiCredentialPlan): {
+  readonly ready: boolean;
+  readonly apiKey?: string;
+  readonly provenance?: ProviderCredentialProvenance;
+  readonly sourceLabel?: string;
+  readonly missingLabel?: string;
+  readonly environment: ProviderCredentialEnvironmentResolution;
+} {
+  const environment = {
+    kind: "none" as const,
+    sources: [] as const,
+    missingRequired: [] as const,
+  };
+  if (plan.kind === "none") {
+    const missingLabel = plan.expected === "access-token"
+      ? "GEMINI_ACCESS_TOKEN"
+      : plan.expected === "adc"
+        ? plan.configuredPath === undefined
+          ? "Google ADC credentials"
+          : `an existing ADC credential file at ${plan.configuredPath}`
+        : plan.expected === "api-key"
+          ? "GEMINI_API_KEY or GOOGLE_API_KEY (or a saved Gemini BYOK key)"
+          : "a Gemini API key, GEMINI_ACCESS_TOKEN, or Google ADC credentials";
+    return { ready: false, missingLabel, environment };
+  }
+  if (plan.kind === "api-key") {
+    const provenance: ProviderCredentialProvenance | undefined =
+      plan.source === "GEMINI_API_KEY" || plan.source === "GOOGLE_API_KEY"
+        ? {
+            kind: "environment",
+            fields: [{ role: "apiKey", envVar: plan.source }],
+          }
+        : undefined;
+    return {
+      ready: true,
+      apiKey: plan.credential,
+      sourceLabel: plan.source === "saved-byok" ? "saved Gemini BYOK" : plan.source,
+      ...(provenance !== undefined ? { provenance } : {}),
+      environment,
+    };
+  }
+  return {
+    ready: true,
+    sourceLabel: plan.source,
     environment,
   };
 }

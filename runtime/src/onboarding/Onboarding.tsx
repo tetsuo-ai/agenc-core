@@ -8,6 +8,7 @@ import React, {
 } from "react";
 
 import {
+  readProviderConfig,
   resolveProviderSelection,
   resolveProviderSettings,
 } from "../config/resolve-provider.js";
@@ -42,12 +43,27 @@ import {
   GROK_OAUTH_CREDENTIAL_PROVENANCE,
   missingProviderCredentialEnvironmentLabel,
   providerCredentialEnvironmentProvenance,
+  resolveProviderBaseURLEnvironment,
   resolveProviderCredentialEnvironment,
   type ProviderCredentialProvenance,
 } from "../llm/registry/provider-ingress.js";
 import { resolveGrokProviderCredential } from "../llm/xai-capability-config.js";
 import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
+import { readLocalByokCredential } from "../auth/native-credentials.js";
+import { resolveProviderFactoryOptions } from "../llm/provider-options.js";
+import {
+  geminiEndpointFor,
+} from "../llm/providers/gemini/endpoint-plan.js";
+import {
+  readGeminiRuntimeOptions,
+} from "../llm/providers/gemini/runtime-options.js";
+import {
+  geminiCredentialHeaders,
+  getGeminiAuthMode,
+  resolveGeminiCredentialPlan,
+  type GeminiCredentialPlan,
+} from "../utils/geminiAuth.js";
 import { ApproveApiKey, maskedApiKeyTail } from "./ApproveApiKey.js";
 import {
   maybeTruncateInput,
@@ -461,11 +477,11 @@ function providerDefaultModel(
       BUILT_IN_PROVIDER_DEFAULT_MODELS[provider]
     );
   }
-  const settings = resolveProviderSettings(
-    provider,
-    context.config,
-    context.env,
-  );
+  if (provider === "gemini") {
+    return readProviderConfig(context.config, provider)?.default_model?.trim() ||
+      BUILT_IN_PROVIDER_DEFAULT_MODELS[provider];
+  }
+  const settings = resolveProviderSettings(provider, context.config, context.env);
   return settings?.defaultModel ?? BUILT_IN_PROVIDER_DEFAULT_MODELS[provider];
 }
 
@@ -1023,7 +1039,7 @@ function hasLocalProviderModel(
 async function probeRemoteProvider(params: {
   readonly provider: BuiltInProviderSlug;
   readonly baseURL: string;
-  readonly apiKey: string;
+  readonly headers: Readonly<Record<string, string>>;
   readonly fetchImpl?: typeof fetch;
   readonly timeoutMs?: number;
 }): Promise<{ readonly ok: boolean; readonly status?: number }> {
@@ -1039,10 +1055,12 @@ async function probeRemoteProvider(params: {
   }
   try {
     const response = await fetchImpl(
-      providerVerificationUrl(params.provider, params.baseURL),
+      params.provider === "gemini"
+        ? `${params.baseURL.replace(/\/+$/u, "")}/models`
+        : providerVerificationUrl(params.provider, params.baseURL),
       {
         method: "GET",
-        headers: remoteProviderHeaders(params.provider, params.apiKey),
+        headers: params.headers,
         signal: controller.signal,
       },
     );
@@ -1052,6 +1070,77 @@ async function probeRemoteProvider(params: {
   } finally {
     clearTimeout(timer);
   }
+}
+
+function geminiCredentialLabel(plan: GeminiCredentialPlan): string {
+  if (plan.kind === "api-key") {
+    return "GEMINI_API_KEY or GOOGLE_API_KEY";
+  }
+  if (plan.kind === "access-token") return plan.source;
+  if (plan.kind === "adc") {
+    return plan.source === "GOOGLE_APPLICATION_CREDENTIALS"
+      ? "GOOGLE_APPLICATION_CREDENTIALS"
+      : "well-known Google ADC credentials";
+  }
+  if (plan.expected === "access-token") return "GEMINI_ACCESS_TOKEN";
+  if (plan.expected === "adc") {
+    return plan.configuredPath === undefined
+      ? "Google ADC credentials"
+      : `an existing ADC credential file at ${plan.configuredPath}`;
+  }
+  if (plan.expected === "api-key") {
+    return "GEMINI_API_KEY or GOOGLE_API_KEY (or a saved Gemini BYOK key)";
+  }
+  return "a Gemini API key, GEMINI_ACCESS_TOKEN, or Google ADC credentials";
+}
+
+function configuredGeminiCredentialLabel(environment: NodeJS.ProcessEnv): string {
+  try {
+    const mode = getGeminiAuthMode(environment);
+    if (mode === "access-token") return "GEMINI_ACCESS_TOKEN";
+    if (mode === "adc") return "Google ADC credentials";
+    if (mode === "api-key") {
+      return "GEMINI_API_KEY or GOOGLE_API_KEY (or a saved Gemini BYOK key)";
+    }
+  } catch {
+    // The canonical resolver returns the invalid-mode detail to the caller.
+  }
+  return "Gemini credential and endpoint configuration";
+}
+
+function geminiCredentialSourceLabel(
+  plan: Exclude<GeminiCredentialPlan, { kind: "none" | "adc" }>,
+): string {
+  return plan.kind === "api-key" && plan.source === "saved-byok"
+    ? "saved Gemini BYOK"
+    : plan.source;
+}
+
+function geminiCredentialProvenance(
+  plan: GeminiCredentialPlan,
+): ProviderConnectionCredentialProvenance | undefined {
+  if (
+    plan.kind !== "api-key" ||
+    (plan.source !== "GEMINI_API_KEY" && plan.source !== "GOOGLE_API_KEY")
+  ) {
+    return undefined;
+  }
+  return {
+    kind: "environment",
+    fields: [{ role: "apiKey", envVar: plan.source }],
+  };
+}
+
+function resolveOnboardingGeminiCredentialPlan(
+  context: FirstRunOnboardingContext,
+): GeminiCredentialPlan {
+  const ingress = captureSecureStorageIngress(
+    context.env ?? process.env,
+    context.agencHome,
+  );
+  return resolveGeminiCredentialPlan(ingress.environment, {
+    savedApiKey: readLocalByokCredential(ingress.home, "gemini")?.apiKey,
+  });
 }
 
 export async function checkOnboardingProviderConnection(
@@ -1064,18 +1153,52 @@ export async function checkOnboardingProviderConnection(
     context.agencHome,
   );
   const environment = ingress.environment;
-  const settings = resolveProviderSettings(
-    provider,
-    context.config,
-    environment,
-  );
-  const baseURL =
-    settings?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS[provider];
-  const credentialEnvironment = resolveProviderCredentialEnvironment(
-    provider,
-    environment,
-  );
-  const credentialLabel = providerCredentialEnvironmentLabel(provider);
+  const settings = provider === "gemini"
+    ? undefined
+    : resolveProviderSettings(provider, context.config, environment);
+  const geminiBaseURL = provider === "gemini"
+    ? resolveProviderBaseURLEnvironment(provider, environment)?.value ??
+      readProviderConfig(context.config, provider)?.base_url?.trim()
+    : undefined;
+  let geminiRuntime: ReturnType<typeof readGeminiRuntimeOptions> = undefined;
+  if (provider === "gemini") {
+    try {
+      const factoryOptions = resolveProviderFactoryOptions(
+        provider,
+        {
+          model,
+          credentialHome: ingress.home,
+          ...(geminiBaseURL !== undefined ? { baseURL: geminiBaseURL } : {}),
+        },
+        environment,
+        {
+          savedApiKey: readLocalByokCredential(ingress.home, "gemini")?.apiKey,
+        },
+      );
+      geminiRuntime = readGeminiRuntimeOptions(factoryOptions.extra);
+      if (geminiRuntime === undefined) {
+        throw new Error("Gemini runtime authority was not resolved");
+      }
+    } catch (error) {
+      return {
+        provider,
+        model,
+        status: "credentials-required",
+        ok: false,
+        detail: error instanceof Error ? error.message : String(error),
+        credentialLabel: configuredGeminiCredentialLabel(environment),
+      };
+    }
+  }
+  const baseURL = geminiRuntime === undefined
+    ? settings?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS[provider]
+    : geminiEndpointFor(geminiRuntime.endpointPlan);
+  const credentialEnvironment = provider === "gemini"
+    ? undefined
+    : resolveProviderCredentialEnvironment(provider, environment);
+  const credentialLabel = provider === "gemini"
+    ? geminiCredentialLabel(geminiRuntime!.credentialPlan)
+    : providerCredentialEnvironmentLabel(provider);
   const environmentProvenance = credentialEnvironment === undefined
     ? undefined
     : providerCredentialEnvironmentProvenance(credentialEnvironment);
@@ -1195,6 +1318,73 @@ export async function checkOnboardingProviderConnection(
     };
   }
 
+  if (provider === "gemini") {
+    const credentialPlan = geminiRuntime!.credentialPlan;
+    const credentialProvenance = geminiCredentialProvenance(credentialPlan);
+    if (credentialPlan.kind === "none") {
+      return {
+        provider,
+        model,
+        status: "credentials-required",
+        ok: false,
+        detail: `Set ${credentialLabel} before the first model turn, or continue and add it later.`,
+        credentialLabel,
+        baseURL,
+      };
+    }
+    if (credentialPlan.kind === "adc") {
+      return {
+        provider,
+        model,
+        status: "ready",
+        ok: true,
+        detail:
+          `Google ADC credential file selected via ${credentialPlan.source}. ` +
+          "AgenC will exchange and refresh its access token on model requests.",
+        credentialLabel,
+        baseURL,
+      };
+    }
+    const headers = geminiCredentialHeaders(credentialPlan);
+    if (headers === undefined) {
+      throw new Error("Gemini credential headers were not resolved");
+    }
+    const remote = await probeRemoteProvider({
+      provider,
+      baseURL,
+      headers,
+      fetchImpl: context.fetchImpl,
+    });
+    if (!remote.ok) {
+      const authFailed = remote.status !== undefined &&
+        isKeyRejectedStatus(provider, remote.status);
+      return {
+        provider,
+        model,
+        status: authFailed ? "auth-failed" : "provider-unreachable",
+        ok: false,
+        detail: authFailed
+          ? `Provider rejected ${geminiCredentialSourceLabel(credentialPlan)}.`
+          : "Provider readiness check did not complete; verify network access and retry.",
+        credentialLabel,
+        ...(credentialProvenance !== undefined
+          ? { credentialProvenance }
+          : {}),
+        baseURL,
+      };
+    }
+    return {
+      provider,
+      model,
+      status: "ready",
+      ok: true,
+      detail: `Gemini credential found via ${geminiCredentialSourceLabel(credentialPlan)}.`,
+      credentialLabel,
+      ...(credentialProvenance !== undefined ? { credentialProvenance } : {}),
+      baseURL,
+    };
+  }
+
   if (
     onboarding.supportsManagedKeyAccess &&
     resolveAuthManagedKeysEnabled(context.config) &&
@@ -1279,7 +1469,7 @@ export async function checkOnboardingProviderConnection(
     const remote = await probeRemoteProvider({
       provider,
       baseURL,
-      apiKey,
+      headers: remoteProviderHeaders(provider, apiKey),
       fetchImpl: context.fetchImpl,
     });
     if (!remote.ok) {
@@ -1618,6 +1808,37 @@ export async function submitFirstRunOnboardingInput(
         }
         if (isApiKeyEntryCommand(command)) {
           const access = providerOnboardingInfo(state.selectedProvider).access;
+          if (state.selectedProvider === "gemini") {
+            const plan = resolveOnboardingGeminiCredentialPlan(context);
+            if (plan.kind !== "none") {
+              return {
+                state: withCompletedStep(
+                  {
+                    ...state,
+                    modelAccessInput: "menu",
+                    authPrompt: null,
+                    error: null,
+                  },
+                  "model-access",
+                  "connection-test",
+                ),
+                completed: false,
+              };
+            }
+            if (plan.expected === "access-token" || plan.expected === "adc") {
+              return {
+                state: {
+                  ...state,
+                  modelAccessInput: "menu",
+                  authPrompt: null,
+                  error:
+                    `Set ${geminiCredentialLabel(plan)}. A pasted API key ` +
+                    `cannot override GEMINI_AUTH_MODE=${plan.mode}.`,
+                },
+                completed: false,
+              };
+            }
+          }
           if (access === "environment") {
             return {
               state: {
@@ -1700,6 +1921,26 @@ export async function submitFirstRunOnboardingInput(
             },
             completed: false,
           };
+        }
+        if (state.selectedProvider === "gemini") {
+          const ingress = captureSecureStorageIngress(
+            context.env ?? process.env,
+            context.agencHome,
+          );
+          const authMode = getGeminiAuthMode(ingress.environment);
+          if (authMode === "access-token" || authMode === "adc") {
+            return {
+              state: {
+                ...state,
+                modelAccessInput: "menu",
+                authPrompt: null,
+                error:
+                  `A pasted API key cannot override GEMINI_AUTH_MODE=${authMode}. ` +
+                  `Set ${authMode === "access-token" ? "GEMINI_ACCESS_TOKEN" : "Google ADC credentials"}.`,
+              },
+              completed: false,
+            };
+          }
         }
         const apiKey = normalizeApiKeyEntry(raw);
         if (apiKey.length === 0 || /\s/.test(apiKey)) {
@@ -1959,7 +2200,17 @@ function credentialInstructionForConnection(
 
 function modelAccessInstructionForProvider(
   provider: BuiltInProviderSlug,
+  geminiPlan?: GeminiCredentialPlan,
 ): string {
+  if (provider === "gemini" && geminiPlan !== undefined) {
+    if (geminiPlan.kind !== "none") {
+      return `${geminiCredentialLabel(geminiPlan)} is configured. Press Enter to use it, or type back to choose another access method.`;
+    }
+    if (geminiPlan.expected === "access-token" || geminiPlan.expected === "adc") {
+      return `Set ${geminiCredentialLabel(geminiPlan)}, then press Enter to continue. A pasted API key cannot override GEMINI_AUTH_MODE=${geminiPlan.mode}.`;
+    }
+    return `Paste ${geminiCredentialLabel(geminiPlan)} to verify it, or press Enter to add it later.`;
+  }
   const credentialLabel = providerApiKeyEnvironmentLabel(provider);
   const onboarding = providerOnboardingInfo(provider);
   if (onboarding.access === "managed") {
@@ -2132,6 +2383,9 @@ export function detailLinesForStep(
             "Press Enter to run the connection check (or type test).",
           ];
     case "model-access": {
+      const geminiPlan = state.selectedProvider === "gemini"
+        ? resolveOnboardingGeminiCredentialPlan(context)
+        : undefined;
       if (state.pendingApiKeyApproval !== null) {
         return [];
       }
@@ -2152,7 +2406,14 @@ export function detailLinesForStep(
         const billingProvider =
           state.selectedProvider === "grok" ? "xAI" : state.selectedProvider;
         const onboarding = providerOnboardingInfo(state.selectedProvider);
-        const providerAccess = onboarding.access === "managed"
+        const providerAccess = state.selectedProvider === "gemini" &&
+            geminiPlan !== undefined
+          ? geminiPlan.kind === "none"
+            ? geminiPlan.expected === "access-token" || geminiPlan.expected === "adc"
+              ? `Use Gemini with ${geminiCredentialLabel(geminiPlan)}. A one-field BYOK key cannot override GEMINI_AUTH_MODE=${geminiPlan.mode}.`
+              : `Use Gemini with ${geminiCredentialLabel(geminiPlan)}.`
+            : `Use Gemini with configured ${geminiCredentialLabel(geminiPlan)}.`
+          : onboarding.access === "managed"
           ? `Use ${state.selectedProvider} through AgenC account auth.`
           : onboarding.access === "api-key"
             ? `Use ${credentialLabel ?? `a ${state.selectedProvider} API key`} — requests are billed by ${billingProvider}.`
@@ -2166,14 +2427,18 @@ export function detailLinesForStep(
           "2. Sign in with X / xAI — use Grok through an eligible X or xAI subscription.",
           `3. ${providerAccess}`,
           "4. Configure later — continue without signing in or saving a key.",
-          "Choose a number. You can also paste a provider API key directly.",
+          ...(geminiPlan?.kind === "none" &&
+            (geminiPlan.expected === "access-token" ||
+              geminiPlan.expected === "adc")
+            ? ["Choose a number. Configure the forced Gemini credential source before testing."]
+            : ["Choose a number. You can also paste a provider API key directly."]),
         ];
       }
       const connection = state.connection;
       if (connection === null) {
         return [
           `Provider: ${state.selectedProvider}`,
-          modelAccessInstructionForProvider(state.selectedProvider),
+          modelAccessInstructionForProvider(state.selectedProvider, geminiPlan),
           "Type back to choose a different access method.",
         ];
       }

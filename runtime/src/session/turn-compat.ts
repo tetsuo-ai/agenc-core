@@ -6,10 +6,18 @@ import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import type {
   LLMContentPart,
   LLMMessage,
+  LLMProvider,
   LLMTool,
   LLMToolCall,
+  LLMUsage,
 } from "../llm/types.js";
-import type { LLMUsage } from "../llm/types.js";
+import {
+  createProvider,
+  isFactoryProvider,
+  preserveProviderFactoryState,
+  readProviderFactoryOptions,
+  readProviderIdentity,
+} from "../llm/provider.js";
 import { assertAgentRoleWorkspaceMatches } from "../agents/role.js";
 import type { PhaseEvent } from "../phases/events.js";
 import type {
@@ -28,8 +36,10 @@ import {
 } from "../tools/runtimes/context.js";
 import {
   attachSandboxExecutionBroker,
+  missingSandboxExecutionBoundary,
   readSandboxExecutionBroker,
   readSandboxExecutionSurface,
+  type SandboxExecutionBrokerLike,
 } from "../sandbox/execution-broker.js";
 import { frameUntrustedToolHistoryMessages } from "../tools/untrusted-tool-result-framing.js";
 import type { AttachmentMessage, Message } from "../types/message.js";
@@ -81,6 +91,7 @@ export interface TurnCompatSession {
   readonly userMessage: string | readonly LLMContentPart[];
   readonly systemPrompt: string;
   readonly foregroundMemoryScope: ForegroundAgentMemoryScope;
+  readonly disposeOwnedProvider: () => Promise<void>;
 }
 
 type ForegroundAgentMemoryScope =
@@ -89,6 +100,118 @@ type ForegroundAgentMemoryScope =
       readonly selected: true;
       readonly authorization: AgentMemoryAuthorization | undefined;
     };
+
+interface TurnCompatProviderLease {
+  readonly provider: LLMProvider;
+  readonly disposeOwnedProvider: () => Promise<void>;
+}
+
+function createOwnedProviderDisposer(
+  provider: LLMProvider | undefined,
+): () => Promise<void> {
+  let disposal: Promise<void> | undefined;
+  return () => {
+    disposal ??= Promise.resolve().then(async () => {
+      await provider?.dispose?.();
+    });
+    return disposal;
+  };
+}
+
+function createStatelessProviderSessionView(
+  provider: LLMProvider,
+): LLMProvider {
+  return {
+    name: provider.name,
+    ...(provider.tokenCountCapability !== undefined
+      ? { tokenCountCapability: provider.tokenCountCapability }
+      : {}),
+    ...(provider.suggestedStreamIdleTimeoutMs !== undefined
+      ? { suggestedStreamIdleTimeoutMs: provider.suggestedStreamIdleTimeoutMs }
+      : {}),
+    chat: (messages, options) => provider.chat(messages, options),
+    chatStream: (messages, onChunk, options) =>
+      provider.chatStream(messages, onChunk, options),
+    healthCheck: () => provider.healthCheck(),
+    ...(provider.predictCode !== undefined
+      ? {
+          predictCode: (request, options) =>
+            provider.predictCode!(request, options),
+        }
+      : {}),
+    ...(provider.getExecutionProfile !== undefined
+      ? {
+          getExecutionProfile: (options) =>
+            provider.getExecutionProfile!(options),
+        }
+      : {}),
+    ...(provider.retrieveStoredResponse !== undefined
+      ? {
+          retrieveStoredResponse: (responseId: string) =>
+            provider.retrieveStoredResponse!(responseId),
+        }
+      : {}),
+    ...(provider.deleteStoredResponse !== undefined
+      ? {
+          deleteStoredResponse: (responseId: string) =>
+            provider.deleteStoredResponse!(responseId),
+        }
+      : {}),
+  };
+}
+
+function createTurnCompatProviderLease(params: {
+  readonly provider: LLMProvider;
+  readonly cwd: string;
+  readonly sandboxExecutionBroker: SandboxExecutionBrokerLike | undefined;
+}): TurnCompatProviderLease {
+  const source = params.provider;
+  if (source.forkForSession !== undefined) {
+    if (params.sandboxExecutionBroker === undefined) {
+      throw missingSandboxExecutionBoundary("provider");
+    }
+    const forked = source.forkForSession({
+      cwd: params.cwd,
+      sandboxExecutionBroker: params.sandboxExecutionBroker,
+    });
+    if (forked === source) {
+      throw new Error(
+        `${source.name} provider returned its parent instance from forkForSession`,
+      );
+    }
+    const provider = isFactoryProvider(forked)
+      ? forked
+      : preserveProviderFactoryState(forked, source);
+    return {
+      provider,
+      disposeOwnedProvider: createOwnedProviderDisposer(provider),
+    };
+  }
+
+  const providerName = readProviderIdentity(source);
+  if (providerName !== null) {
+    // Factory state is already the resolved session snapshot. Rebuilding from
+    // it gives the child an independent transport/continuation state without
+    // consulting process environment or credential storage again.
+    const provider = createProvider(
+      providerName,
+      readProviderFactoryOptions(source),
+    );
+    return {
+      provider,
+      disposeOwnedProvider: createOwnedProviderDisposer(provider),
+    };
+  }
+
+  // Structural providers without canonical factory state are expected to be
+  // stateless. A distinct facade keeps Session from discovering and rebinding
+  // a parent-owned HTTP client; stateful adapters must implement
+  // forkForSession so their transport can be independently owned.
+  return {
+    provider: createStatelessProviderSessionView(source),
+    disposeOwnedProvider: createOwnedProviderDisposer(undefined),
+  };
+}
 
 export type TurnCompatRunEvent =
   | { readonly type: "phase"; readonly event: PhaseEvent }
@@ -161,66 +284,88 @@ export async function createTurnCompatSession(
       model,
     },
   };
-  const session = new Session({
-    conversationId:
-      opts.conversationId ??
-      params.toolUseContext.agentId ??
-      `${parent.conversationId}:turn:${randomUUID()}`,
-    roleWorkspace: parent.roleWorkspace,
-    agentDefinitions: scopedAgentDefinitions,
-    initialState: {
-      sessionConfiguration,
-      history: [],
-    },
-    features: parent.features,
-    mcpManagerOwnership: "borrowed",
-    services: {
-      ...parent.services,
-      // The compat child owns its selected model/provider revision. Sharing
-      // the parent's provider service would silently retain the parent model.
-      providerService: undefined,
-      registry,
-      ...(opts.executionAdmission !== undefined
-        ? { executionAdmission: opts.executionAdmission }
-        : {}),
-      ...(sandboxExecutionBroker !== undefined
-        ? { sandboxExecutionBroker }
-        : {}),
-      hooks: {
-        ...parent.services.hooks,
-        preToolUseHooks: [],
-        postToolUseHooks: [],
-        failureToolUseHooks: [],
-        permissionDecisionHooks: [],
-        stopHooks: [
-          ...configuredCompatStopHooks(parent.services.hooks),
-          createCompatSessionStopHook(params),
-        ],
-      },
-      querySource: params.querySource,
-      approvalResolver: {
-        request: async () => ({ kind: "approved" }),
-      },
-      permissionModeRegistry: new PermissionModeRegistry({
-        ...appState.toolPermissionContext,
-        mode: "bypassPermissions",
-        isBypassPermissionsModeAvailable: true,
-      } as unknown as ToolPermissionContext),
-    } as SessionServices,
-    jsRepl: parent.jsRepl,
-    config: {
-      ...parent.config,
-      cwd: effectiveCwd,
-      model,
-    },
-    modelInfo: {
-      ...parent.modelInfo,
-      slug: model,
-      ...(params.maxOutputTokensOverride !== undefined
-        ? { maxOutputTokens: params.maxOutputTokensOverride }
-        : {}),
-    },
+  const selectedProvider = params.toolUseContext.provider ??
+    parent.services.provider;
+  const providerLease = createTurnCompatProviderLease({
+    provider: selectedProvider,
+    cwd: effectiveCwd,
+    sandboxExecutionBroker,
   });
+  let session: Session;
+  try {
+    session = new Session({
+      conversationId:
+        opts.conversationId ??
+        params.toolUseContext.agentId ??
+        `${parent.conversationId}:turn:${randomUUID()}`,
+      roleWorkspace: parent.roleWorkspace,
+      agentDefinitions: scopedAgentDefinitions,
+      initialState: {
+        sessionConfiguration,
+        history: [],
+      },
+      features: parent.features,
+      mcpManagerOwnership: "borrowed",
+      services: {
+        ...parent.services,
+        // The compat child owns its selected model/provider revision. Sharing
+        // the parent's provider service would silently retain the parent model.
+        providerService: undefined,
+        provider: providerLease.provider,
+        registry,
+        ...(opts.executionAdmission !== undefined
+          ? { executionAdmission: opts.executionAdmission }
+          : {}),
+        ...(sandboxExecutionBroker !== undefined
+          ? { sandboxExecutionBroker }
+          : {}),
+        hooks: {
+          ...parent.services.hooks,
+          preToolUseHooks: [],
+          postToolUseHooks: [],
+          failureToolUseHooks: [],
+          permissionDecisionHooks: [],
+          stopHooks: [
+            ...configuredCompatStopHooks(parent.services.hooks),
+            createCompatSessionStopHook(params),
+          ],
+        },
+        querySource: params.querySource,
+        approvalResolver: {
+          request: async () => ({ kind: "approved" }),
+        },
+        permissionModeRegistry: new PermissionModeRegistry({
+          ...appState.toolPermissionContext,
+          mode: "bypassPermissions",
+          isBypassPermissionsModeAvailable: true,
+        } as unknown as ToolPermissionContext),
+      } as SessionServices,
+      jsRepl: parent.jsRepl,
+      config: {
+        ...parent.config,
+        cwd: effectiveCwd,
+        model,
+      },
+      modelInfo: {
+        ...parent.modelInfo,
+        slug: model,
+        ...(params.maxOutputTokensOverride !== undefined
+          ? { maxOutputTokens: params.maxOutputTokensOverride }
+          : {}),
+      },
+    });
+  } catch (error) {
+    try {
+      await providerLease.disposeOwnedProvider();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "turn compatibility session construction and provider cleanup failed",
+      );
+    }
+    throw error;
+  }
+  session.onBeforeDurableClose(providerLease.disposeOwnedProvider);
   attachToolContextSurface(session, scopedToolUseContext);
   return {
     session,
@@ -228,6 +373,7 @@ export async function createTurnCompatSession(
     userMessage,
     systemPrompt,
     foregroundMemoryScope,
+    disposeOwnedProvider: providerLease.disposeOwnedProvider,
   };
 }
 
@@ -683,11 +829,15 @@ export async function* runTurnCompat(
     if (!completed && !runAbortController.signal.aborted) {
       runAbortController.abort(new Error("turn compatibility stream closed"));
     }
-    await runInForegroundMemoryScope(() =>
-      iterator.return?.({ reason: "cancelled" }),
-    );
-    unsubscribe();
-    queueWake = null;
+    try {
+      await runInForegroundMemoryScope(() =>
+        iterator.return?.({ reason: "cancelled" }),
+      );
+    } finally {
+      unsubscribe();
+      queueWake = null;
+      await turn.disposeOwnedProvider();
+    }
   }
 }
 

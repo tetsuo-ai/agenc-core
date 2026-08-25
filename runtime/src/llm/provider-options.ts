@@ -11,9 +11,8 @@
 import { assertCanonicalEnvironmentIngress } from "../config/environment-ingress.js";
 import { canonicalSessionEnvironmentKeys } from "../session/environment.js";
 import {
-  getGeminiAuthMode,
   getGeminiProjectIdHint,
-  resolveGeminiCredential,
+  resolveGeminiCredentialPlan,
 } from "../utils/geminiAuth.js";
 import {
   readOpenAiOauthCredentials,
@@ -31,10 +30,21 @@ import {
 import { BUILT_IN_PROVIDER_BASE_URLS } from "./registry/provider-info.js";
 import { resolveGrokProviderCredential } from "./xai-capability-config.js";
 import type { ProviderFactoryOptions, ProviderName } from "./provider.js";
+import {
+  assertNoRetiredGeminiRuntimeFields,
+  createGeminiRuntimeOptions,
+  readGeminiRuntimeOptions,
+} from "./providers/gemini/runtime-options.js";
+import { createGeminiEndpointPlan } from "./providers/gemini/endpoint-plan.js";
 
 export type ProviderEnvironment = Readonly<
   Record<string, string | undefined>
 >;
+
+/** Lower-precedence credentials discovered at the canonical ingress. */
+export interface ProviderCredentialCandidates {
+  readonly savedApiKey?: string;
+}
 
 function nonEmpty(value: string | undefined): string | undefined {
   const normalized = value?.trim();
@@ -94,6 +104,7 @@ export function resolveProviderFactoryOptions(
   provider: ProviderName,
   requested: ProviderFactoryOptions,
   env: ProviderEnvironment,
+  candidates: ProviderCredentialCandidates = {},
 ): ProviderFactoryOptions {
   if (
     provider === "amazon-bedrock" &&
@@ -105,10 +116,9 @@ export function resolveProviderFactoryOptions(
   }
   const snapshot = snapshotProviderEnvironment(env);
   const home = requested.credentialHome;
-  const credentialEnvironment = resolveProviderCredentialEnvironment(
-    provider,
-    snapshot,
-  );
+  const credentialEnvironment = provider === "gemini"
+    ? undefined
+    : resolveProviderCredentialEnvironment(provider, snapshot);
   const environmentApiKey = credentialEnvironment?.kind === "api-key"
     ? credentialEnvironment.apiKey?.value
     : undefined;
@@ -117,10 +127,13 @@ export function resolveProviderFactoryOptions(
         home,
         requested.apiKey,
         snapshot,
-      ).value
-    : nonEmpty(requested.apiKey) ?? environmentApiKey;
+      ).value ?? nonEmpty(candidates.savedApiKey)
+    : nonEmpty(requested.apiKey) ??
+      environmentApiKey ??
+      nonEmpty(candidates.savedApiKey);
+  const requestedBaseURL = nonEmpty(requested.baseURL);
   let baseURL =
-    nonEmpty(requested.baseURL) ??
+    requestedBaseURL ??
     resolveProviderBaseURLEnvironment(provider, snapshot)?.value;
 
   const resolvedExtra: Record<string, unknown> = {};
@@ -197,25 +210,68 @@ export function resolveProviderFactoryOptions(
   }
 
   if (provider === "gemini") {
-    const authMode = getGeminiAuthMode(snapshot);
-    const accessToken = nonEmpty(snapshot.GEMINI_ACCESS_TOKEN);
-    const project = getGeminiProjectIdHint(snapshot);
+    assertNoRetiredGeminiRuntimeFields(requested.extra);
+    const requestedRuntime = readGeminiRuntimeOptions(requested.extra);
+    if (requestedRuntime !== undefined && nonEmpty(requested.apiKey) !== undefined) {
+      throw new Error(
+        "Gemini factory options cannot contain both apiKey and extra.gemini credentialPlan",
+      );
+    }
+    const credentialPlan = requestedRuntime?.credentialPlan ??
+      resolveGeminiCredentialPlan(snapshot, {
+        apiKey: requested.apiKey,
+        savedApiKey: candidates.savedApiKey,
+      });
+    const usesVertexRouting =
+      credentialPlan.kind === "access-token" ||
+      credentialPlan.kind === "adc" ||
+      (credentialPlan.kind === "none" &&
+        (credentialPlan.mode === "access-token" ||
+          credentialPlan.mode === "adc"));
+    const project = getGeminiProjectIdHint(snapshot) ??
+      (credentialPlan.kind === "access-token" || credentialPlan.kind === "adc"
+        ? credentialPlan.projectId
+        : undefined);
     const location =
       nonEmpty(snapshot.GEMINI_VERTEX_LOCATION) ??
-      nonEmpty(snapshot.GOOGLE_CLOUD_LOCATION) ??
-      nonEmpty(snapshot.GOOGLE_CLOUD_REGION) ??
-      nonEmpty(snapshot.CLOUD_ML_REGION);
-    const cachedContent = nonEmpty(snapshot.GEMINI_CACHED_CONTENT);
-    if (authMode === "access-token" || authMode === "adc") {
-      resolvedExtra.authMode = "oauth";
-      apiKey = undefined;
+      nonEmpty(snapshot.GOOGLE_CLOUD_LOCATION);
+    if (requestedRuntime !== undefined && requestedBaseURL !== undefined) {
+      throw new Error(
+        "Gemini factory options cannot contain both baseURL and extra.gemini endpointPlan",
+      );
     }
-    if (accessToken !== undefined) resolvedExtra.accessToken = accessToken;
-    if (project !== undefined) resolvedExtra.project = project;
-    if (location !== undefined) resolvedExtra.location = location;
-    if (cachedContent !== undefined) resolvedExtra.cachedContent = cachedContent;
-    resolvedExtra.resolveCredential = () =>
-      resolveGeminiCredential(snapshot);
+    if (
+      requestedRuntime === undefined &&
+      baseURL === undefined &&
+      usesVertexRouting &&
+      (project === undefined || location === undefined)
+    ) {
+      throw new Error(
+        "Gemini access-token/ADC routing requires both project and location when GEMINI_BASE_URL is not set",
+      );
+    }
+    const endpointPlan = requestedRuntime?.endpointPlan ??
+      createGeminiEndpointPlan({
+        ...(baseURL !== undefined ? { baseURL } : {}),
+        ...(baseURL === undefined &&
+        usesVertexRouting &&
+        project !== undefined &&
+        location !== undefined
+          ? { vertex: { project, location } }
+          : {}),
+      });
+    const cachedContent = requestedRuntime === undefined
+      ? nonEmpty(snapshot.GEMINI_CACHED_CONTENT)
+      : requestedRuntime.cachedContent;
+    forcedExtra.gemini = createGeminiRuntimeOptions({
+      credentialPlan,
+      endpointPlan,
+      ...(cachedContent !== undefined ? { cachedContent } : {}),
+    });
+    // From this boundary onward Gemini has one credential and endpoint
+    // representation. Generic factory fields cannot become parallel authority.
+    apiKey = undefined;
+    baseURL = undefined;
   }
 
   if (provider === "amazon-bedrock") {

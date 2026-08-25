@@ -9,7 +9,7 @@ import {
   getGeminiAuthMode,
   getGeminiProjectIdHint,
   materializeGeminiCredentialPlan,
-  resolveGeminiCredential,
+  parseGeminiCredentialPlan,
   resolveGeminiCredentialPlan,
   type GeminiCredentialPlan,
 } from '../../src/utils/geminiAuth.ts'
@@ -21,9 +21,19 @@ function environment(values: EnvSnapshot = {}): EnvSnapshot {
   return Object.freeze({ ...values })
 }
 
-describe('resolveGeminiCredential', () => {
+async function selectAndMaterializeGeminiCredential(
+  env: EnvSnapshot,
+  options: Parameters<typeof resolveGeminiCredentialPlan>[1] = {},
+) {
+  return materializeGeminiCredentialPlan(
+    resolveGeminiCredentialPlan(env, options),
+    options,
+  )
+}
+
+describe('selectAndMaterializeGeminiCredential', () => {
   test('prefers GEMINI_API_KEY over other captured Gemini auth inputs', async () => {
-    await expect(resolveGeminiCredential(environment({
+    await expect(selectAndMaterializeGeminiCredential(environment({
       GEMINI_API_KEY: 'gem-key',
       GOOGLE_API_KEY: 'google-key',
       GEMINI_ACCESS_TOKEN: 'token-123',
@@ -34,8 +44,8 @@ describe('resolveGeminiCredential', () => {
     })
   })
 
-  test('an explicit factory key wins every valid captured mode', async () => {
-    await expect(resolveGeminiCredential(environment({
+  test('forced ADC mode ignores an explicit factory API key', async () => {
+    await expect(selectAndMaterializeGeminiCredential(environment({
       GEMINI_AUTH_MODE: 'adc',
       GEMINI_API_KEY: 'environment-key',
       GEMINI_ACCESS_TOKEN: 'environment-token',
@@ -43,14 +53,16 @@ describe('resolveGeminiCredential', () => {
       apiKey: 'factory-key',
       platformHome: missingPlatformHome,
     })).resolves.toEqual({
-      kind: 'api-key',
-      credential: 'factory-key',
-      source: 'factory',
+      kind: 'none',
+      mode: 'adc',
+      expected: 'adc',
+      configuredPath:
+        '/agenc-test/missing-platform-home/.config/gcloud/application_default_credentials.json',
     })
   })
 
   test('uses only the captured access token and canonical project hints', async () => {
-    await expect(resolveGeminiCredential(environment({
+    await expect(selectAndMaterializeGeminiCredential(environment({
       GEMINI_AUTH_MODE: 'access-token',
       GEMINI_ACCESS_TOKEN: 'token-123',
       GEMINI_PROJECT_ID: 'test-project',
@@ -64,9 +76,34 @@ describe('resolveGeminiCredential', () => {
     })
   })
 
+  test('uses saved BYOK only as an API-key mode candidate', () => {
+    expect(resolveGeminiCredentialPlan(environment(), {
+      savedApiKey: 'saved-key',
+      platformHome: missingPlatformHome,
+    })).toEqual({
+      kind: 'api-key',
+      credential: 'saved-key',
+      source: 'saved-byok',
+    })
+
+    expect(resolveGeminiCredentialPlan(environment({
+      GEMINI_AUTH_MODE: 'adc',
+      GOOGLE_APPLICATION_CREDENTIALS: '/captured/missing.json',
+    }), {
+      savedApiKey: 'stale-saved-key',
+      fileExists: () => false,
+      platformHome: missingPlatformHome,
+    })).toEqual({
+      kind: 'none',
+      mode: 'adc',
+      expected: 'adc',
+      configuredPath: '/captured/missing.json',
+    })
+  })
+
   test('materializes the exact selected ADC file and client metadata', async () => {
     let selectedPath: string | undefined
-    await expect(resolveGeminiCredential(environment({
+    await expect(selectAndMaterializeGeminiCredential(environment({
       GEMINI_AUTH_MODE: 'adc',
       GOOGLE_APPLICATION_CREDENTIALS: existingFilePath,
     }), {
@@ -92,7 +129,7 @@ describe('resolveGeminiCredential', () => {
   })
 
   test('returns a diagnostic plan when the captured environment has no auth source', async () => {
-    await expect(resolveGeminiCredential(environment(), {
+    await expect(selectAndMaterializeGeminiCredential(environment(), {
       platformHome: missingPlatformHome,
       platform: 'linux',
     })).resolves.toEqual({
@@ -105,7 +142,7 @@ describe('resolveGeminiCredential', () => {
   })
 
   test('access-token mode does not silently fall back to ADC', async () => {
-    await expect(resolveGeminiCredential(environment({
+    await expect(selectAndMaterializeGeminiCredential(environment({
       GEMINI_AUTH_MODE: 'access-token',
       GOOGLE_APPLICATION_CREDENTIALS: existingFilePath,
     }), {
@@ -121,7 +158,7 @@ describe('resolveGeminiCredential', () => {
   })
 
   test('adc mode ignores a captured access token', async () => {
-    await expect(resolveGeminiCredential(environment({
+    await expect(selectAndMaterializeGeminiCredential(environment({
       GEMINI_AUTH_MODE: 'adc',
       GEMINI_ACCESS_TOKEN: 'token-123',
       GOOGLE_APPLICATION_CREDENTIALS: existingFilePath,
@@ -142,7 +179,7 @@ describe('resolveGeminiCredential', () => {
   })
 
   test('does not hide invalid auth modes behind usable credentials', async () => {
-    await expect(resolveGeminiCredential(environment({
+    await expect(selectAndMaterializeGeminiCredential(environment({
       GEMINI_AUTH_MODE: 'system',
       GEMINI_API_KEY: 'gem-key',
     }))).rejects.toThrow(
@@ -152,7 +189,7 @@ describe('resolveGeminiCredential', () => {
 
   test('surfaces a selected ADC file failure instead of treating it as no auth', async () => {
     const rootCause = new Error('bad credential document')
-    const promise = resolveGeminiCredential(environment({
+    const promise = selectAndMaterializeGeminiCredential(environment({
       GEMINI_AUTH_MODE: 'adc',
       GOOGLE_APPLICATION_CREDENTIALS: existingFilePath,
     }), {
@@ -172,6 +209,23 @@ describe('resolveGeminiCredential', () => {
 })
 
 describe('Gemini credential plan materialization', () => {
+  test('rejects unknown fields at the serialized plan boundary', () => {
+    expect(() => parseGeminiCredentialPlan({
+      kind: 'api-key',
+      credential: 'gemini-key',
+      source: 'factory',
+      accessToken: 'parallel-token',
+    })).toThrow('Gemini credential plan contains unsupported fields')
+  })
+
+  test('rejects the literal undefined at the serialized plan boundary', () => {
+    expect(() => parseGeminiCredentialPlan({
+      kind: 'api-key',
+      credential: 'undefined',
+      source: 'factory',
+    })).toThrow('Gemini credential plan requires a non-empty credential')
+  })
+
   test('requests a token on every materialization instead of caching a bearer', async () => {
     const plan: GeminiCredentialPlan = {
       kind: 'adc',
@@ -208,7 +262,7 @@ describe('Gemini credential plan materialization', () => {
     }))
 
     try {
-      await expect(resolveGeminiCredential(environment({
+      await expect(selectAndMaterializeGeminiCredential(environment({
         GEMINI_AUTH_MODE: 'adc',
         GOOGLE_APPLICATION_CREDENTIALS: credentialPath,
       }))).rejects.toThrow(

@@ -114,19 +114,6 @@ const scenarios: Scenario[] = [
     expectedHitRate: 0.7,
     expectedFreshInput: 300,
   },
-  {
-    name: 'Gemini via openaiShim — cached_content_token_count',
-    provider: 'gemini',
-    rawUsage: {
-      prompt_tokens: 4_000,
-      completion_tokens: 200,
-      cached_content_token_count: 3_200,
-    },
-    expectedRead: 3_200,
-    expectedTotal: 4_000,
-    expectedHitRate: 0.8,
-    expectedFreshInput: 800,
-  },
 ]
 
 describe('raw usage → shim → extractCacheMetrics pipeline', () => {
@@ -148,6 +135,26 @@ describe('raw usage → shim → extractCacheMetrics pipeline', () => {
       expect(metrics.hitRate).toBeCloseTo(s.expectedHitRate, 4)
     })
   }
+})
+
+describe('native usage → extractCacheMetrics pipeline', () => {
+  test('Gemini canonical cached usage remains visible downstream', () => {
+    const metrics = extractCacheMetrics(
+      {
+        input_tokens: 800,
+        cache_creation_input_tokens: 0,
+        cache_read_input_tokens: 3_200,
+      },
+      'gemini',
+    )
+
+    expect(metrics).toMatchObject({
+      supported: true,
+      read: 3_200,
+      total: 4_000,
+      hitRate: 0.8,
+    })
+  })
 })
 
 describe('no-cache providers — pipeline honestly reports unsupported', () => {
@@ -261,7 +268,7 @@ describe('display path end-to-end — private-IP, custom-port, self-hosted endpo
   test('self-hosted proxy forwarding real upstream cache data is NOT discarded', () => {
     // Review-blocker regression: an enterprise setup with an internal
     // reverse proxy on a private URL forwarding to OpenAi / Kimi /
-    // DeepSeek / Gemini WILL deliver real cache fields via the shim.
+    // DeepSeek WILL deliver real cache fields via the shim.
     // Pre-fix, the URL heuristic → self-hosted → unconditional
     // `supported: false` discarded the data and rendered '[Cache: N/A]'
     // even though valid cache metrics were on the payload. Post-fix,

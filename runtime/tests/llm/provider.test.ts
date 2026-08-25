@@ -1,10 +1,18 @@
 import { describe, expect, test, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { JWT } from "google-auth-library";
 import type { AuthBackend } from "../auth/backend.js";
 import { AgenCProvider } from "./providers/agenc/index.js";
 import { AnthropicProvider } from "./providers/anthropic/adapter.js";
 import { BedrockProvider } from "./providers/bedrock/index.js";
 import { DeepSeekProvider } from "./providers/deepseek/index.js";
-import { GeminiProvider } from "./providers/gemini/index.js";
+import {
+  GeminiProvider,
+  type GeminiProviderConfig,
+} from "./providers/gemini/index.js";
+import { createGeminiEndpointPlan } from "./providers/gemini/endpoint-plan.js";
 import { GrokProvider } from "./providers/grok/adapter.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { GitHubProvider } from "./providers/github/index.js";
@@ -99,16 +107,126 @@ describe("createProvider", () => {
     expect(readProviderFactoryOptions(provider).tools).toEqual(tools);
   });
 
-  test("preserves configured Gemini cached-content identity for accounting", () => {
-    const provider = new GeminiProvider({
-      apiKey: "gemini-key",
-      model: "gemini-2.5-pro",
-      cachedContent: "cachedContents/project-context",
-    });
+  test("preserves factory Gemini cached-content through the native request", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(JSON.stringify({
+        candidates: [{
+          content: { role: "model", parts: [{ text: "cached" }] },
+          finishReason: "STOP",
+        }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    const provider = createProvider(
+      "gemini",
+      resolveProviderFactoryOptions(
+        "gemini",
+        { model: "gemini-2.5-pro", extra: { fetchImpl } },
+        {
+          GEMINI_API_KEY: "gemini-key",
+          GEMINI_CACHED_CONTENT: "cachedContents/project-context",
+        },
+      ),
+    );
 
     expect(readProviderFactoryOptions(provider).extra).toMatchObject({
+      gemini: {
+        credentialPlan: {
+          kind: "api-key",
+          credential: "gemini-key",
+          source: "GEMINI_API_KEY",
+        },
+        cachedContent: "cachedContents/project-context",
+      },
+    });
+    await provider.chat([{ role: "user", content: "hello" }]);
+    const [, init] = fetchImpl.mock.calls[0] ?? [];
+    expect(JSON.parse(String(init?.body))).toMatchObject({
       cachedContent: "cachedContents/project-context",
     });
+  });
+
+  test("materializes a factory-selected ADC plan on the native request", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "agenc-gemini-factory-adc-"));
+    const credentialPath = join(directory, "service-account.json");
+    writeFileSync(credentialPath, JSON.stringify({
+      type: "service_account",
+      client_email: "service@example.test",
+      private_key: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n",
+      project_id: "resource-project",
+      quota_project_id: "billing-project",
+    }));
+    let tokenRequests = 0;
+    const token = vi.spyOn(JWT.prototype, "getAccessToken").mockImplementation(
+      async () => ({
+        token: `adc-request-token-${++tokenRequests}`,
+        res: null,
+      }),
+    );
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
+      new Response(JSON.stringify({
+        candidates: [{
+          content: { role: "model", parts: [{ text: "adc" }] },
+          finishReason: "STOP",
+        }],
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      })
+    );
+
+    try {
+      const provider = createProvider(
+        "gemini",
+        resolveProviderFactoryOptions(
+          "gemini",
+          { model: "gemini-2.5-pro", extra: { fetchImpl } },
+          {
+            GEMINI_AUTH_MODE: "adc",
+            GOOGLE_APPLICATION_CREDENTIALS: credentialPath,
+            GOOGLE_CLOUD_LOCATION: "us-central1",
+            GOOGLE_CLOUD_PROJECT: "resource-project",
+            GOOGLE_CLOUD_QUOTA_PROJECT: "billing-project",
+          },
+        ),
+      );
+
+      await provider.chat([{ role: "user", content: "hello" }]);
+      await provider.chat([{ role: "user", content: "again" }]);
+      const firstHeaders = fetchImpl.mock.calls[0]?.[1]?.headers as Headers;
+      const secondHeaders = fetchImpl.mock.calls[1]?.[1]?.headers as Headers;
+      expect(firstHeaders.get("authorization")).toBe(
+        "Bearer adc-request-token-1",
+      );
+      expect(secondHeaders.get("authorization")).toBe(
+        "Bearer adc-request-token-2",
+      );
+      expect(firstHeaders.get("x-goog-user-project")).toBe("billing-project");
+      expect(secondHeaders.get("x-goog-user-project")).toBe("billing-project");
+      expect(tokenRequests).toBe(2);
+      expect(readProviderFactoryOptions(provider).extra).toMatchObject({
+        gemini: {
+          credentialPlan: {
+            kind: "adc",
+            credentialPath,
+            source: "GOOGLE_APPLICATION_CREDENTIALS",
+          },
+          endpointPlan: {
+            kind: "vertex",
+            project: "resource-project",
+            location: "us-central1",
+            nativeBaseURL:
+              "https://us-central1-aiplatform.googleapis.com/v1/projects/resource-project/locations/us-central1/publishers/google",
+          },
+        },
+      });
+      expect(readProviderFactoryOptions(provider).baseURL).toBeUndefined();
+    } finally {
+      token.mockRestore();
+      rmSync(directory, { force: true, recursive: true });
+    }
   });
 
   test("routes 'agenc' to AgenCProvider with explicit auth context", () => {
@@ -205,6 +323,12 @@ describe("createProvider", () => {
             sessionId: "session-1",
           },
         }
+        : name === "gemini"
+          ? resolveProviderFactoryOptions(
+            "gemini",
+            {},
+            { GEMINI_API_KEY: "registry-test-key" },
+          )
         : name === "amazon-bedrock"
           ? {
             extra: {
@@ -220,7 +344,24 @@ describe("createProvider", () => {
 
       const options = readProviderFactoryOptions(provider);
       expect(options.model).toBe(info?.defaultModel);
-      if (name !== "agenc") {
+      if (name === "gemini") {
+        expect(options.apiKey).toBeUndefined();
+        expect(options.baseURL).toBeUndefined();
+        expect(options.extra).toMatchObject({
+          gemini: {
+            credentialPlan: {
+              kind: "api-key",
+              credential: "registry-test-key",
+              source: "GEMINI_API_KEY",
+            },
+            endpointPlan: {
+              kind: "developer",
+              nativeBaseURL:
+                "https://generativelanguage.googleapis.com/v1beta",
+            },
+          },
+        });
+      } else if (name !== "agenc") {
         expect(options.baseURL).toBe(info?.baseURL);
       }
     },
@@ -253,7 +394,6 @@ describe("createProvider", () => {
     { name: "openrouter", model: "openai/gpt-5" },
     { name: "groq", model: "llama-3.3-70b-versatile" },
     { name: "deepseek", model: "deepseek-v4-pro" },
-    { name: "gemini", model: "gemini-2.5-pro" },
     {
       name: "amazon-bedrock",
       model: "amazon.nova-pro-v1:0",
@@ -306,6 +446,27 @@ describe("createProvider", () => {
       expect(vendKey).toHaveBeenCalledWith(name, "session-vend");
     },
   );
+
+  test("never asks AuthBackend to vend Gemini credentials", () => {
+    const vendKey = vi.fn(authBackend.vendKey);
+    const provider = createProvider("gemini", {
+      model: "gemini-2.5-pro",
+      extra: {
+        authBackend: { ...authBackend, vendKey },
+        sessionId: "session-gemini",
+        gemini: {
+          credentialPlan: {
+            kind: "api-key",
+            credential: "canonical-key",
+            source: "factory",
+          },
+          endpointPlan: createGeminiEndpointPlan(),
+        },
+      },
+    });
+    expect(provider).toBeInstanceOf(GeminiProvider);
+    expect(vendKey).not.toHaveBeenCalled();
+  });
 
   test.each([
     {
@@ -1568,27 +1729,10 @@ describe("createProvider", () => {
       model: "gemini-2.5-pro",
       expectedBaseURL: "https://generativelanguage.googleapis.com/v1beta",
       expectedModel: "gemini-2.5-pro",
-      expectedUseResponsesApi: false,
+      expectedUseResponsesApi: undefined,
       expectedInstance: GeminiProvider,
-      assertApiKey: true,
-      expectedApiKey: "gemini-test",
-    },
-    {
-      name: "gemini",
-      env: {
-        GEMINI_API_KEY: undefined,
-        GOOGLE_API_KEY: undefined,
-        GEMINI_BASE_URL:
-          "https://generativelanguage.googleapis.com/v1beta/openai",
-      },
-      apiKey: "gemini-test",
-      model: "gemini-2.5-pro",
-      expectedBaseURL: "https://generativelanguage.googleapis.com/v1beta",
-      expectedModel: "gemini-2.5-pro",
-      expectedUseResponsesApi: false,
-      expectedInstance: GeminiProvider,
-      assertApiKey: true,
-      expectedApiKey: "gemini-test",
+      assertApiKey: false,
+      expectedApiKey: undefined,
     },
   ] as const)(
     "routes '$name' through the live provider path without leaking OPENAI globals",
@@ -1623,6 +1767,30 @@ describe("createProvider", () => {
         const config = (provider as unknown as { config: { host?: string; model: string } }).config;
         expect(config.host).toBe(expectedBaseURL);
         expect(config.model).toBe(expectedModel);
+      } else if (name === "gemini") {
+        expect(provider).toBeInstanceOf(GeminiProvider);
+        expect(isFactoryProvider(provider)).toBe(true);
+        const config = (provider as unknown as { config: GeminiProviderConfig })
+          .config;
+        expect(config.model).toBe(expectedModel);
+        expect(config.credentialPlan).toEqual({
+          kind: "api-key",
+          credential: "gemini-test",
+          source: "factory",
+        });
+        expect(config.endpointPlan).toMatchObject({
+          kind: "developer",
+          nativeBaseURL: expectedBaseURL,
+        });
+        expect(config).not.toHaveProperty("apiKey");
+        expect(config).not.toHaveProperty("baseURL");
+        expect(config).not.toHaveProperty("useResponsesApi");
+        const factoryOptions = readProviderFactoryOptions(provider);
+        expect(factoryOptions.apiKey).toBeUndefined();
+        expect(factoryOptions.baseURL).toBeUndefined();
+        expect(factoryOptions.extra).toMatchObject({
+          gemini: { endpointPlan: config.endpointPlan },
+        });
       } else {
         expect(provider).toBeInstanceOf(expectedInstance ?? OpenAIProvider);
         expect(isFactoryProvider(provider)).toBe(true);
@@ -1659,10 +1827,255 @@ describe("createProvider", () => {
 
     expect(provider).toBeInstanceOf(GeminiProvider);
     expect(readProviderFactoryOptions(provider)).toMatchObject({
-      apiKey: "google-test",
-      baseURL: "https://generativelanguage.googleapis.com/v1beta",
       model: "gemini-2.5-pro",
+      extra: {
+        gemini: {
+          credentialPlan: {
+            kind: "api-key",
+            credential: "google-test",
+            source: "GOOGLE_API_KEY",
+          },
+          endpointPlan: {
+            kind: "developer",
+            nativeBaseURL:
+              "https://generativelanguage.googleapis.com/v1beta",
+          },
+        },
+      },
     });
+    expect(readProviderFactoryOptions(provider).apiKey).toBeUndefined();
+    expect(readProviderFactoryOptions(provider).baseURL).toBeUndefined();
+  });
+
+  test("does not infer Vertex from ambient project metadata for an API key", () => {
+    const options = resolveProviderFactoryOptions(
+      "gemini",
+      { model: "gemini-2.5-pro" },
+      {
+        GEMINI_API_KEY: "developer-key",
+        GEMINI_PROJECT_ID: "ambient-project",
+        GEMINI_VERTEX_LOCATION: "us-central1",
+      },
+    );
+
+    expect(options.extra).toMatchObject({
+      gemini: {
+        credentialPlan: {
+          kind: "api-key",
+          credential: "developer-key",
+          source: "GEMINI_API_KEY",
+        },
+      },
+    });
+    expect(options.extra).toMatchObject({
+      gemini: {
+        endpointPlan: {
+          kind: "developer",
+          nativeBaseURL:
+            "https://generativelanguage.googleapis.com/v1beta",
+        },
+      },
+    });
+    const rebuilt = readProviderFactoryOptions(createProvider("gemini", options));
+    expect(rebuilt.apiKey).toBeUndefined();
+    expect(rebuilt.baseURL).toBeUndefined();
+    expect(rebuilt.extra).toMatchObject({
+      gemini: {
+        endpointPlan: { kind: "developer" },
+      },
+    });
+  });
+
+  test("round-trips a directly constructed Gemini provider", () => {
+    const direct = new GeminiProvider({
+      model: "gemini-2.5-pro",
+      credentialPlan: {
+        kind: "api-key",
+        credential: "direct-key",
+        source: "factory",
+      },
+      endpointPlan: createGeminiEndpointPlan(),
+      cachedContent: "cachedContents/direct-context",
+    });
+
+    const rebuilt = createProvider(
+      "gemini",
+      readProviderFactoryOptions(direct),
+    ) as GeminiProvider;
+    const rebuiltConfig = (
+      rebuilt as unknown as { config: GeminiProviderConfig }
+    ).config;
+
+    expect(rebuiltConfig.credentialPlan).toEqual({
+      kind: "api-key",
+      credential: "direct-key",
+      source: "factory",
+    });
+    expect(rebuiltConfig.endpointPlan).toEqual(createGeminiEndpointPlan());
+    expect(rebuiltConfig.cachedContent).toBe("cachedContents/direct-context");
+    expect(readProviderFactoryOptions(rebuilt).apiKey).toBeUndefined();
+    expect(readProviderFactoryOptions(rebuilt).baseURL).toBeUndefined();
+  });
+
+  test.each([
+    "Authorization",
+    "authorization",
+    "X-Api-Key",
+    "api-key",
+    "X-Goog-Api-Key",
+    "x-goog-user-project",
+  ])("rejects conflicting Gemini default header %s", (header) => {
+    expect(() =>
+      new GeminiProvider({
+        model: "gemini-2.5-pro",
+        credentialPlan: {
+          kind: "api-key",
+          credential: "factory-key",
+          source: "factory",
+        },
+        endpointPlan: createGeminiEndpointPlan(),
+        defaultHeaders: { [header]: "parallel-credential" },
+      })
+    ).toThrow(/cannot override canonical authentication headers/u);
+  });
+
+  test("keeps a forced Gemini ADC mode ahead of API keys", () => {
+    const resolved = resolveProviderFactoryOptions(
+      "gemini",
+      { apiKey: "factory-key", model: "gemini-2.5-pro" },
+      {
+        GEMINI_AUTH_MODE: "adc",
+        GOOGLE_API_KEY: "environment-key",
+        GOOGLE_APPLICATION_CREDENTIALS: "/missing/adc.json",
+        GOOGLE_CLOUD_LOCATION: "us-central1",
+        GOOGLE_CLOUD_PROJECT: "project-1",
+      },
+    );
+
+    expect(resolved.apiKey).toBeUndefined();
+    expect(resolved.extra).toMatchObject({
+      gemini: {
+        credentialPlan: {
+          kind: "none",
+          mode: "adc",
+          expected: "adc",
+          configuredPath: "/missing/adc.json",
+        },
+        endpointPlan: {
+          kind: "vertex",
+          project: "project-1",
+          location: "us-central1",
+        },
+      },
+    });
+  });
+
+  test.each([
+    ["accessToken", "token"],
+    ["authMode", "oauth"],
+    ["oauth", { accessToken: "token" }],
+    ["resolveCredential", async () => ({ kind: "none" })],
+    ["geminiLocation", "us-central1"],
+    ["location", "us-central1"],
+    ["project", "project-1"],
+    ["cachedContent", "cachedContents/old"],
+  ] as const)("rejects retired Gemini extra field %s", (field, value) => {
+    expect(() =>
+      resolveProviderFactoryOptions(
+        "gemini",
+        { extra: { [field]: value } },
+        { GEMINI_API_KEY: "gemini-key" },
+      )
+    ).toThrow(/retired credential\/config fields/u);
+    expect(() =>
+      createProvider("gemini", {
+        model: "gemini-2.5-pro",
+        extra: {
+          [field]: value,
+          gemini: {
+            credentialPlan: {
+              kind: "api-key",
+              credential: "gemini-key",
+              source: "factory",
+            },
+            endpointPlan: createGeminiEndpointPlan(),
+          },
+        },
+      })
+    ).toThrow(/retired credential\/config fields/u);
+  });
+
+  test.each([
+    [{ apiKey: "parallel-key" }, /does not accept apiKey/u],
+    [{ baseURL: "https://parallel.example/v1" }, /does not accept baseURL/u],
+  ] as const)(
+    "rejects generic Gemini factory authority alongside a canonical plan",
+    (parallel, expected) => {
+      expect(() =>
+        createProvider("gemini", {
+          ...parallel,
+          model: "gemini-2.5-pro",
+          extra: {
+            gemini: {
+              credentialPlan: {
+                kind: "api-key",
+                credential: "canonical-key",
+                source: "factory",
+              },
+              endpointPlan: createGeminiEndpointPlan(),
+            },
+          },
+        })
+      ).toThrow(expected);
+    },
+  );
+
+  test("round-trips independently cloned canonical Gemini runtime options", () => {
+    const provider = createProvider(
+      "gemini",
+      resolveProviderFactoryOptions(
+        "gemini",
+        { model: "gemini-2.5-pro" },
+        { GEMINI_API_KEY: "gemini-key" },
+      ),
+    );
+    const first = readProviderFactoryOptions(provider);
+    const second = readProviderFactoryOptions(provider);
+    const firstGemini = first.extra?.gemini as Record<string, unknown>;
+    const secondGemini = second.extra?.gemini as Record<string, unknown>;
+
+    expect(first.apiKey).toBeUndefined();
+    expect(firstGemini).not.toBe(secondGemini);
+    expect(firstGemini.credentialPlan).not.toBe(secondGemini.credentialPlan);
+    expect(Object.isFrozen(firstGemini)).toBe(true);
+    expect(Object.isFrozen(firstGemini.credentialPlan)).toBe(true);
+  });
+
+  test("does not reapply ambient endpoint or cache settings to a canonical Gemini plan", () => {
+    const canonical = {
+      credentialPlan: {
+        kind: "api-key" as const,
+        credential: "canonical-key",
+        source: "factory" as const,
+      },
+      endpointPlan: createGeminiEndpointPlan(),
+    };
+    const resolved = resolveProviderFactoryOptions(
+      "gemini",
+      {
+        model: "gemini-2.5-pro",
+        extra: { gemini: canonical },
+      },
+      {
+        GEMINI_BASE_URL: "https://ambient.example/v1",
+        GEMINI_CACHED_CONTENT: "cachedContents/ambient",
+      },
+    );
+
+    expect(resolved.apiKey).toBeUndefined();
+    expect(resolved.baseURL).toBeUndefined();
+    expect(resolved.extra?.gemini).toMatchObject(canonical);
+    expect(resolved.extra?.gemini).not.toHaveProperty("cachedContent");
   });
 
   test("resolves factory credentials and endpoints from the canonical provider rows", () => {
@@ -1678,7 +2091,28 @@ describe("createProvider", () => {
           {},
           { [envVar]: `${provider}-key` },
         );
-        expect(resolved.apiKey, `${provider} ${envVar}`).toBe(`${provider}-key`);
+        if (provider === "gemini") {
+          expect(resolved.apiKey, `${provider} ${envVar}`).toBeUndefined();
+          expect(resolved.baseURL, `${provider} ${envVar}`).toBeUndefined();
+          expect(resolved.extra).toMatchObject({
+            gemini: {
+              credentialPlan: {
+                kind: "api-key",
+                credential: `${provider}-key`,
+                source: envVar,
+              },
+              endpointPlan: {
+                kind: "developer",
+                nativeBaseURL:
+                  "https://generativelanguage.googleapis.com/v1beta",
+              },
+            },
+          });
+        } else {
+          expect(resolved.apiKey, `${provider} ${envVar}`).toBe(
+            `${provider}-key`,
+          );
+        }
       }
       for (const envVar of definition.baseURLEnvVars) {
         const resolved = resolveProviderFactoryOptions(
@@ -1686,9 +2120,21 @@ describe("createProvider", () => {
           {},
           { [envVar]: `https://${provider}.example/v1` },
         );
-        expect(resolved.baseURL, `${provider} ${envVar}`).toBe(
-          `https://${provider}.example/v1`,
-        );
+        if (provider === "gemini") {
+          expect(resolved.baseURL, `${provider} ${envVar}`).toBeUndefined();
+          expect(resolved.extra).toMatchObject({
+            gemini: {
+              endpointPlan: {
+                kind: "custom",
+                nativeBaseURL: `https://${provider}.example/v1`,
+              },
+            },
+          });
+        } else {
+          expect(resolved.baseURL, `${provider} ${envVar}`).toBe(
+            `https://${provider}.example/v1`,
+          );
+        }
       }
     }
 
@@ -1769,7 +2215,7 @@ describe("createProvider", () => {
     );
   });
 
-  test("infers a Vertex Gemini base URL from bearer env credentials", () => {
+  test("infers a canonical Vertex endpoint plan from bearer env credentials", () => {
     const provider = withEnv(
       {
         GOOGLE_API_KEY: undefined,
@@ -1777,7 +2223,6 @@ describe("createProvider", () => {
         GEMINI_ACCESS_TOKEN: "ya29-env-token",
         GOOGLE_CLOUD_PROJECT: "project-1",
         GOOGLE_CLOUD_LOCATION: "us-central1",
-        GOOGLE_CLOUD_REGION: undefined,
         GEMINI_VERTEX_LOCATION: undefined,
         GEMINI_BASE_URL: undefined,
       },
@@ -1793,13 +2238,28 @@ describe("createProvider", () => {
 
     expect(provider).toBeInstanceOf(GeminiProvider);
     const config = (provider as unknown as {
-      config: { accessToken?: string; baseURL?: string; project?: string };
+      config: GeminiProviderConfig;
     }).config;
-    expect(config.accessToken).toBe("ya29-env-token");
-    expect(config.project).toBe("project-1");
-    expect(config.baseURL).toBe(
-      "https://us-central1-aiplatform.googleapis.com/v1/projects/project-1/locations/us-central1",
-    );
+    expect(config.credentialPlan).toEqual({
+      kind: "access-token",
+      credential: "ya29-env-token",
+      projectId: "project-1",
+      source: "GEMINI_ACCESS_TOKEN",
+    });
+    expect(config.endpointPlan).toEqual({
+      kind: "vertex",
+      project: "project-1",
+      location: "us-central1",
+      nativeBaseURL:
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/project-1/locations/us-central1/publishers/google",
+    });
+    expect(config).not.toHaveProperty("baseURL");
+    expect(readProviderFactoryOptions(provider).extra).toMatchObject({
+      gemini: {
+        endpointPlan: config.endpointPlan,
+      },
+    });
+    expect(readProviderFactoryOptions(provider).baseURL).toBeUndefined();
   });
 
   test("honors Gemini access-token auth mode even when GOOGLE_API_KEY is present", () => {
@@ -1811,7 +2271,6 @@ describe("createProvider", () => {
         GEMINI_ACCESS_TOKEN: "ya29-env-token",
         GOOGLE_CLOUD_PROJECT: "project-1",
         GOOGLE_CLOUD_LOCATION: "us-central1",
-        GOOGLE_CLOUD_REGION: undefined,
         GEMINI_VERTEX_LOCATION: undefined,
         GEMINI_BASE_URL: undefined,
       },
@@ -1827,19 +2286,26 @@ describe("createProvider", () => {
 
     expect(provider).toBeInstanceOf(GeminiProvider);
     const config = (provider as unknown as {
-      config: {
-        apiKey?: string;
-        accessToken?: string;
-        baseURL?: string;
-        project?: string;
-      };
+      config: GeminiProviderConfig;
     }).config;
-    expect(config.apiKey).toBeUndefined();
-    expect(config.accessToken).toBe("ya29-env-token");
-    expect(config.project).toBe("project-1");
-    expect(config.baseURL).toBe(
-      "https://us-central1-aiplatform.googleapis.com/v1/projects/project-1/locations/us-central1",
-    );
+    expect(config.credentialPlan).toEqual({
+      kind: "access-token",
+      credential: "ya29-env-token",
+      projectId: "project-1",
+      source: "GEMINI_ACCESS_TOKEN",
+    });
+    expect(config).not.toHaveProperty("apiKey");
+    expect(config).not.toHaveProperty("accessToken");
+    expect(config).not.toHaveProperty("project");
+    expect(config.endpointPlan).toMatchObject({
+      kind: "vertex",
+      project: "project-1",
+      location: "us-central1",
+      nativeBaseURL:
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/project-1/locations/us-central1/publishers/google",
+    });
+    expect(config).not.toHaveProperty("baseURL");
+    expect(readProviderFactoryOptions(provider).baseURL).toBeUndefined();
   });
 
   test("honors Gemini ADC auth mode even when GOOGLE_API_KEY is present", () => {
@@ -1849,9 +2315,9 @@ describe("createProvider", () => {
         GOOGLE_API_KEY: "google-test",
         GEMINI_API_KEY: undefined,
         GEMINI_ACCESS_TOKEN: undefined,
+        GOOGLE_APPLICATION_CREDENTIALS: "/missing/gemini-adc.json",
         GOOGLE_CLOUD_PROJECT: "project-1",
         GOOGLE_CLOUD_LOCATION: "us-central1",
-        GOOGLE_CLOUD_REGION: undefined,
         GEMINI_VERTEX_LOCATION: undefined,
         GEMINI_BASE_URL: undefined,
       },
@@ -1867,14 +2333,58 @@ describe("createProvider", () => {
 
     expect(provider).toBeInstanceOf(GeminiProvider);
     const config = (provider as unknown as {
-      config: { apiKey?: string; baseURL?: string; project?: string };
+      config: GeminiProviderConfig;
     }).config;
-    expect(config.apiKey).toBeUndefined();
-    expect(config.project).toBe("project-1");
-    expect(config.baseURL).toBe(
-      "https://us-central1-aiplatform.googleapis.com/v1/projects/project-1/locations/us-central1",
-    );
+    expect(config.credentialPlan).toMatchObject({
+      kind: "none",
+      mode: "adc",
+      expected: "adc",
+      configuredPath: "/missing/gemini-adc.json",
+    });
+    expect(config).not.toHaveProperty("apiKey");
+    expect(config).not.toHaveProperty("project");
+    expect(config.endpointPlan).toMatchObject({
+      kind: "vertex",
+      project: "project-1",
+      location: "us-central1",
+      nativeBaseURL:
+        "https://us-central1-aiplatform.googleapis.com/v1/projects/project-1/locations/us-central1/publishers/google",
+    });
+    expect(config).not.toHaveProperty("baseURL");
+    expect(readProviderFactoryOptions(provider).baseURL).toBeUndefined();
   });
+
+  test.each([
+    {
+      mode: "access-token",
+      env: {
+        GEMINI_AUTH_MODE: "access-token",
+        GEMINI_ACCESS_TOKEN: "forced-access-token",
+        GOOGLE_API_KEY: "ignored-api-key",
+      },
+    },
+    {
+      mode: "adc",
+      env: {
+        GEMINI_AUTH_MODE: "adc",
+        GOOGLE_APPLICATION_CREDENTIALS: "/missing/gemini-adc.json",
+        GOOGLE_API_KEY: "ignored-api-key",
+      },
+    },
+  ] as const)(
+    "fails closed when forced Gemini $mode routing lacks project/location",
+    ({ env }) => {
+      expect(() =>
+        resolveProviderFactoryOptions(
+          "gemini",
+          { model: "gemini-2.5-pro" },
+          env,
+        )
+      ).toThrow(
+        /access-token\/ADC routing requires both project and location/u,
+      );
+    },
+  );
 
   test("tracks the canonical provider identity and rebuild options on openai-compatible providers", () => {
     const provider = withEnv(

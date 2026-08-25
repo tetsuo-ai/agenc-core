@@ -13,6 +13,7 @@ import {
   type ProviderFactoryOptions,
   type ProviderRuntimeExtra,
 } from "../llm/provider.js";
+import { readGeminiRuntimeOptions } from "../llm/providers/gemini/runtime-options.js";
 import { getProviderNativeToolDefinitions } from "../llm/provider-native-search.js";
 import {
   createTokenAccountingConfigurationRevision,
@@ -78,8 +79,8 @@ function accountingOptionsForProvider(
   const configuredTemperature =
     typeof extra.temperature === "number" ? extra.temperature : undefined;
   const configuredCachedContent =
-    provider.name === "gemini" && typeof extra.cachedContent === "string"
-      ? extra.cachedContent
+    provider.name === "gemini"
+      ? readGeminiRuntimeOptions(extra)?.cachedContent
       : undefined;
   return {
     ...options,

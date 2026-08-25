@@ -1724,7 +1724,12 @@ async function providerFactoryOptionsFromSettings(params: {
     extra.maxTokens = MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS;
     extra.managedCredential = true;
   }
-  const apiKey = params.settings?.apiKey ?? managedCredential?.apiKey;
+  // Gemini environment credentials are selected from the captured session
+  // environment by resolveProviderFactoryOptions. Do not promote them into
+  // the explicit factory-key precedence slot during a model switch.
+  const apiKey = normalizedProvider === "gemini"
+    ? undefined
+    : params.settings?.apiKey ?? managedCredential?.apiKey;
   const baseURL = params.settings?.baseURL ?? managedCredential?.baseURL;
   return {
     ...(apiKey ? { apiKey } : {}),
@@ -1746,13 +1751,20 @@ function mergeProviderFactoryOptions(
   base: ProviderFactoryOptions | undefined,
   override: ProviderFactoryOptions,
 ): ProviderFactoryOptions {
+  const canonicalOverride = base?.extra?.gemini === undefined
+    ? override
+    : Object.fromEntries(
+        Object.entries(override).filter(
+          ([key]) => key !== "apiKey" && key !== "baseURL",
+        ),
+      ) as ProviderFactoryOptions;
   const mergedExtra = {
     ...(base?.extra ?? {}),
-    ...(override.extra ?? {}),
+    ...(canonicalOverride.extra ?? {}),
   };
   return {
     ...(base ?? {}),
-    ...override,
+    ...canonicalOverride,
     ...(Object.keys(mergedExtra).length > 0 ? { extra: mergedExtra } : {}),
   };
 }
@@ -3081,7 +3093,6 @@ export class Session {
     const providerService = this.providerService;
     const liveBinding = providerService.current();
     const liveProvider = liveBinding.instance;
-    const liveProviderOptions = liveBinding.factoryOptions;
     const beforeModel =
       liveBinding.model ??
       peeked.sessionConfiguration?.collaborationMode?.model ??
@@ -3124,12 +3135,9 @@ export class Session {
     try {
       const targetNormalizedProvider =
         resolveBuiltInProviderSlug(resolvedProvider);
-      const reusableLiveProviderOptions =
-        liveProviderOptions &&
-        resolveBuiltInProviderSlug(liveBinding.provider) ===
-          targetNormalizedProvider
-          ? liveProviderOptions
-          : undefined;
+      const reusableLiveProviderOptions = targetNormalizedProvider === undefined
+        ? undefined
+        : providerService.committedFactoryOptions(targetNormalizedProvider);
       const configStore = (this.services as Partial<SessionServices>)
         .configStore;
       targetProviderSettings =
@@ -3157,7 +3165,7 @@ export class Session {
                 this.services.admissionRequired !== false,
             })
           : {};
-      preparedSwitch = providerService.prepare(
+      preparedSwitch = await providerService.prepare(
         { provider: resolvedProvider, model: resolvedModel },
         {
           ...mergeProviderFactoryOptions(

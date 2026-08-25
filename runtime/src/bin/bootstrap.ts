@@ -1266,11 +1266,16 @@ async function bootstrapLocalRuntimeSessionScoped(
     grokCapabilities: startup.config.providers?.grok,
     env,
   });
+  const providerFactoryApiKey = resolvedProvider === "gemini"
+    ? firstNonEmptyString(options.apiKey)
+    : selectedApiKey;
   const provider: LLMProvider = createProvider(
     resolvedProvider as ProviderName,
     resolveProviderFactoryOptions(resolvedProvider as ProviderName, {
       credentialHome: configStore.homeContext,
-      apiKey: selectedApiKey,
+      ...(providerFactoryApiKey !== undefined
+        ? { apiKey: providerFactoryApiKey }
+        : {}),
       ...(selectedBaseURL ? { baseURL: selectedBaseURL } : {}),
       model: selectedProviderModel,
       ...(providerSettings?.timeoutMs !== undefined
@@ -1312,7 +1317,11 @@ async function bootstrapLocalRuntimeSessionScoped(
         // non-direct-xAI hosts so other providers never get xAI payloads.
         ...xaiCapabilityExtra,
       },
-    }, env),
+    }, providerEnvironment, {
+      ...(runtimeLocalByokKey !== undefined
+        ? { savedApiKey: runtimeLocalByokKey }
+        : {}),
+    }),
   );
   const capabilityEntry = resolveProviderCapabilityEntry({
     provider: profileProvider,
@@ -1471,7 +1480,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     buildBootstrapSessionServices({
       provider,
       providerName: resolvedProvider,
-      ...(selectedApiKey ? { apiKey: selectedApiKey } : {}),
+      ...(providerFactoryApiKey ? { apiKey: providerFactoryApiKey } : {}),
       ...(options.authBackend !== undefined
         ? { authBackend: options.authBackend }
         : {}),
@@ -1489,6 +1498,8 @@ async function bootstrapLocalRuntimeSessionScoped(
       env,
       conversationId,
       model,
+      readSavedApiKey: (provider) =>
+        localByokAuthBackend.readByokKey(provider),
       sessionConfiguration,
       runtimeOptions,
       codeModeService,

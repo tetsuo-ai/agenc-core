@@ -35,6 +35,12 @@ import {
   type GeminiProviderConfig,
 } from "./providers/gemini/index.js";
 import {
+  assertNoRetiredGeminiRuntimeFields,
+  parseGeminiRuntimeOptions,
+  readGeminiRuntimeOptions,
+  type GeminiRuntimeOptions,
+} from "./providers/gemini/runtime-options.js";
+import {
   BedrockProvider,
   type BedrockProviderConfig,
 } from "./providers/bedrock/index.js";
@@ -110,10 +116,7 @@ export type ProviderRuntimeExtra = Partial<
   readonly chatgptBackend?: boolean;
   readonly authMode?: "api_key" | "oauth";
   readonly oauth?: Record<string, unknown>;
-  readonly accessToken?: string;
-  readonly location?: string;
-  readonly geminiLocation?: string;
-  readonly resolveCredential?: GeminiProviderConfig["resolveCredential"];
+  readonly gemini?: GeminiRuntimeOptions;
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   readonly fetchImpl?: typeof fetch;
   readonly accessKeyId?: string;
@@ -123,7 +126,6 @@ export type ProviderRuntimeExtra = Partial<
   readonly anthropicVersion?: string;
   readonly betaHeaders?: readonly string[];
   readonly contextManagement?: Record<string, unknown>;
-  readonly cachedContent?: string;
   readonly contextWindowTokens?: number;
   readonly parallelToolCalls?: boolean;
   readonly visionModel?: string;
@@ -163,10 +165,7 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "chatgptBackend",
   "authMode",
   "oauth",
-  "accessToken",
-  "location",
-  "geminiLocation",
-  "resolveCredential",
+  "gemini",
   "defaultHeaders",
   "fetchImpl",
   "accessKeyId",
@@ -176,7 +175,6 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "anthropicVersion",
   "betaHeaders",
   "contextManagement",
-  "cachedContent",
   "contextWindowTokens",
   "parallelToolCalls",
   "visionModel",
@@ -226,7 +224,22 @@ export function readProviderFactoryOptions(
       config?: Record<string, unknown>;
     }
   ).config;
-  const extra = readProviderRuntimeExtra(config);
+  const directGeminiRuntime =
+    provider.name === "gemini" &&
+      config?.credentialPlan !== undefined &&
+      config?.endpointPlan !== undefined
+      ? parseGeminiRuntimeOptions({
+          credentialPlan: config.credentialPlan,
+          endpointPlan: config.endpointPlan,
+          ...(firstNonEmpty(readString(config, "cachedContent")) !== undefined
+            ? { cachedContent: firstNonEmpty(readString(config, "cachedContent")) }
+            : {}),
+        })
+      : undefined;
+  const runtimeExtra = readProviderRuntimeExtra(config);
+  const extra = directGeminiRuntime === undefined
+    ? runtimeExtra
+    : { ...(runtimeExtra ?? {}), gemini: directGeminiRuntime };
   const configuredTools = Array.isArray(config?.tools)
     ? (config.tools as ReadonlyArray<LLMTool>)
     : undefined;
@@ -315,6 +328,20 @@ function markFactoryProvider<T extends LLMProvider>(
   return provider;
 }
 
+/** Preserve canonical factory identity when wrapping a provider object. */
+export function preserveProviderFactoryState<T extends LLMProvider>(
+  target: T,
+  source: LLMProvider,
+): T {
+  const state = (source as FactoryMarkedProvider)[FACTORY_PROVIDER_STATE];
+  return state === undefined
+    ? target
+    : markFactoryProvider(target, {
+        provider: state.provider,
+        options: state.options,
+      });
+}
+
 function firstNonEmpty(...values: Array<string | undefined>): string | undefined {
   for (const value of values) {
     if (typeof value === "string" && value.trim().length > 0) {
@@ -388,7 +415,6 @@ const AUTH_VENDED_PROVIDER_NAMES = new Set<ProviderName>([
   "openrouter",
   "groq",
   "deepseek",
-  "gemini",
   "amazon-bedrock",
 ]);
 const DEFAULT_AUTH_VENDED_DELEGATE_TTL_MS = 5 * 60 * 1000;
@@ -565,7 +591,6 @@ function authVendedProviderCapabilities(
     case "openrouter":
     case "groq":
     case "deepseek":
-    case "gemini":
       return { storedResponses: true };
     default:
       return {};
@@ -789,16 +814,6 @@ function normalizeOllamaHost(baseURL: string | undefined): string | undefined {
   return normalized.replace(/\/v1\/?$/i, "");
 }
 
-function geminiVertexBaseURL(
-  project: string | undefined,
-  location: string | undefined,
-): string | undefined {
-  const normalizedProject = firstNonEmpty(project);
-  const normalizedLocation = firstNonEmpty(location);
-  if (!normalizedProject || !normalizedLocation) return undefined;
-  return `https://${encodeURIComponent(normalizedLocation)}-aiplatform.googleapis.com/v1/projects/${encodeURIComponent(normalizedProject)}/locations/${encodeURIComponent(normalizedLocation)}`;
-}
-
 function cloneExtraValue(value: unknown): unknown {
   if (isSandboxExecutionBrokerLike(value)) return value;
   if (Array.isArray(value)) return [...value];
@@ -843,7 +858,11 @@ function cloneProviderFactoryOptions(
         extra: Object.fromEntries(
           Object.entries(options.extra).map(([key, value]) => [
             key,
-            key === "authBackend" ? value : cloneExtraValue(value),
+            key === "authBackend"
+              ? value
+              : key === "gemini"
+                ? parseGeminiRuntimeOptions(value)
+                : cloneExtraValue(value),
           ]),
         ),
       }
@@ -923,7 +942,9 @@ function readProviderRuntimeExtra(
     if (!(key in source)) continue;
     const value = source[key];
     if (value === undefined) continue;
-    extra[key] = cloneExtraValue(value);
+    extra[key] = key === "gemini"
+      ? parseGeminiRuntimeOptions(value)
+      : cloneExtraValue(value);
   }
   return Object.keys(extra).length > 0 ? extra : undefined;
 }
@@ -932,6 +953,7 @@ function readRuntimeExtra(
   extra: Record<string, unknown> | undefined,
 ): ProviderRuntimeExtra {
   const providerFallback = readProviderFallback(extra);
+  const gemini = readGeminiRuntimeOptions(extra);
   return {
     ...(readString(extra, "systemPrompt") !== undefined
       ? { systemPrompt: readString(extra, "systemPrompt") }
@@ -979,6 +1001,7 @@ function readRuntimeExtra(
       }
       : {}),
     ...(readRecord(extra, "oauth") ? { oauth: readRecord(extra, "oauth") } : {}),
+    ...(gemini !== undefined ? { gemini } : {}),
     ...(readStringRecord(extra, "defaultHeaders")
       ? { defaultHeaders: readStringRecord(extra, "defaultHeaders") }
       : {}),
@@ -1683,55 +1706,55 @@ export function createProvider(
         providerCtor: GitHubProvider,
       });
     case "gemini": {
-      const apiKey = resolveFactoryApiKey(opts);
+      assertNoRetiredGeminiRuntimeFields(opts.extra);
+      if (resolveFactoryApiKey(opts) !== undefined) {
+        throw new Error(
+          "Gemini provider does not accept apiKey after ingress; pass canonical extra.gemini runtime options",
+        );
+      }
+      if (normalizeBaseURL(opts.baseURL) !== undefined) {
+        throw new Error(
+          "Gemini provider does not accept baseURL after ingress; pass canonical extra.gemini endpointPlan",
+        );
+      }
+      const gemini = extra.gemini;
+      if (gemini === undefined) {
+        throw new Error(
+          "Gemini provider requires canonical extra.gemini runtime options",
+        );
+      }
       const model = requireModel(
         "gemini",
         opts.model,
         defaultModelFor("gemini"),
       );
-      const project = firstNonEmpty(extra.project);
-      const location = firstNonEmpty(
-        readString(opts.extra, "location"),
-        readString(opts.extra, "geminiLocation"),
-        extra.region,
-      );
-      const explicitAccessToken = firstNonEmpty(
-        readString(opts.extra, "accessToken"),
-        readString(readRecord(opts.extra, "oauth"), "accessToken"),
-      );
-      const configuredBaseURL = normalizeBaseURL(opts.baseURL);
-      const inferredVertexBaseURL = apiKey === undefined
-        ? geminiVertexBaseURL(project, location)
-        : undefined;
       const cfg: GeminiProviderConfig = {
         ...buildCommonConfig(extra),
-        ...(apiKey !== undefined ? { apiKey } : {}),
+        credentialPlan: gemini.credentialPlan,
+        endpointPlan: gemini.endpointPlan,
         model,
-        providerName: "gemini",
         tools: opts.tools ? [...opts.tools] : undefined,
-        baseURL: configuredBaseURL ?? inferredVertexBaseURL ?? defaultBaseURLFor("gemini"),
-        useResponsesApi: false,
-        ...(extra.cachedContent ? { cachedContent: extra.cachedContent } : {}),
+        ...(gemini.cachedContent
+          ? { cachedContent: gemini.cachedContent }
+          : {}),
         ...(extra.defaultHeaders ? { defaultHeaders: extra.defaultHeaders } : {}),
         ...(extra.fetchImpl ? { fetchImpl: extra.fetchImpl } : {}),
-        ...(project ? { project } : {}),
-        ...(explicitAccessToken ? { accessToken: explicitAccessToken } : {}),
-        ...(extra.resolveCredential
-          ? { resolveCredential: extra.resolveCredential }
+        ...(extra.contextWindowTokens !== undefined
+          ? { contextWindowTokens: extra.contextWindowTokens }
           : {}),
         ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
       };
+      const storedExtra = readProviderRuntimeExtra({
+        ...(cfg as unknown as Record<string, unknown>),
+        gemini,
+      });
       return markFactoryProvider(new GeminiProvider(cfg), {
         provider: "gemini",
         options: {
           ...(opts.credentialHome !== undefined ? { credentialHome: opts.credentialHome } : {}),
-          ...(apiKey !== undefined ? { apiKey } : {}),
-          baseURL: cfg.baseURL,
           model,
           ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),
-          ...(readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>)
-            ? { extra: readProviderRuntimeExtra(cfg as unknown as Record<string, unknown>) }
-            : {}),
+          ...(storedExtra !== undefined ? { extra: storedExtra } : {}),
         },
       });
     }

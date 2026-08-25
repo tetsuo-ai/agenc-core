@@ -1,18 +1,20 @@
 /**
  * Cross-provider cache usage normalizer for Phase 1 observability.
  *
- * Two layers of extraction, because the shim layer (openaiShim/openAiCodeTransform)
- * already converts raw provider usage to provider-shape on the way in:
+ * Two layers of extraction, because the compatibility shim layer
+ * (openaiShim/openAiCodeTransform) converts raw usage to provider shape on the
+ * way in:
  *
  *   1. `extractCacheReadFromRawUsage` — consumes RAW provider usage, used
  *      from inside the shims where each provider's native field names are
- *      still visible. Single source of truth for "where is the cached-
- *      tokens count on provider X".
- *   2. `extractCacheMetrics` — consumes POST-shim provider-shape usage,
- *      which is what every downstream caller (cost-tracker, REPL display,
- *      /cache-stats) actually sees. Uses the `provider` argument only to
- *      decide whether the metric is `supported` (Copilot vanilla, Ollama
- *      get N/A rather than a fabricated 0%).
+ *      still visible. Single source of truth for the raw shapes accepted by
+ *      those shims.
+ *   2. `extractCacheMetrics` — consumes canonical provider-shape usage from
+ *      either a native adapter or a compatibility shim, which is what every
+ *      downstream caller (cost-tracker, REPL display, /cache-stats) sees.
+ *      Uses the `provider` argument only to decide whether the metric is
+ *      `supported` (Copilot vanilla and Ollama get N/A rather than a
+ *      fabricated 0%).
  *
  * Design rationale:
  *   - Pure functions, no globals: callers pass the provider explicitly so
@@ -40,8 +42,6 @@
  *   - Kimi / Moonshot:  usage.cached_tokens (top level), usage.prompt_tokens
  *   - DeepSeek:         usage.prompt_cache_hit_tokens,
  *                       usage.prompt_cache_miss_tokens
- *   - Gemini:           usage.cached_content_token_count,
- *                       usage.prompt_token_count
  *   - Copilot (non-AgenC) / Ollama: not reported → supported=false
  */
 import type { APIProvider } from '../../utils/model/providers.js'
@@ -75,7 +75,7 @@ export type CacheMetrics = {
   created: number
   /**
    * Total input tokens the request is measured against, computed uniformly
-   * as `fresh + read + created` after the shim normalizes every provider
+   * as `fresh + read + created` after the selected transport normalizes usage
    * to the provider convention. Used as the denominator for hit-rate.
    */
   total: number
@@ -278,10 +278,9 @@ export function resolveCacheProvider(
 }
 
 /**
- * Read the cached-tokens count from a RAW provider usage object, handling
- * every shape we know about. Callers are the shim layer (openaiShim,
- * openAiCodeTransform) — the only place where the native provider fields still
- * exist before conversion to provider shape.
+ * Read the cached-tokens count from a raw compatibility-shim usage object.
+ * Callers are openaiShim and openAiCodeTransform, the only paths where these
+ * provider-compatible fields exist before conversion to provider shape.
  *
  * Order of fallbacks is deliberate: the first non-zero match wins, so
  * adding a provider that combines shapes is safe as long as we list the
@@ -306,9 +305,6 @@ export function extractCacheReadFromRawUsage(usage: RawUsage): number {
   // 4. DeepSeek — hit/miss split at top level.
   const deepseek = asNumber(u.prompt_cache_hit_tokens)
   if (deepseek > 0) return deepseek
-  // 5. Gemini — cached_content_token_count.
-  const gemini = asNumber(u.cached_content_token_count)
-  if (gemini > 0) return gemini
   return 0
 }
 
@@ -327,9 +323,9 @@ export type NormalizedShimUsage = {
 }
 
 /**
- * Convert raw provider usage (any known shape) into the provider-shape
- * `NormalizedShimUsage` used throughout the codebase. Single source of
- * truth for the shim layer — `openAiCodeTransform.makeUsage`,
+ * Convert raw compatibility-shim usage into the provider-shape
+ * `NormalizedShimUsage` used throughout the codebase. Single source of truth
+ * for the shim layer — `openAiCodeTransform.makeUsage`,
  * `openaiShim.convertChunkUsage`, and the non-streaming response in
  * `OpenAiShimMessages` all call this helper, and the integration test
  * calls it directly instead of re-implementing the conversion.
@@ -400,15 +396,14 @@ export function buildproviderUsageFromRawUsage(
 }
 
 /**
- * Extract a unified CacheMetrics from POST-SHIM (provider-shape) usage.
+ * Extract unified CacheMetrics from canonical provider-shape usage.
  *
- * By the time this runs, openaiShim/openAiCodeTransform have already converted
- * raw provider fields into `cache_read_input_tokens` (via
- * `extractCacheReadFromRawUsage`) and adjusted `input_tokens` to be
- * "fresh only" per provider convention. This function is therefore
- * deliberately provider-independent for the numeric extraction — the
- * `provider` argument is used only to surface `supported: false` for
- * providers that expose no cache data at all.
+ * By the time this runs, a native adapter or compatibility shim has already
+ * projected usage into `cache_read_input_tokens` and adjusted `input_tokens`
+ * to be "fresh only" per provider convention. This function is therefore
+ * deliberately provider-independent for numeric extraction; the `provider`
+ * argument is used only to surface `supported: false` for providers that
+ * expose no cache data at all.
  */
 export function extractCacheMetrics(
   usage: RawUsage,
@@ -431,9 +426,9 @@ export function extractCacheMetrics(
   // URL being on a private network (RFC1918, .local TLD, etc.), which
   // is a heuristic, not an authoritative "this endpoint cannot cache"
   // signal. An internal reverse proxy forwarding to OpenAi / Kimi /
-  // DeepSeek / Gemini will produce a private URL but ALSO emit real
+  // DeepSeek will produce a private URL but ALSO emit real
   // cache fields via the shim. Force-unsupported here would discard
-  // legitimate data. Let the data decide: if the shim extracted any
+  // legitimate data. Let the data decide: if the transport projected any
   // cache activity (read OR created), trust it and fall through to
   // normal extraction; otherwise render honest N/A for vanilla
   // vLLM/LocalAI-style endpoints that really don't cache.
