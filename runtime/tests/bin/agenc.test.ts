@@ -313,6 +313,17 @@ function installDaemonCliDepsForTest(
           ],
         };
       }
+      if (method === "session.mcp.status") {
+        return {
+          sessionId:
+            typeof params?.sessionId === "string"
+              ? params.sessionId
+              : sessionId,
+          revision: 0,
+          servers: [],
+          tools: [],
+        };
+      }
       if (method === "session.snapshot") {
         return {
           sessionId:
@@ -3314,6 +3325,7 @@ describe("main() smoke", () => {
       );
       expect(daemon.requests.map((request) => request.method)).toEqual([
         "agent.attach",
+        "session.mcp.status",
       ]);
     } finally {
       vi.doUnmock("../tui/main.js");
@@ -3386,9 +3398,10 @@ describe("main() smoke", () => {
       expect(code).toBe(0);
       expect(daemon.requests.map((request) => request.method)).toEqual([
         "agent.attach",
+        "session.mcp.status",
         "session.cancelTurn",
       ]);
-      expect(daemon.requests.at(1)?.params).toEqual({
+      expect(daemon.requests.at(2)?.params).toEqual({
         sessionId: "session_tui_cancel",
         reason: "interrupted",
       });
@@ -3482,8 +3495,10 @@ describe("main() smoke", () => {
       );
       expect(daemon.requests.map((request) => request.method)).toEqual([
         "agent.attach",
+        "session.mcp.status",
         "message.stream",
         "agent.attach",
+        "session.mcp.status",
       ]);
       expect(daemon.createConnectedTuiClient).toHaveBeenCalledTimes(2);
       expect(daemon.client.close).toHaveBeenCalled();
