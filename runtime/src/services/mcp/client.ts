@@ -451,7 +451,7 @@ function getMcpAuthCache(): Promise<McpAuthCacheData> {
   return authCachePromise
 }
 
-async function isMcpAuthCached(serverId: string): Promise<boolean> {
+export async function isMcpAuthCached(serverId: string): Promise<boolean> {
   const cache = await getMcpAuthCache()
   const entry = cache[serverId]
   if (!entry) {

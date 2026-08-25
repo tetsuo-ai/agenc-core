@@ -1,8 +1,11 @@
-import { mkdtemp, mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdtemp, mkdir, readFile, stat, unlink, writeFile } from "node:fs/promises";
+import { createHash, generateKeyPairSync, sign, type KeyObject } from "node:crypto";
+import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { parseToml } from "../../config/loader.js";
+import { pluginSignaturePayloadBytes } from "../resolution.js";
 import {
   defaultRunProcess,
   marketplaceInstalledPath,
@@ -17,7 +20,13 @@ import {
   runAgenCPluginCli,
   type AgenCPluginCliOptions,
 } from "./pluginCliCommands.js";
-import type { PluginCliIo } from "./pluginOperations.js";
+import type {
+  InstallPluginInput,
+  InstallPluginResult,
+  PluginCliIo,
+} from "./pluginOperations.js";
+
+const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 
 function createIo(): PluginCliIo & {
   readonly stdoutText: () => string;
@@ -85,6 +94,23 @@ async function writePlugin(root: string, name = "alpha"): Promise<string> {
   return pluginRoot;
 }
 
+async function signTestPlugin(pluginRoot: string, privateKey: KeyObject): Promise<void> {
+  const manifestPath = join(pluginRoot, ".agenc-plugin", "plugin.json");
+  const commandPath = join(pluginRoot, "commands", "hello.md");
+  const files = {
+    "commands/hello.md": `sha256:${createHash("sha256").update(await readFile(commandPath)).digest("hex")}`,
+  };
+  const signature = sign(
+    null,
+    pluginSignaturePayloadBytes(await readFile(manifestPath), files),
+    privateKey,
+  ).toString("base64");
+  await writeFile(
+    join(pluginRoot, ".agenc-plugin", "signature.json"),
+    `${JSON.stringify({ publisher: "tetsuo-test", signature, files }, null, 2)}\n`,
+  );
+}
+
 function options(
   agencHome: string,
   workspaceRoot: string,
@@ -104,6 +130,8 @@ describe("agenc plugin CLI", () => {
 
     expect(help).toContain("marketplace add <path|git|url|github>");
     expect(help).toContain("Add local, git, URL, or GitHub marketplace");
+    expect(help).toContain("marketplace catalog [--product <id>] [--json]");
+    expect(help).toContain("marketplace install <plugin@marketplace>");
   });
 
   it("parses plugin and marketplace commands", () => {
@@ -171,6 +199,35 @@ describe("agenc plugin CLI", () => {
       sparse: "plugins",
       force: false,
     });
+    expect(parseAgenCPluginCliArgs([
+      "plugin",
+      "marketplace",
+      "catalog",
+      "--product",
+      "desktop",
+      "--json",
+    ])).toEqual({
+      kind: "marketplace-catalog",
+      json: true,
+      product: "desktop",
+    });
+    expect(parseAgenCPluginCliArgs([
+      "plugin",
+      "marketplace",
+      "install",
+      "@scope/toolbox@team",
+      "--scope=project",
+      "--force",
+      "--product=desktop",
+      "--json",
+    ])).toEqual({
+      kind: "marketplace-install",
+      pluginId: "@scope/toolbox@team",
+      scope: "project",
+      force: true,
+      json: true,
+      product: "desktop",
+    });
   });
 
   it("installs, lists, and disables a local plugin", async () => {
@@ -194,7 +251,13 @@ describe("agenc plugin CLI", () => {
     }, options(agencHome, workspaceRoot, listIo));
     expect(listExit).toBe(0);
     expect(JSON.parse(listIo.stdoutText())).toMatchObject({
-      plugins: [{ name: "alpha", enabled: true }],
+      plugins: [{
+        id: "alpha",
+        operationId: "plugin:user:alpha",
+        scope: "user",
+        name: "alpha",
+        enabled: true,
+      }],
     });
 
     const disableIo = createIo();
@@ -303,6 +366,7 @@ describe("agenc plugin CLI", () => {
       kind: "marketplace-remove",
       name: "team",
     }, options(agencHome, workspaceRoot, removeIo));
+    expect(removeIo.stderrText()).toBe("");
     expect(removeExit).toBe(0);
 
     const emptyListIo = createIo();
@@ -311,6 +375,453 @@ describe("agenc plugin CLI", () => {
       json: true,
     }, options(agencHome, workspaceRoot, emptyListIo));
     expect(JSON.parse(emptyListIo.stdoutText())).toEqual({ marketplaces: [] });
+  });
+
+  it("installs the clean first-party marketplace from an explicit local checkout", async () => {
+    const { agencHome, workspaceRoot } = await tempRuntime();
+    const addIo = createIo();
+    expect(await runAgenCPluginCli({
+      kind: "marketplace-add",
+      source: REPO_ROOT,
+      name: "local-first-party",
+      force: false,
+    }, options(agencHome, workspaceRoot, addIo))).toBe(0);
+
+    const catalogIo = createIo();
+    expect(await runAgenCPluginCli({
+      kind: "marketplace-catalog",
+      product: "desktop",
+      json: true,
+    }, options(agencHome, workspaceRoot, catalogIo))).toBe(0);
+    expect(JSON.parse(catalogIo.stdoutText())).toMatchObject({
+      marketplaces: [{
+        name: "local-first-party",
+        sourceType: "local",
+        plugins: expect.arrayContaining([
+          expect.objectContaining({ id: "iot-builder@local-first-party" }),
+        ]),
+      }],
+    });
+
+    const installIo = createIo();
+    expect(await runAgenCPluginCli({
+      kind: "marketplace-install",
+      pluginId: "iot-builder@local-first-party",
+      product: "desktop",
+      scope: "user",
+      force: false,
+      json: true,
+    }, options(agencHome, workspaceRoot, installIo))).toBe(0);
+    expect(JSON.parse(installIo.stdoutText())).toMatchObject({
+      pluginId: "iot-builder@local-first-party",
+      resolutionKind: "local",
+      signatureVerified: false,
+      plugin: { id: "iot-builder@local-first-party", enabled: true },
+    });
+
+    for (const enabled of [false, true]) {
+      const io = createIo();
+      expect(await runAgenCPluginCli({
+        kind: enabled ? "enable" : "disable",
+        pluginId: "iot-builder@local-first-party",
+      }, options(agencHome, workspaceRoot, io))).toBe(0);
+      const listedIo = createIo();
+      await runAgenCPluginCli({ kind: "list", json: true }, options(
+        agencHome,
+        workspaceRoot,
+        listedIo,
+      ));
+      expect(JSON.parse(listedIo.stdoutText())).toMatchObject({
+        plugins: [{ id: "iot-builder@local-first-party", enabled }],
+      });
+    }
+
+    const uninstallIo = createIo();
+    expect(await runAgenCPluginCli({
+      kind: "uninstall",
+      pluginId: "iot-builder@local-first-party",
+      scope: "user",
+      keepData: true,
+    }, options(agencHome, workspaceRoot, uninstallIo))).toBe(0);
+    await expect(stat(join(agencHome, "plugins", "iot-builder")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    const config = parseToml(await readFile(join(agencHome, "config.toml"), "utf8")) as {
+      readonly plugins?: { readonly plugins?: Record<string, unknown> };
+    };
+    expect(config.plugins?.plugins).not.toHaveProperty("iot-builder@local-first-party");
+    expect(config.plugins?.plugins).not.toHaveProperty("iot-builder");
+
+    // Listing canonically rewrites the config with quoted TOML keys. A later
+    // reinstall must reuse that table instead of appending a duplicate bare
+    // `[plugins]` declaration.
+    const reinstallIo = createIo();
+    expect(await runAgenCPluginCli({
+      kind: "marketplace-install",
+      pluginId: "iot-builder@local-first-party",
+      product: "desktop",
+      scope: "user",
+      force: false,
+      json: true,
+    }, options(agencHome, workspaceRoot, reinstallIo))).toBe(0);
+    let sawDuplicateKey = false;
+    parseToml(await readFile(join(agencHome, "config.toml"), "utf8"), {
+      onDuplicateKey: () => {
+        sawDuplicateKey = true;
+      },
+    });
+    expect(sawDuplicateKey).toBe(false);
+    expect(await runAgenCPluginCli({
+      kind: "uninstall",
+      pluginId: "iot-builder@local-first-party",
+      scope: "user",
+      keepData: true,
+    }, options(agencHome, workspaceRoot, createIo()))).toBe(0);
+  });
+
+  it("emits a versioned product catalog and preserves git coordinates on install", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const marketplaceRoot = join(root, "remote-marketplace");
+    const sha = "a".repeat(40);
+    await mkdir(marketplaceRoot, { recursive: true });
+    await writeFile(
+      join(marketplaceRoot, "marketplace.json"),
+      JSON.stringify({
+        metadata: {
+          name: "upstream",
+          displayName: "Remote plugins",
+        },
+        plugins: [
+          {
+            name: "remote-tool",
+            source: {
+              source: "git-subdir",
+              url: "https://github.com/tetsuo-ai/agenc-plugins.git",
+              path: "plugins/remote-tool",
+              ref: "stable",
+              sha,
+            },
+            version: "2.3.4",
+            description: "Remote tool catalog summary",
+            components: ["skills", "mcp"],
+            interface: {
+              displayName: "Remote Tool",
+              shortDescription: "Visible before installation.",
+              longDescription: "Inline marketplace metadata for the Desktop plugin catalog.",
+              developerName: "Tetsuo AI",
+              category: "developer-tools",
+              capabilities: ["skills", "mcp"],
+              brandColor: "#123456",
+              screenshots: [],
+            },
+            policy: {
+              installation: "AVAILABLE",
+              authentication: "ON_USE",
+              products: ["desktop"],
+            },
+          },
+          {
+            name: "server-only",
+            source: {
+              source: "git-subdir",
+              url: "https://github.com/tetsuo-ai/agenc-plugins.git",
+              path: "plugins/server-only",
+              ref: "stable",
+            },
+            policy: {
+              installation: "AVAILABLE",
+              authentication: "ON_USE",
+              products: ["server"],
+            },
+          },
+        ],
+      }, null, 2),
+    );
+
+    const addIo = createIo();
+    expect(await runAgenCPluginCli({
+      kind: "marketplace-add",
+      source: marketplaceRoot,
+      name: "team",
+      force: false,
+    }, options(agencHome, workspaceRoot, addIo))).toBe(0);
+
+    const catalogIo = createIo();
+    expect(await runAgenCPluginCli({
+      kind: "marketplace-catalog",
+      product: "desktop",
+      json: true,
+    }, options(agencHome, workspaceRoot, catalogIo))).toBe(0);
+    expect(JSON.parse(catalogIo.stdoutText())).toMatchObject({
+      schemaVersion: 1,
+      kind: "agenc.plugin.marketplace.catalog",
+      product: "desktop",
+      marketplaces: [{
+        name: "team",
+        displayName: "Remote plugins",
+        plugins: [{
+          id: "remote-tool@team",
+          name: "remote-tool",
+          marketplace: "team",
+          source: {
+            type: "git",
+            url: "https://github.com/tetsuo-ai/agenc-plugins.git",
+            path: "plugins/remote-tool",
+            ref: "stable",
+            sha,
+          },
+          version: "2.3.4",
+          description: "Remote tool catalog summary",
+          components: ["skills", "mcp"],
+          interface: {
+            displayName: "Remote Tool",
+            shortDescription: "Visible before installation.",
+            longDescription: "Inline marketplace metadata for the Desktop plugin catalog.",
+            developerName: "Tetsuo AI",
+            category: "developer-tools",
+            capabilities: ["skills", "mcp"],
+            brandColor: "#123456",
+            screenshots: [],
+          },
+        }],
+      }],
+      errors: [],
+    });
+    expect(catalogIo.stdoutText()).not.toContain("server-only");
+
+    let installInput: InstallPluginInput | undefined;
+    const installResult: InstallPluginResult = {
+      plugin: {
+        id: "remote-tool@team",
+        operationId: "plugin:project:remote-tool@team",
+        scope: "project",
+        name: "remote-tool",
+        version: "1.0.0",
+        enabled: true,
+        root: join(workspaceRoot, ".agents", "plugins", "remote-tool"),
+        source: "project",
+      },
+      destination: join(workspaceRoot, ".agents", "plugins", "remote-tool"),
+      scope: "project",
+      resolutionKind: "git",
+      signatureVerified: true,
+    };
+    const installIo = createIo();
+    expect(await runAgenCPluginCli({
+      kind: "marketplace-install",
+      pluginId: "remote-tool@team",
+      product: "desktop",
+      scope: "project",
+      force: true,
+      json: true,
+    }, {
+      ...options(agencHome, workspaceRoot, installIo),
+      installPlugin: async (input) => {
+        installInput = input;
+        return installResult;
+      },
+    })).toBe(0);
+    expect(installInput).toMatchObject({
+      source: "https://github.com/tetsuo-ai/agenc-plugins.git",
+      pluginId: "remote-tool@team",
+      name: "remote-tool",
+      scope: "project",
+      force: true,
+      gitSubdir: "plugins/remote-tool",
+      gitRef: "stable",
+      gitSha: sha,
+    });
+    expect(JSON.parse(installIo.stdoutText())).toMatchObject({
+      schemaVersion: 1,
+      kind: "agenc.plugin.marketplace.install",
+      pluginId: "remote-tool@team",
+      marketplace: "team",
+      product: "desktop",
+      source: {
+        type: "git",
+        path: "plugins/remote-tool",
+        ref: "stable",
+        sha,
+      },
+      plugin: {
+        id: "remote-tool@team",
+        operationId: "plugin:project:remote-tool@team",
+        scope: "project",
+      },
+    });
+    expect(installIo.stderrText()).toBe("");
+
+    const rejectedIo = createIo();
+    expect(await runAgenCPluginCli({
+      kind: "marketplace-install",
+      pluginId: "remote-tool@team",
+      scope: "user",
+      force: false,
+      json: true,
+    }, options(agencHome, workspaceRoot, rejectedIo))).toBe(1);
+    expect(JSON.parse(rejectedIo.stdoutText())).toMatchObject({
+      schemaVersion: 1,
+      kind: "agenc.plugin.marketplace.install.error",
+      ok: false,
+      error: {
+        message: expect.stringContaining("is not available for install"),
+      },
+    });
+    expect(rejectedIo.stderrText()).toBe("");
+  });
+
+  it("installs a signed remote-marketplace plugin and keeps its canonical id through the full lifecycle", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const marketplaceRoot = join(root, "signed-marketplace");
+    await mkdir(marketplaceRoot, { recursive: true });
+    const source = await writePlugin(marketplaceRoot, "remote-tool");
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    await signTestPlugin(source, privateKey);
+    const publishersPath = join(root, "plugin-publishers.json");
+    await writeFile(publishersPath, JSON.stringify({
+      publishers: {
+        "tetsuo-test": {
+          publicKey: publicKey.export({ format: "der", type: "spki" }).toString("base64"),
+        },
+      },
+    }));
+    const manifestPath = join(marketplaceRoot, "marketplace.json");
+    await writeFile(manifestPath, JSON.stringify({
+      metadata: { name: "team" },
+      plugins: [{
+        name: "remote-tool",
+        source: "./remote-tool",
+        policy: { installation: "AVAILABLE", products: ["desktop"] },
+      }],
+    }));
+    await writeMarketplaceIndex({
+      version: 1,
+      marketplaces: {
+        team: {
+          name: "team",
+          source: "https://github.com/tetsuo-ai/plugins.git",
+          sourceType: "git",
+          sourceDescriptor: {
+            source: "git",
+            url: "https://github.com/tetsuo-ai/plugins.git",
+          },
+          installedPath: marketplaceRoot,
+          manifestPath,
+          updatedAt: "2026-05-05T00:00:00.000Z",
+        },
+      },
+    }, { agencHome });
+    const cliOptions = {
+      ...options(agencHome, workspaceRoot, createIo()),
+      publishersPath,
+    };
+
+    await unlink(join(source, ".agenc-plugin", "signature.json"));
+    const unsignedIo = createIo();
+    expect(await runAgenCPluginCli({
+      kind: "marketplace-install",
+      pluginId: "remote-tool@team",
+      product: "desktop",
+      scope: "user",
+      force: false,
+      json: true,
+    }, { ...cliOptions, io: unsignedIo })).toBe(1);
+    expect(JSON.parse(unsignedIo.stdoutText())).toMatchObject({
+      ok: false,
+      error: { message: expect.stringContaining("plugin signature is required") },
+    });
+    await signTestPlugin(source, privateKey);
+
+    const installIo = createIo();
+    expect(await runAgenCPluginCli({
+      kind: "marketplace-install",
+      pluginId: "remote-tool@team",
+      product: "desktop",
+      scope: "user",
+      force: false,
+      json: true,
+    }, { ...cliOptions, io: installIo })).toBe(0);
+    expect(JSON.parse(installIo.stdoutText())).toMatchObject({
+      pluginId: "remote-tool@team",
+      signatureVerified: true,
+      plugin: { id: "remote-tool@team", enabled: true },
+    });
+    const destination = join(agencHome, "plugins", "remote-tool");
+    expect(JSON.parse(await readFile(
+      join(destination, ".agenc-plugin", "agenc-install.json"),
+      "utf8",
+    ))).toMatchObject({
+      id: "remote-tool@team",
+      signatureRequired: true,
+      signatureVerified: true,
+    });
+
+    const disableIo = createIo();
+    expect(await runAgenCPluginCli({
+      kind: "disable",
+      pluginId: "remote-tool@team",
+    }, { ...cliOptions, io: disableIo })).toBe(0);
+    let config = parseToml(await readFile(join(agencHome, "config.toml"), "utf8")) as {
+      readonly plugins?: { readonly plugins?: Record<string, { readonly enabled?: boolean }> };
+    };
+    expect(config.plugins?.plugins?.["remote-tool@team"]?.enabled).toBe(false);
+    expect(config.plugins?.plugins).not.toHaveProperty("remote-tool");
+    const disabledListIo = createIo();
+    await runAgenCPluginCli({ kind: "list", json: true }, {
+      ...cliOptions,
+      io: disabledListIo,
+    });
+    expect(JSON.parse(disabledListIo.stdoutText())).toMatchObject({
+      plugins: [{ id: "remote-tool@team", enabled: false }],
+    });
+
+    const enableIo = createIo();
+    expect(await runAgenCPluginCli({
+      kind: "enable",
+      pluginId: "remote-tool@team",
+    }, { ...cliOptions, io: enableIo })).toBe(0);
+    config = parseToml(await readFile(join(agencHome, "config.toml"), "utf8")) as {
+      readonly plugins?: { readonly plugins?: Record<string, { readonly enabled?: boolean }> };
+    };
+    expect(config.plugins?.plugins?.["remote-tool@team"]?.enabled).toBe(true);
+
+    await writeFile(
+      join(source, ".agenc-plugin", "plugin.json"),
+      JSON.stringify({
+        name: "remote-tool",
+        version: "2.0.0",
+        description: "Updated signed plugin",
+        commands: "./commands",
+      }, null, 2),
+    );
+    await signTestPlugin(source, privateKey);
+    const updateIo = createIo();
+    expect(await runAgenCPluginCli({
+      kind: "update",
+      pluginId: "remote-tool@team",
+      scope: "user",
+    }, { ...cliOptions, io: updateIo })).toBe(0);
+    const updatedListIo = createIo();
+    await runAgenCPluginCli({ kind: "list", json: true }, {
+      ...cliOptions,
+      io: updatedListIo,
+    });
+    expect(JSON.parse(updatedListIo.stdoutText())).toMatchObject({
+      plugins: [{ id: "remote-tool@team", version: "2.0.0", enabled: true }],
+    });
+
+    const uninstallIo = createIo();
+    expect(await runAgenCPluginCli({
+      kind: "uninstall",
+      pluginId: "remote-tool@team",
+      scope: "user",
+      keepData: true,
+    }, { ...cliOptions, io: uninstallIo })).toBe(0);
+    await expect(stat(destination)).rejects.toMatchObject({ code: "ENOENT" });
+    config = parseToml(await readFile(join(agencHome, "config.toml"), "utf8")) as {
+      readonly plugins?: { readonly plugins?: Record<string, unknown> };
+    };
+    expect(config.plugins?.plugins).not.toHaveProperty("remote-tool@team");
+    expect(config.plugins?.plugins).not.toHaveProperty("remote-tool");
   });
 
   it("adds URL and GitHub shorthand marketplaces through the CLI parser grammar", async () => {
@@ -487,6 +998,7 @@ describe("agenc plugin CLI", () => {
       kind: "marketplace-remove",
       name: "team",
     }, options(agencHome, workspaceRoot, io));
+    expect(io.stderrText()).toBe("");
     expect(removeExit).toBe(0);
     expect((await stat(hostilePath)).isDirectory()).toBe(true);
     await expect(stat(installedPath)).rejects.toMatchObject({ code: "ENOENT" });

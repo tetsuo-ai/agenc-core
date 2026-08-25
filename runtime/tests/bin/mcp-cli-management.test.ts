@@ -25,6 +25,15 @@ const handlerMocks = vi.hoisted(() => ({
   mcpResetChoicesHandler: vi.fn(),
 }));
 
+const desktopHandlerMocks = vi.hoisted(() => ({
+  mcpDesktopAuthenticateHandler: vi.fn(),
+  mcpDesktopGetHandler: vi.fn(),
+  mcpDesktopListHandler: vi.fn(),
+  mcpDesktopSetEnabledHandler: vi.fn(),
+  mcpDesktopUpsertHandler: vi.fn(),
+  writeMcpDesktopErrorEnvelope: vi.fn(),
+}));
+
 const configMocks = vi.hoisted(() => ({
   addMcpConfig: vi.fn(async (name: string, config: unknown, scope: string) => {
     if (scope === "local") {
@@ -71,6 +80,7 @@ const settingsMocks = vi.hoisted(() => ({
 }));
 
 vi.mock("../cli/handlers/mcp.js", () => handlerMocks);
+vi.mock("../cli/handlers/mcp-desktop.js", () => desktopHandlerMocks);
 vi.mock("../services/mcp/config.js", () => configMocks);
 vi.mock("../services/mcp/utils.js", () => ({
   describeMcpConfigFilePath: vi.fn(() => join(agencHome, "config.toml")),
@@ -207,6 +217,10 @@ describe("AgenC MCP management CLI parsing", () => {
       "approve-project",
       "reset-project-choices",
       "doctor",
+      "enable",
+      "disable",
+      "upsert",
+      "authenticate",
       "xaa",
     ]) {
       expect(parseAgenCMcpCliArgs(["mcp", command, "server"])).toEqual({
@@ -230,6 +244,10 @@ describe("AgenC MCP management CLI parsing", () => {
     expect(help).toContain("approve-project");
     expect(help).toContain("reset-project-choices");
     expect(help).toContain("doctor");
+    expect(help).toContain("enable");
+    expect(help).toContain("disable");
+    expect(help).toContain("upsert");
+    expect(help).toContain("authenticate");
     expect(help).toContain("xaa");
     expect(help).toContain("--transport <stdio|sse|http>");
     expect(help).toContain("default: user for add/add-json");
@@ -294,6 +312,82 @@ describe("AgenC MCP management CLI parsing", () => {
       configOnly: true,
       json: true,
     });
+  });
+
+  test("dispatches the structured Desktop management contract", async () => {
+    const { io } = captureIo();
+
+    await expect(
+      runAgenCMcpCli(
+        {
+          kind: "management",
+          argv: ["list", "--config-only", "--json"],
+        },
+        { io },
+      ),
+    ).resolves.toBe(0);
+    expect(desktopHandlerMocks.mcpDesktopListHandler).toHaveBeenCalledWith(io);
+
+    await expect(
+      runAgenCMcpCli(
+        {
+          kind: "management",
+          argv: ["get", "docs", "--config-only", "--json"],
+        },
+        { io },
+      ),
+    ).resolves.toBe(0);
+    expect(desktopHandlerMocks.mcpDesktopGetHandler).toHaveBeenCalledWith(
+      "docs",
+      io,
+    );
+
+    await expect(
+      runAgenCMcpCli(
+        { kind: "management", argv: ["enable", "docs"] },
+        { io },
+      ),
+    ).resolves.toBe(0);
+    await expect(
+      runAgenCMcpCli(
+        { kind: "management", argv: ["disable", "docs"] },
+        { io },
+      ),
+    ).resolves.toBe(0);
+    expect(desktopHandlerMocks.mcpDesktopSetEnabledHandler.mock.calls).toEqual([
+      ["docs", true, io],
+      ["docs", false, io],
+    ]);
+
+    await expect(
+      runAgenCMcpCli(
+        { kind: "management", argv: ["upsert", "--json"] },
+        { io },
+      ),
+    ).resolves.toBe(0);
+    expect(desktopHandlerMocks.mcpDesktopUpsertHandler).toHaveBeenCalledWith(io);
+
+    await expect(
+      runAgenCMcpCli(
+        { kind: "management", argv: ["authenticate", "docs"] },
+        { io },
+      ),
+    ).resolves.toBe(0);
+    expect(
+      desktopHandlerMocks.mcpDesktopAuthenticateHandler,
+    ).toHaveBeenCalledWith("docs", io);
+  });
+
+  test("requires the paired config-only and json flags", async () => {
+    const { io } = captureIo();
+
+    await expect(
+      runAgenCMcpCli(
+        { kind: "management", argv: ["list", "--config-only"] },
+        { io },
+      ),
+    ).resolves.toBe(1);
+    expect(desktopHandlerMocks.mcpDesktopListHandler).not.toHaveBeenCalled();
   });
 
   test("rejects extra fixed-arity command arguments", async () => {

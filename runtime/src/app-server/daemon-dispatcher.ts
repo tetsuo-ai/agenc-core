@@ -179,7 +179,6 @@ import {
   type ToolDenyParams,
 } from "./protocol/index.js";
 import { isRecord } from "../utils/record.js";
-import { LEDGER_SOLANA_SIGN_CLIENT_CAPABILITY } from "../elicitation/types.js";
 import { AgenCDaemonWorkflowStartError } from "./workflow/run-start-service.js";
 import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
 import type { CodePredictionService } from "../services/code-prediction/service.js";
@@ -1620,12 +1619,10 @@ export class AgenCDaemonJsonRpcDispatcher {
     connection: AgenCDaemonJsonRpcConnection,
     capabilities: JsonObject,
   ): Promise<void> {
-    const receivesLedgerActions =
-      capabilities[LEDGER_SOLANA_SIGN_CLIENT_CAPABILITY] === true;
     const receivesMobileStatus =
       capabilities[AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY] === true;
     if (
-      (!receivesLedgerActions && !receivesMobileStatus) ||
+      !receivesMobileStatus ||
       this.#clientMultiplexer === undefined ||
       connection.sendNotification === undefined
     ) {

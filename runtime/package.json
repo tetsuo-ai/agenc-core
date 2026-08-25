@@ -20,8 +20,7 @@
   "files": [
     "bin",
     "dist",
-    "README.md",
-    "plugins"
+    "README.md"
   ],
   "agencExecutableFiles": [
     "dist/agenc-process-broker",
@@ -29,7 +28,7 @@
     "dist/agenc-landlock-run"
   ],
   "scripts": {
-    "build": "node scripts/sync-shipped-plugins.mjs && node scripts/build-runtime.mjs && node scripts/write-build-version.mjs && npm run check:package-entrypoints && npm run check:sdk-generated-types && node ../scripts/canonicalize-package-modes.mjs .",
+    "build": "node scripts/build-runtime.mjs && node scripts/write-build-version.mjs && npm run check:package-entrypoints && npm run check:sdk-generated-types && node ../scripts/canonicalize-package-modes.mjs .",
     "daemon": "node bin/agenc daemon start --foreground",
     "daemon:status": "node bin/agenc daemon status",
     "start": "node bin/agenc",

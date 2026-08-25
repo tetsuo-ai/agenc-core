@@ -190,6 +190,25 @@ export async function addUserMcpServerToToml(
     .apply();
 }
 
+/**
+ * Atomically replace or create one user-scoped MCP server.
+ *
+ * A rename and its replacement are expressed as edits in one config.toml
+ * transaction, so callers never leave the user with a removed server if the
+ * replacement fails validation or persistence.
+ */
+export async function upsertUserMcpServerInToml(
+  originalName: string | undefined,
+  name: string,
+  config: McpServerConfig,
+): Promise<void> {
+  const edits = new AgenCConfigEditsBuilder(resolveAgencHome(process.env));
+  if (originalName !== undefined && originalName !== name) {
+    edits.removeMcpServer(originalName);
+  }
+  await edits.setMcpServer(name, toCanonicalMcpServerConfig(config)).apply();
+}
+
 export async function removeUserMcpServerFromToml(
   name: string,
 ): Promise<void> {

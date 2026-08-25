@@ -47,7 +47,6 @@ Slash: `/skills` — list roots, manage project skills; also lists bundled skill
 | --- | --- |
 | `browser-automation` | Snapshot → act → re-snapshot workflow for the LIVE `Browser` tool ([browser.md](../browser.md)) |
 | `agenc-marketplace-kit-installer` | Marketplace kit install helper |
-| `iot-builder` | IoT/embedded project builder: measurement-first hardware identification, toolchain selection (PlatformIO, Arduino CLI, ESP-IDF, MicroPython, SBC cross-compile), build → flash → serial-monitor loop, flash backup before first overwrite, and an electrical-safety checklist. Extracts per-board and per-toolchain reference files on first invoke |
 
 ### `SKILL.md` frontmatter (high level)
 
@@ -137,6 +136,8 @@ agenc plugin update <name> [--source <path>]
 agenc plugin enable <name> [--path <path>]
 agenc plugin disable <name>
 agenc plugin disable-all
+agenc plugin marketplace catalog [--product <id>] [--json]
+agenc plugin marketplace install <name@marketplace> [--product <id>] [--scope …] [--force] [--json]
 agenc plugin marketplace list|add|remove|upgrade …
 ```
 
@@ -148,6 +149,27 @@ Aliases: top-level `plugin` and `plugins`. TUI: `/plugins` (aliases
 Local path, git, URL, or GitHub sources via `marketplace add`. Index ops in
 `runtime/src/plugins/marketplace/marketplace.ts`. Validate marketplace
 manifests with `plugin validate --marketplace`.
+
+Catalog IDs are canonical `name@marketplace` values. Structured Git catalog
+sources preserve `path`, `ref`, and `sha` through install metadata and later
+updates. JSON installed-plugin rows include explicit `id`, `operationId`, and
+`scope`; identity is not reconstructed from a source URL.
+
+### Optional first-party plugins
+
+The repository-root `marketplace.json` is suitable for remote serving and
+publishes these plugins with `AVAILABLE` policy (never
+`INSTALLED_BY_DEFAULT`):
+
+| Plugin | Contribution |
+| --- | --- |
+| `iot-builder` | Measurement-first embedded workflows and board/toolchain/safety references |
+| `zeroday-hunter` | Evidence-backed, authorized vulnerability-research campaigns |
+| `ledger-wallet-cli` | Wallet CLI Harness skill, scripts, and local MCP wrapper for the official `wallet-cli` JSON contract |
+
+The runtime package does not copy or register these directories. Users first
+configure the served marketplace, then choose an explicit canonical plugin ID
+with `marketplace install`.
 
 ---
 

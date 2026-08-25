@@ -104,10 +104,6 @@ import {
   type ToolRuntimeAttemptContext,
 } from "./runtimes/context.js";
 import { withSignedAllowedRoots } from "./system/filesystem.js";
-import {
-  hasExactLedgerMention,
-  REQUEST_LEDGER_TRANSFER_TOOL_NAME,
-} from "../elicitation/request-ledger-transfer.js";
 import { runAdmittedToolCall } from "../budget/admitted-tool-call.js";
 import {
   beginWorkspaceToolOperation,
@@ -898,27 +894,6 @@ export class ToolRouter {
       };
     }
 
-    if (ledgerTurnBlocksTool(opts, spec.tool)) {
-      const message =
-        `@ledger routes this turn's transfer through ${REQUEST_LEDGER_TRANSFER_TOOL_NAME}; ` +
-        `blocked non-read-only tool ${spec.tool.name}`;
-      await recordToolPolicyAudit(opts, {
-        decision: "denied",
-        source: "ledger-turn-policy",
-        reasonCode: "ledger_turn_non_read_only_tool_denied",
-        toolName: spec.tool.name,
-        callId: toolCall.id,
-      });
-      emitErrorEvent(opts.session.eventLog, toolCall.id, {
-        cause: "ledger_turn_non_read_only_tool_denied",
-        message,
-      });
-      return {
-        content: `<tool_use_error>${message}</tool_use_error>`,
-        isError: true,
-      };
-    }
-
     const invocation: ToolInvocation = {
       session: opts.session,
       turn: opts.turn,
@@ -1449,37 +1424,6 @@ export function workspaceEditorToolCoherenceDenial(
     "buffers because that tool cannot participate in AgenC's revision and " +
     "mutation audit. Use a coordinated built-in file tool, or close the " +
     "Editor workspace before running it."
-  );
-}
-
-function ledgerTurnBlocksTool(
-  opts: LiveToolDispatchOptions,
-  tool: Tool,
-): boolean {
-  const session = opts.session as Session & {
-    currentRootHumanTurn?: () => {
-      readonly turnId: string;
-      readonly text: string;
-    } | null;
-  };
-  const humanTurn = session.currentRootHumanTurn?.();
-  if (
-    humanTurn === null ||
-    humanTurn === undefined ||
-    humanTurn.turnId !== opts.turn.subId ||
-    !hasExactLedgerMention(humanTurn.text)
-  ) {
-    return false;
-  }
-  if (tool.name === REQUEST_LEDGER_TRANSFER_TOOL_NAME) return false;
-
-  // Fail closed: an explicit isReadOnly=true is the minimum trustworthy
-  // classification. Any contradictory mutating/side-effect metadata wins.
-  return !(
-    tool.isReadOnly === true &&
-    tool.metadata?.mutating !== true &&
-    tool.recoveryCategory !== "side-effecting" &&
-    tool.recoveryCategory !== "interactive"
   );
 }
 

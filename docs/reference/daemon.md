@@ -305,7 +305,6 @@ outside ordinary session attachment:
 | Capability                     | Behavior                                                                                                                        |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
 | `portal.mobile.status.push.v1` | Global `event.agent_status` observer feed, deduplicated by physical connection and replayed from bounded session status buffers |
-| `portal.ledger.solana.sign.v1` | Single-consumer `event.user_input_request.clientAction` delivery to the newest capable phone, with bounded live-session replay  |
 
 Generic SDK clients advertise no such capabilities by default. Conversation
 messages and transcripts remain attachment-bound.
@@ -320,11 +319,6 @@ control messages keep their existing overload-control semantics.
 `bypassPermissions` before releasing the pending request and rolls the mode
 back if settlement fails or the request disappeared. Without the flag,
 session scope remains the narrower equivalent-rule cache.
-
-`event.user_input_request.clientAction` and
-`elicitation.respond.clientResult` carry typed client-only interactions. The
-current Ledger action is documented in
-[`../security/mobile-ledger-transfer.md`](../security/mobile-ledger-transfer.md).
 
 ## What the daemon owns
 

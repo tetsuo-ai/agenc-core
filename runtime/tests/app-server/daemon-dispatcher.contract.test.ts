@@ -152,65 +152,6 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     expect(cancelSessionTurn).not.toHaveBeenCalled();
   });
 
-  it("registers an initialized Ledger-capable client before any session attach", async () => {
-    const sessionManager = new AgenCDaemonSessionManager({
-      createSessionId: () => "session_ledger",
-    });
-    await sessionManager.createSession({
-      agentId: "agent_ledger",
-      cwd: await workspaces.create(),
-    });
-    const clientMultiplexer = new AgenCDaemonClientMultiplexer({
-      sessionManager,
-    });
-    const notifications: JsonObject[] = [];
-    const dispatcher = new AgenCDaemonJsonRpcDispatcher({
-      agentManager: new AgenCDaemonAgentManager(),
-      sessionManager,
-      clientMultiplexer,
-    });
-    const connection = dispatcher.createConnection({
-      sendNotification: (message) => notifications.push(message),
-    });
-
-    await connection.dispatch(
-      request("init-ledger", "initialize", {
-        protocol: { version: "1.0.0" },
-        capabilities: { "portal.ledger.solana.sign.v1": true },
-      }),
-    );
-    const action: JsonObject = {
-      jsonrpc: JSON_RPC_VERSION,
-      method: "event.user_input_request",
-      params: {
-        sessionId: "session_ledger",
-        eventId: "event-ledger",
-        requestId: "request-ledger",
-        callId: "call-ledger",
-        turnId: "turn-ledger",
-        questions: [],
-        clientAction: {
-          type: "ledger_solana_transfer_v1",
-          source: "agenc-core",
-          targetCapability: "portal.ledger.solana.sign.v1",
-          network: "mainnet-beta",
-          intentId: "intent-ledger",
-          responseNonce: "response-nonce-ledger",
-          to: "11111111111111111111111111111111",
-          lamports: "1",
-          expiresAt: "2026-07-10T10:10:00.000Z",
-        },
-      },
-    };
-
-    await clientMultiplexer.broadcastSessionEvent("session_ledger", action);
-
-    expect(notifications).toEqual([action]);
-    await expect(
-      clientMultiplexer.attachedClientIds("session_ledger"),
-    ).resolves.toEqual([]);
-    await dispatcher.closeConnection(connection);
-  });
 
   it("registers an opted-in mobile status client before any session attach", async () => {
     const sessionManager = new AgenCDaemonSessionManager({

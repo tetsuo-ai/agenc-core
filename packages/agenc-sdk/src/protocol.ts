@@ -1418,7 +1418,6 @@ export interface EventUserInputRequestParams extends AgencEventBaseParams {
   readonly callId: string;
   readonly turnId: string;
   readonly questions: readonly JsonObject[];
-  readonly clientAction?: JsonObject;
 }
 
 export interface EventMcpElicitationRequestParams extends AgencEventBaseParams {

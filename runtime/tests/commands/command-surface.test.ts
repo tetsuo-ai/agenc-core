@@ -44,7 +44,6 @@ const MINIMAL_NAMES = [
   "effort",
   "resolve",
   "swarm",
-  "ledger",
   "permissions",
   "plan",
   "agents",
@@ -162,15 +161,9 @@ describe("AgenC command surface compatibility", () => {
     expect(names.has("sandbox")).toBe(false);
   });
 
-  it("projects Ledger aliases and its subcommand hint into the TUI", () => {
-    const ledger = getCommandsSync().find(
-      (command) => command.name === "ledger",
-    );
-
-    expect(ledger?.aliases).toContain("wallet");
-    expect(ledger?.argumentHint).toContain("status");
-    expect(ledger?.argumentHint).toContain("install");
-    expect(ledger?.argumentHint).toContain("balances");
+  it("does not project optional Ledger plugin commands into the core TUI", () => {
+    expect(getCommandsSync().some((command) => command.name === "ledger")).toBe(false);
+    expect(getCommandsSync().some((command) => command.aliases?.includes("wallet"))).toBe(false);
   });
 
   it("keeps remote and bridge allowlists on the minimal command set", () => {

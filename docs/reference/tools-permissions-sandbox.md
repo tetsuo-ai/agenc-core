@@ -158,7 +158,6 @@ path. Model-facing search is `WebSearch` (plus gated `XSearch` when enabled).
 | --- | --- |
 | `AskUserQuestion` | Multi-choice questions (TUI picker); **visible by default** |
 | `request_user_input` | Elicitation / free-form user input |
-| `request_ledger_transfer` | Built-in typed Android/Ledger SOL transfer handoff; exact active root-turn `@ledger` authorization only |
 | `Brief` | Short progress message to the user |
 | `SendUserMessage` | Alias of Brief-style progress message |
 | `Sleep` | Sleep / yield; **deferred** by default |
@@ -339,21 +338,6 @@ that transactionally promotes the owning daemon session to
 If the pending request is stale or settlement throws, Core restores the prior
 permission context. The mode is session-local and does not authorize another
 session or remove OS sandbox boundaries.
-
-### `@ledger` turn policy
-
-`request_ledger_transfer` is a privileged interaction tool with no
-model-directed filesystem writes. It is available only when the exact active
-root-human turn contains `@ledger`, and one atomic claim permits a single call
-for that turn. Subagents and synthetic/autonomous turns cannot inherit the
-token from prompt text or durable history.
-
-During that turn, the router denies every other tool unless it is explicitly
-read-only and has no mutating, interactive, or side-effecting metadata. The
-tool accepts only a Solana recipient, positive decimal lamports, and an optional
-short note, then emits a typed client action for a capable Android phone.
-Physical approval and receipt validation are described in
-[`../security/mobile-ledger-transfer.md`](../security/mobile-ledger-transfer.md).
 
 ### Rules, trust, unattended
 

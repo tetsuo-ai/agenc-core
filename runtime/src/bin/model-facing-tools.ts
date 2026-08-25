@@ -110,8 +110,6 @@ import {
 import { createEditorProposalTool } from "../tools/system/editor-proposal.js";
 import { isPreapprovedHost } from "./web-fetch-preapproved.js";
 import { createRequestUserInputTool } from "../elicitation/request-user-input.js";
-import { createRequestLedgerTransferTool } from "../elicitation/request-ledger-transfer.js";
-import { createLedgerWalletCliTools } from "../elicitation/ledger-wallet-cli.js";
 import { createImagineImageTool } from "../tools/system/imagine-image.js";
 import { createImagineVideoTool } from "../tools/system/imagine-video.js";
 import { getRuleByContentsForTool } from "../permissions/rules.js";
@@ -2772,14 +2770,11 @@ function createSkillInvocationRuntimeTool(opts: ModelFacingToolOptions): Tool {
 }
 
 /**
- * Look up a skill in the runtime's bundled registry (browser-automation,
- * iot-builder, the kit installer).
+ * Look up a skill in the runtime's bundled registry.
  *
  * These ship compiled into the binary as Commands rather than through the
  * local skill loader, so `resolveSkill`/`renderSkill` — which are typed to
- * exclude the `bundled` source — never see them. Without this the model gets
- * `Unknown skill: iot-builder` for a skill the runtime demonstrably has, is
- * listed in `/skills`, and answers to `/iot-builder`.
+ * exclude the `bundled` source — never see them.
  *
  * Dynamic literal import (esbuild-discoverable) with a catch: registration
  * runs at module load and can throw where the build-time MACRO define is
@@ -2809,29 +2804,9 @@ async function findBundledSkillCommand(name: string): Promise<
     if (typeof getBundledSkills !== "function") return null;
     const commands = (getBundledSkills as () => unknown)();
     if (!Array.isArray(commands)) return null;
-    const bundled = commands.find(
+    return commands.find(
       (command) => isRecord(command) && command.name === name,
-    );
-    if (bundled !== undefined) return bundled;
-    // Skills contributed by plugins shipped in the runtime package (e.g.
-    // zeroday-hunter) register through the built-in plugin registry, not the
-    // bundled-skills array. Without this fallback the Skill tool rejects them
-    // as unknown even though /skills lists them.
-    const builtin = (await import(
-      "../plugins/builtin/index.js"
-    )) as unknown as Record<string, unknown>;
-    const getBuiltinSkills = builtin.getBuiltinPluginSkillCommands;
-    if (typeof getBuiltinSkills === "function") {
-      const pluginCommands = (getBuiltinSkills as () => unknown)();
-      if (Array.isArray(pluginCommands)) {
-        return (
-          pluginCommands.find(
-            (command) => isRecord(command) && command.name === name,
-          ) ?? null
-        );
-      }
-    }
-    return null;
+    ) ?? null;
   } catch {
     return null;
   }
@@ -2859,19 +2834,7 @@ async function listBundledSkillNames(): Promise<string[]> {
               : [],
           )
         : [];
-    const names = new Set(invocable(commands));
-    // Also surface skills from plugins shipped in the runtime package, so an
-    // unknown-skill error lists them as available alongside the bundled ones.
-    const builtin = (await import(
-      "../plugins/builtin/index.js"
-    )) as unknown as Record<string, unknown>;
-    const getBuiltinSkills = builtin.getBuiltinPluginSkillCommands;
-    if (typeof getBuiltinSkills === "function") {
-      for (const name of invocable((getBuiltinSkills as () => unknown)())) {
-        names.add(name);
-      }
-    }
-    return [...names];
+    return invocable(commands);
   } catch {
     return [];
   }
@@ -5033,11 +4996,6 @@ export function createModelFacingTools(
     createNotebookReadTool(opts),
     createNotebookEditTool(opts),
     createLspTool(opts),
-    createRequestLedgerTransferTool(opts),
-    ...createLedgerWalletCliTools({
-      ...(opts.agencHome !== undefined ? { agencHome: opts.agencHome } : {}),
-      ...(opts.env !== undefined ? { env: opts.env } : {}),
-    }),
     createRequestUserInputTool(opts),
     ...createPlanAndMessageTools(opts),
     ...createTaskTools(opts),

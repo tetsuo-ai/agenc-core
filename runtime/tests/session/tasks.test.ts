@@ -182,7 +182,7 @@ const flush = (): Promise<void> =>
 // ─────────────────────────────────────────────────────────────────────
 
 describe("tasks.ts primitives", () => {
-  it("createActiveTurnState initializes all 11 upstream fields to defaults", () => {
+  it("createActiveTurnState initializes upstream fields to defaults", () => {
     const s = createActiveTurnState();
     expect(s.pendingApprovals.size).toBe(0);
     expect(s.pendingRequestPermissions.size).toBe(0);
@@ -249,20 +249,14 @@ describe("Session.spawnTask registry lifecycle", () => {
   it("binds root human text to the exact active turn and drops it on replacement", async () => {
     const session = buildSession();
     await session.spawnTask({
-      subId: "turn-ledger",
+      subId: "turn-current",
       kind: "regular",
-      rootHumanTurnText: "@ledger send 1 lamport",
+      rootHumanTurnText: "review the current changes",
     });
     expect(session.currentRootHumanTurn()).toEqual({
-      turnId: "turn-ledger",
-      text: "@ledger send 1 lamport",
+      turnId: "turn-current",
+      text: "review the current changes",
     });
-    await expect(
-      session.claimLedgerTransferAuthorization("turn-ledger"),
-    ).resolves.toBe(true);
-    await expect(
-      session.claimLedgerTransferAuthorization("turn-ledger"),
-    ).resolves.toBe(false);
 
     await session.spawnTask({ subId: "turn-next", kind: "regular" });
     expect(session.currentRootHumanTurn()).toBeNull();

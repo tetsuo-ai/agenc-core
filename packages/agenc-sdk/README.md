@@ -14,11 +14,10 @@ Node **>=26.5 <27** · ESM only · plain `tsc` build · no runtime dependencies.
 | `client.reattachRun({ runId, afterSequence })`                               | Catch up from a durable cursor, suppress and report duplicate delivery, stop on any explicit replay gap, and fetch the durable terminal result after reconnect.                                                        |
 | `client.request(method, params)`                                             | Raw typed JSON-RPC for all **53** public daemon methods (mirrored in `./protocol`).                                                                                                                                    |
 
-The protocol mirror preserves trusted `event.user_input_request.clientAction`
-objects, typed `elicitation.respond.clientResult` receipts,
-`ToolApproveParams.allowAllToolsForSession`, and remote subscription-tier
-identity fields. `connect()` advertises no mobile capabilities by default: it
-does not opt a generic embedder into global status or Ledger signing delivery.
+The protocol mirror preserves `ToolApproveParams.allowAllToolsForSession` and
+remote subscription-tier identity fields. `connect()` advertises no mobile
+capabilities by default, so it does not opt a generic embedder into global
+status delivery.
 
 Daemon prompts reserve one local run per session synchronously and use a
 stable `clientMessageId` for correlation/idempotent retry. Protocol 1.2 adds

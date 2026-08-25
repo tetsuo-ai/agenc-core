@@ -769,10 +769,10 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     } as unknown as Session;
 
     await drain(
-      runTurn(session, mkCtx(), "@ledger send 1 lamport", {
+      runTurn(session, mkCtx(), "review the current changes", {
         querySource: "sdk",
         displayUserMessage: null,
-        rootHumanTurnText: "@ledger send 1 lamport",
+        rootHumanTurnText: "review the current changes",
       }),
     );
 
@@ -780,68 +780,41 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     expect(delegatedOptions[0]).toMatchObject({
       querySource: "sdk",
       displayUserMessage: null,
-      rootHumanTurnText: "@ledger send 1 lamport",
+      rootHumanTurnText: "review the current changes",
     });
   });
 
-  test("routes exact @ledger transfers separately from Ledger Wallet CLI requests", async () => {
-    const captureSystemPrompt = async (
-      rootHumanTurnText: string,
-    ): Promise<string> => {
-      let seenSystemPrompt = "";
-      const provider: LLMProvider = {
-        ...mkProvider({ content: "done" }),
-        chatStream: async (_messages, _onChunk, options) => {
-          seenSystemPrompt = options?.systemPrompt ?? "";
-          return {
-            content: "done",
-            toolCalls: [],
-            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-            model: "test-model",
-            finishReason: "stop",
-          };
-        },
-      };
-      const { session, events } = mkSession({
-        provider,
-        registry: mkRegistry(),
-      });
-      const ctx = mkCtx();
-      (ctx as TurnContext & { baseInstructions?: string }).baseInstructions =
-        "BASE_SYSTEM_INSTRUCTIONS";
-      await drain(
-        runTurn(session, ctx, rootHumanTurnText, {
-          querySource: "sdk",
-          displayUserMessage: null,
-          rootHumanTurnText,
-        }),
-      );
-      return seenSystemPrompt;
+  test("does not inject a branded hardware-wallet protocol into root turns", async () => {
+    let seenSystemPrompt = "";
+    const provider: LLMProvider = {
+      ...mkProvider({ content: "done" }),
+      chatStream: async (_messages, _onChunk, options) => {
+        seenSystemPrompt = options?.systemPrompt ?? "";
+        return {
+          content: "done",
+          toolCalls: [],
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
     };
+    const { session } = mkSession({ provider, registry: mkRegistry() });
+    const ctx = mkCtx();
+    (ctx as TurnContext & { baseInstructions?: string }).baseInstructions =
+      "BASE_SYSTEM_INSTRUCTIONS";
 
-    const routed = await captureSystemPrompt(
-      "@ledger send 1 SOL to 11111111111111111111111111111111",
+    await drain(
+      runTurn(session, ctx, "@ledger send 1 SOL", {
+        querySource: "sdk",
+        displayUserMessage: null,
+        rootHumanTurnText: "@ledger send 1 SOL",
+      }),
     );
-    expect(routed).toContain("BASE_SYSTEM_INSTRUCTIONS");
-    expect(routed).toContain("call request_ledger_transfer exactly once");
-    expect(routed).toContain("1 SOL = 1,000,000,000 lamports");
-    expect(routed).toContain("never describe submitted as confirmed");
 
-    const ordinary = await captureSystemPrompt(
-      "describe ledger hardware without routing a transfer",
-    );
-    expect(ordinary).toContain("BASE_SYSTEM_INSTRUCTIONS");
-    expect(ordinary).not.toContain("request_ledger_transfer");
-    expect(ordinary).toContain("invoke the ledger-wallet-cli skill");
-    expect(ordinary).toContain("ledger_wallet_cli_status");
-    expect(ordinary).toContain("install_ledger_wallet_cli");
-
-    const accounting = await captureSystemPrompt(
-      "post this journal entry to the accounting ledger",
-    );
-    expect(accounting).toContain("BASE_SYSTEM_INSTRUCTIONS");
-    expect(accounting).not.toContain("ledger-wallet-cli");
-    expect(accounting).not.toContain("request_ledger_transfer");
+    expect(seenSystemPrompt).toContain("BASE_SYSTEM_INSTRUCTIONS");
+    expect(seenSystemPrompt).not.toContain("request_ledger_transfer");
+    expect(seenSystemPrompt).not.toContain("lamports");
   });
 
   test("session memory post-sampling uses prepared context and warns on failure", async () => {

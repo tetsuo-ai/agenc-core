@@ -5,6 +5,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rename,
   rm,
   stat,
@@ -6853,8 +6854,15 @@ describe("WorkspaceMutationCoordinator", () => {
     if (admission.decision !== "allow") throw new Error("expected admission");
     coordinator.beginMutation(admission.token);
     await writeFile(path, after);
+    const canonicalWorkspaceRoot = await realpath(workspaceRoot);
+    const canonicalPath = await realpath(path);
     await mkdir(
-      workspaceMutationStatePath(workspaceRoot, agencHome, "ledger-v1.jsonl"),
+      workspaceMutationStatePath(
+        canonicalWorkspaceRoot,
+        agencHome,
+        "ledger-v1.jsonl",
+      ),
+      { recursive: true },
     );
 
     await expect(
@@ -6872,7 +6880,7 @@ describe("WorkspaceMutationCoordinator", () => {
       }).changes,
     ).toContainEqual(
       expect.objectContaining({
-        path,
+        path: canonicalPath,
         status: "unknown_outcome",
         beforeSha256: sha256(before),
         afterSha256: sha256(after),
@@ -6901,6 +6909,7 @@ describe("WorkspaceMutationCoordinator", () => {
         ],
       }),
     ).not.toThrow();
+    await coordinator.flushQuarantinePersistence();
   });
 
   it("canonicalizes symlink aliases and rejects paths escaping the workspace", async () => {

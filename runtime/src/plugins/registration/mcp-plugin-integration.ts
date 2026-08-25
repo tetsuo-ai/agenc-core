@@ -20,6 +20,8 @@ export interface PluginMcpRegistrationOptions extends PluginRuntimeLoadOptions {
   readonly plugins?: readonly LoadedPlugin[];
   readonly sessionId?: string;
   readonly errors?: PluginLoadIssue[];
+  /** Project normalized MCP declarations without resolving secrets or creating sandbox data dirs. */
+  readonly configOnly?: boolean;
 }
 
 export interface PluginChannelRegistration {
@@ -171,6 +173,10 @@ function addPluginScopeToServers(
   const scoped: Record<string, McpServerConfig> = {};
   for (const [name, server] of Object.entries(servers)) {
     const scopedName = pluginScopedServerIdentifier(plugin.name, name);
+    if (options.configOnly === true) {
+      scoped[scopedName] = { ...server };
+      continue;
+    }
     const resolved = resolvePluginMcpEnvironmentWithIssues(plugin, server, options);
     if (reportServerIssues(plugin, name, resolved.issues, options)) continue;
     const sandboxed = resolvePluginMcpSandboxedServer(
