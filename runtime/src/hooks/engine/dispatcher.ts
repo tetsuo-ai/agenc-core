@@ -17,7 +17,6 @@ import { AdmissionDeniedError } from "../../budget/admission-client.js";
 import type {
   CommandRunResult,
   HookCommandRunDiagnostic,
-  HookDispatchResult,
   HookEngineOptions,
   HookRunDiagnostic,
   IndividualHookConfig,
@@ -83,21 +82,6 @@ export class HookEngine {
           matchesPattern(input, hook.matcher),
         );
       });
-  }
-
-  async dispatch(
-    event: HookEventName,
-    matcherInputs: readonly string[],
-    input: Record<string, unknown>,
-    signal?: AbortSignal,
-  ): Promise<readonly HookDispatchResult[]> {
-    const handlers = this.selectHandlersForMatcherInputs(event, matcherInputs);
-    return Promise.all(
-      handlers.map(async (hook) => ({
-        hook,
-        run: await this.runCommandHook(hook, input, signal, inputCwd(input)),
-      })),
-    );
   }
 
   async runCommandHook(
@@ -239,11 +223,6 @@ export class HookEngine {
       ...(result.error !== undefined ? { rawError: result.error } : {}),
     };
   }
-}
-
-function inputCwd(input: Record<string, unknown>): string | undefined {
-  const cwd = input.cwd;
-  return typeof cwd === "string" && cwd.trim().length > 0 ? cwd : undefined;
 }
 
 export function matchesPattern(matchQuery: string, matcher?: string): boolean {

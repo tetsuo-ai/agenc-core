@@ -60,8 +60,3 @@ export interface HookEngineOptions {
   readonly executionAdmission?: ExecutionAdmissionClient;
   readonly admissionRequired?: boolean;
 }
-
-export interface HookDispatchResult {
-  readonly hook: IndividualHookConfig;
-  readonly run: HookCommandRunDiagnostic;
-}

@@ -2313,6 +2313,35 @@ describe("configured hooks trust gate", () => {
     expect(existsSync(sentinel)).toBe(false);
   });
 
+  test("untrusted PermissionRequest hooks cannot bypass the command trust gate", async () => {
+    const sentinel = await tempSentinel();
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: {},
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+      isWorkspaceTrusted: () => false,
+    });
+    const target = makeTarget();
+    runtime.attachTarget(target);
+    runtime.load({
+      PermissionRequest: [
+        {
+          matcher: "Read",
+          hooks: [{ type: "command", command: touchCommand(sentinel) }],
+        },
+      ],
+    });
+
+    const decision = await target.permissionDecisionHooks[0]!({
+      toolName: "Read",
+      args: { file_path: "/tmp/example" },
+    });
+
+    expect(decision).toEqual({ kind: "pass" });
+    expect(existsSync(sentinel)).toBe(false);
+  });
+
   test("explicit session opt-in allows hooks and explicit false blocks them", async () => {
     const yesSentinel = await tempSentinel();
     const yes = makeRuntime({

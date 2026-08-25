@@ -442,19 +442,23 @@ export class ConfiguredHooksRuntime {
       if (this.isDisabled()) {
         return { kind: "pass" };
       }
-      const runs = await this.engine.dispatch(
+      const hookInput = {
+        ...permissionDecisionHookInput(input, this.opts.cwd),
+        hook_event_name: "PermissionRequest",
+        tool_name: toolName,
+        tool_input: args,
+      };
+      const handlers = this.engine.selectHandlersForMatcherInputs(
         "PermissionRequest",
         hookMatcherInputsForToolName(toolName, input.matcherAliases ?? []),
-        {
-          ...permissionDecisionHookInput(input, this.opts.cwd),
-          hook_event_name: "PermissionRequest",
-          tool_name: toolName,
-          tool_input: args,
-        },
-        input.signal,
+      );
+      const runs = await Promise.all(
+        handlers.map((hook) =>
+          this.runCommandHook(hook, hookInput, input.signal),
+        ),
       );
       let allow: PermissionDecisionResult | undefined;
-      for (const { run } of runs) {
+      for (const run of runs) {
         if (run.status === "blocking") {
           const reason = trimmedReason(run.rawStderr);
           if (reason === undefined) {

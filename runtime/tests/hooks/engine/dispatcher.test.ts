@@ -117,36 +117,6 @@ describe("HookEngine dispatcher", () => {
     ]);
   });
 
-  test("dispatches matching command hooks with JSON stdin", async () => {
-    const engine = makeEngine({
-      PermissionRequest: [
-        {
-          matcher: "Read",
-          hooks: [
-            {
-              type: "command",
-              command:
-                "node -e \"let s=''; process.stdin.on('data', c => s += c); process.stdin.on('end', () => process.stdout.write(JSON.parse(s).tool_name));\"",
-            },
-          ],
-        },
-        {
-          matcher: "Write",
-          hooks: [{ type: "command", command: "printf wrong" }],
-        },
-      ],
-    });
-
-    const runs = await engine.dispatch("PermissionRequest", ["Read"], {
-      hook_event_name: "PermissionRequest",
-      tool_name: "Read",
-    });
-
-    expect(runs).toHaveLength(1);
-    expect(runs[0]?.run.status).toBe("success");
-    expect(runs[0]?.run.stdout).toBe("Read");
-  });
-
   test("records blocking, timeout, and disabled command diagnostics", async () => {
     const engine = makeEngine({
       PreToolUse: [
