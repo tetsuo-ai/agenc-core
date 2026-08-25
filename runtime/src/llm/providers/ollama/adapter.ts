@@ -906,7 +906,7 @@ export class OllamaProvider implements LLMProvider {
       // allowlist constraint and shipped under
       // `fallback_full_catalog_no_matches`.
       console.warn(
-        `[OllamaAdapter] Tool allowlist resolved to ${requestedToolNames.length} names but zero matched the provider catalog — suppressing all tools for this call (requested: ${requestedToolNames.join(", ")})`,
+        `[OllamaAdapter] Tool allowlist resolved to ${requestedToolNames.length} names but zero matched the provider catalog of ${providerCatalogToolCount} — ${providerCatalogToolCount === 0 ? "the catalog is EMPTY, so no allowlist could match: the tools never reached the adapter" : "every requested name is absent from it, which is a naming-form mismatch"}. Suppressing all tools for this call. Requested: ${requestedToolNames.join(", ")}. Catalog: ${providerCatalogToolNames.join(", ") || "(none)"}`,
       );
       return {
         tools: [],
