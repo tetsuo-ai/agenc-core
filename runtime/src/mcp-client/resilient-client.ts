@@ -419,6 +419,8 @@ export class ResilientMCPBridge implements MCPToolBridge {
           ...(this.options.serverOrigin !== undefined
             ? { serverOrigin: this.options.serverOrigin }
             : {}),
+          environment:
+            this.options.environment ?? EMPTY_MCP_REQUEST_ENVIRONMENT,
         },
       );
 

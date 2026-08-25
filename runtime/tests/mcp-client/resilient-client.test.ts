@@ -257,6 +257,19 @@ describe("ResilientMCPBridge", () => {
     expect(callB?.[5]).toEqual({});
     expect(Object.isFrozen(callB?.[5])).toBe(true);
     expect(callA?.[5]).not.toBe(callB?.[5]);
+    const bridgeCallA = mockCreateToolBridge.mock.calls.find(
+      ([, serverName]) => serverName === "session-a",
+    );
+    const bridgeCallB = mockCreateToolBridge.mock.calls.find(
+      ([, serverName]) => serverName === "session-b",
+    );
+    expect(bridgeCallA?.[3]?.environment).toEqual({
+      HTTPS_PROXY: "http://session-a.proxy.test:8080",
+      NO_PROXY: "localhost",
+    });
+    expect(Object.isFrozen(bridgeCallA?.[3]?.environment)).toBe(true);
+    expect(bridgeCallB?.[3]?.environment).toEqual({});
+    expect(Object.isFrozen(bridgeCallB?.[3]?.environment)).toBe(true);
 
     await Promise.all([bridgeA.dispose(), bridgeB.dispose()]);
   });

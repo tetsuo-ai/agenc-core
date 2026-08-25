@@ -55,6 +55,15 @@ import {
   isProviderToolNameSafe,
 } from "../llm/wire/mcp-tool-naming.js";
 import { asRecord } from "../utils/record.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
+import { MAX_TOOL_CALL_ID_UTF8_BYTES } from "../session/tool-result-integrity.js";
+import { sleep } from "../utils/sleep.js";
+import { snapshotMcpRequestEnvironment } from "./environment.js";
+import { normalizeMcpToolOutput } from "./tool-output.js";
+import {
+  sanitizeMcpOutputText,
+  truncateMcpUtf8,
+} from "./content-sanitization.js";
 
 /**
  * Policy knobs forwarded from server config to the bridge. `allowedTools`
@@ -179,15 +188,22 @@ function modelFacingMcpToolDescription(
 }
 
 const DEFAULT_MCP_LIST_TOOLS_TIMEOUT_MS = 30_000;
+const MAX_MCP_LIST_TOOLS_ATTEMPTS = 3;
+const MCP_LIST_TOOLS_RETRY_BASE_DELAY_MS = 250;
 // @modelcontextprotocol/sdk always installs a request timer. Use Node's
 // largest safe timer window and reset it on progress when no operator timeout
 // was configured; AgenC itself imposes no MCP tool-call deadline.
 const MCP_SDK_UNBOUNDED_WINDOW_MS = 2_147_483_647;
 const MCP_REQUEST_PERMISSIONS_TOOL_NAME = "request_permissions";
 const MCP_RAW_TOOL_NAME_PATTERN = /^[a-zA-Z0-9_-]{1,64}$/;
-
-/** I-76: upper bound on a single MCP tool-call result, 5MB. */
-const MAX_MCP_CALL_RESULT_BYTES = 5 * 1024 * 1024;
+const MCP_EXECUTION_ONLY_ARGUMENT_KEYS = new Set([
+  "__abortSignal",
+  "__callId",
+  "__onProgress",
+  "__sandboxExecutionBroker",
+  "__sandboxExecutionSurface",
+  "__toolRuntimeContext",
+]);
 
 function filterProviderSafeMcpToolCatalog(
   serverName: string,
@@ -326,6 +342,7 @@ interface ToolBridgeOptions {
   permissions?: MCPToolBridgePermissionOptions;
   serverOrigin?: string;
   transport?: "stdio" | "sse" | "http" | "streamable_http";
+  environment: ProviderEnvironment;
 }
 
 interface MCPToolDescriptor {
@@ -380,15 +397,25 @@ function safeStringifyArgs(args: Record<string, unknown>): string {
   }
 }
 
-function safeStringifyMCPPayload(value: unknown, fallback = ""): string {
-  if (typeof value === "string") return value;
-  if (value === undefined) return fallback;
-  try {
-    const serialized = JSON.stringify(value);
-    return serialized === undefined ? fallback : serialized;
-  } catch {
-    return String(value);
+function withoutMcpExecutionOnlyArgs(
+  args: Record<string, unknown>,
+): Record<string, unknown> {
+  const outbound: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(args)) {
+    if (
+      MCP_EXECUTION_ONLY_ARGUMENT_KEYS.has(key) ||
+      key.startsWith("__agenc")
+    ) {
+      continue;
+    }
+    Object.defineProperty(outbound, key, {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value,
+    });
   }
+  return outbound;
 }
 
 function normalizeMCPToolDescriptor(raw: unknown): MCPToolDescriptor | null {
@@ -418,39 +445,6 @@ function normalizeMCPToolCatalog(rawTools: unknown): MCPToolDescriptor[] {
   return rawTools
     .map(normalizeMCPToolDescriptor)
     .filter((tool): tool is MCPToolDescriptor => tool !== null);
-}
-
-function renderMCPCallContentItem(raw: unknown): string {
-  const record = asRecord(raw);
-  if (record?.type === "text") {
-    return safeStringifyMCPPayload(record.text);
-  }
-  return safeStringifyMCPPayload(raw);
-}
-
-function renderMCPCallContent(rawContent: unknown): string {
-  if (Array.isArray(rawContent)) {
-    return rawContent.map(renderMCPCallContentItem).join("\n");
-  }
-  return safeStringifyMCPPayload(rawContent);
-}
-
-function normalizeMCPCallToolResponse(raw: unknown): {
-  readonly content: string;
-  readonly isError: boolean;
-} {
-  const record = asRecord(raw);
-  if (!record) {
-    return {
-      content: renderMCPCallContent(raw),
-      isError: false,
-    };
-  }
-
-  return {
-    content: renderMCPCallContent(record.content),
-    isError: record.isError === true,
-  };
 }
 
 function errorResult(content: string): ToolResult {
@@ -843,11 +837,106 @@ async function withRPCDeadline<T>(
   }
 }
 
+async function listMcpToolsWithRetry(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  client: any,
+  serverName: string,
+  timeoutMs: number,
+  logger: Logger,
+): Promise<MCPListToolsResponse> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= MAX_MCP_LIST_TOOLS_ATTEMPTS; attempt += 1) {
+    try {
+      return await withRPCDeadline<MCPListToolsResponse>(
+        `MCP server "${serverName}" listTools`,
+        timeoutMs,
+        (signal) => client.listTools(undefined, { signal, timeout: timeoutMs }),
+      );
+    } catch (error) {
+      lastError = error;
+      if (attempt === MAX_MCP_LIST_TOOLS_ATTEMPTS) break;
+      logger.warn?.(
+        `MCP server ${JSON.stringify(serverName)} listTools attempt ${attempt} failed; retrying`,
+      );
+      await sleep(MCP_LIST_TOOLS_RETRY_BASE_DELAY_MS * attempt);
+    }
+  }
+  throw lastError;
+}
+
 function abortSignalFromArgs(
   args: Record<string, unknown>,
 ): AbortSignal | undefined {
   const signal = args.__abortSignal;
   return signal instanceof AbortSignal ? signal : undefined;
+}
+
+type MCPProgressCallback = (event: {
+  readonly chunk: string;
+  readonly stream?: "stdout" | "stderr" | "status";
+  readonly processId?: number;
+}) => void;
+
+function progressCallbackFromArgs(
+  args: Record<string, unknown>,
+): MCPProgressCallback | undefined {
+  const callback = args.__onProgress;
+  return typeof callback === "function"
+    ? callback as MCPProgressCallback
+    : undefined;
+}
+
+function callIdFromArgs(
+  args: Record<string, unknown>,
+  fallback: string,
+): string {
+  const descriptor = Object.getOwnPropertyDescriptor(args, "__callId");
+  const value = descriptor?.value;
+  return descriptor?.enumerable === false &&
+      typeof value === "string" &&
+      value.trim().length > 0 &&
+      Buffer.byteLength(value, "utf8") <= MAX_TOOL_CALL_ID_UTF8_BYTES
+    ? value
+    : fallback;
+}
+
+function renderMcpProgress(raw: unknown): string | undefined {
+  const record = asRecord(raw);
+  if (!record) return undefined;
+  const parts: string[] = [];
+  if (typeof record.message === "string") {
+    parts.push(
+      sanitizeMcpOutputText(truncateMcpUtf8(record.message, 896)),
+    );
+  }
+  if (typeof record.progress === "number" && Number.isFinite(record.progress)) {
+    const progress = String(record.progress);
+    const total = typeof record.total === "number" && Number.isFinite(record.total)
+      ? `/${record.total}`
+      : "";
+    parts.push(`progress ${progress}${total}`);
+  }
+  if (parts.length === 0) return undefined;
+  return truncateMcpUtf8(parts.join(" — "), 1_024);
+}
+
+function forwardMcpProgress(
+  raw: unknown,
+  callback: MCPProgressCallback | undefined,
+  logger: Logger,
+  toolName: string,
+): void {
+  if (callback === undefined) return;
+  const chunk = renderMcpProgress(raw);
+  if (chunk === undefined || chunk.length === 0) return;
+  try {
+    callback({ chunk, stream: "status" });
+  } catch (error) {
+    logger.warn?.(
+      `MCP tool ${JSON.stringify(toolName)} progress callback failed`,
+      error,
+    );
+  }
 }
 
 /**
@@ -867,8 +956,9 @@ export async function createToolBridge(
   client: any,
   serverName: string,
   logger: Logger = silentLogger,
-  options: ToolBridgeOptions = {},
+  options: ToolBridgeOptions,
 ): Promise<MCPToolBridge> {
+  const environment = snapshotMcpRequestEnvironment(options.environment);
   const listToolsTimeoutMs = normalizeTimeoutMs(
     options.listToolsTimeoutMs,
     DEFAULT_MCP_LIST_TOOLS_TIMEOUT_MS,
@@ -880,11 +970,11 @@ export async function createToolBridge(
       ? Math.max(1, Math.floor(options.callToolTimeoutMs))
       : undefined;
 
-  const response = await withRPCDeadline<MCPListToolsResponse>(
-    `MCP server "${serverName}" listTools`,
+  const response = await listMcpToolsWithRetry(
+    client,
+    serverName,
     listToolsTimeoutMs,
-    (signal) =>
-      client.listTools(undefined, { signal, timeout: listToolsTimeoutMs }),
+    logger,
   );
   const rawTools = normalizeMCPToolCatalog(response.tools);
   const mcpTools: MCPToolDescriptorLike[] = options.serverConfig
@@ -959,11 +1049,14 @@ export async function createToolBridge(
           };
         }
 
-        // T6 gap #119: notify observer of call start. The observer is
-        // responsible for emitting `mcp_tool_call_begin`; bridge stays
-        // session-agnostic. `callId` is synthesized here because the
-        // MCP bridge is not given one by the executor wrapper.
-        const callId = `mcp-${serverName}-${mcpTool.name}-${randomCallId()}`;
+        // T6 gap #119: notify observer of call start. Prefer the admitted
+        // executor call id so persistence, progress, and events share one
+        // identity; standalone bridge callers get a local fallback.
+        const callId = callIdFromArgs(
+          args,
+          `mcp-${serverName}-${mcpTool.name}-${randomCallId()}`,
+        );
+        const progressCallback = progressCallbackFromArgs(args);
         if (
           mcpTool.name === MCP_REQUEST_PERMISSIONS_TOOL_NAME &&
           options.permissions?.requestPermissionsRpc !== undefined
@@ -984,7 +1077,9 @@ export async function createToolBridge(
           if (!authorization.ok) {
             return authorization.result;
           }
-          const executionArgs = authorization.args;
+          const executionArgs = withoutMcpExecutionOnlyArgs(
+            authorization.args,
+          );
           effectSignal?.throwIfAborted();
           const callArgs = safeStringifyArgs(executionArgs);
           const observer = options.callObserver;
@@ -994,43 +1089,50 @@ export async function createToolBridge(
             toolName: mcpTool.name,
             args: callArgs,
           });
-          const result = normalizeMCPCallToolResponse(
-            await withRPCDeadline<unknown>(
-              `MCP tool "${mcpTool.name}" callTool`,
-              callToolTimeoutMs,
-              (signal) =>
-                client.callTool(
-                  {
-                    name: mcpTool.name,
-                    arguments: executionArgs,
-                  },
-                  undefined,
-                  {
-                    signal,
-                    timeout:
-                      callToolTimeoutMs ?? MCP_SDK_UNBOUNDED_WINDOW_MS,
-                    ...(callToolTimeoutMs === undefined
-                      ? { resetTimeoutOnProgress: true }
-                      : {}),
-                  },
-                ),
-              effectSignal,
-            ),
+          const rawResult = await withRPCDeadline<unknown>(
+            `MCP tool "${mcpTool.name}" callTool`,
+            callToolTimeoutMs,
+            (signal) =>
+              client.callTool(
+                {
+                  name: mcpTool.name,
+                  arguments: executionArgs,
+                },
+                undefined,
+                {
+                  signal,
+                  timeout:
+                    callToolTimeoutMs ?? MCP_SDK_UNBOUNDED_WINDOW_MS,
+                  ...(callToolTimeoutMs === undefined
+                    ? { resetTimeoutOnProgress: true }
+                    : {}),
+                  ...(progressCallback !== undefined
+                    ? {
+                        onprogress: (progress: unknown) => {
+                          forwardMcpProgress(
+                            progress,
+                            progressCallback,
+                            logger,
+                            mcpTool.name,
+                          );
+                        },
+                      }
+                    : {}),
+                },
+              ),
+            effectSignal,
           );
+          const result = await normalizeMcpToolOutput({
+            raw: rawResult,
+            serverName,
+            toolName: mcpTool.name,
+            callId,
+            environment,
+            logger,
+          });
 
-          const rawContent = result.content;
-
-          // I-76: cap result payload at 5MB.
-          const bytes = Buffer.byteLength(rawContent, "utf8");
-          let content = rawContent;
-          if (bytes > MAX_MCP_CALL_RESULT_BYTES) {
-            content = `${truncateUtf8(rawContent, MAX_MCP_CALL_RESULT_BYTES)}\n\n…[truncated: MCP tool result exceeded ${MAX_MCP_CALL_RESULT_BYTES} bytes]`;
-            logger.warn?.(
-              `MCP tool "${mcpTool.name}" result exceeded I-76 cap (${bytes}B > ${MAX_MCP_CALL_RESULT_BYTES}B); truncated`,
-            );
-          }
-
-          const isError = result.isError;
+          const content = result.content;
+          const isError = result.isError === true;
           const durationMs = Date.now() - startedAtMs;
           observer?.onEnd?.({
             callId,
@@ -1040,15 +1142,16 @@ export async function createToolBridge(
             isError,
             durationMs,
           });
-          return {
-            content,
-            isError,
-          };
+          return result;
         } catch (error) {
           const effectiveError = effectSignal?.aborted
             ? effectSignal.reason
             : error;
-          const errMessage = `MCP tool "${mcpTool.name}" failed: ${effectiveError instanceof Error ? effectiveError.message : String(effectiveError)}`;
+          const rawErrorMessage =
+            `MCP tool "${mcpTool.name}" failed: ${effectiveError instanceof Error ? effectiveError.message : String(effectiveError)}`;
+          const errMessage = sanitizeMcpOutputText(
+            truncateMcpUtf8(rawErrorMessage, 16 * 1024),
+          );
           const durationMs = Date.now() - startedAtMs;
           options.callObserver?.onEnd?.({
             callId,

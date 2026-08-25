@@ -3111,13 +3111,13 @@ async function processMCPResult(
   }
 
   // Check if content needs truncation (i.e., is too large)
-  if (!(await mcpContentNeedsTruncation(content))) {
+  if (!(await mcpContentNeedsTruncation(content, environment))) {
     return content
   }
 
   // If large output files feature is disabled, fall back to old truncation behavior
   if (isEnvDefinedFalsy(environment.ENABLE_MCP_LARGE_OUTPUT_FILES)) {
-    return await truncateMcpContentIfNeeded(content)
+    return await truncateMcpContentIfNeeded(content, environment)
   }
 
   // Save large output to file and return instructions for reading it
@@ -3129,7 +3129,7 @@ async function processMCPResult(
   // If content contains images, fall back to truncation - persisting images as JSON
   // defeats the image compression logic and makes them non-viewable
   if (contentContainsImages(content)) {
-    return await truncateMcpContentIfNeeded(content)
+    return await truncateMcpContentIfNeeded(content, environment)
   }
 
   // Generate a unique ID for the persisted file (server__tool-timestamp)

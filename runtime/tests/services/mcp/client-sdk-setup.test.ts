@@ -2887,11 +2887,25 @@ test('connectToServer truncates oversized server instructions', async () => {
 test('MCP tool calls persist large non-image output and fall back when disabled', async () => {
   vi.resetModules()
   const persisted: Array<{ content: unknown; id: string }> = []
+  const needsTruncationEnvironments: Array<Readonly<Record<string, string | undefined>>> = []
+  const truncationEnvironments: Array<Readonly<Record<string, string | undefined>>> = []
   const pngBase64 =
     'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII='
   vi.doMock('../../../src/utils/mcpValidation.js', () => ({
-    mcpContentNeedsTruncation: async () => true,
-    truncateMcpContentIfNeeded: async () => 'truncated fallback',
+    mcpContentNeedsTruncation: async (
+      _content: unknown,
+      environment: Readonly<Record<string, string | undefined>>,
+    ) => {
+      needsTruncationEnvironments.push(environment)
+      return true
+    },
+    truncateMcpContentIfNeeded: async (
+      _content: unknown,
+      environment: Readonly<Record<string, string | undefined>>,
+    ) => {
+      truncationEnvironments.push(environment)
+      return 'truncated fallback'
+    },
   }))
   vi.doMock('../../../src/utils/toolResultStorage.js', () => ({
     isPersistError: (value: unknown) =>
@@ -3044,4 +3058,13 @@ test('MCP tool calls persist large non-image output and fall back when disabled'
   )
 
   assert.deepEqual(fallbackResult, { data: 'truncated fallback' })
+  assert.equal(needsTruncationEnvironments.length > 0, true)
+  assert.deepEqual(
+    needsTruncationEnvironments.at(-1),
+    { ENABLE_MCP_LARGE_OUTPUT_FILES: '0' },
+  )
+  assert.deepEqual(
+    truncationEnvironments.at(-1),
+    { ENABLE_MCP_LARGE_OUTPUT_FILES: '0' },
+  )
 })

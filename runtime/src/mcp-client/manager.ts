@@ -1461,6 +1461,7 @@ export class MCPManager {
           listToolsTimeoutMs: config.timeout,
           callToolTimeoutMs: config.timeout,
           serverConfig: toToolCatalogPolicyConfig(config),
+          environment: this.environment,
           ...(this.callObserver !== undefined
             ? { callObserver: this.callObserver }
             : {}),

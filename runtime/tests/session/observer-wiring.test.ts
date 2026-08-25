@@ -62,6 +62,7 @@ describe("observer-wiring — T6 gap #119 session wiring", () => {
 
     const bridge = await createToolBridge(fakeClient, "srv", undefined, {
       callObserver: observer,
+      environment: {},
     });
     const tool = bridge.tools[0]!;
     const result = await tool.execute({ ping: true });
@@ -107,6 +108,7 @@ describe("observer-wiring — T6 gap #119 session wiring", () => {
 
     const bridge = await createToolBridge(fakeClient, "srv", undefined, {
       callObserver: observer,
+      environment: {},
     });
     const result = await bridge.tools[0]!.execute({});
     expect(result.isError).toBe(true);
@@ -230,7 +232,9 @@ describe("observer-wiring — T6 gap #119 session wiring", () => {
       callTool,
       close: async () => {},
     };
-    const bridge = await createToolBridge(fakeClient, "srv", undefined, {});
+    const bridge = await createToolBridge(fakeClient, "srv", undefined, {
+      environment: {},
+    });
     await bridge.tools[0]!.execute({});
     expect(callTool).toHaveBeenCalledOnce();
     // No observer, no listeners — nothing to assert beyond "no throw".

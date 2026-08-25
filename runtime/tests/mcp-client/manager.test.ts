@@ -180,6 +180,27 @@ describe("MCPManager", () => {
     );
   });
 
+  it("passes its immutable provider environment to the canonical tool bridge", async () => {
+    const environment: Record<string, string | undefined> = {
+      MAX_MCP_OUTPUT_TOKENS: "1234",
+    };
+    mockCreateMCPConnection.mockResolvedValueOnce("client1");
+    mockCreateToolBridge.mockResolvedValueOnce(makeMockBridge("srv1", ["toolA"]));
+
+    const manager = new MCPManager(
+      [makeConfig("srv1")],
+      undefined,
+      environment,
+    );
+    environment.MAX_MCP_OUTPUT_TOKENS = "9999";
+    await manager.start();
+
+    const bridgeEnvironment = mockCreateToolBridge.mock.calls[0]?.[3]?.environment;
+    expect(bridgeEnvironment).toEqual({ MAX_MCP_OUTPUT_TOKENS: "1234" });
+    expect(Object.isFrozen(bridgeEnvironment)).toBe(true);
+    expect(bridgeEnvironment).not.toBe(environment);
+  });
+
   it("isolates surface subscribers and supports idempotent unsubscribe", async () => {
     const bridge = makeMockBridge("srv1", ["toolA"]);
     mockCreateMCPConnection.mockResolvedValueOnce("client1");
