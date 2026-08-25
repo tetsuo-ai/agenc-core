@@ -603,6 +603,31 @@ export function parseOpenAIToolChoice(
   };
 }
 
+/**
+ * The Responses API takes the flat `ToolChoiceFunction` shape, matching its
+ * flat `tools[]` entries (toOpenAIResponsesTools). Handed the nested Chat
+ * Completions object it reads the outer type as a function selection, finds
+ * no sibling `name`, and rejects the whole request with "Missing required
+ * parameter: 'tool_choice.name'" — the turn then ends with no answer.
+ */
+export function parseOpenAIResponsesToolChoice(
+  toolChoice: LLMToolChoice | undefined,
+): unknown {
+  if (toolChoice === undefined) return undefined;
+  if (
+    toolChoice === "auto" ||
+    toolChoice === "required" ||
+    toolChoice === "none"
+  ) {
+    return toolChoice;
+  }
+  return {
+    type: "function",
+    // Same encoded name the `tools[]` entry carries; see parseOpenAIToolChoice.
+    name: encodeMcpToolNameForWire(toolChoice.name),
+  };
+}
+
 export function parseAnthropicToolChoice(
   toolChoice: LLMToolChoice | undefined,
 ): unknown {

@@ -531,11 +531,17 @@ describe("buildOpenAIResponsesRequest", () => {
     const tools = request.tools as Array<{ name: string }>;
     // Hardcoded literal on purpose: pins the wire contract.
     expect(tools[0]!.name).toBe("mcp__memory__search_nodes");
-    // tool_choice must reference the encoded tools[] entry byte-for-byte,
-    // never the dotted internal name the provider never saw.
+    // Flat, like the tools[] entries this endpoint takes. The nested Chat
+    // Completions object leaves the Responses API reading `type: "function"`
+    // as a selection with no sibling `name`, and it rejects the request with
+    // "Missing required parameter: 'tool_choice.name'" — the turn then ends
+    // with no answer at all.
+    //
+    // The name must reference the encoded tools[] entry byte-for-byte, never
+    // the dotted internal name the provider never saw.
     expect(request.tool_choice).toEqual({
       type: "function",
-      function: { name: tools[0]!.name },
+      name: tools[0]!.name,
     });
   });
 });
