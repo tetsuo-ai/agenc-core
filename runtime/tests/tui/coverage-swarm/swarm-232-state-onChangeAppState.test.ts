@@ -1,16 +1,11 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { AppState } from "../../../src/tui/state/AppStateStore.js";
-import {
-  externalMetadataToAppState,
-  onChangeAppState,
-} from "../../../src/tui/state/onChangeAppState.js";
+import { onChangeAppState } from "../../../src/tui/state/onChangeAppState.js";
 
 const harness = vi.hoisted(() => ({
   applyConfigEnvironmentVariables: vi.fn(),
   logError: vi.fn(),
-  notifyPermissionModeChanged: vi.fn(),
-  notifySessionMetadataChanged: vi.fn(),
   setMainLoopModelOverride: vi.fn(),
   updateSettingsForSource: vi.fn(),
 }));
@@ -30,18 +25,6 @@ vi.mock("../../../src/utils/log.js", () => ({
 
 vi.mock("../../../src/utils/managedEnv.js", () => ({
   applyConfigEnvironmentVariables: harness.applyConfigEnvironmentVariables,
-}));
-
-vi.mock("../../../src/utils/permissions/PermissionMode.js", () => ({
-  permissionModeFromString: (mode: string) =>
-    mode === "acceptEdits" || mode === "plan" ? mode : "default",
-  toExternalPermissionMode: (mode: string) =>
-    mode === "auto" || mode === "bubble" ? "default" : mode,
-}));
-
-vi.mock("../../../src/utils/sessionState.js", () => ({
-  notifyPermissionModeChanged: harness.notifyPermissionModeChanged,
-  notifySessionMetadataChanged: harness.notifySessionMetadataChanged,
 }));
 
 vi.mock("../../../src/utils/settings/settings.js", () => ({
@@ -64,40 +47,8 @@ describe("onChangeAppState coverage swarm", () => {
   beforeEach(() => {
     harness.applyConfigEnvironmentVariables.mockReset();
     harness.logError.mockReset();
-    harness.notifyPermissionModeChanged.mockReset();
-    harness.notifySessionMetadataChanged.mockReset();
     harness.setMainLoopModelOverride.mockReset();
     harness.updateSettingsForSource.mockReset();
-  });
-
-  test("hydrates string permission metadata and ignores absent metadata", () => {
-    const previous = makeState({
-      toolPermissionContext: {
-        additionalDirectories: ["/tmp/workspace"],
-        mode: "default",
-      },
-    });
-
-    const hydrated = externalMetadataToAppState({
-      permission_mode: "acceptEdits",
-    })(previous);
-    const unchanged = externalMetadataToAppState({})(previous);
-
-    expect(hydrated.toolPermissionContext).toMatchObject({
-      additionalDirectories: ["/tmp/workspace"],
-      mode: "acceptEdits",
-    });
-    expect(unchanged.toolPermissionContext).toBe(previous.toolPermissionContext);
-  });
-
-  test("notifies raw permission mode changes while suppressing unchanged external metadata", () => {
-    onChangeAppState({
-      oldState: makeState({ toolPermissionContext: { mode: "default" } }),
-      newState: makeState({ toolPermissionContext: { mode: "bubble" } }),
-    });
-
-    expect(harness.notifySessionMetadataChanged).not.toHaveBeenCalled();
-    expect(harness.notifyPermissionModeChanged).toHaveBeenCalledWith("bubble");
   });
 
   test("writes selected models to canonical settings", () => {
@@ -151,8 +102,6 @@ describe("onChangeAppState coverage swarm", () => {
 
     expect(harness.updateSettingsForSource).not.toHaveBeenCalled();
     expect(harness.applyConfigEnvironmentVariables).not.toHaveBeenCalled();
-    expect(harness.notifyPermissionModeChanged).not.toHaveBeenCalled();
-    expect(harness.notifySessionMetadataChanged).not.toHaveBeenCalled();
   });
 
   test("does not reapply the shell environment when its canonical policy is unchanged", () => {

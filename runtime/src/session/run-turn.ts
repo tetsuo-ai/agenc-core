@@ -187,7 +187,6 @@ import {
   queuedCommandWorkspaceView,
   remove as removeFromQueue,
 } from "../utils/messageQueueManager.js";
-import { notifyCommandLifecycle } from "../utils/commandLifecycle.js";
 import { wrapCommandText } from "../utils/messages.js";
 import { asRecord } from "../utils/record.js";
 import { SLEEP_TOOL_NAME } from "../tools/SleepTool/prompt.js";
@@ -1574,7 +1573,6 @@ function drainQueuedCommandsAfterTools(params: {
   readonly ctx: TurnContext;
   readonly querySource: string;
   readonly sleepRan: boolean;
-  readonly consumedCommandUuids: string[];
 }): PhaseEvent[] {
   // Commands in the global input queue belong to fresh Agent turns unless
   // explicitly admitted through the Editor-owned mailbox path. Consuming
@@ -1630,10 +1628,6 @@ function drainQueuedCommandsAfterTools(params: {
             { userMessageId: uuid }),
       },
     });
-    if (typeof command.uuid === "string") {
-      params.consumedCommandUuids.push(command.uuid);
-      notifyCommandLifecycle(command.uuid, "started");
-    }
     if (durableUserPrompt) {
       params.session.emit({
         id: uuid,
@@ -4421,17 +4415,6 @@ async function* runTurnKernelInner(
   let lastContent = "";
   let emptyResponseRetryCount = 0;
   let editorSamplingIterations = 0;
-  const consumedCommandUuids: string[] = [];
-  const completeConsumedCommands = (): void => {
-    for (const uuid of consumedCommandUuids) {
-      notifyCommandLifecycle(uuid, "completed");
-    }
-    consumedCommandUuids.length = 0;
-  };
-  const returnTerminal = (terminal: Terminal): Terminal => {
-    completeConsumedCommands();
-    return terminal;
-  };
   const finishEditorInteractionLimit = async (
     limitKind: "sampling_iterations" | "tool_calls",
     limit: number,
@@ -4504,7 +4487,7 @@ async function* runTurnKernelInner(
     const cancelledAtLoopStart = await finishCancelledIfAborted();
     if (cancelledAtLoopStart !== null) {
       yield cancelledAtLoopStart.event;
-      return returnTerminal(cancelledAtLoopStart.terminal);
+      return cancelledAtLoopStart.terminal;
     }
 
     // Guardian-rejection circuit-breaker interrupt (inspected runtime
@@ -4535,7 +4518,7 @@ async function* runTurnKernelInner(
         usage,
         stopReason: "cancelled",
       };
-      return returnTerminal(terminal);
+      return terminal;
     }
 
     if (
@@ -4548,7 +4531,7 @@ async function* runTurnKernelInner(
         editorSamplingIterations,
       );
       yield limited.event;
-      return returnTerminal(limited.terminal);
+      return limited.terminal;
     }
 
     const maxTurns = resolveMaxTurns(ctx);
@@ -4563,7 +4546,7 @@ async function* runTurnKernelInner(
         usage,
         stopReason: "max_turns",
       };
-      return returnTerminal(terminal);
+      return terminal;
     }
 
     const maxBudgetUsd = ctx.config.maxBudgetUsd;
@@ -4586,7 +4569,7 @@ async function* runTurnKernelInner(
         usage,
         stopReason: "max_budget_usd",
       };
-      return returnTerminal(terminal);
+      return terminal;
     }
 
     // Behavioral backstop (goal #3): the SECOND whole-turn backstop —
@@ -4659,7 +4642,7 @@ async function* runTurnKernelInner(
           usage,
           stopReason: "no_progress",
         };
-        return returnTerminal(terminal);
+        return terminal;
       }
     }
 
@@ -4676,7 +4659,7 @@ async function* runTurnKernelInner(
         usage,
         stopReason: "completed",
       };
-      return returnTerminal(terminal);
+      return terminal;
     }
 
     resetIterationFields(state);
@@ -4721,7 +4704,7 @@ async function* runTurnKernelInner(
           usage,
           stopReason: terminalToStopReason(result.terminal.reason),
         };
-        return returnTerminal(result.terminal);
+        return result.terminal;
       }
     } catch (error) {
       await drainInFlight(state, ctx, session);
@@ -4751,7 +4734,7 @@ async function* runTurnKernelInner(
           stopReason: "cancelled",
           error: underlying,
         };
-        return returnTerminal(terminal);
+        return terminal;
       }
       // T6 gap #119: error-terminated turn still completes the turn
       // boundary for rollout reducers.
@@ -4765,13 +4748,13 @@ async function* runTurnKernelInner(
         stopReason: "error",
         error: underlying,
       };
-      return returnTerminal(terminal);
+      return terminal;
     }
 
     const cancelledAfterSampling = await finishCancelledIfAborted();
     if (cancelledAfterSampling !== null) {
       yield cancelledAfterSampling.event;
-      return returnTerminal(cancelledAfterSampling.terminal);
+      return cancelledAfterSampling.terminal;
     }
 
     // Recovery re-entry? postSampleRecovery or continuationNudge may
@@ -4908,7 +4891,7 @@ async function* runTurnKernelInner(
           stopReason: "error",
           error: underlying,
         };
-        return returnTerminal(terminal);
+        return terminal;
       }
 
       if (!midTurnCompacted) {
@@ -4942,7 +4925,7 @@ async function* runTurnKernelInner(
           stopReason: "error",
           error: underlying,
         };
-        return returnTerminal(terminal);
+        return terminal;
       }
 
       // agenc runtime `client_session.reset_websocket_session()` parity.
@@ -5003,7 +4986,7 @@ async function* runTurnKernelInner(
           stopReason: "error",
           error,
         };
-        return returnTerminal(terminal);
+        return terminal;
       }
       // Reasoning providers can occasionally complete a response after
       // emitting only a reasoning-summary block and no assistant output. A
@@ -5049,7 +5032,7 @@ async function* runTurnKernelInner(
         stopReason,
       };
       await drainPendingExtraction();
-      return returnTerminal(terminal);
+      return terminal;
     }
 
     // GOAL #4b Stage 1 — CB-PostAssistant durable checkpoint. The assistant
@@ -5087,7 +5070,7 @@ async function* runTurnKernelInner(
     const cancelledAfterTools = await finishCancelledIfAborted();
     if (cancelledAfterTools !== null) {
       yield cancelledAfterTools.event;
-      return returnTerminal(cancelledAfterTools.terminal);
+      return cancelledAfterTools.terminal;
     }
     if (lastAssistant) {
       const completedByCallId = new Map(
@@ -5152,7 +5135,7 @@ async function* runTurnKernelInner(
         state.editorToolCallsAdmitted + state.editorToolCallLimitDeniedIds.size,
       );
       yield limited.event;
-      return returnTerminal(limited.terminal);
+      return limited.terminal;
     }
     if (state.preventContinuation) {
       state.toolUseBlocks = [];
@@ -5174,7 +5157,7 @@ async function* runTurnKernelInner(
         stopReason: "completed",
       };
       await drainPendingExtraction();
-      return returnTerminal(terminal);
+      return terminal;
     }
     const drainedQueuedCommandEvents = drainQueuedCommandsAfterTools({
       state,
@@ -5182,7 +5165,6 @@ async function* runTurnKernelInner(
       ctx,
       querySource: turnQuerySource,
       sleepRan,
-      consumedCommandUuids,
     });
     for (const event of drainedQueuedCommandEvents) {
       yield event;
