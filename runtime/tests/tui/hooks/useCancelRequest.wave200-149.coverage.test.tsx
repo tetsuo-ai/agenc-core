@@ -27,7 +27,6 @@ const fixture = vi.hoisted(() => ({
   killAllRunningAgentTasks: vi.fn(),
   markAgentsNotified: vi.fn(),
   enqueuePendingNotification: vi.fn(),
-  emitTaskTerminatedSdk: vi.fn(),
   exitTeammateView: vi.fn(),
   onAgentsKilled: vi.fn(),
   onCancel: vi.fn(),
@@ -111,11 +110,6 @@ vi.mock('../../utils/messageQueueManager.js', () => ({
   hasCommandsInQueue: () => fixture.hasCommandsInQueue,
 }))
 
-vi.mock('../../utils/sdkEventQueue.js', () => ({
-  emitTaskTerminatedSdk: (...args: unknown[]) =>
-    fixture.emitTaskTerminatedSdk(...args),
-}))
-
 function runningAgent(
   id: string,
   description: string,
@@ -189,22 +183,6 @@ describe('CancelRequestHandler teammate-view interrupt coverage', () => {
     expect(fixture.markAgentsNotified).toHaveBeenCalledWith(
       'agent_2',
       expect.any(Function),
-    )
-    expect(fixture.emitTaskTerminatedSdk).toHaveBeenCalledWith(
-      'agent_1',
-      'stopped',
-      {
-        toolUseId: 'tool_1',
-        summary: 'inspect status bar',
-      },
-    )
-    expect(fixture.emitTaskTerminatedSdk).toHaveBeenCalledWith(
-      'agent_2',
-      'stopped',
-      {
-        toolUseId: 'tool_2',
-        summary: 'write summary',
-      },
     )
     expect(fixture.enqueuePendingNotification).toHaveBeenCalledWith({
       value:

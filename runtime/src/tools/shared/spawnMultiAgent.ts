@@ -821,8 +821,6 @@ function registerOutOfProcessTeammateTask(
 
   // When abort is signaled, kill the pane using the backend that created it
   // (tmux kill-pane for tmux panes, it2 session close for iTerm2 native panes).
-  // SDK task_notification bookend is emitted by killInProcessTeammate (the
-  // sole abort trigger for this controller).
   abortController.signal.addEventListener(
     'abort',
     () => {

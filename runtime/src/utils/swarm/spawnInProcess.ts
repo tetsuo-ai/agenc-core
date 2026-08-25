@@ -28,7 +28,6 @@ import { createAbortController } from '../abortController.js'
 import { formatAgentId } from '../agentId.js'
 import { registerCleanup } from '../cleanupRegistry.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { emitTaskTerminatedSdk } from '../sdkEventQueue.js'
 import { evictTaskOutput } from '../task/diskOutput.js'
 import {
   evictTerminalTask,
@@ -247,8 +246,6 @@ export function killInProcessTeammate(
   let killed = false
   let teamName: string | null = null
   let agentId: string | null = null
-  let toolUseId: string | undefined
-  let description: string | undefined
 
   setAppState((prev: AppState) => {
     const task = prev.tasks[taskId]
@@ -265,8 +262,6 @@ export function killInProcessTeammate(
     // Capture identity for cleanup after state update
     teamName = teammateTask.identity.teamName
     agentId = teammateTask.identity.agentId
-    toolUseId = teammateTask.toolUseId
-    description = teammateTask.description
 
     // Abort the controller to stop execution. The per-turn work controller is
     // now a child of this lifecycle controller so it already cascades, but abort
@@ -325,20 +320,11 @@ export function killInProcessTeammate(
 
   if (killed) {
     void evictTaskOutput(taskId)
-    // notified:true was pre-set so no XML notification fires; close the SDK
-    // task_started bookend directly. The in-process runner's own
-    // completion/failure emit guards on status==='running' so it won't
-    // double-emit after seeing status:killed.
-    emitTaskTerminatedSdk(taskId, 'stopped', {
-      toolUseId,
-      summary: description,
-    })
     setTimeout(
       evictTerminalTask.bind(null, taskId, setAppState),
       STOPPED_DISPLAY_MS,
     )
   }
-
 
   return killed
 }

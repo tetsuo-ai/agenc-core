@@ -1008,8 +1008,7 @@ async function* runPowerShellCommand({
   function startBackgrounding(backgroundFn?: (shellId: string) => void): void {
     // If a foreground task is already registered (via registerForeground in the
     // progress loop), background it in-place instead of re-spawning. Re-spawning
-    // would overwrite tasks[taskId], emit a duplicate task_started SDK event,
-    // and leak the first cleanup callback.
+    // would overwrite tasks[taskId] and leak the first cleanup callback.
     if (foregroundTaskId) {
       if (
         !backgroundExistingForegroundTask(

@@ -27,7 +27,6 @@ import {
   getTokenCountFromTracker,
   isLocalAgentTask,
   killAsyncAgent,
-  type ProgressTracker,
   updateAgentProgress as updateAsyncAgentProgress,
   updateAgentSummary as updateAsyncAgentSummary,
   updateProgressFromMessage,
@@ -50,7 +49,6 @@ import {
   buildTranscriptForClassifier,
   classifyYoloAction,
 } from '../../utils/permissions/yoloClassifier.js'
-import { emitTaskProgress as emitTaskProgressEvent } from '../../utils/task/sdkProgress.js'
 import { isInProcessTeammate } from '../../utils/teammateContext.js'
 import { getTokenCountFromUsage } from '../../utils/tokens.js'
 import { EXIT_PLAN_MODE_V2_TOOL_NAME } from '../ExitPlanModeTool/constants.js'
@@ -349,26 +347,6 @@ export function getLastToolUseName(message: MessageType): string | undefined {
   return block?.type === 'tool_use' ? block.name : undefined
 }
 
-export function emitTaskProgress(
-  tracker: ProgressTracker,
-  taskId: string,
-  toolUseId: string | undefined,
-  description: string,
-  startTime: number,
-  lastToolName: string,
-): void {
-  const progress = getProgressUpdate(tracker)
-  emitTaskProgressEvent({
-    taskId,
-    toolUseId,
-    description: progress.lastActivity?.activityDescription ?? description,
-    startTime,
-    totalTokens: progress.tokenCount,
-    toolUses: progress.toolUseCount,
-    lastToolName,
-  })
-}
-
 export async function classifyHandoffIfNeeded({
   agentMessages,
   tools,
@@ -531,17 +509,6 @@ export async function runAsyncAgentLifecycle({
         getProgressUpdate(tracker),
         rootSetAppState,
       )
-      const lastToolName = getLastToolUseName(message)
-      if (lastToolName) {
-        emitTaskProgress(
-          tracker,
-          taskId,
-          toolUseContext.toolUseId,
-          description,
-          metadata.startTime,
-          lastToolName,
-        )
-      }
     }
 
     stopSummarization?.()

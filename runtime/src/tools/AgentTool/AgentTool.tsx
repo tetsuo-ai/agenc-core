@@ -62,7 +62,6 @@ import {
   filterDeniedAgents,
   getDenyRuleForAgent,
 } from "../../utils/permissions/permissions.js";
-import { enqueueSdkEvent } from "../../utils/sdkEventQueue.js";
 import { writeAgentMetadata } from "../../utils/sessionStorage.js";
 import { sessionQueueOwner } from "../../utils/queueOwnership.js";
 import { sleep } from "../../utils/sleep.js";
@@ -88,7 +87,6 @@ import { setAgentColor } from "src/tools/AgentTool/agentColorManager.js";
 import {
   agentToolResultSchema,
   classifyHandoffIfNeeded,
-  emitTaskProgress,
   extractPartialResult,
   finalizeAgentTool,
   getLastToolUseName,
@@ -1299,7 +1297,6 @@ export const AgentTool = buildTool({
 
             // Track if an error occurred during iteration
             let syncAgentError: Error | undefined;
-            let wasAborted = false;
             let worktreeResult: {
               worktreePath?: string;
               worktreeBranch?: string;
@@ -1429,17 +1426,6 @@ export const AgentTool = buildTool({
                             getProgressUpdate(tracker),
                             rootSetAppState,
                           );
-                          const lastToolName = getLastToolUseName(msg);
-                          if (lastToolName) {
-                            emitTaskProgress(
-                              tracker,
-                              backgroundedTaskId,
-                              toolUseContext.toolUseId,
-                              description,
-                              startTime,
-                              lastToolName,
-                            );
-                          }
                         }
                         const agentResult = finalizeAgentTool(
                           agentMessages,
@@ -1576,35 +1562,23 @@ export const AgentTool = buildTool({
                 const message = result.value;
                 agentMessages.push(message);
 
-                // Emit task_progress for the VS Code subagent panel
+                // Track foreground progress for the optional live summarizer.
                 updateProgressFromMessage(
                   syncTracker,
                   message,
                   syncResolveActivity,
                   toolUseContext.options.tools,
                 );
-                if (foregroundTaskId) {
-                  const lastToolName = getLastToolUseName(message);
-                  if (lastToolName) {
-                    emitTaskProgress(
-                      syncTracker,
-                      foregroundTaskId,
-                      toolUseContext.toolUseId,
-                      description,
-                      agentStartTime,
-                      lastToolName,
-                    );
-                    // Keep AppState task.progress in sync when SDK summaries are
-                    // enabled, so updateAgentSummary reads correct token/tool counts
-                    // instead of zeros.
-                    if (getSdkAgentProgressSummariesEnabled()) {
-                      updateAsyncAgentProgress(
-                        foregroundTaskId,
-                        getProgressUpdate(syncTracker),
-                        rootSetAppState,
-                      );
-                    }
-                  }
+                if (
+                  foregroundTaskId &&
+                  getSdkAgentProgressSummariesEnabled() &&
+                  getLastToolUseName(message)
+                ) {
+                  updateAsyncAgentProgress(
+                    foregroundTaskId,
+                    getProgressUpdate(syncTracker),
+                    rootSetAppState,
+                  );
                 }
 
                 // Forward bash_progress events from sub-agent to parent so the SDK
@@ -1667,7 +1641,6 @@ export const AgentTool = buildTool({
               // Handle errors from the sync agent loop
               // AbortError should be re-thrown for proper interruption handling
               if (error instanceof AbortError) {
-                wasAborted = true;
                 throw error;
               }
 
@@ -1692,30 +1665,6 @@ export const AgentTool = buildTool({
               // Unregister foreground task if agent completed without being backgrounded
               if (foregroundTaskId) {
                 unregisterAgentForeground(foregroundTaskId, rootSetAppState);
-                // Notify SDK consumers (e.g. VS Code subagent panel) that this
-                // foreground agent is done. Goes through drainSdkEvents() — does
-                // NOT trigger the print.ts XML task_notification parser or the LLM loop.
-                if (!wasBackgrounded) {
-                  const progress = getProgressUpdate(syncTracker);
-                  enqueueSdkEvent({
-                    type: "system",
-                    subtype: "task_notification",
-                    task_id: foregroundTaskId,
-                    tool_use_id: toolUseContext.toolUseId,
-                    status: syncAgentError
-                      ? "failed"
-                      : wasAborted
-                        ? "stopped"
-                        : "completed",
-                    output_file: "",
-                    summary: description,
-                    usage: {
-                      total_tokens: progress.tokenCount,
-                      tool_uses: progress.toolUseCount,
-                      duration_ms: Date.now() - agentStartTime,
-                    },
-                  });
-                }
               }
 
               // Clean up scoped skills so they don't accumulate in the global map

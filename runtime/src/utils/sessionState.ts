@@ -23,9 +23,7 @@ export type RequiresActionDetails = {
   input?: Record<string, unknown>
 }
 
-import { isEnvTruthy } from './envUtils.js'
 import type { PermissionMode } from './permissions/PermissionMode.js'
-import { enqueueSdkEvent } from './sdkEventQueue.js'
 
 // CCR external_metadata keys — push in onChangeAppState, restore in
 // externalMetadataToAppState.
@@ -113,22 +111,6 @@ export function notifySessionStateChanged(
     metadataListener?.({ task_summary: null })
   }
 
-  // Mirror to the SDK event stream so non-CCR consumers (scmuxd, VS Code)
-  // see the same authoritative idle/running signal the CCR bridge does.
-  // 'idle' fires after heldBackResult flushes — lets scmuxd flip IDLE and
-  // show the bg-task dot instead of a stuck generating spinner.
-  //
-  // Opt-in until CCR web + mobile clients learn to ignore this subtype in
-  // their isWorking() last-message heuristics — the trailing idle event
-  // currently pins them at "Running...".
-  // https://anthropic.slack.com/archives/C093BJBD1CP/p1774152406752229
-  if (isEnvTruthy(process.env.AGENC_EMIT_SESSION_STATE_EVENTS)) {
-    enqueueSdkEvent({
-      type: 'system',
-      subtype: 'session_state_changed',
-      state,
-    })
-  }
 }
 
 export function notifySessionMetadataChanged(

@@ -8,7 +8,6 @@ import { buildTaskNotificationXml } from "../../tasks/taskNotificationXml.js";
 import type { TaskState } from "../../tasks/types.js";
 import { enqueuePendingNotification } from "../messageQueueManager.js";
 import type { SessionQueueOwner } from "../queueOwnership.js";
-import { enqueueSdkEvent } from "../sdkEventQueue.js";
 import { getTaskOutputDelta, getTaskOutputPath } from "./diskOutput.js";
 
 // Standard polling interval for all tasks
@@ -77,10 +76,8 @@ export function updateTaskState<T extends TaskState>(
  * Register a new task in AppState.
  */
 export function registerTask(task: TaskState, setAppState: SetAppState): void {
-  let isReplacement = false;
   setAppState((prev) => {
     const existing = prev.tasks[task.id];
-    isReplacement = existing !== undefined;
     // Carry forward UI-held state on re-register (resumeAgentBackground
     // replaces the task; user's retain shouldn't reset). startTime keeps
     // the panel sort stable; messages + diskLoaded preserve the viewed
@@ -98,23 +95,6 @@ export function registerTask(task: TaskState, setAppState: SetAppState): void {
           }
         : task;
     return { ...prev, tasks: { ...prev.tasks, [task.id]: merged } };
-  });
-
-  // Replacement (resume) — not a new start. Skip to avoid double-emit.
-  if (isReplacement) return;
-
-  enqueueSdkEvent({
-    type: "system",
-    subtype: "task_started",
-    task_id: task.id,
-    tool_use_id: task.toolUseId,
-    description: task.description,
-    task_type: task.type,
-    workflow_name:
-      "workflowName" in task
-        ? (task.workflowName as string | undefined)
-        : undefined,
-    prompt: "prompt" in task ? (task.prompt as string) : undefined,
   });
 }
 

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ConfigStore } from '../../../src/config/store.js'
+import type { ProviderEnvironment } from '../../../src/llm/provider-options.js'
 import { SessionProviderService } from '../../../src/session/provider-service.js'
 import { resolveAgentRuntimeOptions } from '../../../src/session/runtime-options.js'
 import type { Session } from '../../../src/session/session.js'
@@ -105,10 +106,6 @@ vi.mock('../../../src/utils/task/framework.js', () => ({
   evictTerminalTask: vi.fn(),
 }))
 
-vi.mock('../../../src/utils/sdkEventQueue.js', () => ({
-  emitTaskTerminatedSdk: vi.fn(),
-}))
-
 vi.mock('../../../src/utils/teammateMailbox.js', async importOriginal => ({
   ...(await importOriginal<
     typeof import('../../../src/utils/teammateMailbox.js')
@@ -124,7 +121,6 @@ afterEach(() => {
   capture.rolloutStores.length = 0
   capture.failNextRun = false
   capture.lifecycleAbort = undefined
-  delete process.env.AGENC_AUTO_COMPACT_WINDOW
 })
 
 function createAppState(taskId: string, pendingUserMessages: string[]) {
@@ -155,7 +151,11 @@ function teammateIdentity() {
   }
 }
 
-function installSessionAuthorities(parent: Session, cwd: string): ConfigStore {
+function installSessionAuthorities(
+  parent: Session,
+  cwd: string,
+  environment: ProviderEnvironment = {},
+): ConfigStore {
   const home = process.env.AGENC_HOME
   if (home === undefined) throw new Error('test harness did not install AGENC_HOME')
   const configStore = new ConfigStore({
@@ -174,6 +174,7 @@ function installSessionAuthorities(parent: Session, cwd: string): ConfigStore {
       initialProvider: provider,
       initialProviderName: 'grok',
       initialModel: 'grok-4.5',
+      environment,
     }),
   })
   return configStore
@@ -181,7 +182,6 @@ function installSessionAuthorities(parent: Session, cwd: string): ConfigStore {
 
 describe('in-process teammate canonical rollout ownership', () => {
   it('compacts its isolated rollout, continues, and reopens without parent history leakage', async () => {
-    process.env.AGENC_AUTO_COMPACT_WINDOW = '32'
     const { createCompactionTransactionHarness } = await import(
       '../../helpers/compaction-transaction-harness.js'
     )
@@ -204,7 +204,9 @@ describe('in-process teammate canonical rollout ownership', () => {
     ])
     const parent = harness.session
     const parentCwd = harness.store.store.cwd
-    const configStore = installSessionAuthorities(parent, parentCwd)
+    const configStore = installSessionAuthorities(parent, parentCwd, {
+      AGENC_AUTO_COMPACT_WINDOW: '32',
+    })
     const rootAdmission = parent.services.executionAdmission
     if (rootAdmission === undefined) {
       throw new Error('missing parent execution admission')
@@ -302,6 +304,7 @@ describe('in-process teammate canonical rollout ownership', () => {
         cwd: parentCwd,
         sessionId: teammateStore.sessionId,
         agencVersion: '0.13.0',
+        agencHome: configStore.homeContext.path,
         resume: true,
         autoStartScheduler: false,
       })

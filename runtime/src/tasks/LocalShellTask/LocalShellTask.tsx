@@ -92,10 +92,8 @@ function startStallWatchdog(
             cancelled = true;
             clearInterval(timer);
             const summary = `${BACKGROUND_BASH_SUMMARY_PREFIX}"${description}" appears to be waiting for interactive input`;
-            // No <status> tag — print.ts treats <status> as a terminal
-            // signal and an unknown value falls through to 'completed',
-            // falsely closing the task for SDK consumers. Statusless
-            // notifications are skipped by the SDK emitter (progress ping).
+            // This is a progress notification, not a terminal task state, so
+            // it deliberately has no <status> tag.
             const message = `${buildTaskNotificationXml({
               taskId,
               toolUseId,
@@ -463,8 +461,8 @@ export function backgroundAll(
  * Unlike spawn(), this does NOT re-register the task — it flips isBackgrounded
  * on the existing registration and sets up a completion handler.
  * Used when the auto-background timer fires after registerForeground() has
- * already registered the task (avoiding duplicate task_started SDK events
- * and leaked cleanup callbacks).
+ * already registered the task, avoiding an overwritten task and leaked cleanup
+ * callback.
  */
 export function backgroundExistingForegroundTask(
   taskId: string,

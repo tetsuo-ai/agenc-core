@@ -82,7 +82,6 @@ import {
 } from '../permissions/PermissionUpdate.js'
 import type { PermissionUpdate } from '../permissions/PermissionUpdateSchema.js'
 import { hasPermissionsToUseTool } from '../permissions/permissions.js'
-import { emitTaskTerminatedSdk } from '../sdkEventQueue.js'
 import { sleep } from '../sleep.js'
 import { jsonStringify } from '../slowOperations.js'
 import { claimTask, listTasks, type Task, updateTask } from '../tasks.js'
@@ -1741,19 +1740,14 @@ export async function runInProcessTeammate(
     }
 
     // Mark as completed when exiting the loop
-    let alreadyTerminal = false
-    let toolUseId: string | undefined
     updateTaskState(
       taskId,
       task => {
         // killInProcessTeammate may have already set status:killed +
-        // notified:true + cleared fields. Don't overwrite (would flip
-        // killed → completed and double-emit the SDK bookend).
+        // notified:true + cleared fields. Don't overwrite it.
         if (task.status !== 'running') {
-          alreadyTerminal = true
           return task
         }
-        toolUseId = task.toolUseId
         task.onIdleCallbacks?.forEach(cb => cb())
         task.unregisterCleanup?.()
         return {
@@ -1775,14 +1769,6 @@ export async function runInProcessTeammate(
     void evictTaskOutput(taskId)
     // Eagerly evict task from AppState since it's been consumed
     evictTerminalTask(taskId, setAppState)
-    // notified:true pre-set → no XML notification → print.ts won't emit
-    // the SDK task_notification. Close the task_started bookend directly.
-    if (!alreadyTerminal) {
-      emitTaskTerminatedSdk(taskId, 'completed', {
-        toolUseId,
-        summary: identity.agentId,
-      })
-    }
 
     return { success: true, messages: allMessages }
   } catch (error) {
@@ -1794,16 +1780,12 @@ export async function runInProcessTeammate(
     )
 
     // Mark task as failed and notify any waiters
-    let alreadyTerminal = false
-    let toolUseId: string | undefined
     updateTaskState(
       taskId,
       task => {
         if (task.status !== 'running') {
-          alreadyTerminal = true
           return task
         }
-        toolUseId = task.toolUseId
         task.onIdleCallbacks?.forEach(cb => cb())
         task.unregisterCleanup?.()
         return {
@@ -1827,13 +1809,6 @@ export async function runInProcessTeammate(
     void evictTaskOutput(taskId)
     // Eagerly evict task from AppState since it's been consumed
     evictTerminalTask(taskId, setAppState)
-    // notified:true pre-set → no XML notification → close SDK bookend directly.
-    if (!alreadyTerminal) {
-      emitTaskTerminatedSdk(taskId, 'failed', {
-        toolUseId,
-        summary: identity.agentId,
-      })
-    }
 
     // Send idle notification with failure via file-based mailbox
     await sendIdleNotification(

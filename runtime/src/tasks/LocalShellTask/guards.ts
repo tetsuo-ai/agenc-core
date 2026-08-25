@@ -1,6 +1,6 @@
-// Pure type + type guard for LocalShellTask state.
-// Extracted from LocalShellTask.tsx so non-React consumers (stopTask.ts via
-// print.ts) don't pull React/ink into the module graph.
+// Pure type + type guard for LocalShellTask state. Kept outside the React
+// component module so task-lifecycle consumers do not pull React/Ink into
+// their module graph.
 
 import type { TaskStateBase } from "../Task.js";
 import type { AgentId } from "../../types/ids.js";
