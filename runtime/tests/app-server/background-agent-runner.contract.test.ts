@@ -23,6 +23,7 @@ import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,
 } from "../permissions/types.js";
+import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import { JSON_RPC_VERSION } from "./protocol/index.js";
 import { requestApproval } from "../tools/orchestrator.js";
 import type { CsvAgentJobsRepositoryProvider } from "./csv-agent-jobs-authority.js";
@@ -209,6 +210,7 @@ function makeTopLevelRunner(opts: {
     readonly totalTokens: number;
   };
   readonly canonicalRuntimeSettings?: boolean;
+  readonly userPromptSubmitHooks?: readonly UserPromptSubmitHook[];
 }) {
   const shutdownImpl = opts.bootstrapShutdown ?? vi.fn(async () => {});
   const durableOperations = new Set<Promise<unknown>>();
@@ -307,7 +309,9 @@ function makeTopLevelRunner(opts: {
       model: sessionState.sessionConfiguration.collaborationMode.model,
     }),
   };
+  let nextInternalSubId = 0;
   const session = {
+    abortController: new AbortController(),
     conversationId: opts.conversationId,
     providerService,
     permissionModeRegistry,
@@ -370,6 +374,8 @@ function makeTopLevelRunner(opts: {
     emitPhaseEvent: (phase: unknown) => {
       for (const listener of [...phaseSubscribers]) listener(phase);
     },
+    nextInternalSubId: () =>
+      `background-runner-hook-${(nextInternalSubId += 1)}`,
     emitSessionEvent: (event: unknown) => {
       const sequence = (event as { seq?: unknown }).seq;
       if (typeof sequence === "number" && Number.isSafeInteger(sequence)) {
@@ -393,7 +399,13 @@ function makeTopLevelRunner(opts: {
       return stamped;
     }),
     rolloutStore,
-    services: { conversationThreadManager: stub, providerService },
+    services: {
+      conversationThreadManager: stub,
+      providerService,
+      hooks: {
+        userPromptSubmitHooks: [...(opts.userPromptSubmitHooks ?? [])],
+      },
+    },
   };
   if (opts.hydrateStateWith !== undefined) {
     Object.assign(session, { state: { with: opts.hydrateStateWith } });
@@ -3079,10 +3091,15 @@ describe("AgenC delegate background-agent runner", () => {
 
     expect(result.agentId).toBe("session-storm-fix");
     expect(result.status).toBe("running");
-    expect(stub.thread.submit).toHaveBeenCalledWith({
-      type: "user_input",
-      input: "hi",
-    });
+    expect(stub.thread.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "user_input",
+        input: "hi",
+        submitOptions: expect.objectContaining({
+          displayUserMessage: "hi",
+        }),
+      }),
+    );
     const submittedInput = stub.thread.submit.mock.calls[0]?.[0];
     expect(JSON.stringify(submittedInput)).not.toContain(
       "You are a subagent spawned",
@@ -3108,16 +3125,53 @@ describe("AgenC delegate background-agent runner", () => {
     });
 
     expect(stub.thread.submit).toHaveBeenCalledTimes(1);
-    expect(stub.thread.submit.mock.calls[0]?.[0]).toEqual({
-      type: "user_input",
-      input: [
-        { type: "text", text: "hello" },
-        {
-          type: "image_url",
-          image_url: { url: "data:image/png;base64,iVBOR" },
-        },
-      ],
+    expect(stub.thread.submit.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({
+        type: "user_input",
+        input: [
+          { type: "text", text: "hello" },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,iVBOR" },
+          },
+        ],
+        submitOptions: expect.objectContaining({
+          displayUserMessage: "hello\n[image]",
+        }),
+      }),
+    );
+  });
+
+  it("[managed-thread] runs initial prompt hooks against initialContent rather than the objective", async () => {
+    const inspectHook = vi.fn(() => ({}));
+    const { runner, stub } = makeTopLevelRunner({
+      conversationId: "session-initial-content-hook-authority",
+      userPromptSubmitHooks: [inspectHook],
     });
+
+    await runner.startAgent({
+      objective: "benign routing label",
+      initialContent: "actual raw initial model input",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    expect(inspectHook).toHaveBeenCalledOnce();
+    expect(inspectHook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "actual raw initial model input",
+        sessionId: "session-initial-content-hook-authority",
+      }),
+    );
+    expect(inspectHook).not.toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: "benign routing label" }),
+    );
+    expect(stub.thread.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "user_input",
+        input: [{ type: "text", text: "actual raw initial model input" }],
+      }),
+    );
   });
 
   it("[managed-thread] carries validated Editor policy into the atomic first turn", async () => {
@@ -3196,6 +3250,87 @@ describe("AgenC delegate background-agent runner", () => {
     expect(stub.thread.submit).not.toHaveBeenCalled();
   });
 
+  it("[managed-thread] rejects blocked initial prompt ingress before durable turn activation", async () => {
+    const blockHook = vi.fn(() => ({
+      blockingError: { blockingError: "initial prompt denied" },
+    }));
+    const { runner, session, control, stub, rolloutStore, shutdown } =
+      makeTopLevelRunner({
+        conversationId: "session-initial-prompt-blocked",
+        userPromptSubmitHooks: [blockHook],
+      });
+
+    await expect(
+      runner.startAgent({
+        objective: "blocked initial prompt",
+        unattendedAllow: [],
+        unattendedDeny: [],
+      }),
+    ).rejects.toMatchObject({
+      code: "PROMPT_BLOCKED",
+      message: expect.stringContaining("initial prompt denied"),
+    });
+
+    expect(blockHook).toHaveBeenCalledOnce();
+    expect(blockHook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "blocked initial prompt",
+        sessionId: "session-initial-prompt-blocked",
+      }),
+    );
+    const emittedTypes = vi.mocked(session.emit).mock.calls.map(([event]) =>
+      (event as { msg?: { type?: unknown } }).msg?.type,
+    );
+    expect(emittedTypes).not.toContain("user_message");
+    expect(rolloutStore.recordRunStartupActivationEvent).not.toHaveBeenCalled();
+    expect(stub.thread.submit).not.toHaveBeenCalled();
+    expect(control.sendInput).not.toHaveBeenCalled();
+    expect(shutdown).toHaveBeenCalledOnce();
+  });
+
+  it("[managed-thread] buffers initial prompt warnings for canonical delivery after attach", async () => {
+    const throwingHook = vi.fn(() => {
+      throw new Error("startup prompt hook exploded");
+    });
+    const { runner, stub } = makeTopLevelRunner({
+      conversationId: "session-initial-prompt-warning",
+      userPromptSubmitHooks: [throwingHook],
+    });
+    const emitted: JsonObject[] = [];
+
+    await runner.startAgent({
+      objective: "continue after non-blocking hook failure",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-initial-prompt-warning", {
+      sessionId: "session_1",
+      emit: async (notification) => {
+        emitted.push(notification);
+      },
+    });
+
+    expect(throwingHook).toHaveBeenCalledOnce();
+    expect(stub.thread.submit).toHaveBeenCalledOnce();
+    expect(emitted).toContainEqual(
+      expect.objectContaining({
+        jsonrpc: JSON_RPC_VERSION,
+        method: "event.session_event",
+        params: expect.objectContaining({
+          sessionId: "session_1",
+          agentId: "session-initial-prompt-warning",
+          event: expect.objectContaining({
+            type: "warning",
+            payload: expect.objectContaining({
+              cause: "user_prompt_submit_hook_threw",
+              message: expect.stringContaining("startup prompt hook exploded"),
+            }),
+          }),
+        }),
+      }),
+    );
+  });
+
   it("[managed-thread] defers a cold Editor session without a model turn or Agent startup side effects", async () => {
     const { runner, stub, bootstrap } = makeTopLevelRunner({
       conversationId: "session-cold-editor-prediction",
@@ -3272,8 +3407,118 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.sendInput).toHaveBeenCalledWith(
       "session-user-order",
       "continue",
+      expect.objectContaining({ displayUserMessage: "continue" }),
     );
     expect(emitted).toHaveLength(1);
+  });
+
+  it("[managed-thread] rejects blocked follow-up ingress before durable user-message and run activation", async () => {
+    const blockHook = vi.fn(() => ({
+      blockingError: { blockingError: "follow-up prompt denied" },
+    }));
+    const { runner, session, control, stub, rolloutStore } =
+      makeTopLevelRunner({
+        conversationId: "session-follow-up-prompt-blocked",
+        userPromptSubmitHooks: [blockHook],
+      });
+    await runner.startAgent({
+      objective: "passive hook test",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    vi.mocked(session.emit).mockClear();
+    rolloutStore.recordRunStartupActivationEvent.mockClear();
+
+    await expect(
+      runner.submitAgentMessage("session-follow-up-prompt-blocked", {
+        sessionId: "session_1",
+        content: "blocked follow-up prompt",
+        originalContent: "blocked follow-up prompt",
+        messageId: "blocked-follow-up-message",
+        streamId: "blocked-follow-up-stream",
+        acceptedAt: "2026-08-25T00:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({
+      code: "PROMPT_BLOCKED",
+      message: expect.stringContaining("follow-up prompt denied"),
+    });
+
+    expect(blockHook).toHaveBeenCalledOnce();
+    expect(blockHook).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "blocked follow-up prompt",
+        sessionId: "session-follow-up-prompt-blocked",
+      }),
+    );
+    const emittedTypes = vi.mocked(session.emit).mock.calls.map(([event]) =>
+      (event as { msg?: { type?: unknown } }).msg?.type,
+    );
+    expect(emittedTypes).not.toContain("user_message");
+    expect(rolloutStore.recordRunStartupActivationEvent).not.toHaveBeenCalled();
+    expect(stub.thread.submit).not.toHaveBeenCalled();
+    expect(control.sendInput).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] applies owning-session hook context to follow-up model input exactly once", async () => {
+    const contextHook = vi.fn(() => ({
+      additionalContexts: ["session-owned daemon context"],
+    }));
+    const { runner, session, control } = makeTopLevelRunner({
+      conversationId: "session-follow-up-hook-context",
+      userPromptSubmitHooks: [contextHook],
+    });
+    await runner.startAgent({
+      objective: "passive hook test",
+      initialContent: [],
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    await expect(
+      runner.submitAgentMessage("session-follow-up-hook-context", {
+        sessionId: "session_1",
+        content: "allowed follow-up prompt",
+        originalContent: "allowed follow-up prompt",
+        messageId: "allowed-follow-up-message",
+        streamId: "allowed-follow-up-stream",
+        acceptedAt: "2026-08-25T00:00:01.000Z",
+      }),
+    ).resolves.toMatchObject({ disposition: "started" });
+
+    expect(contextHook).toHaveBeenCalledOnce();
+    expect(contextHook).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: "allowed follow-up prompt" }),
+    );
+    expect(control.sendInput).toHaveBeenCalledTimes(1);
+    expect(control.sendInput).toHaveBeenCalledWith(
+      "session-follow-up-hook-context",
+      expect.stringContaining("session-owned daemon context"),
+      expect.objectContaining({
+        displayUserMessage: "allowed follow-up prompt",
+      }),
+    );
+    const sendInputCalls = control.sendInput.mock.calls as unknown as ReadonlyArray<
+      readonly unknown[]
+    >;
+    const modelInput = sendInputCalls[0]?.[1];
+    expect(typeof modelInput).toBe("string");
+    expect(String(modelInput).match(/session-owned daemon context/g)).toHaveLength(
+      1,
+    );
+    expect(session.emit).toHaveBeenCalledWith({
+      id: "allowed-follow-up-message",
+      msg: {
+        type: "user_message",
+        payload: {
+          message: "allowed follow-up prompt",
+          displayText: "allowed follow-up prompt",
+          messageId: "allowed-follow-up-message",
+          streamId: "allowed-follow-up-stream",
+          acceptedAt: "2026-08-25T00:00:01.000Z",
+        },
+      },
+    });
   });
 
   it("[managed-thread] correlates every live turn surface to one admitted message", async () => {
@@ -3784,6 +4029,7 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.sendInput).toHaveBeenCalledWith(
       "session-strict-busy",
       "legacy queued turn",
+      expect.objectContaining({ displayUserMessage: "legacy queued turn" }),
     );
   });
 
@@ -3815,6 +4061,7 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.sendInput).toHaveBeenCalledWith(
       "session-deferred-first-send",
       "first user message",
+      expect.objectContaining({ displayUserMessage: "first user message" }),
     );
   });
 
@@ -4034,6 +4281,7 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.sendInput).toHaveBeenCalledWith(
       "session-user-durable",
       "second visible prompt",
+      expect.objectContaining({ displayUserMessage: "second visible prompt" }),
     );
     expect(emitted).toHaveLength(1);
     expect(session.emit).toHaveBeenCalledWith({
@@ -4115,10 +4363,15 @@ describe("AgenC delegate background-agent runner", () => {
       unattendedAllow: [],
       unattendedDeny: [],
     });
-    expect(stub.thread.submit).toHaveBeenCalledWith({
-      type: "user_input",
-      input: "audit first prompt",
-    });
+    expect(stub.thread.submit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "user_input",
+        input: "audit first prompt",
+        submitOptions: expect.objectContaining({
+          displayUserMessage: "audit first prompt",
+        }),
+      }),
+    );
 
     await runner.attachAgentSessionEvents("session-objective-first-prompt", {
       sessionId: "session_1",
@@ -4319,6 +4572,7 @@ describe("AgenC delegate background-agent runner", () => {
     expect(control.sendInput).toHaveBeenCalledWith(
       "session-cancelled-turn-status",
       "continue after cancel",
+      expect.objectContaining({ displayUserMessage: "continue after cancel" }),
     );
   });
 

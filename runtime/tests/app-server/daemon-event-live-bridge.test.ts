@@ -91,6 +91,32 @@ describe("daemon live bridge for usage and tool-input events", () => {
     });
   });
 
+  it("forwards canonical runtime warnings with their persisted identity", () => {
+    const daemonEvent = daemonEventFromUnboundSessionEvent({
+      eventId: "journal-warning-1",
+      id: "warning-1",
+      seq: 13,
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "user_prompt_submit_hook_threw",
+          message: "UserPromptSubmit hook 0 threw: hook boom",
+        },
+      },
+    });
+
+    expect(daemonEvent).toEqual({
+      id: "warning-1",
+      eventId: "journal-warning-1",
+      sequence: 13,
+      type: "warning",
+      payload: {
+        cause: "user_prompt_submit_hook_threw",
+        message: "UserPromptSubmit hook 0 threw: hook boom",
+      },
+    });
+  });
+
   it("still drops malformed tool_input payloads", () => {
     expect(
       daemonEventFromUnboundSessionEvent({

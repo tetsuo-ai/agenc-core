@@ -21,6 +21,10 @@ import type { AgentControl } from "../agents/control.js";
 import { MailboxClosedError } from "../agents/mailbox.js";
 import { runTurn } from "../session/run-turn.js";
 import {
+  prepareUserPromptForTurn,
+  userPromptDisplayText,
+} from "../hooks/user-prompt-ingress.js";
+import {
   ROOT_AGENT_PATH,
   joinAgentPath,
   normalizeAgentMetadata,
@@ -375,7 +379,9 @@ export interface AgenCBackgroundAgentMessageTerminal extends JsonObject {
 }
 
 export type AgenCBackgroundAgentMessageErrorCode =
-  "TURN_IN_PROGRESS" | "CLIENT_MESSAGE_ID_CONFLICT";
+  | "TURN_IN_PROGRESS"
+  | "CLIENT_MESSAGE_ID_CONFLICT"
+  | "PROMPT_BLOCKED";
 
 export class AgenCBackgroundAgentMessageError extends Error {
   readonly code: AgenCBackgroundAgentMessageErrorCode;
@@ -386,6 +392,14 @@ export class AgenCBackgroundAgentMessageError extends Error {
     this.code = code;
   }
 }
+
+const DAEMON_USER_PROMPT_PREPARED: unique symbol = Symbol(
+  "agenc.daemon-user-prompt-prepared",
+);
+
+type DaemonSessionSubmitOptions = SessionSubmitOptions & {
+  readonly [DAEMON_USER_PROMPT_PREPARED]?: true;
+};
 
 export interface AgenCBackgroundAgentClearSessionParams {
   readonly sessionId: string;
@@ -1070,7 +1084,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const uninstallApprovalBridge = this.#installDaemonApprovalBridge(
       bootstrap.session,
     );
-    installDaemonTurnDriverHooks(bootstrap.session);
+    installDaemonTurnDriverHooks(bootstrap.session, bootstrap.configStore);
 
     try {
       const { control } = this.#ensureAgentControl(bootstrap.session);
@@ -1149,6 +1163,16 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         );
       }
 
+      const taskContent =
+        params.deferInitialTurn === true
+          ? []
+          : messageContentToLlmParts(params.initialContent);
+      const firstInput: string | readonly LLMContentPart[] =
+        taskContent ?? params.objective;
+      const hasFirstInput =
+        typeof firstInput === "string"
+          ? firstInput.trim().length > 0
+          : firstInput.length > 0;
       const startedAt = this.#now();
       const active: ActiveBackgroundAgent = {
         bootstrap,
@@ -1180,6 +1204,29 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         messageSubmissionsById: new Map(),
         dispatchChain: Promise.resolve(),
       };
+      // Prompt preparation emits canonical warnings and errors. Subscribe as
+      // soon as the unpublished active record exists so those events are
+      // buffered for the eventual attach instead of falling into the gap
+      // between bootstrap and active-map publication.
+      active.unsubscribeElicitationEvents =
+        this.#installSessionEventLogBridge(active);
+
+      let preparedFirstInput = firstInput;
+      if (hasFirstInput && params.initialEditorInteraction === undefined) {
+        const prepared = await prepareDaemonUserPrompt({
+          session: bootstrap.session,
+          configStore: bootstrap.configStore,
+          input: firstInput,
+        });
+        if (prepared.blocked) {
+          throw new AgenCBackgroundAgentMessageError(
+            "PROMPT_BLOCKED",
+            prepared.blockMessage ?? "UserPromptSubmit hook blocked the prompt",
+          );
+        }
+        preparedFirstInput = prepared.input;
+      }
+
       if (supportsCanonicalRuntimeSettings(active)) {
         const initialRuntimeSettings = captureRuntimeSettings(active, {
           permissionContext: initialInteractivePermissionContext,
@@ -1203,8 +1250,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       active.unsubscribeMcpSurfaceInvalidations =
         this.#installMcpSurfaceInvalidationBridge(active);
       this.#installDurableTerminalFinalizer(active, managedThread.threadId);
-      active.unsubscribeElicitationEvents =
-        this.#installSessionEventLogBridge(active);
       this.#trackAgentStatus(active);
       // Phase events update runner-local bookkeeping only. Canonical live
       // delivery comes from Session.EventLog so replay and live clients see
@@ -1226,16 +1271,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       // session.submit(input) → runTurn. No directive, no fork, no
       // AgentTool dispatcher. This mirrors the upstream `turn_start`
       // shape for the first message.
-      const taskContent =
-        params.deferInitialTurn === true
-          ? []
-          : messageContentToLlmParts(params.initialContent);
-      const firstInput: string | readonly LLMContentPart[] =
-        taskContent ?? params.objective;
-      const hasFirstInput =
-        typeof firstInput === "string"
-          ? firstInput.trim().length > 0
-          : firstInput.length > 0;
       if (hasFirstInput) {
         // Emit the user_message daemon event for the initial content so
         // the TUI transcript can render it. Turn 2+ goes through
@@ -1267,29 +1302,25 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             });
           }
         }
-        const firstSubmitOptions =
-          params.initialDisplayUserMessage === undefined &&
-          params.initialEditorInteraction === undefined
-            ? undefined
-            : {
-                ...(params.initialDisplayUserMessage !== undefined
-                  ? {
-                      displayUserMessage: params.initialDisplayUserMessage,
-                    }
-                  : {}),
-                ...(params.initialEditorInteraction !== undefined
-                  ? {
-                      editorInteraction: params.initialEditorInteraction,
-                    }
-                  : {}),
-              };
+        const firstSubmitOptions: DaemonSessionSubmitOptions = {
+          ...(params.initialEditorInteraction === undefined
+            ? { [DAEMON_USER_PROMPT_PREPARED]: true as const }
+            : {}),
+          displayUserMessage:
+            params.initialDisplayUserMessage === undefined
+              ? messageContentDisplayText(transcriptContent)
+              : params.initialDisplayUserMessage,
+          ...(params.initialEditorInteraction !== undefined
+            ? {
+                editorInteraction: params.initialEditorInteraction,
+              }
+            : {}),
+        };
         void managedThread
           .submit({
             type: "user_input",
-            input: firstInput,
-            ...(firstSubmitOptions !== undefined
-              ? { submitOptions: firstSubmitOptions }
-              : {}),
+            input: preparedFirstInput,
+            submitOptions: firstSubmitOptions,
           })
           .catch(() => {
             /* first-turn submission errors surface via session events */
@@ -1471,7 +1502,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         uninstallApprovalBridge = this.#installDaemonApprovalBridge(
           bootstrap.session,
         );
-        installDaemonTurnDriverHooks(bootstrap.session);
+        installDaemonTurnDriverHooks(bootstrap.session, bootstrap.configStore);
         const { control } = this.#ensureAgentControl(bootstrap.session);
         await installUnattendedPermissionPolicy(
           bootstrap.session.permissionModeRegistry,
@@ -2321,7 +2352,24 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     params: AgenCBackgroundAgentMessageParams,
     submission: ActiveMessageSubmission,
   ): Promise<AgenCBackgroundAgentMessageResult> {
-    const input = messageContentToAgentInput(params.content);
+    let input = messageContentToAgentInput(params.content);
+    if (params.editorInteraction === undefined) {
+      const prepared = await prepareDaemonUserPrompt({
+        session: active.bootstrap.session,
+        configStore: active.bootstrap.configStore,
+        input,
+        hookPrompt: userPromptDisplayText(
+          messageContentToAgentInput(params.originalContent),
+        ),
+      });
+      if (prepared.blocked) {
+        throw new AgenCBackgroundAgentMessageError(
+          "PROMPT_BLOCKED",
+          prepared.blockMessage ?? "UserPromptSubmit hook blocked the prompt",
+        );
+      }
+      input = prepared.input;
+    }
     commitDurableRunStartupActivation(active, agentId, this.#now());
     active.lastActiveAt = this.#now();
     if (params.displayUserMessage === null) {
@@ -2362,22 +2410,26 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         },
       });
     }
+    const submitOptions: DaemonSessionSubmitOptions = {
+      ...(params.editorInteraction === undefined
+        ? { [DAEMON_USER_PROMPT_PREPARED]: true as const }
+        : {}),
+      displayUserMessage:
+        params.displayUserMessage === undefined
+          ? messageContentDisplayText(params.originalContent)
+          : params.displayUserMessage,
+      ...(params.editorInteraction !== undefined
+        ? { editorInteraction: params.editorInteraction }
+        : {}),
+    };
     if (typeof input === "string") {
-      await active.control.sendInput(
-        agentId,
-        input,
-        ...(params.editorInteraction === undefined
-          ? []
-          : [{ editorInteraction: params.editorInteraction }]),
-      );
+      await active.control.sendInput(agentId, input, submitOptions);
     } else {
       await submitStructuredAgentInput(
         active,
         input,
         messageContentDisplayText(params.content),
-        ...(params.editorInteraction === undefined
-          ? []
-          : [{ editorInteraction: params.editorInteraction }]),
+        submitOptions,
       );
     }
     await active.dispatchChain;
@@ -5804,6 +5856,7 @@ function toolRequestInputFromPayload(
  *   - durable user transcript messages emitted by runtime turns
  *   - collab-agent lifecycle events emitted by `spawn_agent`,
  *     `wait_agent`, `send_message`, and `close_agent`
+ *   - runtime warnings emitted before or during a turn
  *   - streaming tool progress chunks (`tool_progress`)
  *   - extended-thinking + reasoning-summary streaming events
  *     (`assistant_thinking_block_start`/`delta`/`block_stop`,
@@ -5840,6 +5893,7 @@ const CANONICAL_CORE_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   "turn_started",
   "turn_complete",
   "turn_aborted",
+  "warning",
   "error",
   "stream_error",
   "effect_intent",
@@ -7707,6 +7761,24 @@ function messageContentToAgentInput(
   });
 }
 
+function prepareDaemonUserPrompt(params: {
+  readonly session: Session;
+  readonly configStore: LocalRuntimeBootstrap["configStore"];
+  readonly input: string | readonly LLMContentPart[];
+  readonly hookPrompt?: string;
+}) {
+  return runWithCurrentRuntimeSession(params.session, () =>
+    prepareUserPromptForTurn({
+      session: params.session,
+      configStore: params.configStore,
+      input: params.input,
+      ...(params.hookPrompt !== undefined
+        ? { hookPrompt: params.hookPrompt }
+        : {}),
+    }),
+  );
+}
+
 async function submitStructuredAgentInput(
   active: ActiveBackgroundAgent,
   input: readonly LLMContentPart[],
@@ -7898,27 +7970,20 @@ function buildBootstrapArgv(
   );
 }
 
-// Install the minimal turnDriverHooks the daemon path needs so
-// session.submit(input) actually drives a turn. The non-daemon TUI
-// path installs a richer hook in bin/agenc.ts:1274 (autonomous keep-
-// alive, slash-command routing, prepared prompt). The daemon doesn't
-// have those concerns — its job is to drive runTurn for each user
-// input and emit phase events. Phase events flow out via
-// session.subscribeToEvents which background-agent-runner already
-// subscribed to in startAgent/restoreAgent.
+// Install the daemon turn driver. Prompt ingress normally runs before durable
+// message publication, while this driver retains the same authority for direct
+// Session.submit callers that do not cross the daemon message boundary.
 function installDaemonTurnDriverHooks(
   session: LocalRuntimeBootstrap["session"],
+  configStore: LocalRuntimeBootstrap["configStore"],
+  runTurnFn: typeof runTurn = runTurn,
 ): void {
   const installer = (
     session as unknown as {
       installTurnDriverHooks?: (hooks: {
         readonly submit: (
           message: string | readonly LLMContentPart[],
-          opts?: {
-            readonly source?: string;
-            readonly displayUserMessage?: string | null;
-            readonly editorInteraction?: SessionEditorInteraction;
-          },
+          opts?: DaemonSessionSubmitOptions,
         ) => Promise<void>;
         readonly flushEventLog?: () => Promise<void> | void;
       }) => void;
@@ -7927,6 +7992,29 @@ function installDaemonTurnDriverHooks(
   if (typeof installer !== "function") return;
   installer.call(session, {
     submit: async (message, opts) => {
+      let turnInput = message;
+      let promptDisplayText =
+        typeof message === "string"
+          ? message
+          : userPromptDisplayText(message);
+      if (
+        opts?.editorInteraction === undefined &&
+        opts?.[DAEMON_USER_PROMPT_PREPARED] !== true
+      ) {
+        const prepared = await prepareDaemonUserPrompt({
+          session,
+          configStore,
+          input: message,
+        });
+        if (prepared.blocked) {
+          throw new AgenCBackgroundAgentMessageError(
+            "PROMPT_BLOCKED",
+            prepared.blockMessage ?? "UserPromptSubmit hook blocked the prompt",
+          );
+        }
+        turnInput = prepared.input;
+        promptDisplayText = prepared.displayInput ?? promptDisplayText;
+      }
       const baseCtx = (
         session as unknown as { newDefaultTurn: () => unknown }
       ).newDefaultTurn();
@@ -7940,12 +8028,7 @@ function installDaemonTurnDriverHooks(
       const rootHumanTurnText =
         opts?.source !== "autonomous_tick" && opts?.displayUserMessage !== null
           ? (opts?.displayUserMessage ??
-            (typeof message === "string"
-              ? message
-              : message
-                  .map((part) => (part.type === "text" ? part.text : ""))
-                  .filter((part) => part.trim().length > 0)
-                  .join("\n")))
+            promptDisplayText)
           : undefined;
       // displayUserMessage: null suppresses the run-turn user_message
       // emit. On the daemon path, submitAgentMessage above already
@@ -7953,10 +8036,10 @@ function installDaemonTurnDriverHooks(
       // metadata threaded through from the TUI). Without this guard
       // both emits fire with different ids, so the transcript-reducer
       // (which dedups by id) renders the user message twice.
-      for await (const event of runTurn(
+      for await (const event of runTurnFn(
         session as never,
         ctx as never,
-        message,
+        turnInput,
         {
           // This runner owns a root ManagedThread fed by daemon/phone human input. Bootstrap may
           // carry an agent-scoped querySource, which would make runTurn treat the same human prompt
@@ -7986,6 +8069,9 @@ function installDaemonTurnDriverHooks(
     },
   });
 }
+
+export const __installDaemonTurnDriverHooksForTest =
+  installDaemonTurnDriverHooks;
 
 async function installUnattendedPermissionPolicy(
   registry: PermissionModeRegistry,

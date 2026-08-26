@@ -150,6 +150,38 @@ describe("hook authority regressions", () => {
     ).toHaveLength(1);
   });
 
+  test("prompt ingress reuses the sole configured hook runtime authority", () => {
+    const configuredRuntimeConstructionSites = productionSources(SOURCE_ROOT)
+      .flatMap((path) => {
+        const contents = readFileSync(path, "utf8");
+        return Array.from(
+          contents.matchAll(/\bnew\s+ConfiguredHooksRuntime\s*\(/gu),
+          () => relative(SOURCE_ROOT, path).replaceAll("\\", "/"),
+        );
+      })
+      .sort();
+    expect(configuredRuntimeConstructionSites).toEqual([
+      "bin/bootstrap-services.ts",
+    ]);
+
+    const cliOwner = source("bin/agenc-main.ts");
+    expect(cliOwner).not.toMatch(/\bConfiguredHooksRuntime\b/u);
+    expect(cliOwner).not.toMatch(/\bSandboxExecutionBroker\b/u);
+    expect(cliOwner).not.toMatch(/\bcreateOneShotHookTarget\b/u);
+    expect(cliOwner).not.toMatch(/\bprepareOneShotPromptForDaemon\b/u);
+
+    for (const ingressOwner of [
+      "bin/agenc-main.ts",
+      "app-server/background-agent-runner.ts",
+    ]) {
+      const contents = source(ingressOwner);
+      expect(contents).toMatch(
+        /from\s+["']\.\.\/hooks\/user-prompt-ingress\.js["']/u,
+      );
+      expect(contents).toMatch(/\bprepareUserPromptForTurn\s*\(/u);
+    }
+  });
+
   test("obsolete config snapshot and file watcher are deleted", () => {
     expect(
       existsSync(resolve(SOURCE_ROOT, "utils/hooks/hooksConfigSnapshot.ts")),

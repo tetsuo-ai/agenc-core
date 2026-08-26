@@ -54,7 +54,10 @@ import type {
   AgenCBackgroundAgentSessionEventBinding,
   AgenCBackgroundAgentStartParams,
 } from "./background-agent-runner.js";
-import { AgenCBackgroundAgentSuspensionShutdownError } from "./background-agent-runner.js";
+import {
+  AgenCBackgroundAgentMessageError,
+  AgenCBackgroundAgentSuspensionShutdownError,
+} from "./background-agent-runner.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 
 function sequence(values: readonly string[]): () => string {
@@ -5269,6 +5272,73 @@ describe("AgenC background agent lifecycle", () => {
     await expect(
       createTestAgent(agents, { cwd: process.cwd(), objective: "   " }),
     ).rejects.toBeInstanceOf(AgenCDaemonAgentLifecycleError);
+  });
+
+  it("translates a startup prompt block into a lifecycle error", async () => {
+    const agents = new AgenCDaemonAgentManager({
+      runner: {
+        startAgent: async () => {
+          throw new AgenCBackgroundAgentMessageError(
+            "PROMPT_BLOCKED",
+            "startup prompt blocked by hook",
+          );
+        },
+      },
+    });
+
+    await expect(
+      createTestAgent(agents, {
+        cwd: process.cwd(),
+        objective: "blocked startup prompt",
+      }),
+    ).rejects.toMatchObject({
+      name: AgenCDaemonAgentLifecycleError.name,
+      code: "PROMPT_BLOCKED",
+      message: "startup prompt blocked by hook",
+    });
+  });
+
+  it("preserves a startup prompt block in the JSON-RPC error data", async () => {
+    const agents = new AgenCDaemonAgentManager({
+      runner: {
+        startAgent: async () => {
+          throw new AgenCBackgroundAgentMessageError(
+            "PROMPT_BLOCKED",
+            "startup prompt blocked by hook",
+          );
+        },
+      },
+    });
+    const connection = new AgenCDaemonJsonRpcDispatcher({
+      agentManager: agents,
+    }).createConnection();
+    await connection.dispatch({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "initialize-prompt-block",
+      method: "initialize",
+      params: { protocolVersion: "1.0.0", clientName: "contract-test" },
+    });
+
+    await expect(
+      connection.dispatch({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "create-prompt-blocked",
+        method: "agent.create",
+        params: {
+          objective: "blocked startup prompt",
+          cwd: process.cwd(),
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
+        },
+      }),
+    ).resolves.toEqual({
+      jsonrpc: JSON_RPC_VERSION,
+      id: "create-prompt-blocked",
+      error: {
+        code: -32602,
+        message: "startup prompt blocked by hook",
+        data: { code: "PROMPT_BLOCKED" },
+      },
+    });
   });
 
   it("requires initialize before agent.create on a daemon JSON-RPC connection", async () => {

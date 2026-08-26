@@ -36,7 +36,6 @@ import { isAbsolute, resolve } from "node:path";
 import { cwd as processCwd } from "node:process";
 import { VERSION } from "../index.js";
 import { applyBestEffortPreMainProcessHardening } from "../sandbox/hardening/index.js";
-import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import {
   classifyCLI,
   extractFlagValues,
@@ -73,7 +72,6 @@ import {
 } from "../session/runtime-options.js";
 import { runTurn } from "../session/run-turn.js";
 import { editorInteractionSystemPrompt } from "../session/editor-interaction.js";
-import { seedFileMentionSessionReads } from "../session/file-mention-session-reads.js";
 import type { Terminal } from "../session/turn-state.js";
 import {
   hasSupportedFileIdentity,
@@ -97,18 +95,11 @@ import {
 } from "../services/heapWatchdog/heapWatchdog.js";
 import type { AgenCConfig } from "../config/schema.js";
 import {
-  expandFileMentions,
-  extractMentionAllowedRoots,
-  formatFileMentionRejection,
-  type FileMentionExpansion,
-} from "../prompts/file-mentions.js";
-import {
   assembleSystemPrompt,
   buildAssembleSystemPromptOpts,
   type McpServerInstructionsInput,
 } from "../prompts/system-prompt.js";
 import { getOutputStyleConfig } from "../constants/outputStyles.js";
-import { renderHookAdditionalContextSection } from "../prompts/hook-context-framing.js";
 import { loadSessionMcpServerInstructions } from "../prompts/mcp-server-instructions.js";
 import { clearSystemPromptSections } from "../prompts/sections.js";
 import {
@@ -253,14 +244,7 @@ import {
   parseAgenCTrajectoriesCliArgs,
   runAgenCTrajectoriesCli,
 } from "./trajectories-cli.js";
-import {
-  executeUserPromptSubmitHooks,
-  getUserPromptSubmitHookBlockingMessage,
-} from "../hooks/user-prompt-submit.js";
-import {
-  ConfiguredHooksRuntime,
-  type HookInstallTarget,
-} from "../hooks/configured-hooks.js";
+import { prepareUserPromptForTurn } from "../hooks/user-prompt-ingress.js";
 import {
   readStartupCliFlags,
   resolveCanonicalStartupSelection,
@@ -1165,430 +1149,6 @@ function writeUnavailableCliCwd(): number {
   return 1;
 }
 
-function emitFileMentionWarnings(
-  session: Session,
-  expansion: FileMentionExpansion,
-): void {
-  for (const rejection of expansion.rejected) {
-    session.emit({
-      id: session.nextInternalSubId(),
-      msg: {
-        type: "warning",
-        payload: {
-          cause: "file_mention_attachment_dropped",
-          message: formatFileMentionRejection(rejection),
-          ...{
-            path: rejection.raw,
-            reason: rejection.reason,
-          },
-        },
-      },
-    });
-  }
-}
-
-function writeFileMentionWarnings(
-  stderr: Pick<NodeJS.WriteStream, "write">,
-  expansion: FileMentionExpansion,
-): void {
-  for (const rejection of expansion.rejected) {
-    stderr.write(`agenc: ${formatFileMentionRejection(rejection)}\n`);
-  }
-}
-
-async function expandPromptFileMentions(params: {
-  readonly session: Session;
-  readonly configStore: ConfigStore;
-  readonly input: string;
-}): Promise<{ readonly input: string; readonly displayInput?: string }> {
-  const cwd = params.session.sessionConfiguration.cwd ?? process.cwd();
-  const config = params.configStore.current();
-  const expansion = await expandFileMentions(params.input, {
-    cwd,
-    allowedRoots: extractMentionAllowedRoots(config),
-  });
-  emitFileMentionWarnings(params.session, expansion);
-  if (expansion.attachments.length === 0) {
-    return { input: params.input };
-  }
-  await seedFileMentionSessionReads(
-    params.session.conversationId,
-    expansion.attachments,
-  );
-  return {
-    input: expansion.prompt,
-    displayInput: params.input,
-  };
-}
-
-async function expandOneShotPromptFileMentions(params: {
-  readonly configStore: Pick<ConfigStore, "current">;
-  readonly input: string;
-  readonly cwd: string;
-  readonly stderr: Pick<NodeJS.WriteStream, "write">;
-}): Promise<string> {
-  const config = params.configStore.current();
-  const expansion = await expandFileMentions(params.input, {
-    cwd: params.cwd,
-    allowedRoots: extractMentionAllowedRoots(config),
-  });
-  writeFileMentionWarnings(params.stderr, expansion);
-  return expansion.attachments.length === 0 ? params.input : expansion.prompt;
-}
-
-function userInputDisplayText(
-  input: string | readonly LLMContentPart[],
-): string {
-  if (typeof input === "string") return input;
-  return input
-    .map((part) => {
-      if (part.type === "text") return part.text;
-      return "[image]";
-    })
-    .filter((part) => part.length > 0)
-    .join("\n");
-}
-
-const MAX_USER_PROMPT_SUBMIT_CONTEXT_LENGTH = 10_000;
-
-function truncateUserPromptSubmitContext(context: string): string {
-  if (context.length <= MAX_USER_PROMPT_SUBMIT_CONTEXT_LENGTH) return context;
-  return `${context.substring(0, MAX_USER_PROMPT_SUBMIT_CONTEXT_LENGTH)}… [output truncated - exceeded ${MAX_USER_PROMPT_SUBMIT_CONTEXT_LENGTH} characters]`;
-}
-
-function appendUserPromptSubmitContexts(
-  input: string | readonly LLMContentPart[],
-  contexts: readonly string[],
-): string | readonly LLMContentPart[] {
-  if (contexts.length === 0) return input;
-  const contextText = formatUserPromptSubmitContexts(contexts);
-  if (contextText.length === 0) return input;
-  if (typeof input === "string") {
-    return input.trim().length > 0 ? `${input}\n\n${contextText}` : contextText;
-  }
-  const next = [...input];
-  const last = next[next.length - 1];
-  if (last?.type === "text") {
-    next[next.length - 1] = {
-      ...last,
-      text: `${last.text}\n\n${contextText}`,
-    };
-    return next;
-  }
-  next.push({ type: "text", text: contextText });
-  return next;
-}
-
-function formatUserPromptSubmitContexts(contexts: readonly string[]): string {
-  return (
-    renderHookAdditionalContextSection(
-      contexts.map((context) => ({
-        hookName: "UserPromptSubmit",
-        hookEvent: "UserPromptSubmit",
-        content: truncateUserPromptSubmitContext(context),
-      })),
-    ) ?? ""
-  );
-}
-
-function appendUserPromptSubmitContextsToMessage(
-  message: string,
-  contexts: readonly string[],
-): string {
-  if (contexts.length === 0) return message;
-  const contextText = formatUserPromptSubmitContexts(contexts);
-  return contextText.length === 0 ? message : `${message}\n\n${contextText}`;
-}
-
-function emitUserPromptSubmitHookThrown(
-  session: Session,
-  err: unknown,
-  idx: number,
-): void {
-  session.emit({
-    id: session.nextInternalSubId(),
-    msg: {
-      type: "warning",
-      payload: {
-        cause: "user_prompt_submit_hook_threw",
-        message: `UserPromptSubmit hook ${idx} threw: ${err instanceof Error ? err.message : String(err)}`,
-      },
-    },
-  });
-}
-
-async function collectUserPromptSubmitHookOutcome(params: {
-  readonly session: Session;
-  readonly prompt: string;
-}): Promise<{
-  readonly blocked: boolean;
-  readonly additionalContexts: readonly string[];
-  readonly blockMessage?: string;
-}> {
-  const permissionMode = params.session.permissionModeRegistry.current().mode;
-  const additionalContexts: string[] = [];
-  for await (const hookResult of executeUserPromptSubmitHooks(
-    params.prompt,
-    permissionMode,
-    {
-      session: params.session,
-      services: params.session.services,
-      cwd: params.session.sessionConfiguration.cwd ?? process.cwd(),
-      abortController: params.session.abortController,
-    },
-    undefined,
-    (err, idx) => emitUserPromptSubmitHookThrown(params.session, err, idx),
-  )) {
-    if (hookResult.additionalContexts) {
-      additionalContexts.push(...hookResult.additionalContexts);
-    }
-    if (hookResult.blockingError) {
-      const message = getUserPromptSubmitHookBlockingMessage(
-        hookResult.blockingError,
-      );
-      const messageWithContext = appendUserPromptSubmitContextsToMessage(
-        message,
-        additionalContexts,
-      );
-      params.session.emit({
-        id: params.session.nextInternalSubId(),
-        msg: {
-          type: "error",
-          payload: {
-            cause: "user_prompt_submit_hook_blocked",
-            message: messageWithContext,
-          },
-        },
-      });
-      return {
-        blocked: true,
-        additionalContexts,
-        blockMessage: messageWithContext,
-      };
-    }
-    if (hookResult.preventContinuation) {
-      const message = hookResult.stopReason
-        ? `Operation stopped by hook: ${hookResult.stopReason}`
-        : "Operation stopped by hook";
-      const messageWithContext = appendUserPromptSubmitContextsToMessage(
-        message,
-        additionalContexts,
-      );
-      params.session.emit({
-        id: params.session.nextInternalSubId(),
-        msg: {
-          type: "warning",
-          payload: {
-            cause: "user_prompt_submit_hook_stopped",
-            message: messageWithContext,
-          },
-        },
-      });
-      return {
-        blocked: true,
-        additionalContexts,
-        blockMessage: messageWithContext,
-      };
-    }
-    const attachment = hookResult.message?.attachment;
-    if (
-      attachment?.type === "hook_success" &&
-      typeof attachment.content === "string" &&
-      attachment.content.length > 0
-    ) {
-      additionalContexts.push(attachment.content);
-    }
-  }
-  return {
-    blocked: false,
-    additionalContexts,
-  };
-}
-
-function createOneShotHookTarget(): HookInstallTarget {
-  return {
-    preToolUseHooks: [],
-    postToolUseHooks: [],
-    failureToolUseHooks: [],
-    permissionDecisionHooks: [],
-    userPromptSubmitHooks: [],
-    stopHooks: [],
-    stopFailureHooks: [],
-    clearConfiguredLifecycleHooks: () => {},
-  };
-}
-
-async function prepareOneShotPromptForDaemon(params: {
-  readonly prompt: string;
-  readonly configStore: Pick<ConfigStore, "current" | "authoritySnapshot">;
-  readonly agencHome: string;
-  readonly cwd: string;
-  readonly env: NodeJS.ProcessEnv;
-  readonly signal: AbortSignal;
-  readonly stderr: Pick<NodeJS.WriteStream, "write">;
-  readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
-}): Promise<
-  | { readonly blocked: false; readonly prompt: string }
-  | { readonly blocked: true; readonly blockMessage: string }
-> {
-  const target = createOneShotHookTarget();
-  const explicitDanger =
-    params.dangerouslyBypassApprovalsAndSandbox === true;
-  const configuredSandbox = params.configStore.current().sandbox_mode;
-  const sandboxExecutionBroker = new SandboxExecutionBroker({
-    mode: explicitDanger
-      ? "danger_full_access"
-      : configuredSandbox === "read-only"
-        ? "read_only"
-        : configuredSandbox === "danger-full-access"
-          ? "danger_full_access"
-          : "workspace_write",
-    cwd: params.cwd,
-    env: params.env,
-    allowGpu: params.configStore.current().sandbox?.allow_gpu === true,
-  });
-  const hooksRuntime = new ConfiguredHooksRuntime({
-    cwd: params.cwd,
-    env: params.env,
-    agencHome: params.agencHome,
-    shellPath: params.env.SHELL ?? "/bin/sh",
-    sandboxExecutionBroker,
-    admissionRequired: true,
-  });
-  hooksRuntime.attachTarget(target);
-  hooksRuntime.loadConfigAuthority(params.configStore.authoritySnapshot());
-
-  const additionalContexts: string[] = [];
-  let hookExecutionFailure: string | undefined;
-  for await (const hookResult of executeUserPromptSubmitHooks(
-    params.prompt,
-    "default",
-    {
-      cwd: params.cwd,
-      services: { hooks: target },
-      abortController: { signal: params.signal },
-    },
-    undefined,
-    (err, idx) => {
-      const message = err instanceof Error ? err.message : String(err);
-      hookExecutionFailure ??= `UserPromptSubmit hook ${idx} could not cross the required execution admission boundary: ${message}`;
-      params.stderr.write(
-        `agenc: UserPromptSubmit hook ${idx} threw: ${message}\n`,
-      );
-    },
-  )) {
-    if (hookResult.additionalContexts) {
-      additionalContexts.push(...hookResult.additionalContexts);
-    }
-    if (hookResult.blockingError) {
-      return {
-        blocked: true,
-        blockMessage: appendUserPromptSubmitContextsToMessage(
-          getUserPromptSubmitHookBlockingMessage(hookResult.blockingError),
-          additionalContexts,
-        ),
-      };
-    }
-    if (hookResult.preventContinuation) {
-      return {
-        blocked: true,
-        blockMessage: appendUserPromptSubmitContextsToMessage(
-          hookResult.stopReason
-            ? `Operation stopped by hook: ${hookResult.stopReason}`
-            : "Operation stopped by hook",
-          additionalContexts,
-        ),
-      };
-    }
-    const attachment = hookResult.message?.attachment;
-    if (
-      attachment?.type === "hook_success" &&
-      typeof attachment.content === "string" &&
-      attachment.content.length > 0
-    ) {
-      additionalContexts.push(attachment.content);
-    }
-  }
-  if (hookExecutionFailure !== undefined) {
-    return {
-      blocked: true,
-      blockMessage: appendUserPromptSubmitContextsToMessage(
-        hookExecutionFailure,
-        additionalContexts,
-      ),
-    };
-  }
-
-  const expandedPrompt = await expandOneShotPromptFileMentions({
-    configStore: params.configStore,
-    input: params.prompt,
-    cwd: params.cwd,
-    stderr: params.stderr,
-  });
-  const promptWithContext = appendUserPromptSubmitContexts(
-    expandedPrompt,
-    additionalContexts,
-  );
-  return {
-    blocked: false,
-    prompt:
-      typeof promptWithContext === "string"
-        ? promptWithContext
-        : userInputDisplayText(promptWithContext),
-  };
-}
-
-async function prepareSubmittedPromptForTurn(params: {
-  readonly session: Session;
-  readonly configStore: ConfigStore;
-  readonly input: string | readonly LLMContentPart[];
-}): Promise<{
-  readonly blocked: boolean;
-  readonly input: string | readonly LLMContentPart[];
-  readonly displayInput?: string;
-  readonly blockMessage?: string;
-}> {
-  const prompt = userInputDisplayText(params.input);
-  const hookOutcome = await collectUserPromptSubmitHookOutcome({
-    session: params.session,
-    prompt,
-  });
-  if (hookOutcome.blocked) {
-    return {
-      blocked: true,
-      input: params.input,
-      ...(hookOutcome.blockMessage !== undefined
-        ? { blockMessage: hookOutcome.blockMessage }
-        : {}),
-    };
-  }
-
-  if (typeof params.input === "string") {
-    const expanded = await expandPromptFileMentions({
-      session: params.session,
-      configStore: params.configStore,
-      input: params.input,
-    });
-    return {
-      blocked: false,
-      input: appendUserPromptSubmitContexts(
-        expanded.input,
-        hookOutcome.additionalContexts,
-      ),
-      displayInput: expanded.displayInput ?? params.input,
-    };
-  }
-
-  return {
-    blocked: false,
-    input: appendUserPromptSubmitContexts(
-      params.input,
-      hookOutcome.additionalContexts,
-    ),
-    displayInput: prompt,
-  };
-}
-
 function installTuiSessionContract(params: {
   readonly session: Session;
   readonly configStore: ConfigStore;
@@ -1654,7 +1214,7 @@ function installTuiSessionContract(params: {
       ): Promise<void> => {
         const preparedPrompt =
           opts.editorInteraction === undefined
-            ? await prepareSubmittedPromptForTurn({
+            ? await prepareUserPromptForTurn({
                 session: params.session,
                 configStore: params.configStore,
                 input: prompt,
@@ -2493,39 +2053,22 @@ export async function oneShotCLI(
       env: sessionEnv,
       ...(profileName !== undefined ? { profileName } : {}),
     });
-    const promptPreparation = await prepareOneShotPromptForDaemon({
-      prompt: resolvedUserMessage,
-      configStore,
-      agencHome,
-      cwd: daemonCwd,
-      env: process.env,
-      signal: lifecycleAbort.signal,
-      stderr: process.stderr,
-      dangerouslyBypassApprovalsAndSandbox:
-        startupCliFlags.dangerouslyBypassApprovalsAndSandbox === true,
-    });
-    throwIfAborted("prepareOneShotPromptForDaemon");
-    if (promptPreparation.blocked) {
-      process.stderr.write(`${promptPreparation.blockMessage}\n`);
-      return 1;
-    }
-    const preparedUserMessage = promptPreparation.prompt;
     const resolvedStartupImages =
       startupImages.length > 0
         ? startupImages
         : extractFlagValues(process.argv.slice(2), "--image");
     const initialContent = startupContentFromInputs(
-      preparedUserMessage,
+      resolvedUserMessage,
       resolvedStartupImages,
       daemonCwd,
       sessionEnv.HOME,
     );
     const daemonPrompt =
-      preparedUserMessage.trim().length > 0
-        ? preparedUserMessage
+      resolvedUserMessage.trim().length > 0
+        ? resolvedUserMessage
         : initialContent !== undefined
           ? "Multimodal AgenC startup"
-          : preparedUserMessage;
+          : resolvedUserMessage;
     // Forward the canonical dangerous-bypass selection to the daemon so the
     // print-mode one-shot agent runs under bypassPermissions, matching
     // the bootTUI path. See GAP-PE-GUARDIAN-YOLO-LEAK.
@@ -4748,20 +4291,7 @@ async function prepareDaemonTuiPrompt(params: {
   readonly stderr: Pick<NodeJS.WriteStream, "write">;
 }): Promise<string | null> {
   if (isLocalSlashCommandInput(params.message)) return null;
-  const outcome = await prepareOneShotPromptForDaemon({
-    prompt: params.message,
-    configStore: params.configStore,
-    agencHome: params.agencHome,
-    cwd: params.cwd,
-    env: params.env,
-    signal: new AbortController().signal,
-    stderr: params.stderr,
-  });
-  if (outcome.blocked) {
-    params.stderr.write(`${outcome.blockMessage}\n`);
-    return null;
-  }
-  return outcome.prompt;
+  return params.message;
 }
 
 function wrapDaemonTuiSessionWithPromptPreparation<
@@ -5096,27 +4626,8 @@ export async function bootTUIEntry(
       env: sessionEnv,
       ...(profileName !== undefined ? { profileName } : {}),
     });
-    const promptPreparation =
-      initialPrompt !== undefined && initialPrompt.length > 0
-        ? await prepareOneShotPromptForDaemon({
-            prompt: objective,
-            configStore,
-            agencHome,
-            cwd: daemonCwd,
-            env: sessionEnv,
-            signal: new AbortController().signal,
-            stderr: process.stderr,
-            dangerouslyBypassApprovalsAndSandbox:
-              startupCliFlags.dangerouslyBypassApprovalsAndSandbox === true,
-          })
-        : { blocked: false as const, prompt: objective };
-    if (promptPreparation.blocked) {
-      process.stderr.write(`${promptPreparation.blockMessage}\n`);
-      return 1;
-    }
-    const preparedObjective = promptPreparation.prompt;
     const initialContent = startupContentFromInputs(
-      preparedObjective,
+      objective,
       startupImages,
       daemonCwd,
       sessionEnv.HOME,
@@ -5129,7 +4640,7 @@ export async function bootTUIEntry(
     // forwarding in background-agent-runner.buildBootstrapArgv.
     const promptPermissionMode = startupPermissionMode(startupCliFlags);
     const started = await deps.startPromptAgent({
-      prompt: preparedObjective,
+      prompt: objective,
       env: sessionEnv,
       runtimeOptions,
       cwd: daemonCwd,

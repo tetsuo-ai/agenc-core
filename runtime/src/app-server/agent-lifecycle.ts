@@ -200,7 +200,8 @@ export type AgenCDaemonAgentLifecycleErrorCode =
   | "RUN_NOT_FOUND"
   | "RUN_CANCEL_UNAVAILABLE"
   | "TURN_IN_PROGRESS"
-  | "CLIENT_MESSAGE_ID_CONFLICT";
+  | "CLIENT_MESSAGE_ID_CONFLICT"
+  | "PROMPT_BLOCKED";
 
 export class AgenCDaemonAgentLifecycleError extends Error {
   readonly code: AgenCDaemonAgentLifecycleErrorCode;
@@ -209,6 +210,20 @@ export class AgenCDaemonAgentLifecycleError extends Error {
     super(message);
     this.name = "AgenCDaemonAgentLifecycleError";
     this.code = code;
+  }
+}
+
+async function startNewBackgroundAgent(
+  runner: AgenCBackgroundAgentRunner,
+  params: Parameters<AgenCBackgroundAgentRunner["startAgent"]>[0],
+): Promise<AgenCBackgroundAgentStartResult> {
+  try {
+    return await runner.startAgent(params);
+  } catch (error) {
+    if (error instanceof AgenCBackgroundAgentMessageError) {
+      throw new AgenCDaemonAgentLifecycleError(error.code, error.message);
+    }
+    throw error;
   }
 }
 
@@ -807,7 +822,7 @@ export class AgenCDaemonAgentManager {
         resumeSessionId === undefined ? undefined : randomUUID();
       const started =
         resumeSessionId === undefined
-          ? await this.#runner.startAgent({
+          ? await startNewBackgroundAgent(this.#runner, {
               objective,
               cwd,
               ...(model !== undefined ? { model } : {}),
