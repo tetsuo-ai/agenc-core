@@ -13,6 +13,7 @@ import { runHookCommand } from "../../src/hooks/engine/command-runner.js";
 import { AgenCStdioClientTransport } from "../../src/mcp-client/transports/stdio.js";
 import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
 import { attachSandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
+import { registerSandboxExecutionLifecycleParticipant } from "../../src/sandbox/execution-lifecycle.js";
 import {
   clearCurrentRuntimeSession,
   runWithCurrentRuntimeSession,
@@ -81,6 +82,13 @@ describe("fail-closed process surfaces", () => {
   it("blocks MCP stdio before host spawn", async () => {
     const root = tempRoot("agenc-sandbox-mcp-");
     const marker = join(root, "mcp-escaped");
+    const broker = unavailableBroker(root);
+    registerSandboxExecutionLifecycleParticipant(broker, {
+      name: "mcp-manager",
+      spawnSurfaces: ["mcp_stdio"],
+      quiesce: async () => {},
+      resume: async () => {},
+    });
     const transport = new AgenCStdioClientTransport(
       {
         command: process.execPath,
@@ -89,7 +97,7 @@ describe("fail-closed process surfaces", () => {
         env: { ...process.env } as Record<string, string>,
       },
       undefined,
-      unavailableBroker(root),
+      broker,
     );
 
     await expect(transport.start()).rejects.toMatchObject({

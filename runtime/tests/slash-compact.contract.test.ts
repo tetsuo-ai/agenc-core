@@ -149,17 +149,12 @@ describe("slash /compact contract", () => {
     expect(setStreamMode).toHaveBeenCalledWith("requesting");
     expect(setResponseLength).toHaveBeenCalledWith(expect.any(Function));
     expect(onCompactProgress).toHaveBeenNthCalledWith(1, {
-      type: "hooks_start",
-      hookType: "pre_compact",
-    });
-    expect(onCompactProgress).toHaveBeenNthCalledWith(2, {
       type: "compact_start",
     });
-    expect(onCompactProgress).toHaveBeenNthCalledWith(3, {
+    expect(onCompactProgress).toHaveBeenNthCalledWith(2, {
       type: "compact_end",
     });
     expect(compactLifecycle).toEqual([
-      { type: "hooks_start", hookType: "pre_compact" },
       { type: "stream_mode", mode: "requesting" },
       { type: "response_length", length: 0 },
       { type: "compact_start" },

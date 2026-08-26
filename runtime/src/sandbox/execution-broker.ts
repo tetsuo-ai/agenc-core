@@ -9,6 +9,7 @@
  * unchanged.
  */
 
+import { AsyncLocalStorage } from "node:async_hooks";
 import { spawnSync } from "node:child_process";
 import { probeLandlock, resolveLandlockRun } from "./landlock-run.js";
 import { realpathSync, statSync } from "node:fs";
@@ -20,7 +21,9 @@ import {
   canWritePathWithCwd,
   SandboxManager,
   type AdditionalPermissionProfile,
+  type PermissionProfile,
   type SandboxType,
+  type WindowsSandboxLevel,
 } from "./engine/index.js";
 import { effectivePermissionProfile } from "./engine/policy-transforms.js";
 import { planLandlockConfinement } from "./linux-launcher/landlock-exec.js";
@@ -42,6 +45,17 @@ import {
   isAppArmorUserNamespaceDenial,
 } from "./apparmor.js";
 import { sanitizeSandboxLauncherEnvironment } from "./launcher-environment.js";
+import {
+  SandboxExecutionLeaseCleanupError,
+  registerSandboxPreparedSpawn,
+  type SandboxPreparedSpawn,
+} from "./execution-prepared-spawn.js";
+
+export {
+  SandboxExecutionLeaseCleanupError,
+  isSandboxPreparedSpawn,
+  type SandboxPreparedSpawn,
+} from "./execution-prepared-spawn.js";
 
 export type SandboxExecutionSurface =
   | "startup"
@@ -123,6 +137,14 @@ export interface SandboxSpawnCommand {
   readonly permissionProfileOverride?: UnifiedExecRuntimeSandbox["permissionProfile"];
 }
 
+export interface SandboxPrepareSpawnOptions {
+  /**
+   * Name of the already-registered lifecycle participant that will own this
+   * long-lived process. Omit for ordinary one-shot execution.
+   */
+  readonly lifecycleParticipant?: string;
+}
+
 export type SandboxExecutionManager = Pick<
   SandboxManager,
   "selectInitial" | "transform"
@@ -134,8 +156,8 @@ export interface SandboxExecutionBrokerLike {
   readonly cwd: string;
   /** Zero for a root session; increments for each isolated child authority. */
   readonly forkDepth?: number;
-  /** Re-root the same live boundary so captured registry/hook references update. */
-  rebase(cwd: string): void;
+  /** Permanent authority poison set after a lifecycle rollback cannot recover. */
+  isClosedAfterLifecycleAuthorityFailure?(): boolean;
   /** Fork an independent boundary for a child session or worktree. */
   forkForCwd(cwd: string): SandboxExecutionBrokerLike;
   status(): SandboxExecutionStatus;
@@ -146,7 +168,8 @@ export interface SandboxExecutionBrokerLike {
   prepareSpawn(
     surface: SandboxExecutionSurface,
     command: SandboxSpawnCommand,
-  ): SandboxSpawnCommand;
+    options?: SandboxPrepareSpawnOptions,
+  ): SandboxPreparedSpawn;
 }
 
 export class SandboxExecutionError extends Error {
@@ -215,10 +238,13 @@ export interface SandboxExecutionBrokerOptions {
   readonly windowsSandboxLevel?: UnifiedExecRuntimeSandbox["windowsSandboxLevel"];
   readonly windowsSandboxPrivateDesktop?: boolean;
   readonly allowGpu?: boolean;
+  readonly permissionProfile?: PermissionProfile;
   readonly platform?: NodeJS.Platform;
   readonly sandboxManager?: SandboxExecutionManager;
   /** Internal lineage marker propagated by forkForCwd. */
   readonly forkDepth?: number;
+  /** Injectable only for deterministic lifecycle lease-drain tests. */
+  readonly lifecycleLeaseDrainTimeoutMs?: number;
   /** Injectable only for deterministic platform/fault tests. */
   readonly probe?: (options: {
     readonly mode: SandboxMode;
@@ -231,29 +257,269 @@ export interface SandboxExecutionBrokerOptions {
   readonly planLandlockPolicy?: typeof planLandlockConfinement;
 }
 
+export interface SandboxExecutionBrokerAuthority {
+  readonly mode: SandboxMode;
+  readonly permissionProfile?: PermissionProfile;
+  readonly windowsSandboxLevel: WindowsSandboxLevel;
+  readonly allowGpu: boolean;
+}
+
 const defaultSandboxManager = new SandboxManager();
 
+function immutablePermissionProfile(
+  profile: PermissionProfile | undefined,
+): PermissionProfile | undefined {
+  if (profile === undefined) return undefined;
+  const entries = profile.fileSystem.entries.map((entry) => {
+    const fileSystemPath = (() => {
+      switch (entry.path.kind) {
+        case "path":
+        case "glob":
+          return Object.freeze({ ...entry.path });
+        case "special":
+          return Object.freeze({
+            ...entry.path,
+            value: Object.freeze({ ...entry.path.value }),
+          });
+      }
+    })();
+    return Object.freeze({ ...entry, path: fileSystemPath });
+  });
+  return Object.freeze({
+    ...profile,
+    fileSystem: Object.freeze({
+      ...profile.fileSystem,
+      entries: Object.freeze(entries),
+    }),
+  });
+}
+
+const DEFAULT_LIFECYCLE_LEASE_DRAIN_TIMEOUT_MS = 5_000;
+
+interface SandboxExecutionLifecyclePermit {
+  readonly broker: SandboxExecutionBroker;
+  readonly epoch: number;
+  readonly participantName: string;
+  active: boolean;
+}
+
+const sandboxExecutionLifecyclePermit =
+  new AsyncLocalStorage<SandboxExecutionLifecyclePermit>();
+
+declare const sandboxExecutionLifecycleFenceBrand: unique symbol;
+declare const sandboxExecutionLifecycleMutationPermitBrand: unique symbol;
+
+/** Opaque broker-owned token used only by the lifecycle coordinator. */
+export interface SandboxExecutionLifecycleFence {
+  readonly [sandboxExecutionLifecycleFenceBrand]: never;
+}
+
+/** Opaque proof that one-shot and registered participant drains completed. */
+export interface SandboxExecutionLifecycleMutationPermit {
+  readonly [sandboxExecutionLifecycleMutationPermitBrand]: never;
+}
+
+type OneShotLeaseState = "prepared" | "running" | "complete";
+
+interface OneShotLeaseRecord {
+  readonly surface: SandboxExecutionSurface;
+  readonly authorityEpoch: number;
+  readonly controller: AbortController;
+  readonly completion: Promise<void>;
+  resolveCompletion(): void;
+  rejectCompletion(error: unknown): void;
+  state: OneShotLeaseState;
+  invalidated: boolean;
+}
+
+interface LifecycleFenceState {
+  readonly handle: SandboxExecutionLifecycleFence;
+  readonly epoch: number;
+  oneShotDrainProven: boolean;
+  mutationPermit?: SandboxExecutionLifecycleMutationPermit;
+}
+
+class SandboxPreparedSpawnImpl implements SandboxPreparedSpawn {
+  readonly #broker: SandboxExecutionBroker;
+  readonly #surface: SandboxExecutionSurface;
+  readonly #command: SandboxSpawnCommand;
+  readonly #authorityEpoch: number;
+  readonly #participantName: string | undefined;
+  readonly #requiresLifecyclePermit: boolean;
+  readonly #oneShotLease: OneShotLeaseRecord | undefined;
+  #consumed = false;
+
+  constructor(options: {
+    readonly broker: SandboxExecutionBroker;
+    readonly surface: SandboxExecutionSurface;
+    readonly command: SandboxSpawnCommand;
+    readonly authorityEpoch: number;
+    readonly participantName?: string;
+    readonly requiresLifecyclePermit?: boolean;
+    readonly oneShotLease?: OneShotLeaseRecord;
+  }) {
+    this.#broker = options.broker;
+    this.#surface = options.surface;
+    this.#command = options.command;
+    this.#authorityEpoch = options.authorityEpoch;
+    this.#participantName = options.participantName;
+    this.#requiresLifecyclePermit = options.requiresLifecyclePermit ?? false;
+    this.#oneShotLease = options.oneShotLease;
+    registerSandboxPreparedSpawn(this);
+  }
+
+  async run<T>(
+    operation: (
+      command: SandboxSpawnCommand,
+      lifecycleSignal: AbortSignal,
+    ) => Promise<T>,
+  ): Promise<T> {
+    if (this.#participantName !== undefined) {
+      throw new Error(
+        `sandbox spawn for lifecycle participant ${this.#participantName} must be transferred explicitly`,
+      );
+    }
+    const lease = this.#beginOneShot();
+    try {
+      const result = await operation(this.#command, lease.controller.signal);
+      this.#broker.completeOneShotSpawnLease(lease);
+      return result;
+    } catch (error) {
+      this.#broker.completeOneShotSpawnLease(
+        lease,
+        error instanceof SandboxExecutionLeaseCleanupError
+          ? error
+          : undefined,
+      );
+      throw error;
+    }
+  }
+
+  start<T>(
+    operation: (
+      command: SandboxSpawnCommand,
+      lifecycleSignal: AbortSignal,
+    ) => { readonly value: T; readonly completion: Promise<void> },
+  ): T {
+    if (this.#participantName !== undefined) {
+      throw new Error(
+        `sandbox spawn for lifecycle participant ${this.#participantName} must be transferred explicitly`,
+      );
+    }
+    const lease = this.#beginOneShot();
+    let started: { readonly value: T; readonly completion: Promise<void> };
+    try {
+      started = operation(this.#command, lease.controller.signal);
+    } catch (error) {
+      this.#broker.completeOneShotSpawnLease(lease);
+      throw error;
+    }
+    void started.completion.then(
+      () => this.#broker.completeOneShotSpawnLease(lease),
+      (error: unknown) =>
+        this.#broker.completeOneShotSpawnLease(
+          lease,
+          error instanceof SandboxExecutionLeaseCleanupError
+            ? error
+            : undefined,
+        ),
+    );
+    return started.value;
+  }
+
+  runSync<T>(operation: (command: SandboxSpawnCommand) => T): T {
+    if (this.#participantName !== undefined) {
+      throw new Error(
+        `sandbox spawn for lifecycle participant ${this.#participantName} must be transferred explicitly`,
+      );
+    }
+    const lease = this.#beginOneShot();
+    try {
+      return operation(this.#command);
+    } finally {
+      this.#broker.completeOneShotSpawnLease(lease);
+    }
+  }
+
+  spawnLifecycleParticipant<T>(
+    participantName: string,
+    operation: (command: SandboxSpawnCommand) => T,
+  ): T {
+    if (this.#consumed) {
+      throw new Error("sandbox prepared spawn was already consumed");
+    }
+    if (
+      this.#participantName === undefined ||
+      participantName !== this.#participantName
+    ) {
+      throw new Error(
+        `sandbox prepared spawn is not owned by lifecycle participant ${participantName}`,
+      );
+    }
+    this.#broker.assertLifecycleParticipantSpawnAuthorized(
+      participantName,
+      this.#surface,
+      this.#authorityEpoch,
+      this.#requiresLifecyclePermit,
+    );
+    this.#consumed = true;
+    const result = operation(this.#command);
+    if (
+      typeof result === "object" &&
+      result !== null &&
+      "then" in result &&
+      typeof (result as { readonly then?: unknown }).then === "function"
+    ) {
+      throw new Error(
+        "lifecycle participant spawn callback must start the process synchronously",
+      );
+    }
+    return result;
+  }
+
+  #beginOneShot(): OneShotLeaseRecord {
+    if (this.#consumed) {
+      throw new Error("sandbox prepared spawn was already consumed");
+    }
+    this.#consumed = true;
+    const lease = this.#oneShotLease;
+    if (lease === undefined) {
+      throw new Error("sandbox one-shot spawn is missing its lifecycle lease");
+    }
+    this.#broker.beginOneShotSpawnLease(lease, this.#authorityEpoch);
+    return lease;
+  }
+}
+
 export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
-  readonly mode: SandboxMode;
-  readonly required: boolean;
   readonly forkDepth: number;
+  #mode: SandboxMode;
   #cwd: string;
   readonly #env: NodeJS.ProcessEnv;
   readonly #platform: NodeJS.Platform;
   readonly #sandboxManager: SandboxExecutionManager;
   readonly #explicitLinuxHelper: string | undefined;
-  readonly #windowsSandboxLevel: NonNullable<
+  #windowsSandboxLevel: NonNullable<
     UnifiedExecRuntimeSandbox["windowsSandboxLevel"]
   >;
   readonly #windowsSandboxPrivateDesktop: boolean;
-  readonly #allowGpu: boolean;
+  #allowGpu: boolean;
+  #permissionProfile: PermissionProfile | undefined;
   readonly #probe: NonNullable<SandboxExecutionBrokerOptions["probe"]>;
   readonly #planLandlockPolicy: typeof planLandlockConfinement;
   #status: SandboxExecutionStatus | undefined;
+  #lifecycleAuthorityFailure: string | undefined;
+  readonly #lifecycleLeaseDrainTimeoutMs: number;
+  #authorityEpoch = 0;
+  #lifecycleFence: LifecycleFenceState | undefined;
+  readonly #oneShotLeases = new Set<OneShotLeaseRecord>();
+  readonly #lifecycleParticipantSurfaces = new Map<
+    string,
+    Map<SandboxExecutionSurface, number>
+  >();
 
   constructor(options: SandboxExecutionBrokerOptions) {
-    this.mode = options.mode;
-    this.required = sandboxModeRequiresPlatformIsolation(options.mode);
+    this.#mode = options.mode;
     this.forkDepth = Number.isFinite(options.forkDepth)
       ? Math.max(0, Math.floor(options.forkDepth ?? 0))
       : 0;
@@ -266,26 +532,357 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     this.#windowsSandboxPrivateDesktop =
       options.windowsSandboxPrivateDesktop ?? false;
     this.#allowGpu = options.allowGpu ?? false;
+    this.#permissionProfile = immutablePermissionProfile(
+      options.permissionProfile,
+    );
     this.#probe = options.probe ?? probeSandboxExecutionStatus;
     this.#planLandlockPolicy =
       options.planLandlockPolicy ?? planLandlockConfinement;
+    this.#lifecycleLeaseDrainTimeoutMs =
+      options.lifecycleLeaseDrainTimeoutMs ??
+      DEFAULT_LIFECYCLE_LEASE_DRAIN_TIMEOUT_MS;
+    if (
+      !Number.isFinite(this.#lifecycleLeaseDrainTimeoutMs) ||
+      this.#lifecycleLeaseDrainTimeoutMs <= 0
+    ) {
+      throw new Error(
+        "sandbox lifecycle lease drain timeout must be finite and positive",
+      );
+    }
   }
 
   get cwd(): string {
     return this.#cwd;
   }
 
-  rebase(cwd: string): void {
+  get mode(): SandboxMode {
+    return this.#mode;
+  }
+
+  get required(): boolean {
+    return sandboxModeRequiresPlatformIsolation(this.#mode);
+  }
+
+  /** Permanently close execution after a runtime-authority rollback fails. */
+  closeAfterLifecycleAuthorityFailure(reason: string): void {
+    if (this.#lifecycleAuthorityFailure !== undefined) return;
+    this.#mode = "read_only";
+    this.#status = undefined;
+    this.#lifecycleAuthorityFailure = reason;
+    this.#authorityEpoch += 1;
+    for (const lease of this.#oneShotLeases) {
+      if (lease.state === "prepared") {
+        lease.invalidated = true;
+        this.completeOneShotSpawnLease(lease);
+      } else if (lease.state === "running") {
+        lease.controller.abort(
+          new Error("sandbox execution authority was permanently closed"),
+        );
+      }
+    }
+  }
+
+  /** True only after an irreversible lifecycle-authority rollback failure. */
+  isClosedAfterLifecycleAuthorityFailure(): boolean {
+    return this.#lifecycleAuthorityFailure !== undefined;
+  }
+
+  /** @internal Register the long-lived surfaces owned by one participant. */
+  registerLifecycleParticipantSpawnSurfaces(
+    participantName: string,
+    surfaces: readonly SandboxExecutionSurface[],
+  ): () => void {
+    if (participantName.trim().length === 0) {
+      throw new Error("sandbox lifecycle participant name must not be empty");
+    }
+    if (this.#lifecycleFence !== undefined) {
+      throw new Error(
+        `cannot register ${participantName} while a sandbox execution broker lifecycle transition is active`,
+      );
+    }
+    if (this.#lifecycleParticipantSurfaces.has(participantName)) {
+      throw new Error(
+        `sandbox lifecycle participant name is already registered: ${participantName}`,
+      );
+    }
+    const owned = new Map<SandboxExecutionSurface, number>();
+    for (const surface of new Set(surfaces)) {
+      owned.set(surface, 1);
+    }
+    this.#lifecycleParticipantSurfaces.set(participantName, owned);
+    let registered = true;
+    return () => {
+      if (!registered) return;
+      registered = false;
+      this.#lifecycleParticipantSurfaces.delete(participantName);
+    };
+  }
+
+  /** @internal Close external execution ingress for one lifecycle phase. */
+  beginLifecycleAuthorityTransition(): SandboxExecutionLifecycleFence {
+    if (this.#lifecycleAuthorityFailure !== undefined) {
+      throw new Error(
+        "sandbox execution broker is closed after an authority failure",
+      );
+    }
+    if (this.#lifecycleFence !== undefined) {
+      throw new Error("sandbox execution broker lifecycle transition is active");
+    }
+    this.#authorityEpoch += 1;
+    const handle = Object.freeze({}) as SandboxExecutionLifecycleFence;
+    const fence = {
+      handle,
+      epoch: this.#authorityEpoch,
+      oneShotDrainProven: false,
+    };
+    this.#lifecycleFence = fence;
+    for (const lease of [...this.#oneShotLeases]) {
+      if (lease.state === "prepared") {
+        lease.invalidated = true;
+        this.completeOneShotSpawnLease(lease);
+        continue;
+      }
+      if (lease.state === "running") {
+        lease.controller.abort(
+          new Error("sandbox execution authority transition started"),
+        );
+      }
+    }
+    return handle;
+  }
+
+  /** @internal Wait until every pre-transition one-shot process is gone. */
+  async waitForLifecycleOneShotDrain(
+    handle: SandboxExecutionLifecycleFence,
+  ): Promise<void> {
+    this.#requireLifecycleFence(handle);
+    const running = [...this.#oneShotLeases].filter(
+      (lease) => lease.state === "running",
+    );
+    if (running.length === 0) {
+      this.#requireLifecycleFence(handle).oneShotDrainProven = true;
+      return;
+    }
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        reject(
+          new Error(
+            `sandbox execution lease drain exceeded ${this.#lifecycleLeaseDrainTimeoutMs}ms`,
+          ),
+        );
+      }, this.#lifecycleLeaseDrainTimeoutMs);
+      timer.unref?.();
+    });
+    try {
+      await Promise.race([
+        Promise.all(running.map((lease) => lease.completion)).then(() => {}),
+        timeout,
+      ]);
+      this.#requireLifecycleFence(handle).oneShotDrainProven = true;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  /** @internal Mint mutation proof only after the coordinator quiesces owners. */
+  proveLifecycleParticipantsQuiesced(
+    handle: SandboxExecutionLifecycleFence,
+  ): SandboxExecutionLifecycleMutationPermit {
+    const fence = this.#requireLifecycleFence(handle);
+    if (!fence.oneShotDrainProven) {
+      throw new Error(
+        "sandbox lifecycle mutation requires a proven one-shot process drain",
+      );
+    }
+    const permit = Object.freeze(
+      {},
+    ) as SandboxExecutionLifecycleMutationPermit;
+    fence.mutationPermit = permit;
+    return permit;
+  }
+
+  /** @internal Revoke mutation authority before any participant resumes. */
+  invalidateLifecycleParticipantsQuiesced(
+    handle: SandboxExecutionLifecycleFence,
+  ): void {
+    this.#requireLifecycleFence(handle).mutationPermit = undefined;
+  }
+
+  /** @internal Run one participant resume under a broker+epoch permit. */
+  async runWithLifecycleParticipantSpawnPermit<T>(
+    handle: SandboxExecutionLifecycleFence,
+    participantName: string,
+    operation: () => Promise<T> | T,
+  ): Promise<T> {
+    const fence = this.#requireLifecycleFence(handle);
+    if (!this.#lifecycleParticipantSurfaces.has(participantName)) {
+      throw new Error(
+        `sandbox lifecycle participant ${participantName} has no registered spawn surfaces`,
+      );
+    }
+    const permit: SandboxExecutionLifecyclePermit = {
+      broker: this,
+      epoch: fence.epoch,
+      participantName,
+      active: true,
+    };
+    return sandboxExecutionLifecyclePermit.run(permit, async () => {
+      try {
+        return await operation();
+      } finally {
+        permit.active = false;
+      }
+    });
+  }
+
+  /** @internal Prove code is running inside this participant's active resume. */
+  assertLifecycleParticipantResumePermit(participantName: string): void {
+    const fence = this.#lifecycleFence;
+    const permit = sandboxExecutionLifecyclePermit.getStore();
+    if (
+      fence === undefined ||
+      permit?.active !== true ||
+      permit.broker !== this ||
+      permit.epoch !== fence.epoch ||
+      permit.participantName !== participantName
+    ) {
+      throw new Error(
+        `sandbox lifecycle participant ${participantName} has no active resume permit`,
+      );
+    }
+  }
+
+  /** @internal Release a successful or fully rolled-back lifecycle fence. */
+  endLifecycleAuthorityTransition(
+    handle: SandboxExecutionLifecycleFence,
+  ): void {
+    this.#requireLifecycleFence(handle);
+    this.#lifecycleFence = undefined;
+  }
+
+  /** @internal Start an already-prepared one-shot lease. */
+  beginOneShotSpawnLease(
+    lease: OneShotLeaseRecord,
+    authorityEpoch: number,
+  ): void {
+    if (
+      lease.state !== "prepared" ||
+      lease.invalidated ||
+      authorityEpoch !== this.#authorityEpoch ||
+      this.#lifecycleFence !== undefined ||
+      this.#lifecycleAuthorityFailure !== undefined
+    ) {
+      this.completeOneShotSpawnLease(lease);
+      throw requiredSandboxExecutionError(
+        lease.surface,
+        this.#unavailableLifecycleAuthorityStatus(),
+      );
+    }
+    lease.state = "running";
+  }
+
+  /** @internal Complete a one-shot lease after its entire process tree stops. */
+  completeOneShotSpawnLease(
+    lease: OneShotLeaseRecord,
+    cleanupError?: unknown,
+  ): void {
+    if (lease.state === "complete") return;
+    lease.state = "complete";
+    this.#oneShotLeases.delete(lease);
+    if (cleanupError === undefined) {
+      lease.resolveCompletion();
+      return;
+    }
+    lease.rejectCompletion(cleanupError);
+    this.closeAfterLifecycleAuthorityFailure(
+      cleanupError instanceof Error
+        ? `sandbox process-tree cleanup was unproven: ${cleanupError.message}`
+        : "sandbox process-tree cleanup was unproven",
+    );
+  }
+
+  /** @internal Revalidate a participant handle immediately before spawn. */
+  assertLifecycleParticipantSpawnAuthorized(
+    participantName: string,
+    surface: SandboxExecutionSurface,
+    authorityEpoch: number,
+    requireActiveLifecyclePermit = false,
+  ): void {
+    const owned = this.#lifecycleParticipantSurfaces.get(participantName);
+    if ((owned?.get(surface) ?? 0) <= 0) {
+      throw new Error(
+        `sandbox lifecycle participant ${participantName} does not own ${surface} execution`,
+      );
+    }
+    if (authorityEpoch !== this.#authorityEpoch) {
+      throw requiredSandboxExecutionError(
+        surface,
+        this.#unavailableLifecycleAuthorityStatus(),
+      );
+    }
+    if (requireActiveLifecyclePermit) {
+      this.assertLifecycleParticipantResumePermit(participantName);
+    }
+    this.#assertLifecycleAuthorityOpen(surface, participantName);
+  }
+
+  executionAuthority(): SandboxExecutionBrokerAuthority {
+    return Object.freeze({
+      mode: this.#mode,
+      ...(this.#permissionProfile !== undefined
+        ? { permissionProfile: this.#permissionProfile }
+        : {}),
+      windowsSandboxLevel: this.#windowsSandboxLevel,
+      allowGpu: this.#allowGpu,
+    });
+  }
+
+  applyAuthorityAfterLifecycleQuiesce(
+    permit: SandboxExecutionLifecycleMutationPermit,
+    authority: SandboxExecutionBrokerAuthority,
+  ): void {
+    this.#requireLifecycleMutationPermit(permit);
+    if (this.#lifecycleAuthorityFailure !== undefined) {
+      throw new Error(
+        "sandbox execution broker is closed after an authority failure",
+      );
+    }
+    this.#mode = authority.mode;
+    this.#permissionProfile = immutablePermissionProfile(
+      authority.permissionProfile,
+    );
+    this.#windowsSandboxLevel = authority.windowsSandboxLevel;
+    this.#allowGpu = authority.allowGpu;
+    this.#status = undefined;
+  }
+
+  rebaseAfterLifecycleQuiesce(
+    permit: SandboxExecutionLifecycleMutationPermit,
+    cwd: string,
+  ): void {
+    this.#requireLifecycleMutationPermit(permit);
     const resolved = path.resolve(cwd);
     if (resolved === this.#cwd) return;
+    if (this.#permissionProfile !== undefined) {
+      this.#permissionProfile = immutablePermissionProfile(
+        rebasePermissionProfile(
+          this.#permissionProfile,
+          this.#cwd,
+          resolved,
+        ),
+      );
+    }
     this.#cwd = resolved;
     this.#status = undefined;
   }
 
   forkForCwd(cwd: string): SandboxExecutionBroker {
+    this.#assertLifecycleAuthorityOpen("child_agent");
+    const resolvedCwd = path.resolve(cwd);
     return new SandboxExecutionBroker({
       mode: this.mode,
-      cwd,
+      cwd: resolvedCwd,
       env: this.#env,
       ...(this.#explicitLinuxHelper !== undefined
         ? { agencLinuxSandboxExe: this.#explicitLinuxHelper }
@@ -293,15 +890,28 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       windowsSandboxLevel: this.#windowsSandboxLevel,
       windowsSandboxPrivateDesktop: this.#windowsSandboxPrivateDesktop,
       allowGpu: this.#allowGpu,
+      ...(this.#permissionProfile !== undefined
+        ? {
+            permissionProfile: rebasePermissionProfile(
+              this.#permissionProfile,
+              this.#cwd,
+              resolvedCwd,
+            ),
+          }
+        : {}),
       platform: this.#platform,
       sandboxManager: this.#sandboxManager,
       probe: this.#probe,
       planLandlockPolicy: this.#planLandlockPolicy,
       forkDepth: this.forkDepth + 1,
+      lifecycleLeaseDrainTimeoutMs: this.#lifecycleLeaseDrainTimeoutMs,
     });
   }
 
   status(): SandboxExecutionStatus {
+    if (this.#lifecycleAuthorityFailure !== undefined) {
+      return this.#closedLifecycleAuthorityStatus();
+    }
     this.#status ??= this.#probe({
       mode: this.mode,
       cwd: this.#cwd,
@@ -315,6 +925,13 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   }
 
   assertReady(surface: SandboxExecutionSurface): SandboxExecutionStatus {
+    this.#assertLifecycleAuthorityOpen(surface);
+    return this.#assertReadyAfterLifecycleAdmission(surface);
+  }
+
+  #assertReadyAfterLifecycleAdmission(
+    surface: SandboxExecutionSurface,
+  ): SandboxExecutionStatus {
     const status = this.status();
     if (!this.required || status.kind === "ready") return status;
     throw requiredSandboxExecutionError(surface, status);
@@ -323,12 +940,21 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   runtimeSandbox(
     surface: SandboxExecutionSurface,
   ): UnifiedExecRuntimeSandbox | undefined {
+    this.#assertLifecycleAuthorityOpen(surface);
+    return this.#runtimeSandboxAfterLifecycleAdmission(surface);
+  }
+
+  #runtimeSandboxAfterLifecycleAdmission(
+    surface: SandboxExecutionSurface,
+  ): UnifiedExecRuntimeSandbox | undefined {
     if (!this.required) return undefined;
-    const status = this.assertReady(surface);
+    const status = this.#assertReadyAfterLifecycleAdmission(surface);
     return {
-      permissionProfile: permissionProfileForSandboxMode(this.mode, {
-        cwd: this.#cwd,
-      }),
+      permissionProfile:
+        this.#permissionProfile ??
+        permissionProfileForSandboxMode(this.mode, {
+          cwd: this.#cwd,
+        }),
       sandboxPolicyCwd: this.#cwd,
       preference: "require",
       ...(status.helperPath !== undefined
@@ -343,12 +969,25 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   prepareSpawn(
     surface: SandboxExecutionSurface,
     command: SandboxSpawnCommand,
-  ): SandboxSpawnCommand {
+    options: SandboxPrepareSpawnOptions = {},
+  ): SandboxPreparedSpawn {
     try {
+      const participantName = options.lifecycleParticipant;
+      const requiresLifecyclePermit =
+        participantName !== undefined && this.#lifecycleFence !== undefined;
+      if (participantName !== undefined) {
+        this.assertLifecycleParticipantSpawnAuthorized(
+          participantName,
+          surface,
+          this.#authorityEpoch,
+        );
+      } else {
+        this.#assertLifecycleAuthorityOpen(surface);
+      }
       // Establish the required boundary before examining or transforming the
       // command. When the sandbox probe failed, that is the primary failure;
       // no executable resolution or policy projection should mask it.
-      const modeSandbox = this.runtimeSandbox(surface);
+      const modeSandbox = this.#runtimeSandboxAfterLifecycleAdmission(surface);
       // A surface may TIGHTEN its own boundary (plugin MCP servers confined
       // to their data dir) — never widen a stricter global mode, so the
       // override applies only under workspace_write.
@@ -374,6 +1013,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       ) {
         const baseProfile =
           runtimeSandbox?.permissionProfile ??
+          this.#permissionProfile ??
           permissionProfileForSandboxMode(this.mode, {
             cwd: this.#cwd,
           });
@@ -400,18 +1040,58 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
         program: resolvedProgram,
         argv0: command.argv0 ?? basename(command.program),
       };
-      if (runtimeSandbox === undefined) return resolvedCommand;
-      const sandboxWithSurfacePermissions =
-        command.additionalPermissions === undefined
-          ? runtimeSandbox
-          : {
-              ...runtimeSandbox,
-              additionalPermissions: command.additionalPermissions,
-            };
-      return transformSandboxedCommand({
-        ...resolvedCommand,
-        runtimeSandbox: sandboxWithSurfacePermissions,
-        sandboxManager: this.#sandboxManager,
+      const preparedCommand = (() => {
+        if (runtimeSandbox === undefined) return resolvedCommand;
+        const sandboxWithSurfacePermissions =
+          command.additionalPermissions === undefined
+            ? runtimeSandbox
+            : {
+                ...runtimeSandbox,
+                additionalPermissions: command.additionalPermissions,
+              };
+        return transformSandboxedCommand({
+          ...resolvedCommand,
+          runtimeSandbox: sandboxWithSurfacePermissions,
+          sandboxManager: this.#sandboxManager,
+        });
+      })();
+      if (participantName !== undefined) {
+        return new SandboxPreparedSpawnImpl({
+          broker: this,
+          surface,
+          command: preparedCommand,
+          authorityEpoch: this.#authorityEpoch,
+          participantName,
+          requiresLifecyclePermit,
+        });
+      }
+      let resolveCompletion!: () => void;
+      let rejectCompletion!: (error: unknown) => void;
+      const completion = new Promise<void>((resolve, reject) => {
+        resolveCompletion = resolve;
+        rejectCompletion = reject;
+      });
+      // A rejected cleanup proof is consumed by the lifecycle drain. Attach a
+      // handler now so a failure outside a transition cannot become an
+      // unhandled rejection before the next lifecycle phase observes it.
+      void completion.catch(() => {});
+      const lease: OneShotLeaseRecord = {
+        surface,
+        authorityEpoch: this.#authorityEpoch,
+        controller: new AbortController(),
+        completion,
+        resolveCompletion,
+        rejectCompletion,
+        state: "prepared",
+        invalidated: false,
+      };
+      this.#oneShotLeases.add(lease);
+      return new SandboxPreparedSpawnImpl({
+        broker: this,
+        surface,
+        command: preparedCommand,
+        authorityEpoch: this.#authorityEpoch,
+        oneShotLease: lease,
       });
     } catch (error) {
       if (error instanceof SandboxExecutionError) throw error;
@@ -425,6 +1105,84 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
         cause: error,
       });
     }
+  }
+
+  #assertLifecycleAuthorityOpen(
+    surface: SandboxExecutionSurface,
+    participantName?: string,
+  ): void {
+    if (this.#lifecycleAuthorityFailure !== undefined) {
+      throw requiredSandboxExecutionError(
+        surface,
+        this.#closedLifecycleAuthorityStatus(),
+      );
+    }
+    const fence = this.#lifecycleFence;
+    if (fence === undefined) return;
+    if (participantName !== undefined) {
+      const permit = sandboxExecutionLifecyclePermit.getStore();
+      if (
+        permit?.active === true &&
+        permit.broker === this &&
+        permit.epoch === fence.epoch &&
+        permit.participantName === participantName
+      ) {
+        return;
+      }
+    }
+    throw requiredSandboxExecutionError(
+      surface,
+      this.#unavailableLifecycleAuthorityStatus(),
+    );
+  }
+
+  #requireLifecycleFence(
+    handle: SandboxExecutionLifecycleFence,
+  ): LifecycleFenceState {
+    const fence = this.#lifecycleFence;
+    if (fence === undefined || fence.handle !== handle) {
+      throw new Error("sandbox execution lifecycle fence is not active");
+    }
+    return fence;
+  }
+
+  #requireLifecycleMutationPermit(
+    permit: SandboxExecutionLifecycleMutationPermit,
+  ): void {
+    const fence = this.#lifecycleFence;
+    if (
+      fence === undefined ||
+      !fence.oneShotDrainProven ||
+      fence.mutationPermit !== permit
+    ) {
+      throw new Error(
+        "sandbox authority mutation requires proven lifecycle quiescence",
+      );
+    }
+  }
+
+  #unavailableLifecycleAuthorityStatus(): SandboxExecutionStatus {
+    if (this.#lifecycleAuthorityFailure !== undefined) {
+      return this.#closedLifecycleAuthorityStatus();
+    }
+    return {
+      kind: "unavailable",
+      mode: this.#mode,
+      platform: this.#platform,
+      reason: "sandbox runtime authority is changing",
+      remediation: "Retry after the runtime settings transition settles.",
+    };
+  }
+
+  #closedLifecycleAuthorityStatus(): SandboxExecutionStatus {
+    return {
+      kind: "unavailable",
+      mode: this.#mode,
+      platform: this.#platform,
+      reason: this.#lifecycleAuthorityFailure,
+      remediation:
+        "Close this session and attach again from a fresh runtime settings snapshot.",
+    };
   }
 
   /**
@@ -476,6 +1234,82 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       });
     }
   }
+}
+
+function rebasePermissionProfile(
+  profile: PermissionProfile,
+  previousCwd: string,
+  nextCwd: string,
+): PermissionProfile {
+  if (profile.fileSystem.kind !== "restricted") return profile;
+  const entries = profile.fileSystem.entries.map((entry) => {
+    switch (entry.path.kind) {
+      case "path":
+        return {
+          ...entry,
+          path: {
+            kind: "path" as const,
+            path: rebaseWorkspacePath(
+              entry.path.path,
+              previousCwd,
+              nextCwd,
+            ),
+          },
+        };
+      case "glob":
+        return {
+          ...entry,
+          path: {
+            kind: "glob" as const,
+            pattern: rebaseWorkspacePath(
+              entry.path.pattern,
+              previousCwd,
+              nextCwd,
+            ),
+          },
+        };
+      case "special":
+        if (entry.path.value.kind !== "unknown") return entry;
+        return {
+          ...entry,
+          path: {
+            kind: "special" as const,
+            value: {
+              ...entry.path.value,
+              path: rebaseWorkspacePath(
+                entry.path.value.path,
+                previousCwd,
+                nextCwd,
+              ),
+            },
+          },
+        };
+    }
+  });
+  return {
+    ...profile,
+    fileSystem: {
+      ...profile.fileSystem,
+      entries,
+    },
+  };
+}
+
+function rebaseWorkspacePath(
+  candidate: string,
+  previousCwd: string,
+  nextCwd: string,
+): string {
+  if (!path.isAbsolute(candidate)) return candidate;
+  const relative = path.relative(previousCwd, candidate);
+  if (
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative)
+  ) {
+    return candidate;
+  }
+  return path.join(nextCwd, relative);
 }
 
 export function resolveSpawnExecutable(options: {
@@ -1012,7 +1846,6 @@ export function readSandboxExecutionBroker(
     typeof candidate.runtimeSandbox === "function" &&
     typeof candidate.assertReady === "function" &&
     typeof candidate.cwd === "string" &&
-    typeof candidate.rebase === "function" &&
     typeof candidate.forkForCwd === "function"
     ? (value as SandboxExecutionBrokerLike)
     : undefined;

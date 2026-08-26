@@ -6,8 +6,23 @@ import { join } from "node:path";
 import { describe, expect, test, vi } from "vitest";
 
 import { createLSPClient } from "./LSPClient.js";
-import { SandboxExecutionBroker } from "../../sandbox/execution-broker.js";
+import {
+  SandboxExecutionBroker,
+  type SandboxPreparedSpawn,
+} from "../../sandbox/execution-broker.js";
+import { registerSandboxExecutionLifecycleParticipant } from "../../sandbox/execution-lifecycle.js";
 import { explicitDangerBroker } from "../../helpers/explicit-danger-boundary.js";
+
+function registerLspParticipant(broker: SandboxExecutionBroker): void {
+  registerSandboxExecutionLifecycleParticipant(broker, {
+    name: "lsp",
+    spawnSurfaces: ["lsp"],
+    quiesce: async () => {},
+    resume: async () => {},
+  });
+}
+
+registerLspParticipant(explicitDangerBroker);
 
 const EXITING_SERVER = "setTimeout(() => process.exit(1), 10)";
 const CLEAN_EXIT_SERVER = "setTimeout(() => process.exit(0), 10)";
@@ -373,6 +388,7 @@ describe("createLSPClient", () => {
         remediation: "repair sandbox support",
       }),
     });
+    registerLspParticipant(broker);
     try {
       const client = createLSPClient("unavailable", {
         sandboxExecutionBroker: broker,
@@ -400,17 +416,33 @@ describe("createLSPClient", () => {
       mode: "danger_full_access",
       cwd: dir,
     });
+    registerLspParticipant(broker);
     const prepareSpawn = vi.spyOn(broker, "prepareSpawn").mockImplementation(
-      (_surface, command) => ({
-        program: process.execPath,
-        args: [
-          "-e",
-          `require("node:fs").writeFileSync(${JSON.stringify(output)}, JSON.stringify({ cwd: process.cwd(), env: process.env.LSP_TRANSFORMED_ENV, argv0: process.argv0 }))`,
-        ],
-        cwd: dir,
-        env: { ...command.env, LSP_TRANSFORMED_ENV: "present" },
-        argv0: "agenc-lsp-sandboxed",
-      }),
+      (_surface, command) => {
+        const transformed = {
+          program: process.execPath,
+          args: [
+            "-e",
+            `require("node:fs").writeFileSync(${JSON.stringify(output)}, JSON.stringify({ cwd: process.cwd(), env: process.env.LSP_TRANSFORMED_ENV, argv0: process.argv0 }))`,
+          ],
+          cwd: dir,
+          env: { ...command.env, LSP_TRANSFORMED_ENV: "present" },
+          argv0: "agenc-lsp-sandboxed",
+        };
+        return {
+          run: operation => operation(
+            transformed,
+            new AbortController().signal,
+          ),
+          start: operation => operation(
+            transformed,
+            new AbortController().signal,
+          ).value,
+          runSync: operation => operation(transformed),
+          spawnLifecycleParticipant: (_participantName, operation) =>
+            operation(transformed),
+        } satisfies SandboxPreparedSpawn;
+      },
     );
     try {
       const client = createLSPClient("transformed", {
@@ -427,7 +459,7 @@ describe("createLSPClient", () => {
         args: ["--must-not-run"],
         cwd: dir,
         env: expect.any(Object),
-      });
+      }, { lifecycleParticipant: "lsp" });
       const observed = JSON.parse(
         await readFile(output, "utf8"),
       ) as Record<string, string>;

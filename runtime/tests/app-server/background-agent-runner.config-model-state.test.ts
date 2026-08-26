@@ -8,8 +8,14 @@ import {
 import type { AgentStatus } from "../../src/agents/status.js";
 import {
   createEmptyToolPermissionContext,
-  type ToolPermissionContext,
 } from "../../src/permissions/types.js";
+import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
+import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
+import {
+  sandboxExecutionBrokerAuthorityFromSessionAuthority,
+  sessionConfigurationFromAgenCConfig,
+  sessionExecutionAuthorityFromAgenCConfig,
+} from "../../src/session/configuration.js";
 
 function makeStubConversationThreadManager(threadId: string) {
   let listeners: ((status: AgentStatus) => void)[] = [];
@@ -69,22 +75,102 @@ function makeRunnerHarness(opts: {
   }) => void;
 }) {
   const conversationId = "parent-session";
-  const permissionModeRegistry = {
-    current: () => createEmptyToolPermissionContext(),
-    update: vi.fn(async (_context: ToolPermissionContext) => {}),
-  };
+  const permissionModeRegistry = new PermissionModeRegistry(
+    createEmptyToolPermissionContext(),
+  );
   const stub = makeStubConversationThreadManager(conversationId);
   const eventLogSubscribers: Array<(event: unknown) => void> = [];
   const phaseSubscribers: Array<(phase: unknown) => void> = [];
+  const baseConfiguration = sessionConfigurationFromAgenCConfig({
+    config: {},
+    workspaceRoot: process.cwd(),
+    model: "base-model",
+    provider: "openai",
+    projectTrust: "trusted",
+  });
   const stateObject = {
-    sessionConfiguration: opts.sessionConfiguration ?? {
-      collaborationMode: { model: "base-model" },
-      provider: { slug: "openai" },
+    sessionConfiguration: {
+      ...baseConfiguration,
+      ...(opts.sessionConfiguration ?? {}),
     },
   };
+  const rolloutItems: unknown[] = [];
+  let lastSeq = 0;
+  const configStore = {
+    projectRoot: process.cwd(),
+    stateRepository: {
+      reload: vi.fn(() => ({})),
+      getNamespace: vi.fn(() => ({})),
+    },
+    authoritySnapshot: () => ({ config: {}, layers: [] }),
+    sources: () => [],
+    ...opts.configStore,
+  };
+  if (typeof configStore.prepareReload !== "function") {
+    Object.assign(configStore, {
+      prepareReload: async () => {
+        const previous = configStore.current() as Record<string, unknown>;
+        const staged = typeof configStore.reload === "function"
+          ? await configStore.reload()
+          : previous;
+        let state: "prepared" | "committed" | "published" | "rolled_back" =
+          "prepared";
+        let settled = false;
+        const authority = {
+          ...configStore,
+          current: () => staged,
+          authoritySnapshot: () => ({ config: staged, layers: [] }),
+          sources: () => [],
+          ignored: () => [],
+          warnings: () => [],
+          provenance: () => undefined,
+        };
+        return {
+          config: staged,
+          authority,
+          get state() {
+            return state;
+          },
+          get settled() {
+            return settled;
+          },
+          commit: () => {
+            state = "committed";
+          },
+          publish: () => {
+            state = "published";
+          },
+          rollback: () => {
+            state = "rolled_back";
+          },
+          settle: () => {
+            settled = true;
+          },
+        };
+      },
+    });
+  }
+  let configuredExecutionAuthority =
+    sessionExecutionAuthorityFromAgenCConfig({
+      config: {},
+      workspaceRoot: process.cwd(),
+      projectTrust: "trusted",
+    });
+  const sandboxExecutionBroker = new SandboxExecutionBroker({
+    cwd: process.cwd(),
+    ...sandboxExecutionBrokerAuthorityFromSessionAuthority(
+      configuredExecutionAuthority,
+      process.cwd(),
+    ),
+  });
   const session = {
+    abortController: new AbortController(),
+    abortTerminal: vi.fn(),
     conversationId,
     permissionModeRegistry,
+    get sessionConfiguration() {
+      return stateObject.sessionConfiguration;
+    },
     eventLog: {
       subscribe: (listener: (event: unknown) => void) => {
         eventLogSubscribers.push(listener);
@@ -101,10 +187,20 @@ function makeRunnerHarness(opts: {
         if (index >= 0) phaseSubscribers.splice(index, 1);
       };
     },
-    emit: vi.fn(),
+    prepareEmit: vi.fn((event: Record<string, unknown>) => {
+      const stamped = { ...event, seq: ++lastSeq };
+      rolloutItems.push({ type: "event_msg", payload: stamped });
+      return { event: stamped, publish: () => stamped };
+    }),
+    publishPreparedEvent: vi.fn((event: unknown) => event),
+    emit: vi.fn((event: Record<string, unknown>) => {
+      const prepared = session.prepareEmit(event);
+      return prepared.publish();
+    }),
     services: {
       conversationThreadManager: stub,
-      configStore: opts.configStore,
+      configStore,
+      sandboxExecutionBroker,
     },
     setPendingProviderSwitch: (spec: {
       provider: string;
@@ -129,9 +225,37 @@ function makeRunnerHarness(opts: {
   };
   const rolloutStore = {
     rolloutPath: `/tmp/${conversationId}.jsonl`,
-    readAll: () => [],
+    readAll: () => [...rolloutItems],
+    recordRunRuntimeSettingsEvent: vi.fn(() => {}),
+    syncCanonicalTail: vi.fn(() => {}),
   };
   const bootstrap = vi.fn(async () => ({
+    workspaceRoot: process.cwd(),
+    configStore,
+    get configuredExecutionAuthority() {
+      return configuredExecutionAuthority;
+    },
+    prepareConfiguredExecutionAuthority: (config: Record<string, unknown>) => {
+      const previous = configuredExecutionAuthority;
+      const authority = sessionExecutionAuthorityFromAgenCConfig({
+        config,
+        workspaceRoot: process.cwd(),
+        projectTrust: "trusted",
+      });
+      let committed = false;
+      return {
+        authority,
+        commit: () => {
+          configuredExecutionAuthority = authority;
+          committed = true;
+        },
+        rollback: () => {
+          if (!committed) return;
+          configuredExecutionAuthority = previous;
+          committed = false;
+        },
+      };
+    },
     session,
     rolloutStore,
     registry: { tools: [], toLLMTools: () => [], dispatch: vi.fn() },
@@ -184,16 +308,17 @@ describe("daemon config/model state refresh + atomicity", () => {
   });
 
   it("applyAgentConfig still reloads + stages for a known profile", async () => {
-    const reload = vi.fn(async () => ({}));
+    const config = {
+      model: "base-model",
+      model_provider: "openai",
+      profiles: {
+        fast: { model: "fast-model", model_provider: "openai" },
+      },
+    };
+    const reload = vi.fn(async () => config);
     const { runner } = makeRunnerHarness({
       configStore: {
-        current: () => ({
-          model: "base-model",
-          model_provider: "openai",
-          profiles: {
-            fast: { model: "fast-model", model_provider: "openai" },
-          },
-        }),
+        current: () => config,
         reload,
       },
     });

@@ -22,6 +22,8 @@ import type { QuerySource } from '../../constants/querySource.js'
 import { getSystemContext, getUserContext } from '../../context.js'
 import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
 import { requireCurrentRuntimeSession } from '../../session/current-session.js'
+import { transitionPermissionMode } from '../../permissions/permission-mode.js'
+import type { ToolPermissionContext as CanonicalToolPermissionContext } from '../../permissions/types.js'
 import { createSessionMcpSamplingHandlers } from '../../session/mcp-startup.js'
 import { runTurnCompat } from '../../session/turn-compat.js'
 import { getDumpPromptsPath } from '../../services/api/dumpPrompts.js'
@@ -42,7 +44,6 @@ import { killShellTasksForAgent } from '../../tasks/LocalShellTask/killShellTask
 import type { AgentId } from '../../types/ids.js'
 import type {
   AdditionalWorkingDirectory,
-  InternalPermissionMode,
 } from '../../types/permissions.js'
 import type { HooksSettings } from '../../schemas/hooks.js'
 import type {
@@ -91,6 +92,7 @@ import {
 } from '../../utils/systemPromptType.js'
 import type { ContentReplacementState } from '../../utils/toolResultStorage.js'
 import { createAgentId } from '../../utils/uuid.js'
+import { getCwd } from '../../utils/cwd.js'
 import { resolveAgentTools } from './agentToolUtils.js'
 import {
   beginLegacyAgentSpawnAdmission,
@@ -536,25 +538,62 @@ export async function* runAgent({
   const agentGetAppState = () => {
     const state = toolUseContext.getAppState()
     let toolPermissionContext = state.toolPermissionContext
+    const workspacePath = getCwd()
+    const canonicalLiveContext =
+      toolPermissionContext as unknown as CanonicalToolPermissionContext
+    const validatedLiveContext = transitionPermissionMode(
+      canonicalLiveContext.mode,
+      canonicalLiveContext.mode,
+      canonicalLiveContext,
+      { workspacePath },
+    )
+    if ('error' in validatedLiveContext) {
+      logForDebugging(
+        `[Agent: ${agentDefinition.agentType}] Refusing inherited bypassPermissions without exact cwd consent for ${workspacePath}`,
+        { level: 'warn' },
+      )
+      toolPermissionContext = {
+        ...toolPermissionContext,
+        mode: 'default',
+      }
+    } else {
+      toolPermissionContext =
+        validatedLiveContext as unknown as typeof toolPermissionContext
+    }
 
     // Override permission mode if agent defines one (unless parent is bypassPermissions, acceptEdits, or auto)
     if (
       agentPermissionMode &&
-      state.toolPermissionContext.mode !== 'bypassPermissions' &&
-      state.toolPermissionContext.mode !== 'acceptEdits' &&
+      toolPermissionContext.mode !== 'bypassPermissions' &&
+      toolPermissionContext.mode !== 'acceptEdits' &&
       !(
         feature('TRANSCRIPT_CLASSIFIER') &&
-        state.toolPermissionContext.mode === 'auto'
+        toolPermissionContext.mode === 'auto'
       )
     ) {
-      toolPermissionContext = {
-        ...toolPermissionContext,
-        // agentPermissionMode is the permissions/types PermissionMode (which
-        // also lists the internal-only 'unattended'), while the context's mode
-        // is InternalPermissionMode. parsePermissionMode only ever yields
-        // USER_ADDRESSABLE_PERMISSION_MODES, all of which are valid
-        // InternalPermissionMode values, so this narrowing is sound.
-        mode: agentPermissionMode as InternalPermissionMode,
+      try {
+        const transitioned = transitionPermissionMode(
+          toolPermissionContext.mode,
+          agentPermissionMode,
+          toolPermissionContext as unknown as CanonicalToolPermissionContext,
+          { workspacePath },
+        )
+        if ('error' in transitioned) {
+          logForDebugging(
+            `[Agent: ${agentDefinition.agentType}] Refusing configured bypassPermissions without exact cwd consent for ${workspacePath}`,
+            { level: 'warn' },
+          )
+        } else {
+          toolPermissionContext = {
+            ...transitioned,
+            mode: agentPermissionMode,
+          } as unknown as typeof toolPermissionContext
+        }
+      } catch (error) {
+        logForDebugging(
+          `[Agent: ${agentDefinition.agentType}] Refusing permission mode ${agentPermissionMode}: ${String(error)}`,
+          { level: 'warn' },
+        )
       }
     }
 

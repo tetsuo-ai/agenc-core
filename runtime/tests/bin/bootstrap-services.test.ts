@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -19,9 +19,21 @@ import {
 import { createHookExecutionAuthority } from "../hooks/execution-authority.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 import { defaultConfig } from "../config/schema.js";
+import {
+  COORDINATED_CONFIG_STORE_PUBLICATION,
+  ConfigStore,
+  type PreparedConfigStoreReload,
+} from "../config/store.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
-import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import {
+  PermissionAuthorityUnavailableError,
+  PermissionModeRegistry,
+} from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import {
+  applyPermissionRulesSnapshot,
+  readPermissionRulesSnapshot,
+} from "../permissions/settings.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
 import type { PostToolUseHook } from "../tools/hooks.js";
 import {
@@ -894,6 +906,284 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
 
       expect(stopBackgroundPolling).toHaveBeenCalledTimes(1);
     } finally {
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a concurrent mode mutation before applying a reloaded permission generation", async () => {
+    mockPolicyLimits();
+    const home = mkdtempSync(join(tmpdir(), "agenc-permission-reload-home-"));
+    const workspace = mkdtempSync(
+      join(tmpdir(), "agenc-permission-reload-workspace-"),
+    );
+    const configPath = join(home, "config.toml");
+    writeFileSync(configPath, "config_version = 2\n", "utf8");
+    const configStore = new ConfigStore({
+      home,
+      cwd: workspace,
+      projectRoot: workspace,
+      projectTrusted: true,
+      env: { AGENC_HOME: home, HOME: home },
+    });
+    await configStore.reload();
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
+    let releaseModeChange = (): void => {};
+    let removeFailureHook = (): void => {};
+    let handle: ReturnType<typeof buildBootstrapSessionServices> | undefined;
+    try {
+      handle = buildBootstrapSessionServices({
+        provider: {
+          name: "anthropic",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          }),
+          chatStream: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          }),
+          healthCheck: async () => true,
+        },
+        providerName: "anthropic",
+        registry: { tools: [] } as never,
+        mcpManager: {} as never,
+        unifiedExecManager: {} as never,
+        sandboxExecutionBroker: explicitDangerBroker,
+        permissionModeRegistry,
+        configStore,
+        toolApprovals: {
+          get: () => undefined,
+          set: () => {},
+          clear: () => {},
+          withCachedApproval: async (request: {
+            fetchDecision: () => Promise<unknown>;
+          }) => request.fetchDecision(),
+        } as never,
+        networkApproval: {
+          clearSessionHosts: () => {},
+          requestNetworkApproval: async () => ({ kind: "approved" }),
+          requestDeferredApproval: async () => ({ kind: "approved" }),
+        } as never,
+        modelsManager: {} as never,
+        agencHome: home,
+        workspaceRoot: workspace,
+        env: { HOME: home, SHELL: "/bin/sh" },
+        conversationId: "session-permission-reload",
+        model: "test-model",
+        sessionConfiguration: {} as never,
+        runtimeOptions: TEST_RUNTIME_OPTIONS,
+        admissionRequired: false,
+      });
+
+      let markModeChangeStarted!: () => void;
+      const modeChangeStarted = new Promise<void>((resolve) => {
+        markModeChangeStarted = resolve;
+      });
+      const modeChangeGate = new Promise<void>((resolve) => {
+        releaseModeChange = resolve;
+      });
+      const modeChange = permissionModeRegistry.transact(async (current) => {
+        markModeChangeStarted();
+        await modeChangeGate;
+        return {
+          next: { ...current, mode: "plan" },
+          result: () => undefined,
+        };
+      });
+      await modeChangeStarted;
+
+      writeFileSync(
+        configPath,
+        [
+          "config_version = 2",
+          "[permissions]",
+          'deny = ["system.bash(rm:*)"]',
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await configStore.reload();
+      releaseModeChange();
+      await expect(modeChange).rejects.toBeInstanceOf(
+        PermissionAuthorityUnavailableError,
+      );
+
+      await vi.waitFor(() => {
+        expect(permissionModeRegistry.current()).toMatchObject({
+          mode: "default",
+          alwaysDenyRules: {
+            userSettings: ["system.bash(rm:*)"],
+          },
+        });
+      });
+      expect(Object.isFrozen(permissionModeRegistry.current())).toBe(true);
+
+      const failedPublication = Promise.withResolvers<void>();
+      removeFailureHook = permissionModeRegistry.installBeforeUpdateHook(() => {
+        failedPublication.resolve();
+        throw new Error("injected permission reload durability failure");
+      });
+      writeFileSync(
+        configPath,
+        [
+          "config_version = 2",
+          "[permissions]",
+          'deny = ["system.bash(curl:*)"]',
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      await configStore.reload();
+      await failedPublication.promise;
+
+      expect(configStore.current().permissions?.deny).toEqual([
+        "system.bash(curl:*)",
+      ]);
+      expect(() => permissionModeRegistry.current()).toThrow(
+        PermissionAuthorityUnavailableError,
+      );
+      expect(() => handle!.execPolicy.current()).toThrow(
+        PermissionAuthorityUnavailableError,
+      );
+
+      removeFailureHook();
+      removeFailureHook = (): void => {};
+      await configStore.reload();
+      await vi.waitFor(() => {
+        expect(permissionModeRegistry.current()).toMatchObject({
+          mode: "default",
+          alwaysDenyRules: {
+            userSettings: ["system.bash(curl:*)"],
+          },
+        });
+      });
+      expect(Object.isFrozen(permissionModeRegistry.current())).toBe(true);
+    } finally {
+      releaseModeChange();
+      removeFailureHook();
+      await handle?.shutdown();
+      rmSync(home, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("does not re-enter permission publication for a registry-coordinated config reload", async () => {
+    mockPolicyLimits();
+    const home = mkdtempSync(join(tmpdir(), "agenc-coordinated-reload-home-"));
+    const workspace = mkdtempSync(
+      join(tmpdir(), "agenc-coordinated-reload-workspace-"),
+    );
+    const configPath = join(home, "config.toml");
+    writeFileSync(configPath, "config_version = 2\n", "utf8");
+    const configStore = new ConfigStore({
+      home,
+      cwd: workspace,
+      projectRoot: workspace,
+      projectTrusted: true,
+      env: { AGENC_HOME: home, HOME: home },
+    });
+    await configStore.reload();
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
+    let handle: ReturnType<typeof buildBootstrapSessionServices> | undefined;
+    let removeCoordinator = (): void => {};
+    try {
+      handle = buildBootstrapSessionServices({
+        provider: {
+          name: "anthropic",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          }),
+          chatStream: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+          }),
+          healthCheck: async () => true,
+        },
+        providerName: "anthropic",
+        registry: { tools: [] } as never,
+        mcpManager: {} as never,
+        unifiedExecManager: {} as never,
+        sandboxExecutionBroker: explicitDangerBroker,
+        permissionModeRegistry,
+        configStore,
+        toolApprovals: {
+          get: () => undefined,
+          set: () => {},
+          clear: () => {},
+          withCachedApproval: async (request: {
+            fetchDecision: () => Promise<unknown>;
+          }) => request.fetchDecision(),
+        } as never,
+        networkApproval: {
+          clearSessionHosts: () => {},
+          requestNetworkApproval: async () => ({ kind: "approved" }),
+          requestDeferredApproval: async () => ({ kind: "approved" }),
+        } as never,
+        modelsManager: {} as never,
+        agencHome: home,
+        workspaceRoot: workspace,
+        env: { HOME: home, SHELL: "/bin/sh" },
+        conversationId: "session-coordinated-permission-reload",
+        model: "test-model",
+        sessionConfiguration: {} as never,
+        runtimeOptions: TEST_RUNTIME_OPTIONS,
+        admissionRequired: false,
+      });
+
+      const contextPublications = vi.fn();
+      permissionModeRegistry.subscribeToContextChange(contextPublications);
+      removeCoordinator = permissionModeRegistry.installPublicationCoordinator(
+        async (_next, _current, metadata, publication) => {
+          const prepared = (
+            metadata as {
+              readonly preparedConfigReload: PreparedConfigStoreReload;
+            }
+          ).preparedConfigReload;
+          prepared.commit();
+          await publication.commit();
+          prepared.publish(COORDINATED_CONFIG_STORE_PUBLICATION);
+          prepared.settle();
+        },
+      );
+
+      writeFileSync(
+        configPath,
+        [
+          "config_version = 2",
+          "[permissions]",
+          'deny = ["system.bash(curl:*)"]',
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      const preparedConfigReload = await configStore.prepareReload();
+      const permissionSnapshot = readPermissionRulesSnapshot(
+        preparedConfigReload.authority,
+      );
+      await permissionModeRegistry.transact((current) => ({
+        next: applyPermissionRulesSnapshot(current, permissionSnapshot),
+        metadata: { preparedConfigReload },
+        result: () => undefined,
+      }));
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      expect(permissionModeRegistry.current().alwaysDenyRules).toMatchObject({
+        userSettings: ["system.bash(curl:*)"],
+      });
+      expect(contextPublications).toHaveBeenCalledOnce();
+    } finally {
+      removeCoordinator();
+      await handle?.shutdown();
       rmSync(home, { recursive: true, force: true });
       rmSync(workspace, { recursive: true, force: true });
     }

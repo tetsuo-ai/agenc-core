@@ -157,13 +157,12 @@ export function parseSettingSourcesFlag(flag: string): SettingSource[] {
  * @returns Array of enabled SettingSource values
  */
 export function getEnabledSettingSources(): SettingSource[] {
-  const allowed = getAllowedSettingSources()
-
-  // Always include policy and flag settings
-  const result = new Set<SettingSource>(allowed as SettingSource[])
-  result.add('policySettings')
-  result.add('flagSettings')
-  return Array.from(result)
+  const enabled = new Set<SettingSource>([
+    ...(getAllowedSettingSources() as SettingSource[]),
+    'flagSettings',
+    'policySettings',
+  ])
+  return SETTING_SOURCES.filter(source => enabled.has(source))
 }
 
 /**

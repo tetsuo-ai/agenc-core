@@ -149,6 +149,57 @@ describe('turn compatibility catalog boundary', () => {
     expect(parentBroker.cwd).toBe(authority)
   })
 
+  it('inherits the live permission context instead of inventing bypass authority', async () => {
+    const cwd = tempRoot('permission-inheritance')
+    const parent = foregroundParent(cwd)
+    const turn = await createTurnCompatSession(parent, {
+      messages: [],
+      systemPrompt: asSystemPrompt(['system']),
+      userContext: {},
+      systemContext: {},
+      canUseTool: async () => ({ behavior: 'allow' }),
+      toolUseContext: foregroundToolContext(cwd, [], undefined),
+      querySource: 'repl_main_thread',
+    })
+
+    expect(turn.session.services.permissionModeRegistry.current().mode).toBe(
+      'dontAsk',
+    )
+
+    await turn.session.shutdown()
+    await parent.shutdown()
+  })
+
+  it('refuses to inherit bypass authority bound to a different cwd', async () => {
+    const cwd = tempRoot('permission-bypass-cwd')
+    const otherCwd = tempRoot('permission-bypass-other')
+    const parent = foregroundParent(cwd)
+    const toolUseContext = foregroundToolContext(cwd, [], undefined)
+    const originalGetAppState = toolUseContext.getAppState
+    toolUseContext.getAppState = () => ({
+      ...originalGetAppState(),
+      toolPermissionContext: createEmptyToolPermissionContext({
+        mode: 'bypassPermissions',
+        isBypassPermissionsModeAvailable: true,
+        bypassPermissionsAcceptedIn: [otherCwd],
+      }),
+    })
+
+    await expect(
+      createTurnCompatSession(parent, {
+        messages: [],
+        systemPrompt: asSystemPrompt(['system']),
+        userContext: {},
+        systemContext: {},
+        canUseTool: async () => ({ behavior: 'allow' }),
+        toolUseContext,
+        querySource: 'repl_main_thread',
+      }),
+    ).rejects.toThrow(/exact canonical cwd consent/u)
+
+    await parent.shutdown()
+  })
+
   it('injects an explicitly bound child admission client', async () => {
     const cwd = tempRoot('child-admission')
     const childAdmission = {

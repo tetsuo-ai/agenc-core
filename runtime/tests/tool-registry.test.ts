@@ -29,6 +29,8 @@ import {
   createEditorProposalTool,
   EDITOR_PROPOSAL_TOOL_NAME,
 } from "./tools/system/editor-proposal.js";
+import { ConfigStore } from "./config/store.js";
+import { defaultConfig } from "./config/schema.js";
 
 function buildToolRegistry(options: BuildToolRegistryOptions) {
   return buildProductionToolRegistry({
@@ -1520,16 +1522,12 @@ describe("tool-registry dynamic and deferred catalog", () => {
       createEmptyToolPermissionContext({ mode: "acceptEdits" }),
     );
     const warnings: string[] = [];
-    let syncCount = 0;
     let exited = false;
     let plan = "# Plan\n\nDo it.";
     const registry = buildToolRegistry({
       workspaceRoot: "/tmp",
       workflowController: {
         getPermissionModeRegistry: () => permissionRegistry,
-        syncPermissionContext: async () => {
-          syncCount += 1;
-        },
         emitWarning: (cause) => {
           warnings.push(cause);
         },
@@ -1563,7 +1561,6 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(exitedResult.content).toContain("Approved Plan (edited by user)");
     expect(exitedResult.content).toContain("# Edited Plan");
     expect(permissionRegistry.current().mode).toBe("acceptEdits");
-    expect(syncCount).toBe(2);
     expect(warnings).toEqual(["mode_changed_to_plan", "mode_exited_plan"]);
     expect(exited).toBe(true);
   });
@@ -1577,7 +1574,6 @@ describe("tool-registry dynamic and deferred catalog", () => {
       workspaceRoot: "/tmp",
       workflowController: {
         getPermissionModeRegistry: () => permissionRegistry,
-        syncPermissionContext: async () => {},
         getPlanFilePath: () => "/tmp/agenc/plans/plan.md",
         readPlan: () => plan,
         writePlan: async (content) => {
@@ -1643,7 +1639,6 @@ describe("tool-registry dynamic and deferred catalog", () => {
       workspaceRoot: "/tmp",
       workflowController: {
         getPermissionModeRegistry: () => permissionRegistry,
-        syncPermissionContext: async () => {},
         emitPlanExited: () => {
           exited = true;
         },
@@ -1682,6 +1677,58 @@ describe("tool-registry dynamic and deferred catalog", () => {
     expect(exited).toBe(true);
   });
 
+  test("ExitPlanMode does not create session allow rules under managed-only policy", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-plan-managed-rules-"));
+    const configStore = new ConfigStore({
+      home,
+      env: { AGENC_HOME: home, HOME: home },
+      cwd: "/tmp",
+      base: {
+        ...defaultConfig(),
+        allowManagedPermissionRulesOnly: true,
+      },
+    });
+    try {
+      const permissionRegistry = new PermissionModeRegistry(
+        createEmptyToolPermissionContext({
+          mode: "plan",
+          prePlanMode: "default",
+        }),
+      );
+      const registry = buildToolRegistry({
+        workspaceRoot: "/tmp",
+        workflowController: {
+          getPermissionModeRegistry: () => permissionRegistry,
+          getConfigStore: () => configStore,
+          getPlanFilePath: () => "/tmp/agenc/plans/plan.md",
+          readPlan: () => "# Managed Plan\n\nRun the checks.",
+        },
+      });
+      recordExitPlanModeApproval("exit-managed-rules", {
+        action: "approve",
+        mode: "acceptEdits",
+        applyAllowedPrompts: true,
+        allowedPrompts: [{ tool: "system.bash", prompt: "npm test" }],
+      });
+
+      const result = await registry.dispatch({
+        id: "exit-managed-rules",
+        name: "ExitPlanMode",
+        arguments: "{}",
+      });
+
+      expect(result.isError).toBeUndefined();
+      expect(permissionRegistry.current().mode).toBe("acceptEdits");
+      expect(
+        permissionRegistry.current().alwaysAllowRules.session,
+      ).toBeUndefined();
+      expect(result.metadata).not.toHaveProperty("appliedPlanPermissionUpdates");
+    } finally {
+      configStore.stateRepository.close();
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
   test("ExitPlanMode invokes the controller clear-context hook when requested by TUI approval", async () => {
     const permissionRegistry = new PermissionModeRegistry(
       createEmptyToolPermissionContext({
@@ -1694,7 +1741,6 @@ describe("tool-registry dynamic and deferred catalog", () => {
       workspaceRoot: "/tmp",
       workflowController: {
         getPermissionModeRegistry: () => permissionRegistry,
-        syncPermissionContext: async () => {},
         getPlanFilePath: () => "/tmp/agenc/plans/plan.md",
         readPlan: () => "# Plan\n\nClear context.",
         requestContextClearAfterPlanApproval: async (plan) => {
@@ -1729,7 +1775,6 @@ describe("tool-registry dynamic and deferred catalog", () => {
       workspaceRoot: "/tmp",
       workflowController: {
         getPermissionModeRegistry: () => permissionRegistry,
-        syncPermissionContext: async () => {},
         getPlanFilePath: () => "/tmp/agenc/plans/plan.md",
         readPlan: () => "# Plan\n\nInitial.",
         writePlan: async () => {},

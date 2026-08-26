@@ -120,7 +120,6 @@ const harness = vi.hoisted(() => {
     keybindingRegistrations: [] as Array<Record<string, unknown>>,
     modelPickerProps: undefined as undefined | Record<string, unknown>,
     nextPermissionMode: "plan",
-    cyclePermissionModeNextMode: null as null | string,
     autoModeGateEnabled: true,
     platform: "linux",
     quickOpenProps: undefined as undefined | Record<string, unknown>,
@@ -132,6 +131,12 @@ const harness = vi.hoisted(() => {
     teamsDialogProps: undefined as undefined | Record<string, unknown>,
     terminal: undefined as undefined | string,
     thinkingToggleProps: undefined as undefined | Record<string, unknown>,
+    transitionPermissionMode: vi.fn(
+      (_from: unknown, _to: unknown, context: Record<string, unknown>) => ({
+        ...context,
+        transitioned: true,
+      }),
+    ),
     typeahead: {
       commandArgumentHint: undefined as undefined | string,
       inlineGhostText: undefined as undefined | string,
@@ -230,7 +235,6 @@ const harness = vi.hoisted(() => {
       harness.keybindingRegistrations = [];
       harness.modelPickerProps = undefined;
       harness.nextPermissionMode = "plan";
-      harness.cyclePermissionModeNextMode = null;
       harness.autoModeGateEnabled = true;
       harness.platform = "linux";
       harness.quickOpenProps = undefined;
@@ -242,6 +246,7 @@ const harness = vi.hoisted(() => {
       harness.teamsDialogProps = undefined;
       harness.terminal = undefined;
       harness.thinkingToggleProps = undefined;
+      harness.transitionPermissionMode.mockClear();
       harness.typeahead = {
         commandArgumentHint: undefined,
         inlineGhostText: undefined,
@@ -617,18 +622,9 @@ vi.mock("../../../utils/permissions/autoModeState.js", () => ({
   setAutoModeActive: vi.fn(),
 }));
 
-vi.mock("../../../utils/permissions/getNextPermissionMode.js", () => ({
-  cyclePermissionMode: (context: unknown) => ({
-    context,
-    nextMode: harness.cyclePermissionModeNextMode ?? harness.nextPermissionMode,
-  }),
+vi.mock("../../../permissions/permission-mode.js", () => ({
   getNextPermissionMode: () => harness.nextPermissionMode,
-}));
-
-vi.mock("../../../permissions/permission-mode.js", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  transitionPermissionMode: (_from: unknown, _to: unknown, context: unknown) =>
-    context,
+  transitionPermissionMode: harness.transitionPermissionMode,
   isAutoModeGateEnabled: () => harness.autoModeGateEnabled,
 }));
 
@@ -1425,7 +1421,7 @@ describe("PromptInput render surface", () => {
     }
   });
 
-  test("picks a permission mode by digit while the mode switcher is open", async () => {
+  test("requests a permission mode by digit without projecting it early", async () => {
     const setToolPermissionContext = vi.fn();
     const rendered = await renderPromptInput({ setToolPermissionContext });
 
@@ -1460,7 +1456,7 @@ describe("PromptInput render surface", () => {
       expect(setToolPermissionContext).toHaveBeenCalledWith(
         expect.objectContaining({ mode: "plan" }),
       );
-      expect(harness.appState.toolPermissionContext.mode).toBe("plan");
+      expect(harness.appState.toolPermissionContext.mode).toBe("default");
     } finally {
       await rendered.dispose();
     }
@@ -3712,56 +3708,123 @@ describe("PromptInput render surface", () => {
     }
   });
 
-  test("previews first-time auto mode before applying transition side effects", async () => {
-    vi.useFakeTimers();
-    harness.features.TRANSCRIPT_CLASSIFIER = true;
-    harness.hasAutoModeOptIn = false;
-    harness.nextPermissionMode = "auto";
-    const setHelpOpen = vi.fn();
-    const setToolPermissionContext = vi.fn();
-    const rendered = await renderPromptInput({
-      helpOpen: true,
-      setHelpOpen,
-      setToolPermissionContext,
-    });
-
-    try {
-      await waitForPromptInputProps();
-
-      harness.keybindings["chat:cycleMode"]?.();
-
-      expect(harness.appState.toolPermissionContext.mode).toBe("auto");
-      expect(setToolPermissionContext).toHaveBeenCalledWith(
-        expect.objectContaining({ mode: "auto" }),
+  test.each(["local registry update", "daemon permission RPC"])(
+    "keeps first-time auto preview out of the %s until acceptance",
+    async (authorityPath) => {
+      vi.useFakeTimers();
+      harness.features.TRANSCRIPT_CLASSIFIER = true;
+      harness.hasAutoModeOptIn = false;
+      harness.nextPermissionMode = "auto";
+      const setHelpOpen = vi.fn();
+      const localRegistryUpdate = vi.fn();
+      const daemonPermissionRpc = vi.fn();
+      const updatePermissionAuthority = vi.fn(
+        (context: Record<string, unknown>) => {
+          if (authorityPath === "local registry update") {
+            localRegistryUpdate(context);
+          } else {
+            daemonPermissionRpc(context.mode);
+          }
+        },
       );
-      expect(setHelpOpen).toHaveBeenCalledWith(false);
+      const rendered = await renderPromptInput({
+        helpOpen: true,
+        setHelpOpen,
+        setToolPermissionContext: updatePermissionAuthority,
+      });
 
-      vi.advanceTimersByTime(400);
-    } finally {
-      vi.clearAllTimers();
-      vi.useRealTimers();
-      await rendered.dispose();
-    }
-  });
+      try {
+        await waitForPromptInputProps();
+        harness.transitionPermissionMode.mockClear();
+
+        harness.keybindings["chat:cycleMode"]?.();
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(harness.appState.toolPermissionContext.mode).toBe("default");
+        expect(updatePermissionAuthority).not.toHaveBeenCalled();
+        expect(localRegistryUpdate).not.toHaveBeenCalled();
+        expect(daemonPermissionRpc).not.toHaveBeenCalled();
+        expect(harness.transitionPermissionMode).not.toHaveBeenCalled();
+        expect(harness.promptInputFooterProps?.toolPermissionContext).toEqual(
+          expect.objectContaining({ mode: "auto" }),
+        );
+        expect(setHelpOpen).toHaveBeenCalledWith(false);
+
+        const latestContext = {
+          ...harness.appState.toolPermissionContext,
+          alwaysAskRules: { session: ["system.bash(git status)"] },
+          mode: "plan",
+        };
+        harness.appState.toolPermissionContext = latestContext;
+
+        await vi.advanceTimersByTimeAsync(400);
+        await vi.advanceTimersByTimeAsync(0);
+        expect(harness.autoModeOptInProps).toBeDefined();
+        expect(updatePermissionAuthority).not.toHaveBeenCalled();
+        expect(localRegistryUpdate).not.toHaveBeenCalled();
+        expect(daemonPermissionRpc).not.toHaveBeenCalled();
+        expect(harness.transitionPermissionMode).not.toHaveBeenCalled();
+
+        (harness.autoModeOptInProps?.onAccept as () => void)();
+
+        expect(harness.transitionPermissionMode).toHaveBeenCalledTimes(1);
+        expect(harness.transitionPermissionMode).toHaveBeenCalledWith(
+          "plan",
+          "auto",
+          latestContext,
+        );
+        expect(updatePermissionAuthority).toHaveBeenCalledTimes(1);
+        expect(updatePermissionAuthority).toHaveBeenCalledWith(
+          expect.objectContaining({
+            alwaysAskRules: latestContext.alwaysAskRules,
+            mode: "auto",
+            transitioned: true,
+          }),
+        );
+        if (authorityPath === "local registry update") {
+          expect(localRegistryUpdate).toHaveBeenCalledTimes(1);
+          expect(localRegistryUpdate).toHaveBeenCalledWith(
+            expect.objectContaining({ mode: "auto", transitioned: true }),
+          );
+          expect(daemonPermissionRpc).not.toHaveBeenCalled();
+        } else {
+          expect(daemonPermissionRpc).toHaveBeenCalledTimes(1);
+          expect(daemonPermissionRpc).toHaveBeenCalledWith("auto");
+          expect(localRegistryUpdate).not.toHaveBeenCalled();
+        }
+      } finally {
+        vi.clearAllTimers();
+        vi.useRealTimers();
+        await rendered.dispose();
+      }
+    },
+  );
 
   test("clears pending auto-mode opt-in timer on unmount", async () => {
     vi.useFakeTimers();
     harness.features.TRANSCRIPT_CLASSIFIER = true;
     harness.hasAutoModeOptIn = false;
     harness.nextPermissionMode = "auto";
-    const rendered = await renderPromptInput();
+    const updatePermissionAuthority = vi.fn();
+    const rendered = await renderPromptInput({
+      setToolPermissionContext: updatePermissionAuthority,
+    });
 
     try {
       await waitForPromptInputProps();
 
       harness.keybindings["chat:cycleMode"]?.();
       expect(vi.getTimerCount()).toBeGreaterThan(0);
+      expect(updatePermissionAuthority).not.toHaveBeenCalled();
+      expect(harness.transitionPermissionMode).not.toHaveBeenCalled();
 
       rendered.root.unmount();
       rendered.stdin.end();
       rendered.stdout.end();
 
       expect(vi.getTimerCount()).toBe(0);
+      expect(updatePermissionAuthority).not.toHaveBeenCalled();
+      expect(harness.appState.toolPermissionContext.mode).toBe("default");
     } finally {
       vi.clearAllTimers();
       vi.useRealTimers();
@@ -3812,7 +3875,6 @@ describe("PromptInput render surface", () => {
       );
 
       harness.nextPermissionMode = "default";
-      harness.cyclePermissionModeNextMode = "default";
       harness.keybindings["chat:cycleMode"]?.();
       await sleep(0);
 

@@ -1,8 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
   applyPermissionRulesToPermissionContext,
-  applyPermissionUpdate,
-  applyPermissionUpdates,
   clearAllRulesFromSource,
   convertRulesToUpdates,
   escapeRuleContent,
@@ -24,6 +22,10 @@ import {
   toolAlwaysAllowedRule,
   unescapeRuleContent,
 } from "./rules.js";
+import {
+  applyPermissionUpdate,
+  applyPermissionUpdates,
+} from "./permission-updates.js";
 import {
   createEmptyToolPermissionContext,
   type PermissionRule,
@@ -436,6 +438,18 @@ describe("applyPermissionUpdate", () => {
     expect(out.mode).toBe("acceptEdits");
   });
 
+  test("setMode cannot activate bypassPermissions", () => {
+    const ctx = createEmptyToolPermissionContext();
+    expect(() =>
+      applyPermissionUpdate(ctx, {
+        type: "setMode",
+        destination: "session",
+        mode: "bypassPermissions",
+      }),
+    ).toThrow(/exact-cwd consent transition/u);
+    expect(ctx.mode).toBe("default");
+  });
+
   test("addRules appends to the correct source bucket", () => {
     const ctx = createEmptyToolPermissionContext();
     const out = applyPermissionUpdate(ctx, {
@@ -445,6 +459,25 @@ describe("applyPermissionUpdate", () => {
       rules: [{ toolName: "FileRead" }],
     });
     expect(out.alwaysAllowRules.session).toEqual(["FileRead"]);
+  });
+
+  test("addRules keeps source buckets canonical when a rule is added twice", () => {
+    const duplicated = applyPermissionUpdate(
+      applyPermissionUpdate(createEmptyToolPermissionContext(), {
+        type: "addRules",
+        destination: "session",
+        behavior: "deny",
+        rules: [{ toolName: "Write" }],
+      }),
+      {
+        type: "addRules",
+        destination: "session",
+        behavior: "deny",
+        rules: [{ toolName: "Write" }],
+      },
+    );
+
+    expect(duplicated.alwaysDenyRules.session).toEqual(["Write"]);
   });
 
   test("replaceRules replaces the entire bucket", () => {

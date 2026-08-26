@@ -201,8 +201,8 @@ function mkProviderWithClient(client: ProviderHttpClient): LLMProvider {
 
 /**
  * Minimal `Session` builder for the W3 integration tests. Mirrors the
- * loose-cast approach in `idle-input.test.ts` so the constructor's
- * permission-registry bootstrap is exercised.
+ * loose-cast approach in `idle-input.test.ts` while supplying the canonical
+ * permission registry required by every live session.
  */
 function buildSession(
   overrides: {
@@ -228,6 +228,9 @@ function buildSession(
     agentControl: {
       shutdownAgentTree: vi.fn(),
     },
+    permissionModeRegistry: new PermissionModeRegistry(
+      ctxWithPermissionMode("default"),
+    ),
     provider: mkProvider(),
     registry: {
       tools: [],
@@ -286,17 +289,19 @@ async function withEnv<T>(
 }
 
 // ─────────────────────────────────────────────────────────────────────
-// SessionServices.permissionModeRegistry bootstrap
+// SessionServices.permissionModeRegistry authority
 // ─────────────────────────────────────────────────────────────────────
 
-describe("SessionServices.permissionModeRegistry default bootstrap", () => {
-  it("constructs a default registry when services.permissionModeRegistry is omitted", () => {
-    const session = buildSession();
-    // The registry must exist after construction even though the caller
-    // cast the services through `unknown` without supplying one.
-    const registry = session.services.permissionModeRegistry;
-    expect(registry).toBeInstanceOf(PermissionModeRegistry);
-    expect(registry.current().mode).toBe("default");
+describe("SessionServices.permissionModeRegistry authority", () => {
+  it("rejects construction when services.permissionModeRegistry is omitted", () => {
+    expect(() =>
+      buildSession({
+        services: {
+          permissionModeRegistry:
+            undefined as unknown as PermissionModeRegistry,
+        },
+      }),
+    ).toThrow("Session requires services.permissionModeRegistry");
   });
 
   it("populates the default querySource when omitted", () => {
@@ -524,30 +529,6 @@ describe("Session.setPendingWorktreeState", () => {
     expect(session.pendingWorktreeState).toBeNull();
     expect(session.sessionConfiguration.cwd).toBe("/repo");
     expect(session.roleWorkspace.id).toBe("/tmp");
-  });
-});
-
-describe("Session permission-context sync", () => {
-  it("mirrors registry mode changes onto sessionConfiguration.permissionContext", async () => {
-    const registry = new PermissionModeRegistry(
-      createEmptyToolPermissionContext({ mode: "default" }),
-    );
-    const session = buildSession({
-      services: { permissionModeRegistry: registry },
-    });
-
-    expect(session.sessionConfiguration.permissionContext?.mode).toBe(
-      "default",
-    );
-
-    await registry.update(
-      createEmptyToolPermissionContext({
-        mode: "plan",
-        isAutoModeAvailable: true,
-      }),
-    );
-
-    expect(session.sessionConfiguration.permissionContext?.mode).toBe("plan");
   });
 });
 
@@ -1842,14 +1823,12 @@ describe("TurnContext.permissionMode (I-30 snapshot)", () => {
 // isPlanMode gate (T11 W3 wiring)
 // ─────────────────────────────────────────────────────────────────────
 
-describe("isPlanMode via sessionConfiguration.permissionContext.mode", () => {
+describe("isPlanMode via the per-turn permission snapshot", () => {
   it("returns true when the permission context is in plan mode", () => {
     const ctx = {
       subId: "t-plan",
       collaborationMode: { model: "test-model" },
-      sessionConfiguration: {
-        permissionContext: { mode: "plan" as const },
-      },
+      permissionMode: "plan" as const,
     } as unknown as TurnContext;
     expect(isPlanMode(ctx)).toBe(true);
   });
@@ -1867,9 +1846,7 @@ describe("isPlanMode via sessionConfiguration.permissionContext.mode", () => {
       const ctx = {
         subId: "t-nonplan",
         collaborationMode: { model: "test-model" },
-        sessionConfiguration: {
-          permissionContext: { mode },
-        },
+        permissionMode: mode,
       } as unknown as TurnContext;
       expect(isPlanMode(ctx)).toBe(false);
     }

@@ -50,6 +50,7 @@ const explicitLegacyTestBoundary = new Set([
   "config/keybindings-authority-migration.test.ts",
   "config/mcp-json-authority-migration.test.ts",
   "config/migration-quarantine-race.test.ts",
+  "config/migration-lock-release.test.ts",
   "config/migration-transaction.test.ts",
   "config/ordinary-load-no-migration.test.ts",
   "config/per-tool-config-authority.test.ts",

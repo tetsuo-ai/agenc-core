@@ -158,11 +158,8 @@ import {
   isOpus1mMergeEnabled,
   modelDisplayString,
 } from "../../../utils/model/model.js";
-import { setAutoModeActive } from "../../../utils/permissions/autoModeState.js";
 import {
   getNextPermissionMode,
-} from "../../../utils/permissions/getNextPermissionMode.js";
-import {
   isAutoModeGateEnabled,
   transitionPermissionMode,
 } from "../../../permissions/permission-mode.js";
@@ -1004,6 +1001,7 @@ function PromptInput({
       return {
         ...toolPermissionContext,
         mode: viewedTeammate.permissionMode,
+        isBypassPermissionsModeAvailable: false,
       };
     }
     return toolPermissionContext;
@@ -1105,15 +1103,23 @@ function PromptInput({
   const [showThinkingToggle, setShowThinkingToggle] = useState(false);
   const [showModeSwitcher, setShowModeSwitcher] = useState(false);
   const [showAutoModeOptIn, setShowAutoModeOptIn] = useState(false);
+  const [autoModeOptInPreview, setAutoModeOptInPreview] = useState(false);
   const promptModalOverlayActive =
     upstreamModalOverlayActive ||
     showModeSwitcher ||
     showAutoModeOptIn ||
+    autoModeOptInPreview ||
     Boolean(showBashesDialog);
   const promptKeyboardActive =
     composerInputEnabled && !promptModalOverlayActive;
-  const [previousModeBeforeAuto, setPreviousModeBeforeAuto] =
-    useState<PermissionMode | null>(null);
+  const displayedToolPermissionContext = useMemo(
+    (): ToolPermissionContext =>
+      autoModeOptInPreview
+        ? { ...effectiveToolPermissionContext, mode: "auto" }
+        : effectiveToolPermissionContext,
+    [autoModeOptInPreview, effectiveToolPermissionContext],
+  );
+  const autoModeOptInPendingRef = useRef(false);
   const autoModeOptInTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const modeSwitcherTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const modeCycleKeybindingActive =
@@ -1123,10 +1129,12 @@ function PromptInput({
     (promptKeyboardActive ||
       showModeSwitcher ||
       showAutoModeOptIn ||
+      autoModeOptInPreview ||
       Boolean(autoModeOptInTimeoutRef.current));
 
   useEffect(
     () => () => {
+      autoModeOptInPendingRef.current = false;
       if (autoModeOptInTimeoutRef.current) {
         clearTimeout(autoModeOptInTimeoutRef.current);
         autoModeOptInTimeoutRef.current = null;
@@ -2723,11 +2731,32 @@ function PromptInput({
     setShowModeSwitcher(false);
   }, []);
 
+  const clearAutoModeOptInPreview = useCallback(() => {
+    autoModeOptInPendingRef.current = false;
+    if (autoModeOptInTimeoutRef.current) {
+      clearTimeout(autoModeOptInTimeoutRef.current);
+      autoModeOptInTimeoutRef.current = null;
+    }
+    setShowAutoModeOptIn(false);
+    setAutoModeOptInPreview(false);
+  }, []);
+
   // Applies one specific permission mode. Shared by shift+tab cycling and
   // digit picks in the mode-switcher toast.
   const selectPermissionMode = useCallback((targetMode: PermissionMode) => {
     // When viewing a teammate, set their mode instead of the leader's
     if (isAgentSwarmsEnabled() && viewedTeammate && viewingAgentTaskId) {
+      if (targetMode === "bypassPermissions") {
+        addNotification({
+          key: "teammate-bypass-consent-required",
+          text:
+            "bypassPermissions is unavailable for teammate mode changes because this control cannot collect exact cwd consent.",
+          priority: "immediate",
+          color: "warning",
+          timeoutMs: 8000,
+        });
+        return;
+      }
       const teammateTaskId = viewingAgentTaskId;
       setAppState((prev) => {
         const task = prev.tasks[teammateTaskId];
@@ -2755,7 +2784,7 @@ function PromptInput({
     }
 
     logForDebugging(
-      `[auto-mode] selectPermissionMode: currentMode=${toolPermissionContext.mode} targetMode=${targetMode} isAutoModeAvailable=${toolPermissionContext.isAutoModeAvailable} showAutoModeOptIn=${showAutoModeOptIn} timeoutPending=${!!autoModeOptInTimeoutRef.current}`,
+      `[auto-mode] selectPermissionMode: currentMode=${toolPermissionContext.mode} targetMode=${targetMode} isAutoModeAvailable=${toolPermissionContext.isAutoModeAvailable} previewPending=${autoModeOptInPreview} showAutoModeOptIn=${showAutoModeOptIn} timeoutPending=${!!autoModeOptInTimeoutRef.current}`,
     );
     showModeSwitcherToast();
 
@@ -2769,29 +2798,18 @@ function PromptInput({
       isEnteringAutoModeFirstTime =
         targetMode === "auto" &&
         toolPermissionContext.mode !== "auto" &&
+        !autoModeOptInPendingRef.current &&
         !hasAutoModeOptIn() &&
         !viewingAgentTaskId; // Only show for primary agent, not subagents
     }
     if (feature("TRANSCRIPT_CLASSIFIER")) {
       if (isEnteringAutoModeFirstTime) {
-        // Store previous mode so we can revert if user declines
-        setPreviousModeBeforeAuto(toolPermissionContext.mode);
+        autoModeOptInPendingRef.current = true;
+        setAutoModeOptInPreview(true);
 
-        // Only update the UI mode label — do NOT call transitionPermissionMode
-        // or cyclePermissionMode yet; we haven't confirmed with the user.
-        setAppState((prev) => ({
-          ...prev,
-          toolPermissionContext: {
-            ...prev.toolPermissionContext,
-            mode: "auto",
-          },
-        }));
-        setToolPermissionContext({
-          ...toolPermissionContext,
-          mode: "auto",
-        });
-
-        // Show opt-in dialog after 400ms debounce
+        // Keep the preview local until the warning has been accepted. Calling
+        // setToolPermissionContext here would update the local registry or send
+        // a daemon permission RPC before consent.
         if (autoModeOptInTimeoutRef.current) {
           clearTimeout(autoModeOptInTimeoutRef.current);
         }
@@ -2815,25 +2833,23 @@ function PromptInput({
     // the decision; applying the transition here would bypass the consent.
     if (
       targetMode === "auto" &&
-      (showAutoModeOptIn || autoModeOptInTimeoutRef.current)
+      (autoModeOptInPendingRef.current ||
+        autoModeOptInPreview ||
+        showAutoModeOptIn ||
+        autoModeOptInTimeoutRef.current)
     ) {
       return;
     }
 
-    // Dismiss auto mode opt-in dialog if showing or pending (user is moving away).
-    // Do NOT revert to previousModeBeforeAuto here — cycling or picking means
-    // "select another mode", not "decline". Reverting causes a ping-pong loop:
-    // auto reverts to the prior mode, whose next mode is auto again, forever.
-    // The dialog's own decline button (handleAutoModeOptInDecline) handles revert.
+    // Moving to another mode cancels the preview. The live permission context
+    // has not changed, so there is nothing to revert.
     if (feature("TRANSCRIPT_CLASSIFIER")) {
-      if (showAutoModeOptIn || autoModeOptInTimeoutRef.current) {
-        setShowAutoModeOptIn(false);
-        if (autoModeOptInTimeoutRef.current) {
-          clearTimeout(autoModeOptInTimeoutRef.current);
-          autoModeOptInTimeoutRef.current = null;
-        }
-        setPreviousModeBeforeAuto(null);
-        // Fall through — the transition below applies the picked target.
+      if (
+        autoModeOptInPreview ||
+        showAutoModeOptIn ||
+        autoModeOptInTimeoutRef.current
+      ) {
+        clearAutoModeOptInPreview();
       }
     }
 
@@ -2844,19 +2860,21 @@ function PromptInput({
       toolPermissionContext.mode,
       targetMode,
       toolPermissionContext,
+      { workspacePath: getCwd() },
     );
 
-    // Set the mode via setAppState directly because setToolPermissionContext
-    // intentionally preserves the existing mode (to prevent coordinator mode
-    // corruption from workers). Then call setToolPermissionContext to trigger
-    // recheck of queued permission prompts.
-    setAppState((prev) => ({
-      ...prev,
-      toolPermissionContext: {
-        ...preparedContext,
-        mode: targetMode,
-      },
-    }));
+    if ("error" in preparedContext) {
+      addNotification({
+        key: "bypass-consent-required",
+        text:
+          "bypassPermissions needs explicit consent. Run /permissions accept-bypass first.",
+        priority: "immediate",
+        color: "warning",
+        timeoutMs: 8000,
+      });
+      return;
+    }
+
     setToolPermissionContext({
       ...preparedContext,
       mode: targetMode,
@@ -2874,11 +2892,13 @@ function PromptInput({
     teamContext,
     viewingAgentTaskId,
     viewedTeammate,
-    setAppState,
     setToolPermissionContext,
     helpOpen,
     showAutoModeOptIn,
+    autoModeOptInPreview,
     showModeSwitcherToast,
+    clearAutoModeOptInPreview,
+    addNotification,
   ]);
 
   // Handler for chat:cycleMode - cycle through permission modes
@@ -2886,18 +2906,22 @@ function PromptInput({
     // When viewing a teammate, cycle from their mode instead of the leader's
     if (isAgentSwarmsEnabled() && viewedTeammate && viewingAgentTaskId) {
       const teammateContext: ToolPermissionContext = {
-        ...toolPermissionContext,
+        ...displayedToolPermissionContext,
         mode: viewedTeammate.permissionMode,
       };
-      // Pass undefined for teamContext (unused but kept for API compatibility)
-      selectPermissionMode(getNextPermissionMode(teammateContext, undefined));
+      selectPermissionMode(
+        getNextPermissionMode(teammateContext.mode, teammateContext),
+      );
       return;
     }
     selectPermissionMode(
-      getNextPermissionMode(toolPermissionContext, teamContext),
+      getNextPermissionMode(
+        displayedToolPermissionContext.mode,
+        displayedToolPermissionContext,
+      ),
     );
   }, [
-    toolPermissionContext,
+    displayedToolPermissionContext,
     teamContext,
     viewedTeammate,
     viewingAgentTaskId,
@@ -2915,8 +2939,8 @@ function PromptInput({
       }
       if (!/^[1-9]$/u.test(input)) return;
       const modes = visibleUserFacingModes(
-        effectiveToolPermissionContext.isBypassPermissionsModeAvailable,
-        effectiveToolPermissionContext.isAutoModeAvailable,
+        displayedToolPermissionContext.isBypassPermissionsModeAvailable,
+        displayedToolPermissionContext.isAutoModeAvailable,
       );
       const targetMode = modes[Number.parseInt(input, 10) - 1];
       if (targetMode === undefined) return;
@@ -2931,24 +2955,17 @@ function PromptInput({
   // Handler for auto mode opt-in dialog acceptance
   const handleAutoModeOptInAccept = useCallback(() => {
     if (feature("TRANSCRIPT_CLASSIFIER")) {
-      setShowAutoModeOptIn(false);
-      setPreviousModeBeforeAuto(null);
+      if (!autoModeOptInPendingRef.current) return;
+      clearAutoModeOptInPreview();
 
-      // Now that the user accepted, apply the full transition: activate the
-      // auto mode backend (classifier, beta headers) and strip dangerous
-      // permissions (e.g. Bash(*) always-allow rules).
+      // Permission requests can update the context while the warning is open.
+      // Apply the transition to the latest context so those updates survive.
+      const latestContext = store.getState().toolPermissionContext;
       const strippedContext = transitionPermissionMode(
-        previousModeBeforeAuto ?? toolPermissionContext.mode,
+        latestContext.mode,
         "auto",
-        toolPermissionContext,
+        latestContext,
       );
-      setAppState((prev) => ({
-        ...prev,
-        toolPermissionContext: {
-          ...strippedContext,
-          mode: "auto",
-        },
-      }));
       setToolPermissionContext({
         ...strippedContext,
         mode: "auto",
@@ -2962,50 +2979,18 @@ function PromptInput({
   }, [
     helpOpen,
     setHelpOpen,
-    previousModeBeforeAuto,
-    toolPermissionContext,
-    setAppState,
+    clearAutoModeOptInPreview,
+    store,
     setToolPermissionContext,
   ]);
 
   // Handler for auto mode opt-in dialog decline
   const handleAutoModeOptInDecline = useCallback(() => {
     if (feature("TRANSCRIPT_CLASSIFIER")) {
-      logForDebugging(
-        `[auto-mode] handleAutoModeOptInDecline: reverting to ${previousModeBeforeAuto}, setting isAutoModeAvailable=false`,
-      );
-      setShowAutoModeOptIn(false);
-      if (autoModeOptInTimeoutRef.current) {
-        clearTimeout(autoModeOptInTimeoutRef.current);
-        autoModeOptInTimeoutRef.current = null;
-      }
-
-      // Revert to previous mode and remove auto from the carousel
-      // for the rest of this session
-      if (previousModeBeforeAuto) {
-        setAutoModeActive(false);
-        setAppState((prev) => ({
-          ...prev,
-          toolPermissionContext: {
-            ...prev.toolPermissionContext,
-            mode: previousModeBeforeAuto,
-            isAutoModeAvailable: false,
-          },
-        }));
-        setToolPermissionContext({
-          ...toolPermissionContext,
-          mode: previousModeBeforeAuto,
-          isAutoModeAvailable: false,
-        });
-        setPreviousModeBeforeAuto(null);
-      }
+      logForDebugging("[auto-mode] opt-in declined; clearing preview");
+      clearAutoModeOptInPreview();
     }
-  }, [
-    previousModeBeforeAuto,
-    toolPermissionContext,
-    setAppState,
-    setToolPermissionContext,
-  ]);
+  }, [clearAutoModeOptInPreview]);
 
   // Handler for chat:imagePaste - paste image from clipboard
   const handleImagePaste = useCallback(async () => {
@@ -3496,14 +3481,14 @@ function PromptInput({
   const workbenchFrameColumns = useContentWidth();
   const promptGlyphs = selectAgenCTuiGlyphs();
   const workbenchPermissionLabel =
-    effectiveToolPermissionContext.mode === "bypassPermissions"
+    displayedToolPermissionContext.mode === "bypassPermissions"
       ? "YOLO"
       : permissionModeShortTitle(
-          effectiveToolPermissionContext.mode,
+          displayedToolPermissionContext.mode,
         ).toUpperCase();
   const workbenchPromptGlyph =
     viewingAgentName || mode !== "bash"
-      ? effectiveToolPermissionContext.mode === "bypassPermissions"
+      ? displayedToolPermissionContext.mode === "bypassPermissions"
         ? promptGlyphs.promptBypass
         : promptGlyphs.pointer
       : "!";
@@ -3745,14 +3730,14 @@ function PromptInput({
     if (!showModeSwitcher) return null;
     return (
       <ModeSwitcher
-        currentMode={effectiveToolPermissionContext.mode}
+        currentMode={displayedToolPermissionContext.mode}
         bypassAvailable={
-          effectiveToolPermissionContext.isBypassPermissionsModeAvailable
+          displayedToolPermissionContext.isBypassPermissionsModeAvailable
         }
-        autoAvailable={effectiveToolPermissionContext.isAutoModeAvailable}
+        autoAvailable={displayedToolPermissionContext.isAutoModeAvailable}
       />
     );
-  }, [showModeSwitcher, effectiveToolPermissionContext]);
+  }, [showModeSwitcher, displayedToolPermissionContext]);
   const backgroundTasksDialogElement = useMemo(() => {
     if (!showBashesDialog) return null;
     return (
@@ -4029,7 +4014,7 @@ function PromptInput({
           <Box flexDirection="row" width="100%">
             <PromptInputModeIndicator
               mode={mode}
-              permissionMode={effectiveToolPermissionContext.mode}
+              permissionMode={displayedToolPermissionContext.mode}
               isLoading={isLoading}
               viewingAgentName={viewingAgentName}
               viewingAgentColor={viewingAgentColor}
@@ -4072,7 +4057,7 @@ function PromptInput({
           ) : null}
           <PromptInputModeIndicator
             mode={mode}
-            permissionMode={effectiveToolPermissionContext.mode}
+            permissionMode={displayedToolPermissionContext.mode}
             isLoading={isLoading}
             viewingAgentName={viewingAgentName}
             viewingAgentColor={viewingAgentColor}
@@ -4119,7 +4104,7 @@ function PromptInput({
           selectedSuggestion={selectedSuggestion}
           suggestionType={suggestionType}
           maxColumnWidth={maxColumnWidth}
-          toolPermissionContext={effectiveToolPermissionContext}
+          toolPermissionContext={displayedToolPermissionContext}
           helpOpen={helpOpen}
           suppressHint={false}
           isLoading={isLoading}

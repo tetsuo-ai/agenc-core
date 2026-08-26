@@ -10,6 +10,8 @@ import { describe, expect, it } from "vitest";
 import { createAgentRoleWorkspace } from "../agents/role.js";
 import { ConfigStore } from "../config/store.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { AsyncQueue } from "../utils/async-queue.js";
 import {
   MAILBOX_SOURCE_IDLE_INPUT,
@@ -30,6 +32,9 @@ function buildSession(mailboxLimits?: SessionOpts["mailboxLimits"]): Session {
   // mailbox + event log paths are exercised. Cast through `unknown`
   // to skirt the otherwise-heavy SessionServices interface.
   const services = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},

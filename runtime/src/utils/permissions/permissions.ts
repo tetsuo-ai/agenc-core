@@ -38,10 +38,12 @@ import type {
   PermissionRuleSource,
 } from './PermissionRule.js'
 import {
-  applyPermissionUpdate,
-  applyPermissionUpdates,
   persistPermissionUpdates,
 } from './PermissionUpdate.js'
+import {
+  applyPermissionUpdate,
+  applyPermissionUpdates,
+} from '../../permissions/permission-updates.js'
 import type {
   PermissionUpdate,
   PermissionUpdateDestination,
@@ -402,6 +404,23 @@ async function runPermissionRequestHooksForHeadlessAgent(
       }
       const decision = hookResult.permissionRequestResult
       if (decision.behavior === 'allow') {
+        const attemptsBypassActivation = decision.updatedPermissions?.some(
+          update =>
+            update.type === 'setMode' &&
+            update.mode === 'bypassPermissions',
+        )
+        if (attemptsBypassActivation) {
+          return {
+            behavior: 'deny',
+            message:
+              'PermissionRequest hooks cannot enable bypassPermissions without exact workspace consent',
+            decisionReason: {
+              type: 'hook',
+              hookName: 'PermissionRequest',
+              reason: 'bypassPermissions requires explicit workspace consent',
+            },
+          }
+        }
         const finalInput = decision.updatedInput ?? input
         // Persist permission updates if provided
         if (decision.updatedPermissions?.length) {

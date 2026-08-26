@@ -1334,7 +1334,7 @@ describe("session-store", () => {
       agencVersion: "0.2.0",
     });
 
-    const session = {
+    const session = Object.assign(Object.create(Session.prototype), {
       eventLog: new EventLog(),
       rolloutStore,
       txEvent: new AsyncQueue<any>(),
@@ -1343,10 +1343,9 @@ describe("session-store", () => {
         let n = 0;
         return () => `sub-${++n}`;
       })(),
-    } as unknown as Session;
+    }) as Session;
 
-    Session.prototype.emit.call(
-      session,
+    session.emit(
       {
         id: "tool-1",
         msg: {
@@ -1385,7 +1384,7 @@ describe("session-store", () => {
       agencVersion: "0.2.0",
     });
 
-    const session = {
+    const session = Object.assign(Object.create(Session.prototype), {
       eventLog: new EventLog(),
       rolloutStore,
       txEvent: new AsyncQueue<any>(),
@@ -1401,9 +1400,9 @@ describe("session-store", () => {
         let n = 0;
         return () => `sub-${++n}`;
       })(),
-    } as unknown as Session;
+    }) as Session;
 
-    Session.prototype.emit.call(session, {
+    session.emit({
       id: "tool-2",
       msg: {
         type: "tool_call_completed",
@@ -1426,7 +1425,7 @@ describe("session-store", () => {
     const order: string[] = [];
     const eventLog = new EventLog();
     eventLog.subscribe(() => order.push("listener"));
-    const session = {
+    const session = Object.assign(Object.create(Session.prototype), {
       eventLog,
       rolloutStore: {
         append: (_event: unknown, opts: { readonly durable?: boolean }) => {
@@ -1442,9 +1441,9 @@ describe("session-store", () => {
         },
       },
       isRolloutPersistenceSuspended: () => false,
-    } as unknown as Session;
+    }) as Session;
 
-    const stamped = Session.prototype.emit.call(session, {
+    const stamped = session.emit({
       id: "effect-intent-id",
       msg: {
         type: "effect_intent",
@@ -1462,6 +1461,43 @@ describe("session-store", () => {
     });
 
     expect(stamped.seq).toBe(1);
+    expect(order).toEqual(["fsync", "listener", "tx"]);
+  });
+
+  test("Session.prepareEmit defers publication and publishes exactly once", () => {
+    const order: string[] = [];
+    const eventLog = new EventLog();
+    eventLog.subscribe(() => order.push("listener"));
+    const session = Object.assign(Object.create(Session.prototype), {
+      eventLog,
+      rolloutStore: {
+        append: () => {
+          order.push("fsync");
+          return true;
+        },
+      },
+      txEvent: {
+        send: () => {
+          order.push("tx");
+          return true;
+        },
+      },
+      isRolloutPersistenceSuspended: () => false,
+    }) as Session;
+
+    const prepared = session.prepareEmit(
+      {
+        id: "settings-1",
+        msg: {
+          type: "warning",
+          payload: { cause: "test", message: "prepared" },
+        },
+      },
+      { durable: true },
+    );
+    expect(order).toEqual(["fsync"]);
+    expect(prepared.publish()).toBe(prepared.event);
+    expect(prepared.publish()).toBe(prepared.event);
     expect(order).toEqual(["fsync", "listener", "tx"]);
   });
 
@@ -1485,7 +1521,7 @@ describe("session-store", () => {
     const published: string[] = [];
     const eventLog = new EventLog();
     eventLog.subscribe(() => published.push("listener"));
-    const session = {
+    const session = Object.assign(Object.create(Session.prototype), {
       eventLog,
       rolloutStore,
       txEvent: {
@@ -1495,10 +1531,10 @@ describe("session-store", () => {
         },
       },
       isRolloutPersistenceSuspended: () => false,
-    } as unknown as Session;
+    }) as Session;
 
     expect(() =>
-      Session.prototype.emit.call(session, {
+      session.emit({
         id: "effect-result-id",
         msg: {
           type: "effect_result",

@@ -27,6 +27,7 @@ import {
 } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
+import { cloneFrozenRuntimeSettingsSnapshot } from "../state/runtime-settings-snapshot.js";
 
 import { AsyncLock } from "../utils/async-lock.js";
 import { openStateDatabases } from "../state/sqlite-driver.js";
@@ -56,6 +57,7 @@ import {
 import type {
   AgentAttachParams,
   AgentAttachResult,
+  AgentAttachSessionSummary,
   AgentCreateParams,
   AgentCreateResult,
   AgentListParams,
@@ -114,6 +116,8 @@ import type {
   SessionSetModelResult,
   SessionSetPermissionModeParams,
   SessionSetPermissionModeResult,
+  SessionPermissionRuleMutationParams,
+  SessionPermissionRuleMutationResult,
   SessionHooksStatusParams,
   SessionHooksStatusResult,
   SessionHooksSetDisabledParams,
@@ -1403,7 +1407,12 @@ export class AgenCDaemonAgentManager {
     return result;
   }
 
-  async attachAgent(params: AgentAttachParams): Promise<AgentAttachResult> {
+  async attachAgent(
+    params: AgentAttachParams,
+    registerSessionRoute: (
+      sessionId: string,
+    ) => Promise<() => Promise<void> | void> | (() => Promise<void> | void),
+  ): Promise<AgentAttachResult> {
     if (this.#sessionManager === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
         "INVALID_ARGUMENT",
@@ -1440,35 +1449,81 @@ export class AgenCDaemonAgentManager {
         `daemon session ${session.sessionId} has no valid runtime-options authority`,
       );
     }
+    if (this.#runner?.getAgentSnapshot === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        `daemon agent ${target.agentId} has no live runtime-settings authority`,
+      );
+    }
 
     const attachment = await this.#sessionManager.attachSession({
       sessionId: session.sessionId,
       ...(params.clientId !== undefined ? { clientId: params.clientId } : {}),
     });
-    const orderedSessionIds = [
-      session.sessionId,
-      ...sessions
-        .map((activeSession) => activeSession.sessionId)
-        .filter((sessionId) => sessionId !== session.sessionId),
-    ];
-    const attachedSessions = (
-      await Promise.all(
-        orderedSessionIds.map((sessionId) =>
-          this.#sessionManager!.getSession(sessionId),
-        ),
-      )
-    ).filter(
-      (activeSession): activeSession is SessionSummary =>
-        activeSession !== null && isActiveSession(activeSession),
-    );
-    return {
-      agentId: target.agentId,
-      attachmentId: attachment.attachmentId,
-      sessionIds: orderedSessionIds,
-      runtimeOptions,
-      runtimeSessionId: target.agentId,
-      sessions: attachedSessions,
-    };
+    let rollbackRoute: (() => Promise<void> | void) | undefined;
+    try {
+      rollbackRoute = await registerSessionRoute(session.sessionId);
+      const runnerSnapshot = await this.#runner.getAgentSnapshot(target.agentId);
+      if (
+        runnerSnapshot?.runtimeSettings === undefined ||
+        runnerSnapshot.runtimeSettingsEventId === undefined
+      ) {
+        throw new AgenCDaemonAgentLifecycleError(
+          "INVALID_ARGUMENT",
+          `daemon agent ${target.agentId} has no live runtime-settings authority`,
+        );
+      }
+      const orderedSessionIds = [
+        session.sessionId,
+        ...sessions
+          .map((activeSession) => activeSession.sessionId)
+          .filter((sessionId) => sessionId !== session.sessionId),
+      ];
+      const attachedSessions: AgentAttachSessionSummary[] = await Promise.all(
+        orderedSessionIds.map(async (sessionId) => {
+          const activeSession =
+            await this.#sessionManager!.getSession(sessionId);
+          const cwd = activeSession?.cwd;
+          if (
+            activeSession === null ||
+            !isActiveSession(activeSession) ||
+            activeSession.agentId !== target.agentId ||
+            typeof cwd !== "string" ||
+            cwd.trim() !== cwd ||
+            cwd.length === 0 ||
+            Buffer.byteLength(cwd, "utf8") > 4_096 ||
+            !isAbsolute(cwd)
+          ) {
+            throw new AgenCDaemonAgentLifecycleError(
+              "INVALID_ARGUMENT",
+              `daemon agent ${target.agentId} has no valid active session authority for ${sessionId}`,
+            );
+          }
+          return { ...activeSession, cwd };
+        }),
+      );
+      return {
+        agentId: target.agentId,
+        attachmentId: attachment.attachmentId,
+        sessionIds: orderedSessionIds,
+        runtimeOptions,
+        runtimeSettings: cloneFrozenRuntimeSettingsSnapshot(
+          runnerSnapshot.runtimeSettings,
+        ) as RunRuntimeSettingsSnapshot & JsonObject,
+        runtimeSettingsEventId: runnerSnapshot.runtimeSettingsEventId,
+        runtimeSessionId: target.agentId,
+        sessions: attachedSessions,
+      };
+    } catch (error) {
+      await Promise.resolve(rollbackRoute?.()).catch(() => {});
+      await this.#sessionManager
+        .detachSession({
+          sessionId: session.sessionId,
+          attachmentId: attachment.attachmentId,
+        })
+        .catch(() => {});
+      throw error;
+    }
   }
 
   async getAgent(agentId: string): Promise<AgentSummary | null> {
@@ -2236,6 +2291,7 @@ export class AgenCDaemonAgentManager {
       ? await this.#runner!.setAgentPermissionMode!(agentId, {
           sessionId: params.sessionId,
           mode: "bypassPermissions",
+          bypassAuthority: "operator_tool_approval",
         })
       : undefined;
     let resolved = false;
@@ -3198,6 +3254,41 @@ export class AgenCDaemonAgentManager {
     };
   }
 
+  async mutateSessionPermissionRule(
+    params: SessionPermissionRuleMutationParams,
+  ): Promise<SessionPermissionRuleMutationResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.permissions.mutateRule requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.mutateAgentPermissionRule === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.permissions.mutateRule requires a background runner",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowMutatePermissionRule: true },
+    );
+    const result = await this.#runner.mutateAgentPermissionRule(agentId, {
+      sessionId: params.sessionId,
+      operation: params.operation,
+      behavior: params.behavior,
+      rule: params.rule,
+    });
+    return {
+      sessionId: params.sessionId,
+      applied: result.applied,
+      operation: result.operation,
+      behavior: result.behavior,
+      rule: result.rule,
+      sessionRules: result.sessionRules,
+    };
+  }
+
   async getSessionHooksStatus(
     params: SessionHooksStatusParams,
   ): Promise<SessionHooksStatusResult> {
@@ -3524,6 +3615,7 @@ export class AgenCDaemonAgentManager {
       readonly allowSnapshot?: boolean;
       readonly allowSetModel?: boolean;
       readonly allowSetPermissionMode?: boolean;
+      readonly allowMutatePermissionRule?: boolean;
       readonly allowHooksStatus?: boolean;
       readonly allowSetHooksDisabled?: boolean;
       readonly allowApplyConfig?: boolean;
@@ -3584,6 +3676,9 @@ export class AgenCDaemonAgentManager {
     const hasSetPermissionModeRunner =
       options.allowSetPermissionMode === true &&
       this.#runner?.setAgentPermissionMode !== undefined;
+    const hasMutatePermissionRuleRunner =
+      options.allowMutatePermissionRule === true &&
+      this.#runner?.mutateAgentPermissionRule !== undefined;
     const hasHooksStatusRunner =
       options.allowHooksStatus === true &&
       this.#runner?.getAgentHooksStatus !== undefined;
@@ -3613,6 +3708,7 @@ export class AgenCDaemonAgentManager {
       !hasSnapshotRunner &&
       !hasSetModelRunner &&
       !hasSetPermissionModeRunner &&
+      !hasMutatePermissionRuleRunner &&
       !hasHooksStatusRunner &&
       !hasSetHooksDisabledRunner &&
       !hasApplyConfigRunner &&
@@ -3993,7 +4089,14 @@ function interactivePermissionModeFromRuntimeSettings(
     mode === "bypassPermissions" ||
     (mode === "plan" && settings.prePlanMode === "bypassPermissions");
   if (
-    (bypassTransitionCritical && settings.bypassPermissionsWorkspace !== cwd) ||
+    (settings.autoModeActive && !settings.autoModeAvailable) ||
+    (settings.bypassPermissionsConsentWorkspace !== null &&
+      (settings.bypassPermissionsConsentWorkspace !== cwd ||
+        !settings.bypassPermissionsModeAvailable)) ||
+    (bypassTransitionCritical &&
+      (settings.bypassPermissionsWorkspace !== cwd ||
+        !settings.bypassPermissionsModeAvailable ||
+        settings.bypassPermissionsConsentWorkspace !== cwd)) ||
     (!bypassTransitionCritical && settings.bypassPermissionsWorkspace !== null)
   ) {
     throw new AgenCDaemonAgentLifecycleError(
@@ -4067,7 +4170,12 @@ function runtimeSettingsSnapshotsEqual(
     left.permissionMode === right.permissionMode &&
     left.prePlanMode === right.prePlanMode &&
     left.autoModeActive === right.autoModeActive &&
+    left.autoModeAvailable === right.autoModeAvailable &&
+    left.bypassPermissionsModeAvailable ===
+      right.bypassPermissionsModeAvailable &&
     left.bypassPermissionsWorkspace === right.bypassPermissionsWorkspace &&
+    left.bypassPermissionsConsentWorkspace ===
+      right.bypassPermissionsConsentWorkspace &&
     left.model === right.model &&
     left.provider === right.provider &&
     left.profile === right.profile &&

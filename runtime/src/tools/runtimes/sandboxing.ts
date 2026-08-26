@@ -543,14 +543,14 @@ function isNetworkSandboxPolicy(value: unknown): value is NetworkSandboxPolicy {
   return value === "enabled" || value === "disabled" || value === "restricted";
 }
 
-interface LiveFileSystemSandboxPolicy {
+export interface LiveFileSystemSandboxPolicy {
   readonly allowWrite: readonly string[];
   readonly denyWrite: readonly string[];
   readonly allowRead: readonly string[];
   readonly denyRead: readonly string[];
 }
 
-interface LiveNetworkSandboxPolicy {
+export interface LiveNetworkSandboxPolicy {
   readonly allowlist: readonly string[];
   readonly denylist: readonly string[];
   readonly allowManagedDomainsOnly: boolean;
@@ -629,6 +629,22 @@ function liveNetworkPolicyToEngine(
     return "restricted";
   }
   return candidate.enabled === true ? "enabled" : undefined;
+}
+
+/** Build the process policy used outside request-scoped tool turns. */
+export function permissionProfileForLiveSandboxPolicies(
+  mode: SandboxMode,
+  cwd: string,
+  fileSystem: LiveFileSystemSandboxPolicy,
+  network: LiveNetworkSandboxPolicy,
+): PermissionProfile {
+  if (mode === "danger_full_access" || mode === "external_sandbox") {
+    return permissionProfileForSandboxMode(mode, { cwd });
+  }
+  return permissionProfileFromRuntimePermissions(
+    adaptLiveFileSystemPolicy(fileSystem, mode, cwd),
+    liveNetworkPolicyToEngine(network) ?? defaultNetworkForSandboxMode(mode),
+  );
 }
 
 function toolMayMutate(tool: Tool): boolean {

@@ -71,7 +71,6 @@ export const KEYBINDING_ACTION_NAMES = [
   "confirm:next",
   "confirm:nextField",
   "confirm:previousField",
-  "confirm:cycleMode",
   "confirm:toggle",
   "confirm:toggleExplanation",
   "tabs:next",

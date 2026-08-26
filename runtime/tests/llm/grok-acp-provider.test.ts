@@ -94,6 +94,7 @@ describe('factory routing', () => {
       const factoryOptions = readProviderFactoryOptions(provider)
       expect(factoryOptions.extra?.sandboxExecutionBroker).toBe(broker)
 
+      await provider.dispose?.()
       recreated = createProvider('grok', factoryOptions)
       expect(recreated).toBeInstanceOf(GrokAcpProvider)
       expect(
@@ -324,6 +325,9 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
       await provider.chat([{ role: 'user', content: 'before transition' }])
       expect(prepareSpawn).toHaveBeenCalledTimes(1)
       expect(prepareSpawn.mock.calls[0]?.[1].cwd).toBe(initialCwd)
+      expect(prepareSpawn.mock.calls[0]?.[2]).toEqual({
+        lifecycleParticipant: 'grok-acp-provider',
+      })
 
       await transitionSandboxExecutionBroker(broker, rebasedCwd)
       // Resume is intentionally lazy: a workspace transition does not launch
@@ -333,6 +337,9 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
       await provider.chat([{ role: 'user', content: 'after transition' }])
       expect(prepareSpawn).toHaveBeenCalledTimes(2)
       expect(prepareSpawn.mock.calls[1]?.[1].cwd).toBe(rebasedCwd)
+      expect(prepareSpawn.mock.calls[1]?.[2]).toEqual({
+        lifecycleParticipant: 'grok-acp-provider',
+      })
     } finally {
       await provider.dispose()
       prepareSpawn.mockRestore()

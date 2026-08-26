@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import { createPlanningTools } from '../../src/tools/system/planning.js'
+import { resolveHomeContext } from '../../src/config/home.js'
+import { runWithCurrentRuntimeSession } from '../../src/session/current-session.js'
 
 // The TodoWrite handler must bridge to the file-backed task board that the
 // TUI's TaskListV2 renders via useTasksV2 — otherwise the tool only emits
@@ -35,6 +37,17 @@ function findTodoWrite() {
   return tool
 }
 
+function withHomeAuthority<T>(operation: () => T): T {
+  const homeContext = resolveHomeContext(
+    { AGENC_HOME: home, HOME: home },
+    { platformHome: home },
+  )
+  return runWithCurrentRuntimeSession(
+    { services: { configStore: { homeContext } } } as never,
+    operation,
+  )
+}
+
 async function readBoardTask(contentSlug: string) {
   const path = join(home, 'tasks', 'bridge-test', `tw-${contentSlug}.json`)
   return JSON.parse(await readFile(path, 'utf8'))
@@ -43,12 +56,12 @@ async function readBoardTask(contentSlug: string) {
 describe('TodoWrite → task board bridge', () => {
   it('persists todos to the board with stable content-slug ids and ordering', async () => {
     const tool = findTodoWrite()
-    const result = await tool.execute({
+    const result = await withHomeAuthority(() => tool.execute({
       todos: [
         { content: 'Explore the codebase', status: 'in_progress', activeForm: 'Exploring the codebase' },
         { content: 'Implement the feature', status: 'pending', activeForm: 'Implementing the feature' },
       ],
-    })
+    }))
     expect(result.isError).not.toBe(true)
 
     const first = await readBoardTask('explore-the-codebase')
@@ -64,17 +77,17 @@ describe('TodoWrite → task board bridge', () => {
 
   it('updates status on re-issue and closes tasks dropped from the list', async () => {
     const tool = findTodoWrite()
-    await tool.execute({
+    await withHomeAuthority(() => tool.execute({
       todos: [
         { content: 'Explore the codebase', status: 'in_progress', activeForm: 'Exploring the codebase' },
         { content: 'Implement the feature', status: 'pending', activeForm: 'Implementing the feature' },
       ],
-    })
-    await tool.execute({
+    }))
+    await withHomeAuthority(() => tool.execute({
       todos: [
         { content: 'Explore the codebase', status: 'completed', activeForm: 'Exploring the codebase' },
       ],
-    })
+    }))
 
     const first = await readBoardTask('explore-the-codebase')
     expect(first.status).toBe('completed')
@@ -86,11 +99,11 @@ describe('TodoWrite → task board bridge', () => {
 
   it('still returns the donor success message', async () => {
     const tool = findTodoWrite()
-    const result = await tool.execute({
+    const result = await withHomeAuthority(() => tool.execute({
       todos: [
         { content: 'Ship it', status: 'in_progress', activeForm: 'Shipping it' },
       ],
-    })
+    }))
     const text = JSON.stringify(result)
     expect(text).toContain('Todos have been modified successfully')
   })

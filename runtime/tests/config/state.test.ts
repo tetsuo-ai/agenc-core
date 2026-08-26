@@ -1,11 +1,16 @@
 import {
+  chmodSync,
+  linkSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs'
+import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -14,6 +19,7 @@ import { afterEach, describe, expect, test } from 'vitest'
 import {
   createCanonicalStateDocument,
   getGlobalRuntimeState,
+  parseCanonicalStateDocument,
   readCanonicalState,
   StateRepositoryError,
   validateCanonicalStateDocument,
@@ -27,6 +33,88 @@ function temporaryDirectory(): string {
   const directory = mkdtempSync(join(tmpdir(), 'agenc-state-'))
   tempDirectories.push(directory)
   return directory
+}
+
+function withInjectedDirectoryFsyncFailure<T>(
+  failure: NodeJS.ErrnoException,
+  operation: () => T,
+): T {
+  const nodeFs = createRequire(import.meta.url)('node:fs') as {
+    openSync(path: string, flags: string | number): number
+    fsyncSync(descriptor: number): void
+    closeSync(descriptor: number): void
+  }
+  const originalOpenSync = nodeFs.openSync
+  const originalFsyncSync = nodeFs.fsyncSync
+  const originalCloseSync = nodeFs.closeSync
+  let directoryDescriptor: number | undefined
+  nodeFs.openSync = (path, flags) => {
+    const descriptor = originalOpenSync(path, flags)
+    if (flags === 'r') directoryDescriptor = descriptor
+    return descriptor
+  }
+  nodeFs.fsyncSync = (descriptor) => {
+    if (descriptor === directoryDescriptor) throw failure
+    originalFsyncSync(descriptor)
+  }
+  nodeFs.closeSync = (descriptor) => originalCloseSync(descriptor)
+  syncBuiltinESMExports()
+
+  try {
+    return operation()
+  } finally {
+    nodeFs.openSync = originalOpenSync
+    nodeFs.fsyncSync = originalFsyncSync
+    nodeFs.closeSync = originalCloseSync
+    syncBuiltinESMExports()
+  }
+}
+
+function withInjectedRenameFailure<T>(
+  failure: NodeJS.ErrnoException,
+  operation: () => T,
+): T {
+  const nodeFs = createRequire(import.meta.url)('node:fs') as {
+    renameSync(oldPath: string, newPath: string): void
+  }
+  const originalRenameSync = nodeFs.renameSync
+  nodeFs.renameSync = () => {
+    throw failure
+  }
+  syncBuiltinESMExports()
+
+  try {
+    return operation()
+  } finally {
+    nodeFs.renameSync = originalRenameSync
+    syncBuiltinESMExports()
+  }
+}
+
+function withInjectedLinkFailure<T>(
+  failure: NodeJS.ErrnoException,
+  operation: () => T,
+): T {
+  const nodeFs = createRequire(import.meta.url)('node:fs') as {
+    linkSync(existingPath: string, newPath: string): void
+  }
+  const originalLinkSync = nodeFs.linkSync
+  let injected = false
+  nodeFs.linkSync = (existingPath, newPath) => {
+    if (!injected && newPath.endsWith('state.json')) {
+      injected = true
+      throw failure
+    }
+    originalLinkSync(existingPath, newPath)
+  }
+  syncBuiltinESMExports()
+
+  try {
+    return operation()
+  } finally {
+    nodeFs.linkSync = originalLinkSync
+    syncBuiltinESMExports()
+  }
 }
 
 afterEach(() => {
@@ -131,6 +219,62 @@ describe('canonical runtime state', () => {
         state: { global },
       }),
     ).toThrow(/agenc config migrate/u)
+  })
+
+  test.each([
+    ['fast-mode session preference', { fastModePerSessionOptIn: true }],
+    ['bypass acceptance', { bypassPermissionsModeAcceptedIn: ['/repo'] }],
+  ])('rejects the retired settings namespace containing %s', (_label, settings) => {
+    expect(() =>
+      validateCanonicalStateDocument({
+        state_version: 1,
+        state: { global: { settings } },
+      }),
+    ).toThrow(/unsupported or retired state.*settings/u)
+  })
+
+  test('rejects retired consent when the canonical permission namespace also exists', () => {
+    expect(() =>
+      parseCanonicalStateDocument(JSON.stringify({
+        state_version: 1,
+        state: {
+          global: {
+            permissions: {
+              bypassPermissionsAcceptedByCwd: {
+                '/workspace/canonical': {
+                  version: 1,
+                  canonicalCwd: '/workspace/canonical',
+                  dev: '1',
+                  ino: '2',
+                },
+              },
+            },
+            settings: {
+              bypassPermissionsModeAcceptedIn: ['/workspace/retired'],
+            },
+          },
+        },
+      })),
+    ).toThrow(/unsupported or retired state.*settings/u)
+  })
+
+  test.each([
+    ['permissions namespace', 'corrupt'],
+    [
+      'acceptance map',
+      { bypassPermissionsAcceptedByCwd: ['/workspace/accepted'] },
+    ],
+  ])('rejects a corrupt %s', (_label, permissions) => {
+    expect(() =>
+      parseCanonicalStateDocument(JSON.stringify({
+        state_version: 1,
+        state: {
+          global: {
+            permissions,
+          },
+        },
+      })),
+    ).toThrow(/permissions/u)
   })
 
   test.each([
@@ -250,9 +394,15 @@ describe('canonical runtime state', () => {
       global: { hasSeenTasksHint: true },
     })
 
-    writeCanonicalStateAtomicSync(path, document)
+    const outcome = writeCanonicalStateAtomicSync(path, document)
 
     expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(document)
+    expect(outcome).toMatchObject({
+      committed: true,
+      directoryDurability: expect.stringMatching(
+        /^(?:confirmed|unsupported|indeterminate)$/u,
+      ),
+    })
     if (process.platform !== 'win32') {
       expect(lstatSync(path).mode & 0o777).toBe(0o600)
     }
@@ -270,5 +420,242 @@ describe('canonical runtime state', () => {
     await expect(readCanonicalState(path)).rejects.toThrow(
       /state JSON contains 1 duplicate object key/u,
     )
+  })
+
+  test('refuses to read state.json through a symbolic link', async () => {
+    const directory = temporaryDirectory()
+    const target = join(directory, 'outside-state.json')
+    const path = join(directory, 'state.json')
+    writeCanonicalStateAtomicSync(
+      target,
+      createCanonicalStateDocument({
+        global: { hasSeenTasksHint: true },
+      }),
+    )
+    symlinkSync(target, path)
+
+    await expect(readCanonicalState(path)).rejects.toThrow(/symbolic link/u)
+  })
+
+  test('refuses hard-linked state authority', async () => {
+    const directory = temporaryDirectory()
+    const target = join(directory, 'outside-state.json')
+    const path = join(directory, 'state.json')
+    writeCanonicalStateAtomicSync(
+      target,
+      createCanonicalStateDocument({ global: { hasSeenTasksHint: true } }),
+    )
+    linkSync(target, path)
+
+    await expect(readCanonicalState(path)).rejects.toThrow(
+      /exactly one hard link/u,
+    )
+  })
+
+  test('refuses group/world-readable state authority', async () => {
+    if (process.platform === 'win32') return
+    const path = join(temporaryDirectory(), 'state.json')
+    writeCanonicalStateAtomicSync(
+      path,
+      createCanonicalStateDocument({ global: { hasSeenTasksHint: true } }),
+    )
+    chmodSync(path, 0o666)
+
+    await expect(readCanonicalState(path)).rejects.toThrow(/exact mode 0600/u)
+  })
+
+  test.each([
+    ['Map', new Map([['value', 1]])],
+    ['Date', new Date(0)],
+    ['function', () => true],
+    ['NaN', Number.NaN],
+    ['Infinity', Number.POSITIVE_INFINITY],
+    ['nested undefined', undefined],
+  ])('rejects non-lossless nested JSON state: %s', (_label, badValue) => {
+    expect(() => validateCanonicalStateDocument({
+      state_version: 1,
+      state: {
+        global: {
+          projects: {
+            '/repo': {
+              lastSessionMetrics: { badValue },
+            },
+          },
+        },
+      },
+    })).toThrow(/non-(?:lossless JSON number|JSON value|plain JSON object)/u)
+  })
+
+  test('rejects cyclic nested state', () => {
+    const cyclic: Record<string, unknown> = {}
+    cyclic.self = cyclic
+    expect(() => validateCanonicalStateDocument({
+      state_version: 1,
+      state: {
+        global: {
+          projects: {
+            '/repo': { lastSessionMetrics: cyclic },
+          },
+        },
+      },
+    })).toThrow(/cyclic JSON value/u)
+  })
+
+  test('ignores an unsupported directory fsync after a successful open', () => {
+    const directory = temporaryDirectory()
+    const path = join(directory, 'state.json')
+    const unsupported = Object.assign(
+      new Error('injected unsupported directory fsync'),
+      { code: 'EINVAL' },
+    )
+
+    const outcome = withInjectedDirectoryFsyncFailure(unsupported, () =>
+      writeCanonicalStateAtomicSync(
+        path,
+        createCanonicalStateDocument({
+          global: { hasSeenTasksHint: true },
+        }),
+      ),
+    )
+    expect(outcome).toEqual({
+      committed: true,
+      directoryDurability: 'unsupported',
+      postCommitErrors: [unsupported],
+    })
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(
+      createCanonicalStateDocument({
+        global: { hasSeenTasksHint: true },
+      }),
+    )
+  })
+
+  test('reports an indeterminate directory fsync after committing visible state', () => {
+    const directory = temporaryDirectory()
+    const path = join(directory, 'state.json')
+    const failure = Object.assign(new Error('injected directory fsync failure'), {
+      code: 'EIO',
+    })
+    const document = createCanonicalStateDocument({
+      global: { hasSeenTasksHint: true },
+    })
+    const outcome = withInjectedDirectoryFsyncFailure(failure, () =>
+      writeCanonicalStateAtomicSync(
+        path,
+        document,
+      ),
+    )
+
+    expect(outcome).toEqual({
+      committed: true,
+      directoryDurability: 'indeterminate',
+      postCommitErrors: [failure],
+    })
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(document)
+  })
+
+  test('throws a pre-rename failure without publishing or retaining its stage', () => {
+    const directory = temporaryDirectory()
+    const path = join(directory, 'state.json')
+    const original = createCanonicalStateDocument({
+      global: { hasSeenTasksHint: false },
+    })
+    writeCanonicalStateAtomicSync(path, original)
+    const replacement = createCanonicalStateDocument({
+      global: { hasSeenTasksHint: true },
+    })
+    const failure = Object.assign(new Error('injected rename failure'), {
+      code: 'EIO',
+    })
+
+    expect(() =>
+      withInjectedRenameFailure(failure, () =>
+        writeCanonicalStateAtomicSync(path, replacement),
+      ),
+    ).toThrow(failure)
+    expect(JSON.parse(readFileSync(path, 'utf8'))).toEqual(original)
+    expect(readdirSync(directory)).toEqual(['state.json'])
+  })
+
+  test('restores the prior state after publication fails following quarantine', async () => {
+    const directory = temporaryDirectory()
+    const path = join(directory, 'state.json')
+    const original = createCanonicalStateDocument({
+      global: { hasSeenTasksHint: false },
+    })
+    writeCanonicalStateAtomicSync(path, original)
+    const replacement = createCanonicalStateDocument({
+      global: { hasSeenTasksHint: true },
+    })
+    const failure = Object.assign(new Error('injected link failure'), {
+      code: 'EIO',
+    })
+
+    expect(() =>
+      withInjectedLinkFailure(failure, () =>
+        writeCanonicalStateAtomicSync(path, replacement),
+      ),
+    ).toThrow(failure)
+    await expect(readCanonicalState(path)).resolves.toEqual(original)
+    expect(readdirSync(directory)).toEqual(['state.json'])
+  })
+
+  test('preserves a concurrent state revision quarantined after the CAS check', () => {
+    const directory = temporaryDirectory()
+    const path = join(directory, 'state.json')
+    const displacedExpected = join(directory, 'displaced-expected.json')
+    const original = createCanonicalStateDocument({
+      global: { hasSeenTasksHint: false },
+    })
+    const concurrent = createCanonicalStateDocument({
+      global: { hasSeenTasksHint: true, hasUsedStash: true },
+    })
+    writeCanonicalStateAtomicSync(path, original)
+
+    const nodeFs = createRequire(import.meta.url)('node:fs') as {
+      renameSync(oldPath: string, newPath: string): void
+    }
+    const originalRenameSync = nodeFs.renameSync
+    let swapped = false
+    nodeFs.renameSync = (oldPath, newPath) => {
+      if (!swapped && oldPath === path && newPath.includes('.quarantine-')) {
+        swapped = true
+        originalRenameSync(path, displacedExpected)
+        writeFileSync(path, `${JSON.stringify(concurrent, null, 2)}\n`, {
+          mode: 0o600,
+        })
+      }
+      originalRenameSync(oldPath, newPath)
+    }
+    syncBuiltinESMExports()
+
+    try {
+      expect(() => writeCanonicalStateAtomicSync(
+        path,
+        createCanonicalStateDocument({ global: { hasSeenTasksHint: true } }),
+      )).toThrow(/quarantined a concurrent revision/u)
+    } finally {
+      nodeFs.renameSync = originalRenameSync
+      syncBuiltinESMExports()
+    }
+
+    expect(swapped).toBe(true)
+    const quarantine = readdirSync(directory)
+      .find((entry) => entry.startsWith('state.json.quarantine-'))
+    expect(quarantine).toBeDefined()
+    expect(JSON.parse(readFileSync(join(directory, quarantine!), 'utf8')))
+      .toEqual(concurrent)
+    expect(JSON.parse(readFileSync(displacedExpected, 'utf8'))).toEqual(original)
+  })
+
+  test('refuses a special destination leaf instead of replacing it', () => {
+    const directory = temporaryDirectory()
+    const path = join(directory, 'state.json')
+    mkdirSync(path)
+
+    expect(() => writeCanonicalStateAtomicSync(
+      path,
+      createCanonicalStateDocument({ global: { hasSeenTasksHint: true } }),
+    )).toThrow(/regular file/u)
+    expect(lstatSync(path).isDirectory()).toBe(true)
   })
 })

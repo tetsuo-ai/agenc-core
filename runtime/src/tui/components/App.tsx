@@ -1848,9 +1848,8 @@ function useSyncedPermissionContext(
   const toolPermissionContext = useAppState(_temp2) as ToolPermissionContext;
   const setAppState = useSetAppState();
   useEffect(() => {
-    return session.services.permissionModeRegistry.subscribeToModeChange?.(
-      () => {
-        const next = session.services.permissionModeRegistry.current();
+    return session.services.permissionModeRegistry.subscribeToContextChange(
+      (next) => {
         setAppState((prev) => ({
           ...prev,
           toolPermissionContext: next,
@@ -1863,11 +1862,14 @@ function useSyncedPermissionContext(
       const registry = session.services.permissionModeRegistry;
       const daemonSetMode = daemonPermissionModeFn(session);
       const applyLocal = async (): Promise<void> => {
+        await registry.update?.(next);
+      };
+      const mirrorCanonicalDaemonContext = (): void => {
+        const canonical = registry.current();
         setAppState((prev) => ({
           ...prev,
-          toolPermissionContext: next,
+          toolPermissionContext: canonical,
         }));
-        await registry.update?.(next);
       };
       // Always push the mode to the daemon, even when the client-side registry
       // already shows it: the daemon may have RESPAWNED since (fresh registry at
@@ -1879,14 +1881,10 @@ function useSyncedPermissionContext(
         void applyLocal().catch(_temp3);
         return;
       }
-      const previous = registry.current();
       void daemonSetMode(next.mode)
-        .then(() => applyLocal())
+        .then(mirrorCanonicalDaemonContext)
         .catch((err) => {
-          setAppState((prev) => ({
-            ...prev,
-            toolPermissionContext: previous,
-          }));
+          mirrorCanonicalDaemonContext();
           emitPermissionModeSyncWarning(session, next.mode, err);
         });
     },

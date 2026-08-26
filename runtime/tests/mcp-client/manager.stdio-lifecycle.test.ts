@@ -95,12 +95,16 @@ describe("MCPManager stdio lifecycle", () => {
       undefined,
       { PATH: process.env.PATH, MCP_SESSION_MARKER: "session-b" },
     );
-    const broker = new SandboxExecutionBroker({
+    const brokerA = new SandboxExecutionBroker({
       mode: "danger_full_access",
       cwd: process.cwd(),
     });
-    managerA.setSandboxExecutionBroker(broker);
-    managerB.setSandboxExecutionBroker(broker);
+    const brokerB = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: process.cwd(),
+    });
+    managerA.setSandboxExecutionBroker(brokerA);
+    managerB.setSandboxExecutionBroker(brokerB);
 
     const previousMarker = process.env.MCP_SESSION_MARKER;
     process.env.MCP_SESSION_MARKER = "mutated-daemon-environment";

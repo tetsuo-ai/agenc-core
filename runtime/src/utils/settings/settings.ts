@@ -15,46 +15,16 @@ import {
 import { applyCanonicalConfigPatchSync } from "../../config/update-sync.js";
 import { hasSecurityAcknowledgementSync } from "../../permissions/trust/project-trust.js";
 import { logError } from "../log.js";
-import { clone } from "../slowOperations.js";
 import {
   type EditableSettingSource,
-  getEnabledSettingSources,
   type SettingSource,
 } from "./constants.js";
-import {
-  type SettingsWithErrors,
-  type ValidationError,
-} from "./validation.js";
+import { type SettingsWithErrors } from "./validation.js";
 import {
   type CanonicalSettingsAuthority,
   getCanonicalConfigLayers,
   getCanonicalSettingsAuthority,
 } from "./canonicalAuthority.js";
-
-const SETTINGS_STATE_NAMESPACE = "settings";
-
-export interface RuntimeSettingsState {
-  readonly fastModePerSessionOptIn?: boolean;
-  readonly bypassPermissionsModeAcceptedIn?: readonly string[];
-}
-
-/**
- * The only runtime settings view: the canonical resolved TOML config plus the
- * two genuine mutable state facts. It deliberately introduces no renamed
- * compatibility fields.
- */
-export type RuntimeSettingsSnapshot = AgenCConfig & RuntimeSettingsState;
-export type RuntimeSettingsPatch = Partial<RuntimeSettingsSnapshot>;
-
-const RuntimeSettingsStateSchema = z.object({
-  fastModePerSessionOptIn: z.boolean().optional(),
-  bypassPermissionsModeAcceptedIn: z.array(z.string()).optional(),
-}).strict();
-
-const STATE_OWNED_FIELDS = new Set([
-  "fastModePerSessionOptIn",
-  "bypassPermissionsModeAcceptedIn",
-]);
 
 const POLICY_OWNED_FIELDS: ReadonlySet<string> = new Set(
   MANAGED_ONLY_CONFIG_KEYS,
@@ -80,32 +50,6 @@ function requireAuthority(
   return authority;
 }
 
-function readStateSettings(
-  authority: CanonicalSettingsAuthority,
-): RuntimeSettingsState {
-  const raw = authority.stateRepository.getNamespace(SETTINGS_STATE_NAMESPACE);
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
-    throw new Error(`state.global.${SETTINGS_STATE_NAMESPACE} must be an object`);
-  }
-  const unauthorized = Object.keys(raw).filter(
-    (key) => !STATE_OWNED_FIELDS.has(key),
-  );
-  if (unauthorized.length > 0) {
-    throw new Error(
-      `state.global.${SETTINGS_STATE_NAMESPACE} contains non-state fields: ${unauthorized.sort().join(", ")}`,
-    );
-  }
-  const parsed = RuntimeSettingsStateSchema.safeParse(raw);
-  if (!parsed.success) {
-    throw new Error(
-      `state.global.${SETTINGS_STATE_NAMESPACE} is invalid: ${parsed.error.issues
-        .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
-        .join("; ")}`,
-    );
-  }
-  return parsed.data;
-}
-
 function sourceScopes(source: SettingSource): readonly Parameters<typeof getCanonicalConfigLayers>[0][] {
   switch (source) {
     case "userSettings":
@@ -124,7 +68,7 @@ function sourceScopes(source: SettingSource): readonly Parameters<typeof getCano
 function configForSource(
   source: SettingSource,
   authority: CanonicalSettingsAuthority | null,
-): RuntimeSettingsSnapshot | null {
+): AgenCConfig | null {
   const layers = sourceScopes(source).flatMap((scope) =>
     getCanonicalConfigLayers(scope, authority)
   );
@@ -134,29 +78,8 @@ function configForSource(
 export function getSettingsForSource(
   source: SettingSource,
   authority: CanonicalSettingsAuthority | null = getCanonicalSettingsAuthority(),
-): RuntimeSettingsSnapshot | null {
-  const config = configForSource(source, authority);
-  if (source !== "userSettings") return config;
-  const state = readStateSettings(requireAuthority(authority));
-  return Object.keys(state).length > 0 || config !== null
-    ? Object.freeze({ ...(config ?? {}), ...state })
-    : null;
-}
-
-/** Canonical managed-TOML policy projection; no JSON policy file is read. */
-export function loadManagedFileSettings(): {
-  settings: RuntimeSettingsSnapshot | null;
-  errors: ValidationError[];
-} {
-  return { settings: getSettingsForSource("policySettings"), errors: [] };
-}
-
-export function getManagedFileSettingsPresence(): {
-  hasBase: boolean;
-  hasDropIns: boolean;
-} {
-  const layers = getCanonicalConfigLayers("managed");
-  return { hasBase: layers.length > 0, hasDropIns: layers.length > 1 };
+): AgenCConfig | null {
+  return configForSource(source, authority);
 }
 
 export function getSettingsRootPathForSource(
@@ -215,55 +138,25 @@ export function getRelativeSettingsFilePathForSource(
   return source === "projectSettings" ? ".agenc/config.toml" : ".agenc/config.local.toml";
 }
 
-function mergePatch(target: JsonRecord, patch: Readonly<Record<string, unknown>>): void {
-  for (const [key, value] of Object.entries(patch)) {
-    if (value === undefined) {
-      delete target[key];
-      continue;
-    }
-    if (
-      typeof value === "object" && value !== null && !Array.isArray(value) &&
-      typeof target[key] === "object" && target[key] !== null && !Array.isArray(target[key])
-    ) {
-      mergePatch(target[key] as JsonRecord, value as Record<string, unknown>);
-      if (Object.keys(target[key] as JsonRecord).length === 0) delete target[key];
-      continue;
-    }
-    target[key] = clone(value) as JsonRecord[string];
-  }
-}
-
-function classifyUpdate(settings: RuntimeSettingsPatch): "config" | "state" | Error {
-  let owner: "config" | "state" | null = null;
+function classifyUpdate(settings: Partial<AgenCConfig>): "config" | Error {
   for (const key of Object.keys(settings)) {
-    const next = CONFIG_OWNED_FIELDS.has(key)
-      ? "config"
-      : STATE_OWNED_FIELDS.has(key)
-        ? "state"
-        : null;
-    if (next === null) {
+    if (!CONFIG_OWNED_FIELDS.has(key)) {
       const reason = POLICY_OWNED_FIELDS.has(key)
         ? "managed policy is writable only through a managed config.toml layer"
         : "the field belongs to trust, credentials, or a retired surface";
       return new Error(`Cannot persist ${key}: ${reason}`);
     }
-    if (owner !== null && owner !== next) {
-      return new Error(
-        "A settings update cannot span config.toml and state.json; split it into two explicit updates",
-      );
-    }
-    owner = next;
   }
-  return owner ?? "state";
+  return "config";
 }
 
 export async function updateSettingsForSource(
   source: EditableSettingSource,
-  settings: RuntimeSettingsPatch,
+  settings: Partial<AgenCConfig>,
   explicitAuthority: CanonicalSettingsAuthority | null = getCanonicalSettingsAuthority(),
 ): Promise<{ error: Error | null }> {
-  const owner = classifyUpdate(settings);
-  if (owner instanceof Error) return { error: owner };
+  const classification = classifyUpdate(settings);
+  if (classification instanceof Error) return { error: classification };
   if (source === "projectSettings" || source === "localSettings") {
     const operatorOnly = Object.keys(settings).filter((key) =>
       OPERATOR_ONLY_CONFIG_KEYS.includes(
@@ -285,11 +178,6 @@ export async function updateSettingsForSource(
       };
     }
   }
-  if (owner === "state" && source !== "userSettings") {
-    return {
-      error: new Error(`Mutable runtime preferences are user state and cannot be written to ${source}`),
-    };
-  }
   let authority: CanonicalSettingsAuthority;
   try {
     authority = requireAuthority(explicitAuthority);
@@ -297,39 +185,15 @@ export async function updateSettingsForSource(
     return { error: error instanceof Error ? error : new Error(String(error)) };
   }
   try {
-    if (owner === "state") {
-      authority.stateRepository.updateNamespace(SETTINGS_STATE_NAMESPACE, (current) => {
-        const next = clone(current) as JsonRecord;
-        mergePatch(next, settings as Readonly<Record<string, unknown>>);
-        const unauthorized = Object.keys(next).filter(
-          (key) => !STATE_OWNED_FIELDS.has(key),
-        );
-        if (unauthorized.length > 0) {
-          throw new Error(
-            `state.global.${SETTINGS_STATE_NAMESPACE} contains non-state fields: ${unauthorized.sort().join(", ")}`,
-          );
-        }
-        const parsed = RuntimeSettingsStateSchema.safeParse(next);
-        if (!parsed.success) {
-          throw new Error(
-            parsed.error.issues
-              .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
-              .join("; "),
-          );
-        }
-        return parsed.data as JsonRecord;
-      });
-    } else {
-      const path = getSettingsFilePathForSource(source, authority);
-      if (!path) throw new Error(`No canonical config.toml target for ${source}`);
-      const configScope = source === "userSettings"
-        ? "user"
-        : source === "projectSettings"
-          ? "project"
-          : "local";
-      applyCanonicalConfigPatchSync(path, settings as JsonRecord, configScope);
-      await authority.reload();
-    }
+    const path = getSettingsFilePathForSource(source, authority);
+    if (!path) throw new Error(`No canonical config.toml target for ${source}`);
+    const configScope = source === "userSettings"
+      ? "user"
+      : source === "projectSettings"
+        ? "project"
+        : "local";
+    applyCanonicalConfigPatchSync(path, settings as JsonRecord, configScope);
+    await authority.reload();
     return { error: null };
   } catch (error) {
     const wrapped = error instanceof Error ? error : new Error(String(error));
@@ -338,56 +202,20 @@ export async function updateSettingsForSource(
   }
 }
 
-export function getManagedSettingsKeysForLogging(settings: RuntimeSettingsPatch): string[] {
-  const expanded = new Set<string>();
-  const validSettings = settings as Record<string, unknown>;
-  for (const key of Object.keys(validSettings)) {
-    if (
-      ["permissions", "sandbox", "hooks"].includes(key) &&
-      validSettings[key] && typeof validSettings[key] === "object"
-    ) {
-      for (const child of Object.keys(validSettings[key] as Record<string, unknown>)) {
-        expanded.add(`${key}.${child}`);
-      }
-    } else {
-      expanded.add(key);
-    }
-  }
-  return [...expanded].sort();
-}
-
 export function getInitialSettings(
   authority: CanonicalSettingsAuthority = requireAuthority(
     getCanonicalSettingsAuthority(),
   ),
-): RuntimeSettingsSnapshot {
-  return Object.freeze({ ...authority.current(), ...readStateSettings(authority) });
+): AgenCConfig {
+  return authority.current();
 }
 
-export function getExecutionAuthoritySettings(): RuntimeSettingsSnapshot {
+export function getExecutionAuthoritySettings(): AgenCConfig {
   return getInitialSettings();
-}
-
-export type SettingsWithSources = {
-  effective: RuntimeSettingsSnapshot;
-  sources: Array<{ source: SettingSource; settings: RuntimeSettingsSnapshot }>;
-};
-
-export function getSettingsWithSources(): SettingsWithSources {
-  const sources: SettingsWithSources["sources"] = [];
-  for (const source of getEnabledSettingSources()) {
-    const settings = getSettingsForSource(source);
-    if (settings && Object.keys(settings).length > 0) sources.push({ source, settings });
-  }
-  return { effective: getInitialSettings(), sources };
 }
 
 export function getSettingsWithErrors(): SettingsWithErrors {
   return { settings: getInitialSettings(), errors: [] };
-}
-
-export function getPolicySettingsOrigin(): "managed-toml" | null {
-  return getCanonicalConfigLayers("managed").length > 0 ? "managed-toml" : null;
 }
 
 export function hasAutoModeOptIn(): boolean {
@@ -410,11 +238,4 @@ export function getAutoModeConfig():
   });
   const result = schema.safeParse(getExecutionAuthoritySettings().autoMode);
   return result.success ? result.data : undefined;
-}
-
-export function rawSettingsContainsKey(key: string): boolean {
-  return getEnabledSettingSources().some((source) => {
-    const settings = getSettingsForSource(source);
-    return settings !== null && Object.prototype.hasOwnProperty.call(settings, key);
-  });
 }

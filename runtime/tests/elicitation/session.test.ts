@@ -98,6 +98,8 @@ vi.mock("../tui/tool-rendering.js", () => ({
 }));
 
 import { AsyncQueue } from "../utils/async-queue.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {
   Session,
   type Event,
@@ -203,6 +205,9 @@ function mkProvider(): LLMProvider {
 
 function buildSession(): Session {
   const services = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},

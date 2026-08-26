@@ -36,6 +36,11 @@ import {
   spawnContainedProcess,
   terminateProcessTreeAndWait,
 } from "../../src/utils/supervisedProcess.js";
+import {
+  SandboxExecutionBroker,
+  SandboxExecutionLeaseCleanupError,
+} from "../../src/sandbox/execution-broker.js";
+import { transitionSandboxExecutionBrokerMode } from "../../src/sandbox/execution-lifecycle.js";
 
 function nodeCommand(source: string) {
   return {
@@ -312,6 +317,109 @@ async function withFakeWindowsTaskkill(
 }
 
 describe("runSupervisedProcess", () => {
+  it.runIf(process.platform !== "win32")(
+    "poisons broker authority when an ordinary timeout reaches the cleanup backstop",
+    async () => {
+      const broker = new SandboxExecutionBroker({
+        mode: "danger_full_access",
+        cwd: process.cwd(),
+      });
+      const prepared = broker.prepareSpawn(
+        "hook",
+        nodeCommand(
+          "process.on('SIGTERM', () => {}); process.stdout.write('ready'); setInterval(() => {}, 1000)",
+        ),
+      );
+
+      await expect(
+        runSupervisedProcess(prepared, {
+          timeoutMs: 250,
+          maxOutputBytes: 1_024,
+          terminateGraceMs: 0,
+          settleBackstopMs: 0,
+        }),
+      ).rejects.toBeInstanceOf(SandboxExecutionLeaseCleanupError);
+
+      expect(broker.isClosedAfterLifecycleAuthorityFailure()).toBe(true);
+      expect(() =>
+        broker.prepareSpawn("hook", nodeCommand("process.exit(0)")),
+      ).toThrow(/cleanup was unproven/u);
+      await expect(
+        transitionSandboxExecutionBrokerMode(broker, "read_only"),
+      ).rejects.toThrow(/closed after an authority failure/u);
+    },
+  );
+
+  it.runIf(process.platform === "linux")(
+    "poisons broker authority when the subreaper exits without cleanup proof",
+    async () => {
+      await withLinuxBrokerFaultLibrary(async (libraryPath) => {
+        const broker = new SandboxExecutionBroker({
+          mode: "danger_full_access",
+          cwd: process.cwd(),
+        });
+        const command = nodeCommand("process.exit(0)");
+        const prepared = broker.prepareSpawn("hook", {
+          ...command,
+          env: linuxBrokerFaultEnvironment(libraryPath, "setsid"),
+        });
+
+        await expect(
+          runSupervisedProcess(prepared, {
+            maxOutputBytes: 1_024,
+            linuxContainment: "subreaper",
+          }),
+        ).rejects.toMatchObject({
+          name: "SandboxExecutionLeaseCleanupError",
+          cause: expect.objectContaining({
+            message: expect.stringMatching(/before readiness|cleanup proof/u),
+          }),
+        });
+
+        expect(broker.isClosedAfterLifecycleAuthorityFailure()).toBe(true);
+        await expect(
+          transitionSandboxExecutionBrokerMode(broker, "danger_full_access"),
+        ).rejects.toThrow(/closed after an authority failure/u);
+      });
+    },
+  );
+
+  it.runIf(process.platform !== "win32")(
+    "keeps broker authority open after an ordinary process-consumer error with proven cleanup",
+    async () => {
+      const broker = new SandboxExecutionBroker({
+        mode: "danger_full_access",
+        cwd: process.cwd(),
+      });
+      const prepared = broker.prepareSpawn(
+        "hook",
+        nodeCommand(
+          "process.stdout.write('ready'); setInterval(() => {}, 1000)",
+        ),
+      );
+      const consumerError = new Error("injected output consumer failure");
+
+      const result = await runSupervisedProcess(prepared, {
+        maxOutputBytes: 1_024,
+        terminateGraceMs: 50,
+        settleBackstopMs: 1_000,
+        onStdout: () => {
+          throw consumerError;
+        },
+      });
+
+      expect(result).toMatchObject({
+        stopReason: "consumer_limit",
+        error: consumerError,
+        processTreeCleanupProven: true,
+      });
+      expect(broker.isClosedAfterLifecycleAuthorityFailure()).toBe(false);
+      await expect(
+        transitionSandboxExecutionBrokerMode(broker, "danger_full_access"),
+      ).resolves.toBeUndefined();
+    },
+  );
+
   it("runs without an implicit deadline when timeoutMs is omitted", async () => {
     const result = await runSupervisedProcess(
       nodeCommand("setTimeout(() => process.stdout.write('done'), 75)"),
@@ -325,6 +433,8 @@ describe("runSupervisedProcess", () => {
       signal: null,
       forced: false,
       backstopExpired: false,
+      processTreeCleanupProven: true,
+      processStarted: true,
     });
     expect(result.stopReason).toBeUndefined();
     expect(result.stdout.toString()).toBe("done");
@@ -408,6 +518,7 @@ describe("runSupervisedProcess", () => {
       stopReason: "aborted",
       forced: false,
       backstopExpired: false,
+      processStarted: false,
     });
     expect(result.error).toBeUndefined();
   });
@@ -435,19 +546,23 @@ describe("runSupervisedProcess", () => {
 
   it("streams stdout without retaining or charging it to the capture ceiling", async () => {
     const chunks: Buffer[] = [];
+    let processId: number | undefined;
     const result = await runSupervisedProcess(
       nodeCommand("process.stdout.write('streamed-payload'.repeat(32))"),
       {
         maxOutputBytes: 8,
         captureStdout: false,
-        onStdout(chunk) {
+        onStdout(chunk, control) {
           chunks.push(Buffer.from(chunk));
+          processId = control.processId;
         },
       },
     );
 
     expect(result).toMatchObject({ exitCode: 0, signal: null });
     expect(result.stopReason).toBeUndefined();
+    expect(result.processStarted).toBe(true);
+    expect(processId).toBeGreaterThan(0);
     expect(result.stdout.byteLength).toBe(0);
     expect(Buffer.concat(chunks).toString()).toBe(
       "streamed-payload".repeat(32),

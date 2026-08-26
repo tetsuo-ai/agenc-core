@@ -4,7 +4,7 @@
  * in AgenC's lifecycle.
  */
 import { basename } from "path";
-import { spawn, type ChildProcessWithoutNullStreams } from "child_process";
+import type { ChildProcessWithoutNullStreams } from "child_process";
 import { pathExists } from "./file.js";
 import { wrapSpawn } from "./ShellCommand.js";
 import { TaskOutput } from "./task/TaskOutput.js";
@@ -143,6 +143,11 @@ import type { Message } from "../types/message.js";
 import { execAgentHook } from "./hooks/execAgentHook.js";
 import { execHttpHook } from "./hooks/execHttpHook.js";
 import type { ShellCommand } from "./ShellCommand.js";
+import { SandboxExecutionLeaseCleanupError } from "../sandbox/execution-broker.js";
+import {
+  spawnContainedProcess,
+  terminateProcessTreeAndWait,
+} from "./supervisedProcess.js";
 import {
   getSessionHooks,
   getSessionFunctionHooks,
@@ -923,7 +928,6 @@ async function execCommandHook(
   // without Git Bash — but init.ts still calls setShellIfWindows() on
   // startup, which will exit first. Relaxing that is phase 1 of the
   // design's implementation order (separate PR).
-  let child: ChildProcessWithoutNullStreams;
   const ambientSession = peekAmbientRuntimeSession();
   const sandboxExecutionBroker =
     ambientSession?.services.sandboxExecutionBroker;
@@ -984,6 +988,10 @@ async function execCommandHook(
   };
   const effectiveForceSyncExecution =
     executionAdmission !== undefined || forceSyncExecution === true;
+  let child: ChildProcessWithoutNullStreams;
+  let shellCommand: ShellCommand;
+  let spawnProgram: string;
+  let spawnArgs: readonly string[];
   try {
     if (shellType === "powershell") {
       const pwshPath = await getCachedPowerShellPath();
@@ -994,57 +1002,84 @@ async function execCommandHook(
             `PowerShell, or remove "shell": "powershell" to use bash.`,
         );
       }
-      const command = sandboxExecutionBroker.prepareSpawn("hook", {
-        program: pwshPath,
-        args: buildPowerShellArgs(finalCommand),
-        env: spawnEnv,
-        cwd: safeCwd,
-      });
-      if (
-        executionAdmission !== undefined &&
-        admissionReservationId !== undefined
-      ) {
-        executionAdmission.markDispatched(admissionReservationId, {
-          boundary: "tool_effect",
-          details: { hookEvent, hookName, shellType },
-        });
-        admissionDispatched = true;
-      }
-      child = spawn(command.program, [...command.args], {
-        env: command.env,
-        cwd: command.cwd,
-        ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
-        // Prevent visible console window on Windows (no-op on other platforms)
-        windowsHide: true,
-      }) as ChildProcessWithoutNullStreams;
+      spawnProgram = pwshPath;
+      spawnArgs = buildPowerShellArgs(finalCommand);
     } else {
       // On Windows, use Git Bash explicitly (cmd.exe can't run bash syntax).
       // On other platforms, shell: true uses /bin/sh.
       const shell = isWindows ? findGitBashPath() : "/bin/sh";
-      const command = sandboxExecutionBroker.prepareSpawn("hook", {
-        program: shell,
-        args: ["-c", finalCommand],
-        env: spawnEnv,
-        cwd: safeCwd,
-      });
-      if (
-        executionAdmission !== undefined &&
-        admissionReservationId !== undefined
-      ) {
-        executionAdmission.markDispatched(admissionReservationId, {
-          boundary: "tool_effect",
-          details: { hookEvent, hookName, shellType },
-        });
-        admissionDispatched = true;
-      }
-      child = spawn(command.program, [...command.args], {
-        env: command.env,
-        cwd: command.cwd,
-        ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
-        // Prevent visible console window on Windows (no-op on other platforms)
-        windowsHide: true,
-      }) as ChildProcessWithoutNullStreams;
+      spawnProgram = shell;
+      spawnArgs = ["-c", finalCommand];
     }
+    const preparedSpawn = sandboxExecutionBroker.prepareSpawn("hook", {
+      program: spawnProgram,
+      args: spawnArgs,
+      env: spawnEnv,
+      cwd: safeCwd,
+    });
+    if (
+      executionAdmission !== undefined &&
+      admissionReservationId !== undefined
+    ) {
+      executionAdmission.markDispatched(admissionReservationId, {
+        boundary: "tool_effect",
+        details: { hookEvent, hookName, shellType },
+      });
+      admissionDispatched = true;
+    }
+    const startedHook = preparedSpawn.start((spawnCommand, lifecycleSignal) => {
+      const child = spawnContainedProcess(
+        spawnCommand.program,
+        spawnCommand.args,
+        {
+          env: spawnCommand.env,
+          cwd: spawnCommand.cwd,
+          ...(spawnCommand.argv0 !== undefined
+            ? { argv0: spawnCommand.argv0 }
+            : {}),
+        },
+      );
+      const hookTaskOutput = new TaskOutput(`hook_${child.pid}`, null);
+      const shellCommand = wrapSpawn(
+        child,
+        AbortSignal.any([effectSignal, lifecycleSignal]),
+        hookTimeoutMs,
+        hookTaskOutput,
+      );
+      const completion = shellCommand.result.then(
+        async () => {
+          try {
+            await terminateProcessTreeAndWait(child, {
+              label: `Hook ${hookName}`,
+            });
+          } catch (error) {
+            throw new SandboxExecutionLeaseCleanupError(
+              `Hook process-tree cleanup failed: ${errorMessage(error)}`,
+              { cause: error },
+            );
+          }
+        },
+        async (error) => {
+          try {
+            await terminateProcessTreeAndWait(child, {
+              label: `Hook ${hookName}`,
+            });
+          } catch (cleanupError) {
+            throw new SandboxExecutionLeaseCleanupError(
+              `Hook process-tree cleanup failed: ${errorMessage(cleanupError)}`,
+              { cause: cleanupError },
+            );
+          }
+          throw error;
+        },
+      );
+      return {
+        value: { child, shellCommand },
+        completion,
+      };
+    });
+    child = startedHook.child;
+    shellCommand = startedHook.shellCommand;
   } catch (error) {
     try {
       if (
@@ -1077,16 +1112,6 @@ async function execCommandHook(
     }
     throw error;
   }
-
-  // Hooks use pipe mode — stdout must be streamed into JS so we can parse
-  // the first response line to detect async hooks ({"async": true}).
-  const hookTaskOutput = new TaskOutput(`hook_${child.pid}`, null);
-  const shellCommand = wrapSpawn(
-    child,
-    effectSignal,
-    hookTimeoutMs,
-    hookTaskOutput,
-  );
   // Track whether shellCommand ownership was transferred (e.g., to async hook registry)
   let shellCommandTransferred = false;
   // Track whether stdin has already been written (to avoid "write after end" errors)

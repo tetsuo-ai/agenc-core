@@ -76,10 +76,8 @@ import {
   SUBAGENT_REJECT_MESSAGE_WITH_REASON_PREFIX,
 } from '../messages.js'
 import type { ModelAlias } from '../model/aliases.js'
-import {
-  applyPermissionUpdates,
-  persistPermissionUpdates,
-} from '../permissions/PermissionUpdate.js'
+import { applyPermissionUpdates } from '../../permissions/permission-updates.js'
+import { persistPermissionUpdates } from '../permissions/PermissionUpdate.js'
 import type { PermissionUpdate } from '../permissions/PermissionUpdateSchema.js'
 import { hasPermissionsToUseTool } from '../permissions/permissions.js'
 import { sleep } from '../sleep.js'

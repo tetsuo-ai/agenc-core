@@ -31,6 +31,7 @@ import { isAutoModeGateEnabled } from "../permissions/classifier.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
 import { NetworkApprovalService as RuntimeNetworkApprovalService } from "../permissions/network-approval.js";
 import { initializeToolPermissionContext } from "../permissions/settings.js";
+import type { ToolPermissionContext } from "../permissions/types.js";
 import { buildTurnContext, type TurnContext } from "../session/turn-context.js";
 import { Session, type SessionState } from "../session/session.js";
 import {
@@ -43,8 +44,12 @@ import type {
   SessionConfiguration,
 } from "../session/turn-context.js";
 import {
-  sandboxPolicyValueFromAgenCConfig,
+  applySessionExecutionAuthority,
+  executionAuthorityForPermissionContext,
+  sandboxExecutionBrokerAuthorityFromSessionAuthority,
   sessionConfigurationFromAgenCConfig,
+  sessionExecutionAuthorityFromAgenCConfig,
+  type SessionExecutionAuthority,
 } from "../session/configuration.js";
 import {
   SchemaMismatchError,
@@ -89,9 +94,15 @@ import { getCompactSystemPrompt,
 import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
 import type { Tools as PromptTools } from "../tools/Tool.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
-import { UnifiedExecProcessManager } from "../unified-exec/process-manager.js";
+import {
+  UnifiedExecProcessManager,
+  type UnifiedExecSandboxAuthorityQuiesceToken,
+} from "../unified-exec/process-manager.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
-import { disposeSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
+import {
+  disposeSandboxExecutionBroker,
+  registerSandboxExecutionLifecycleParticipant,
+} from "../sandbox/execution-lifecycle.js";
 import { createCodeModeService } from "../tools/code-mode/service.js";
 import {
   clearCurrentRuntimeSession,
@@ -812,6 +823,12 @@ export interface BootstrapLocalRuntimeSessionOptions {
 export interface LocalRuntimeBootstrap {
   readonly agencHome: string;
   readonly configStore: ConfigStore;
+  /** Configured least-privilege policy captured before mode overrides. */
+  readonly configuredExecutionAuthority: SessionExecutionAuthority;
+  /** Stage a configured baseline for the registry publication transaction. */
+  readonly prepareConfiguredExecutionAuthority: (
+    config: AgenCConfig,
+  ) => PreparedConfiguredExecutionAuthority;
   readonly workspaceRoot: string;
   readonly conversationId: string;
   readonly resolvedProvider: string;
@@ -831,6 +848,12 @@ export interface LocalRuntimeBootstrap {
   readonly memoryMdPath: string;
   readonly shutdown: () => Promise<void>;
   readonly autonomousModeEnabled: boolean;
+}
+
+export interface PreparedConfiguredExecutionAuthority {
+  readonly authority: SessionExecutionAuthority;
+  commit(): void;
+  rollback(): void;
 }
 
 async function waitForPartialMcpDisposal(task: Promise<void>): Promise<void> {
@@ -986,17 +1009,6 @@ async function bootstrapLocalRuntimeSessionScoped(
   });
   const cli = options.cli;
   const runtimeOptions = options.runtimeOptions;
-  const sandboxExecutionBroker = new SandboxExecutionBroker({
-    mode: cli.dangerouslyBypassApprovalsAndSandbox
-      ? "danger_full_access"
-      : sandboxPolicyValueFromAgenCConfig(startup.config.sandbox_mode),
-    cwd: workspaceRoot,
-    env,
-    allowGpu: startup.config.sandbox?.allow_gpu === true,
-  });
-  if (options.requireSandboxReadyAtStartup === true) {
-    sandboxExecutionBroker.assertReady("startup");
-  }
   const autonomousModeEnabled =
     cli.autonomousMode === true || startup.config.autonomous_mode === true;
   const executionAdmissionAutonomous =
@@ -1031,6 +1043,118 @@ async function bootstrapLocalRuntimeSessionScoped(
     cwd: workspaceRoot,
     projectRootMarkers: startup.config.project_root_markers,
   });
+  const executionProjectTrust = (
+    config: AgenCConfig,
+    cwd: string,
+  ) => resolveProjectTrustStateSync({
+    agencHome,
+    env,
+    cwd,
+    projectRootMarkers: config.project_root_markers,
+  });
+  let configuredExecutionConfig = startup.config;
+  let configuredExecutionAuthorityCwd = workspaceRoot;
+  let configuredExecutionAuthorityProjectTrust = projectTrust;
+  let configuredExecutionAuthority =
+    sessionExecutionAuthorityFromAgenCConfig({
+      config: configuredExecutionConfig,
+      workspaceRoot: configuredExecutionAuthorityCwd,
+      projectTrust,
+    });
+  const currentConfiguredExecutionAuthority = (): SessionExecutionAuthority => {
+    const currentCwd = sandboxExecutionBroker.cwd;
+    const currentProjectTrust = executionProjectTrust(
+      configuredExecutionConfig,
+      currentCwd,
+    );
+    if (
+      configuredExecutionAuthorityCwd === currentCwd &&
+      configuredExecutionAuthorityProjectTrust === currentProjectTrust
+    ) {
+      return configuredExecutionAuthority;
+    }
+    configuredExecutionAuthority = sessionExecutionAuthorityFromAgenCConfig({
+      config: configuredExecutionConfig,
+      workspaceRoot: currentCwd,
+      projectTrust: currentProjectTrust,
+    });
+    configuredExecutionAuthorityCwd = currentCwd;
+    configuredExecutionAuthorityProjectTrust = currentProjectTrust;
+    return configuredExecutionAuthority;
+  };
+  const prepareConfiguredExecutionAuthority = (
+    canonicalConfig: AgenCConfig,
+  ): PreparedConfiguredExecutionAuthority => {
+    const previousConfig = configuredExecutionConfig;
+    const previous = currentConfiguredExecutionAuthority();
+    const previousProjectTrust = configuredExecutionAuthorityProjectTrust;
+    const preparedCwd = sandboxExecutionBroker.cwd;
+    const preparedProjectTrust = executionProjectTrust(
+      canonicalConfig,
+      preparedCwd,
+    );
+    const authority = sessionExecutionAuthorityFromAgenCConfig({
+      config: canonicalConfig,
+      workspaceRoot: preparedCwd,
+      projectTrust: preparedProjectTrust,
+    });
+    let committed = false;
+    return Object.freeze({
+      authority,
+      commit: () => {
+        if (configuredExecutionConfig !== previousConfig && !committed) {
+          throw new Error(
+            "configured execution authority changed before staged commit",
+          );
+        }
+        if (sandboxExecutionBroker.cwd !== preparedCwd && !committed) {
+          throw new Error(
+            "configured execution authority cwd changed before staged commit",
+          );
+        }
+        if (
+          executionProjectTrust(canonicalConfig, preparedCwd) !==
+            preparedProjectTrust &&
+          !committed
+        ) {
+          throw new Error(
+            "configured execution authority trust changed before staged commit",
+          );
+        }
+        configuredExecutionConfig = canonicalConfig;
+        configuredExecutionAuthority = authority;
+        configuredExecutionAuthorityCwd = preparedCwd;
+        configuredExecutionAuthorityProjectTrust = preparedProjectTrust;
+        committed = true;
+      },
+      rollback: () => {
+        if (!committed) return;
+        if (configuredExecutionConfig !== canonicalConfig) {
+          throw new Error(
+            "configured execution authority changed before staged rollback",
+          );
+        }
+        configuredExecutionConfig = previousConfig;
+        const currentCwd = sandboxExecutionBroker.cwd;
+        const currentProjectTrust = executionProjectTrust(
+          previousConfig,
+          currentCwd,
+        );
+        configuredExecutionAuthority =
+          currentCwd === preparedCwd &&
+            currentProjectTrust === previousProjectTrust
+            ? previous
+            : sessionExecutionAuthorityFromAgenCConfig({
+                config: previousConfig,
+                workspaceRoot: currentCwd,
+                projectTrust: currentProjectTrust,
+              });
+        configuredExecutionAuthorityCwd = currentCwd;
+        configuredExecutionAuthorityProjectTrust = currentProjectTrust;
+        committed = false;
+      },
+    });
+  };
   const permissionInit = await initializeToolPermissionContext({
     env: {
       home: agencHome,
@@ -1044,14 +1168,41 @@ async function bootstrapLocalRuntimeSessionScoped(
       : {}),
     projectTrust,
   });
-  const autoModeEnabled = isAutoModeGateEnabled(providerEnvironment);
-  const toolPermissionContext = {
+  const autoModeEnabled =
+    permissionInit.toolPermissionContext.isAutoModeAvailable === true &&
+    isAutoModeGateEnabled(providerEnvironment);
+  let toolPermissionContext: ToolPermissionContext = {
     ...permissionInit.toolPermissionContext,
     isAutoModeAvailable: autoModeEnabled,
     ...(permissionInit.toolPermissionContext.mode === "auto" && !autoModeEnabled
       ? { mode: "default" as const, autoModeActive: false }
       : {}),
   };
+  const initialSandboxExecutionAuthority =
+    sandboxExecutionBrokerAuthorityFromSessionAuthority(
+      executionAuthorityForPermissionContext(
+        configuredExecutionAuthority,
+        toolPermissionContext,
+      ),
+      workspaceRoot,
+    );
+  const sandboxExecutionBroker = new SandboxExecutionBroker({
+    mode: initialSandboxExecutionAuthority.mode,
+    cwd: workspaceRoot,
+    env,
+    ...(initialSandboxExecutionAuthority.permissionProfile !== undefined
+      ? {
+          permissionProfile:
+            initialSandboxExecutionAuthority.permissionProfile,
+        }
+      : {}),
+    windowsSandboxLevel:
+      initialSandboxExecutionAuthority.windowsSandboxLevel,
+    allowGpu: initialSandboxExecutionAuthority.allowGpu,
+  });
+  if (options.requireSandboxReadyAtStartup === true) {
+    sandboxExecutionBroker.assertReady("startup");
+  }
   const permissionModeRegistry = new PermissionModeRegistry(
     toolPermissionContext,
   );
@@ -1173,6 +1324,34 @@ async function bootstrapLocalRuntimeSessionScoped(
   });
   const unifiedExecManager = new UnifiedExecProcessManager({
     cwd: workspaceRoot,
+  });
+  const unifiedExecLifecycleParticipantName = "unified-exec-manager";
+  let unifiedExecQuiesceToken:
+    | UnifiedExecSandboxAuthorityQuiesceToken
+    | undefined;
+  registerSandboxExecutionLifecycleParticipant(sandboxExecutionBroker, {
+    name: unifiedExecLifecycleParticipantName,
+    quiesce: async () => {
+      const token = unifiedExecManager.beginSandboxAuthorityQuiesce();
+      unifiedExecQuiesceToken = token;
+      await unifiedExecManager.finishSandboxAuthorityQuiesce(token);
+    },
+    resume: async () => {
+      sandboxExecutionBroker.assertLifecycleParticipantResumePermit(
+        unifiedExecLifecycleParticipantName,
+      );
+      const token = unifiedExecQuiesceToken;
+      if (token === undefined) {
+        throw new Error("unified exec lifecycle resume has no quiesce token");
+      }
+      unifiedExecManager.resumeSandboxAuthorityAfterQuiesce(token);
+      unifiedExecQuiesceToken = undefined;
+    },
+    dispose: async () => {
+      const token = unifiedExecManager.beginSandboxAuthorityQuiesce();
+      unifiedExecQuiesceToken = token;
+      await unifiedExecManager.finishSandboxAuthorityQuiesce(token);
+    },
   });
   const codeModeService = createCodeModeService({ env });
   let sessionRef: Session | null = null;
@@ -1397,25 +1576,25 @@ async function bootstrapLocalRuntimeSessionScoped(
     coordinatorMode: coordinatorModeEnabled,
     compactProfile: usesLocalToolProfile(resolvedProvider),
   });
-  const sessionConfiguration = {
+  const configuredSessionConfiguration = {
     ...sessionConfigurationFromAgenCConfig({
       config: startup.config,
       workspaceRoot,
       model,
       provider: resolvedProvider,
       projectTrust,
-      dangerouslyBypassApprovalsAndSandbox:
-        cli.dangerouslyBypassApprovalsAndSandbox === true,
     }),
     baseInstructions,
   } satisfies SessionConfiguration;
+  const sessionConfiguration = applySessionExecutionAuthority(
+    configuredSessionConfiguration,
+    executionAuthorityForPermissionContext(
+      configuredExecutionAuthority,
+      toolPermissionContext,
+    ),
+  );
   let initialState: SessionState = {
-    sessionConfiguration: {
-      ...sessionConfiguration,
-      permissionContext: {
-        mode: toolPermissionContext.mode,
-      },
-    } as SessionConfiguration,
+    sessionConfiguration,
     history: [],
     ...(resumeConversation
       ? { pendingSessionStartSource: "resume" as const }
@@ -2082,6 +2261,10 @@ async function bootstrapLocalRuntimeSessionScoped(
     return {
       agencHome,
       configStore,
+      get configuredExecutionAuthority() {
+        return currentConfiguredExecutionAuthority();
+      },
+      prepareConfiguredExecutionAuthority,
       workspaceRoot,
       conversationId,
       resolvedProvider,

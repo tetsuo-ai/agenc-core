@@ -367,7 +367,6 @@ export function removeMemberByAgentId(
 
 /**
  * Sets a team member's permission mode.
- * Called when the team leader changes a teammate's mode via the TeamsDialog.
  * @param teamName - The name of the team
  * @param memberName - The name of the member to update
  * @param mode - The new permission mode
@@ -422,44 +421,6 @@ export function syncTeammateMode(
   if (teamName && agentName) {
     setMemberMode(teamName, agentName, mode)
   }
-}
-
-/**
- * Sets multiple team members' permission modes in a single atomic operation.
- * Avoids race conditions when updating multiple teammates at once.
- * @param teamName - The name of the team
- * @param modeUpdates - Array of {memberName, mode} to update
- */
-export function setMultipleMemberModes(
-  teamName: string,
-  modeUpdates: Array<{ memberName: string; mode: PermissionMode }>,
-): boolean {
-  const teamFile = readTeamFile(teamName)
-  if (!teamFile) {
-    return false
-  }
-
-  // Build a map of updates for efficient lookup
-  const updateMap = new Map(modeUpdates.map(u => [u.memberName, u.mode]))
-
-  // Create updated members array immutably
-  let anyChanged = false
-  const updatedMembers = teamFile.members.map(member => {
-    const newMode = updateMap.get(member.name)
-    if (newMode !== undefined && member.mode !== newMode) {
-      anyChanged = true
-      return { ...member, mode: newMode }
-    }
-    return member
-  })
-
-  if (anyChanged) {
-    writeTeamFile(teamName, { ...teamFile, members: updatedMembers })
-    logForDebugging(
-      `[TeammateTool] Set ${modeUpdates.length} member modes in team ${teamName}`,
-    )
-  }
-  return true
 }
 
 /**

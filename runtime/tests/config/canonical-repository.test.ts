@@ -2,9 +2,11 @@ import {
   chmodSync,
   existsSync,
   linkSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -36,6 +38,7 @@ import {
   resolveMcpLayerCandidates,
   type ConfigLayerSnapshot,
 } from "./repository.js";
+import { parseCanonicalStateDocument } from "./state.js";
 import { ConfigStore } from "./store.js";
 
 const temporaryDirectories: string[] = [];
@@ -50,6 +53,16 @@ function write(path: string, content: string, mode = 0o600): void {
   mkdirSync(join(path, ".."), { recursive: true });
   writeFileSync(path, content, { mode });
   chmodSync(path, mode);
+}
+
+function persistedBypassConsent(canonicalCwd: string) {
+  const identity = lstatSync(canonicalCwd, { bigint: true });
+  return {
+    version: 1,
+    canonicalCwd,
+    dev: identity.dev.toString(10),
+    ino: identity.ino.toString(10),
+  };
 }
 
 function mcpLayer(
@@ -690,6 +703,222 @@ describe("explicit v2 migration", () => {
     expect(plan.writes).toEqual([]);
   });
 
+  test("repairs retired canonical settings while preserving stable exact-cwd consent", async () => {
+    const root = temp("agenc-migration-state-namespace-upgrade");
+    const home = join(root, "home");
+    const acceptedCwd = join(root, "accepted-workspace");
+    mkdirSync(acceptedCwd, { recursive: true });
+    const canonicalAcceptedCwd = realpathSync(acceptedCwd);
+    const statePath = join(home, "state.json");
+    const retiredState = `${JSON.stringify({
+      state_version: 1,
+      state: {
+        global: {
+          installMethod: "native",
+          settings: {
+            fastModePerSessionOptIn: true,
+            bypassPermissionsModeAcceptedIn: [acceptedCwd],
+          },
+        },
+      },
+    })}\n`;
+    write(statePath, retiredState, 0o666);
+
+    expect(() => parseCanonicalStateDocument(retiredState, statePath)).toThrow(
+      /agenc config migrate/u,
+    );
+
+    const plan = await checkConfigV2Migration({
+      env: {},
+      home,
+      projectRoot: join(root, "project"),
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath: join(root, "missing-global.json"),
+      id: "canonical-state-namespace-upgrade",
+      scope: "all",
+    });
+
+    expect(plan.conflicts).toEqual([]);
+    expect(plan.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sourcePath: statePath,
+        field: "state.global.settings.fastModePerSessionOptIn",
+        action: "drop",
+      }),
+      expect.objectContaining({
+        sourcePath: statePath,
+        field: "state.global.settings.bypassPermissionsModeAcceptedIn",
+        action: "migrate",
+        target: "state.global.permissions.bypassPermissionsAcceptedByCwd",
+      }),
+    ]));
+    const stateWrite = plan.writes.find((write) => write.kind === "state");
+    expect(stateWrite).toBeDefined();
+    expect(stateWrite?.mode).toBe(0o600);
+    expect(parseCanonicalStateDocument(stateWrite!.content, statePath).state)
+      .toEqual({
+        global: {
+          installMethod: "native",
+          permissions: {
+            bypassPermissionsAcceptedByCwd: {
+              [canonicalAcceptedCwd]: persistedBypassConsent(
+                canonicalAcceptedCwd,
+              ),
+            },
+          },
+        },
+      });
+
+    await applyConfigV2Migration(plan);
+    expect(parseCanonicalStateDocument(readFileSync(statePath, "utf8"), statePath).state)
+      .toEqual({
+        global: {
+          installMethod: "native",
+          permissions: {
+            bypassPermissionsAcceptedByCwd: {
+              [canonicalAcceptedCwd]: persistedBypassConsent(
+                canonicalAcceptedCwd,
+              ),
+            },
+          },
+        },
+      });
+    if (process.platform !== "win32") {
+      expect(lstatSync(statePath).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  test("preserves config-file mode while planning a canonical rewrite", async () => {
+    if (process.platform === "win32") return;
+    const root = temp("agenc-migration-config-mode");
+    const home = join(root, "home");
+    const configPath = join(home, "config.toml");
+    write(configPath, "configVersion = 1\n", 0o640);
+
+    const plan = await checkConfigV2Migration({
+      env: {},
+      home,
+      projectRoot: join(root, "project"),
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath: join(root, "missing-global.json"),
+      id: "canonical-config-mode",
+      scope: "all",
+    });
+
+    expect(plan.conflicts).toEqual([]);
+    const configWrite = plan.writes.find((write) => write.kind === "config");
+    expect(configWrite?.targetPath).toBe(configPath);
+    expect(configWrite?.mode).toBe(0o640);
+  });
+
+  test("blocks relative and nonexistent cwd grants during canonical state repair", async () => {
+    const root = temp("agenc-migration-invalid-bypass-cwd");
+    const home = join(root, "home");
+    const statePath = join(home, "state.json");
+    write(statePath, JSON.stringify({
+      state_version: 1,
+      state: {
+        global: {
+          settings: {
+            bypassPermissionsModeAcceptedIn: [
+              "relative/workspace",
+              join(root, "missing-workspace"),
+            ],
+          },
+        },
+      },
+    }));
+
+    const plan = await checkConfigV2Migration({
+      env: {},
+      home,
+      projectRoot: join(root, "project"),
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath: join(root, "missing-global.json"),
+      id: "invalid-canonical-bypass-cwd",
+      scope: "all",
+    });
+
+    expect(plan.conflicts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        sourcePath: statePath,
+        field: "state.global.settings.bypassPermissionsModeAcceptedIn[0]",
+        reason: expect.stringMatching(/absolute and normalized/u),
+      }),
+      expect.objectContaining({
+        sourcePath: statePath,
+        field: "state.global.settings.bypassPermissionsModeAcceptedIn[1]",
+        reason: expect.stringMatching(/stable existing directory/u),
+      }),
+    ]));
+    expect(plan.writes).toEqual([]);
+    expect(readFileSync(statePath, "utf8")).toContain(
+      "bypassPermissionsModeAcceptedIn",
+    );
+  });
+
+  test("migrates retired user settings consent but never accepts workspace authority", async () => {
+    const root = temp("agenc-migration-settings-bypass-consent");
+    const home = join(root, "home");
+    const projectRoot = join(root, "project");
+    const acceptedCwd = join(root, "accepted-workspace");
+    mkdirSync(acceptedCwd, { recursive: true });
+    const canonicalAcceptedCwd = realpathSync(acceptedCwd);
+    write(join(home, "settings.json"), JSON.stringify({
+      bypassPermissionsModeAcceptedIn: [acceptedCwd],
+    }));
+
+    const userPlan = await checkConfigV2Migration({
+      env: {},
+      home,
+      projectRoot,
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath: join(root, "missing-global.json"),
+      id: "user-settings-bypass-consent",
+      scope: "user",
+    });
+
+    expect(userPlan.conflicts).toEqual([]);
+    const stateWrite = userPlan.writes.find((write) => write.kind === "state");
+    expect(parseCanonicalStateDocument(stateWrite!.content).state).toEqual({
+      global: {
+        permissions: {
+          bypassPermissionsAcceptedByCwd: {
+            [canonicalAcceptedCwd]: persistedBypassConsent(
+              canonicalAcceptedCwd,
+            ),
+          },
+        },
+      },
+    });
+
+    write(join(projectRoot, ".agenc", "settings.json"), JSON.stringify({
+      bypassPermissionsModeAcceptedIn: [acceptedCwd],
+    }));
+    const workspacePlan = await checkConfigV2Migration({
+      env: {},
+      home: join(root, "other-home"),
+      projectRoot,
+      managedConfigPath: join(root, "managed", "config.toml"),
+      managedSettingsPath: join(root, "managed", "managed-settings.json"),
+      globalStatePath: join(root, "missing-global.json"),
+      id: "workspace-settings-bypass-consent",
+      scope: "all",
+    });
+    expect(workspacePlan.conflicts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        scope: "project",
+        field: "bypassPermissionsModeAcceptedIn",
+        reason: expect.stringMatching(/cannot be granted/u),
+      }),
+    ]));
+    expect(workspacePlan.writes).toEqual([]);
+  });
+
   test("refuses one file as both user and project migration target", async () => {
     const root = temp("agenc-migration-scope-path-collision");
     const projectRoot = join(root, "project");
@@ -1178,6 +1407,18 @@ describe("retired-field migration manifest", () => {
     expect(classifyRetiredField("settings-json", "effortLevel")).toMatchObject({
       action: "transform",
       target: "reasoning_effort",
+    });
+    expect(classifyRetiredField(
+      "settings-json",
+      "fastModePerSessionOptIn",
+    )).toMatchObject({ authority: "removed", action: "drop" });
+    expect(classifyRetiredField(
+      "settings-json",
+      "bypassPermissionsModeAcceptedIn",
+    )).toMatchObject({
+      authority: "state",
+      action: "transform",
+      target: "state.global.permissions.bypassPermissionsAcceptedByCwd",
     });
     expect(classifyRetiredField("config-toml-v1", "sandbox_policy")).toMatchObject({
       action: "transform",

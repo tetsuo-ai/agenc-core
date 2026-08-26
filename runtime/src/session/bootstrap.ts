@@ -533,12 +533,7 @@ async function dispatchBootstrapSessionStart(
 ): Promise<void> {
   const processSessionStart = session.services.hooks?.processSessionStart;
   if (typeof processSessionStart !== "function") return;
-  const permissionMode =
-    (
-      session.sessionConfiguration as {
-        readonly permissionContext?: { readonly mode?: string };
-      }
-    ).permissionContext?.mode ?? "default";
+  const permissionMode = session.permissionModeRegistry.current().mode;
   const messages = await runWithCurrentRuntimeSession(session, () =>
     processSessionStart(
       {

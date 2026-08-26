@@ -6,10 +6,21 @@ import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { resolveHomeContext } from "../../../src/config/home.js";
 import { createImagineImageTool } from "../../../src/tools/system/imagine-image.js";
 import { createModelFacingTools } from "../../../src/bin/model-facing-tools.js";
 import { createProvider } from "../../../src/llm/provider.js";
 import type { Session } from "../../../src/session/session.js";
+
+function testHome(workspaceRoot: string) {
+  return resolveHomeContext(
+    {
+      AGENC_HOME: join(workspaceRoot, ".agenc-test-home"),
+      HOME: workspaceRoot,
+    },
+    { platformHome: workspaceRoot },
+  );
+}
 
 describe("ImagineImage tool", () => {
   it("is not catalog-registered for non-Grok (Claude/OpenAI) sessions", () => {
@@ -36,6 +47,7 @@ describe("ImagineImage tool", () => {
   it("refuses non-grok sessions at execute time (defense-in-depth)", async () => {
     const tool = createImagineImageTool({
       workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
       getSession: () =>
         ({
           services: { provider: { name: "openai" } },
@@ -65,6 +77,7 @@ describe("ImagineImage tool", () => {
 
     const tool = createImagineImageTool({
       workspaceRoot: root,
+      home: testHome(root),
       getSession: () =>
         ({ services: { provider } }) as unknown as Session,
       env: {}, // no BYOK
@@ -96,6 +109,7 @@ describe("ImagineImage tool", () => {
 
     const tool = createImagineImageTool({
       workspaceRoot: root,
+      home: testHome(root),
       getSession: () =>
         ({ services: { provider } }) as unknown as Session,
       env: { XAI_API_KEY: "real-byok-key" },
@@ -145,6 +159,7 @@ describe("ImagineImage tool", () => {
     ) as unknown as typeof fetch;
     const tool = createImagineImageTool({
       workspaceRoot: process.cwd(),
+      home: testHome(process.cwd()),
       getSession: () => ({ services: { provider } }) as unknown as Session,
       env: {},
       fetchImpl,

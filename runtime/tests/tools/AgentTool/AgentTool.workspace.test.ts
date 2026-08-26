@@ -19,16 +19,20 @@ import {
   AgentTool,
 } from '../../../src/tools/AgentTool/AgentTool.js'
 import {
+  bindAgentDefinitionToWorkspace,
   __setPluginAgentsLoaderForTesting,
   clearAgentDefinitionsCache,
 } from '../../../src/tools/AgentTool/loadAgentsDir.js'
+import { runAgent } from '../../../src/tools/AgentTool/runAgent.js'
 import type { ToolUseContext } from '../../../src/tools/Tool.js'
 import { getDefaultAppState } from '../../../src/tui/state/AppStateStore.js'
 import { runWithCwdOverride } from '../../../src/utils/cwd.js'
+import { createFileStateCacheWithSizeLimit } from '../../../src/utils/fileStateCache.js'
 import {
   resetCanonicalSettingsAuthorityForTesting,
   runWithCanonicalSettingsAuthority,
 } from '../../../src/utils/settings/canonicalAuthority.js'
+import { asSystemPrompt } from '../../../src/utils/systemPromptType.js'
 
 const roots: string[] = []
 const settingsAuthorities = new Map<string, ConfigStore>()
@@ -659,6 +663,74 @@ Do not start.
     expect(runAgentSource).toContain(
       'executionAdmission: spawnAdmission.childAdmission',
     )
+  })
+
+  it('refuses configured child bypass consent granted for a different cwd', async () => {
+    const workspace = tempRoot('agent-bypass-workspace')
+    const consentedElsewhere = tempRoot('agent-bypass-other-workspace')
+    const session = sessionFor(workspace)
+    const { context } = contextFor(workspace)
+    const parentState = context.getAppState()
+    const permissionContext = {
+      ...parentState.toolPermissionContext,
+      mode: 'default' as const,
+      isBypassPermissionsModeAvailable: true,
+      bypassPermissionsAcceptedIn: [resolve(consentedElsewhere)],
+    }
+    const childContext = {
+      ...context,
+      readFileState: createFileStateCacheWithSizeLimit(10),
+      getAppState: () => ({
+        ...parentState,
+        toolPermissionContext: permissionContext,
+      }),
+    } as unknown as ToolUseContext
+    const agentDefinition = bindAgentDefinitionToWorkspace(
+      {
+        agentType: 'consent-bound-child',
+        whenToUse: 'Tests exact cwd permission consent',
+        source: 'plugin',
+        plugin: 'permission-test',
+        baseDir: workspace,
+        permissionMode: 'bypassPermissions',
+        getSystemPrompt: () => 'Do not execute tools.',
+      },
+      session.roleWorkspace,
+    )
+    const cacheBoundary = new Error('cache boundary reached')
+    let observedMode: string | undefined
+
+    const iterator = runAgent({
+      agentDefinition,
+      promptMessages: [],
+      toolUseContext: childContext,
+      canUseTool: async () => ({ behavior: 'allow' }),
+      isAsync: false,
+      querySource: 'agent:custom',
+      availableTools: [],
+      agentMetadataAlreadyPersisted: true,
+      override: {
+        agentId: 'permission-test-child',
+        userContext: {},
+        systemContext: {},
+        systemPrompt: asSystemPrompt(['Test child.']),
+      },
+      onCacheSafeParams: params => {
+        observedMode = params.toolUseContext.getAppState().toolPermissionContext.mode
+        throw cacheBoundary
+      },
+    })
+
+    const advance = () => runWithCanonicalSettingsAuthority(
+      session.services.configStore,
+      () => runWithCurrentRuntimeSession(
+        session,
+        () => runWithCwdOverride(workspace, () => iterator.next()),
+      ),
+    )
+
+    await expect(advance()).rejects.toBe(cacheBoundary)
+    expect(observedMode).toBe('default')
   })
 
   it('prefers an exact restrictive plugin alias on the immediate call path', async () => {

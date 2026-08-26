@@ -1,10 +1,9 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import type { HomeContext } from "../../../src/config/home.js";
 import type { ConfigLayerSnapshot } from "../../../src/config/repository.js";
 import type { AgenCConfig } from "../../../src/config/schema.js";
 import { RuntimeStateRepository } from "../../../src/config/runtime-state-repository.js";
-import { updateRuntimeState } from "../../../src/utils/config.js";
 import {
   runWithCanonicalSettingsAuthority,
   type CanonicalSettingsAuthority,
@@ -88,25 +87,24 @@ describe("execution authority settings projection", () => {
     ]);
   });
 
-  test("rejects config and policy injection through state.global.settings", () => {
+  test("does not read or merge a runtime-state settings namespace", () => {
     const current = authority("canonical-model", "state-injection");
-    expect(() => {
-      runWithCanonicalSettingsAuthority(current, () =>
-        updateRuntimeState((state) => ({
-          ...state,
-          settings: {
-            model: "state-injected-model",
-            permissions: { allow: ["system.bash(*)"] },
-            disableAllHooks: true,
-          },
-        } as typeof state)));
-    }).toThrow(/operator configuration in state\.global\.settings/u);
-    expect(
-      runWithCanonicalSettingsAuthority(
-        current,
-        () => getInitialSettings().model,
-      ),
-    ).toBe("canonical-model");
+    const stateRead = vi.spyOn(current.stateRepository, "getNamespace")
+      .mockReturnValue({ fastModePerSessionOptIn: true });
+
+    const initial = runWithCanonicalSettingsAuthority(
+      current,
+      () => getInitialSettings(),
+    );
+    const userLayer = runWithCanonicalSettingsAuthority(
+      current,
+      () => getSettingsForSource("userSettings"),
+    );
+
+    expect(initial.model).toBe("canonical-model");
+    expect(initial).not.toHaveProperty("fastModePerSessionOptIn");
+    expect(userLayer).toBeNull();
+    expect(stateRead).not.toHaveBeenCalled();
   });
 
   test("exposes canonical field names without a compatibility projection", () => {
@@ -170,6 +168,18 @@ describe("execution authority settings projection", () => {
   });
 
   test("rejects managed-only writes and repository-owned operator or rollback writes before I/O", async () => {
+    const retiredStatePatch = {
+      fastModePerSessionOptIn: true,
+    } as unknown as Partial<AgenCConfig>;
+    await expect(updateSettingsForSource(
+      "userSettings",
+      retiredStatePatch,
+      null,
+    )).resolves.toMatchObject({
+      error: expect.objectContaining({
+        message: expect.stringContaining("retired surface"),
+      }),
+    });
     await expect(updateSettingsForSource(
       "userSettings",
       { availableModels: ["grok-4.6"] },

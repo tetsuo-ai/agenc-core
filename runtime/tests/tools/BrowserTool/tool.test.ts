@@ -10,6 +10,7 @@
  */
 
 import { describe, expect, test, vi } from "vitest";
+import { resolve } from "node:path";
 import { createBrowserTool } from "../../../src/tools/BrowserTool/tool.js";
 import { BROWSER_TOOL_NAME } from "../../../src/tools/BrowserTool/prompt.js";
 import { createEmptyToolPermissionContext } from "../../../src/permissions/types.js";
@@ -19,7 +20,10 @@ import {
   SandboxExecutionBroker,
   attachSandboxExecutionBroker,
 } from "../../../src/sandbox/execution-broker.js";
-import { disposeSandboxExecutionBroker } from "../../../src/sandbox/execution-lifecycle.js";
+import {
+  disposeSandboxExecutionBroker,
+  transitionSandboxExecutionBroker,
+} from "../../../src/sandbox/execution-lifecycle.js";
 
 function evaluatorContext(): ToolEvaluatorContext {
   const permissionContext = createEmptyToolPermissionContext();
@@ -148,5 +152,35 @@ describe("Browser tool validation (no browser launched)", () => {
     expect(afterDisposal).toMatchObject({ isError: true });
     expect(afterDisposal.content).toContain("authority has been disposed");
     expect(listTabs).toHaveBeenCalledOnce();
+  });
+
+  test("quiesces the broker-owned manager through a real workspace transition", async () => {
+    const closeAll = vi.fn(async () => {});
+    const listTabs = vi.fn(async () => []);
+    const tool = createBrowserTool({
+      manager: { closeAll, listTabs } as never,
+    });
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: resolve("browser-transition-initial"),
+    });
+    const rebasedCwd = resolve("browser-transition-rebased");
+    const args: Record<string, unknown> = { action: "tabs" };
+    attachSandboxExecutionBroker(args, broker, "browser");
+
+    try {
+      const beforeTransition = await tool.execute(args);
+      expect(beforeTransition.isError).toBeUndefined();
+      await transitionSandboxExecutionBroker(broker, rebasedCwd);
+
+      expect(broker.cwd).toBe(rebasedCwd);
+      expect(closeAll).toHaveBeenCalledOnce();
+      const afterTransition = await tool.execute(args);
+      expect(afterTransition.isError).toBeUndefined();
+      expect(listTabs).toHaveBeenCalledTimes(2);
+    } finally {
+      await disposeSandboxExecutionBroker(broker);
+    }
+    expect(closeAll).toHaveBeenCalledTimes(2);
   });
 });

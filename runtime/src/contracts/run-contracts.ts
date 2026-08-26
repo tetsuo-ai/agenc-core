@@ -135,14 +135,17 @@ export type RunRuntimeServiceTier = (typeof RUN_RUNTIME_SERVICE_TIERS)[number];
 /**
  * Complete desired session overlay. It intentionally omits permission rules:
  * those are recomputed from current trusted policy on recovery. A bypass
- * authorization is retained only while it is transition-critical and is
- * bound to the exact canonical workspace spelling.
+ * authorization and availability are daemon-owned. Any retained bypass
+ * consent is bound to the exact canonical workspace spelling.
  */
 export interface RunRuntimeSettingsSnapshot {
   readonly permissionMode: RunRuntimePermissionMode;
   readonly prePlanMode: RunRuntimePermissionMode | null;
   readonly autoModeActive: boolean;
+  readonly autoModeAvailable: boolean;
+  readonly bypassPermissionsModeAvailable: boolean;
   readonly bypassPermissionsWorkspace: string | null;
+  readonly bypassPermissionsConsentWorkspace: string | null;
   readonly model: string;
   readonly provider: string;
   readonly profile: string | null;

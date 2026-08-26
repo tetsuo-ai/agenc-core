@@ -1,9 +1,11 @@
 /** Canonical permission projection and persistence over layered config.toml. */
 
 import { existsSync } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
-import { readStrictConfigLayer, type ConfigScope } from "../config/repository.js";
-import { ConfigStore } from "../config/store.js";
+import { isAbsolute, resolve } from "node:path";
+import {
+  ConfigStore,
+  type ConfigStoreAuthority,
+} from "../config/store.js";
 import {
   isValidPermissionMode,
   type AgenCConfig,
@@ -12,25 +14,26 @@ import {
 import { findProjectRootSync } from "../session/session-store.js";
 import {
   getSettingsForSource as getCanonicalSettingsForSource,
-  type RuntimeSettingsPatch,
-  type RuntimeSettingsSnapshot,
   updateSettingsForSource as updateCanonicalSettingsForSource,
 } from "../utils/settings/settings.js";
 import {
+  getEnabledSettingSources as getCanonicalEnabledSettingSources,
+} from "../utils/settings/constants.js";
+import {
   applyPermissionRulesToPermissionContext,
-  applyPermissionUpdate,
   clearAllRulesFromSource,
   parseRuleString,
   serializeRuleValue,
   setRulesForSource,
 } from "./rules.js";
+import { applyPermissionUpdate } from "./permission-updates.js";
 import {
   EDITABLE_SOURCES,
   PERMISSION_BEHAVIORS,
   PERMISSION_RULE_SOURCES,
   SETTING_SOURCES,
   createEmptyToolPermissionContext,
-  deepFreeze,
+  immutableToolPermissionContext,
   isUserAddressablePermissionMode,
   type EditablePermissionRuleSource,
   type PermissionBehavior,
@@ -41,20 +44,27 @@ import {
   type PermissionUpdate,
   type ToolPermissionContext,
 } from "./types.js";
-import { isAutoModeGateEnabled } from "./permission-mode.js";
+import {
+  createDisabledAutoModeContext,
+  createDisabledBypassPermissionsContext,
+  isAutoModeGateEnabled,
+  restoreDangerousPermissions,
+  stripDangerousPermissionsForAutoMode,
+  transitionPlanAutoMode,
+  transitionPermissionMode,
+} from "./permission-mode.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
+import {
+  authorizeBypassPermissionsConsent,
+  canonicalizeBypassPermissionsCwd,
+  loadBypassPermissionsConsent,
+} from "./bypass-consent-state.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Re-exports so callers can `import { SETTING_SOURCES, EDITABLE_SOURCES } from "./settings.js"`
 // ─────────────────────────────────────────────────────────────────────
 
 export { SETTING_SOURCES, EDITABLE_SOURCES };
-
-// ─────────────────────────────────────────────────────────────────────
-// Canonical permission snapshot
-// ─────────────────────────────────────────────────────────────────────
-
-export type PermissionSettingsSnapshot = RuntimeSettingsSnapshot;
 
 // ─────────────────────────────────────────────────────────────────────
 // Path resolution
@@ -66,7 +76,7 @@ export interface DiskEnv {
   /** Defaults to `process.cwd()`. */
   readonly cwd?: string;
   /** Active strict layered repository snapshot. */
-  readonly configStore?: ConfigStore;
+  readonly configStore?: ConfigStoreAuthority;
   /** Override the managed config.toml path. */
   readonly managedConfigPath?: string;
 }
@@ -77,7 +87,7 @@ function resolveCwd(env: DiskEnv | undefined): string {
 
 function resolveProjectRoot(
   env: DiskEnv | undefined,
-  configStore?: ConfigStore,
+  configStore?: ConfigStoreAuthority,
 ): string {
   const cwd = resolveCwd(env);
   if (configStore) return configStore.projectRoot;
@@ -103,132 +113,23 @@ async function withCanonicalStore(env?: DiskEnv): Promise<DiskEnv> {
   return { ...env, cwd, configStore };
 }
 
-/**
- * Return the canonical TOML layer path for a source, or `null` when the
- * source is in-memory-only or no managed layer was resolved.
- */
-export function getSettingsFilePathForSource(
-  source: PermissionRuleSource,
-  env?: DiskEnv,
-): string | null {
-  const configStore = env?.configStore;
-  switch (source) {
-    case "userSettings": {
-      if (configStore) return configStore.homeContext.configTomlPath;
-      return env?.home ? join(env.home, "config.toml") : null;
-    }
-    case "projectSettings": {
-      const root = resolveProjectRoot(env, configStore);
-      return join(root, ".agenc", "config.toml");
-    }
-    case "localSettings": {
-      const root = resolveProjectRoot(env, configStore);
-      return join(root, ".agenc", "config.local.toml");
-    }
-    case "flagSettings": {
-      return env?.configStore?.sources("flag")[0]?.path ?? null;
-    }
-    case "policySettings": {
-      if (env?.managedConfigPath) return env.managedConfigPath;
-      return env?.configStore?.sources("managed").at(-1)?.path ?? null;
-    }
-    case "cliArg":
-    case "command":
-    case "session":
-      return null;
-  }
-}
-
 // ─────────────────────────────────────────────────────────────────────
 // Canonical projection
 // ─────────────────────────────────────────────────────────────────────
 
-function settingsFromConfig(config: AgenCConfig): PermissionSettingsSnapshot {
-  return config as PermissionSettingsSnapshot;
-}
-
-function scopeForSource(source: PermissionRuleSource): ConfigScope | null {
+function settingsForSource(
+  source: PermissionRuleSource,
+  env?: DiskEnv,
+): AgenCConfig | null {
   switch (source) {
-    case "userSettings": return "user";
-    case "projectSettings": return "project";
-    case "localSettings": return "local";
-    case "flagSettings": return "flag";
-    case "policySettings": return "managed";
     case "cliArg":
     case "command":
     case "session":
       return null;
   }
-}
-
-function mergeSourceSettings(
-  values: readonly PermissionSettingsSnapshot[],
-): PermissionSettingsSnapshot | null {
-  if (values.length === 0) return null;
-  const out: Record<string, unknown> = {};
-  let permissions: Record<string, unknown> = {};
-  for (const value of values) {
-    const rawPermissions = value.permissions as Record<string, unknown> | undefined;
-    if (rawPermissions) {
-      const previous = permissions;
-      permissions = { ...permissions, ...rawPermissions };
-      for (const behavior of ["allow", "deny", "ask", "additionalDirectories"] as const) {
-        const incoming = rawPermissions[behavior];
-        if (!Array.isArray(incoming)) continue;
-        const existing = Array.isArray(previous[behavior])
-          ? previous[behavior] as unknown[]
-          : [];
-        permissions[behavior] = [...new Set([...existing, ...incoming])];
-      }
-    }
-    Object.assign(out, value);
-  }
-  if (Object.keys(permissions).length > 0) out.permissions = permissions;
-  return out as PermissionSettingsSnapshot;
-}
-
-function settingsForSource(
-  source: PermissionRuleSource,
-  env?: DiskEnv,
-): PermissionSettingsSnapshot | null {
-  const scope = scopeForSource(source);
-  if (scope === null) return null;
-  const layers = env?.configStore?.sources(scope);
-  if (layers) {
-    return mergeSourceSettings(layers.map((layer) => settingsFromConfig(layer.config)));
-  }
-  return getCanonicalSettingsForSource(source as Parameters<typeof getCanonicalSettingsForSource>[0]);
-}
-
-/** Read one explicit strict TOML layer for migration/diagnostic tooling. */
-export async function readCanonicalPermissionConfig(
-  path: string,
-  scope: ConfigScope,
-): Promise<PermissionSettingsSnapshot | null> {
-  const layer = await readStrictConfigLayer(path, scope, "permission config");
-  return layer ? settingsFromConfig(layer.config) : null;
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// Enabled sources
-// ─────────────────────────────────────────────────────────────────────
-
-/**
- * Returns the list of setting sources the runtime should consult,
- * derived from the active config. Policy and flag settings are always
- * included (matching AgenC behavior). Pass the config store so
- * consumers do not depend on any process-global.
- */
-export function getEnabledSettingSources(
-  configStore?: ConfigStore,
-): PermissionRuleSource[] {
-  // Today AgenC has no per-source opt-out knob; mirror AgenC's
-  // "all canonical config sources enabled" default. When such a knob is added
-  // to AgenCConfig, it should be read here.
-  void configStore;
-  const out: PermissionRuleSource[] = [];
-  for (const s of SETTING_SOURCES) out.push(s);
-  return out;
+  return env?.configStore
+    ? getCanonicalSettingsForSource(source, env.configStore)
+    : getCanonicalSettingsForSource(source);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -242,7 +143,7 @@ export function getEnabledSettingSources(
  * came from.
  */
 export function permissionSettingsToRules(
-  json: Pick<PermissionSettingsSnapshot, "permissions"> | null,
+  json: Pick<AgenCConfig, "permissions"> | null,
   source: PermissionRuleSource,
 ): PermissionRule[] {
   if (!json || !json.permissions) return [];
@@ -265,7 +166,7 @@ export function permissionSettingsToRules(
 // ─────────────────────────────────────────────────────────────────────
 
 export function shouldAllowManagedPermissionRulesOnly(
-  policySettings: PermissionSettingsSnapshot | null | undefined,
+  policySettings: AgenCConfig | null | undefined,
 ): boolean {
   return policySettings?.allowManagedPermissionRulesOnly === true;
 }
@@ -277,8 +178,8 @@ export function shouldAllowManagedPermissionRulesOnly(
 /**
  * Walk every canonical config source in priority order and return a
  * single flat `PermissionRule[]`. When managed TOML has
- * `allowManagedPermissionRulesOnly=true`, only the `policySettings`
- * source is consulted.
+ * `allowManagedPermissionRulesOnly=true`, only `policySettings` may add rules
+ * or directories. Every enabled layer is still scanned for restrictions.
  */
 export interface PermissionRulesSnapshot {
   readonly rules: readonly PermissionRule[];
@@ -300,6 +201,17 @@ export async function loadPermissionRulesSnapshot(
   env?: DiskEnv,
 ): Promise<PermissionRulesSnapshot> {
   const canonicalEnv = await withCanonicalStore(env);
+  if (canonicalEnv.configStore === undefined) {
+    throw new Error("Canonical ConfigStore is required to load permission policy");
+  }
+  return readPermissionRulesSnapshot(canonicalEnv.configStore);
+}
+
+/** Read one already-published ConfigStore generation without yielding. */
+export function readPermissionRulesSnapshot(
+  configStore: ConfigStoreAuthority,
+): PermissionRulesSnapshot {
+  const canonicalEnv: DiskEnv = { configStore };
   const policyJson = settingsForSource("policySettings", canonicalEnv);
   const managedOnly = shouldAllowManagedPermissionRulesOnly(policyJson);
 
@@ -310,7 +222,7 @@ export async function loadPermissionRulesSnapshot(
     { readonly path: string; readonly source: PermissionRuleSource }
   >();
 
-  const notePolicyFlags = (json: PermissionSettingsSnapshot | null): void => {
+  const notePolicyFlags = (json: AgenCConfig | null): void => {
     bypassPermissionsModeDisabled ||=
       json?.permissions?.bypassPermissionsMode === "disable";
     disableAutoMode ||= getAutoModeDisableSetting(json) === "disable";
@@ -318,7 +230,7 @@ export async function loadPermissionRulesSnapshot(
   notePolicyFlags(policyJson);
 
   const noteDirectories = (
-    json: PermissionSettingsSnapshot | null,
+    json: AgenCConfig | null,
     source: PermissionRuleSource,
   ): void => {
     if (source === "projectSettings" || source === "localSettings") return;
@@ -329,25 +241,15 @@ export async function loadPermissionRulesSnapshot(
     }
   };
 
-  if (managedOnly) {
-    noteDirectories(policyJson, "policySettings");
-    return {
-      rules: permissionSettingsToRules(policyJson, "policySettings"),
-      directories: Object.freeze([...directories.values()]),
-      managedOnly,
-      bypassPermissionsModeDisabled,
-      disableAutoMode,
-    };
-  }
-
   const rules: PermissionRule[] = [];
-  for (const source of getEnabledSettingSources(canonicalEnv.configStore)) {
+  for (const source of getCanonicalEnabledSettingSources()) {
     const json =
       source === "policySettings"
         ? policyJson
         : settingsForSource(source, canonicalEnv);
     if (json === null) continue;
     notePolicyFlags(json);
+    if (managedOnly && source !== "policySettings") continue;
     noteDirectories(json, source);
     rules.push(...permissionSettingsToRules(json, source));
   }
@@ -407,7 +309,11 @@ export function applyPermissionRulesSnapshot(
   ctx: ToolPermissionContext,
   snapshot: PermissionRulesSnapshot,
 ): ToolPermissionContext {
-  let out = ctx;
+  // The auto-mode stash is part of the effective allow-rule set. Restore it
+  // before source replacement so deleted sources and managed-only filtering
+  // remove stashed rules through the same path as live rules. If auto remains
+  // active, the final canonical rule set is stripped again below.
+  let out = restoreDangerousPermissions(ctx);
   const rules = filterRepositoryControlledPermissionGrants(
     snapshot.rules,
   );
@@ -457,10 +363,35 @@ export function applyPermissionRulesSnapshot(
   for (const directory of snapshot.directories) {
     additionalWorkingDirectories.set(directory.path, directory);
   }
-  return deepFreeze({
+  const withDirectories = {
     ...out,
     additionalWorkingDirectories,
-  }) as ToolPermissionContext;
+  } as ToolPermissionContext;
+  const withBypassPolicy =
+    snapshot.bypassPermissionsModeDisabled
+      ? createDisabledBypassPermissionsContext(withDirectories)
+      : {
+          ...withDirectories,
+          bypassPermissionsModeDisabledByPolicy: false,
+        };
+  const withCurrentAutoRules =
+    !snapshot.disableAutoMode &&
+    (withBypassPolicy.mode === "auto" ||
+      (withBypassPolicy.mode === "plan" &&
+        withBypassPolicy.autoModeActive === true))
+      ? {
+          ...stripDangerousPermissionsForAutoMode(withBypassPolicy),
+          autoModeActive: true,
+        }
+      : withBypassPolicy;
+  const canonical = immutableToolPermissionContext(
+    snapshot.disableAutoMode
+      ? createDisabledAutoModeContext(withCurrentAutoRules)
+      : withCurrentAutoRules,
+  ) as ToolPermissionContext;
+  return snapshot.disableAutoMode
+    ? canonical
+    : transitionPlanAutoMode(canonical);
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -483,6 +414,9 @@ export async function persistPermissionUpdateToConfig(
   update: PermissionUpdate,
   env?: DiskEnv,
 ): Promise<boolean> {
+  if (update.type === "setMode" && update.mode === "bypassPermissions") {
+    return false;
+  }
   if (!editableDestination(update.destination)) return true;
 
   const repositoryControlled =
@@ -499,7 +433,7 @@ export async function persistPermissionUpdateToConfig(
   const policyJson = settingsForSource("policySettings", canonicalEnv);
   if (shouldAllowManagedPermissionRulesOnly(policyJson)) return false;
 
-  const current = settingsForSource(update.destination, canonicalEnv) ?? ({} as PermissionSettingsSnapshot);
+  const current = settingsForSource(update.destination, canonicalEnv) ?? {};
   const permissions = current.permissions ?? {};
   let nextPermissions: PermissionsConfig;
   let changed = false;
@@ -596,7 +530,7 @@ export async function persistPermissionUpdateToConfig(
   if (!changed) return true;
   const result = await updateCanonicalSettingsForSource(update.destination, {
     permissions: nextPermissions,
-  } satisfies RuntimeSettingsPatch, canonicalEnv.configStore);
+  } satisfies Partial<AgenCConfig>, canonicalEnv.configStore);
   return result.error === null;
 }
 
@@ -649,51 +583,6 @@ export async function deletePermissionRule(
     },
     opts.env,
   );
-}
-
-// ─────────────────────────────────────────────────────────────────────
-// bypassPermissions consent persistence
-// ─────────────────────────────────────────────────────────────────────
-
-export interface RecordBypassPermissionsAcceptanceOpts {
-  /**
-   * Absolute path to the workspace directory the operator has consented
-   * to activate `bypassPermissions` mode in. Appended (deduped) to the
-   * canonical user state `bypassPermissionsModeAcceptedIn`
-   * array so follow-up sessions opened against the same directory skip
-   * the consent prompt.
-   */
-  readonly workspacePath: string;
-  readonly env?: DiskEnv;
-}
-
-/**
- * Persist explicit operator consent for `bypassPermissions` mode to canonical
- * user state. Returns `true` on success, including an idempotent no-op. The
- * session-level mirror of this list lives on
- * `ToolPermissionContext.bypassPermissionsAcceptedIn` and is updated by
- * the `/permissions accept-bypass` command separately.
- */
-export async function recordBypassPermissionsAcceptance(
-  opts: RecordBypassPermissionsAcceptanceOpts,
-): Promise<boolean> {
-  const { workspacePath, env } = opts;
-  const canonicalEnv = await withCanonicalStore(env);
-  const current = settingsForSource("userSettings", canonicalEnv) ??
-    ({} as PermissionSettingsSnapshot);
-  const existingRaw = (current as { bypassPermissionsModeAcceptedIn?: unknown })
-    .bypassPermissionsModeAcceptedIn;
-  const existing = Array.isArray(existingRaw)
-    ? (existingRaw.filter((v): v is string => typeof v === "string"))
-    : [];
-  if (existing.includes(workspacePath)) {
-    // Already recorded — nothing to write, but still treat as success.
-    return true;
-  }
-  const result = await updateCanonicalSettingsForSource("userSettings", {
-    bypassPermissionsModeAcceptedIn: [...existing, workspacePath],
-  } satisfies RuntimeSettingsPatch, canonicalEnv.configStore);
-  return result.error === null;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -777,7 +666,7 @@ export interface InitialPermissionModeInput {
    * for `--dangerously-skip-permissions`). */
   readonly dangerouslySkipPermissions?: boolean;
   /** Resolved managed policy (for permissions.bypassPermissionsMode). */
-  readonly policySettings?: PermissionSettingsSnapshot | null;
+  readonly policySettings?: AgenCConfig | null;
   /** Resolved user `config.toml` `permissions.defaultMode`. */
   readonly userDefaultMode?: string;
   /** Effective auto-mode availability after config resolution. */
@@ -848,7 +737,7 @@ export function initialPermissionModeFromCLI(
 }
 
 function getAutoModeDisableSetting(
-  json: PermissionSettingsSnapshot | null,
+  json: AgenCConfig | null,
 ): "disable" | null {
   if (!json) return null;
   const rootValue = json.disableAutoMode;
@@ -861,26 +750,18 @@ function getAutoModeDisableSetting(
 async function loadModeSettingsInputs(
   env?: DiskEnv,
 ): Promise<{
-  readonly policySettings: PermissionSettingsSnapshot | null;
+  readonly policySettings: AgenCConfig | null;
   readonly defaultMode?: string;
   readonly autoModeDisabled: boolean;
   readonly bypassPermissionsModePolicy?: "allow" | "disable";
 }> {
-  const sources: readonly PermissionRuleSource[] = [
-    "userSettings",
-    "projectSettings",
-    "localSettings",
-    "flagSettings",
-    "policySettings",
-  ];
-
   let defaultMode: string | undefined;
   let authoritativeAutoModeDisabled = false;
   let repositoryAutoModeRestricted = false;
   let bypassPermissionsModePolicy: "allow" | "disable" | undefined;
-  let policySettings: PermissionSettingsSnapshot | null = null;
+  let policySettings: AgenCConfig | null = null;
 
-  for (const source of sources) {
+  for (const source of getCanonicalEnabledSettingSources()) {
     const json = settingsForSource(source, env);
     if (json === null) continue;
     if (source === "policySettings") {
@@ -1014,8 +895,10 @@ export async function initializeToolPermissionContext(
 
   // Empty starting context.
   let ctx: ToolPermissionContext = createEmptyToolPermissionContext({
-    mode: effectiveMode,
+    mode: "default",
     isBypassPermissionsModeAvailable,
+    bypassPermissionsModeDisabledByPolicy:
+      bypassPermissionsModePolicy === "disable",
     isAutoModeAvailable: !autoModeDisabled,
   });
 
@@ -1073,7 +956,80 @@ export async function initializeToolPermissionContext(
     }
   }
 
-  return { toolPermissionContext: ctx, warnings };
+  // Bind durable consent during every trusted initialization, even when the
+  // session starts in default mode. A later default -> bypass transition must
+  // use the exact-cwd consent restored at startup rather than requiring the
+  // operator to accept again after each process restart.
+  let canonicalCwd: ReturnType<typeof canonicalizeBypassPermissionsCwd> |
+    undefined;
+  try {
+    canonicalCwd = canonicalizeBypassPermissionsCwd(
+      canonicalEnv.cwd ?? process.cwd(),
+    );
+    if (ctx.bypassPermissionsModeDisabledByPolicy !== true) {
+      const explicitStartupBypass =
+        effectiveMode === "bypassPermissions" &&
+        (opts.allowDangerouslySkipPermissions === true ||
+          opts.permissionMode === "bypassPermissions");
+      if (explicitStartupBypass) {
+        ctx = authorizeBypassPermissionsConsent(ctx, canonicalCwd);
+      } else if (
+        !untrustedProject &&
+        canonicalEnv.configStore !== undefined
+      ) {
+        for (const acceptedCwd of loadBypassPermissionsConsent(
+          canonicalEnv.configStore.stateRepository,
+          canonicalCwd,
+          { reload: true },
+        )) {
+          ctx = authorizeBypassPermissionsConsent(ctx, acceptedCwd);
+        }
+      }
+    }
+  } catch {
+    if (effectiveMode === "bypassPermissions") {
+      effectiveMode = "default";
+    }
+  }
+
+  // Rules and restored consent must exist before the mode transition. In
+  // particular, entering auto strips dangerous allow rules into the canonical
+  // restoration stash; constructing an auto context first would let those
+  // grants pre-empt the classifier while leaving autoModeActive false.
+  if (effectiveMode === "bypassPermissions") {
+    if (canonicalCwd === undefined) {
+      effectiveMode = "default";
+    } else {
+      try {
+        const transitioned = transitionPermissionMode(
+          ctx.mode,
+          effectiveMode,
+          ctx,
+          { workspacePath: canonicalCwd },
+        );
+        if ("error" in transitioned) {
+          effectiveMode = "default";
+        } else {
+          ctx = { ...transitioned, mode: effectiveMode };
+        }
+      } catch {
+        effectiveMode = "default";
+      }
+    }
+  }
+  if (effectiveMode !== "bypassPermissions") {
+    const transitioned = transitionPermissionMode(
+      ctx.mode,
+      effectiveMode,
+      ctx,
+    );
+    ctx = { ...transitioned, mode: effectiveMode };
+  }
+
+  return {
+    toolPermissionContext: immutableToolPermissionContext(ctx),
+    warnings,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1081,7 +1037,7 @@ export async function initializeToolPermissionContext(
 // ─────────────────────────────────────────────────────────────────────
 
 export function getConfigFromStore(
-  configStore?: ConfigStore,
+  configStore?: ConfigStoreAuthority,
 ): AgenCConfig | null {
   return configStore ? configStore.current() : null;
 }

@@ -24,6 +24,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AsyncQueue } from "../utils/async-queue.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type { MCPManager, MCPManagerStartOpts } from "../mcp-client/manager.js";
 import {
   Session,
@@ -137,6 +139,9 @@ function mkProvider(): LLMProvider {
 function mkServices(overrides: Partial<SessionServices> = {}): SessionServices {
   const mcpStartupAbort = new AbortController();
   return {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
       setSandboxPolicy: () => {},

@@ -19,12 +19,81 @@ const quarantineRace = vi.hoisted(() => ({
   sourcePath: "",
   replacement: "",
   writeFailurePath: "",
+  journalStageStatus: "" as "" | "complete" | "rolled-back",
+  fsyncFailureStatus: "" as "" | "complete",
+  fsyncFailurePath: "",
+  fsyncFailure: new Error("injected migration fsync failure"),
+  fsyncCloseFailure: new Error("injected migration fsync close failure"),
+  failInitialJournalVerification: false,
+  failInitialJournalStageCleanup: false,
+  initialJournalStageCleanupFailure: new Error(
+    "injected initial journal stage cleanup failure",
+  ),
 }));
 
 vi.mock("node:fs/promises", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs/promises")>();
   return {
     ...actual,
+    open: async (...args: Parameters<typeof actual.open>) => {
+      const handle = await actual.open(...args);
+      if (String(args[0]) !== quarantineRace.fsyncFailurePath) return handle;
+      return new Proxy(handle, {
+        get(target, property) {
+          if (property === "sync") {
+            return async () => {
+              throw quarantineRace.fsyncFailure;
+            };
+          }
+          if (property === "close") {
+            return async () => {
+              await target.close();
+              quarantineRace.fsyncFailurePath = "";
+              throw quarantineRace.fsyncCloseFailure;
+            };
+          }
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    },
+    link: async (sourcePath: string, destinationPath: string) => {
+      if (
+        quarantineRace.failInitialJournalVerification &&
+        destinationPath.endsWith("journal.json")
+      ) {
+        const content = await actual.readFile(sourcePath, "utf8");
+        if (/"status"\s*:\s*"prepared"/u.test(content)) {
+          await actual.link(sourcePath, destinationPath);
+          await actual.appendFile(destinationPath, " ");
+          quarantineRace.failInitialJournalVerification = false;
+          return;
+        }
+      }
+      if (
+        quarantineRace.journalStageStatus.length > 0 &&
+        destinationPath.endsWith("journal.json") &&
+        sourcePath.endsWith(".agenc-migration-publication-quarantine")
+      ) {
+        const content = await actual.readFile(sourcePath, "utf8");
+        if (content.includes(
+          `\"status\": \"${quarantineRace.journalStageStatus}\"`,
+        )) {
+          await actual.link(sourcePath, destinationPath);
+          await actual.writeFile(
+            sourcePath.slice(
+              0,
+              -".agenc-migration-publication-quarantine".length,
+            ),
+            "recreated-after-commit",
+            { mode: 0o600 },
+          );
+          quarantineRace.journalStageStatus = "";
+          return;
+        }
+      }
+      return actual.link(sourcePath, destinationPath);
+    },
     writeFile: async (...args: unknown[]) => {
       if (
         quarantineRace.writeFailurePath.length > 0 &&
@@ -33,9 +102,35 @@ vi.mock("node:fs/promises", async (importOriginal) => {
         quarantineRace.writeFailurePath = "";
         throw new Error("simulated preparation stage write failure");
       }
-      return (actual.writeFile as unknown as (
+      const result = await (actual.writeFile as unknown as (
         ...writeArgs: unknown[]
       ) => Promise<void>)(...args);
+      if (
+        quarantineRace.fsyncFailureStatus.length > 0 &&
+        String(args[0]).includes("journal.json.tmp-") &&
+        String(args[1]).includes(
+          `\"status\": \"${quarantineRace.fsyncFailureStatus}\"`,
+        )
+      ) {
+        quarantineRace.fsyncFailurePath = String(args[0]);
+        quarantineRace.fsyncFailureStatus = "";
+      }
+      return result;
+    },
+    rm: async (...args: Parameters<typeof actual.rm>) => {
+      const path = String(args[0]);
+      if (
+        quarantineRace.failInitialJournalStageCleanup &&
+        path.includes("journal.json.tmp-") &&
+        path.endsWith(".agenc-migration-publication-quarantine")
+      ) {
+        const content = await actual.readFile(path, "utf8");
+        if (content.includes('"status": "prepared"')) {
+          quarantineRace.failInitialJournalStageCleanup = false;
+          throw quarantineRace.initialJournalStageCleanupFailure;
+        }
+      }
+      return actual.rm(...args);
     },
     rename: async (sourcePath: string, destinationPath: string) => {
       if (
@@ -65,6 +160,7 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 import {
   applyConfigV2Migration,
   checkConfigV2Migration,
+  rollbackConfigV2Migration,
 } from "../../src/config/migration.js";
 import { readNativeSecureStorage } from "../../src/utils/secureStorage/native.js";
 
@@ -109,6 +205,11 @@ afterEach(() => {
   quarantineRace.sourcePath = "";
   quarantineRace.replacement = "";
   quarantineRace.writeFailurePath = "";
+  quarantineRace.journalStageStatus = "";
+  quarantineRace.fsyncFailureStatus = "";
+  quarantineRace.fsyncFailurePath = "";
+  quarantineRace.failInitialJournalVerification = false;
+  quarantineRace.failInitialJournalStageCleanup = false;
   for (const root of roots.splice(0)) {
     rmSync(root, { recursive: true, force: true });
   }
@@ -241,6 +342,162 @@ describe("credential migration quarantine races", () => {
 });
 
 describe("configuration migration quarantine crash recovery", () => {
+  test("keeps an fsync failure primary when closing the same migration handle also fails", async () => {
+    const home = tempHome();
+    const target = join(home, "config.toml");
+    const original = 'configVersion = 1\nmodel = "before"\n';
+    writeFileSync(target, original, { mode: 0o600 });
+    const id = "journal-fsync-close-failure";
+    const plan = await checkConfigV2Migration(migrationOptions(home, id));
+    expect(plan.conflicts).toEqual([]);
+
+    quarantineRace.fsyncFailureStatus = "complete";
+    let caught: unknown;
+    try {
+      await applyConfigV2Migration(plan);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBe(quarantineRace.fsyncFailure);
+    expect(
+      (caught as Error & { cleanupErrors?: readonly Error[] }).cleanupErrors,
+    ).toEqual([quarantineRace.fsyncCloseFailure]);
+    expect(readFileSync(target, "utf8")).toBe(original);
+    const journalPath = join(
+      home,
+      "migrations",
+      "config-v2",
+      id,
+      "journal.json",
+    );
+    expect(JSON.parse(readFileSync(journalPath, "utf8")).status)
+      .toBe("rolled-back");
+  });
+
+  test("retains a prepared journal and recovery artifacts after post-link verification fails", async () => {
+    const home = tempHome();
+    const target = join(home, "config.toml");
+    const original = 'configVersion = 1\nmodel = "before"\n';
+    writeFileSync(target, original, { mode: 0o600 });
+    const id = "initial-journal-verification-failure";
+    const plan = await checkConfigV2Migration(migrationOptions(home, id));
+    expect(plan.conflicts).toEqual([]);
+
+    quarantineRace.failInitialJournalVerification = true;
+    await expect(applyConfigV2Migration(plan)).rejects.toThrow(
+      /exclusive publication target does not match its stage/u,
+    );
+
+    const journalPath = join(
+      home,
+      "migrations",
+      "config-v2",
+      id,
+      "journal.json",
+    );
+    const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
+      readonly status: string;
+      readonly writes: readonly { readonly backupPath?: string }[];
+    };
+    expect(journal.status).toBe("prepared");
+    expect(journal.writes[0]?.backupPath).toBeDefined();
+    expect(existsSync(journal.writes[0]!.backupPath!)).toBe(true);
+    expect(existsSync(`${target}.migrate-v2-${id}.tmp`)).toBe(true);
+    expect(readFileSync(target, "utf8")).toBe(original);
+
+    const rolledBack = await rollbackConfigV2Migration(id, {
+      env: {},
+      home,
+      platformHome: join(home, ".."),
+    });
+    expect(JSON.parse(readFileSync(rolledBack.journalPath, "utf8")).status)
+      .toBe("rolled-back");
+    expect(readFileSync(target, "utf8")).toBe(original);
+  });
+
+  test("keeps initial journal stage-cleanup failure primary without deleting recovery artifacts", async () => {
+    const home = tempHome();
+    const target = join(home, "config.toml");
+    const original = 'configVersion = 1\nmodel = "before"\n';
+    writeFileSync(target, original, { mode: 0o600 });
+    const id = "initial-journal-stage-cleanup-failure";
+    const plan = await checkConfigV2Migration(migrationOptions(home, id));
+    expect(plan.conflicts).toEqual([]);
+
+    quarantineRace.failInitialJournalStageCleanup = true;
+    let caught: unknown;
+    try {
+      await applyConfigV2Migration(plan);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBe(quarantineRace.initialJournalStageCleanupFailure);
+    const journalPath = join(
+      home,
+      "migrations",
+      "config-v2",
+      id,
+      "journal.json",
+    );
+    const journal = JSON.parse(readFileSync(journalPath, "utf8")) as {
+      readonly status: string;
+      readonly writes: readonly { readonly backupPath?: string }[];
+    };
+    expect(journal.status).toBe("prepared");
+    expect(journal.writes[0]?.backupPath).toBeDefined();
+    expect(existsSync(journal.writes[0]!.backupPath!)).toBe(true);
+    expect(existsSync(`${target}.migrate-v2-${id}.tmp`)).toBe(true);
+    expect(readdirSync(dirname(journalPath)).some((entry) =>
+      entry.includes("journal.json.tmp-") &&
+      entry.endsWith(".agenc-migration-publication-quarantine")
+    )).toBe(true);
+
+    const rolledBack = await rollbackConfigV2Migration(id, {
+      env: {},
+      home,
+      platformHome: join(home, ".."),
+    });
+    expect(JSON.parse(readFileSync(rolledBack.journalPath, "utf8")).status)
+      .toBe("rolled-back");
+    expect(readFileSync(target, "utf8")).toBe(original);
+  });
+
+  test("keeps final apply and rollback outcomes authoritative when a journal stage reappears", async () => {
+    const home = tempHome();
+    const target = join(home, "config.toml");
+    const original = 'configVersion = 1\nmodel = "before"\n';
+    writeFileSync(target, original, { mode: 0o600 });
+    const id = "final-journal-stage-reappears";
+    const plan = await checkConfigV2Migration(migrationOptions(home, id));
+    expect(plan.conflicts).toEqual([]);
+
+    quarantineRace.journalStageStatus = "complete";
+    const applied = await applyConfigV2Migration(plan);
+    expect(applied.postPublicationErrors.map((error) => error.message)).toEqual(
+      expect.arrayContaining([expect.stringMatching(/stage reappeared/u)]),
+    );
+    expect(JSON.parse(readFileSync(applied.journalPath, "utf8")).status)
+      .toBe("complete");
+    expect(readFileSync(target, "utf8")).toContain('"config_version" = 2');
+
+    quarantineRace.journalStageStatus = "rolled-back";
+    const rolledBack = await rollbackConfigV2Migration(id, {
+      env: {},
+      home,
+      platformHome: join(home, ".."),
+    });
+    expect(
+      rolledBack.postPublicationErrors.map((error) => error.message),
+    ).toEqual(expect.arrayContaining([
+      expect.stringMatching(/stage reappeared/u),
+    ]));
+    expect(JSON.parse(readFileSync(rolledBack.journalPath, "utf8")).status)
+      .toBe("rolled-back");
+    expect(readFileSync(target, "utf8")).toBe(original);
+  });
+
   test("restores a target quarantined before its replacement was published", async () => {
     const home = tempHome();
     const target = join(home, "config.toml");

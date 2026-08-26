@@ -8,7 +8,10 @@ import {
   resolveUnattendedPermissionDecision,
   unattendedPolicyForContext,
 } from "./unattended-policy.js";
-import { createEmptyToolPermissionContext } from "./types.js";
+import {
+  createEmptyToolPermissionContext,
+  type ToolPermissionContext,
+} from "./types.js";
 
 describe("unattended permission policy", () => {
   test("normalizes canonical risk families, trims entries, and removes duplicates", () => {
@@ -65,6 +68,51 @@ describe("unattended permission policy", () => {
       denylist: ["system.bash"],
     });
     expect(base.mode).toBe("default");
+  });
+
+  test("clones and freezes caller-owned context and policy inputs", () => {
+    const rules = ["Read(src/**)"];
+    const directory = { path: "/extra", source: "session" as const };
+    const directories = new Map([[directory.path, directory]]);
+    const allowlist = ["FileRead"];
+    const denylist = ["system.bash"];
+    const input: ToolPermissionContext = {
+      mode: "default",
+      additionalWorkingDirectories: directories,
+      alwaysAllowRules: { session: rules },
+      alwaysDenyRules: {},
+      alwaysAskRules: {},
+      isBypassPermissionsModeAvailable: false,
+    };
+
+    const next = applyUnattendedPermissionPolicyToContext(input, {
+      allowlist,
+      denylist,
+    });
+    rules.push("Write(**)");
+    directory.path = "/mutated";
+    directories.clear();
+    allowlist.push("Write");
+    denylist.length = 0;
+
+    expect(next).not.toBe(input);
+    expect(next.alwaysAllowRules.session).toEqual(["Read(src/**)"]);
+    expect(next.additionalWorkingDirectories.get("/extra")).toEqual({
+      path: "/extra",
+      source: "session",
+    });
+    expect(next.unattendedPolicy).toEqual({
+      allowlist: ["FileRead"],
+      denylist: ["system.bash"],
+    });
+    expect(Object.isFrozen(next)).toBe(true);
+    expect(Object.isFrozen(next.unattendedPolicy)).toBe(true);
+    expect(() => {
+      (next.unattendedPolicy?.allowlist as string[]).push("Write");
+    }).toThrow(TypeError);
+    expect(() =>
+      Map.prototype.clear.call(next.additionalWorkingDirectories),
+    ).toThrow(TypeError);
   });
 
   // The daemon always forces --autonomous, so installUnattendedPermissionPolicy

@@ -22,10 +22,8 @@ import {
   freshDenialTracking,
   type DenialTrackingState,
 } from "./denial-tracking.js";
-import {
-  applyPermissionUpdate,
-  type PermissionRule,
-} from "./rules.js";
+import type { PermissionRule } from "./rules.js";
+import { applyPermissionUpdate } from "./permission-updates.js";
 import {
   createEmptyToolPermissionContext,
   type PermissionMode,
@@ -936,17 +934,19 @@ describe("hasPermissionsToUseTool — denial limits", () => {
 // ---------------------------------------------------------------------------
 
 describe("I-3 race — getAppState re-read before step 2a", () => {
-  it("picks up a mid-evaluation mode flip into bypassPermissions", async () => {
+  it("refuses a mid-evaluation PermissionUpdate flip into bypassPermissions", async () => {
     const harness = buildHarness({ mode: "default" });
     const tool = makeTool({
       name: "system.bash",
       checkPermissions() {
         // Between step 1c and step 2a, mutate the mode to bypass.
-        const nextCtx = applyPermissionUpdate(
-          harness.getState().toolPermissionContext,
-          { type: "setMode", destination: "session", mode: "bypassPermissions" },
-        );
-        harness.setContext(nextCtx);
+        expect(() =>
+          applyPermissionUpdate(harness.getState().toolPermissionContext, {
+            type: "setMode",
+            destination: "session",
+            mode: "bypassPermissions",
+          }),
+        ).toThrow(/exact-cwd consent transition/u);
         return {
           behavior: "passthrough" as const,
           message: "default",
@@ -954,14 +954,8 @@ describe("I-3 race — getAppState re-read before step 2a", () => {
       },
     });
     const result = await hasPermissionsToUseTool(tool, {}, harness.context);
-    // Step 2a must observe the updated mode → allow.
-    expect(result.behavior).toBe("allow");
-    if (result.behavior === "allow") {
-      expect(result.decisionReason).toMatchObject({
-        type: "mode",
-        mode: "bypassPermissions",
-      });
-    }
+    expect(result.behavior).toBe("ask");
+    expect(harness.getState().toolPermissionContext.mode).toBe("default");
   });
 });
 

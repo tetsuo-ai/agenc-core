@@ -170,6 +170,7 @@ export function createBrowserTool(
       try {
         registerSandboxExecutionLifecycleParticipant(sandboxExecutionBroker, {
           name: "browser",
+          spawnSurfaces: ["browser"],
           quiesce: () => created.closeAll(),
           resume: async () => {},
           dispose: async () => {

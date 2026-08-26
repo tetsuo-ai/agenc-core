@@ -33,9 +33,9 @@ describe("runTurn automatic compaction rollback wiring", () => {
   it("drives the production transaction boundary before requiring a reviewed rollback for later model work", async () => {
     const environment = saveCompactionEnvironment();
     const source = createSourceMessages();
+    enableAutomaticCompaction();
     const harness = createRunTurnHarness(source);
     try {
-      enableAutomaticCompaction();
       const modelInfo = {
         ...mkCtx().modelInfo,
         slug: "grok-4.5",
@@ -170,6 +170,13 @@ function createRunTurnHarness(
   const provider = createProvider(compactionAwareProviderResponse);
   const { session } = mkSession({
     provider,
+    services: {
+      providerEnvironment: Object.fromEntries(
+        COMPACTION_ENVIRONMENT_KEYS.flatMap((key) =>
+          process.env[key] === undefined ? [] : [[key, process.env[key]]],
+        ),
+      ),
+    },
     history: source as readonly LLMMessage[],
     modelInfo: {
       slug: "grok-4.5",

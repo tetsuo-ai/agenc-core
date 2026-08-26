@@ -14,6 +14,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EventLog } from "../session/event-log.js";
+import { runWithCurrentRuntimeSession } from "../session/current-session.js";
+import { resolveHomeContext } from "../config/home.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
@@ -3249,6 +3251,14 @@ describe("executeTools — T7 gap #109 pipeline", () => {
         },
       },
     });
+    Object.assign(session.services, {
+      configStore: {
+        homeContext: resolveHomeContext(
+          { AGENC_HOME: agencHome, HOME: agencHome },
+          { platformHome: agencHome },
+        ),
+      },
+    });
     const state = mkState({
       toolCalls: [
         {
@@ -3259,14 +3269,16 @@ describe("executeTools — T7 gap #109 pipeline", () => {
       ],
     });
 
-    await executeTools(
-      state,
-      {
-        ...mkCtx(),
-        approvalPolicy: { value: "on_request" },
-        sandboxPolicy: { value: "workspace_write" },
-      } as unknown as TurnContext,
-      session,
+    await runWithCurrentRuntimeSession(session, () =>
+      executeTools(
+        state,
+        {
+          ...mkCtx(),
+          approvalPolicy: { value: "on_request" },
+          sandboxPolicy: { value: "workspace_write" },
+        } as unknown as TurnContext,
+        session,
+      ),
     );
 
     expect(approvalInput?.["plan"]).toContain("Wire approval gate");

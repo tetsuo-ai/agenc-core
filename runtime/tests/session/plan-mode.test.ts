@@ -75,19 +75,12 @@ function mkSession(): { session: Session; events: Event[] } {
 }
 
 function mkCtx(collabModel = "plan"): TurnContext {
-  // The historical legacy gate consulted `collaborationMode.model === "plan"`
-  // to flip plan mode. After the gate consolidation, plan mode is gated
-  // exclusively on `sessionConfiguration.permissionContext.mode`. Preserve
-  // the test ergonomic of `mkCtx("plan")` ⇒ plan-mode-active by routing
-  // the literal "plan" through the authoritative path.
   const planModeActive = collabModel === "plan";
   return {
     subId: "turn-plan-1",
     collaborationMode: { model: collabModel },
     modelInfo: { slug: "test" },
-    ...(planModeActive
-      ? { sessionConfiguration: { permissionContext: { mode: "plan" } } }
-      : {}),
+    permissionMode: planModeActive ? "plan" : "default",
   } as unknown as TurnContext;
 }
 
@@ -96,30 +89,27 @@ function mkCtx(collabModel = "plan"): TurnContext {
 // ─────────────────────────────────────────────────────────────────────
 
 describe("isPlanMode", () => {
-  test("returns true when sessionConfiguration.permissionContext.mode === 'plan'", () => {
+  test("returns true when the turn permission snapshot is plan", () => {
     const ctx = {
       subId: "t",
       collaborationMode: { model: "chat" },
-      sessionConfiguration: {
-        permissionContext: { mode: "plan" },
-      },
+      permissionMode: "plan",
     } as unknown as TurnContext;
     expect(isPlanMode(ctx)).toBe(true);
   });
 
-  test("returns false when permissionContext.mode is anything else (or absent)", () => {
+  test("returns false when the turn permission snapshot is not plan", () => {
     const noCtx = {
       subId: "t",
       collaborationMode: { model: "chat" },
+      permissionMode: "default",
     } as unknown as TurnContext;
     expect(isPlanMode(noCtx)).toBe(false);
 
     const defaultCtx = {
       subId: "t",
       collaborationMode: { model: "chat" },
-      sessionConfiguration: {
-        permissionContext: { mode: "default" },
-      },
+      permissionMode: "default",
     } as unknown as TurnContext;
     expect(isPlanMode(defaultCtx)).toBe(false);
 
@@ -128,6 +118,7 @@ describe("isPlanMode", () => {
     const legacy = {
       subId: "t",
       collaborationMode: { model: "plan" },
+      permissionMode: "default",
     } as unknown as TurnContext;
     expect(isPlanMode(legacy)).toBe(false);
   });

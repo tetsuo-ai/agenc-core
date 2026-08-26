@@ -203,22 +203,30 @@ export class XaiAcpClient {
         : {}),
       [GROK_ACP_REFERRER_ENV]: GROK_ACP_REFERRER,
     }
-    const spawnCommand = sandboxExecutionBroker.prepareSpawn('provider', {
-      program: command,
-      args,
-      cwd: this.options.cwd,
-      env,
-      additionalPermissions: { network: { enabled: true } },
-    })
+    const preparedSpawn = sandboxExecutionBroker.prepareSpawn(
+      'provider',
+      {
+        program: command,
+        args,
+        cwd: this.options.cwd,
+        env,
+        additionalPermissions: { network: { enabled: true } },
+      },
+      { lifecycleParticipant: 'grok-acp-provider' },
+    )
     try {
-      this.child = spawn(spawnCommand.program, [...spawnCommand.args], {
-        cwd: spawnCommand.cwd,
-        env: spawnCommand.env,
-        argv0: spawnCommand.argv0,
-        stdio: ['pipe', 'pipe', 'pipe'],
-        detached: process.platform !== 'win32',
-        windowsHide: true,
-      })
+      this.child = preparedSpawn.spawnLifecycleParticipant(
+        'grok-acp-provider',
+        (spawnCommand) =>
+          spawn(spawnCommand.program, [...spawnCommand.args], {
+            cwd: spawnCommand.cwd,
+            env: spawnCommand.env,
+            argv0: spawnCommand.argv0,
+            stdio: ['pipe', 'pipe', 'pipe'],
+            detached: process.platform !== 'win32',
+            windowsHide: true,
+          }),
+      )
     } catch (error) {
       throw new XaiAcpError(
         'spawn_failed',

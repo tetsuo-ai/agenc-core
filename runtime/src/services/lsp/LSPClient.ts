@@ -306,22 +306,30 @@ export function createLSPClient(
         if (sandboxExecutionBroker === undefined) {
           throw missingSandboxExecutionBoundary("lsp");
         }
-        const spawnCommand = sandboxExecutionBroker.prepareSpawn("lsp", {
-          program: command,
-          args,
-          cwd: resolve(runOptions?.cwd ?? sandboxExecutionBroker.cwd),
-          env: mergedEnv(options.baseEnv, runOptions?.env),
-        });
-        child = spawn(spawnCommand.program, [...spawnCommand.args], {
-          stdio: ["pipe", "pipe", "pipe"],
-          env: spawnCommand.env,
-          cwd: spawnCommand.cwd,
-          windowsHide: true,
-          detached: process.platform !== "win32",
-          ...(spawnCommand.argv0 !== undefined
-            ? { argv0: spawnCommand.argv0 }
-            : {}),
-        });
+        const preparedSpawn = sandboxExecutionBroker.prepareSpawn(
+          "lsp",
+          {
+            program: command,
+            args,
+            cwd: resolve(runOptions?.cwd ?? sandboxExecutionBroker.cwd),
+            env: mergedEnv(options.baseEnv, runOptions?.env),
+          },
+          { lifecycleParticipant: "lsp" },
+        );
+        child = preparedSpawn.spawnLifecycleParticipant(
+          "lsp",
+          (spawnCommand) =>
+            spawn(spawnCommand.program, [...spawnCommand.args], {
+              stdio: ["pipe", "pipe", "pipe"],
+              env: spawnCommand.env,
+              cwd: spawnCommand.cwd,
+              windowsHide: true,
+              detached: process.platform !== "win32",
+              ...(spawnCommand.argv0 !== undefined
+                ? { argv0: spawnCommand.argv0 }
+                : {}),
+            }),
+        );
 
         if (!child.stdin || !child.stdout) {
           throw new Error("LSP server process stdio not available");

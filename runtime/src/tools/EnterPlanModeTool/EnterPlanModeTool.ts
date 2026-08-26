@@ -7,7 +7,7 @@ import {
 import type { Tool } from '../Tool.js'
 import { buildTool, type ToolDef } from '../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
-import { applyPermissionUpdate } from '../../utils/permissions/PermissionUpdate.js'
+import { applyPermissionUpdate } from '../../permissions/permission-updates.js'
 import { transitionPermissionMode } from '../../permissions/permission-mode.js'
 import { isPlanModeInterviewPhaseEnabled } from '../../utils/planModeV2.js'
 import { ENTER_PLAN_MODE_TOOL_NAME } from './constants.js'

@@ -1538,7 +1538,13 @@ export class StrictCanonicalJournalValidator {
       (payload.prePlanMode !== null &&
         !RUN_RUNTIME_PERMISSION_MODES.includes(payload.prePlanMode as never)) ||
       typeof payload.autoModeActive !== "boolean" ||
+      typeof payload.autoModeAvailable !== "boolean" ||
+      typeof payload.bypassPermissionsModeAvailable !== "boolean" ||
       !validNullableString(payload.bypassPermissionsWorkspace, 4_096) ||
+      !validNullableString(
+        payload.bypassPermissionsConsentWorkspace,
+        4_096,
+      ) ||
       !validBoundedSettingString(payload.model, 1_024) ||
       !validBoundedSettingString(payload.provider, 256) ||
       !validNullableString(payload.profile, 256) ||
@@ -1592,8 +1598,16 @@ export class StrictCanonicalJournalValidator {
         ? payload.autoModeActive !== true
         : payload.permissionMode !== "plan" &&
           payload.autoModeActive !== false) ||
+      (payload.autoModeActive && !payload.autoModeAvailable) ||
+      (payload.bypassPermissionsConsentWorkspace !== null &&
+        (payload.bypassPermissionsConsentWorkspace !==
+          this.#canonicalWorkspace ||
+          !payload.bypassPermissionsModeAvailable)) ||
       (bypassTransitionCritical
-        ? payload.bypassPermissionsWorkspace !== this.#canonicalWorkspace
+        ? payload.bypassPermissionsWorkspace !== this.#canonicalWorkspace ||
+          !payload.bypassPermissionsModeAvailable ||
+          payload.bypassPermissionsConsentWorkspace !==
+            this.#canonicalWorkspace
         : payload.bypassPermissionsWorkspace !== null)
     ) {
       this.#fail(
@@ -1606,7 +1620,12 @@ export class StrictCanonicalJournalValidator {
       permissionMode: payload.permissionMode,
       prePlanMode: payload.prePlanMode,
       autoModeActive: payload.autoModeActive,
+      autoModeAvailable: payload.autoModeAvailable,
+      bypassPermissionsModeAvailable:
+        payload.bypassPermissionsModeAvailable,
       bypassPermissionsWorkspace: payload.bypassPermissionsWorkspace,
+      bypassPermissionsConsentWorkspace:
+        payload.bypassPermissionsConsentWorkspace,
       model: payload.model,
       provider: payload.provider,
       profile: payload.profile,
@@ -1872,7 +1891,12 @@ function runtimeSettingsEqual(
     left.permissionMode === right.permissionMode &&
     left.prePlanMode === right.prePlanMode &&
     left.autoModeActive === right.autoModeActive &&
+    left.autoModeAvailable === right.autoModeAvailable &&
+    left.bypassPermissionsModeAvailable ===
+      right.bypassPermissionsModeAvailable &&
     left.bypassPermissionsWorkspace === right.bypassPermissionsWorkspace &&
+    left.bypassPermissionsConsentWorkspace ===
+      right.bypassPermissionsConsentWorkspace &&
     left.model === right.model &&
     left.provider === right.provider &&
     left.profile === right.profile &&

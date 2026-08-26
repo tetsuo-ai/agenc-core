@@ -25,7 +25,10 @@ import type {
   StopHookOutcome,
   StopRequest,
 } from "../phases/stop-hooks.js";
-import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import {
+  PermissionModeRegistry,
+  transitionPermissionMode,
+} from "../permissions/permission-mode.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { ToolRegistry, ToolDispatchResult } from "../tool-registry.js";
 import type { CanUseToolFn } from "../tui/hooks/useCanUseTool.js";
@@ -255,6 +258,19 @@ export async function createTurnCompatSession(
     getCwdOverrideForCurrentContext() ??
     parent.sessionConfiguration.cwd ??
     parent.config.cwd;
+  const livePermissionContext = appState.toolPermissionContext as unknown as
+    ToolPermissionContext;
+  const inheritedPermissionContext = transitionPermissionMode(
+    livePermissionContext.mode,
+    livePermissionContext.mode,
+    livePermissionContext,
+    { workspacePath: effectiveCwd },
+  );
+  if ("error" in inheritedPermissionContext) {
+    throw new Error(
+      "turn compatibility cannot inherit bypassPermissions without exact canonical cwd consent",
+    );
+  }
   const sandboxExecutionBroker =
     parent.services.sandboxExecutionBroker?.forkForCwd(effectiveCwd);
   const scopedToolUseContext =
@@ -334,11 +350,9 @@ export async function createTurnCompatSession(
         approvalResolver: {
           request: async () => ({ kind: "approved" }),
         },
-        permissionModeRegistry: new PermissionModeRegistry({
-          ...appState.toolPermissionContext,
-          mode: "bypassPermissions",
-          isBypassPermissionsModeAvailable: true,
-        } as unknown as ToolPermissionContext),
+        permissionModeRegistry: new PermissionModeRegistry(
+          inheritedPermissionContext,
+        ),
       } as SessionServices,
       jsRepl: parent.jsRepl,
       config: {

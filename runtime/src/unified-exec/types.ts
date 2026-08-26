@@ -68,6 +68,8 @@ export interface UnifiedExecManagerOptions {
   readonly maxTimeoutMs?: number;
   readonly maxProcesses?: number;
   readonly sandboxManager?: UnifiedExecSandboxManager;
+  /** Injectable only for deterministic sandbox-authority drain tests. */
+  readonly sandboxAuthorityQuiesceTimeoutMs?: number;
 }
 
 export interface ExecCommandRequest extends ToolExecutionInjectedArgs {

@@ -121,7 +121,10 @@ import type { Tool } from "../tools/types.js";
 import { createEditorProposalTool } from "../tools/system/editor-proposal.js";
 import { BudgetTracker } from "../conversation/token-budget.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
-import { createEmptyToolPermissionContext } from "../permissions/types.js";
+import {
+  createEmptyToolPermissionContext,
+  type PermissionMode,
+} from "../permissions/types.js";
 import {
   registerMagicDoc,
   resetMagicDocsForTests,
@@ -197,6 +200,7 @@ function mkCtx(): TurnContext {
       usedFallbackModelMetadata: false,
     },
     collaborationMode: { model: "test-model" },
+    permissionMode: "default",
     approvalPolicy: { value: "never" },
     sandboxPolicy: { value: "read_only" },
     fileSystemSandboxPolicy: {
@@ -569,9 +573,9 @@ function mkSession(opts: {
     ...(opts.codeModeService !== undefined
       ? { codeModeService: opts.codeModeService }
       : {}),
-    ...(opts.permissionModeRegistry
-      ? { permissionModeRegistry: opts.permissionModeRegistry }
-      : {}),
+    permissionModeRegistry:
+      opts.permissionModeRegistry ??
+      new PermissionModeRegistry(createEmptyToolPermissionContext()),
     ...(opts.skillsManager ? { skillsManager: opts.skillsManager } : {}),
     configStore,
   } as unknown as SessionServices;
@@ -2568,6 +2572,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     } as ToolRegistry;
     const ctx = {
       ...mkCtx(),
+      permissionMode: "plan",
       editorInteraction: {
         interactionId: "interaction-no-proposal",
         kind: "edit",
@@ -2635,6 +2640,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     );
     const ctx = {
       ...mkCtx(),
+      permissionMode: "plan",
       editorInteraction: {
         interactionId: "interaction-plan-read",
         kind: "explain",
@@ -2650,15 +2656,6 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
         },
       },
     } as TurnContext;
-    (
-      ctx as unknown as {
-        sessionConfiguration: {
-          permissionContext: { mode: string };
-        };
-      }
-    ).sessionConfiguration = {
-      permissionContext: { mode: "plan" },
-    };
 
     const readTool: Tool = {
       name: "FileRead",
@@ -2748,15 +2745,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       events.some((event) => event.msg.type === "plan_item_completed"),
     ).toBe(false);
     expect(permissionModeRegistry.current().mode).toBe("plan");
-    expect(
-      (
-        ctx as unknown as {
-          sessionConfiguration: {
-            permissionContext: { mode: string };
-          };
-        }
-      ).sessionConfiguration.permissionContext.mode,
-    ).toBe("plan");
+    expect(ctx.permissionMode).toBe("plan");
   });
 
   test("proposal-only Editor turns bypass Plan tool requirements while preserving the trusted proposal loop", async () => {
@@ -2767,6 +2756,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
     const contentSha256 = "c".repeat(64);
     const ctx = {
       ...mkCtx(),
+      permissionMode: "plan",
       editorInteraction: {
         interactionId,
         kind: "edit",
@@ -2782,15 +2772,6 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
         },
       },
     } as TurnContext;
-    (
-      ctx as unknown as {
-        sessionConfiguration: {
-          permissionContext: { mode: string };
-        };
-      }
-    ).sessionConfiguration = {
-      permissionContext: { mode: "plan" },
-    };
 
     const proposalTool = createEditorProposalTool();
     const registry = {
@@ -2885,15 +2866,7 @@ describe("runTurn — T6 gap #119 lifecycle emits", () => {
       events.some((event) => event.msg.type === "plan_item_completed"),
     ).toBe(false);
     expect(permissionModeRegistry.current().mode).toBe("plan");
-    expect(
-      (
-        ctx as unknown as {
-          sessionConfiguration: {
-            permissionContext: { mode: string };
-          };
-        }
-      ).sessionConfiguration.permissionContext.mode,
-    ).toBe("plan");
+    expect(ctx.permissionMode).toBe("plan");
   });
 
   test("launches MagicDocs from main-thread idle completed turns", async () => {
@@ -4508,16 +4481,7 @@ describe("runTurn — live sampling request contract", () => {
   });
 
   test("plan mode sanitizes visible assistant text but still completes the raw proposed plan", async () => {
-    const ctx = mkCtx();
-    (
-      ctx as unknown as {
-        sessionConfiguration: {
-          permissionContext: { mode: string };
-        };
-      }
-    ).sessionConfiguration = {
-      permissionContext: { mode: "plan" },
-    };
+    const ctx = { ...mkCtx(), permissionMode: "plan" } as TurnContext;
     const { session, events } = mkSession({
       provider: mkProvider({
         content: [
@@ -4551,16 +4515,7 @@ describe("runTurn — live sampling request contract", () => {
   });
 
   test("plan mode retries when provider returns assistant text without a tool call", async () => {
-    const ctx = mkCtx();
-    (
-      ctx as unknown as {
-        sessionConfiguration: {
-          permissionContext: { mode: string };
-        };
-      }
-    ).sessionConfiguration = {
-      permissionContext: { mode: "plan" },
-    };
+    const ctx = { ...mkCtx(), permissionMode: "plan" } as TurnContext;
 
     const exitPlanTool: LLMTool = {
       type: "function",
@@ -4623,13 +4578,8 @@ describe("runTurn — live sampling request contract", () => {
       tools: [],
       toLLMTools: () => [exitPlanTool],
       dispatch: async (toolCall: LLMToolCall) => {
-        (
-          ctx as unknown as {
-            sessionConfiguration: {
-              permissionContext: { mode: string };
-            };
-          }
-        ).sessionConfiguration.permissionContext.mode = "bypassPermissions";
+        (ctx as { permissionMode: PermissionMode }).permissionMode =
+          "bypassPermissions";
         return { content: "exited", isError: false };
       },
     } as ToolRegistry;

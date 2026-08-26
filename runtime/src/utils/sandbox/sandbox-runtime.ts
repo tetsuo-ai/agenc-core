@@ -30,6 +30,7 @@ import {
   getOriginalCwd,
 } from '../../bootstrap/state.js'
 import type {
+  AgenCConfig,
   SandboxFilesystemConfig,
   SandboxNetworkConfig,
 } from '../../config/schema.js'
@@ -43,7 +44,6 @@ import {
   getSettingsFilePathForSource,
   getSettingsForSource,
   getSettingsRootPathForSource,
-  type RuntimeSettingsSnapshot,
   updateSettingsForSource,
 } from '../settings/settings.js'
 
@@ -61,13 +61,13 @@ import type { PermissionRuleValue } from '../permissions/PermissionRule.js'
 import { ripgrepCommand } from '../ripgrep.js'
 
 function sandboxNetwork(
-  settings: RuntimeSettingsSnapshot | null,
+  settings: AgenCConfig | null,
 ): SandboxNetworkConfig | undefined {
   return settings?.sandbox?.network
 }
 
 function sandboxFilesystem(
-  settings: RuntimeSettingsSnapshot | null,
+  settings: AgenCConfig | null,
 ): SandboxFilesystemConfig | undefined {
   return settings?.sandbox?.filesystem
 }
@@ -184,7 +184,7 @@ function shouldAllowManagedReadPathsOnly(): boolean {
  * @param settings Merged settings (used for sandbox config like network, ripgrep, etc.)
  */
 export function convertToSandboxRuntimeConfig(
-  settings: RuntimeSettingsSnapshot,
+  settings: AgenCConfig,
 ): SandboxRuntimeConfig {
   const permissions = settings.permissions || {}
   const networkSettings = sandboxNetwork(settings)

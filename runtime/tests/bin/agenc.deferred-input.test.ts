@@ -3,8 +3,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   __createDeferredDaemonPromptTuiSessionForTest,
   __wrapDaemonTuiSessionWithPromptPreparationForTest,
+  sessionConfigurationFromAgenCConfig,
 } from "./agenc-main.js";
 import { ConfigStore } from "../config/store.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import type {
   SessionEditorInteraction,
   SessionSubmitOptions,
@@ -168,9 +171,30 @@ function withConfigStore(
     typeof base.services === "object" && base.services !== null
       ? (base.services as Record<string, unknown>)
       : {};
+  const existingSessionConfiguration =
+    typeof base.sessionConfiguration === "object" &&
+    base.sessionConfiguration !== null
+      ? (base.sessionConfiguration as Record<string, unknown>)
+      : {};
+  const workspaceRoot =
+    typeof existingSessionConfiguration.cwd === "string"
+      ? existingSessionConfiguration.cwd
+      : process.cwd();
+  const config = configStore.current();
   return {
     ...base,
+    sessionConfiguration: {
+      ...sessionConfigurationFromAgenCConfig({
+        config,
+        workspaceRoot,
+        model: config.model,
+      }),
+      ...existingSessionConfiguration,
+    },
     services: {
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext(),
+      ),
       ...services,
       configStore,
     },
@@ -199,6 +223,25 @@ function editorInteraction(interactionId: string): SessionEditorInteraction {
       end: { line: 2, column: 3 },
     },
     selectionMode: "character",
+  };
+}
+
+function daemonRuntimeSettings() {
+  return {
+    permissionMode: "default" as const,
+    prePlanMode: null,
+    autoModeActive: false,
+    autoModeAvailable: true,
+    bypassPermissionsModeAvailable: false,
+    bypassPermissionsWorkspace: null,
+    bypassPermissionsConsentWorkspace: null,
+    model: "grok-4.5",
+    provider: "grok",
+    profile: null,
+    reasoningEffort: null,
+    modelVerbosity: null,
+    serviceTier: null,
+    hooksDisabled: false,
   };
 }
 
@@ -264,6 +307,8 @@ function daemonHarness(
           attachmentId: `attachment-${attachAttempts}`,
           sessionIds: [`session-${attachAttempts}`],
           runtimeSessionId: agentId,
+          runtimeSettings: daemonRuntimeSettings(),
+          runtimeSettingsEventId: `settings-${attachAttempts}`,
         };
       }
       if (method === "message.stream") {
@@ -1240,6 +1285,8 @@ describe("deferred daemon input ownership", () => {
           attachmentId: "attachment-1",
           sessionIds: ["session-1"],
           runtimeSessionId: "agent-1",
+          runtimeSettings: daemonRuntimeSettings(),
+          runtimeSettingsEventId: "settings-1",
         };
       }
       if (method === "workspace.editor.predict") {
@@ -1269,6 +1316,8 @@ describe("deferred daemon input ownership", () => {
           attachmentId: "attachment-2",
           sessionIds: ["session-2"],
           runtimeSessionId: "agent-2",
+          runtimeSettings: daemonRuntimeSettings(),
+          runtimeSettingsEventId: "settings-2",
         };
       }
       if (method === "workspace.editor.predict") {

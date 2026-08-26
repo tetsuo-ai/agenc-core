@@ -75,6 +75,7 @@ import {
   resolveAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
+import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
 
 function stubSession() {
   return {
@@ -203,6 +204,7 @@ function installDaemonCliDepsForTest(
     readonly liveAgentMetadata?: Readonly<Record<string, unknown>>;
     readonly liveAgentPath?: string;
     readonly runtimeOptions?: AgentRuntimeOptions;
+    readonly runtimeSettings?: RunRuntimeSettingsSnapshot;
     readonly resumePromptAgentError?: Error;
     readonly requestErrors?: Partial<Record<string, Error | readonly Error[]>>;
     readonly mcpManager?: unknown;
@@ -234,6 +236,23 @@ function installDaemonCliDepsForTest(
   const roleWorkspaceCwd = options.roleWorkspaceCwd ?? cwd;
   let ownerRuntimeOptions =
     options.runtimeOptions ?? resolveAgentRuntimeOptions({});
+  let ownerRuntimeSettings: RunRuntimeSettingsSnapshot =
+    options.runtimeSettings ?? {
+      permissionMode: "default",
+      prePlanMode: null,
+      autoModeActive: false,
+      autoModeAvailable: true,
+      bypassPermissionsModeAvailable: false,
+      bypassPermissionsWorkspace: null,
+      bypassPermissionsConsentWorkspace: null,
+      model: "grok-4.3",
+      provider: "grok",
+      profile: null,
+      reasoningEffort: null,
+      modelVerbosity: null,
+      serviceTier: null,
+      hooksDisabled: false,
+    };
   const requests: Array<{ method: string; params: unknown }> = [];
   const requestErrorQueues = new Map<string, Error[]>(
     Object.entries(options.requestErrors ?? {}).map(([method, error]) => [
@@ -307,6 +326,7 @@ function installDaemonCliDepsForTest(
           attachmentId: "attachment_test",
           sessionIds: [sessionId],
           runtimeOptions: ownerRuntimeOptions,
+          runtimeSettings: ownerRuntimeSettings,
           runtimeSessionId,
           sessions: [
             {
@@ -407,10 +427,34 @@ function installDaemonCliDepsForTest(
       prompt: string;
       initialContent?: string | readonly unknown[];
       runtimeOptions?: AgentRuntimeOptions;
+      model?: string;
+      provider?: string;
+      profile?: string;
+      permissionMode?: RunRuntimeSettingsSnapshot["permissionMode"];
     }) => {
       if (params.runtimeOptions !== undefined) {
         ownerRuntimeOptions = params.runtimeOptions;
       }
+      const permissionMode =
+        params.permissionMode ?? ownerRuntimeSettings.permissionMode;
+      const bypassTransitionCritical = permissionMode === "bypassPermissions";
+      ownerRuntimeSettings = {
+        ...ownerRuntimeSettings,
+        permissionMode,
+        prePlanMode: permissionMode === "plan" ? "default" : null,
+        autoModeActive: permissionMode === "auto",
+        autoModeAvailable: true,
+        bypassPermissionsModeAvailable:
+          bypassTransitionCritical ||
+          ownerRuntimeSettings.bypassPermissionsModeAvailable,
+        bypassPermissionsWorkspace: bypassTransitionCritical ? cwd : null,
+        bypassPermissionsConsentWorkspace: bypassTransitionCritical
+          ? cwd
+          : ownerRuntimeSettings.bypassPermissionsConsentWorkspace,
+        model: params.model ?? ownerRuntimeSettings.model,
+        provider: params.provider ?? ownerRuntimeSettings.provider,
+        profile: params.profile ?? ownerRuntimeSettings.profile,
+      };
       return {
         ...agent,
         objective: params.prompt.trim(),
@@ -423,6 +467,10 @@ function installDaemonCliDepsForTest(
       rolloutPath: string;
       sourceProof: { readonly dev: string; readonly ino: string };
       runtimeOptions?: AgentRuntimeOptions;
+      model?: string;
+      provider?: string;
+      profile?: string;
+      permissionMode?: RunRuntimeSettingsSnapshot["permissionMode"];
     }) => {
       if (options.resumePromptAgentError !== undefined) {
         throw options.resumePromptAgentError;
@@ -430,6 +478,26 @@ function installDaemonCliDepsForTest(
       if (params.runtimeOptions !== undefined) {
         ownerRuntimeOptions = params.runtimeOptions;
       }
+      const permissionMode =
+        params.permissionMode ?? ownerRuntimeSettings.permissionMode;
+      const bypassTransitionCritical = permissionMode === "bypassPermissions";
+      ownerRuntimeSettings = {
+        ...ownerRuntimeSettings,
+        permissionMode,
+        prePlanMode: permissionMode === "plan" ? "default" : null,
+        autoModeActive: permissionMode === "auto",
+        autoModeAvailable: true,
+        bypassPermissionsModeAvailable:
+          bypassTransitionCritical ||
+          ownerRuntimeSettings.bypassPermissionsModeAvailable,
+        bypassPermissionsWorkspace: bypassTransitionCritical ? cwd : null,
+        bypassPermissionsConsentWorkspace: bypassTransitionCritical
+          ? cwd
+          : ownerRuntimeSettings.bypassPermissionsConsentWorkspace,
+        model: params.model ?? ownerRuntimeSettings.model,
+        provider: params.provider ?? ownerRuntimeSettings.provider,
+        profile: params.profile ?? ownerRuntimeSettings.profile,
+      };
       return {
         ...agent,
         agentPath: "/root",
@@ -465,6 +533,7 @@ function installDaemonCliDepsForTest(
       roleWorkspace?: { readonly id: string; readonly cwd: string };
       conversationId: string;
       runtimeOptions: AgentRuntimeOptions;
+      runtimeSettings?: RunRuntimeSettingsSnapshot;
     }) => {
       const abortController = new AbortController();
       const configStore = new ConfigStore({
@@ -476,6 +545,7 @@ function installDaemonCliDepsForTest(
           model_provider: "grok",
         },
       });
+      const config = configStore.current();
       return {
         baseSession: {
           conversationId: params.conversationId,
@@ -483,6 +553,11 @@ function installDaemonCliDepsForTest(
           cwd: params.cwd,
           home: params.env?.HOME ?? "/tmp/agenc-test-user",
           sessionConfiguration: {
+            ...sessionConfigurationFromAgenCConfig({
+              config,
+              workspaceRoot: params.cwd,
+              model: config.model,
+            }),
             cwd: params.cwd,
             provider: { slug: "xai" },
           },
@@ -3043,7 +3118,14 @@ describe("main() smoke", () => {
         }),
       ).resolves.toBe(0);
       expect(daemon.createTuiContext).toHaveBeenCalledWith(
-        expect.objectContaining({ runtimeOptions }),
+        expect.objectContaining({
+          runtimeOptions,
+          runtimeSettings: expect.objectContaining({
+            permissionMode: "default",
+            model: "grok-4.3",
+            provider: "grok",
+          }),
+        }),
       );
       expect(observedBareMode).toEqual([true, true]);
       await expect(
@@ -3058,6 +3140,21 @@ describe("main() smoke", () => {
           runtimeOptions: resolveAgentRuntimeOptions({}),
         }),
       ).rejects.toThrow("runtime options disagree");
+      expect(daemon.createTuiContext).toHaveBeenCalledOnce();
+      await expect(
+        attachAgentTuiEntry({
+          agentId: "agent_bare_attach",
+          clientId: "client_provider_conflicting_attach",
+          env: {
+            AGENC_HOME: tmpHome,
+            AGENC_WORKSPACE: tmpCwd,
+            HOME: tmpHome,
+          },
+          startupCliFlags: { provider: "openai" },
+        }),
+      ).rejects.toThrow(
+        "attach-time provider openai disagrees with live daemon provider grok",
+      );
       expect(daemon.createTuiContext).toHaveBeenCalledOnce();
     } finally {
       vi.doUnmock("../tui/main.js");

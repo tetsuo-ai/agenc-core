@@ -47,6 +47,7 @@ const MAX_YIELD_TIME_MS = 30_000;
 const MAX_EMPTY_WRITE_YIELD_TIME_MS = 300_000;
 const DEFAULT_MAX_PROCESSES = 64;
 const DEFAULT_OUTPUT_BUFFER_CHARS = 1024 * 1024;
+const SANDBOX_AUTHORITY_QUIESCE_TIMEOUT_MS = 5_000;
 const PTY_ARGV0_EXECVE_SCRIPT =
   "const [program, argv0, ...args] = process.argv.slice(1);" +
   "const execve = process.execve;" +
@@ -299,10 +300,19 @@ interface ProcessEntry {
   readonly exitPromise: Promise<ExitState>;
   resolveExit: (state: ExitState) => void;
   exitState: ExitState | null;
+  cleanupFailure?: Error;
   hardTimeout?: NodeJS.Timeout;
   // gaphunt3 #44: removes the upstream-abort listener attached to the (long-lived,
   // session-scoped) source signal so it is cleaned up on normal exit, not only on abort.
   detachUpstreamAbort?: () => void;
+}
+
+declare const unifiedExecSandboxAuthorityQuiesceBrand: unique symbol;
+
+/** Opaque generation token for one sandbox-authority quiesce cycle. */
+export interface UnifiedExecSandboxAuthorityQuiesceToken {
+  readonly [unifiedExecSandboxAuthorityQuiesceBrand]: never;
+  readonly generation: number;
 }
 
 function enforceOwnerAccess(
@@ -418,8 +428,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly env?: Record<string, string>;
   private readonly maxProcesses: number;
   private readonly sandboxManager: UnifiedExecSandboxManager;
+  private readonly sandboxAuthorityQuiesceTimeoutMs: number;
   private nextProcessId = 1;
   private readonly processes = new Map<number, ProcessEntry>();
+  private sandboxAuthorityGeneration = 0;
+  private sandboxAuthorityQuiesced = false;
+  private sandboxAuthorityCleanupFailure: Error | undefined;
+  private activeSandboxAuthorityQuiesce:
+    | UnifiedExecSandboxAuthorityQuiesceToken
+    | undefined;
 
   constructor(options: UnifiedExecManagerOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
@@ -427,11 +444,91 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     this.maxTimeoutMs = options.maxTimeoutMs ?? Number.POSITIVE_INFINITY;
     this.maxProcesses = options.maxProcesses ?? DEFAULT_MAX_PROCESSES;
     this.sandboxManager = options.sandboxManager ?? new SandboxManager();
+    this.sandboxAuthorityQuiesceTimeoutMs =
+      options.sandboxAuthorityQuiesceTimeoutMs ??
+      SANDBOX_AUTHORITY_QUIESCE_TIMEOUT_MS;
+    if (
+      !Number.isFinite(this.sandboxAuthorityQuiesceTimeoutMs) ||
+      this.sandboxAuthorityQuiesceTimeoutMs <= 0
+    ) {
+      throw new Error(
+        "unified exec sandbox-authority quiesce timeout must be finite and positive",
+      );
+    }
+  }
+
+  /** Close command admission synchronously before a lifecycle drain begins. */
+  beginSandboxAuthorityQuiesce(): UnifiedExecSandboxAuthorityQuiesceToken {
+    if (this.sandboxAuthorityCleanupFailure !== undefined) {
+      throw new AggregateError(
+        [this.sandboxAuthorityCleanupFailure],
+        "unified exec process cleanup is unproven",
+        { cause: this.sandboxAuthorityCleanupFailure },
+      );
+    }
+    if (this.sandboxAuthorityQuiesced) {
+      throw new Error("unified exec sandbox authority is already quiesced");
+    }
+    this.sandboxAuthorityGeneration += 1;
+    this.sandboxAuthorityQuiesced = true;
+    const token = Object.freeze({
+      generation: this.sandboxAuthorityGeneration,
+    }) as UnifiedExecSandboxAuthorityQuiesceToken;
+    this.activeSandboxAuthorityQuiesce = token;
+    return token;
+  }
+
+  /** Stop every admitted process and retain any entry whose cleanup is unproven. */
+  async finishSandboxAuthorityQuiesce(
+    token: UnifiedExecSandboxAuthorityQuiesceToken,
+  ): Promise<void> {
+    this.assertActiveSandboxAuthorityQuiesce(token);
+    const entries = [...this.processes.values()];
+    const results = await Promise.allSettled(
+      entries.map((entry) => this.closeProcessStrict(entry)),
+    );
+    const errors: unknown[] = [];
+    for (const [index, result] of results.entries()) {
+      const entry = entries[index];
+      if (entry === undefined) continue;
+      if (result.status === "fulfilled") {
+        this.releaseProcessId(entry.processId);
+      } else {
+        errors.push(result.reason);
+      }
+    }
+    if (errors.length === 0) return;
+    const primary = errors[0];
+    const failure = new AggregateError(
+      errors,
+      "unified exec sandbox-authority quiesce could not prove process-tree cleanup",
+      primary === undefined ? undefined : { cause: primary },
+    );
+    this.poisonSandboxAuthority(failure);
+    throw failure;
+  }
+
+  /** Reopen admission only for the exact successfully-drained generation. */
+  resumeSandboxAuthorityAfterQuiesce(
+    token: UnifiedExecSandboxAuthorityQuiesceToken,
+  ): void {
+    this.assertActiveSandboxAuthorityQuiesce(token);
+    if (this.sandboxAuthorityCleanupFailure !== undefined) {
+      throw new AggregateError(
+        [this.sandboxAuthorityCleanupFailure],
+        "unified exec sandbox authority remains closed after cleanup failure",
+        { cause: this.sandboxAuthorityCleanupFailure },
+      );
+    }
+    this.activeSandboxAuthorityQuiesce = undefined;
+    this.sandboxAuthorityGeneration += 1;
+    this.sandboxAuthorityQuiesced = false;
   }
 
   async execCommand(
     request: ExecCommandRequest,
   ): Promise<ExecCommandToolOutput> {
+    const sandboxAuthorityGeneration = this.assertSandboxAuthorityAdmission();
     if (request.cmd.trim().length === 0) {
       throw new UnifiedExecError(
         "missing_command",
@@ -490,13 +587,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       tty,
       startedAt,
       signal: request.__abortSignal,
+      sandboxAuthorityGeneration,
     });
     const releaseWorkspaceOperation = retainCurrentWorkspaceOperation();
     void entry.exitPromise.then(
       releaseWorkspaceOperation,
       releaseWorkspaceOperation,
     );
-    this.processes.set(processId, entry);
     request.observer?.onBegin?.({
       callId,
       command: request.cmd,
@@ -547,6 +644,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   }
 
   async writeStdin(request: WriteStdinRequest): Promise<ExecCommandToolOutput> {
+    this.assertSandboxAuthorityAdmission();
     const entry = this.processes.get(request.session_id);
     if (!entry) {
       throw new UnifiedExecError(
@@ -653,6 +751,101 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     this.processes.clear();
   }
 
+  private assertSandboxAuthorityAdmission(expectedGeneration?: number): number {
+    if (
+      this.sandboxAuthorityCleanupFailure !== undefined ||
+      this.sandboxAuthorityQuiesced ||
+      (expectedGeneration !== undefined &&
+        expectedGeneration !== this.sandboxAuthorityGeneration)
+    ) {
+      throw new UnifiedExecError(
+        "create_process",
+        this.sandboxAuthorityCleanupFailure === undefined
+          ? "unified exec is quiesced while sandbox runtime authority changes"
+          : "unified exec is permanently closed because process-tree cleanup could not be proven",
+      );
+    }
+    return this.sandboxAuthorityGeneration;
+  }
+
+  private assertActiveSandboxAuthorityQuiesce(
+    token: UnifiedExecSandboxAuthorityQuiesceToken,
+  ): void {
+    if (
+      !this.sandboxAuthorityQuiesced ||
+      this.activeSandboxAuthorityQuiesce !== token ||
+      token.generation !== this.sandboxAuthorityGeneration
+    ) {
+      throw new Error("unified exec sandbox-authority quiesce token is stale");
+    }
+  }
+
+  private poisonSandboxAuthority(error: Error): void {
+    this.sandboxAuthorityCleanupFailure ??= error;
+    this.sandboxAuthorityQuiesced = true;
+    this.sandboxAuthorityGeneration += 1;
+    for (const entry of this.processes.values()) {
+      this.forceTerminate(entry);
+    }
+  }
+
+  private async closeProcessStrict(entry: ProcessEntry): Promise<void> {
+    if (entry.cleanupFailure !== undefined) throw entry.cleanupFailure;
+    const ptyTermination =
+      entry.stored.kind === "pty"
+        ? this.terminatePtyStrict(entry)
+        : Promise.resolve();
+    this.forceTerminate(entry);
+    let timer: NodeJS.Timeout | undefined;
+    const timeout = new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => {
+        reject(
+          new Error(
+            `unified exec process ${entry.processId} cleanup exceeded ${this.sandboxAuthorityQuiesceTimeoutMs}ms`,
+          ),
+        );
+      }, this.sandboxAuthorityQuiesceTimeoutMs);
+      timer.unref?.();
+    });
+    try {
+      await Promise.race([
+        Promise.all([ptyTermination, entry.exitPromise]).then(() => {}),
+        timeout,
+      ]);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+    if (entry.cleanupFailure !== undefined) throw entry.cleanupFailure;
+    if (entry.exitState === null) {
+      throw new Error(
+        `unified exec process ${entry.processId} exit was not proven`,
+      );
+    }
+  }
+
+  private terminatePtyStrict(entry: ProcessEntry): Promise<void> {
+    if (entry.stored.kind !== "pty") return Promise.resolve();
+    const processHandle = entry.stored.process;
+    const pid = processHandle.pid;
+    if (!Number.isInteger(pid) || pid <= 1) {
+      try {
+        processHandle.kill("SIGKILL");
+        return Promise.resolve();
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    }
+    return new Promise<void>((resolvePromise, reject) => {
+      treeKill(pid, "SIGKILL", (error) => {
+        if (error !== undefined && entry.exitState === null) {
+          reject(error);
+          return;
+        }
+        resolvePromise();
+      });
+    });
+  }
+
   private allocateProcessId(): number {
     while (this.processes.has(this.nextProcessId)) {
       this.nextProcessId += 1;
@@ -714,7 +907,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     readonly tty: boolean;
     readonly startedAt: number;
     readonly signal?: AbortSignal;
+    readonly sandboxAuthorityGeneration: number;
   }): Promise<ProcessEntry> {
+    this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
     const output = new ProcessOutputBuffer();
     const abortController = new AbortController();
     const exit = makeDeferredExit();
@@ -777,6 +972,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
           params.args,
           params.argv0,
         );
+        this.assertSandboxAuthorityAdmission(
+          params.sandboxAuthorityGeneration,
+        );
         processHandle = pty.spawn(ptyCommand.program, [...ptyCommand.args], {
           name: "xterm-256color",
           cols: 80,
@@ -806,9 +1004,11 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         complete(entry, { exitCode: event.exitCode, signal: event.signal });
       });
       this.attachAbortTermination(entry);
+      this.processes.set(params.processId, entry);
       return entry;
     }
 
+    this.assertSandboxAuthorityAdmission(params.sandboxAuthorityGeneration);
     const child = spawnContainedProcess(params.program, params.args, {
       cwd: params.cwd,
       env: params.env,
@@ -845,6 +1045,10 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
             complete(entry, state);
           },
           (error) => {
+            const cleanupFailure =
+              error instanceof Error ? error : new Error(String(error));
+            entry.cleanupFailure = cleanupFailure;
+            this.poisonSandboxAuthority(cleanupFailure);
             notifyData(
               "stderr",
               `AgenC could not verify descendant process cleanup: ${
@@ -866,6 +1070,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       settleContainedProcess({ exitCode: 1 }, error);
     });
     this.attachAbortTermination(entry);
+    this.processes.set(params.processId, entry);
     child.unref();
     return entry;
   }

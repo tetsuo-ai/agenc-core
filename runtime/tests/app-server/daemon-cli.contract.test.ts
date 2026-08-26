@@ -28,6 +28,7 @@ import { openStateDatabases } from "../state/sqlite-driver.js";
 import { StateRunDurabilityRepository } from "../state/run-durability.js";
 import { ROLLOUT_SCHEMA_VERSION } from "../session/event-log.js";
 import { RolloutStore } from "../session/rollout-store.js";
+import type { PendingProviderSwitch } from "../session/session.js";
 import { createAgenCJsonLineDaemonRequestClient } from "./agent-cli.js";
 import { AGENC_DAEMON_PROTOCOL_VERSION } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
@@ -71,8 +72,15 @@ import {
 } from "./background-agent-runner.js";
 import {
   createEmptyToolPermissionContext,
-  type ToolPermissionContext,
 } from "../permissions/types.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { ConfigStore } from "../config/store.js";
+import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
+import {
+  sandboxExecutionBrokerAuthorityFromSessionAuthority,
+  sessionConfigurationFromAgenCConfig,
+  sessionExecutionAuthorityFromAgenCConfig,
+} from "../session/configuration.js";
 import { getGlobalDispatcher, setGlobalDispatcher } from "undici";
 import { clearProxyCache } from "../utils/proxy.js";
 import { clearMTLSCache } from "../utils/mtls.js";
@@ -103,17 +111,51 @@ const TEST_RUNTIME_OPTIONS = Object.freeze({
 
 function createRecoveredSession(
   threadId: string,
-  permissionModeRegistry: {
-    current: () => ToolPermissionContext;
-    update: (context: ToolPermissionContext) => Promise<void> | void;
-  },
+  permissionModeRegistry: PermissionModeRegistry,
   options: {
     readonly rolloutStore?: RolloutStore;
     readonly threadStatus?: "running" | "idle";
     readonly enableDurableClose?: boolean;
+    readonly cwd?: string;
   } = {},
 ) {
-  const state = { history: [] as unknown[] };
+  const workspaceRoot = options.cwd ?? process.cwd();
+  const configHome = join(
+    tmpdir(),
+    `agenc-recovered-config-${process.pid}-${threadId.replaceAll("/", "_")}`,
+  );
+  const configStore = new ConfigStore({
+    home: configHome,
+    cwd: workspaceRoot,
+    projectRoot: workspaceRoot,
+    projectTrusted: true,
+    env: {
+      AGENC_HOME: configHome,
+      HOME: tmpdir(),
+    },
+  });
+  let configuredExecutionAuthority = sessionExecutionAuthorityFromAgenCConfig({
+    config: {},
+    workspaceRoot,
+    projectTrust: "trusted",
+  });
+  const state = {
+    history: [] as unknown[],
+    sessionConfiguration: sessionConfigurationFromAgenCConfig({
+      config: {},
+      workspaceRoot,
+      model: "grok-4",
+      provider: "grok",
+      projectTrust: "trusted",
+    }),
+  };
+  const sandboxExecutionBroker = new SandboxExecutionBroker({
+    cwd: workspaceRoot,
+    ...sandboxExecutionBrokerAuthorityFromSessionAuthority(
+      configuredExecutionAuthority,
+      workspaceRoot,
+    ),
+  });
   const rolloutItems: unknown[] = [];
   const fallbackRolloutStore = {
     rolloutPath: join(
@@ -122,6 +164,8 @@ function createRecoveredSession(
     ),
     readAll: () => [...rolloutItems],
     assertToolAdmissionAllowed: () => {},
+    recordRunRuntimeSettingsEvent: () => {},
+    syncCanonicalTail: () => {},
   };
   const rolloutStore = options.rolloutStore ?? fallbackRolloutStore;
   const eventLog = {
@@ -138,6 +182,17 @@ function createRecoveredSession(
     }, 0),
   };
   const beforeDurableCloseListeners = new Set<() => void | Promise<void>>();
+  let pendingProviderSwitch: PendingProviderSwitch | null = null;
+  const runtimeRestoreObservations: Array<
+    | {
+        readonly kind: "pending-provider-switch";
+        readonly pendingProviderSwitch: PendingProviderSwitch | null;
+      }
+    | {
+        readonly kind: "deferred-session-start-hook";
+        readonly pendingProviderSwitch: PendingProviderSwitch | null;
+      }
+  > = [];
   const managedThread = {
     threadId,
     agentPath: "/root",
@@ -165,27 +220,48 @@ function createRecoveredSession(
     }),
     configSnapshot: () => ({}),
   };
-  return {
+  const prepareEvent = (event: {
+    readonly eventId?: string;
+    readonly id?: string;
+    readonly msg: unknown;
+  }) => {
+    const seq = eventLog.lastSeq + 1;
+    const eventId = event.eventId ?? event.id ?? `recovered-event-${seq}`;
+    const stamped = { ...event, eventId, id: eventId, seq };
+    eventLog.lastSeq = seq;
+    let published = false;
+    return {
+      event: stamped,
+      publish: () => {
+        if (published) return stamped;
+        published = true;
+        if (options.rolloutStore === undefined) {
+          rolloutItems.push({ type: "event_msg", payload: stamped });
+        } else if (!options.rolloutStore.append(stamped, { durable: true })) {
+          throw new Error(`failed to append recovered event ${eventId}`);
+        }
+        return stamped;
+      },
+    };
+  };
+  const sessionAbortController = new AbortController();
+  let bootstrapClosed = false;
+  const session = {
     conversationId: threadId,
-    sessionConfiguration: { cwd: process.cwd() },
+    abortController: sessionAbortController,
+    abortTerminal: (reason: string) => sessionAbortController.abort(reason),
+    get sessionConfiguration() {
+      return state.sessionConfiguration;
+    },
     rolloutStore,
     eventLog,
+    prepareEmit: prepareEvent,
+    publishPreparedEvent: (event: unknown) => event,
     emit: (event: {
       readonly eventId?: string;
       readonly id?: string;
       readonly msg: unknown;
-    }) => {
-      const seq = eventLog.lastSeq + 1;
-      const eventId = event.eventId ?? event.id ?? `recovered-event-${seq}`;
-      const stamped = { ...event, eventId, id: eventId, seq };
-      eventLog.lastSeq = seq;
-      if (options.rolloutStore === undefined) {
-        rolloutItems.push({ type: "event_msg", payload: stamped });
-      } else if (!options.rolloutStore.append(stamped, { durable: true })) {
-        throw new Error(`failed to append recovered event ${eventId}`);
-      }
-      return stamped;
-    },
+    }) => prepareEvent(event).publish(),
     ...(options.enableDurableClose === true
       ? {
           onBeforeDurableClose: (listener: () => void | Promise<void>) => {
@@ -207,8 +283,28 @@ function createRecoveredSession(
     snapshotHistoryMessages: () => state.history,
     subscribeToEvents: () => () => {},
     emitPhaseEvent: () => {},
+    get pendingProviderSwitch() {
+      return pendingProviderSwitch;
+    },
+    runtimeRestoreObservations,
+    setPendingProviderSwitch: (next: PendingProviderSwitch | null) => {
+      pendingProviderSwitch =
+        next === null ? null : Object.freeze({ ...next });
+      runtimeRestoreObservations.push({
+        kind: "pending-provider-switch",
+        pendingProviderSwitch,
+      });
+    },
+    flushDeferredSessionStartHook: async () => {
+      runtimeRestoreObservations.push({
+        kind: "deferred-session-start-hook",
+        pendingProviderSwitch,
+      });
+    },
     services: {
       admissionRequired: false,
+      configStore,
+      sandboxExecutionBroker,
       conversationThreadManager: {
         hasThread: (id: string) => id === threadId,
         getThread: (id: string) => {
@@ -219,6 +315,95 @@ function createRecoveredSession(
       },
     },
   };
+  return Object.assign(session, {
+    createBootstrap(extra: Record<string, unknown> = {}) {
+      return {
+        workspaceRoot,
+        get configuredExecutionAuthority() {
+          return configuredExecutionAuthority;
+        },
+        prepareConfiguredExecutionAuthority: (
+          config: Record<string, unknown>,
+        ) => {
+          const previous = configuredExecutionAuthority;
+          const authority = sessionExecutionAuthorityFromAgenCConfig({
+            config,
+            workspaceRoot,
+            projectTrust: "trusted",
+          });
+          let committed = false;
+          return {
+            authority,
+            commit: () => {
+              configuredExecutionAuthority = authority;
+              committed = true;
+            },
+            rollback: () => {
+              if (!committed) return;
+              configuredExecutionAuthority = previous;
+              committed = false;
+            },
+          };
+        },
+        configStore,
+        session,
+        rolloutStore,
+        ...extra,
+        shutdown: async () => {
+          if (bootstrapClosed) return;
+          bootstrapClosed = true;
+          try {
+            await session.runBeforeDurableClose();
+          } finally {
+            options.rolloutStore?.close();
+            configStore.stateRepository.close();
+          }
+        },
+      };
+    },
+  });
+}
+
+function openRecoveredRolloutStore(
+  agencHome: string,
+  options: Parameters<AgenCBootstrapFunction>[0],
+): RolloutStore {
+  if (
+    options.conversationId === undefined ||
+    options.cwd === undefined ||
+    options.resumeRolloutPath === undefined ||
+    options.resumeRolloutLease === undefined
+  ) {
+    throw new Error("startup restore omitted its canonical rollout authority");
+  }
+  const rolloutStore = new RolloutStore({
+    cwd: options.cwd,
+    sessionId: options.conversationId,
+    agencVersion: "0.17.0",
+    agencHome,
+    resume: true,
+    resumeRolloutPath: options.resumeRolloutPath,
+    resumeRolloutLease: options.resumeRolloutLease,
+    autoStartScheduler: false,
+    ...(options.resumeSuspendedConversation === true
+      ? {
+          resumeSuspendedRun: true,
+          suspendedResumeReason:
+            options.suspendedResumeReason ?? "explicit_continue",
+        }
+      : {}),
+  });
+  rolloutStore.open({
+    sessionId: options.conversationId,
+    timestamp: "2026-05-01T12:00:00.000Z",
+    cwd: options.cwd,
+    originator: "daemon-restart-test",
+    source: "interactive-root",
+    agencVersion: "0.17.0",
+    model: options.model ?? "grok-4",
+    modelProvider: options.provider ?? "grok",
+  });
+  return rolloutStore;
 }
 
 function createIo(): AgenCDaemonCliIo & {
@@ -4354,29 +4539,29 @@ snapshot_max_bytes = 64
       Parameters<AgenCBootstrapFunction>[0]
     >();
     const sendInput = vi.fn(async () => {});
-    const permissionModeRegistry = {
-      current: () => createEmptyToolPermissionContext(),
-      update: async () => {},
-    };
     const runner = new AgenCDelegateBackgroundAgentRunner({
       bootstrap: (async (options) => {
         const conversationId = options.conversationId ?? "daemon-recovery";
         restoredConversationIds.push(conversationId);
         restoreOptions.set(conversationId, options);
+        const rolloutStore = openRecoveredRolloutStore(agencHome, options);
         const session = createRecoveredSession(
           conversationId,
-          permissionModeRegistry,
+          new PermissionModeRegistry(createEmptyToolPermissionContext()),
+          {
+            rolloutStore,
+            enableDurableClose: true,
+            ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+          },
         );
-        return {
-          session,
-          rolloutStore: session.rolloutStore,
-          shutdown: async () => {},
-        };
+        return session.createBootstrap();
       }) as AgenCBootstrapFunction,
       ensureAgentControl: (() => ({
         control: {
           sendInput,
           shutdown: async () => {},
+          liveThreadSpawnChildren: () => new Map(),
+          openThreadSpawnChildren: () => new Map(),
         },
         registry: {},
       })) as AgenCEnsureAgentControlFunction,
@@ -4719,7 +4904,7 @@ snapshot_max_bytes = 64
         payload: {
           eventId: `run-cancel-request:${runId}:1`,
           id: `run-cancel-request:${runId}:1`,
-          seq: 1,
+          seq: 2,
           msg: {
             type: "run_cancel_requested",
             payload: {
@@ -4772,10 +4957,9 @@ snapshot_max_bytes = 64
     const rolloutIdentity = await stat(rolloutPath, { bigint: true });
     const sendInput = vi.fn(async () => {});
     const restoredOptions: Array<Parameters<AgenCBootstrapFunction>[0]> = [];
-    const permissionModeRegistry = {
-      current: () => createEmptyToolPermissionContext(),
-      update: async () => {},
-    };
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
     const makeRunner = (): AgenCBackgroundAgentRunner =>
       new AgenCDelegateBackgroundAgentRunner({
         bootstrap: (async (options) => {
@@ -4799,33 +4983,7 @@ snapshot_max_bytes = 64
           ) {
             throw new Error("startup restore cwd descriptor identity changed");
           }
-          const rolloutStore = new RolloutStore({
-            cwd: options.cwd,
-            sessionId: options.conversationId,
-            agencVersion: "0.16.1",
-            agencHome,
-            resume: true,
-            resumeRolloutPath: options.resumeRolloutPath,
-            resumeRolloutLease: options.resumeRolloutLease,
-            autoStartScheduler: false,
-            ...(options.resumeSuspendedConversation === true
-              ? {
-                  resumeSuspendedRun: true,
-                  suspendedResumeReason:
-                    options.suspendedResumeReason ?? "explicit_continue",
-                }
-              : {}),
-          });
-          rolloutStore.open({
-            sessionId: options.conversationId,
-            timestamp: "2026-05-01T12:00:00.000Z",
-            cwd: options.cwd,
-            originator: "daemon-restart-test",
-            source: "interactive-root",
-            agencVersion: "0.16.1",
-            model: "test-model",
-            modelProvider: "test-provider",
-          });
+          const rolloutStore = openRecoveredRolloutStore(agencHome, options);
           const session = createRecoveredSession(
             options.conversationId,
             permissionModeRegistry,
@@ -4833,22 +4991,10 @@ snapshot_max_bytes = 64
               rolloutStore,
               threadStatus: "idle",
               enableDurableClose: true,
+              cwd: options.cwd,
             },
           );
-          let closed = false;
-          return {
-            session,
-            rolloutStore,
-            shutdown: async () => {
-              if (closed) return;
-              closed = true;
-              try {
-                await session.runBeforeDurableClose();
-              } finally {
-                rolloutStore.close();
-              }
-            },
-          };
+          return session.createBootstrap();
         }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
           control: {
@@ -4886,7 +5032,7 @@ snapshot_max_bytes = 64
         resumeRolloutPath: rolloutPath,
       });
       expect(restoredOptions[0]?.resumeSuspendedConversation).toBeUndefined();
-      expect(restoredOptions[0]?.deferSessionStartHooks).toBeUndefined();
+      expect(restoredOptions[0]?.deferSessionStartHooks).toBe(true);
       expect(restoredOptions[0]?.deferAgentStartupSideEffects).toBeUndefined();
 
       firstSignal.emit("SIGTERM");
@@ -5022,22 +5168,25 @@ snapshot_max_bytes = 64
       string,
       ReturnType<typeof createRecoveredSession>
     >();
-    const permissionModeRegistry = {
-      current: () => createEmptyToolPermissionContext(),
-      update: async () => {},
-    };
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
     const runner: AgenCBackgroundAgentRunner =
       new AgenCDelegateBackgroundAgentRunner({
         bootstrap: (async (options) => {
           const conversationId = options.conversationId ?? "daemon-replay";
+          const rolloutStore = openRecoveredRolloutStore(agencHome, options);
           const session = createRecoveredSession(
             conversationId,
             permissionModeRegistry,
+            {
+              rolloutStore,
+              enableDurableClose: true,
+              ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+            },
           );
           restoredSessions.set(conversationId, session);
-          return {
-            session,
-            rolloutStore: session.rolloutStore,
+          return session.createBootstrap({
             registry: {
               tools: [
                 {
@@ -5053,12 +5202,14 @@ snapshot_max_bytes = 64
               dispatch,
             },
             shutdown: async () => {},
-          };
+          });
         }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
           control: {
             sendInput: async () => {},
             shutdown: async () => {},
+            liveThreadSpawnChildren: () => new Map(),
+            openThreadSpawnChildren: () => new Map(),
           },
           registry: {},
         })) as AgenCEnsureAgentControlFunction,
@@ -5151,30 +5302,35 @@ snapshot_max_bytes = 64
       string,
       ReturnType<typeof createRecoveredSession>
     >();
-    const permissionModeRegistry = {
-      current: () => createEmptyToolPermissionContext(),
-      update: async () => {},
-    };
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
     const runner: AgenCBackgroundAgentRunner =
       new AgenCDelegateBackgroundAgentRunner({
         bootstrap: (async (options) => {
           const conversationId =
             options.conversationId ?? "daemon-completed-tool";
+          const rolloutStore = openRecoveredRolloutStore(agencHome, options);
           const session = createRecoveredSession(
             conversationId,
             permissionModeRegistry,
+            {
+              rolloutStore,
+              enableDurableClose: true,
+              ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+            },
           );
           restoredSessions.set(conversationId, session);
-          return {
-            session,
-            rolloutStore: session.rolloutStore,
+          return session.createBootstrap({
             shutdown: async () => {},
-          };
+          });
         }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
           control: {
             sendInput: async () => {},
             shutdown: async () => {},
+            liveThreadSpawnChildren: () => new Map(),
+            openThreadSpawnChildren: () => new Map(),
           },
           registry: {},
         })) as AgenCEnsureAgentControlFunction,
@@ -5271,23 +5427,26 @@ snapshot_max_bytes = 64
       string,
       ReturnType<typeof createRecoveredSession>
     >();
-    const permissionModeRegistry = {
-      current: () => createEmptyToolPermissionContext(),
-      update: async () => {},
-    };
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
     const runner: AgenCBackgroundAgentRunner =
       new AgenCDelegateBackgroundAgentRunner({
         bootstrap: (async (options) => {
           const conversationId =
             options.conversationId ?? "daemon-replay-poison";
+          const rolloutStore = openRecoveredRolloutStore(agencHome, options);
           const session = createRecoveredSession(
             conversationId,
             permissionModeRegistry,
+            {
+              rolloutStore,
+              enableDurableClose: true,
+              ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+            },
           );
           restoredSessions.set(conversationId, session);
-          return {
-            session,
-            rolloutStore: session.rolloutStore,
+          return session.createBootstrap({
             registry: {
               tools: [
                 { name: "FileWrite", recoveryCategory: "side-effecting" },
@@ -5296,12 +5455,14 @@ snapshot_max_bytes = 64
               dispatch,
             },
             shutdown: async () => {},
-          };
+          });
         }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
           control: {
             sendInput: async () => {},
             shutdown: async () => {},
+            liveThreadSpawnChildren: () => new Map(),
+            openThreadSpawnChildren: () => new Map(),
           },
           registry: {},
         })) as AgenCEnsureAgentControlFunction,
@@ -5380,13 +5541,33 @@ snapshot_max_bytes = 64
       toolArgs: { questions: [] },
       recoveryCategory: "interactive",
     });
-    const runner: AgenCBackgroundAgentRunner = {
-      startAgent: async () => ({
-        agentId: "unused",
-        startedAt: "2026-05-01T12:00:00.500Z",
-        status: "running",
-      }),
-    };
+    const runner: AgenCBackgroundAgentRunner =
+      new AgenCDelegateBackgroundAgentRunner({
+        bootstrap: (async (options) => {
+          const conversationId = options.conversationId ?? "daemon-recovery";
+          const rolloutStore = openRecoveredRolloutStore(agencHome, options);
+          const session = createRecoveredSession(
+            conversationId,
+            new PermissionModeRegistry(createEmptyToolPermissionContext()),
+            {
+              rolloutStore,
+              enableDurableClose: true,
+              ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+            },
+          );
+          return session.createBootstrap();
+        }) as AgenCBootstrapFunction,
+        ensureAgentControl: (() => ({
+          control: {
+            sendInput: async () => {},
+            shutdown: async () => {},
+            liveThreadSpawnChildren: () => new Map(),
+            openThreadSpawnChildren: () => new Map(),
+          },
+          registry: {},
+        })) as AgenCEnsureAgentControlFunction,
+        now: () => "2026-05-01T12:00:00.500Z",
+      });
 
     const running = runAgenCDaemonCli(
       { kind: "command", action: "run" },
@@ -5556,6 +5737,7 @@ snapshot_max_bytes = 64
       cwd: process.cwd(),
       runId: createdAgentId,
       objective: "survive daemon restart",
+      profile: "fast",
     });
 
     const sendInput = vi.fn(async () => {});
@@ -5566,30 +5748,36 @@ snapshot_max_bytes = 64
       ReturnType<typeof createRecoveredSession>
     >();
     const secondSignal = createSignalProcess();
-    const permissionModeRegistry = {
-      current: () => createEmptyToolPermissionContext(),
-      update: vi.fn(async () => {}),
-    };
+    const permissionModeRegistry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    );
+    vi.spyOn(permissionModeRegistry, "update");
     const restoreRunner: AgenCBackgroundAgentRunner =
       new AgenCDelegateBackgroundAgentRunner({
         bootstrap: (async (options) => {
           restoreBootstrapOptions = options;
           const conversationId = options.conversationId ?? "daemon-recovery";
+          const rolloutStore = openRecoveredRolloutStore(agencHome, options);
           const session = createRecoveredSession(
             conversationId,
             permissionModeRegistry,
+            {
+              rolloutStore,
+              enableDurableClose: true,
+              ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
+            },
           );
           restoredSessions.set(conversationId, session);
-          return {
-            session,
-            rolloutStore: session.rolloutStore,
+          return session.createBootstrap({
             shutdown: async () => {},
-          };
+          });
         }) as AgenCBootstrapFunction,
         ensureAgentControl: (() => ({
           control: {
             sendInput,
             shutdown: async () => {},
+            liveThreadSpawnChildren: () => new Map(),
+            openThreadSpawnChildren: () => new Map(),
           },
           registry: {},
         })) as AgenCEnsureAgentControlFunction,
@@ -5620,6 +5808,33 @@ snapshot_max_bytes = 64
         "--profile",
         "fast",
       ]),
+    );
+    expect(
+      restoredSessions.get(createdAgentId)?.runtimeRestoreObservations,
+    ).toEqual([
+      {
+        kind: "pending-provider-switch",
+        pendingProviderSwitch: {
+          provider: "grok",
+          model: "grok-4",
+          profile: "fast",
+        },
+      },
+      {
+        kind: "deferred-session-start-hook",
+        pendingProviderSwitch: {
+          provider: "grok",
+          model: "grok-4",
+          profile: "fast",
+        },
+      },
+    ]);
+    expect(restoredSessions.get(createdAgentId)?.pendingProviderSwitch).toEqual(
+      {
+        provider: "grok",
+        model: "grok-4",
+        profile: "fast",
+      },
     );
     expect(permissionModeRegistry.update).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -6084,6 +6299,7 @@ function seedCanonicalDaemonRollout(
     readonly cwd: string;
     readonly runId: string;
     readonly objective: string;
+    readonly profile?: string | null;
   },
 ): string {
   const driver = openStateDatabases({ cwd: params.cwd, agencHome });
@@ -6095,6 +6311,23 @@ function seedCanonicalDaemonRollout(
       `rollout-2026-05-01T00-00-00-000Z-${params.runId}.jsonl`,
     );
     const timestamp = "2026-05-01T00:00:00.000Z";
+    const runtimeSettingsEventId = `runtime-settings:${params.runId}:initial`;
+    const runtimeSettings = {
+      permissionMode: "default" as const,
+      prePlanMode: null,
+      autoModeActive: false,
+      autoModeAvailable: false,
+      bypassPermissionsModeAvailable: false,
+      bypassPermissionsWorkspace: null,
+      bypassPermissionsConsentWorkspace: null,
+      model: "grok-4",
+      provider: "grok",
+      profile: params.profile ?? null,
+      reasoningEffort: null,
+      modelVerbosity: null,
+      serviceTier: null,
+      hooksDisabled: false,
+    };
     writeFileSync(
       rolloutPath,
       [
@@ -6118,6 +6351,27 @@ function seedCanonicalDaemonRollout(
           payload: { role: "user", content: params.objective },
           eventVersion: 1,
         },
+        {
+          type: "event_msg",
+          payload: {
+            id: runtimeSettingsEventId,
+            eventId: runtimeSettingsEventId,
+            seq: 1,
+            msg: {
+              type: "run_runtime_settings_changed",
+              payload: {
+                runId: params.runId,
+                epoch: 1,
+                previousSettingsEventId: null,
+                rollbackOfSettingsEventId: null,
+                reason: "initial",
+                changedAt: timestamp,
+                ...runtimeSettings,
+              },
+            },
+          },
+          eventVersion: 1,
+        },
       ]
         .map((item) => JSON.stringify(item))
         .join("\n") + "\n",
@@ -6132,6 +6386,17 @@ function seedCanonicalDaemonRollout(
       sessionId: params.runId,
       sourcePath: rolloutPath,
       boundAt: timestamp,
+    });
+    runs.recordRuntimeSettingsChanged({
+      runId: params.runId,
+      epoch: 1,
+      eventId: runtimeSettingsEventId,
+      eventSequence: 1,
+      previousSettingsEventId: null,
+      rollbackOfSettingsEventId: null,
+      reason: "initial",
+      changedAt: timestamp,
+      settings: runtimeSettings,
     });
     return rolloutPath;
   } finally {

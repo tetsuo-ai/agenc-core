@@ -8,6 +8,7 @@
  * as the dispatcher transport's `sendNotification` callback.
  */
 
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import {
@@ -71,7 +72,7 @@ const SAFE_SDK_RUNTIME_OPTIONS = Object.freeze({
   remoteMode: false,
   allowUntrustedHooks: false,
 });
-const AGENT_ATTACH_RUNTIME_AUTHORITY_PROTOCOL_MINOR = 4;
+const AGENT_ATTACH_RUNTIME_AUTHORITY_PROTOCOL_MINOR = 7;
 
 /**
  * Minimal transport contract. The runtime's
@@ -1674,9 +1675,77 @@ function assertValidAgentAttachRuntimeAuthority(
   result: unknown,
   response: unknown,
 ): void {
-  if (!isJsonObject(result) || !isJsonObject(result.runtimeOptions)) {
+  if (!isJsonObject(result)) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach response must be an object",
+      response,
+    );
+  }
+  const boundedSettingString = (value: unknown, maxBytes: number): boolean =>
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    Buffer.byteLength(value, "utf8") <= maxBytes;
+  if (
+    !boundedSettingString(result.agentId, 1_024) ||
+    !boundedSettingString(result.attachmentId, 1_024) ||
+    !Array.isArray(result.sessionIds) ||
+    result.sessionIds.length === 0 ||
+    !result.sessionIds.every((sessionId) =>
+      boundedSettingString(sessionId, 1_024)
+    ) ||
+    new Set(result.sessionIds).size !== result.sessionIds.length
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach response must include bounded agent, attachment, and unique session ids",
+      response,
+    );
+  }
+  if (!Array.isArray(result.sessions)) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach response must include session summaries",
+      response,
+    );
+  }
+  const primarySessionId = result.sessionIds[0];
+  const primarySessions = result.sessions.filter(
+    (session) =>
+      isJsonObject(session) && session.sessionId === primarySessionId,
+  );
+  const primarySession = primarySessions[0];
+  if (
+    primarySessions.length !== 1 ||
+    !isJsonObject(primarySession) ||
+    primarySession.agentId !== result.agentId ||
+    !["idle", "running", "waiting"].includes(
+      primarySession.status as string,
+    ) ||
+    !boundedSettingString(primarySession.cwd, 4_096) ||
+    (primarySession.cwd as string).trim() !== primarySession.cwd ||
+    !isAbsolute(primarySession.cwd as string)
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach primary session must be unique, active, and include a bounded absolute cwd",
+      response,
+    );
+  }
+  if (!isJsonObject(result.runtimeOptions)) {
     throw new AgencMalformedResponseError(
       "AgenC agent.attach response must include runtimeOptions",
+      response,
+    );
+  }
+  if (!isJsonObject(result.runtimeSettings)) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach response must include runtimeSettings",
+      response,
+    );
+  }
+  if (
+    typeof result.runtimeSettingsEventId !== "string" ||
+    result.runtimeSettingsEventId.length === 0
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach response must include runtimeSettingsEventId",
       response,
     );
   }
@@ -1720,6 +1789,125 @@ function assertValidAgentAttachRuntimeAuthority(
   ) {
     throw new AgencMalformedResponseError(
       "AgenC agent.attach runtimeOptions.commandWrapperArgv must be an array of non-empty strings",
+      response,
+    );
+  }
+
+  const runtimeSettings = result.runtimeSettings;
+  const permissionModes = new Set([
+    "default",
+    "plan",
+    "acceptEdits",
+    "bypassPermissions",
+    "dontAsk",
+    "auto",
+    "unattended",
+  ]);
+  if (!permissionModes.has(runtimeSettings.permissionMode as string)) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach runtimeSettings.permissionMode is invalid",
+      response,
+    );
+  }
+  if (
+    runtimeSettings.prePlanMode !== null &&
+    !permissionModes.has(runtimeSettings.prePlanMode as string)
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach runtimeSettings.prePlanMode is invalid",
+      response,
+    );
+  }
+  for (const key of [
+    "autoModeActive",
+    "autoModeAvailable",
+    "bypassPermissionsModeAvailable",
+    "hooksDisabled",
+  ] as const) {
+    if (typeof runtimeSettings[key] !== "boolean") {
+      throw new AgencMalformedResponseError(
+        `AgenC agent.attach runtimeSettings.${key} must be boolean`,
+        response,
+      );
+    }
+  }
+  for (const key of ["model", "provider"] as const) {
+    const maxBytes = key === "model" ? 1_024 : 256;
+    if (!boundedSettingString(runtimeSettings[key], maxBytes)) {
+      throw new AgencMalformedResponseError(
+        `AgenC agent.attach runtimeSettings.${key} must be a bounded non-empty string`,
+        response,
+      );
+    }
+  }
+  for (const key of [
+    "bypassPermissionsWorkspace",
+    "bypassPermissionsConsentWorkspace",
+    "profile",
+  ] as const) {
+    const value = runtimeSettings[key];
+    if (value !== null && typeof value !== "string") {
+      throw new AgencMalformedResponseError(
+        `AgenC agent.attach runtimeSettings.${key} must be a string or null`,
+        response,
+      );
+    }
+  }
+  if (
+    runtimeSettings.profile !== null &&
+    !boundedSettingString(runtimeSettings.profile, 256)
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach runtimeSettings.profile must be a bounded non-empty string or null",
+      response,
+    );
+  }
+  for (const [key, values] of [
+    ["reasoningEffort", ["low", "medium", "high", "xhigh", "none"]],
+    ["modelVerbosity", ["low", "medium", "high"]],
+    ["serviceTier", ["priority", "flex"]],
+  ] as const) {
+    const value = runtimeSettings[key];
+    if (value !== null && !values.includes(value as never)) {
+      throw new AgencMalformedResponseError(
+        `AgenC agent.attach runtimeSettings.${key} is invalid`,
+        response,
+      );
+    }
+  }
+
+  const permissionMode = runtimeSettings.permissionMode as string;
+  const prePlanMode = runtimeSettings.prePlanMode as string | null;
+  const bypassTransitionCritical =
+    permissionMode === "bypassPermissions" ||
+    prePlanMode === "bypassPermissions";
+  if (
+    (permissionMode === "plan"
+      ? prePlanMode === null || prePlanMode === "plan"
+      : prePlanMode !== null) ||
+    (permissionMode === "auto"
+      ? runtimeSettings.autoModeActive !== true
+      : permissionMode !== "plan" &&
+        runtimeSettings.autoModeActive !== false) ||
+    (runtimeSettings.autoModeActive &&
+      !runtimeSettings.autoModeAvailable) ||
+    (runtimeSettings.bypassPermissionsConsentWorkspace !== null &&
+      (runtimeSettings.bypassPermissionsConsentWorkspace !==
+        primarySession.cwd ||
+        !runtimeSettings.bypassPermissionsModeAvailable)) ||
+    (bypassTransitionCritical
+      ? !boundedSettingString(
+          runtimeSettings.bypassPermissionsWorkspace,
+          4_096,
+        ) ||
+        runtimeSettings.bypassPermissionsWorkspace !== primarySession.cwd ||
+        !runtimeSettings.bypassPermissionsModeAvailable ||
+        runtimeSettings.bypassPermissionsConsentWorkspace !==
+          primarySession.cwd
+      : runtimeSettings.bypassPermissionsWorkspace !== null)
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach runtimeSettings are not canonically consistent",
       response,
     );
   }

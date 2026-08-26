@@ -134,7 +134,7 @@ describe("runAutoFixCheck", () => {
   test("caps command output while reading", async () => {
     const result = await runAutoFixCheckWithBoundary({
       lint:
-        "node -e 'process.stdout.write(\"x\".repeat(20000)); process.stderr.write(\"y\".repeat(20000))'",
+        "node -e 'process.stdout.write(\"x\".repeat(6000)); process.stderr.write(\"y\".repeat(6000))'",
       timeout: 5_000,
       cwd: TEST_CWD,
     });

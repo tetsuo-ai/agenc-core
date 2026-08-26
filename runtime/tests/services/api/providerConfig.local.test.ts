@@ -171,13 +171,26 @@ test('uses the bound provider and model instead of stale selector fields in its 
   })
 })
 
-test('does not accept an environment snapshot as provider and model authority', () => {
-  expect(() => resolveProviderRequest({
-    environment: Object.freeze({
-      AGENC_PROVIDER: 'openai',
-      AGENC_MODEL: 'gpt-4.1',
+test('does not accept selector fields in an environment snapshot as provider and model authority', () => {
+  const resolved = runWithStartupProviderSelection(
+    {
+      provider: 'openai',
+      model: 'gpt-4.1',
+      environment: {},
+    },
+    () => resolveProviderRequest({
+      environment: Object.freeze({
+        AGENC_PROVIDER: 'github',
+        AGENC_MODEL: 'github:copilot',
+      }),
     }),
-  })).toThrow('No provider authority is bound')
+  )
+
+  expect(resolved).toMatchObject({
+    requestedModel: 'gpt-4.1',
+    resolvedModel: 'gpt-4.1',
+    baseUrl: 'https://api.openai.com/v1',
+  })
 })
 
 test('derives local retry base URLs with /v1 and loopback fallback candidates', () => {

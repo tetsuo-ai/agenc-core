@@ -65,14 +65,16 @@ describe("canonical permission persistence content boundary", () => {
       },
       env,
     );
-    await persistPermissionUpdate(
-      {
-        type: "setMode",
-        mode: "bypassPermissions",
-        destination: "projectSettings",
-      },
-      env,
-    );
+    await expect(
+      persistPermissionUpdate(
+        {
+          type: "setMode",
+          mode: "bypassPermissions",
+          destination: "projectSettings",
+        },
+        env,
+      ),
+    ).rejects.toThrow(/exact-cwd consent transition/u);
     await persistPermissionUpdate(
       {
         type: "addDirectories",

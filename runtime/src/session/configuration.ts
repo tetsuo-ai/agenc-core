@@ -2,7 +2,134 @@ import { resolve } from "node:path";
 
 import type { AgenCConfig } from "../config/schema.js";
 import { resolveApprovalPolicy } from "../permissions/approval-policy.js";
+import type { ToolPermissionContext } from "../permissions/types.js";
+import type { SandboxExecutionBrokerAuthority } from "../sandbox/execution-broker.js";
+import { permissionProfileForLiveSandboxPolicies } from "../tools/runtimes/sandboxing.js";
 import type { SessionConfiguration } from "./turn-context.js";
+
+export type SessionExecutionAuthority = Readonly<
+  Pick<
+    SessionConfiguration,
+    | "approvalPolicy"
+    | "sandboxPolicy"
+    | "fileSystemSandboxPolicy"
+    | "networkSandboxPolicy"
+    | "windowsSandboxLevel"
+    | "sandboxAllowGpu"
+  >
+>;
+
+function immutableExecutionAuthority(
+  configuration: SessionConfiguration,
+): SessionExecutionAuthority {
+  return Object.freeze({
+    approvalPolicy: Object.freeze({ ...configuration.approvalPolicy }),
+    sandboxPolicy: Object.freeze({ ...configuration.sandboxPolicy }),
+    fileSystemSandboxPolicy: Object.freeze({
+      ...configuration.fileSystemSandboxPolicy,
+      allowWrite: Object.freeze([
+        ...configuration.fileSystemSandboxPolicy.allowWrite,
+      ]),
+      denyWrite: Object.freeze([
+        ...configuration.fileSystemSandboxPolicy.denyWrite,
+      ]),
+      allowRead: Object.freeze([
+        ...configuration.fileSystemSandboxPolicy.allowRead,
+      ]),
+      denyRead: Object.freeze([
+        ...configuration.fileSystemSandboxPolicy.denyRead,
+      ]),
+    }),
+    networkSandboxPolicy: Object.freeze({
+      ...configuration.networkSandboxPolicy,
+      allowlist: Object.freeze([
+        ...configuration.networkSandboxPolicy.allowlist,
+      ]),
+      denylist: Object.freeze([
+        ...configuration.networkSandboxPolicy.denylist,
+      ]),
+    }),
+    windowsSandboxLevel: configuration.windowsSandboxLevel,
+    ...(configuration.sandboxAllowGpu === true
+      ? { sandboxAllowGpu: true }
+      : {}),
+  });
+}
+
+/** Capture the configured policy before any permission-mode override. */
+export function sessionExecutionAuthorityFromConfiguration(
+  configuration: SessionConfiguration,
+): SessionExecutionAuthority {
+  return immutableExecutionAuthority(configuration);
+}
+
+/** True when bypass remains the effective authority while planning. */
+export function permissionContextUsesBypassAuthority(
+  context: Pick<ToolPermissionContext, "mode" | "prePlanMode">,
+): boolean {
+  return (
+    context.mode === "bypassPermissions" ||
+    (context.mode === "plan" && context.prePlanMode === "bypassPermissions")
+  );
+}
+
+/**
+ * Resolve one effective execution authority from the configured baseline and
+ * the canonical permission context. Bypass is an override; every other mode
+ * restores the exact configured least-privilege snapshot.
+ */
+export function executionAuthorityForPermissionContext(
+  configured: SessionExecutionAuthority,
+  context: Pick<ToolPermissionContext, "mode" | "prePlanMode">,
+): SessionExecutionAuthority {
+  if (!permissionContextUsesBypassAuthority(context)) return configured;
+  return Object.freeze({
+    ...configured,
+    approvalPolicy: Object.freeze({ value: "never" as const }),
+    sandboxPolicy: Object.freeze({ value: "danger_full_access" as const }),
+    fileSystemSandboxPolicy: Object.freeze({
+      allowWrite: Object.freeze([]),
+      denyWrite: Object.freeze([]),
+      allowRead: Object.freeze([]),
+      denyRead: Object.freeze([]),
+    }),
+  });
+}
+
+/** Project the effective execution authority onto live session configuration. */
+export function applySessionExecutionAuthority(
+  configuration: SessionConfiguration,
+  authority: SessionExecutionAuthority,
+): SessionConfiguration {
+  return {
+    ...configuration,
+    ...authority,
+  };
+}
+
+export function sandboxExecutionBrokerAuthorityFromSessionAuthority(
+  authority: SessionExecutionAuthority,
+  cwd: string,
+): SandboxExecutionBrokerAuthority {
+  const mode = authority.sandboxPolicy.value;
+  const windowsSandboxLevel =
+    authority.windowsSandboxLevel === "strict"
+      ? "high"
+      : authority.windowsSandboxLevel === "permissive"
+        ? "low"
+        : "disabled";
+  return Object.freeze({
+    mode,
+    permissionProfile: permissionProfileForLiveSandboxPolicies(
+      mode,
+      cwd,
+      authority.fileSystemSandboxPolicy,
+      authority.networkSandboxPolicy,
+    ),
+    windowsSandboxLevel,
+    allowGpu: authority.sandboxAllowGpu === true,
+  });
+}
 
 function approvalPolicyValueFromAgenCConfig(
   raw: AgenCConfig["approval_policy"] | undefined,
@@ -34,6 +161,20 @@ export function sandboxPolicyValueFromAgenCConfig(
     default:
       return "workspace_write";
   }
+}
+
+/** Build the immutable configured execution baseline without mode overrides. */
+export function sessionExecutionAuthorityFromAgenCConfig(params: {
+  readonly config: AgenCConfig;
+  readonly workspaceRoot: string;
+  readonly projectTrust?: "trusted" | "untrusted";
+}): SessionExecutionAuthority {
+  return sessionExecutionAuthorityFromConfiguration(
+    sessionConfigurationFromAgenCConfig({
+      ...params,
+      model: "",
+    }),
+  );
 }
 
 /** Build the sole live session-policy projection from a canonical config snapshot. */
@@ -120,13 +261,9 @@ export function sessionConfigurationFromAgenCConfig(params: {
   }
   return {
     ...configured,
-    approvalPolicy: { value: "never" },
-    sandboxPolicy: { value: "danger_full_access" },
-    fileSystemSandboxPolicy: {
-      allowWrite: [],
-      denyWrite: [],
-      allowRead: [],
-      denyRead: [],
-    },
+    ...executionAuthorityForPermissionContext(
+      sessionExecutionAuthorityFromConfiguration(configured),
+      { mode: "bypassPermissions" },
+    ),
   };
 }

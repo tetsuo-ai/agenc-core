@@ -43,6 +43,8 @@ vi.mock("axios", () => {
 });
 
 import { AsyncQueue } from "../utils/async-queue.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {
   Session,
   type Event,
@@ -286,6 +288,9 @@ function mkSession(opts: {
     totalTokenUsage: 0,
   };
   const services: SessionServices = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     admissionRequired: false,
     runtimeOptions: resolveAgentRuntimeOptions({}),
     configStore: createTestConfigStore({

@@ -53,6 +53,8 @@ vi.mock("../memory/session/sessionMemory.js", () => ({
 }));
 
 import { AsyncQueue } from "../utils/async-queue.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { runTurn } from "./run-turn.js";
 import {
   Session,
@@ -279,6 +281,9 @@ function mkSession(opts: { provider: LLMProvider; registry: ToolRegistry }): {
     totalTokenUsage: 0,
   };
   const services: SessionServices = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     admissionRequired: false,
     runtimeOptions: resolveAgentRuntimeOptions({}),
     configStore: createTestConfigStore({

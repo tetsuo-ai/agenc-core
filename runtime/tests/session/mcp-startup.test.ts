@@ -1989,6 +1989,165 @@ describe("mcp-startup session-owned manager helpers", () => {
     }
   });
 
+  it("does not satisfy a joined refresh handshake with an older authority generation", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.before]", 'command = "before"'],
+    });
+    const oldApplyStarted = deferred();
+    const emitOldDeferral = deferred();
+    const oldDeferralEmitted = deferred();
+    const releaseOldApply = deferred();
+    const newDeferralEmitted = deferred();
+    const releaseNewApply = deferred();
+    const harness = createTransactionalManager(
+      async (_configs, opts, call) => {
+        if (call === 1) {
+          oldApplyStarted.resolve();
+          await emitOldDeferral.promise;
+          opts.onSandboxRefreshDeferred?.();
+          oldDeferralEmitted.resolve();
+          await releaseOldApply.promise;
+        }
+        if (call === 2) {
+          opts.onSandboxRefreshDeferred?.();
+          newDeferralEmitted.resolve();
+          await releaseNewApply.promise;
+        }
+      },
+    );
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    const joinedHandshake = vi.fn();
+    try {
+      await service.refreshFromAuthority?.();
+      const oldRefresh = service.refreshFromAuthority?.();
+      await oldApplyStarted.promise;
+
+      writeCanonicalFixtureConfig(fixture.userConfigPath, [
+        "[mcp_servers.after]",
+        'command = "after"',
+      ]);
+      await fixture.store.reload();
+      const joinedRefresh = service.refreshFromAuthority?.({
+        onSandboxRefreshDeferred: joinedHandshake,
+      });
+
+      emitOldDeferral.resolve();
+      await oldDeferralEmitted.promise;
+      expect(joinedHandshake).not.toHaveBeenCalled();
+
+      releaseOldApply.resolve();
+      await newDeferralEmitted.promise;
+      expect(joinedHandshake).toHaveBeenCalledOnce();
+
+      releaseNewApply.resolve();
+      await expect(Promise.all([oldRefresh, joinedRefresh])).resolves.toEqual([
+        {
+          configuredServers: ["after"],
+          requiredServers: [],
+        },
+        {
+          configuredServers: ["after"],
+          requiredServers: [],
+        },
+      ]);
+      expect(harness.configured.map((config) => config.name)).toEqual([
+        "after",
+      ]);
+    } finally {
+      emitOldDeferral.resolve();
+      releaseOldApply.resolve();
+      releaseNewApply.resolve();
+      await service.dispose?.();
+      fixture.cleanup();
+    }
+  });
+
+  it("removes refresh-deferral observers after failure, success, and disposal", async () => {
+    const fixture = await createMcpAuthorityFixture({
+      user: ["[mcp_servers.only]", 'command = "only"'],
+    });
+    const failureStarted = deferred();
+    const releaseFailure = deferred();
+    const disposeStarted = deferred();
+    const releaseDispose = deferred();
+    let emitFailedDeferral: (() => void) | undefined;
+    let emitDisposedDeferral: (() => void) | undefined;
+    const harness = createTransactionalManager(
+      async (_configs, opts, call) => {
+        if (call === 1) {
+          emitFailedDeferral = opts.onSandboxRefreshDeferred;
+          failureStarted.resolve();
+          await releaseFailure.promise;
+          throw new Error("injected refresh failure before deferral");
+        }
+        if (call === 2) {
+          opts.onSandboxRefreshDeferred?.();
+        }
+        if (call === 3) {
+          emitDisposedDeferral = opts.onSandboxRefreshDeferred;
+          disposeStarted.resolve();
+          await releaseDispose.promise;
+        }
+      },
+    );
+    const service = createSessionMcpService(harness.manager, {
+      authority: fixture.store,
+      environment: {},
+    });
+    const failedObserver = vi.fn();
+    const successfulObserver = vi.fn();
+    const disposedObserver = vi.fn();
+    try {
+      await service.refreshFromAuthority?.();
+
+      const failedRefresh = service.refreshFromAuthority?.({
+        onSandboxRefreshDeferred: failedObserver,
+      });
+      const failedExpectation = expect(failedRefresh).rejects.toThrow(
+        /session was fail-closed/u,
+      );
+      await failureStarted.promise;
+      releaseFailure.resolve();
+      await failedExpectation;
+      emitFailedDeferral?.();
+      expect(failedObserver).not.toHaveBeenCalled();
+
+      await expect(
+        service.refreshFromAuthority?.({
+          onSandboxRefreshDeferred: successfulObserver,
+        }),
+      ).resolves.toEqual({
+        configuredServers: ["only"],
+        requiredServers: [],
+      });
+      expect(successfulObserver).toHaveBeenCalledOnce();
+      expect(failedObserver).not.toHaveBeenCalled();
+
+      const disposedRefresh = service.refreshFromAuthority?.({
+        onSandboxRefreshDeferred: disposedObserver,
+      });
+      const disposedExpectation = expect(disposedRefresh).rejects.toThrow(
+        /disposed|closed/u,
+      );
+      await disposeStarted.promise;
+      const disposal = service.dispose?.();
+      releaseDispose.resolve();
+      await disposedExpectation;
+      await disposal;
+      emitDisposedDeferral?.();
+      expect(disposedObserver).not.toHaveBeenCalled();
+      expect(successfulObserver).toHaveBeenCalledOnce();
+    } finally {
+      releaseFailure.resolve();
+      releaseDispose.resolve();
+      await service.dispose?.();
+      fixture.cleanup();
+    }
+  });
+
   it("cancels slow plugin discovery and revokes stale connections on reload", async () => {
     const fixture = await createMcpAuthorityFixture({
       user: ["[mcp_servers.stale]", 'command = "stale"'],

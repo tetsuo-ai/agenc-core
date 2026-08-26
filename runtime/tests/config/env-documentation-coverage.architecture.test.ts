@@ -13,6 +13,11 @@ import { RETIRED_AGENT_RUNTIME_ENV_REPLACEMENTS } from "../../src/session/runtim
 
 const RUNTIME_SOURCE = resolve(import.meta.dirname, "../../src");
 const ENV_REFERENCE = resolve(import.meta.dirname, "../../../docs/reference/env.md");
+const NON_ENV_RUNTIME_NAMES = new Set([
+  // Error code attached to authority-lock release diagnostics, not an
+  // environment variable read by the runtime.
+  "AGENC_CONFIG_AUTHORITY_RELEASE",
+]);
 
 function sourceFiles(directory: string): string[] {
   return readdirSync(directory).flatMap((entry) => {
@@ -99,6 +104,7 @@ describe("environment reference coverage", () => {
   test("documents every production env name consumed by runtime authorities", () => {
     const reference = readFileSync(ENV_REFERENCE, "utf8");
     const missing = [...runtimeEnvironmentNames()]
+      .filter((name) => !NON_ENV_RUNTIME_NAMES.has(name))
       .filter((name) => !reference.includes(`\`${name}\``))
       .sort();
 

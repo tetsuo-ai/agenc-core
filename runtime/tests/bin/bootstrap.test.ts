@@ -1,8 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   mkdir,
+  lstat,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -40,6 +42,7 @@ import { getCurrentRuntimeSession } from "./_deps/current-session.js";
 import {
   isSandboxExecutionBrokerDisposed,
   registerSandboxExecutionLifecycleParticipant,
+  transitionSandboxExecutionBroker,
 } from "../sandbox/execution-lifecycle.js";
 import {
   adaptTranscriptEvents,
@@ -354,6 +357,103 @@ describe("bootstrapLocalRuntimeSession", () => {
   afterEach(() => {
     vi.restoreAllMocks();
     _resetAgentRolesForTesting();
+  });
+
+  it("resolves mode, trust, and reloaded-config authority from the live broker cwd after rebase", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-authority-home-"));
+    const workspace = await mkdtemp(
+      join(tmpdir(), "agenc-bootstrap-authority-ws-"),
+    );
+    const rebasedWorkspace = await mkdtemp(
+      join(tmpdir(), "agenc-bootstrap-authority-rebased-"),
+    );
+    trustWorkspaceForTest(home, workspace);
+    await writeFile(
+      join(home, "config.toml"),
+      'config_version = 2\napproval_policy = "never"\n',
+      { mode: 0o600 },
+    );
+
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        cwd: workspace,
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          HOME: home,
+        },
+      });
+      shutdown = boot.shutdown;
+      const broker = boot.session.services.sandboxExecutionBroker;
+      if (broker === undefined) {
+        throw new Error("bootstrap did not install its root sandbox broker");
+      }
+      expect(boot.configuredExecutionAuthority.approvalPolicy.value).toBe(
+        "never",
+      );
+
+      await transitionSandboxExecutionBroker(broker, rebasedWorkspace);
+
+      expect(boot.configuredExecutionAuthority.approvalPolicy.value).toBe(
+        "untrusted",
+      );
+      expect(
+        boot.configuredExecutionAuthority.fileSystemSandboxPolicy.allowWrite,
+      ).toEqual([rebasedWorkspace]);
+
+      const prepared = boot.prepareConfiguredExecutionAuthority({
+        ...boot.configStore.current(),
+        sandbox_mode: "workspace-write",
+        sandbox: {
+          ...boot.configStore.current().sandbox,
+          filesystem: {
+            allowWrite: ["./relative-grant"],
+          },
+        },
+      });
+      expect(prepared.authority.fileSystemSandboxPolicy.allowWrite).toEqual([
+        rebasedWorkspace,
+        join(rebasedWorkspace, "relative-grant"),
+      ]);
+      expect(prepared.authority.approvalPolicy.value).toBe("untrusted");
+
+      prepared.commit();
+      expect(
+        boot.configuredExecutionAuthority.fileSystemSandboxPolicy.allowWrite,
+      ).toEqual([
+        rebasedWorkspace,
+        join(rebasedWorkspace, "relative-grant"),
+      ]);
+      prepared.rollback();
+      expect(
+        boot.configuredExecutionAuthority.fileSystemSandboxPolicy.allowWrite,
+      ).toEqual([rebasedWorkspace]);
+    } finally {
+      await shutdown?.().catch(() => {});
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+      await rm(rebasedWorkspace, { recursive: true, force: true });
+    }
   });
 
   it("keeps a workspace programmatic role in bootstrap and model-facing catalogs", async () => {
@@ -2203,6 +2303,8 @@ describe("bootstrapLocalRuntimeSession", () => {
   it("lazily reads vault-only Gemini BYOK on the first Ollama to Gemini switch", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const fetchImpl = offlineFetchFixture();
+    vi.spyOn(globalThis, "fetch").mockImplementation(fetchImpl);
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
     const readByokSpy = vi
       .spyOn(LocalAuthBackend.prototype, "readByokKey")
@@ -2221,7 +2323,7 @@ describe("bootstrapLocalRuntimeSession", () => {
           HOME: home,
           SHELL: "/bin/sh",
         },
-        fetchImpl: offlineFetchFixture(),
+        fetchImpl,
         argv: ["node", "agenc"],
       });
       shutdown = boot.shutdown;
@@ -3253,15 +3355,86 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(boot.session.permissionModeRegistry.current().mode).toBe(
         "acceptEdits",
       );
-      expect(
-        boot.session.sessionConfiguration.permissionContext?.mode,
-      ).toBe("acceptEdits");
+      expect("permissionContext" in boot.session.sessionConfiguration).toBe(
+        false,
+      );
       expect(boot.config.durableTurns).toEqual({
         checkpoint: { enabled: false, minIntervalMs: 250 },
         resume: { onRestart: false, requireLease: true, buildPinning: true },
       });
       expect(boot.ctx.config.durableTurns).toEqual(boot.config.durableTurns);
     } finally {
+      await shutdown?.().catch(() => {
+        /* best effort */
+      });
+      await rm(home, { recursive: true, force: true });
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves canonical auto disablement when the classifier gate is open", async () => {
+    const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    const permissionSettings = await import("../permissions/settings.js");
+    const { createEmptyToolPermissionContext } = await import(
+      "../permissions/types.js"
+    );
+    const classifier = await import("../permissions/classifier.js");
+    const restoreGate = classifier.__setAutoModeGateResolverForTesting(
+      () => true,
+    );
+    vi.spyOn(
+      permissionSettings,
+      "initializeToolPermissionContext",
+    ).mockResolvedValue({
+      toolPermissionContext: createEmptyToolPermissionContext({
+        mode: "default",
+        isAutoModeAvailable: false,
+      }),
+      warnings: ["Auto mode was disabled by configuration"],
+    });
+    const providerMod = await import("../llm/provider.js");
+    vi.spyOn(providerMod, "createProvider").mockImplementation(
+      () =>
+        ({
+          name: "stub",
+          chat: async () => ({
+            content: "ok",
+            toolCalls: [],
+            usage: {
+              promptTokens: 1,
+              completionTokens: 1,
+              totalTokens: 2,
+            },
+          }),
+        }) as never,
+    );
+    vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
+
+    let shutdown: (() => Promise<void>) | null = null;
+    try {
+      const boot = await bootstrapLocalRuntimeSession({
+        apiKey: "test-key",
+        fetchImpl: offlineFetchFixture(),
+        env: {
+          ...process.env,
+          AGENC_HOME: home,
+          AGENC_WORKSPACE: workspace,
+          HOME: home,
+          XAI_API_KEY: "classifier-live",
+        },
+      });
+      shutdown = boot.shutdown;
+
+      expect(
+        boot.session.permissionModeRegistry.current().isAutoModeAvailable,
+      ).toBe(false);
+      expect(boot.session.permissionModeRegistry.current().mode).toBe("default");
+      expect("permissionContext" in boot.initialState.sessionConfiguration).toBe(
+        false,
+      );
+    } finally {
+      restoreGate();
       await shutdown?.().catch(() => {
         /* best effort */
       });
@@ -3739,6 +3912,10 @@ required = true
         boot.session.permissionModeRegistry.current()
           .isBypassPermissionsModeAvailable,
       ).toBe(true);
+      expect(
+        boot.session.permissionModeRegistry.current()
+          .bypassPermissionsAcceptedIn,
+      ).toEqual([await realpath(workspace)]);
       expect(boot.initialState.sessionConfiguration.approvalPolicy.value).toBe(
         "never",
       );
@@ -3753,6 +3930,107 @@ required = true
       await rm(workspace, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    { persisted: false, expectedMode: "default" as const },
+    { persisted: true, expectedMode: "bypassPermissions" as const },
+  ])(
+    "starts a configured default bypass mode only with exact persisted cwd consent ($persisted)",
+    async ({ persisted, expectedMode }) => {
+      const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
+      const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+      const canonicalWorkspace = await realpath(workspace);
+      const workspaceIdentity = await lstat(canonicalWorkspace, {
+        bigint: true,
+      });
+      await writeFile(
+        join(home, "config.toml"),
+        [
+          "config_version = 2",
+          "",
+          "[permissions]",
+          'defaultMode = "bypassPermissions"',
+          'bypassPermissionsMode = "allow"',
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      trustWorkspaceForTest(home, workspace);
+      if (persisted) {
+        await writeFile(
+          join(home, "state.json"),
+          `${JSON.stringify({
+            state_version: 1,
+            state: {
+              global: {
+                permissions: {
+                  bypassPermissionsAcceptedByCwd: {
+                    [canonicalWorkspace]: {
+                      version: 1,
+                      canonicalCwd: canonicalWorkspace,
+                      dev: workspaceIdentity.dev.toString(10),
+                      ino: workspaceIdentity.ino.toString(10),
+                    },
+                  },
+                },
+              },
+            },
+          })}\n`,
+          { encoding: "utf8", mode: 0o600 },
+        );
+      }
+
+      const providerMod = await import("../llm/provider.js");
+      vi.spyOn(providerMod, "createProvider").mockImplementation(
+        () =>
+          ({
+            name: "stub",
+            chat: async () => ({
+              content: "ok",
+              toolCalls: [],
+              usage: {
+                promptTokens: 1,
+                completionTokens: 1,
+                totalTokens: 2,
+              },
+            }),
+          }) as never,
+      );
+      vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(
+        undefined,
+      );
+
+      const previousNodeEnv = process.env.NODE_ENV;
+      process.env.NODE_ENV = "production";
+      let shutdown: (() => Promise<void>) | null = null;
+      try {
+        const boot = await bootstrapLocalRuntimeSession({
+          apiKey: "test-key",
+          env: {
+            ...process.env,
+            AGENC_HOME: home,
+            AGENC_WORKSPACE: workspace,
+            HOME: home,
+          },
+        });
+        shutdown = boot.shutdown;
+
+        const permissions = boot.session.permissionModeRegistry.current();
+        expect(permissions.mode).toBe(expectedMode);
+        expect(permissions.bypassPermissionsAcceptedIn ?? []).toEqual(
+          persisted ? [canonicalWorkspace] : [],
+        );
+      } finally {
+        if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = previousNodeEnv;
+        await shutdown?.().catch(() => {
+          /* best effort */
+        });
+        await rm(home, { recursive: true, force: true });
+        await rm(workspace, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("keeps untrusted project config from relaxing bootstrap permissions", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));

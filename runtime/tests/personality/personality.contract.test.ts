@@ -60,6 +60,8 @@ import type {
   StreamProgressCallback,
 } from "../llm/types.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { AsyncQueue } from "../utils/async-queue.js";
 import { bootstrapLocalRuntimeSession } from "../bin/bootstrap.js";
 import {
@@ -306,6 +308,9 @@ function mkSession(provider: LLMProvider): {
     totalTokenUsage: 0,
   };
   const services: SessionServices = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     admissionRequired: false,
     configStore: createTestConfigStore({ cwd: "/tmp" }),
     runtimeOptions: resolveAgentRuntimeOptions({}),

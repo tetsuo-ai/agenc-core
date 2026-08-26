@@ -40,6 +40,8 @@ vi.mock("axios", () => {
 });
 
 import { AsyncQueue } from "../utils/async-queue.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { createTestConfigStore } from "../fixtures.js";
 import {
   Session,
@@ -234,6 +236,9 @@ function mkSession(opts: {
     totalTokenUsage: 0,
   };
   const services: SessionServices = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     admissionRequired: false,
     runtimeOptions: resolveAgentRuntimeOptions({}),
     configStore: createTestConfigStore(),
@@ -533,6 +538,9 @@ describe("runTurnKernel — guardian circuit breaker wiring", () => {
       totalTokenUsage: 0,
     };
     const services: SessionServices = {
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext(),
+      ),
       admissionRequired: false,
       runtimeOptions: resolveAgentRuntimeOptions({}),
       configStore: createTestConfigStore(),

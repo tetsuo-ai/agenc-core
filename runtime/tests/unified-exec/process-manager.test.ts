@@ -872,6 +872,129 @@ describe("UnifiedExecProcessManager", () => {
       code: "unknown_process",
     } satisfies Partial<UnifiedExecError>);
   }, 10_000);
+
+  test("rejects a precomputed sandbox command if quiesce starts while PTY loading is deferred", async () => {
+    const permissionProfile = permissionProfileFromRuntimePermissions(
+      restrictedFileSystemPolicy(),
+      "enabled",
+    );
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sandboxManager: ptyCompatibleSandboxManager(),
+    });
+    let announceLoad!: () => void;
+    const loadEntered = new Promise<void>((resolvePromise) => {
+      announceLoad = resolvePromise;
+    });
+    let releaseLoad!: () => void;
+    const loadGate = new Promise<void>((resolvePromise) => {
+      releaseLoad = resolvePromise;
+    });
+    const spawn = vi.fn();
+    (
+      manager as unknown as {
+        loadPty: () => Promise<{
+          spawn: typeof spawn;
+        }>;
+      }
+    ).loadPty = async () => {
+      announceLoad();
+      await loadGate;
+      return { spawn };
+    };
+
+    const execution = manager.execCommand({
+      cmd: "bash -i",
+      tty: true,
+      yield_time_ms: 250,
+      runtimeSandbox: {
+        permissionProfile,
+        sandboxPolicyCwd: process.cwd(),
+        preference: "require",
+      },
+    });
+    void execution.catch(() => undefined);
+    await loadEntered;
+
+    const token = manager.beginSandboxAuthorityQuiesce();
+    await manager.finishSandboxAuthorityQuiesce(token);
+    releaseLoad();
+
+    await expect(execution).rejects.toThrow(
+      /quiesced while sandbox runtime authority changes/u,
+    );
+    expect(spawn).not.toHaveBeenCalled();
+    manager.resumeSandboxAuthorityAfterQuiesce(token);
+  });
+
+  test("retains an uncooperative process and permanently closes admission when strict quiesce cannot prove exit", async () => {
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sandboxAuthorityQuiesceTimeoutMs: 20,
+    });
+    let exitListener:
+      | ((event: { readonly exitCode: number; readonly signal?: string }) => void)
+      | undefined;
+    (
+      manager as unknown as {
+        loadPty: () => Promise<{
+          spawn: () => {
+            readonly pid: number;
+            write(data: string): void;
+            resize(columns: number, rows: number): void;
+            kill(signal?: string): void;
+            onData(listener: (data: string) => void): { dispose(): void };
+            onExit(
+              listener: (event: {
+                readonly exitCode: number;
+                readonly signal?: string;
+              }) => void,
+            ): { dispose(): void };
+          };
+        }>;
+      }
+    ).loadPty = async () => ({
+      spawn: () => ({
+        pid: 0,
+        write: vi.fn(),
+        resize: vi.fn(),
+        kill: vi.fn(),
+        onData: () => ({ dispose: vi.fn() }),
+        onExit: (listener) => {
+          exitListener = listener;
+          return { dispose: vi.fn() };
+        },
+      }),
+    });
+
+    const started = await manager.execCommand({
+      cmd: "bash -i",
+      tty: true,
+      yield_time_ms: 250,
+    });
+    expect(started.process_id).toEqual(expect.any(Number));
+    const token = manager.beginSandboxAuthorityQuiesce();
+
+    await expect(
+      manager.finishSandboxAuthorityQuiesce(token),
+    ).rejects.toThrow(/could not prove process-tree cleanup/u);
+    expect(
+      (
+        manager as unknown as {
+          processes: Map<number, unknown>;
+        }
+      ).processes.size,
+    ).toBe(1);
+    await expect(
+      manager.execCommand({ cmd: "printf should-not-run" }),
+    ).rejects.toThrow(/permanently closed/u);
+    expect(() =>
+      manager.resumeSandboxAuthorityAfterQuiesce(token),
+    ).toThrow();
+
+    exitListener?.({ exitCode: 137, signal: "SIGKILL" });
+    await manager.closeAll("test_cleanup");
+  });
 });
 
 describe("background-shell trio (task 8)", () => {

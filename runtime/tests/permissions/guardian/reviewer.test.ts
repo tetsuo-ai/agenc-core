@@ -13,7 +13,10 @@ import {
   GUARDIAN_PREFERRED_MODEL,
   parseGuardianAssessment,
 } from "./reviewer.js";
+import { PermissionModeRegistry } from "../permission-mode.js";
+import { createEmptyToolPermissionContext } from "../types.js";
 import { ReviewManager } from "../../session/review.js";
+import { createTestConfigStore } from "../../fixtures.js";
 import {
   Session,
   type Event,
@@ -174,6 +177,10 @@ function mkSession(opts: {
       cancel: () => {},
       isCancelled: () => false,
     },
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
+    configStore: createTestConfigStore({ cwd: "/tmp" }),
     provider: opts.provider,
     registry: {
       tools: [],

@@ -6,7 +6,6 @@ import {
   consumeExitPlanModeApproval,
   parseExitPlanAllowedPrompts,
   recordExitPlanModeApproval,
-  targetPermissionModeForPlanApproval,
 } from "../../src/planning/exit-plan-approval.js";
 
 describe("exit plan approval helpers", () => {
@@ -47,15 +46,6 @@ describe("exit plan approval helpers", () => {
     expect(buildPlanPromptPermissionUpdates([])).toEqual([]);
   });
 
-  test("maps approval mode requests back to permission modes", () => {
-    expect(targetPermissionModeForPlanApproval("acceptEdits", "plan")).toBe("acceptEdits");
-    expect(targetPermissionModeForPlanApproval("bypassPermissions", "plan")).toBe("bypassPermissions");
-    expect(targetPermissionModeForPlanApproval("auto", "plan")).toBe("auto");
-    expect(targetPermissionModeForPlanApproval("default", "acceptEdits")).toBe("acceptEdits");
-    expect(targetPermissionModeForPlanApproval(undefined, "plan")).toBe("default");
-    expect(targetPermissionModeForPlanApproval(undefined, undefined)).toBe("default");
-  });
-
   test("records, consumes, and clears approvals by call id", () => {
     const approval = { action: "approve" as const, plan: "ship it" };
 
@@ -89,11 +79,6 @@ describe("exit plan approval helpers", () => {
     });
     // Consumed: a second consume returns null (the record is deleted on take).
     expect(consumeExitPlanModeApproval({ __callId: callId })).toBeNull();
-
-    // acceptEdits maps to the acceptEdits permission mode regardless of prePlan.
-    expect(targetPermissionModeForPlanApproval("acceptEdits", "default")).toBe(
-      "acceptEdits",
-    );
 
     // The revise mapping round-trips unchanged so execute() stays in plan mode.
     recordExitPlanModeApproval("call-revise", {

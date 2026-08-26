@@ -820,6 +820,27 @@ autostart = false
       attachAgentSessionEvents: async (_agentId, binding) => {
         sessionBinding = binding;
       },
+      getAgentSnapshot: async () => ({
+        status: "running",
+        lastActiveAt: "2026-05-01T12:00:00.500Z",
+        runtimeSettings: {
+          permissionMode: "default",
+          prePlanMode: null,
+          autoModeActive: false,
+          autoModeAvailable: true,
+          bypassPermissionsModeAvailable: false,
+          bypassPermissionsWorkspace: null,
+          bypassPermissionsConsentWorkspace: null,
+          model: "grok-4.5",
+          provider: "grok",
+          profile: null,
+          reasoningEffort: null,
+          modelVerbosity: null,
+          serviceTier: null,
+          hooksDisabled: false,
+        },
+        runtimeSettingsEventId: "settings:agent_socket:initial",
+      }),
       submitAgentMessage: async (_agentId, params) => {
         submitted.push(params);
         await sessionBinding?.emit({
@@ -1364,6 +1385,36 @@ autostart = false
             },
           },
         });
+        await context.send({
+          jsonrpc: "2.0",
+          method: "event.session_event",
+          sessionId: "session_buffered",
+          params: {
+            sessionId: "session_buffered",
+            eventId: "settings-successor",
+            event: {
+              id: "settings-successor",
+              type: "run_runtime_settings_changed",
+              payload: {
+                previousSettingsEventId: "settings-baseline",
+                permissionMode: "default",
+                prePlanMode: null,
+                autoModeActive: false,
+                autoModeAvailable: true,
+                bypassPermissionsModeAvailable: false,
+                bypassPermissionsWorkspace: null,
+                bypassPermissionsConsentWorkspace: null,
+                model: "grok-4.5",
+                provider: "grok",
+                profile: null,
+                reasoningEffort: null,
+                modelVerbosity: null,
+                serviceTier: null,
+                hooksDisabled: false,
+              },
+            },
+          },
+        });
         for (let index = 0; index < 1005; index += 1) {
           await context.send({
             jsonrpc: "2.0",
@@ -1402,6 +1453,79 @@ autostart = false
       expect(
         replayed.some((event) => event.method === "event.message_chunk"),
       ).toBe(true);
+      expect(replayed).toContainEqual(
+        expect.objectContaining({
+          method: "event.session_event",
+          params: expect.objectContaining({
+            event: expect.objectContaining({
+              type: "run_runtime_settings_changed",
+            }),
+          }),
+        }),
+      );
+    } finally {
+      await client.close();
+      await server.close();
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when the bounded session map evicts pre-subscribe authority", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-agent-session-map-cap-"));
+    const socketPath = join(dir, "daemon.sock");
+    const server = new AgenCUnixSocketServer({
+      socketPath,
+      onMessage: async (message, context) => {
+        if (message.method !== "initialize") return;
+        await context.send({
+          jsonrpc: "2.0",
+          id: message.id,
+          result: {
+            type: "initialized",
+            protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+            capabilities: {},
+          },
+        });
+        for (let index = 0; index < 51; index += 1) {
+          await context.send({
+            jsonrpc: "2.0",
+            method: "event.session_event",
+            params: {
+              sessionId: `session-${index}`,
+              event: {
+                id: `delta-${index}`,
+                type: "agent_message_delta",
+                payload: { delta: String(index) },
+              },
+            },
+          });
+        }
+      },
+    });
+
+    await server.listen();
+    const client = await createConnectedAgenCJsonLineDaemonTuiClient({
+      socketPath,
+      authCookie: "session-map-cap-cookie",
+    });
+    try {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const replayed: JsonObject[] = [];
+      const unsubscribe = client.subscribeToSessionEvents(
+        "session-0",
+        (event) => replayed.push(event),
+      );
+      unsubscribe();
+      expect(replayed[0]).toMatchObject({
+        method: "event.session_event",
+        params: {
+          sessionId: "session-0",
+          event: {
+            type: "runtime_settings_authority_gap",
+            payload: { reason: "session_map_limit" },
+          },
+        },
+      });
     } finally {
       await client.close();
       await server.close();

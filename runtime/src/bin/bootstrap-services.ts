@@ -4,7 +4,16 @@ import type { LLMProvider } from "../llm/types.js";
 import { readProviderFactoryOptions } from "../llm/provider.js";
 import type { ReviewDecision } from "../permissions/review-decision.js";
 import { createPermissionAuditFileLogger } from "../permissions/permission-audit-log.js";
-import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import {
+  PermissionModeRegistry,
+  removeOverlyBroadShellAllowRules,
+  type PendingPermissionAuthorityPublication,
+} from "../permissions/permission-mode.js";
+import {
+  applyPermissionRulesSnapshot,
+  readPermissionRulesSnapshot,
+  type PermissionRulesSnapshot,
+} from "../permissions/settings.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
 import { NetworkApprovalService as RuntimeNetworkApprovalService } from "../permissions/network-approval.js";
 import {
@@ -105,6 +114,8 @@ import {
   type ReadSavedProviderApiKey,
 } from "../session/provider-service.js";
 import { snapshotProviderEnvironment } from "../llm/provider-options.js";
+import { logForDebugging } from "../utils/debug.js";
+import { errorMessage } from "../utils/errors.js";
 
 export { bindExecutionAdmissionJournal } from "../session/execution-admission-journal.js";
 
@@ -729,13 +740,64 @@ export function buildBootstrapSessionServices(
         sandboxExecutionBroker: opts.sandboxExecutionBroker,
       }),
   };
-  const unsubscribeHooksConfig = opts.configStore.subscribe((cfg) => {
-    loadHooks();
-    loadBootstrapLspServersInBackground(cfg, {
-      workspaceRoot: opts.workspaceRoot,
-      sandboxExecutionBroker: opts.sandboxExecutionBroker,
+  let permissionReloadDisposed = false;
+  let permissionReloadTail: Promise<void> = Promise.resolve();
+  const queuePermissionReload = (
+    authorityPublication: PendingPermissionAuthorityPublication,
+    snapshot: PermissionRulesSnapshot,
+  ): void => {
+    const publication = permissionReloadTail.then(async () => {
+      if (permissionReloadDisposed) return;
+      await authorityPublication.publish((current) => {
+        let next = applyPermissionRulesSnapshot(current, snapshot);
+        if (
+          opts.env.USER_TYPE === "ant" &&
+          opts.env.AGENC_ENTRYPOINT !== "local-agent"
+        ) {
+          next = removeOverlyBroadShellAllowRules(next);
+        }
+        return {
+          next,
+          result: () => undefined,
+        };
+      });
     });
-  });
+    permissionReloadTail = publication.catch((error) => {
+      logForDebugging(
+        `Failed to publish reloaded permission policy: ${errorMessage(error)}`,
+        { level: "error" },
+      );
+    });
+  };
+  const unsubscribeHooksConfig = opts.configStore.subscribe(
+    (cfg, publication) => {
+      if (
+        publication?.permissionAuthority !==
+        "coordinated_by_permission_mode_registry"
+      ) {
+        const authorityPublication =
+          opts.permissionModeRegistry.beginExternalAuthorityPublication();
+        try {
+          queuePermissionReload(
+            authorityPublication,
+            readPermissionRulesSnapshot(opts.configStore),
+          );
+        } catch (error) {
+          // The synchronous registry fence deliberately remains closed. Logging
+          // the capture failure must never restore the older permission context.
+          logForDebugging(
+            `Failed to capture reloaded permission policy: ${errorMessage(error)}`,
+            { level: "error" },
+          );
+        }
+      }
+      loadHooks();
+      loadBootstrapLspServersInBackground(cfg, {
+        workspaceRoot: opts.workspaceRoot,
+        sandboxExecutionBroker: opts.sandboxExecutionBroker,
+      });
+    }
+  );
   let unsubscribeExecutionAdmission: (() => void) | undefined;
   const providerEnvironment = snapshotProviderEnvironment(opts.env);
   const providerService = new SessionProviderService({
@@ -902,7 +964,9 @@ export function buildBootstrapSessionServices(
     shutdown: async () => {
       unsubscribeExecutionAdmission?.();
       unsubscribeExecutionAdmission = undefined;
+      permissionReloadDisposed = true;
       unsubscribeHooksConfig();
+      await permissionReloadTail;
       await skillsServices.skillsWatcher.stop?.();
       await shutdownBootstrapLspServers(opts.sandboxExecutionBroker);
       hooksService.clearConfiguredLifecycleHooks();

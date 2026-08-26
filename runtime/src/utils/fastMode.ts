@@ -229,10 +229,6 @@ export function getInitialFastModeSettingForContext(
     return false
   }
   const settings = getExecutionAuthoritySettings()
-  // If per-session opt-in is required, fast mode starts off each session
-  if (settings.fastModePerSessionOptIn) {
-    return false
-  }
   return settings.fastMode === true
 }
 

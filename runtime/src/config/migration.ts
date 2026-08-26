@@ -12,7 +12,10 @@ import {
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 
-import { findProjectRootSync } from "../session/session-store.js";
+import {
+  findProjectRootSync,
+  resolveCanonicalSessionCwd,
+} from "../session/session-store.js";
 import { parseRuleString } from "../permissions/rules.js";
 import {
   bindingCommandError,
@@ -40,16 +43,15 @@ import {
   windowsSecureStorageTargetIdentity,
 } from "../utils/secureStorage/migrationIdentity.js";
 import { migrateRetiredProviderSelector } from "../provider-identity.js";
-import {
-  classifyRetiredField,
-  type RetiredConfigSurface,
-} from "./retired-field-manifest.js";
+import { classifyRetiredField } from "./retired-field-manifest.js";
 import {
   resolveMigrationHomeContext,
   type HomeContext,
   type HomeEnvironment,
 } from "./home.js";
-import { acquireConfigAuthorityLocks } from "./authority-lock.js";
+import {
+  runWithConfigAuthorityLocks,
+} from "./authority-lock.js";
 import { firstPlaintextCredentialPath } from "./credential-classification.js";
 import {
   cloneJsonValue,
@@ -66,6 +68,7 @@ import {
 } from "./openai-credential-migration.js";
 import { parseToml } from "./loader.js";
 import { retiredProjectMcpJsonCandidates } from "./retired-input-preflight.js";
+import { logForDebugging } from "../utils/debug.js";
 import { serializeConfigToml } from "./serialize.js";
 import { findConfigSourceCollisions } from "./source-identity.js";
 import {
@@ -82,7 +85,9 @@ import {
   validateStrictConfigDocument,
 } from "./repository.js";
 import {
+  CANONICAL_STATE_FILE_MODE,
   createCanonicalStateDocument,
+  parseCanonicalStateJsonStructure,
   RETIRED_PROJECT_STATE_FIELDS,
   serializeCanonicalState,
   validateCanonicalStateDocument,
@@ -199,6 +204,7 @@ export interface AppliedConfigV2Migration {
   readonly writes: number;
   readonly archives: number;
   readonly credentialSourcesSanitized: number;
+  readonly postPublicationErrors: readonly Error[];
 }
 
 export interface RolledBackConfigV2Migration {
@@ -206,6 +212,7 @@ export interface RolledBackConfigV2Migration {
   readonly journalPath: string;
   readonly restored: number;
   readonly credentialsPreserved: boolean;
+  readonly postPublicationErrors: readonly Error[];
 }
 
 interface ScopeAccumulator {
@@ -322,6 +329,27 @@ export class ConfigMigrationError extends Error {
   constructor(message: string, conflicts?: readonly ConfigMigrationConflict[]) {
     super(message);
     this.conflicts = conflicts;
+  }
+}
+
+function reportMigrationAuthorityReleaseErrors(
+  operation: string,
+  errors: readonly Error[],
+): void {
+  if (errors.length === 0) return;
+  try {
+    const details = errors
+      .map((error) => {
+        const code = (error as NodeJS.ErrnoException).code;
+        return code === undefined ? error.message : `${code}: ${error.message}`;
+      })
+      .join("; ");
+    logForDebugging(
+      `${operation} completed, but configuration authority lock release failed (${details})`,
+      { level: "warn" },
+    );
+  } catch {
+    // A diagnostic sink cannot change a completed migration operation.
   }
 }
 
@@ -3192,17 +3220,195 @@ function mapSettingsConfigValue(
 
 function stateBucket(
   state: JsonRecord,
-  surface: RetiredConfigSurface,
-  _scope: ConfigMigrationScope,
 ): JsonRecord {
   const global = isPlainRecord(state.global)
     ? state.global
     : (state.global = {} as JsonRecord);
-  if (surface === "global-state") return global as JsonRecord;
-  const settings = isPlainRecord((global as JsonRecord).settings)
-    ? (global as JsonRecord).settings
-    : ((global as JsonRecord).settings = {} as JsonRecord);
-  return settings as JsonRecord;
+  return global as JsonRecord;
+}
+
+const RETIRED_BYPASS_CONSENT_FIELD = "bypassPermissionsModeAcceptedIn";
+const RETIRED_FAST_MODE_OPT_IN_FIELD = "fastModePerSessionOptIn";
+const BYPASS_CONSENT_STATE_TARGET =
+  "state.global.permissions.bypassPermissionsAcceptedByCwd";
+
+function migrateRetiredBypassConsent(
+  value: unknown,
+  state: JsonRecord,
+  context: {
+    readonly scope: ConfigMigrationScope;
+    readonly sourcePath: string;
+    readonly field: string;
+    readonly conflicts: ConfigMigrationConflict[];
+    readonly notices: ConfigMigrationNotice[];
+  },
+): void {
+  if (!Array.isArray(value)) {
+    pushConflict(
+      context.conflicts,
+      context.scope,
+      context.sourcePath,
+      "retired bypass consent must be a string array",
+      context.field,
+    );
+    return;
+  }
+
+  const acceptedByCwd: JsonRecord = {};
+  let valid = true;
+  for (const [index, rawCwd] of value.entries()) {
+    const indexedField = `${context.field}[${index}]`;
+    if (typeof rawCwd !== "string") {
+      pushConflict(
+        context.conflicts,
+        context.scope,
+        context.sourcePath,
+        "retired bypass consent cwd must be a string",
+        indexedField,
+      );
+      valid = false;
+      continue;
+    }
+    if (!isAbsolute(rawCwd) || resolve(rawCwd) !== rawCwd) {
+      pushConflict(
+        context.conflicts,
+        context.scope,
+        context.sourcePath,
+        "retired bypass consent cwd must be absolute and normalized",
+        indexedField,
+      );
+      valid = false;
+      continue;
+    }
+    const resolved = resolveCanonicalSessionCwd(rawCwd);
+    if (resolved.kind !== "ok") {
+      pushConflict(
+        context.conflicts,
+        context.scope,
+        context.sourcePath,
+        resolved.kind === "identity_unsupported"
+          ? "retired bypass consent cwd is on a filesystem without stable directory identity"
+          : "retired bypass consent cwd does not resolve to a stable existing directory",
+        indexedField,
+      );
+      valid = false;
+      continue;
+    }
+    acceptedByCwd[resolved.cwd] = {
+      version: 1,
+      canonicalCwd: resolved.cwd,
+      dev: resolved.dev.toString(10),
+      ino: resolved.ino.toString(10),
+    };
+  }
+
+  // One malformed entry invalidates the entire retired grant. Migration plans
+  // with conflicts never write, but keeping the in-memory transform atomic as
+  // well prevents a later caller from accidentally consuming a partial grant.
+  if (!valid) return;
+
+  if (Object.keys(acceptedByCwd).length > 0) {
+    mergeValue(
+      stateBucket(state),
+      "permissions",
+      { bypassPermissionsAcceptedByCwd: acceptedByCwd },
+      {
+        scope: context.scope,
+        sourcePath: context.sourcePath,
+        conflicts: context.conflicts,
+      },
+    );
+  }
+  context.notices.push(Object.freeze({
+    scope: context.scope,
+    sourcePath: context.sourcePath,
+    field: context.field,
+    action: "migrate",
+    target: BYPASS_CONSENT_STATE_TARGET,
+  }));
+}
+
+/**
+ * Explicit migration is the only reader allowed to repair the short-lived
+ * canonical state.settings namespace. Ordinary state loading stays strict.
+ */
+function parseCanonicalStateForMigration(
+  text: string,
+  path: string,
+  conflicts: ConfigMigrationConflict[],
+  notices: ConfigMigrationNotice[],
+): CanonicalStateDocument {
+  const parsed = parseCanonicalStateJsonStructure(text, path);
+  if (!isPlainRecord(parsed)) {
+    return validateCanonicalStateDocument(parsed, path);
+  }
+
+  const document = cloneRecord(parsed);
+  const rawState = document.state;
+  if (!isPlainRecord(rawState)) {
+    return validateCanonicalStateDocument(document, path);
+  }
+  const global = rawState.global;
+  if (!isPlainRecord(global) || !Object.hasOwn(global, "settings")) {
+    return validateCanonicalStateDocument(document, path);
+  }
+  const retiredSettings = global.settings;
+  if (!isPlainRecord(retiredSettings)) {
+    throw new ConfigMigrationError(
+      `${path}.state.global.settings must be an object before it can be migrated`,
+    );
+  }
+
+  const supportedFields = new Set([
+    RETIRED_FAST_MODE_OPT_IN_FIELD,
+    RETIRED_BYPASS_CONSENT_FIELD,
+  ]);
+  for (const field of Object.keys(retiredSettings)) {
+    if (supportedFields.has(field)) continue;
+    pushConflict(
+      conflicts,
+      "state",
+      path,
+      "retired canonical settings namespace contains an unsupported field",
+      `state.global.settings.${field}`,
+    );
+  }
+
+  if (Object.hasOwn(retiredSettings, RETIRED_FAST_MODE_OPT_IN_FIELD)) {
+    if (typeof retiredSettings[RETIRED_FAST_MODE_OPT_IN_FIELD] !== "boolean") {
+      pushConflict(
+        conflicts,
+        "state",
+        path,
+        "retired fast-mode per-session opt-in must be a boolean",
+        `state.global.settings.${RETIRED_FAST_MODE_OPT_IN_FIELD}`,
+      );
+    } else {
+      notices.push(Object.freeze({
+        scope: "state",
+        sourcePath: path,
+        field: `state.global.settings.${RETIRED_FAST_MODE_OPT_IN_FIELD}`,
+        action: "drop",
+      }));
+    }
+  }
+
+  if (Object.hasOwn(retiredSettings, RETIRED_BYPASS_CONSENT_FIELD)) {
+    migrateRetiredBypassConsent(
+      retiredSettings[RETIRED_BYPASS_CONSENT_FIELD],
+      rawState,
+      {
+        scope: "state",
+        sourcePath: path,
+        field: `state.global.settings.${RETIRED_BYPASS_CONSENT_FIELD}`,
+        conflicts,
+        notices,
+      },
+    );
+  }
+
+  delete global.settings;
+  return validateCanonicalStateDocument(document, path);
 }
 
 function consumeSettings(
@@ -3226,6 +3432,29 @@ function consumeSettings(
       continue;
     }
     const classification = classifyRetiredField("settings-json", field);
+    if (
+      field === RETIRED_BYPASS_CONSENT_FIELD &&
+      classification.authority === "state"
+    ) {
+      if (scope !== "user") {
+        pushConflict(
+          conflicts,
+          scope,
+          sourcePath,
+          "retired bypass consent is user-scoped runtime state and cannot be granted by a project, local, or managed settings file",
+          field,
+        );
+        continue;
+      }
+      migrateRetiredBypassConsent(value, state, {
+        scope: "state",
+        sourcePath,
+        field,
+        conflicts,
+        notices,
+      });
+      continue;
+    }
     if (classification.action === "drop") {
       notices.push(Object.freeze({ scope, sourcePath, field, action: "drop" }));
       continue;
@@ -3255,31 +3484,6 @@ function consumeSettings(
         field,
         action: "migrate",
         target: mapped.map((item) => item.target).join(","),
-      }));
-      continue;
-    }
-    if (classification.authority === "state") {
-      if (scope !== "user") {
-        pushConflict(
-          conflicts,
-          scope,
-          sourcePath,
-          "workspace-scoped mutable settings state has no canonical authority; move the preference to user state or remove it explicitly",
-          field,
-        );
-        continue;
-      }
-      mergeValue(stateBucket(state, "settings-json", scope), field, value, {
-        scope: "state",
-        sourcePath,
-        conflicts,
-      });
-      notices.push(Object.freeze({
-        scope,
-        sourcePath,
-        field,
-        action: "retain",
-        target: `state.json:state.global.settings.${field}`,
       }));
       continue;
     }
@@ -3415,7 +3619,7 @@ function consumeGlobalState(
             notices,
           )
         : value;
-      mergeValue(stateBucket(state, "global-state", "state"), field, stateValue, {
+      mergeValue(stateBucket(state), field, stateValue, {
         scope: "state",
         sourcePath,
         conflicts,
@@ -4330,17 +4534,11 @@ export async function checkConfigV2Migration(
   if (existingStateInput) {
     inputs.push(existingStateInput.input);
     try {
-      const duplicateStatePaths = duplicateJsonObjectPaths(
+      existingState = parseCanonicalStateForMigration(
         existingStateInput.text,
-      );
-      if (duplicateStatePaths.length > 0) {
-        throw new ConfigMigrationError(
-          `canonical state JSON contains ${duplicateStatePaths.length} duplicate object key${duplicateStatePaths.length === 1 ? "" : "s"}: ${home.statePath}`,
-        );
-      }
-      existingState = validateCanonicalStateDocument(
-        JSON.parse(existingStateInput.text) as unknown,
         home.statePath,
+        conflicts,
+        notices,
       );
     } catch (error) {
       pushConflict(
@@ -4690,7 +4888,7 @@ export async function checkConfigV2Migration(
           ? { beforeSha256: sha256(originalStateText) }
           : {}),
         afterSha256: sha256(stateContent),
-        mode: existingStateInput?.mode ?? DEFAULT_MODE,
+        mode: CANONICAL_STATE_FILE_MODE,
       }));
     }
   } catch (error) {
@@ -4927,14 +5125,42 @@ function parsePreparationManifest(
   });
 }
 
+interface ExclusiveMigrationPublicationOutcome
+  extends MigrationPublicationOutcome {
+  /** Verified target snapshot, or null when post-link verification failed. */
+  readonly published: StableFileSnapshot | null;
+}
+
+function requireCleanExclusiveMigrationPublication(
+  outcome: ExclusiveMigrationPublicationOutcome,
+  path: string,
+): StableFileSnapshot {
+  const [primary, ...secondary] = outcome.postPublicationErrors;
+  if (primary !== undefined) {
+    attachMigrationCleanupErrors(primary, secondary);
+    throw primary;
+  }
+  if (outcome.published === null) {
+    throw new ConfigMigrationError(
+      `exclusive publication committed without a verified target snapshot: ${path}`,
+    );
+  }
+  return outcome.published;
+}
+
 async function writeExclusiveAtomic(
   path: string,
   content: string,
   mode: number,
-): Promise<StableFileSnapshot> {
+): Promise<ExclusiveMigrationPublicationOutcome> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporaryPath = `${path}.tmp-${process.pid}-${randomUUID()}`;
   let temporarySnapshot: StableFileSnapshot | null = null;
+  let committed = false;
+  let published: StableFileSnapshot | null = null;
+  let primaryFailure: unknown;
+  const cleanupErrors: Error[] = [];
+  const postPublicationErrors: Error[] = [];
   try {
     await writeFile(temporaryPath, content, { encoding: "utf8", mode, flag: "wx" });
     await fsyncPath(temporaryPath);
@@ -4948,32 +5174,64 @@ async function writeExclusiveAtomic(
       );
     }
     await link(temporaryPath, path);
-    const published = await readMigrationFile(path);
-    if (
-      published === null ||
-      !sameStableFileIdentity(published, temporarySnapshot)
-    ) {
-      throw new ConfigMigrationError(
-        `exclusive publication target does not match its stage: ${path}`,
-      );
+    committed = true;
+    try {
+      const candidate = await readMigrationFile(path);
+      if (
+        candidate === null ||
+        !sameStableFileIdentity(candidate, temporarySnapshot)
+      ) {
+        throw new ConfigMigrationError(
+          `exclusive publication target does not match its stage: ${path}`,
+        );
+      }
+      published = candidate;
+    } catch (error) {
+      postPublicationErrors.push(asMigrationPublicationError(error));
     }
     await fsyncPath(dirname(path)).catch(() => undefined);
-    return published;
-  } finally {
-    if (temporarySnapshot !== null) {
+  } catch (error) {
+    primaryFailure = error;
+  }
+
+  if (temporarySnapshot !== null && (!committed || published !== null)) {
+    try {
       await removePreparedArtifactIfUnchanged(
         temporaryPath,
         temporarySnapshot,
         publicationTempQuarantinePath(temporaryPath),
       );
+    } catch (error) {
+      if (committed) {
+        postPublicationErrors.push(asMigrationPublicationError(error));
+      } else {
+        cleanupErrors.push(asMigrationPublicationError(error));
+      }
     }
   }
+  if (primaryFailure !== undefined) {
+    attachMigrationCleanupErrors(primaryFailure, cleanupErrors);
+    throw primaryFailure;
+  }
+  if (!committed) {
+    const failure = new ConfigMigrationError(
+      `exclusive publication did not reach its commit point: ${path}`,
+    );
+    attachMigrationCleanupErrors(failure, cleanupErrors);
+    throw failure;
+  }
+  postPublicationErrors.push(...cleanupErrors);
+  return Object.freeze({
+    committed: true,
+    published,
+    postPublicationErrors: Object.freeze(postPublicationErrors),
+  });
 }
 
 async function writePreparationManifest(
   path: string,
   manifest: MigrationPreparationManifest,
-): Promise<StableFileSnapshot> {
+): Promise<ExclusiveMigrationPublicationOutcome> {
   const content = `${JSON.stringify(manifest, null, 2)}\n`;
   return writeExclusiveAtomic(path, content, DEFAULT_MODE);
 }
@@ -5224,10 +5482,56 @@ async function recoverInterruptedPreparations(home: HomeContext): Promise<void> 
 
 async function fsyncPath(path: string): Promise<void> {
   const handle = await open(path, "r");
+  let syncFailed = false;
+  let syncFailure: unknown;
   try {
     await handle.sync();
+  } catch (error) {
+    syncFailed = true;
+    syncFailure = error;
+    throw error;
   } finally {
-    await handle.close();
+    try {
+      await handle.close();
+    } catch (closeError) {
+      if (syncFailed) {
+        attachMigrationCleanupErrors(syncFailure, [
+          asMigrationPublicationError(closeError),
+        ]);
+      } else {
+        throw closeError;
+      }
+    }
+  }
+}
+
+interface MigrationPublicationOutcome {
+  readonly committed: true;
+  readonly postPublicationErrors: readonly Error[];
+}
+
+function asMigrationPublicationError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+function attachMigrationCleanupErrors(
+  primary: unknown,
+  cleanupErrors: readonly Error[],
+): void {
+  if (cleanupErrors.length === 0) return;
+  try {
+    if (
+      primary !== null &&
+      (typeof primary === "object" || typeof primary === "function") &&
+      Object.isExtensible(primary)
+    ) {
+      Object.defineProperty(primary, "cleanupErrors", {
+        configurable: true,
+        value: Object.freeze([...cleanupErrors]),
+      });
+    }
+  } catch {
+    // Keep the exact primary publication failure authoritative.
   }
 }
 
@@ -5236,7 +5540,7 @@ async function writeAtomic(
   content: string,
   mode: number,
   quarantineToken: string,
-): Promise<void> {
+): Promise<MigrationPublicationOutcome> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const tempPath = `${path}.tmp-${process.pid}-${randomUUID()}`;
   const targetSnapshot = await readMigrationFile(path);
@@ -5246,6 +5550,12 @@ async function writeAtomic(
     );
   }
   let temporarySnapshot: StableFileSnapshot | null = null;
+  let stageQuarantined: QuarantinedMigrationFile | null = null;
+  let targetQuarantined: QuarantinedMigrationFile | null = null;
+  let committed = false;
+  let primaryFailure: unknown;
+  const cleanupErrors: Error[] = [];
+  const postPublicationErrors: Error[] = [];
   try {
     await writeFile(tempPath, content, { encoding: "utf8", mode, flag: "wx" });
     await fsyncPath(tempPath);
@@ -5258,33 +5568,141 @@ async function writeAtomic(
         `atomic publication stage changed while it was written: ${tempPath}`,
       );
     }
-    await replaceMigrationFileFromStage(
+    stageQuarantined = await quarantineExpectedMigrationFile(
       tempPath,
       temporarySnapshot,
-      path,
-      targetSnapshot,
       "atomic journal publication",
       publicationTempQuarantinePath(tempPath),
-      migrationQuarantinePath(path, quarantineToken, "journal"),
     );
-  } finally {
-    if (temporarySnapshot !== null) {
+    try {
+      targetQuarantined = await quarantineExpectedMigrationFile(
+        path,
+        targetSnapshot,
+        "atomic journal publication",
+        migrationQuarantinePath(path, quarantineToken, "journal"),
+      );
+    } catch (error) {
+      try {
+        await restoreQuarantinedMigrationFile(
+          stageQuarantined,
+          "atomic journal publication",
+        );
+        stageQuarantined = null;
+      } catch (restoreError) {
+        cleanupErrors.push(asMigrationPublicationError(restoreError));
+      }
+      throw error;
+    }
+    try {
+      await link(stageQuarantined.path, path);
+      committed = true;
+    } catch (error) {
+      const publicationError = (error as NodeJS.ErrnoException).code === "EEXIST"
+        ? new ConfigMigrationError(
+            `atomic journal publication refuses to overwrite a path that appeared: ${path}`,
+          )
+        : error;
+      for (const quarantined of [targetQuarantined, stageQuarantined]) {
+        if (quarantined === null) continue;
+        try {
+          await restoreQuarantinedMigrationFile(
+            quarantined,
+            "atomic journal publication",
+          );
+          if (quarantined === targetQuarantined) targetQuarantined = null;
+          if (quarantined === stageQuarantined) stageQuarantined = null;
+        } catch (restoreError) {
+          cleanupErrors.push(asMigrationPublicationError(restoreError));
+        }
+      }
+      throw publicationError;
+    }
+
+    // link() is the journal commit point. Every failure below is diagnostic;
+    // callers must observe the completed journal outcome exactly once.
+    try {
+      const published = await readMigrationFile(path);
+      if (
+        published === null ||
+        !sameStableFileIdentity(published, temporarySnapshot)
+      ) {
+        postPublicationErrors.push(new ConfigMigrationError(
+          `committed migration journal no longer matches its publication stage: ${path}`,
+        ));
+      }
+    } catch (error) {
+      postPublicationErrors.push(asMigrationPublicationError(error));
+    }
+    try {
+      await fsyncPath(dirname(path));
+    } catch (error) {
+      postPublicationErrors.push(asMigrationPublicationError(error));
+    }
+    try {
+      if (await readMigrationFile(tempPath) !== null) {
+        postPublicationErrors.push(new ConfigMigrationError(
+          `migration journal stage reappeared after publication and was preserved: ${tempPath}`,
+        ));
+      }
+    } catch (error) {
+      postPublicationErrors.push(asMigrationPublicationError(error));
+    }
+    for (const quarantined of [stageQuarantined, targetQuarantined]) {
+      if (quarantined === null) continue;
+      try {
+        await discardQuarantinedMigrationFile(
+          quarantined,
+          "atomic journal publication",
+        );
+        if (quarantined === stageQuarantined) stageQuarantined = null;
+        if (quarantined === targetQuarantined) targetQuarantined = null;
+      } catch (error) {
+        postPublicationErrors.push(asMigrationPublicationError(error));
+      }
+    }
+  } catch (error) {
+    primaryFailure = error;
+  }
+
+  if (!committed && temporarySnapshot !== null) {
+    try {
       await removePreparedArtifactIfUnchanged(
         tempPath,
         temporarySnapshot,
         publicationTempQuarantinePath(tempPath),
       );
+    } catch (error) {
+      cleanupErrors.push(asMigrationPublicationError(error));
     }
   }
+  if (primaryFailure !== undefined) {
+    attachMigrationCleanupErrors(primaryFailure, cleanupErrors);
+    throw primaryFailure;
+  }
+  if (!committed) {
+    const failure = new ConfigMigrationError(
+      `migration journal publication did not reach its commit point: ${path}`,
+    );
+    attachMigrationCleanupErrors(failure, cleanupErrors);
+    throw failure;
+  }
+  postPublicationErrors.push(...cleanupErrors);
+  return Object.freeze({
+    committed: true,
+    postPublicationErrors: Object.freeze(postPublicationErrors),
+  });
 }
 
-async function writeJournal(path: string, journal: MigrationJournal): Promise<void> {
+async function writeJournal(
+  path: string,
+  journal: MigrationJournal,
+): Promise<MigrationPublicationOutcome> {
   if (journal.quarantineToken === undefined) {
     throw new ConfigMigrationError(
       `migration journal is missing its quarantine token: ${path}`,
     );
   }
-  await writeAtomic(
+  return writeAtomic(
     path,
     `${JSON.stringify(journal, null, 2)}\n`,
     DEFAULT_MODE,
@@ -5411,14 +5829,16 @@ export async function applyConfigV2Migration(
   }
   const dir = await secureJournalDirectory(plan.home, plan.id);
   const journalPath = join(dir, "journal.json");
-  const release = await acquireConfigAuthorityLocks(
+  const outcome = await runWithConfigAuthorityLocks(
     migrationPlanAuthorityPaths(plan, journalPath),
+    () => applyConfigV2MigrationLocked(plan, dir),
   );
-  try {
-    return await applyConfigV2MigrationLocked(plan, dir);
-  } finally {
-    await release();
-  }
+  reportMigrationAuthorityReleaseErrors(
+    "Configuration migration",
+    outcome.postOperationReleaseErrors,
+  );
+  if (outcome.status === "failed") throw outcome.error;
+  return outcome.value;
 }
 
 async function applyConfigV2MigrationLocked(
@@ -5437,6 +5857,8 @@ async function applyConfigV2MigrationLocked(
   let preparationManifestPublished = false;
   let preparationManifestSnapshot: StableFileSnapshot | null = null;
   let journalPublished = false;
+  let completedJournalPublished = false;
+  const finalizationDiagnostics: Error[] = [];
   const quarantineToken = randomUUID();
   try {
     const journalWrites: JournalWrite[] = [];
@@ -5772,11 +6194,16 @@ async function applyConfigV2MigrationLocked(
       quarantineToken,
       artifacts: Object.freeze(preparationArtifacts),
     });
-    preparationManifestSnapshot = await writePreparationManifest(
+    const preparationPublication = await writePreparationManifest(
       preparationManifestPath,
       preparation,
     );
     preparationManifestPublished = true;
+    preparationManifestSnapshot = preparationPublication.published;
+    requireCleanExclusiveMigrationPublication(
+      preparationPublication,
+      preparationManifestPath,
+    );
 
     for (const [index, write] of plan.writes.entries()) {
       const journalWrite = journalWrites[index];
@@ -5875,12 +6302,16 @@ async function applyConfigV2MigrationLocked(
       archiveIndexes: Object.freeze([]),
     }),
   });
-    await writeExclusiveAtomic(
+    const initialJournalPublication = await writeExclusiveAtomic(
       journalPath,
       `${JSON.stringify(prepared, null, 2)}\n`,
       DEFAULT_MODE,
     );
     journalPublished = true;
+    requireCleanExclusiveMigrationPublication(
+      initialJournalPublication,
+      journalPath,
+    );
     if (preparationManifestSnapshot === null) {
       throw new ConfigMigrationError(
         `migration preparation manifest snapshot is missing: ${preparationManifestPath}`,
@@ -6226,7 +6657,14 @@ async function applyConfigV2MigrationLocked(
         );
       }
     }
-    await writeJournal(journalPath, { ...checkpoint, status: "complete" });
+    const completedPublication = await writeJournal(journalPath, {
+      ...checkpoint,
+      status: "complete",
+    });
+    completedJournalPublished = true;
+    finalizationDiagnostics.push(
+      ...completedPublication.postPublicationErrors,
+    );
     } catch (error) {
     const rollbackErrors: unknown[] = [];
     const canCompensateCanonicalCredentials =
@@ -6367,10 +6805,16 @@ async function applyConfigV2MigrationLocked(
       }
     }
     if (cleanupErrors.length > 0) {
-      throw new AggregateError(
-        cleanupErrors,
-        "Configuration migration stage cleanup refused changed artifacts",
-      );
+      if (completedJournalPublished) {
+        finalizationDiagnostics.push(
+          ...cleanupErrors.map(asMigrationPublicationError),
+        );
+      } else {
+        throw new AggregateError(
+          cleanupErrors,
+          "Configuration migration stage cleanup refused changed artifacts",
+        );
+      }
     }
   }
 
@@ -6380,6 +6824,7 @@ async function applyConfigV2MigrationLocked(
       writes: journalWrites.length,
       archives: journalArchives.length,
       credentialSourcesSanitized: journalCredentialActions.length,
+      postPublicationErrors: Object.freeze([...finalizationDiagnostics]),
     });
   } catch (error) {
     if (!journalPublished) {
@@ -7067,12 +7512,22 @@ async function reconcileJournalQuarantines(
   }
 }
 
+interface RollbackJournalOutcome {
+  readonly restored: number;
+  readonly postPublicationErrors: readonly Error[];
+}
+
 async function rollbackJournal(
   journal: MigrationJournal,
   journalPath: string,
   home: HomeContext,
-): Promise<number> {
-  if (journal.status === "rolled-back") return 0;
+): Promise<RollbackJournalOutcome> {
+  if (journal.status === "rolled-back") {
+    return Object.freeze({
+      restored: 0,
+      postPublicationErrors: Object.freeze([]),
+    });
+  }
 
   await reconcileJournalQuarantines(journal, journalPath, home);
 
@@ -7370,7 +7825,7 @@ async function rollbackJournal(
     }
   }
 
-  await writeJournal(journalPath, {
+  const rolledBackPublication = await writeJournal(journalPath, {
     ...checkpoint,
     status: "rolled-back",
     committed: Object.freeze({
@@ -7379,7 +7834,10 @@ async function rollbackJournal(
       archiveIndexes: Object.freeze([]),
     }),
   });
-  return restored;
+  return Object.freeze({
+    restored,
+    postPublicationErrors: rolledBackPublication.postPublicationErrors,
+  });
 }
 
 export async function rollbackConfigV2Migration(
@@ -7389,53 +7847,100 @@ export async function rollbackConfigV2Migration(
   const home = resolveMigrationHomeContext(migrationEnv(options), {
     ...(options.platformHome !== undefined ? { platformHome: options.platformHome } : {}),
   });
-  const directory = await secureJournalDirectory(home, id);
-  const journalPath = join(directory, "journal.json");
-  await recoverPublicationTemps(directory);
-  await recoverControlFileQuarantine(journalPath, "journal", home);
-  const initialSnapshot = await readMigrationFile(journalPath);
-  if (initialSnapshot === null) {
-    throw new ConfigMigrationError(`migration journal does not exist: ${journalPath}`);
-  }
-  const initialText = initialSnapshot.bytes.toString("utf8");
-  const initialJournal = parseJournalText(initialText, journalPath);
-  if (initialJournal.id !== id) {
-    throw new ConfigMigrationError(`migration journal id mismatch at ${journalPath}`);
-  }
-  const release = await acquireConfigAuthorityLocks([
-    migrationLockAnchor(home),
-    journalPath,
-    ...initialJournal.writes.flatMap((write) => [
-      write.targetPath,
-      ...(write.backupPath !== undefined ? [write.backupPath] : []),
-    ]),
-    ...initialJournal.archives.flatMap((archive) => [
-      archive.sourcePath,
-      archive.archivePath,
-    ]),
-    ...(initialJournal.credential?.fileActions.map((action) => action.path) ?? []),
-  ]);
-  try {
-    const lockedSnapshot = await readMigrationFile(journalPath);
-    if (
-      lockedSnapshot === null ||
-      !sameStableFileSnapshot(lockedSnapshot, initialSnapshot)
-    ) {
-      throw new ConfigMigrationError(
-        `migration journal changed while rollback acquired authority locks: ${journalPath}`,
+  const requestedDirectory = journalDirectory(home, id);
+  const requestedJournalPath = join(requestedDirectory, "journal.json");
+  const discoveryOutcome = await runWithConfigAuthorityLocks(
+    [migrationLockAnchor(home), requestedJournalPath],
+    async () => {
+      const directory = await secureJournalDirectory(home, id);
+      const journalPath = join(directory, "journal.json");
+      await recoverPublicationTemps(directory);
+      await recoverControlFileQuarantine(journalPath, "journal", home);
+      const snapshot = await readMigrationFile(journalPath);
+      if (snapshot === null) {
+        throw new ConfigMigrationError(
+          `migration journal does not exist: ${journalPath}`,
+        );
+      }
+      const journal = parseJournalText(
+        snapshot.bytes.toString("utf8"),
+        journalPath,
       );
-    }
-    const restored = await rollbackJournal(initialJournal, journalPath, home);
-    return Object.freeze({
-      id,
+      if (journal.id !== id) {
+        throw new ConfigMigrationError(
+          `migration journal id mismatch at ${journalPath}`,
+        );
+      }
+      return Object.freeze({ directory, journalPath, snapshot, journal });
+    },
+  );
+  reportMigrationAuthorityReleaseErrors(
+    "Configuration migration rollback discovery",
+    discoveryOutcome.postOperationReleaseErrors,
+  );
+  if (discoveryOutcome.status === "failed") throw discoveryOutcome.error;
+  const {
+    directory,
+    journalPath,
+    snapshot: initialSnapshot,
+    journal: initialJournal,
+  } = discoveryOutcome.value;
+  const outcome = await runWithConfigAuthorityLocks(
+    [
+      migrationLockAnchor(home),
       journalPath,
-      restored,
-      credentialsPreserved: initialJournal.credential !== undefined &&
-        initialJournal.committed.credential,
-    });
-  } finally {
-    await release();
-  }
+      ...initialJournal.writes.flatMap((write) => [
+        write.targetPath,
+        ...(write.backupPath !== undefined ? [write.backupPath] : []),
+      ]),
+      ...initialJournal.archives.flatMap((archive) => [
+        archive.sourcePath,
+        archive.archivePath,
+      ]),
+      ...(initialJournal.credential?.fileActions.map((action) => action.path) ?? []),
+    ],
+    async () => {
+      const lockedSnapshot = await readMigrationFile(journalPath);
+      if (
+        lockedSnapshot === null ||
+        !sameStableFileSnapshot(lockedSnapshot, initialSnapshot)
+      ) {
+        throw new ConfigMigrationError(
+          `migration journal changed while rollback acquired authority locks: ${journalPath}`,
+        );
+      }
+      await recoverPublicationTemps(directory);
+      await recoverControlFileQuarantine(journalPath, "journal", home);
+      const authoritativeSnapshot = await readMigrationFile(journalPath);
+      if (
+        authoritativeSnapshot === null ||
+        !sameStableFileSnapshot(authoritativeSnapshot, initialSnapshot)
+      ) {
+        throw new ConfigMigrationError(
+          `migration journal changed during locked rollback recovery: ${journalPath}`,
+        );
+      }
+      const rollback = await rollbackJournal(
+        initialJournal,
+        journalPath,
+        home,
+      );
+      return Object.freeze({
+        id,
+        journalPath,
+        restored: rollback.restored,
+        credentialsPreserved: initialJournal.credential !== undefined &&
+          initialJournal.committed.credential,
+        postPublicationErrors: rollback.postPublicationErrors,
+      });
+    },
+  );
+  reportMigrationAuthorityReleaseErrors(
+    "Configuration migration rollback",
+    outcome.postOperationReleaseErrors,
+  );
+  if (outcome.status === "failed") throw outcome.error;
+  return outcome.value;
 }
 
 function parseJournalText(text: string, journalPath: string): MigrationJournal {

@@ -105,13 +105,8 @@ import type { HookExecutionAuthority } from "../hooks/execution-authority.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import type { ToolRegistry } from "./_deps/tool-registry.js";
-import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
-import {
-  createEmptyToolPermissionContext,
-  type PermissionMode,
-  type ToolPermissionContext,
-} from "../permissions/types.js";
 import type { QuerySource } from "./_deps/query-source.js";
 import {
   freshDenialTracking,
@@ -1472,10 +1467,8 @@ export interface SessionServices {
   /**
    * T11 W3-A: authoritative permission-mode registry. Commands (`/permissions`,
    * `/plan`) and the evaluator both read from the same registry instance so
-   * I-3 live-read semantics are honoured. When omitted, `Session`
-   * bootstraps a default registry seeded with `createEmptyToolPermissionContext()`
-   * so test fixtures can continue constructing Sessions without wiring
-   * the full permissions subsystem.
+   * I-3 live-read semantics are honoured. Every Session constructor must
+   * receive this authority explicitly.
    */
   readonly permissionModeRegistry: PermissionModeRegistry;
   /**
@@ -1792,6 +1785,7 @@ export type AbortReason =
   | "parent_interrupt"
   | "recovery"
   | "mode_changed"
+  | "permission_authority_failure"
   | "auth_failed"
   | "stdin_lost"
   | "provider_switched"
@@ -2699,13 +2693,8 @@ export class Session {
   /**
    * Session bootstrap.
    *
-   * Notable defaults:
-   *   - `opts.services.permissionModeRegistry` is constructed with a
-   *     default `PermissionModeRegistry` seeded from
-   *     `createEmptyToolPermissionContext()` when absent, so test
-   *     fixtures that do not wire the full permissions subsystem still
-   *     get a working registry. Production bootstrap paths supply the
-   *     real registry built during startup by the CLI.
+   * The permission-mode registry has no constructor fallback. Every caller
+   * must supply the same registry used by commands and tool evaluation.
    */
   constructor(opts: SessionOpts) {
     this.conversationId = opts.conversationId;
@@ -2765,41 +2754,10 @@ export class Session {
       drain: () => this.sessionMailbox.drain(),
     });
     this.guardianReviewSession = { enabled: false };
-    // Bootstrap a default permission-mode registry when the caller did
-    // not supply one. `SessionServices.permissionModeRegistry` is
-    // required on the interface, but historical test fixtures that
-    // loose-cast through `unknown as SessionServices` can still reach
-    // this branch with an `undefined` slot, so treat the cast-through
-    // case as a missing registry and fall back to the empty default.
-    const rawRegistry = (
-      opts.services as unknown as {
-        permissionModeRegistry?: PermissionModeRegistry;
-      }
-    ).permissionModeRegistry;
-    const resolvedRegistry =
-      rawRegistry ??
-      new PermissionModeRegistry(createEmptyToolPermissionContext());
-    opts.initialState.sessionConfiguration = {
-      ...opts.initialState.sessionConfiguration,
-      permissionContext: {
-        mode: resolvedRegistry.current().mode,
-        ...(resolvedRegistry.current().isAutoModeAvailable !== undefined
-          ? {
-              isAutoModeAvailable:
-                resolvedRegistry.current().isAutoModeAvailable,
-            }
-          : {}),
-        ...(resolvedRegistry.current().autoModeActive !== undefined
-          ? { autoModeActive: resolvedRegistry.current().autoModeActive }
-          : {}),
-        ...(resolvedRegistry.current().bypassPermissionsAcceptedIn !== undefined
-          ? {
-              bypassPermissionsAcceptedIn:
-                resolvedRegistry.current().bypassPermissionsAcceptedIn,
-            }
-          : {}),
-      },
-    } as SessionConfiguration;
+    const resolvedRegistry = opts.services.permissionModeRegistry;
+    if (resolvedRegistry === undefined) {
+      throw new Error("Session requires services.permissionModeRegistry");
+    }
     const initialSelection = opts.initialState
       .sessionConfiguration as SessionConfiguration & {
       readonly provider?: { readonly slug?: string };
@@ -2853,12 +2811,6 @@ export class Session {
     this.budgetTracker = opts.budgetTracker ?? null;
     this.initialTranscriptEvents = opts.initialTranscriptEvents ?? [];
     this.bindProviderConversation();
-    resolvedRegistry.subscribeToModeChange((newMode) => {
-      void this.syncPermissionContextFromRegistry({
-        ...resolvedRegistry.current(),
-        mode: newMode,
-      });
-    });
     // Per-turn attachment exit-pulse wiring. The plan-mode and auto-mode
     // attachment producers fire a one-shot exit reminder when these flags
     // are set; the registry is the canonical event source for mode
@@ -3032,46 +2984,6 @@ export class Session {
 
   get permissionModeRegistry(): PermissionModeRegistry {
     return this.services.permissionModeRegistry;
-  }
-
-  async syncPermissionContextFromRegistry(
-    nextCtx: Pick<
-      ToolPermissionContext,
-      | "mode"
-      | "isAutoModeAvailable"
-      | "autoModeActive"
-      | "bypassPermissionsAcceptedIn"
-    > = this.permissionModeRegistry.current(),
-  ): Promise<void> {
-    const state = this.state.unsafePeek();
-    const currentPermissionContext = (
-      state.sessionConfiguration as SessionConfiguration & {
-        permissionContext?: {
-          readonly mode?: PermissionMode;
-          readonly isAutoModeAvailable?: boolean;
-          readonly autoModeActive?: boolean;
-          readonly bypassPermissionsAcceptedIn?: readonly string[];
-        };
-      }
-    ).permissionContext;
-    state.sessionConfiguration = {
-      ...state.sessionConfiguration,
-      permissionContext: {
-        ...(currentPermissionContext ?? {}),
-        mode: nextCtx.mode,
-        ...(nextCtx.isAutoModeAvailable !== undefined
-          ? { isAutoModeAvailable: nextCtx.isAutoModeAvailable }
-          : {}),
-        ...(nextCtx.autoModeActive !== undefined
-          ? { autoModeActive: nextCtx.autoModeActive }
-          : {}),
-        ...(nextCtx.bypassPermissionsAcceptedIn !== undefined
-          ? {
-              bypassPermissionsAcceptedIn: nextCtx.bypassPermissionsAcceptedIn,
-            }
-          : {}),
-      },
-    } as SessionConfiguration;
   }
 
   buildPerTurnConfig(overrides?: Partial<Config>): Readonly<Config> {
@@ -4539,20 +4451,14 @@ export class Session {
   }
 
   /**
-   * Synchronously emit an event. Routes through:
-   *
-   *   1. EventLog (T6) — assigns monotonic seq (I-27), fans to
-   *      subscribed sidecars (I-43 per-sidecar isolation).
-   *   2. RolloutStore (T6, when wired) — appends to the JSONL
-   *      rollout; durable events (TurnComplete, TurnAborted, Error,
-   *      ContextCompacted) force fsync before returning (I-4).
-   *   3. txEvent (compatibility) — kept for consumers that still use
-   *      `for await ... of session.txEvent.stream()`.
-   *
-   * I-8: every error site MUST funnel through this or the dedicated
-   * `emitError` helper (event-log.ts).
+   * Stamp and durably append an event without publishing it. The caller must
+   * invoke the returned one-shot `publish` only after the in-memory state
+   * described by the event has become visible.
    */
-  emit(event: Event, appendOpts: AppendOptions = {}): Event {
+  prepareEmit(
+    event: Event,
+    appendOpts: AppendOptions = {},
+  ): { readonly event: Event; publish(): Event } {
     if (this.canonicalJournalSealed) {
       throw new Error(
         `cannot append ${event.msg.type}: canonical run journal is sealed`,
@@ -4572,10 +4478,18 @@ export class Session {
       // retaining caller-supplied coordinates would let the live bridge claim
       // an event that run.replay can never return.
       const ephemeral: Event = { id: event.id, msg: event.msg };
-      this.eventLog.publish(ephemeral, (published) => {
-        this.txEvent.send(published);
-      });
-      return ephemeral;
+      let published = false;
+      return {
+        event: ephemeral,
+        publish: () => {
+          if (published) return ephemeral;
+          published = true;
+          this.eventLog.publish(ephemeral, (publishedEvent) => {
+            this.txEvent.send(publishedEvent);
+          });
+          return ephemeral;
+        },
+      };
     }
     // I-27 + M4: allocate identity/sequence first, but do not let a listener
     // observe a durable transition until its rollout append has fsynced.
@@ -4606,15 +4520,37 @@ export class Session {
         );
       }
     }
+    let published = false;
+    return {
+      event: stamped,
+      publish: () => {
+        if (published) return stamped;
+        published = true;
+        return this.publishPreparedEvent(stamped);
+      },
+    };
+  }
+
+  /** Publish an event already stamped and appended by {@link prepareEmit}. */
+  publishPreparedEvent(event: Event): Event {
     hitM4DurabilityFailpoint("before_event_publish");
-    this.eventLog.publish(stamped, (published) => {
+    this.eventLog.publish(event, (published) => {
       // Compatibility consumers belong to the same FIFO publication queue.
       // A listener may synchronously emit another event; keeping this callback
       // inside EventLog prevents txEvent from observing N+1 before N.
       this.txEvent.send(published);
       hitM4DurabilityFailpoint("after_event_publish");
     });
-    return stamped;
+    return event;
+  }
+
+  /**
+   * Synchronously emit an event. Durable persistence completes before the
+   * event becomes observable; ordinary callers publish immediately after the
+   * append, while state-transition owners may use {@link prepareEmit}.
+   */
+  emit(event: Event, appendOpts: AppendOptions = {}): Event {
+    return this.prepareEmit(event, appendOpts).publish();
   }
 
   /**

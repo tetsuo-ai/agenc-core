@@ -98,6 +98,8 @@ export interface McpRefreshResult {
 
 export interface McpAuthorityRefreshOptions {
   readonly signal?: AbortSignal;
+  /** @internal See `MCPManagerStartOpts.onSandboxRefreshDeferred`. */
+  readonly onSandboxRefreshDeferred?: () => void;
 }
 
 export interface SessionMcpResolutionPlan {
@@ -962,6 +964,11 @@ export function createSessionMcpService(
   let authorityRefreshPending = false;
   let authorityRefreshForcePending = false;
   let authorityRefreshTask: Promise<McpRefreshResult> | undefined;
+  let latestSandboxRefreshDeferredGeneration = -1;
+  const sandboxRefreshDeferralObservers = new Set<{
+    readonly minimumGeneration: number;
+    readonly notify: () => void;
+  }>();
   let pendingAuthorityRevocation: Promise<void> | undefined;
   let authoritySubscriptionInstalled = false;
   let unsubscribeAuthority: (() => void) | undefined;
@@ -1170,6 +1177,33 @@ export function createSessionMcpService(
         plan.configs,
         withConfiguredRequiredServers(plan.configs, {
           signal: operation.controller.signal,
+          onSandboxRefreshDeferred: () => {
+            latestSandboxRefreshDeferredGeneration = Math.max(
+              latestSandboxRefreshDeferredGeneration,
+              operation.generation,
+            );
+            for (const observer of Array.from(
+              sandboxRefreshDeferralObservers,
+            )) {
+              if (
+                observer.minimumGeneration >
+                latestSandboxRefreshDeferredGeneration
+              ) {
+                continue;
+              }
+              sandboxRefreshDeferralObservers.delete(observer);
+              try {
+                observer.notify();
+              } catch (error) {
+                logForDebugging(
+                  `MCP sandbox-refresh deferral observer failed: ${
+                    error instanceof Error ? error.message : String(error)
+                  }`,
+                  { level: "error" },
+                );
+              }
+            }
+          },
         }),
       );
       if (!isCurrent()) {
@@ -1621,6 +1655,7 @@ export function createSessionMcpService(
       void revocation.catch(() => undefined);
     }
     if (authorityRefreshTask !== undefined) return authorityRefreshTask;
+    latestSandboxRefreshDeferredGeneration = -1;
     const task = enqueueMutation(async (): Promise<McpRefreshResult> => {
       let failure: Error | undefined;
       while (authorityRefreshPending && !closed) {
@@ -1696,6 +1731,7 @@ export function createSessionMcpService(
     authorityGeneration += 1;
     authorityRefreshPending = false;
     authorityRefreshForcePending = false;
+    sandboxRefreshDeferralObservers.clear();
     activeAuthorityController?.abort("mcp_session_service_disposed");
     unsubscribeAuthority?.();
     unsubscribeAuthority = undefined;
@@ -1731,19 +1767,61 @@ export function createSessionMcpService(
   ): Promise<McpRefreshResult> => {
     if (closed) return Promise.reject(closedError());
     ensureAuthoritySubscription();
+    const observeSandboxRefreshDeferral = ():
+      | {
+          readonly minimumGeneration: number;
+          readonly notify: () => void;
+        }
+      | undefined => {
+      const notify = refreshOptions?.onSandboxRefreshDeferred;
+      if (notify === undefined) return undefined;
+      const minimumGeneration = authorityGeneration;
+      if (
+        authorityRefreshTask !== undefined &&
+        latestSandboxRefreshDeferredGeneration >= minimumGeneration
+      ) {
+        notify();
+        return undefined;
+      }
+      const observer = { minimumGeneration, notify };
+      sandboxRefreshDeferralObservers.add(observer);
+      return observer;
+    };
+    const removeObserverWhenSettled = (
+      task: Promise<McpRefreshResult>,
+      observer:
+        | {
+            readonly minimumGeneration: number;
+            readonly notify: () => void;
+          }
+        | undefined,
+    ): void => {
+      if (observer === undefined) return;
+      const remove = (): void => {
+        sandboxRefreshDeferralObservers.delete(observer);
+      };
+      void task.then(remove, remove);
+    };
     if (authorityRefreshTask !== undefined) {
       joinedAuthorityGeneration = authorityGeneration;
+      removeObserverWhenSettled(
+        authorityRefreshTask,
+        observeSandboxRefreshDeferral(),
+      );
       return authorityRefreshTask;
     }
     if (
       appliedAuthorityGeneration === authorityGeneration &&
       notifiedAuthorityGeneration === authorityGeneration &&
-      joinedAuthorityGeneration !== authorityGeneration
+      joinedAuthorityGeneration !== authorityGeneration &&
+      refreshOptions?.onSandboxRefreshDeferred === undefined
     ) {
       joinedAuthorityGeneration = authorityGeneration;
       return Promise.resolve(lastCommittedRefreshResult);
     }
-    return scheduleAuthorityRefresh(refreshOptions, false, true);
+    const task = scheduleAuthorityRefresh(refreshOptions, false, true);
+    removeObserverWhenSettled(task, observeSandboxRefreshDeferral());
+    return task;
   };
   const enqueueServerMutation = (
     name: string,

@@ -14,6 +14,7 @@ import {
 } from '../../tools/Tool.js'
 import { getIsNonInteractiveSession } from '../../bootstrap/state.js'
 import type { TaskState } from '../../tasks/types.js'
+import type { AgenCConfig } from '../../config/schema.js'
 import type { AgentColorName } from '../../tools/AgentTool/agentColorManager.js'
 import type { AgentDefinitionsResult } from '../../tools/AgentTool/loadAgentsDir.js'
 import type { AllowedPrompt } from '../../tools/ExitPlanModeTool/ExitPlanModeV2Tool.js'
@@ -34,10 +35,7 @@ import type { DenialTrackingState } from '../../utils/permissions/denialTracking
 import type { PermissionMode } from '../../utils/permissions/PermissionMode.js'
 import type { WorkbenchState } from '../workbench/types.js'
 import { getDefaultWorkbenchState } from '../workbench/reducer.js'
-import {
-  getInitialSettings,
-  type RuntimeSettingsSnapshot,
-} from '../../utils/settings/settings.js'
+import { getInitialSettings } from '../../utils/settings/settings.js'
 import { isAgentSwarmsEnabled } from '../../utils/agentSwarmsEnabled.js'
 import { shouldEnableThinkingByDefault } from '../../utils/thinking.js'
 import { getSelectedProviderEnvironment } from '../../utils/model/providers.js'
@@ -95,7 +93,7 @@ export type FooterItem =
   | 'teams'
 
 export type AppState = DeepImmutable<{
-  settings: RuntimeSettingsSnapshot
+  settings: AgenCConfig
   verbose: boolean
   mainLoopModel: ModelSetting
   mainLoopModelForSession: ModelSetting
@@ -405,7 +403,7 @@ export function getDefaultAppState(): AppState {
  */
 export function getDefaultAppStateForProviderEnvironment(
   providerEnvironment: ProviderEnvironment,
-  initialSettings: RuntimeSettingsSnapshot,
+  initialSettings: AgenCConfig,
 ): AppState {
   const initialMode: PermissionMode =
     isTeammate() && isPlanModeRequired()

@@ -46,8 +46,23 @@ import {
   XaiAcpClient,
   type XaiAcpPermissionRequest,
 } from '../../../src/services/xai/acp.ts'
-import { SandboxExecutionBroker } from '../../../src/sandbox/execution-broker.ts'
+import {
+  SandboxExecutionBroker,
+  type SandboxPreparedSpawn,
+} from '../../../src/sandbox/execution-broker.ts'
+import { registerSandboxExecutionLifecycleParticipant } from '../../../src/sandbox/execution-lifecycle.ts'
 import { explicitDangerBroker } from '../../helpers/explicit-danger-boundary.ts'
+
+function registerAcpParticipant(broker: SandboxExecutionBroker): void {
+  registerSandboxExecutionLifecycleParticipant(broker, {
+    name: 'grok-acp-provider',
+    spawnSurfaces: ['provider'],
+    quiesce: async () => {},
+    resume: async () => {},
+  })
+}
+
+registerAcpParticipant(explicitDangerBroker)
 
 const FIXTURE = join(
   dirname(fileURLToPath(import.meta.url)),
@@ -265,6 +280,7 @@ describe('XaiAcpClient', () => {
         remediation: 'repair the test sandbox',
       }),
     })
+    registerAcpParticipant(broker)
 
     try {
       expect(() =>
@@ -318,14 +334,30 @@ describe('XaiAcpClient', () => {
         platform: 'linux',
       }),
     })
+    registerAcpParticipant(broker)
     const prepareSpawn = vi.spyOn(broker, 'prepareSpawn').mockImplementation(
-      (_surface, command) => ({
-        program: process.execPath,
-        args: [wrapperPath],
-        cwd: transformedCwd,
-        env: { ...command.env, ACP_TRANSFORMED: 'present' },
-        argv0: 'agenc-acp-sandboxed',
-      }),
+      (_surface, command) => {
+        const transformed = {
+          program: process.execPath,
+          args: [wrapperPath],
+          cwd: transformedCwd,
+          env: { ...command.env, ACP_TRANSFORMED: 'present' },
+          argv0: 'agenc-acp-sandboxed',
+        }
+        return {
+          run: operation => operation(
+            transformed,
+            new AbortController().signal,
+          ),
+          start: operation => operation(
+            transformed,
+            new AbortController().signal,
+          ).value,
+          runSync: operation => operation(transformed),
+          spawnLifecycleParticipant: (_participantName, operation) =>
+            operation(transformed),
+        } satisfies SandboxPreparedSpawn
+      },
     )
     let client: XaiAcpClient | undefined
 
@@ -355,7 +387,7 @@ describe('XaiAcpClient', () => {
           GROK_OAUTH2_REFERRER: 'agenc',
         },
         additionalPermissions: { network: { enabled: true } },
-      })
+      }, { lifecycleParticipant: 'grok-acp-provider' })
       expect(JSON.parse(await readFile(capturePath, 'utf8'))).toEqual({
         cwd: transformedCwd,
         argv0: 'agenc-acp-sandboxed',
@@ -394,6 +426,7 @@ describe('XaiAcpClient', () => {
         'utf8',
       )
       const broker = explicitDangerBroker.forkForCwd(root)
+      registerAcpParticipant(broker)
       let client: XaiAcpClient | undefined
       let pids: { agent: number; child: number } | undefined
 

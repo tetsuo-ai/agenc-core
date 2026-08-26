@@ -1,8 +1,9 @@
-import type {
-  PermissionAllowDecision,
-  PermissionAskDecision,
-  PermissionDenyDecision,
-  ToolPermissionContext,
+import {
+  immutableToolPermissionContext,
+  type PermissionAllowDecision,
+  type PermissionAskDecision,
+  type PermissionDenyDecision,
+  type ToolPermissionContext,
 } from "./types.js";
 import { isRemovedLiveToolName } from "./tool-names.js";
 
@@ -110,11 +111,11 @@ export function applyUnattendedPermissionPolicyToContext(
     context.mode === "bypassPermissions" ||
     context.mode === "plan" ||
     context.mode === "acceptEdits";
-  return {
+  return immutableToolPermissionContext({
     ...context,
     mode: preserveMode ? context.mode : "unattended",
     unattendedPolicy: createUnattendedPermissionPolicy(opts),
-  };
+  });
 }
 
 export function resolveUnattendedPermissionDecision(

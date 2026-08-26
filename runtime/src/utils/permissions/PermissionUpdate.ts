@@ -1,6 +1,5 @@
 // Moved-source note: this moved utility still imports not-yet-absorbed upstream subsystems.
 import { posix } from 'path'
-import type { ToolPermissionContext } from '../../tools/Tool.js'
 // Types extracted to src/types/permissions.ts to break import cycles
 import type {
   AdditionalWorkingDirectory,
@@ -13,10 +12,6 @@ import {
   type DiskEnv,
 } from '../../permissions/settings.js'
 import type { EditablePermissionRuleSource } from '../../permissions/types.js'
-import {
-  applyPermissionUpdate as applyCanonicalPermissionUpdate,
-  applyPermissionUpdates as applyCanonicalPermissionUpdates,
-} from '../../permissions/rules.js'
 import { toPosixPath } from './filesystem.js'
 import type { PermissionRuleValue } from './PermissionRule.js'
 import type {
@@ -46,32 +41,6 @@ export function hasRules(updates: PermissionUpdate[] | undefined): boolean {
   return extractRules(updates).length > 0
 }
 
-/**
- * Applies a single permission update to the context and returns the updated context
- * @param context The current permission context
- * @param update The permission update to apply
- * @returns The updated permission context
- */
-export function applyPermissionUpdate(
-  context: ToolPermissionContext,
-  update: PermissionUpdate,
-): ToolPermissionContext {
-  return applyCanonicalPermissionUpdate(context, update)
-}
-
-/**
- * Applies multiple permission updates to the context and returns the updated context
- * @param context The current permission context
- * @param updates The permission updates to apply
- * @returns The updated permission context
- */
-export function applyPermissionUpdates(
-  context: ToolPermissionContext,
-  updates: PermissionUpdate[],
-): ToolPermissionContext {
-  return applyCanonicalPermissionUpdates(context, updates)
-}
-
 export function supportsPersistence(
   destination: PermissionUpdateDestination,
 ): destination is EditablePermissionRuleSource {
@@ -90,6 +59,11 @@ export async function persistPermissionUpdate(
   update: PermissionUpdate,
   env?: DiskEnv,
 ): Promise<void> {
+  if (update.type === 'setMode' && update.mode === 'bypassPermissions') {
+    throw new Error(
+      'PermissionUpdate cannot persist bypassPermissions; use the exact-cwd consent transition',
+    )
+  }
   if (!supportsPersistence(update.destination)) return
 
   logForDebugging(

@@ -256,6 +256,8 @@ describe("AgenC daemon autostart", () => {
     await writeFile(
       join(agencHome, "config.toml"),
       `
+config_version = 2
+
 [daemon]
 autostart = false
 

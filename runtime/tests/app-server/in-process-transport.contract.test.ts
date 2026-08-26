@@ -218,11 +218,14 @@ describe("AgenC in-process app-server transport", () => {
           throw new Error("createAgent should not be called");
         },
         listAgents: async () => ({ agents: [] }),
-        attachAgent: async () => ({
-          agentId: "agent_1",
-          attachmentId: "attachment_1",
-          sessionIds: ["session_1"],
-        }),
+        attachAgent: async (_params, registerSessionRoute) => {
+          await registerSessionRoute("session_1");
+          return {
+            agentId: "agent_1",
+            attachmentId: "attachment_1",
+            sessionIds: ["session_1"],
+          };
+        },
         streamAgentMessage: async () => {},
         approveTool: async () => ({
           requestId: "unused",

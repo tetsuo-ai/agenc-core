@@ -85,14 +85,14 @@ describe.skipIf(process.platform === "win32")(
           broker,
           resolve("mcp-production-retry-new"),
         ),
-      ).rejects.toThrow(/old authority restored/);
+      ).rejects.toThrow(/broker was closed/);
 
       expect(ownedChild(transport)).toBe(owner);
       expect(terminationSeam.calls).toEqual([owner]);
       expect(isPidAlive(pid)).toBe(true);
       expect(manager.getConnectionState("retry-recovery")).toMatchObject({
         type: "failed",
-        error: expect.stringContaining("cleanup remains unproven"),
+        error: expect.stringContaining("execution authority is permanently closed"),
       });
 
       await expect(manager.stop()).resolves.toBeUndefined();
@@ -114,7 +114,7 @@ describe.skipIf(process.platform === "win32")(
           broker,
           resolve("mcp-production-persistent-new"),
         ),
-      ).rejects.toThrow(/old authority restored/);
+      ).rejects.toThrow(/broker was closed/);
       await expect(manager.stop()).resolves.toBeUndefined();
 
       expect(terminationSeam.calls).toEqual([owner, owner]);
@@ -122,10 +122,10 @@ describe.skipIf(process.platform === "win32")(
       expect(isPidAlive(pid)).toBe(true);
       expect(manager.getConnectionState("persistent-failure")).toMatchObject({
         type: "failed",
-        error: expect.stringContaining("cleanup remains unproven"),
+        error: expect.stringContaining("execution authority is permanently closed"),
       });
       await expect(manager.start()).rejects.toThrow(
-        /cleanup|connection lifecycle is active/i,
+        /execution authority is permanently closed/i,
       );
       expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
 
@@ -148,6 +148,7 @@ async function startProductionChain(serverName: string): Promise<{
     mode: "danger_full_access",
     cwd: process.cwd(),
   });
+  const prepareSpawn = vi.spyOn(broker, "prepareSpawn");
   const transport = new AgenCStdioClientTransport(
     {
       command: process.execPath,
@@ -158,7 +159,21 @@ async function startProductionChain(serverName: string): Promise<{
     broker,
   );
   transports.add(transport);
+  const manager = new MCPManager([
+    { name: serverName, command: process.execPath },
+  ]);
+  managers.add(manager);
+  manager.setSandboxExecutionBroker(broker);
   await transport.start();
+  expect(prepareSpawn).toHaveBeenCalledWith(
+    "mcp_stdio",
+    expect.objectContaining({
+      program: process.execPath,
+      cwd: process.cwd(),
+    }),
+    { lifecycleParticipant: "mcp-manager" },
+  );
+  prepareSpawn.mockRestore();
   const owner = ownedChild(transport);
   if (owner === undefined || owner.pid === undefined) {
     throw new Error("expected production MCP stdio owner");
@@ -167,11 +182,6 @@ async function startProductionChain(serverName: string): Promise<{
     listTools: vi.fn().mockResolvedValue({ tools: [] }),
     close: () => transport.close(),
   });
-  const manager = new MCPManager([
-    { name: serverName, command: process.execPath },
-  ]);
-  managers.add(manager);
-  manager.setSandboxExecutionBroker(broker);
   await manager.start({ requireOneReady: true });
   return { broker, manager, transport, owner };
 }

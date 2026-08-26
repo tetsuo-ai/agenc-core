@@ -6,6 +6,8 @@
  * filesystem-browser, and desktop endpoints are not part of this protocol.
  */
 
+import type { RunRuntimeSettingsSnapshot } from "../../contracts/run-contracts.js";
+
 /** JSON-RPC version required on daemon requests, responses, and notifications. */
 export const JSON_RPC_VERSION = "2.0" as const;
 /**
@@ -13,10 +15,14 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.2 adds identity-bearing transcript.v2 and turn-scoped cancellation.
  * 1.3 adds the passive MCP status projection and its live-only invalidation.
  * 1.4 makes the owning agent runtime authority part of agent.attach.
+ * 1.5 adds the effective hook-suppression projection.
+ * 1.6 makes the live canonical run-settings snapshot part of agent.attach.
+ * 1.7 adds inactive permission capabilities to that required snapshot and an
+ * authenticated internal session permission-rule mutation authority.
  * Clients that need any of these additive surfaces must not negotiate an older
  * daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.5.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.7.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -128,6 +134,7 @@ export const AGENC_DAEMON_INTERNAL_METHODS = [
   "session.rewindFilesToMessage",
   "session.setModel",
   "session.setPermissionMode",
+  "session.permissions.mutateRule",
   "session.hooks.status",
   "session.hooks.setDisabled",
   "session.applyConfig",
@@ -838,6 +845,14 @@ export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
     result: "object",
     description:
       "TUI-internal request to switch the permission mode on the daemon-owned session registry.",
+  },
+  "session.permissions.mutateRule": {
+    method: "session.permissions.mutateRule",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to mutate the daemon-owned session permission-rule bucket.",
   },
   "session.hooks.status": {
     method: "session.hooks.status",
@@ -1641,6 +1656,23 @@ export interface SessionSetPermissionModeParams extends JsonObject {
   readonly mode: string;
 }
 
+export type SessionPermissionRuleMutationOperation = "add" | "remove";
+export type SessionPermissionRuleBehavior = "allow" | "deny" | "ask";
+
+export interface SessionPermissionRuleMutationParams extends JsonObject {
+  readonly sessionId: string;
+  readonly operation: SessionPermissionRuleMutationOperation;
+  readonly behavior: SessionPermissionRuleBehavior;
+  /** Canonical `serializeRuleValue` output, reparsed by the daemon. */
+  readonly rule: string;
+}
+
+export interface SessionPermissionRuleBuckets extends JsonObject {
+  readonly allow: readonly string[];
+  readonly deny: readonly string[];
+  readonly ask: readonly string[];
+}
+
 export interface SessionHooksStatusParams extends JsonObject {
   readonly sessionId: string;
 }
@@ -2335,8 +2367,16 @@ export interface AgentAttachResult extends JsonObject {
   readonly sessionIds: readonly string[];
   /** Immutable operator authority owned by the attached daemon session. */
   readonly runtimeOptions: AgentRuntimeOptionsParams;
+  /** Live daemon-owned session settings; static session metadata is not authority. */
+  readonly runtimeSettings: RunRuntimeSettingsSnapshot & JsonObject;
+  /** Canonical settings event hydrated by this response. */
+  readonly runtimeSettingsEventId: string;
   readonly runtimeSessionId?: string;
-  readonly sessions?: readonly SessionSummary[];
+  readonly sessions: readonly AgentAttachSessionSummary[];
+}
+
+export interface AgentAttachSessionSummary extends SessionSummary {
+  readonly cwd: string;
 }
 
 export interface AgentStopResult extends JsonObject {
@@ -3319,6 +3359,16 @@ export interface SessionSetPermissionModeResult extends JsonObject {
   readonly mode: string;
 }
 
+export interface SessionPermissionRuleMutationResult extends JsonObject {
+  readonly sessionId: string;
+  readonly applied: boolean;
+  readonly operation: SessionPermissionRuleMutationOperation;
+  readonly behavior: SessionPermissionRuleBehavior;
+  readonly rule: string;
+  /** Complete canonical daemon-owned session buckets after the mutation. */
+  readonly sessionRules: SessionPermissionRuleBuckets;
+}
+
 /**
  * Flat, serializable snapshot of the daemon session's hooks runtime so the
  * `/hooks` command can render overview/show/validate/diagnostics without
@@ -3628,6 +3678,7 @@ export interface AgenCDaemonInternalResultByMethod {
   readonly "session.rewindFilesToMessage": SessionRewindFilesToMessageResult;
   readonly "session.setModel": SessionSetModelResult;
   readonly "session.setPermissionMode": SessionSetPermissionModeResult;
+  readonly "session.permissions.mutateRule": SessionPermissionRuleMutationResult;
   readonly "session.hooks.status": SessionHooksStatusResult;
   readonly "session.hooks.setDisabled": SessionHooksSetDisabledResult;
   readonly "session.applyConfig": SessionApplyConfigResult;

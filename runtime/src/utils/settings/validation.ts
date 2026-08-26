@@ -1,7 +1,7 @@
 import type { ConfigScope } from 'src/services/mcp/types.js'
 import type { ZodError, ZodIssue } from 'zod/v4'
+import type { AgenCConfig } from '../../config/schema.js'
 import { plural } from '../stringUtils.js'
-import type { RuntimeSettingsSnapshot } from './settings.js'
 import { getValidationTip } from './validationTips.js'
 
 /**
@@ -68,7 +68,7 @@ export type ValidationError = {
 }
 
 export type SettingsWithErrors = {
-  settings: RuntimeSettingsSnapshot
+  settings: AgenCConfig
   errors: ValidationError[]
 }
 

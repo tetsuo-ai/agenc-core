@@ -259,15 +259,19 @@ export class AgenCStdioClientTransport implements Transport {
         this.server.pluginSandbox,
       );
     }
-    const spawnCommand = broker.prepareSpawn("mcp_stdio", {
-      program: command,
-      args: this.server.args ?? [],
-      cwd,
-      env,
-      ...(permissionProfileOverride !== undefined
-        ? { permissionProfileOverride }
-        : {}),
-    });
+    const preparedSpawn = broker.prepareSpawn(
+      "mcp_stdio",
+      {
+        program: command,
+        args: this.server.args ?? [],
+        cwd,
+        env,
+        ...(permissionProfileOverride !== undefined
+          ? { permissionProfileOverride }
+          : {}),
+      },
+      { lifecycleParticipant: "mcp-manager" },
+    );
 
     this.resetStdoutFrame();
     this.stderrBuffer = Buffer.alloc(0);
@@ -275,17 +279,21 @@ export class AgenCStdioClientTransport implements Transport {
     this.closedNotified = false;
 
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(spawnCommand.program, [...spawnCommand.args], {
-        cwd: spawnCommand.cwd,
-        env: spawnCommand.env,
-        stdio: ["pipe", "pipe", "pipe"],
-        shell: false,
-        detached: process.platform !== "win32",
-        windowsHide: process.platform === "win32",
-        ...(spawnCommand.argv0 !== undefined
-          ? { argv0: spawnCommand.argv0 }
-          : {}),
-      });
+      const child = preparedSpawn.spawnLifecycleParticipant(
+        "mcp-manager",
+        (spawnCommand) =>
+          spawn(spawnCommand.program, [...spawnCommand.args], {
+            cwd: spawnCommand.cwd,
+            env: spawnCommand.env,
+            stdio: ["pipe", "pipe", "pipe"],
+            shell: false,
+            detached: process.platform !== "win32",
+            windowsHide: process.platform === "win32",
+            ...(spawnCommand.argv0 !== undefined
+              ? { argv0: spawnCommand.argv0 }
+              : {}),
+          }),
+      );
 
       this.child = child;
 

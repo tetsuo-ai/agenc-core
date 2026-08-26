@@ -289,6 +289,7 @@ function ensureLspLifecycleRegistration(
     scope,
     {
       name: "lsp",
+      spawnSurfaces: ["lsp"],
       quiesce: async () => {
         resumeOptions = state.lastManagerOptions;
         await quiesceLspManagerState(state, scope);

@@ -16,7 +16,7 @@ import {
   isDangerousRemovalPath,
   validatePath,
 } from "./path-validation.js";
-import { applyPermissionUpdate } from "./rules.js";
+import { applyPermissionUpdate } from "./permission-updates.js";
 import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,

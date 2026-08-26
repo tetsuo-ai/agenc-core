@@ -36,6 +36,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import { AsyncQueue } from "../utils/async-queue.js";
 import { createTestConfigStore } from "../fixtures.js";
+import { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {
   Session,
   type Event,
@@ -227,6 +229,9 @@ function mkSession(
 ): Session {
   const cwd = options.cwd ?? "/tmp";
   const services = {
+    permissionModeRegistry: new PermissionModeRegistry(
+      createEmptyToolPermissionContext(),
+    ),
     admissionRequired: false,
     runtimeOptions: resolveAgentRuntimeOptions({}),
     configStore: createTestConfigStore({ cwd }),

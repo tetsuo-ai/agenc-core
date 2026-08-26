@@ -133,12 +133,14 @@ import {
   runAgenCAgentCli,
 } from "../app-server/agent-cli.js";
 import {
+  applyDaemonTuiRuntimeSettingsAuthority,
   createAgenCDaemonOnlyTuiContext,
   findAgenCDaemonAgentBySessionId,
   listAgenCDaemonAgents,
   resumeAgenCDaemonPromptAgent,
   startAgenCDaemonPromptAgent,
   stopAgenCDaemonPromptAgent,
+  type AgenCDaemonOnlyTuiSession,
 } from "../app-server-client/index.js";
 import {
   emitLocalTuiEvent,
@@ -2398,6 +2400,7 @@ async function loadCreateDaemonTuiSession(): Promise<
     sessionId: string;
     conversationId?: string;
     clientId: string;
+    runtimeSettingsCursor: { readonly eventId: string; readonly cwd: string };
   }) => Promise<unknown>
 > {
   const mod = (await import("../tui/daemon-session.js")) as {
@@ -2407,6 +2410,10 @@ async function loadCreateDaemonTuiSession(): Promise<
       sessionId: string;
       conversationId?: string;
       clientId: string;
+      runtimeSettingsCursor: {
+        readonly eventId: string;
+        readonly cwd: string;
+      };
     }) => unknown;
   };
   return (opts) => Promise.resolve(mod.createDaemonTuiSession(opts));
@@ -3281,6 +3288,11 @@ async function createDeferredDaemonPromptTuiSession(params: {
         if (deferredSessionClosed) {
           throw new Error("Deferred TUI session is already closed.");
         }
+        await applyDaemonTuiRuntimeSettingsAuthority(
+          params.baseSession as unknown as AgenCDaemonOnlyTuiSession,
+          params.cwd,
+          attachment.runtimeSettings,
+        );
         liveSession = wrapDaemonTuiSessionWithPromptPreparation(
           (await createDaemonTuiSession({
             baseSession: params.baseSession,
@@ -3289,6 +3301,10 @@ async function createDeferredDaemonPromptTuiSession(params: {
             conversationId:
               attachment.runtimeSessionId ?? attachment.agentId ?? sessionId,
             clientId: params.clientId,
+            runtimeSettingsCursor: {
+              eventId: attachment.runtimeSettingsEventId,
+              cwd: params.cwd,
+            },
           })) as TuiSessionShape,
           {
             agencHome: params.agencHome,
@@ -4777,7 +4793,7 @@ export async function attachAgentTuiEntry(
       }
       const runtimeSessionId =
         attachment.runtimeSessionId ?? attachment.agentId ?? sessionId;
-      const bootstrapCwd = resolveAgenCAgentAttachCwd(attachment, targetCwd);
+      const bootstrapCwd = resolveAgenCAgentAttachCwd(attachment);
       const roleWorkspace = resolveAgenCAgentAttachRoleWorkspace(
         attachment,
         targetCwd,
@@ -4800,10 +4816,9 @@ export async function attachAgentTuiEntry(
         env: bootstrapEnv,
         cwd: bootstrapCwd,
       });
-      const attachedMetadata =
-        attachment.sessions?.find(
-          (attachedSession) => attachedSession.sessionId === sessionId,
-        )?.metadata ?? attachment.sessions?.[0]?.metadata;
+      const attachedMetadata = attachment.sessions.find(
+        (attachedSession) => attachedSession.sessionId === sessionId,
+      )?.metadata;
       const metadataString = (key: string): string | undefined => {
         const value = attachedMetadata?.[key];
         return typeof value === "string" && value.trim().length > 0
@@ -4814,25 +4829,45 @@ export async function attachAgentTuiEntry(
       if (retainedConfigPath !== undefined && !isAbsolute(retainedConfigPath)) {
         throw new Error("daemon session metadata configPath must be absolute");
       }
-      const attachProvider =
-        startupCliFlags.provider ??
-        metadataString("provider") ??
-        metadataString("modelProvider");
-      const attachModel = startupCliFlags.model ?? metadataString("model");
-      const attachProfile =
-        startupCliFlags.profile ?? metadataString("profile");
+      const liveSettings = attachment.runtimeSettings;
+      const requestedPermissionMode = startupPermissionMode(startupCliFlags);
+      if (
+        startupCliFlags.provider !== undefined &&
+        startupCliFlags.provider !== liveSettings.provider
+      ) {
+        throw new Error(
+          `attach-time provider ${startupCliFlags.provider} disagrees with live daemon provider ${liveSettings.provider}`,
+        );
+      }
+      if (
+        startupCliFlags.model !== undefined &&
+        startupCliFlags.model !== liveSettings.model
+      ) {
+        throw new Error(
+          `attach-time model ${startupCliFlags.model} disagrees with live daemon model ${liveSettings.model}`,
+        );
+      }
+      if (
+        requestedPermissionMode !== undefined &&
+        requestedPermissionMode !== liveSettings.permissionMode
+      ) {
+        throw new Error(
+          `attach-time permission mode ${requestedPermissionMode} disagrees with live daemon mode ${liveSettings.permissionMode}`,
+        );
+      }
+      if (
+        startupCliFlags.profile !== undefined &&
+        startupCliFlags.profile !== liveSettings.profile
+      ) {
+        throw new Error(
+          `attach-time profile ${startupCliFlags.profile} disagrees with live daemon profile ${liveSettings.profile ?? "(none)"}`,
+        );
+      }
+      const attachProvider = liveSettings.provider;
+      const attachModel = liveSettings.model;
+      const attachProfile = liveSettings.profile ?? undefined;
       const attachConfigPath =
         startupLayers.flagConfigPath ?? retainedConfigPath;
-      const retainedPermissionMode = metadataString("permissionMode");
-      const retainedUserPermissionMode =
-        retainedPermissionMode !== undefined &&
-        (USER_ADDRESSABLE_PERMISSION_MODES as readonly string[]).includes(
-          retainedPermissionMode,
-        )
-          ? (retainedPermissionMode as AgentCreateParams["permissionMode"])
-          : undefined;
-      const attachPermissionMode =
-        startupPermissionMode(startupCliFlags) ?? retainedUserPermissionMode;
       const {
         workspaceRoot,
         baseSession,
@@ -4844,14 +4879,12 @@ export async function attachAgentTuiEntry(
         cwd: bootstrapCwd,
         roleWorkspace,
         conversationId: runtimeSessionId,
+        runtimeSettings: liveSettings,
         ...(attachProvider !== undefined ? { provider: attachProvider } : {}),
         ...(attachModel !== undefined ? { model: attachModel } : {}),
         ...(attachProfile !== undefined ? { profile: attachProfile } : {}),
         ...(attachConfigPath !== undefined
           ? { configPath: attachConfigPath }
-          : {}),
-        ...(attachPermissionMode !== undefined
-          ? { permissionMode: attachPermissionMode }
           : {}),
       });
       const configStore = baseSession.services.configStore;
@@ -4862,6 +4895,10 @@ export async function attachAgentTuiEntry(
         sessionId,
         conversationId: runtimeSessionId,
         clientId: args.clientId,
+        runtimeSettingsCursor: {
+          eventId: attachment.runtimeSettingsEventId,
+          cwd: bootstrapCwd,
+        },
       });
       const preparedDaemonSession = wrapDaemonTuiSessionWithPromptPreparation(
         daemonSession as {

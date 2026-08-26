@@ -151,6 +151,7 @@ export class GrokAcpProvider implements LLMProvider {
         broker,
         {
           name: "grok-acp-provider",
+          spawnSurfaces: ["provider"],
           quiesce: async () => {
             this.suspended = true;
             await this.closeClient();

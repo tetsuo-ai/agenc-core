@@ -25,7 +25,7 @@ import {
   type PermissionUpdateDestination,
   type ToolPermissionContext,
   type ToolPermissionRulesBySource,
-  deepFreeze,
+  immutableToolPermissionContext,
 } from "./types.js";
 import { isRemovedLiveToolName } from "./tool-names.js";
 
@@ -533,30 +533,39 @@ function writeBucket(
     if (prev) nextBucket[source] = prev;
   }
   nextBucket[destination] = Object.freeze([...ruleStrings]);
-  return deepFreeze({ ...ctx, [bucketKey]: nextBucket }) as ToolPermissionContext;
+  return immutableToolPermissionContext({
+    ...ctx,
+    [bucketKey]: nextBucket,
+  } as ToolPermissionContext);
 }
 
+export type RuleOnlyPermissionUpdate = Exclude<
+  PermissionUpdate,
+  { readonly type: "setMode" }
+>;
+
 /**
- * Apply a single `PermissionUpdate`. Returns a new, deeply frozen
+ * Apply a rule/directory update. Mode changes belong exclusively to
+ * permission-updates.ts so this pure module cannot depend on the FSM.
+ * Returns a new, deeply frozen
  * context. Input update is treated as readonly — destinations not
  * mentioned are carried over verbatim.
  */
-export function applyPermissionUpdate(
+export function applyRulePermissionUpdate(
   ctx: ToolPermissionContext,
-  update: PermissionUpdate,
+  update: RuleOnlyPermissionUpdate,
 ): ToolPermissionContext {
   switch (update.type) {
-    case "setMode": {
-      return deepFreeze({ ...ctx, mode: update.mode }) as ToolPermissionContext;
-    }
     case "addRules": {
       const bucketKey = bucketKeyForBehavior(update.behavior);
       const existing = ctx[bucketKey][update.destination] ?? [];
       const adds = update.rules.map(serializeRuleValue);
-      return writeBucket(ctx, bucketKey, update.destination, [
-        ...existing,
-        ...adds,
-      ]);
+      return writeBucket(
+        ctx,
+        bucketKey,
+        update.destination,
+        [...new Set([...existing, ...adds])],
+      );
     }
     case "replaceRules": {
       const bucketKey = bucketKeyForBehavior(update.behavior);
@@ -578,7 +587,7 @@ export function applyPermissionUpdate(
           source: update.destination as PermissionRuleSource,
         });
       }
-      return deepFreeze({
+      return immutableToolPermissionContext({
         ...ctx,
         additionalWorkingDirectories: next,
       }) as ToolPermissionContext;
@@ -586,7 +595,7 @@ export function applyPermissionUpdate(
     case "removeDirectories": {
       const next = new Map(ctx.additionalWorkingDirectories);
       for (const dir of update.directories) next.delete(dir);
-      return deepFreeze({
+      return immutableToolPermissionContext({
         ...ctx,
         additionalWorkingDirectories: next,
       }) as ToolPermissionContext;
@@ -602,12 +611,12 @@ export function applyPermissionUpdate(
   }
 }
 
-export function applyPermissionUpdates(
+export function applyRulePermissionUpdates(
   ctx: ToolPermissionContext,
-  updates: readonly PermissionUpdate[],
+  updates: readonly RuleOnlyPermissionUpdate[],
 ): ToolPermissionContext {
   let out = ctx;
-  for (const u of updates) out = applyPermissionUpdate(out, u);
+  for (const u of updates) out = applyRulePermissionUpdate(out, u);
   return out;
 }
 
@@ -626,7 +635,7 @@ export function applyPermissionUpdates(
 export function convertRulesToUpdates(
   rules: readonly PermissionRule[],
   updateType: "addRules" | "replaceRules",
-): PermissionUpdate[] {
+): RuleOnlyPermissionUpdate[] {
   const grouped = new Map<string, PermissionRuleValue[]>();
   for (const r of rules) {
     if (!isPermissionUpdateDestination(r.source)) continue;
@@ -635,7 +644,7 @@ export function convertRulesToUpdates(
     if (bucket) bucket.push(r.ruleValue);
     else grouped.set(key, [r.ruleValue]);
   }
-  const updates: PermissionUpdate[] = [];
+  const updates: RuleOnlyPermissionUpdate[] = [];
   for (const [key, values] of grouped) {
     const sepIdx = key.indexOf(":");
     const source = key.slice(0, sepIdx) as PermissionUpdateDestination;
@@ -672,7 +681,10 @@ export function setRulesForSource(
     if (prev) nextBucket[s] = prev;
   }
   nextBucket[source] = Object.freeze([...ruleStrings]);
-  return deepFreeze({ ...ctx, [bucketKey]: nextBucket }) as ToolPermissionContext;
+  return immutableToolPermissionContext({
+    ...ctx,
+    [bucketKey]: nextBucket,
+  } as ToolPermissionContext);
 }
 
 /**
@@ -707,7 +719,7 @@ export function applyPermissionRulesToPermissionContext(
   }
 
   const updates = convertRulesToUpdates(destinationOk, "addRules");
-  let out = applyPermissionUpdates(ctx, updates);
+  let out = applyRulePermissionUpdates(ctx, updates);
 
   // Now handle read-only sources by direct bucket write. We append
   // to any pre-existing strings for the same source × behavior so
@@ -736,7 +748,7 @@ export function clearAllRulesFromSource(
 ): ToolPermissionContext {
   let out = ctx;
   for (const behavior of ["allow", "deny", "ask"] as const) {
-    out = applyPermissionUpdate(out, {
+    out = applyRulePermissionUpdate(out, {
       type: "replaceRules",
       destination: source,
       rules: [],

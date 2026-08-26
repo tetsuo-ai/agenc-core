@@ -41,21 +41,17 @@ describe("TeamsDialog.layout coverage swarm row 201", () => {
     const listFooter = getTeamListFooterText({
       glyphs,
       supportsHideShow: false,
-      cycleModeShortcut: "tab",
       columns: 500,
     });
     const detailFooter = getTeammateDetailFooterText({
       glyphs,
       supportsHideShow: false,
-      cycleModeShortcut: "tab",
       columns: 500,
     });
 
     expect(listFooter).toContain("^/v select");
-    expect(listFooter).toContain("tab sync cycle modes for all");
     expect(listFooter).not.toContain("hide/show");
     expect(detailFooter).toContain("Left back");
-    expect(detailFooter).toContain("tab cycle mode");
     expect(detailFooter).not.toContain("hide/show");
   });
 

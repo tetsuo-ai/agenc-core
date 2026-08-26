@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { getEventListeners } from "node:events";
 import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -2134,30 +2135,6 @@ describe("configured hooks runtime", () => {
   });
 
   test("removes abort listeners after successful command hooks", async () => {
-    class CountingSignal extends EventTarget {
-      aborted = false;
-      reason: unknown;
-      listenerCount = 0;
-
-      override addEventListener(
-        type: string,
-        callback: EventListenerOrEventListenerObject | null,
-        options?: boolean | AddEventListenerOptions,
-      ): void {
-        if (type === "abort" && callback !== null) this.listenerCount += 1;
-        super.addEventListener(type, callback, options);
-      }
-
-      override removeEventListener(
-        type: string,
-        callback: EventListenerOrEventListenerObject | null,
-        options?: boolean | EventListenerOptions,
-      ): void {
-        if (type === "abort" && callback !== null) this.listenerCount -= 1;
-        super.removeEventListener(type, callback, options);
-      }
-    }
-
     const runtime = new ConfiguredHooksRuntime({
       cwd: process.cwd(),
       env: process.env,
@@ -2184,16 +2161,17 @@ describe("configured hooks runtime", () => {
         },
       ],
     });
-    const signal = new CountingSignal();
+    const signal = new AbortController().signal;
+    expect(getEventListeners(signal, "abort")).toHaveLength(0);
 
     await target.userPromptSubmitHooks[0]!({
       prompt: "ship PE-06",
       permissionMode: "default",
       cwd: process.cwd(),
-      signal: signal as AbortSignal,
+      signal,
     });
 
-    expect(signal.listenerCount).toBe(0);
+    expect(getEventListeners(signal, "abort")).toHaveLength(0);
   });
 });
 

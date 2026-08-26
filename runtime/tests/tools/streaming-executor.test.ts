@@ -464,7 +464,7 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
     expect(siblingReasons).toEqual([]);
   });
 
-  test("live dispatch accepts model tool aliases before unknown-tool synthesis", async () => {
+  test("live dispatch rejects retired model tool aliases before dispatch", async () => {
     const execute = vi.fn(async (args: Record<string, unknown>) => ({
       content: `read ${String(args.file_path)}`,
     }));
@@ -510,12 +510,10 @@ describe("StreamingToolExecutor (I-65 + I-41)", () => {
       results.push(result);
     }
 
-    expect(execute).toHaveBeenCalledWith(
-      expect.objectContaining({ file_path: "main.c" }),
-    );
+    expect(execute).not.toHaveBeenCalled();
     expect(results).toHaveLength(1);
-    expect(results[0]!.result.content).toBe("read main.c");
-    expect(results[0]!.result.content).not.toContain("No such tool available");
+    expect(results[0]!.result.isError).toBe(true);
+    expect(results[0]!.result.content).toContain("No such tool available: Read");
   });
 
   test("external abort reasons are preserved in synthetic terminal results", async () => {

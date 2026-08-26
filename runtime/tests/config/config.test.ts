@@ -1988,6 +1988,91 @@ describe("ConfigStore", () => {
     expect(store.subscriberCount()).toBe(0);
   });
 
+  test("prepareReload keeps config and subscribers unchanged until coordinated publication", async () => {
+    const store = new ConfigStore({
+      home: dir,
+      env: {},
+      loader: async () => ({ model: "staged-model" }),
+    });
+    const previous = store.current();
+    const seen: string[] = [];
+    store.subscribe((config) => seen.push(config.model ?? ""));
+
+    const prepared = await store.prepareReload();
+
+    expect(store.current()).toBe(previous);
+    expect(prepared.config.model).toBe("staged-model");
+    expect(prepared.authority.current()).toBe(prepared.config);
+    expect(seen).toEqual([]);
+
+    prepared.commit();
+    expect(store.current()).toBe(prepared.config);
+    expect(seen).toEqual([]);
+
+    prepared.publish();
+    expect(seen).toEqual(["staged-model"]);
+    prepared.settle();
+  });
+
+  test("prepared reload holds serialization through settlement and can restore a published snapshot", async () => {
+    let calls = 0;
+    const store = new ConfigStore({
+      home: dir,
+      env: {},
+      loader: async () => ({ model: calls++ === 0 ? "first" : "second" }),
+    });
+    const original = store.current();
+    const seen: string[] = [];
+    store.subscribe((config) => seen.push(config.model ?? ""));
+
+    const first = await store.prepareReload();
+    first.commit();
+    first.publish();
+    const second = store.reload();
+    await Promise.resolve();
+    expect(calls).toBe(1);
+
+    first.rollback();
+    expect(store.current()).toBe(original);
+    expect(seen).toEqual(["first", original.model ?? ""]);
+    first.settle();
+
+    await expect(second).resolves.toMatchObject({ model: "second" });
+    expect(calls).toBe(2);
+  });
+
+  test("throwing warning sinks and subscribers cannot split prepared publication or restoration", async () => {
+    const onWarn = vi.fn(() => {
+      throw new Error("warning sink failed");
+    });
+    const store = new ConfigStore({
+      home: dir,
+      env: {},
+      onWarn,
+      loader: async ({ onWarn: warn }) => {
+        warn?.("staged warning");
+        return { model: "staged-model" };
+      },
+    });
+    const previous = store.current();
+    const seen: string[] = [];
+    store.subscribe(() => {
+      throw new Error("subscriber failed");
+    });
+    store.subscribe((config) => seen.push(config.model ?? ""));
+
+    const prepared = await store.prepareReload();
+    prepared.commit();
+    expect(() => prepared.publish()).not.toThrow();
+    expect(seen).toEqual(["staged-model"]);
+
+    expect(() => prepared.rollback()).not.toThrow();
+    expect(store.current()).toBe(previous);
+    expect(seen).toEqual(["staged-model", previous.model ?? ""]);
+    prepared.settle();
+    expect(onWarn).toHaveBeenCalled();
+  });
+
   test("reload() rejects invalid canonical config without fallback", async () => {
     mkdirSync(dir, { recursive: true });
     writeFileSync(

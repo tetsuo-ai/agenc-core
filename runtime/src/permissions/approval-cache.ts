@@ -24,10 +24,10 @@
 import { canonicalizeCommandForApproval } from "../shell-command/parser.js";
 import type { ReviewDecision } from "./review-decision.js";
 import {
-  applyPermissionUpdate,
   parseRuleString,
   serializeRuleValue,
 } from "./rules.js";
+import { applyPermissionUpdate } from "./permission-updates.js";
 import type {
   PermissionRuleValue,
   PermissionUpdate,

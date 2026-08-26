@@ -217,12 +217,8 @@ const SETTINGS_TRUST_FIELDS = Object.freeze([
   "skipAutoPermissionPrompt",
 ] as const);
 
-const SETTINGS_STATE_FIELDS = Object.freeze([
-  "fastModePerSessionOptIn",
-  "bypassPermissionsModeAcceptedIn",
-] as const);
-
 const SETTINGS_REMOVED_FIELDS = Object.freeze([
+  "fastModePerSessionOptIn",
   "$schema",
   "includeCoAuthoredBy",
   "assistantName",
@@ -289,11 +285,13 @@ const SETTINGS_ENTRIES = Object.freeze([
     "block",
     "trust decisions must be migrated into the trust ledger explicitly",
   ),
-  ...settingsEntries(
-    SETTINGS_STATE_FIELDS,
+  entry(
+    "settings-json",
+    "bypassPermissionsModeAcceptedIn",
     "state",
-    "retain",
-    "runtime/UI state remains outside canonical configuration",
+    "transform",
+    "exact-cwd bypass consent moves into canonical runtime state after stable directory validation",
+    "state.global.permissions.bypassPermissionsAcceptedByCwd",
   ),
   ...settingsEntries(
     SETTINGS_REMOVED_FIELDS,

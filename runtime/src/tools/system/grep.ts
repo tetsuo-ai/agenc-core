@@ -48,6 +48,10 @@ import {
   applyReadOnlyRuntimeSandboxToSpawn,
   type SandboxSpawnCommand,
 } from "./apply-runtime-sandbox.js";
+import {
+  isSandboxPreparedSpawn,
+  type SandboxPreparedSpawn,
+} from "../../sandbox/execution-broker.js";
 import { resolveToolAllowedPaths, safePath } from "./filesystem.js";
 import { selectPinnedRipgrepPath } from "./pinned-ripgrep.js";
 import {
@@ -491,7 +495,7 @@ function prepareBoundRipgrepCommand(params: {
   readonly program: string;
   readonly args: readonly string[];
   readonly env: Record<string, string>;
-}): SandboxSpawnCommand {
+}): SandboxSpawnCommand | SandboxPreparedSpawn {
   const command = applyReadOnlyRuntimeSandboxToSpawn({
     toolArgs: params.toolArgs,
     fallbackCwd: params.fallbackCwd,
@@ -503,14 +507,37 @@ function prepareBoundRipgrepCommand(params: {
     cwdBinding: "inherited_readonly",
     env: params.env,
   });
-  if (command.cwd !== BOUND_RIPGREP_COMMAND_CWD) {
-    throw new Error(
-      "sandbox transform changed descriptor-bound ripgrep cwd; refusing to leave the authenticated capability root",
-    );
-  }
-  assertGrepArgumentEncoding(command.program, "ripgrep executable");
-  assertGrepArgvWithinLimits(command.argv0 ?? command.program, command.args);
   return command;
+}
+
+async function withBoundRipgrepCommand<T>(
+  command: SandboxSpawnCommand | SandboxPreparedSpawn,
+  operation: (
+    command: SandboxSpawnCommand,
+    lifecycleSignal?: AbortSignal,
+  ) => Promise<T>,
+): Promise<T> {
+  const run = (
+    resolved: SandboxSpawnCommand,
+    lifecycleSignal?: AbortSignal,
+  ): Promise<T> => {
+    if (resolved.cwd !== BOUND_RIPGREP_COMMAND_CWD) {
+      throw new Error(
+        "sandbox transform changed descriptor-bound ripgrep cwd; refusing to leave the authenticated capability root",
+      );
+    }
+    assertGrepArgumentEncoding(resolved.program, "ripgrep executable");
+    assertGrepArgvWithinLimits(
+      resolved.argv0 ?? resolved.program,
+      resolved.args,
+    );
+    return operation(resolved, lifecycleSignal);
+  };
+  return isSandboxPreparedSpawn(command)
+    ? command.run((resolved, lifecycleSignal) =>
+        run(resolved, lifecycleSignal),
+      )
+    : run(command);
 }
 
 /** Probe `rg` once per process and cache the result. */
@@ -542,15 +569,28 @@ async function isRipgrepAvailable(
               remainingGrepOperationMs(deadline),
             );
       if (remaining < 1) return false;
-      const result = await readCapability.runRipgrep({
-        program: command.program,
-        args: command.args,
-        env: command.env,
-        ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
-        timeoutMs: remaining,
-        maxOutputBytes: RIPGREP_PROBE_MAX_OUTPUT_BYTES,
-        ...(signal !== undefined ? { signal } : {}),
-      });
+      const result = await withBoundRipgrepCommand(
+        command,
+        (resolved, lifecycleSignal) =>
+          readCapability.runRipgrep({
+            program: resolved.program,
+            args: resolved.args,
+            env: resolved.env,
+            ...(resolved.argv0 !== undefined
+              ? { argv0: resolved.argv0 }
+              : {}),
+            timeoutMs: remaining,
+            maxOutputBytes: RIPGREP_PROBE_MAX_OUTPUT_BYTES,
+            ...(signal !== undefined || lifecycleSignal !== undefined
+              ? {
+                  signal:
+                    signal !== undefined && lifecycleSignal !== undefined
+                      ? AbortSignal.any([signal, lifecycleSignal])
+                      : (signal ?? lifecycleSignal),
+                }
+              : {}),
+          }),
+      );
       return (
         result.exitCode === 0 &&
         result.stopReason === undefined &&
@@ -564,7 +604,7 @@ async function isRipgrepAvailable(
   // Authenticate and prepare the probe before consulting the process-wide
   // availability cache. A cached host result must never let a later restricted
   // session skip its own required sandbox boundary.
-  let command: SandboxSpawnCommand;
+  let command: SandboxSpawnCommand | SandboxPreparedSpawn;
   try {
     command = applyReadOnlyRuntimeSandboxToSpawn({
       toolArgs,
@@ -588,7 +628,7 @@ async function isRipgrepAvailable(
 }
 
 async function probeRipgrepCommand(
-  command: SandboxSpawnCommand,
+  command: SandboxSpawnCommand | SandboxPreparedSpawn,
   signal?: AbortSignal,
   deadline?: GrepOperationDeadline,
 ): Promise<boolean> {
@@ -1972,35 +2012,49 @@ async function runRipgrepCollectRecords(params: {
     try {
       const skipLines = params.skipLines ?? 0;
       const helperMaximumLines = params.maximumLines ?? MAX_GREP_RESULTS + 1;
-      const result = await params.readCapability.runRipgrep({
-        program: command.program,
-        args: command.args,
-        env: command.env,
-        ...(command.argv0 !== undefined ? { argv0: command.argv0 } : {}),
-        timeoutMs,
-        maxOutputBytes: RIPGREP_WIRE_MAX_OUTPUT_BYTES,
-        ...(helperMaximumLines !== undefined
-          ? {
-              structuredLineLimit: {
-                outputMode: params.outputMode,
-                maximumLines: helperMaximumLines,
-                maximumRecordBytes: MAX_GREP_RECORD_BYTES,
-                maximumWorkUnits:
-                  params.operationBudget?.remainingWorkUnits ??
-                  MAX_GREP_OPERATION_WORK_UNITS,
-                ...(skipLines > 0 ? { skipLines } : {}),
-                ...(params.excludedPaths !== undefined
-                  ? { excludedPaths: params.excludedPaths }
-                  : {}),
-              },
-            }
-          : {}),
-        ...(params.stdin !== undefined ? { stdin: params.stdin } : {}),
-        ...(params.relativeInputFile !== undefined
-          ? { relativeInputFile: params.relativeInputFile }
-          : {}),
-        ...(params.signal !== undefined ? { signal: params.signal } : {}),
-      });
+      const result = await withBoundRipgrepCommand(
+        command,
+        (resolved, lifecycleSignal) =>
+          params.readCapability!.runRipgrep({
+            program: resolved.program,
+            args: resolved.args,
+            env: resolved.env,
+            ...(resolved.argv0 !== undefined
+              ? { argv0: resolved.argv0 }
+              : {}),
+            timeoutMs,
+            maxOutputBytes: RIPGREP_WIRE_MAX_OUTPUT_BYTES,
+            ...(helperMaximumLines !== undefined
+              ? {
+                  structuredLineLimit: {
+                    outputMode: params.outputMode,
+                    maximumLines: helperMaximumLines,
+                    maximumRecordBytes: MAX_GREP_RECORD_BYTES,
+                    maximumWorkUnits:
+                      params.operationBudget?.remainingWorkUnits ??
+                      MAX_GREP_OPERATION_WORK_UNITS,
+                    ...(skipLines > 0 ? { skipLines } : {}),
+                    ...(params.excludedPaths !== undefined
+                      ? { excludedPaths: params.excludedPaths }
+                      : {}),
+                  },
+                }
+              : {}),
+            ...(params.stdin !== undefined ? { stdin: params.stdin } : {}),
+            ...(params.relativeInputFile !== undefined
+              ? { relativeInputFile: params.relativeInputFile }
+              : {}),
+            ...(params.signal !== undefined || lifecycleSignal !== undefined
+              ? {
+                  signal:
+                    params.signal !== undefined &&
+                    lifecycleSignal !== undefined
+                      ? AbortSignal.any([params.signal, lifecycleSignal])
+                      : (params.signal ?? lifecycleSignal),
+                }
+              : {}),
+          }),
+      );
       const parser = createCollectionWireParser(
         params.outputMode,
         helperMaximumLines,

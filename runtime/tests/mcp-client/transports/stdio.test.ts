@@ -32,7 +32,12 @@ vi.mock("../../../src/utils/supervisedProcess.js", async (importOriginal) => {
 });
 
 import type { Logger } from "../../_deps/logger.js";
-import { SandboxExecutionBroker } from "../../sandbox/execution-broker.js";
+import {
+  SandboxExecutionBroker,
+  type SandboxPreparedSpawn,
+  type SandboxSpawnCommand,
+} from "../../sandbox/execution-broker.js";
+import { registerSandboxExecutionLifecycleParticipant } from "../../sandbox/execution-lifecycle.js";
 import {
   AGENC_MCP_STDIO_MAX_FRAME_BYTES,
   AgenCStdioClientTransport,
@@ -46,6 +51,17 @@ const explicitDangerBroker = new SandboxExecutionBroker({
   mode: "danger_full_access",
   cwd: process.cwd(),
 });
+
+function registerMcpParticipant(broker: SandboxExecutionBroker): void {
+  registerSandboxExecutionLifecycleParticipant(broker, {
+    name: "mcp-manager",
+    spawnSurfaces: ["mcp_stdio"],
+    quiesce: async () => {},
+    resume: async () => {},
+  });
+}
+
+registerMcpParticipant(explicitDangerBroker);
 
 afterEach(async () => {
   terminationSeam.failuresRemaining = 0;
@@ -98,6 +114,7 @@ describe("AgenCStdioClientTransport", () => {
       mode: "danger_full_access",
       cwd: dir,
     });
+    registerMcpParticipant(broker);
     const transport = new AgenCStdioClientTransport(
       {
         command: process.execPath,
@@ -135,6 +152,7 @@ describe("AgenCStdioClientTransport", () => {
       mode: "danger_full_access",
       cwd: dir,
     });
+    registerMcpParticipant(broker);
     const transport = new AgenCStdioClientTransport(
       {
         command: process.execPath,
@@ -582,10 +600,17 @@ describe("stdio connect failure diagnostics", () => {
       runtimeSandbox: () => undefined,
       prepareSpawn: (
         _surface: string,
-        command: Record<string, unknown>,
-      ): Record<string, unknown> => {
+        command: SandboxSpawnCommand,
+      ): SandboxPreparedSpawn => {
         recorded.push(command);
-        return command;
+        const signal = new AbortController().signal;
+        return {
+          run: operation => operation(command, signal),
+          start: operation => operation(command, signal).value,
+          runSync: operation => operation(command),
+          spawnLifecycleParticipant: (_participantName, operation) =>
+            operation(command),
+        };
       },
     };
     const transport = new AgenCStdioClientTransport(

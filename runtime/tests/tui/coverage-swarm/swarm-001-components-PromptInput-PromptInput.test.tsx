@@ -64,6 +64,10 @@ const harness = vi.hoisted(() => {
     features: {} as Record<string, boolean>,
     fullscreen: false,
     getGlobalConfigResult: {} as Record<string, unknown>,
+    getNextPermissionMode: vi.fn(
+      (_from: unknown, _context: Record<string, unknown>) =>
+        harness.nextPermissionMode,
+    ),
     globalSearchProps: undefined as undefined | Record<string, unknown>,
     hasAutoModeOptIn: true,
     history: {
@@ -103,7 +107,6 @@ const harness = vi.hoisted(() => {
     keybindings: {} as Record<string, () => unknown>,
     modelPickerProps: undefined as undefined | Record<string, unknown>,
     nextPermissionMode: 'plan',
-    cyclePermissionModeNextMode: null as null | string,
     onRender: vi.fn(),
     platform: 'linux',
     promptInputFooterProps: undefined as undefined | Record<string, unknown>,
@@ -175,6 +178,7 @@ const harness = vi.hoisted(() => {
       harness.features = {}
       harness.fullscreen = false
       harness.getGlobalConfigResult = {}
+      harness.getNextPermissionMode.mockClear()
       harness.globalSearchProps = undefined
       harness.hasAutoModeOptIn = true
       harness.history.dismissSearchHint.mockClear()
@@ -201,7 +205,6 @@ const harness = vi.hoisted(() => {
       harness.keybindings = {}
       harness.modelPickerProps = undefined
       harness.nextPermissionMode = 'plan'
-      harness.cyclePermissionModeNextMode = null
       harness.onRender.mockClear()
       harness.platform = 'linux'
       harness.promptInputFooterProps = undefined
@@ -571,16 +574,9 @@ vi.mock('../../utils/permissions/autoModeState.js', () => ({
   setAutoModeActive: harness.setAutoModeActive,
 }))
 
-vi.mock('../../utils/permissions/getNextPermissionMode.js', () => ({
-  cyclePermissionMode: (context: unknown) => ({
-    context,
-    nextMode: harness.cyclePermissionModeNextMode ?? harness.nextPermissionMode,
-  }),
-  getNextPermissionMode: () => harness.nextPermissionMode,
-}))
-
-vi.mock('../../permissions/permission-mode.js', async importOriginal => ({
-  ...(await importOriginal<Record<string, unknown>>()),
+vi.mock('../../permissions/permission-mode.js', () => ({
+  getNextPermissionMode: harness.getNextPermissionMode,
+  isAutoModeGateEnabled: () => true,
   transitionPermissionMode: harness.transitionPermissionMode,
 }))
 
@@ -1143,6 +1139,9 @@ describe('PromptInput coverage swarm row 001', () => {
         () => harness.autoModeOptInProps !== undefined,
         'auto mode dialog did not render',
       )
+      expect(setToolPermissionContext).not.toHaveBeenCalled()
+      expect(harness.transitionPermissionMode).not.toHaveBeenCalled()
+      expect(harness.appState.toolPermissionContext.mode).toBe('default')
 
       ;(harness.autoModeOptInProps?.onAccept as () => void)()
       expect(harness.transitionPermissionMode).toHaveBeenCalledWith(
@@ -1176,15 +1175,17 @@ describe('PromptInput coverage swarm row 001', () => {
         () => harness.autoModeOptInProps !== undefined,
         'auto mode dialog did not render for decline',
       )
+      expect(declineSetToolPermissionContext).not.toHaveBeenCalled()
+      expect(harness.transitionPermissionMode).not.toHaveBeenCalled()
+      expect(harness.appState.toolPermissionContext.mode).toBe('default')
 
+      const acceptAfterClose = harness.autoModeOptInProps?.onAccept as () => void
       ;(harness.autoModeOptInProps?.onDecline as () => void)()
-      expect(harness.setAutoModeActive).toHaveBeenCalledWith(false)
-      expect(declineSetToolPermissionContext).toHaveBeenLastCalledWith(
-        expect.objectContaining({
-          isAutoModeAvailable: false,
-          mode: 'default',
-        }),
-      )
+      acceptAfterClose()
+      expect(harness.setAutoModeActive).not.toHaveBeenCalled()
+      expect(declineSetToolPermissionContext).not.toHaveBeenCalled()
+      expect(harness.transitionPermissionMode).not.toHaveBeenCalled()
+      expect(harness.appState.toolPermissionContext.mode).toBe('default')
     } finally {
       await declineRendered.dispose()
     }
@@ -1221,6 +1222,48 @@ describe('PromptInput coverage swarm row 001', () => {
       )
       expect(setToolPermissionContext).not.toHaveBeenCalled()
       expect(harness.appState.toolPermissionContext.mode).toBe('default')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('does not offer bypass mode to a viewed teammate', async () => {
+    harness.isAgentSwarmsEnabled = true
+    harness.nextPermissionMode = 'bypassPermissions'
+    harness.appState.viewingAgentTaskId = 'worker-1'
+    harness.viewedTeammate = {
+      id: 'worker-1',
+      identity: { agentName: 'worker', color: 'cyan' },
+      permissionMode: 'plan',
+    }
+    harness.appState.tasks = {
+      'worker-1': {
+        id: 'worker-1',
+        permissionMode: 'plan',
+        type: 'in_process_teammate',
+      },
+    }
+    const rendered = await renderPromptInput({
+      setToolPermissionContext: vi.fn(),
+    })
+
+    try {
+      await waitForPromptInputProps()
+
+      harness.keybindings['chat:cycleMode']?.()
+
+      expect(harness.getNextPermissionMode).toHaveBeenCalledWith(
+        'plan',
+        expect.objectContaining({
+          isBypassPermissionsModeAvailable: false,
+        }),
+      )
+      expect(harness.appState.tasks['worker-1']).toEqual(
+        expect.objectContaining({ permissionMode: 'plan' }),
+      )
+      expect(harness.addNotification).toHaveBeenCalledWith(
+        expect.objectContaining({ key: 'teammate-bypass-consent-required' }),
+      )
     } finally {
       await rendered.dispose()
     }

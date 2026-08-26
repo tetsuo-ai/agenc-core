@@ -72,6 +72,13 @@ export interface MCPManagerStartOpts {
   /** I-20: require THESE named servers to come up. Overrides
    *  `requireOneReady` when both set. */
   readonly requiredServers?: ReadonlyArray<string>;
+  /**
+   * Internal config-publication handshake. `refreshServers()` invokes this at
+   * most once, only after the previous connections are strictly stopped and
+   * the replacement config is installed in the sandbox-resume deferred slot.
+   * Ordinary startup callers must leave it unset.
+   */
+  readonly onSandboxRefreshDeferred?: () => void;
 }
 
 /**
@@ -108,7 +115,10 @@ function defineMcpExecutionArgument(
 
 function withoutStartSignal(
   opts: MCPManagerStartOpts,
-): Omit<MCPManagerStartOpts, "signal"> {
+): Omit<
+  MCPManagerStartOpts,
+  "signal" | "onSandboxRefreshDeferred"
+> {
   return {
     ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
     ...(opts.requireOneReady !== undefined
@@ -490,6 +500,10 @@ export class MCPManager {
     this.rejectDeferredRefresh(
       new Error("MCP refresh was superseded before sandbox resume"),
     );
+    const deferredOpts: MCPManagerStartOpts = {
+      ...withoutStartSignal(opts),
+      ...(opts.signal !== undefined ? { signal: opts.signal } : {}),
+    };
     let resolveRefresh: (() => void) | undefined;
     let rejectRefresh: ((error: unknown) => void) | undefined;
     const promise = new Promise<void>((resolve, reject) => {
@@ -508,24 +522,24 @@ export class MCPManager {
       record.removeAbortListener();
       record.reject(
         new Error(
-          `MCP refresh cancelled before sandbox resume (${opts.signal?.reason ?? "unspecified"})`,
+          `MCP refresh cancelled before sandbox resume (${deferredOpts.signal?.reason ?? "unspecified"})`,
         ),
       );
     };
     record = {
       promise,
-      opts,
+      opts: deferredOpts,
       resolve: () => resolveRefresh?.(),
       reject: (error) => rejectRefresh?.(error),
       removeAbortListener: () =>
-        opts.signal?.removeEventListener("abort", onAbort),
+        deferredOpts.signal?.removeEventListener("abort", onAbort),
       cancelled: false,
     };
     this.deferredRefresh = record;
-    if (opts.signal?.aborted === true) {
+    if (deferredOpts.signal?.aborted === true) {
       onAbort();
     } else {
-      opts.signal?.addEventListener("abort", onAbort, { once: true });
+      deferredOpts.signal?.addEventListener("abort", onAbort, { once: true });
     }
     return record;
   }
@@ -544,6 +558,19 @@ export class MCPManager {
     record.cancelled = true;
     record.removeAbortListener();
     record.reject(error);
+  }
+
+  private isSandboxExecutionAuthorityClosed(): boolean {
+    return (
+      this.sandboxExecutionBroker?.isClosedAfterLifecycleAuthorityFailure?.() ===
+      true
+    );
+  }
+
+  private sandboxExecutionAuthorityClosedError(action: string): Error {
+    return new Error(
+      `MCP ${action} is blocked because sandbox execution authority is permanently closed`,
+    );
   }
 
   /**
@@ -583,6 +610,7 @@ export class MCPManager {
       this.unregisterSandboxLifecycle =
         registerSandboxExecutionLifecycleParticipant(broker, {
           name: "mcp-manager",
+          spawnSurfaces: ["mcp_stdio"],
           quiesce: async () => {
             this.sandboxQuiesced = true;
             this.restartAfterSandboxTransition ||= this.running;
@@ -674,6 +702,14 @@ export class MCPManager {
 
   getConnectionState(name: string): MCPConnectionState | undefined {
     const config = this.getServerConfig(name);
+    if (config !== undefined && this.isSandboxExecutionAuthorityClosed()) {
+      return {
+        type: "failed",
+        error: this.sandboxExecutionAuthorityClosedError(
+          `server ${JSON.stringify(name)}`,
+        ).message,
+      };
+    }
     if (config?.enabled === false) return { type: "disabled" };
     if (this.bridges.has(name)) return { type: "connected" };
     const state = this.connectionStates.get(name);
@@ -710,6 +746,9 @@ export class MCPManager {
    * waits for that cleanup before rebasing sandbox authority.
    */
   async start(opts: MCPManagerStartOpts = {}): Promise<void> {
+    if (this.isSandboxExecutionAuthorityClosed()) {
+      throw this.sandboxExecutionAuthorityClosedError("manager startup");
+    }
     if (this.sandboxQuiesced) {
       throw new Error(
         "MCP manager cannot start while sandbox execution is quiesced",
@@ -970,8 +1009,17 @@ export class MCPManager {
     configs: ReadonlyArray<MCPServerConfig>,
     opts: MCPManagerStartOpts = {},
   ): Promise<void> {
+    if (this.isSandboxExecutionAuthorityClosed()) {
+      throw this.sandboxExecutionAuthorityClosedError("server refresh");
+    }
     const nextConfigs = Object.freeze(configs.map(immutableMcpServerConfig));
     let deferred: DeferredMcpRefresh | undefined;
+    let deferralNotified = false;
+    const notifyDeferral = (): void => {
+      if (deferralNotified) return;
+      deferralNotified = true;
+      opts.onSandboxRefreshDeferred?.();
+    };
     await this.enqueueLifecycle(async () => {
       this.rejectDeferredRefresh(
         new Error("MCP refresh was superseded by a newer configuration"),
@@ -983,12 +1031,14 @@ export class MCPManager {
         this.restartAfterSandboxTransition = true;
         this.lastStartOpts = withoutStartSignal(opts);
         deferred = this.deferRefreshUntilSandboxResume(opts);
+        if (!deferred.cancelled) notifyDeferral();
         return;
       }
       await this.start(opts);
       if (this.sandboxQuiesced) {
         this.restartAfterSandboxTransition = true;
         deferred = this.deferRefreshUntilSandboxResume(opts);
+        if (!deferred.cancelled) notifyDeferral();
         return;
       }
       if (opts.signal?.aborted === true) {
@@ -1004,6 +1054,7 @@ export class MCPManager {
    * Get all tools from all connected MCP servers.
    */
   getTools(): Tool[] {
+    if (this.isSandboxExecutionAuthorityClosed()) return [];
     const tools: Tool[] = [];
     for (const bridge of this.bridges.values()) {
       tools.push(...bridge.tools);
@@ -1015,6 +1066,7 @@ export class MCPManager {
    * Get tools from a specific MCP server.
    */
   getToolsByServer(name: string): Tool[] {
+    if (this.isSandboxExecutionAuthorityClosed()) return [];
     return this.bridges.get(name)?.tools ?? [];
   }
 
@@ -1037,6 +1089,13 @@ export class MCPManager {
     options: MCPManagerToolCallOptions = {},
   ): Promise<ToolResult> {
     options.signal?.throwIfAborted();
+    if (this.isSandboxExecutionAuthorityClosed()) {
+      return {
+        content: this.sandboxExecutionAuthorityClosedError("tool execution")
+          .message,
+        isError: true,
+      };
+    }
     const bridge = this.bridges.get(serverName);
     if (bridge === undefined) {
       return {
@@ -1075,10 +1134,12 @@ export class MCPManager {
    * Get the names of all connected servers.
    */
   getConnectedServers(): string[] {
+    if (this.isSandboxExecutionAuthorityClosed()) return [];
     return Array.from(this.bridges.keys());
   }
 
   getConnectedConnection(name: string): ConnectedMCPServer | undefined {
+    if (this.isSandboxExecutionAuthorityClosed()) return undefined;
     return this.connectedConnections.get(name);
   }
 
@@ -1090,6 +1151,7 @@ export class MCPManager {
    * deltas across turns.
    */
   getServerInstructions(name: string): string | undefined {
+    if (this.isSandboxExecutionAuthorityClosed()) return undefined;
     return this.serverInstructions.get(name);
   }
 
@@ -1102,6 +1164,7 @@ export class MCPManager {
   }
 
   isConnected(name: string): boolean {
+    if (this.isSandboxExecutionAuthorityClosed()) return false;
     return this.bridges.has(name);
   }
 
@@ -1115,6 +1178,7 @@ export class MCPManager {
    * lookup instead of prefix-matching the stringified name.
    */
   getServerForTool(namespacedName: string): string | undefined {
+    if (this.isSandboxExecutionAuthorityClosed()) return undefined;
     for (const [serverName, bridge] of this.bridges) {
       for (const tool of bridge.tools) {
         if (tool.name === namespacedName) return serverName;
@@ -1134,6 +1198,7 @@ export class MCPManager {
   resolveMcpToolInfo(
     toolName: string,
   ): { readonly serverName: string; readonly toolName: string } | undefined {
+    if (this.isSandboxExecutionAuthorityClosed()) return undefined;
     if (toolName.startsWith("mcp.")) {
       const server = this.getServerForTool(toolName);
       if (!server) return undefined;
@@ -1152,6 +1217,14 @@ export class MCPManager {
   }
 
   async reconnectServer(name: string): Promise<MCPReconnectResult> {
+    if (this.isSandboxExecutionAuthorityClosed()) {
+      return reconnectFailure(
+        name,
+        this.sandboxExecutionAuthorityClosedError(
+          `server ${JSON.stringify(name)} reconnect`,
+        ),
+      );
+    }
     if (this.sandboxQuiesced) {
       return reconnectFailure(
         name,
@@ -1303,6 +1376,7 @@ export class MCPManager {
     signal?: AbortSignal,
   ): Promise<ReadonlyArray<MCPResourceDescriptor>> {
     signal?.throwIfAborted();
+    if (this.isSandboxExecutionAuthorityClosed()) return [];
     const bridges = Array.from(this.resourceBridges.values());
     if (bridges.length === 0) return [];
     const results = await Promise.allSettled(
@@ -1327,6 +1401,7 @@ export class MCPManager {
     signal?: AbortSignal,
   ): Promise<ReadonlyArray<MCPResourceDescriptor>> {
     signal?.throwIfAborted();
+    if (this.isSandboxExecutionAuthorityClosed()) return [];
     const bridge = this.resourceBridges.get(name);
     if (!bridge) return [];
     return signal === undefined
@@ -1343,6 +1418,7 @@ export class MCPManager {
     signal?: AbortSignal,
   ): Promise<MCPResourceContent | null> {
     signal?.throwIfAborted();
+    if (this.isSandboxExecutionAuthorityClosed()) return null;
     const parsed = parseNamespacedName(namespacedName);
     if (!parsed) return null;
     const bridge = this.resourceBridges.get(parsed.serverName);
@@ -1356,6 +1432,7 @@ export class MCPManager {
    * List prompts exposed by every connected server (flattened).
    */
   async listPrompts(): Promise<ReadonlyArray<MCPPromptDescriptor>> {
+    if (this.isSandboxExecutionAuthorityClosed()) return [];
     const bridges = Array.from(this.promptBridges.values());
     if (bridges.length === 0) return [];
     const results = await Promise.allSettled(
@@ -1376,6 +1453,7 @@ export class MCPManager {
   async listPromptsByServer(
     name: string,
   ): Promise<ReadonlyArray<MCPPromptDescriptor>> {
+    if (this.isSandboxExecutionAuthorityClosed()) return [];
     const bridge = this.promptBridges.get(name);
     if (!bridge) return [];
     return bridge.listPrompts();
@@ -1390,6 +1468,7 @@ export class MCPManager {
     args?: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<MCPPromptRendered | null> {
+    if (this.isSandboxExecutionAuthorityClosed()) return null;
     const parsed = parseNamespacedName(namespacedName);
     if (!parsed) return null;
     const bridge = this.promptBridges.get(parsed.serverName);

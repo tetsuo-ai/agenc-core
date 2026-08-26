@@ -13,6 +13,7 @@ import { getCompactionReminderAttachment } from "./attachments.js";
 import { feature } from "../build/feature.js";
 import { formatContextPressureReminder } from "./messages.js";
 import { getAutoCompactThreshold } from "../services/compact/autoCompact.js";
+import { runWithStartupProviderSelection } from "../utils/model/providers.js";
 import type { Message } from "../types/message.js";
 
 const WINDOW_ENV = "AGENC_AUTO_COMPACT_WINDOW";
@@ -73,9 +74,16 @@ describe("context-pressure attachment producer", () => {
   it("stays silent when auto-compact is disabled", () => {
     process.env[WINDOW_ENV] = "100000";
     process.env.AGENC_DISABLE_COMPACT = "1";
-    const out = getCompactionReminderAttachment(
-      [userMessage(999_999)],
-      "test-model",
+    const out = runWithStartupProviderSelection(
+      {
+        provider: "grok",
+        model: "test-model",
+        environment: { ...process.env },
+      },
+      () => getCompactionReminderAttachment(
+        [userMessage(999_999)],
+        "test-model",
+      ),
     );
     expect(out).toEqual([]);
   });

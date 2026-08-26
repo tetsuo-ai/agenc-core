@@ -4520,7 +4520,11 @@ function runtimeSettingsSnapshotFromEvent(
     permissionMode: payload.permissionMode,
     prePlanMode: payload.prePlanMode,
     autoModeActive: payload.autoModeActive,
+    autoModeAvailable: payload.autoModeAvailable,
+    bypassPermissionsModeAvailable: payload.bypassPermissionsModeAvailable,
     bypassPermissionsWorkspace: payload.bypassPermissionsWorkspace,
+    bypassPermissionsConsentWorkspace:
+      payload.bypassPermissionsConsentWorkspace,
     model: payload.model,
     provider: payload.provider,
     profile: payload.profile,

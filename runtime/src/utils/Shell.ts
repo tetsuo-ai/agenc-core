@@ -45,9 +45,11 @@ import { subprocessEnv } from "./subprocessEnv.js";
 import { posixPathToWindowsPath } from "./windowsPaths.js";
 import type {
   SandboxExecutionBrokerLike,
+  SandboxPreparedSpawn,
   SandboxSpawnCommand,
   SandboxExecutionSurface,
 } from "../sandbox/execution-broker.js";
+import { SandboxExecutionLeaseCleanupError } from "../sandbox/execution-broker.js";
 import {
   hasCurrentWorkspaceOperationLifetime,
   retainCurrentWorkspaceOperation,
@@ -359,18 +361,18 @@ export async function exec(
       ),
     ),
   };
-  const spawnCommand: SandboxSpawnCommand = sandboxExecutionBroker
-    ? sandboxExecutionBroker.prepareSpawn(
+  const preparedSpawn: SandboxPreparedSpawn | undefined =
+    sandboxExecutionBroker?.prepareSpawn(
         sandboxExecutionSurface ?? "tool",
         unsandboxedSpawnCommand,
-      )
-    : unsandboxedSpawnCommand;
+      );
 
   // When onStdout is provided, use pipe mode: stdout flows through
   // StreamWrapper → TaskOutput in-memory buffer instead of a file fd.
   // This lets callers receive real-time stdout callbacks.
   const containWorkspaceDescendants = hasCurrentWorkspaceOperationLifetime();
-  const usePipeMode = !!onStdout || containWorkspaceDescendants;
+  const usePipeMode =
+    !!onStdout || containWorkspaceDescendants || preparedSpawn !== undefined;
   const taskId = generateTaskId("local_bash");
   const taskOutput = new TaskOutput(taskId, onProgress ?? null, !usePipeMode);
   await mkdir(getTaskOutputDir(), { recursive: true });
@@ -402,60 +404,96 @@ export async function exec(
   }
 
   try {
-    const childProcess = containWorkspaceDescendants
-      ? spawnContainedProcess(spawnCommand.program, spawnCommand.args, {
-          env: spawnCommand.env,
-          cwd: spawnCommand.cwd,
-          ...(spawnCommand.argv0 !== undefined
-            ? { argv0: spawnCommand.argv0 }
-            : {}),
-        })
-      : spawn(spawnCommand.program, [...spawnCommand.args], {
-          env: spawnCommand.env,
-          cwd: spawnCommand.cwd,
-          stdio: usePipeMode
-            ? ["pipe", "pipe", "pipe"]
-            : ["pipe", outputHandle?.fd, outputHandle?.fd],
-          // Don't pass the signal - we'll handle termination ourselves with tree-kill
-          detached: provider.detached,
-          // Prevent visible console window on Windows (no-op on other platforms)
-          windowsHide: true,
-          ...(spawnCommand.argv0 !== undefined
-            ? { argv0: spawnCommand.argv0 }
-            : {}),
-        });
-    if (containWorkspaceDescendants && childProcess.stdin) {
-      childProcess.stdin.end();
-    }
-
-    const shellCommand = wrapSpawn(
-      childProcess,
-      abortSignal,
-      commandTimeout,
-      taskOutput,
-      shouldAutoBackground,
-    );
-    const releaseWorkspaceOperation = retainCurrentWorkspaceOperation();
-    const settleWorkspaceOperation = async (): Promise<void> => {
-      if (containWorkspaceDescendants) {
-        try {
-          await terminateProcessTreeAndWait(childProcess, {
-            label: `Shell command ${command}`,
+    const startShell = (
+      spawnCommand: SandboxSpawnCommand,
+      lifecycleSignal?: AbortSignal,
+    ) => {
+      const containProcessTree =
+        preparedSpawn !== undefined || containWorkspaceDescendants;
+      const childProcess = containProcessTree
+        ? spawnContainedProcess(spawnCommand.program, spawnCommand.args, {
+            env: spawnCommand.env,
+            cwd: spawnCommand.cwd,
+            ...(spawnCommand.argv0 !== undefined
+              ? { argv0: spawnCommand.argv0 }
+              : {}),
+          })
+        : spawn(spawnCommand.program, [...spawnCommand.args], {
+            env: spawnCommand.env,
+            cwd: spawnCommand.cwd,
+            stdio: usePipeMode
+              ? ["pipe", "pipe", "pipe"]
+              : ["pipe", outputHandle?.fd, outputHandle?.fd],
+            detached: provider.detached,
+            windowsHide: true,
+            ...(spawnCommand.argv0 !== undefined
+              ? { argv0: spawnCommand.argv0 }
+              : {}),
           });
-        } catch (error) {
-          // Keep the retained workspace reference fail-closed. Releasing it
-          // after an unverifiable tree cleanup could let Editor acquire
-          // while a delayed descendant is still able to write.
-          logError(error);
-          return;
-        }
+      if (containProcessTree && childProcess.stdin) {
+        childProcess.stdin.end();
       }
-      releaseWorkspaceOperation();
+      const effectiveAbortSignal = lifecycleSignal === undefined
+        ? abortSignal
+        : AbortSignal.any([abortSignal, lifecycleSignal]);
+      const shellCommand = wrapSpawn(
+        childProcess,
+        effectiveAbortSignal,
+        commandTimeout,
+        taskOutput,
+        shouldAutoBackground,
+      );
+      const releaseWorkspaceOperation = retainCurrentWorkspaceOperation();
+      const completion = shellCommand.result.then(
+        async () => {
+          if (containProcessTree) {
+            try {
+              await terminateProcessTreeAndWait(childProcess, {
+                label: `Shell command ${command}`,
+              });
+            } catch (error) {
+              logError(error);
+              throw new SandboxExecutionLeaseCleanupError(
+                `Shell command process-tree cleanup failed: ${errorMessage(error)}`,
+                { cause: error },
+              );
+            }
+          }
+          releaseWorkspaceOperation();
+        },
+        async (error) => {
+          if (containProcessTree) {
+            try {
+              await terminateProcessTreeAndWait(childProcess, {
+                label: `Shell command ${command}`,
+              });
+            } catch (cleanupError) {
+              logError(cleanupError);
+              throw new SandboxExecutionLeaseCleanupError(
+                `Shell command process-tree cleanup failed: ${errorMessage(cleanupError)}`,
+                { cause: cleanupError },
+              );
+            }
+          }
+          releaseWorkspaceOperation();
+          throw error;
+        },
+      );
+      return { childProcess, shellCommand, completion };
     };
-    void shellCommand.result.then(
-      settleWorkspaceOperation,
-      settleWorkspaceOperation,
-    );
+    const started = preparedSpawn === undefined
+      ? startShell(unsandboxedSpawnCommand)
+      : preparedSpawn.start((spawnCommand, lifecycleSignal) => {
+          const startedShell = startShell(spawnCommand, lifecycleSignal);
+          return {
+            value: startedShell,
+            completion: startedShell.completion,
+          };
+        });
+    const { childProcess, shellCommand } = started;
+    // The raw path is used only when no canonical broker exists. Retain its
+    // existing workspace-operation cleanup tracking explicitly.
+    if (preparedSpawn === undefined) void started.completion.catch(() => {});
 
     // Close our copy of the fd — the child has its own dup.
     // Must happen after wrapSpawn attaches 'error' listener, since the await

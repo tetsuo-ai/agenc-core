@@ -23,7 +23,7 @@ import type {
 /** JSON-RPC 2.0 envelope version sent on every request. */
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
 /** Protocol the SDK advertises on `initialize`. Handshake rules are in docs/sdk.md. */
-export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.5.0" as const;
+export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.7.0" as const;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | readonly JsonValue[] | JsonObject;
@@ -655,14 +655,55 @@ export interface AgentListResult extends JsonObject {
   readonly nextCursor?: string;
 }
 
+/** Standalone wire mirror of the runtime's canonical run-settings snapshot. */
+export interface RunRuntimeSettingsSnapshot extends JsonObject {
+  readonly permissionMode:
+    | "default"
+    | "plan"
+    | "acceptEdits"
+    | "bypassPermissions"
+    | "dontAsk"
+    | "auto"
+    | "unattended";
+  readonly prePlanMode:
+    | "default"
+    | "plan"
+    | "acceptEdits"
+    | "bypassPermissions"
+    | "dontAsk"
+    | "auto"
+    | "unattended"
+    | null;
+  readonly autoModeActive: boolean;
+  readonly autoModeAvailable: boolean;
+  readonly bypassPermissionsModeAvailable: boolean;
+  readonly bypassPermissionsWorkspace: string | null;
+  readonly bypassPermissionsConsentWorkspace: string | null;
+  readonly model: string;
+  readonly provider: string;
+  readonly profile: string | null;
+  readonly reasoningEffort: "low" | "medium" | "high" | "xhigh" | "none" | null;
+  readonly modelVerbosity: "low" | "medium" | "high" | null;
+  readonly serviceTier: "priority" | "flex" | null;
+  readonly hooksDisabled: boolean;
+}
+
 export interface AgentAttachResult extends JsonObject {
   readonly agentId: string;
   readonly attachmentId: string;
   readonly sessionIds: readonly string[];
   /** Immutable operator authority owned by the attached daemon session. */
   readonly runtimeOptions: AgentRuntimeOptionsParams;
+  /** Live daemon-owned settings; static session metadata is not authority. */
+  readonly runtimeSettings: RunRuntimeSettingsSnapshot;
+  /** Canonical settings event hydrated by this response. */
+  readonly runtimeSettingsEventId: string;
   readonly runtimeSessionId?: string;
-  readonly sessions?: readonly SessionSummary[];
+  readonly sessions: readonly AgentAttachSessionSummary[];
+}
+
+export interface AgentAttachSessionSummary extends SessionSummary {
+  readonly cwd: string;
 }
 
 export interface AgentStopResult extends JsonObject {

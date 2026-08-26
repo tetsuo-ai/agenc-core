@@ -305,10 +305,6 @@ vi.mock("../../permissions/settings.js", async (importOriginal) => ({
   parseToolRuleStringsFromCLI: (tools: string[] = []) => tools,
 }));
 
-vi.mock("../../utils/settings/applyConfigStoreChange.js", () => ({
-  applyConfigStoreChange: () => {},
-}));
-
 vi.mock("../../utils/settings/settings.js", () => ({
   getInitialSettings: () => ({}),
   getSettingsForSource: () => null,
@@ -973,8 +969,13 @@ function createSession(
     readonly configStore?: import("../../config/store.js").ConfigStore;
   } = {},
 ): AgenCBridgeSession {
-  const modeSubscribers: Array<() => void> = [];
-  const permissionContext = opts.permissionContext ?? PERMISSION_CONTEXT;
+  const modeSubscribers: Array<
+    (next: ToolPermissionContext["mode"], current: ToolPermissionContext["mode"]) => void
+  > = [];
+  const contextSubscribers: Array<
+    (next: ToolPermissionContext, current: ToolPermissionContext) => void
+  > = [];
+  let permissionContext = opts.permissionContext ?? PERMISSION_CONTEXT;
   const executionCwd = opts.executionCwd ?? process.cwd();
   const roleWorkspaceCwd = opts.roleWorkspaceCwd ?? executionCwd;
   return {
@@ -988,14 +989,29 @@ function createSession(
       providerEnvironment: TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
       permissionModeRegistry: {
         current: () => permissionContext,
-        ...(opts.updatePermissionContext !== undefined
-          ? { update: opts.updatePermissionContext }
-          : {}),
+        update: async (next: ToolPermissionContext) => {
+          const current = permissionContext;
+          await opts.updatePermissionContext?.(next);
+          permissionContext = next;
+          for (const cb of [...contextSubscribers]) cb(next, current);
+          if (next.mode !== current.mode) {
+            for (const cb of [...modeSubscribers]) {
+              cb(next.mode, current.mode);
+            }
+          }
+        },
         subscribeToModeChange: (cb) => {
           modeSubscribers.push(cb);
           return () => {
             const index = modeSubscribers.indexOf(cb);
             if (index !== -1) modeSubscribers.splice(index, 1);
+          };
+        },
+        subscribeToContextChange: (cb) => {
+          contextSubscribers.push(cb);
+          return () => {
+            const index = contextSubscribers.indexOf(cb);
+            if (index !== -1) contextSubscribers.splice(index, 1);
           };
         },
       },
@@ -3047,16 +3063,18 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
   });
 
-  test("syncs PromptInput permission mode changes through the daemon before the local shim", async () => {
+  test("mirrors the canonical daemon context without rewriting the registry", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const calls: string[] = [];
-    const modeContext = {
+    const requestedContext = {
       ...PERMISSION_CONTEXT,
       mode: "plan" as const,
     };
+    const canonicalContext = { ...PERMISSION_CONTEXT };
     const setDaemonPermissionMode = vi.fn(
       async (mode: ToolPermissionContext["mode"]) => {
         calls.push(`daemon:${mode}`);
+        Object.assign(canonicalContext, { mode });
         return { applied: true, previousMode: "default", mode };
       },
     );
@@ -3070,6 +3088,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     await withRenderedApp(
       <AgenCTuiApp
         session={createSession({
+          permissionContext: canonicalContext,
           updatePermissionContext,
           setDaemonPermissionMode,
         })}
@@ -3081,14 +3100,75 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           promptProps.setToolPermissionContext as (
             next: ToolPermissionContext,
           ) => void
-        )(modeContext);
+        )(requestedContext);
         await new Promise((resolve) => setTimeout(resolve, 0));
       },
     );
 
     expect(setDaemonPermissionMode).toHaveBeenCalledWith("plan");
-    expect(updatePermissionContext).toHaveBeenCalledWith(modeContext);
-    expect(calls).toEqual(["daemon:plan", "local:plan"]);
+    expect(updatePermissionContext).not.toHaveBeenCalled();
+    expect(providerProbe.currentAppState?.toolPermissionContext).toBe(
+      canonicalContext,
+    );
+    expect(calls).toEqual(["daemon:plan"]);
+  });
+
+  test("keeps a daemon policy rewrite instead of restoring the requested auto context", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const canonicalContext = {
+      ...PERMISSION_CONTEXT,
+      isAutoModeAvailable: true,
+    };
+    const updatePermissionContext = vi.fn();
+    const setDaemonPermissionMode = vi.fn(async () => {
+      Object.assign(canonicalContext, {
+        mode: "default" as const,
+        autoModeActive: false,
+        isAutoModeAvailable: false,
+      });
+      return {
+        applied: false,
+        previousMode: "default" as const,
+        mode: "default" as const,
+      };
+    });
+    providerProbe.promptProps.length = 0;
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={createSession({
+          permissionContext: canonicalContext,
+          updatePermissionContext,
+          setDaemonPermissionMode,
+        })}
+        isInteractive={false}
+      />,
+      async () => {
+        const promptProps = providerProbe.promptProps.at(-1)!;
+        (
+          promptProps.setToolPermissionContext as (
+            next: ToolPermissionContext,
+          ) => void
+        )({
+          ...canonicalContext,
+          mode: "auto",
+          autoModeActive: true,
+          isAutoModeAvailable: true,
+        });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      },
+    );
+
+    expect(setDaemonPermissionMode).toHaveBeenCalledWith("auto");
+    expect(updatePermissionContext).not.toHaveBeenCalled();
+    expect(providerProbe.currentAppState?.toolPermissionContext).toBe(
+      canonicalContext,
+    );
+    expect(canonicalContext).toMatchObject({
+      mode: "default",
+      autoModeActive: false,
+      isAutoModeAvailable: false,
+    });
   });
 
   test("rolls PromptInput permission mode changes back when daemon sync fails", async () => {
@@ -3138,6 +3218,62 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           }),
         }),
       }),
+    );
+    expect(providerProbe.currentAppState?.toolPermissionContext.mode).toBe(
+      "default",
+    );
+  });
+
+  test("projects a local permission context only after registry commit", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const updatePermissionContext = vi.fn(async () => {
+      throw new Error("local publication rejected");
+    });
+    providerProbe.promptProps.length = 0;
+
+    await withRenderedApp(
+      <AgenCTuiApp
+        session={createSession({ updatePermissionContext })}
+        isInteractive={false}
+      />,
+      async () => {
+        const promptProps = providerProbe.promptProps.at(-1)!;
+        (
+          promptProps.setToolPermissionContext as (
+            next: ToolPermissionContext,
+          ) => void
+        )({ ...PERMISSION_CONTEXT, mode: "plan" });
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      },
+    );
+
+    expect(updatePermissionContext).toHaveBeenCalledOnce();
+    expect(providerProbe.currentAppState?.toolPermissionContext.mode).toBe(
+      "default",
+    );
+  });
+
+  test("mirrors the registry's frozen same-mode context into AppState", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const session = createSession();
+    providerProbe.promptProps.length = 0;
+
+    await withRenderedApp(
+      <AgenCTuiApp session={session} isInteractive={false} />,
+      async () => {
+        const next = Object.freeze({
+          ...PERMISSION_CONTEXT,
+          alwaysAskRules: { session: ["Write"] },
+        });
+        await session.services.permissionModeRegistry.update?.(next);
+        await vi.waitFor(() => {
+          expect(providerProbe.currentAppState?.toolPermissionContext).toBe(
+            session.services.permissionModeRegistry.current(),
+          );
+        });
+        expect(Object.isFrozen(next)).toBe(true);
+        expect(providerProbe.currentAppState?.toolPermissionContext).toBe(next);
+      },
     );
   });
 

@@ -4,6 +4,7 @@ import type { PluginError } from '../../types/plugin.js'
 import { isAgenCInChromeMCPServer } from '../../utils/agencInChrome/common.js'
 import { applyCanonicalConfigPatchSync } from '../../config/update-sync.js'
 import type {
+  AgenCConfig,
   ManagedMcpServerPolicyEntry,
   McpServerConfig as CanonicalMcpServerConfig,
 } from '../../config/schema.js'
@@ -25,7 +26,6 @@ import {
 import {
   getSettingsFilePathForSource,
   getSettingsForSource,
-  type RuntimeSettingsSnapshot,
 } from '../../utils/settings/settings.js'
 import type { ValidationError } from '../../utils/settings/validation.js'
 import { jsonStringify } from '../../utils/slowOperations.js'
@@ -280,7 +280,7 @@ function urlMatchesPattern(url: string, pattern: string): boolean {
  */
 function getMcpAllowlistSettings(
   authority: CanonicalSettingsAuthority,
-): RuntimeSettingsSnapshot {
+): AgenCConfig {
   if (shouldAllowManagedMcpServersOnly(authority)) {
     return getSettingsForSource('policySettings', authority) ?? {}
   }
@@ -294,7 +294,7 @@ function getMcpAllowlistSettings(
  */
 function getMcpDenylistSettings(
   authority: CanonicalSettingsAuthority,
-): RuntimeSettingsSnapshot {
+): AgenCConfig {
   return authority.current()
 }
 

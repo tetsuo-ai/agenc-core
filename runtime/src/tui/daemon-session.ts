@@ -6,6 +6,8 @@
  */
 
 import { randomUUID } from "node:crypto";
+import { isAbsolute } from "node:path";
+import { AgenCDaemonResponseError } from "../app-server/agent-cli.js";
 import type {
   AgentAttachParams,
   AgenCDaemonMethod,
@@ -16,7 +18,6 @@ import type {
   MessageContentBlock,
   MessageStreamParams,
   RequestId,
-  SessionAttachParams,
   SessionMcpStatusResult,
   SessionMcpAddServerParams,
   SessionMcpServerByNameParams,
@@ -37,6 +38,8 @@ import type {
   SessionSetModelResult,
   SessionSetPermissionModeParams,
   SessionSetPermissionModeResult,
+  SessionPermissionRuleMutationParams,
+  SessionPermissionRuleMutationResult,
   SessionHooksStatusParams,
   SessionHooksStatusResult,
   SessionHooksSetDisabledParams,
@@ -88,6 +91,16 @@ import {
   reviewDecisionIsAllow,
   type ReviewDecision,
 } from "../permissions/review-decision.js";
+import {
+  replacePermissionRuleSourceBuckets,
+} from "../permissions/permission-updates.js";
+import { validateCanonicalSessionPermissionRuleBuckets } from "../permissions/session-rule-buckets.js";
+import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import { parseRuleString, serializeRuleValue } from "../permissions/rules.js";
+import type {
+  PermissionBehavior,
+  PermissionRuleValue,
+} from "../permissions/types.js";
 import { notifyTasksUpdated } from "../utils/tasks.js";
 import {
   ASK_USER_QUESTION_TOOL_NAME,
@@ -128,12 +141,70 @@ import { isRecord } from "../utils/record.js";
 import { logForDebugging } from "../utils/debug.js";
 import type { AgentRoleWorkspace } from "../agents/role-workspace.js";
 import type { SessionEditorInteraction } from "../session/autonomous-mode.js";
+import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
+import {
+  applyDaemonTuiRuntimeSettingsAuthority,
+  type AgenCDaemonOnlyTuiSession,
+} from "../app-server-client/index.js";
 
 export const AGENC_DAEMON_RECONNECTING_MESSAGE =
   "daemon disconnected, reconnecting";
 
 const MAX_DAEMON_QUEUED_INPUTS = 512;
 const MAX_DAEMON_QUEUED_INPUT_BYTES = 16 * 1_024 * 1_024;
+
+function validateDaemonPermissionRuleMutationResult(
+  result: SessionPermissionRuleMutationResult,
+  sessionId: string,
+  requested: Omit<SessionPermissionRuleMutationParams, "sessionId">,
+): Readonly<Record<PermissionBehavior, readonly PermissionRuleValue[]>> {
+  if (
+    result.sessionId !== sessionId ||
+    typeof result.applied !== "boolean" ||
+    result.operation !== requested.operation ||
+    result.behavior !== requested.behavior ||
+    result.rule !== requested.rule ||
+    !isRecord(result.sessionRules)
+  ) {
+    throw new Error("daemon returned an invalid permission-rule mutation result");
+  }
+  const resultRule = parseRuleString(result.rule);
+  if (resultRule === null || serializeRuleValue(resultRule) !== result.rule) {
+    throw new Error("daemon returned a non-canonical permission rule");
+  }
+  const canonical = validateCanonicalSessionPermissionRuleBuckets(
+    result.sessionRules,
+    "daemon session permission rules",
+  );
+  const finalBucket = canonical.serialized[result.behavior];
+  if (
+    (result.operation === "add" && !finalBucket.includes(result.rule)) ||
+    (result.operation === "remove" && finalBucket.includes(result.rule))
+  ) {
+    throw new Error(
+      "daemon permission-rule result does not match its canonical session bucket",
+    );
+  }
+  return canonical.parsed;
+}
+
+async function projectDaemonSessionPermissionRules(
+  registry: Pick<PermissionModeRegistry, "transact">,
+  projection: Readonly<
+    Record<PermissionBehavior, readonly PermissionRuleValue[]>
+  >,
+): Promise<void> {
+  await registry.transact((current) => {
+    return {
+      next: replacePermissionRuleSourceBuckets(
+        current,
+        "session",
+        projection,
+      ),
+      result: () => undefined,
+    };
+  });
+}
 
 let nextRealtimeTranscriptEventSequence = 0;
 
@@ -228,6 +299,11 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   setDaemonPermissionMode?(
     mode: string,
   ): Promise<SessionSetPermissionModeResult>;
+  mutateDaemonPermissionRule?(params: {
+    readonly operation: SessionPermissionRuleMutationParams["operation"];
+    readonly behavior: SessionPermissionRuleMutationParams["behavior"];
+    readonly rule: string;
+  }): Promise<SessionPermissionRuleMutationResult>;
   getDaemonHooksStatus?(): Promise<SessionHooksStatusResult>;
   setDaemonHooksDisabled?(
     disabled: boolean,
@@ -435,6 +511,11 @@ export interface AgenCDaemonTuiClient {
     options?: { readonly signal?: AbortSignal },
   ): Promise<SessionSetPermissionModeResult>;
   request(
+    method: "session.permissions.mutateRule",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionPermissionRuleMutationResult>;
+  request(
     method: "session.hooks.status",
     params?: JsonObject,
     options?: { readonly signal?: AbortSignal },
@@ -570,11 +651,19 @@ export interface AgenCDaemonTuiSessionOptions<
   readonly realtimeWebrtcSessionFactory?: CreateRealtimeTuiControlsOptions["startWebrtcSession"];
   readonly realtimeAudioCaptureFactory?: StartRealtimeAudioCapture;
   readonly realtimeAudioPlayer?: RealtimeAudioPlayer;
+  /** Snapshot cursor captured only after this socket's session route exists. */
+  readonly runtimeSettingsCursor: {
+    readonly eventId: string;
+    readonly cwd: string;
+  };
 }
 
 export interface AgenCDaemonAgentTuiSessionOptions<
   Session extends AgenCTuiBridgeSession = AgenCTuiBridgeSession,
-> extends Omit<AgenCDaemonTuiSessionOptions<Session>, "sessionId"> {
+> extends Omit<
+    AgenCDaemonTuiSessionOptions<Session>,
+    "sessionId" | "runtimeSettingsCursor"
+  > {
   readonly agentId: string;
 }
 
@@ -587,28 +676,53 @@ export async function attachDaemonAgentTuiSession<
     agentId: options.agentId,
     clientId: options.clientId,
   } satisfies AgentAttachParams);
-  const sessionId = attachment.sessionIds[0];
-  if (sessionId === undefined) {
+  const sessionId = Array.isArray(attachment.sessionIds)
+    ? attachment.sessionIds[0]
+    : undefined;
+  if (typeof sessionId !== "string" || sessionId.length === 0) {
     throw new Error(`daemon agent has no attached session: ${options.agentId}`);
   }
+  if (!Array.isArray(attachment.sessions)) {
+    throw new Error("daemon agent attachment has no session summaries");
+  }
+  const attachedSessions = attachment.sessions.filter(
+    (session) => session.sessionId === sessionId,
+  );
+  if (attachedSessions.length !== 1) {
+    throw new Error(
+      "daemon agent attachment must contain exactly one primary session summary",
+    );
+  }
+  const attachedSession = attachedSessions[0];
+  const authorityCwd = attachedSession?.cwd;
+  if (
+    attachedSession === undefined ||
+    !["idle", "running", "waiting"].includes(attachedSession.status) ||
+    typeof authorityCwd !== "string" ||
+    authorityCwd.trim() !== authorityCwd ||
+    authorityCwd.length === 0 ||
+    Buffer.byteLength(authorityCwd, "utf8") > 4_096 ||
+    !isAbsolute(authorityCwd)
+  ) {
+    throw new Error(
+      "daemon agent attachment primary session must be active with a bounded absolute cwd",
+    );
+  }
+  await applyDaemonTuiRuntimeSettingsAuthority(
+    options.baseSession as unknown as AgenCDaemonOnlyTuiSession,
+    authorityCwd,
+    attachment.runtimeSettings,
+  );
   return createDaemonTuiSession({
     ...options,
     sessionId,
     conversationId: attachment.runtimeSessionId ?? options.agentId,
     realtimeThreadId: options.agentId,
+    runtimeSettingsCursor: {
+      eventId: attachment.runtimeSettingsEventId,
+      cwd: authorityCwd,
+    },
   });
-}
-
-export async function attachDaemonTuiSession<
-  Session extends AgenCTuiBridgeSession = AgenCTuiBridgeSession,
->(
-  options: AgenCDaemonTuiSessionOptions<Session>,
-): Promise<AgenCDaemonBackedTuiSession<Session>> {
-  await options.client.request("session.attach", {
-    sessionId: options.sessionId,
-    clientId: options.clientId,
-  } satisfies SessionAttachParams);
-  return createDaemonTuiSession(options);
 }
 
 export function createDaemonTuiSession<
@@ -678,6 +792,7 @@ export function createDaemonTuiSession<
     }
   >();
   let unsubscribeDaemonEvents: (() => void) | null = null;
+  let runtimeSettingsAuthorityError: Error | null = null;
   const markDaemonActivityActive = (event: unknown): void => {
     if (terminalDaemonTurnObserved) return;
     const payload = (event as { readonly payload?: unknown }).payload;
@@ -782,6 +897,80 @@ export function createDaemonTuiSession<
     ...baseSession,
     services,
   };
+  const runtimeSettingsReconciler = createRuntimeSettingsReconciler({
+    baseSession: eventBridgeSession,
+    cursor: options.runtimeSettingsCursor,
+    onFailure: (error) => {
+      runtimeSettingsAuthorityError = error;
+      broadcastDaemonEvent({
+        id: `daemon-runtime-settings-authority-failed-${Date.now()}`,
+        type: "error",
+        payload: {
+          cause: "runtime_settings_authority_gap",
+          message: error.message,
+        },
+      });
+      const abortTerminal = (
+        baseSession as AgenCTuiBridgeSession & {
+          abortTerminal?: (reason: string) => void;
+        }
+      ).abortTerminal;
+      abortTerminal?.("runtime_settings_authority_gap");
+    },
+  });
+  const assertRuntimeSettingsAuthority = (): void => {
+    if (runtimeSettingsAuthorityError !== null) {
+      throw runtimeSettingsAuthorityError;
+    }
+  };
+  const failPermissionRuleAuthority = (cause: unknown): never => {
+    const error =
+      cause instanceof Error
+        ? cause
+        : new Error(`permission-rule reconciliation failed: ${String(cause)}`);
+    runtimeSettingsAuthorityError = error;
+    try {
+      broadcastDaemonEvent({
+        id: `daemon-permission-rule-authority-failed-${Date.now()}`,
+        type: "error",
+        payload: {
+          cause: "permission_rule_authority_reconciliation_failed",
+          message: error.message,
+        },
+      });
+    } catch {
+      // The authority fence and terminal abort below must survive UI listeners.
+    }
+    try {
+      (
+        baseSession as AgenCTuiBridgeSession & {
+          abortTerminal?: (reason: string) => void;
+        }
+      ).abortTerminal?.("permission_rule_authority_reconciliation_failed");
+    } catch {
+      // The sticky authority error still fences every subsequent bridge call.
+    }
+    throw error;
+  };
+  const isProvenPrecommitAuthorityRejection = (error: unknown): boolean => {
+    if (!(error instanceof AgenCDaemonResponseError)) return false;
+    if (error.code === -32602) return true;
+    return (
+      isJsonObject(error.data) &&
+      error.data.authorityPhase === "precommit"
+    );
+  };
+  let permissionAuthorityMutationTail: Promise<void> = Promise.resolve();
+  const runPermissionAuthorityMutation = <T>(
+    operation: () => Promise<T>,
+  ): Promise<T> => {
+    const result = permissionAuthorityMutationTail.then(operation);
+    permissionAuthorityMutationTail = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    return result;
+  };
   const ensureDaemonEventsSubscribed = (): void => {
     if (unsubscribeDaemonEvents !== null) return;
     unsubscribeDaemonEvents = subscribeToDaemonEvents(
@@ -792,19 +981,27 @@ export function createDaemonTuiSession<
       realtime,
       mcpProjection,
       broadcastDaemonEvent,
+      runtimeSettingsReconciler,
     );
     const currentConnectionState = client.getConnectionState?.();
     if (
       currentConnectionState !== null &&
       currentConnectionState !== undefined
     ) {
+      runtimeSettingsReconciler?.noteConnectionState(currentConnectionState);
       mcpProjection.noteConnectionState(currentConnectionState);
     }
+  };
+  const awaitRuntimeSettingsAuthority = async (): Promise<void> => {
+    ensureDaemonEventsSubscribed();
+    await runtimeSettingsReconciler?.barrier();
+    assertRuntimeSettingsAuthority();
   };
   const maybeStopDaemonEvents = (): void => {
     if (
       eventSubscribers.size > 0 ||
       mcpProjection.hasSubscribers() ||
+      runtimeSettingsReconciler !== undefined ||
       unsubscribeDaemonEvents === null
     ) {
       return;
@@ -899,6 +1096,9 @@ export function createDaemonTuiSession<
   const daemonSessionBase = { ...baseSession };
   Reflect.deleteProperty(daemonSessionBase, "listMcpClients");
   Reflect.deleteProperty(daemonSessionBase, "listMcpTools");
+  if (runtimeSettingsReconciler !== undefined) {
+    ensureDaemonEventsSubscribed();
+  }
   return {
     ...daemonSessionBase,
     conversationId,
@@ -919,6 +1119,8 @@ export function createDaemonTuiSession<
         activeTurnSnapshot ?? baseSession.activeTurn?.unsafePeek?.() ?? null,
     },
     submit: async (message, opts) => {
+      await permissionAuthorityMutationTail;
+      await awaitRuntimeSettingsAuthority();
       const queuedInputsBeforeSubmission = [...queuedInputs];
       const queuedEntries: DaemonQueuedInput[] = [];
       const retained: DaemonQueuedInput[] = [];
@@ -1237,11 +1439,72 @@ export function createDaemonTuiSession<
           // turn surfaces any disconnection separately.
         });
     },
-    setDaemonPermissionMode: async (mode) =>
-      client.request("session.setPermissionMode", {
-        sessionId,
-        mode,
-      } satisfies SessionSetPermissionModeParams),
+    setDaemonPermissionMode: (mode) =>
+      runPermissionAuthorityMutation(async () => {
+        await awaitRuntimeSettingsAuthority();
+        try {
+          const result = await client.request("session.setPermissionMode", {
+            sessionId,
+            mode,
+          } satisfies SessionSetPermissionModeParams);
+          await awaitRuntimeSettingsAuthority();
+          const registry = (
+            eventBridgeSession.services as typeof eventBridgeSession.services & {
+              readonly permissionModeRegistry?: {
+                current(): { readonly mode?: unknown };
+              };
+            }
+          ).permissionModeRegistry;
+          if (
+            registry === undefined ||
+            typeof registry.current !== "function" ||
+            registry.current().mode !== result.mode
+          ) {
+            throw new Error(
+              "daemon permission-mode response was not followed by matching canonical runtime settings",
+            );
+          }
+          return result;
+        } catch (error) {
+          if (isProvenPrecommitAuthorityRejection(error)) throw error;
+          return failPermissionRuleAuthority(error);
+        }
+      }),
+    mutateDaemonPermissionRule: (params) =>
+      runPermissionAuthorityMutation(async () => {
+        await awaitRuntimeSettingsAuthority();
+        try {
+        const result = await client.request("session.permissions.mutateRule", {
+          sessionId,
+          operation: params.operation,
+          behavior: params.behavior,
+          rule: params.rule,
+        } satisfies SessionPermissionRuleMutationParams);
+        const projection = validateDaemonPermissionRuleMutationResult(
+          result,
+          sessionId,
+          params,
+        );
+        const registry = (
+          eventBridgeSession.services as typeof eventBridgeSession.services & {
+            readonly permissionModeRegistry?: Partial<PermissionModeRegistry>;
+          }
+        ).permissionModeRegistry;
+        if (registry === undefined || typeof registry.transact !== "function") {
+          throw new Error(
+            "daemon-backed session has no permission-rule projection registry",
+          );
+        }
+        await projectDaemonSessionPermissionRules(
+          registry as Pick<PermissionModeRegistry, "transact">,
+          projection,
+        );
+        return result;
+        } catch (error) {
+          if (isProvenPrecommitAuthorityRejection(error)) throw error;
+          return failPermissionRuleAuthority(error);
+        }
+      }),
     getDaemonHooksStatus: async () =>
       client.request("session.hooks.status", {
         sessionId,
@@ -1846,6 +2109,208 @@ function messageContentBlocks(
   });
 }
 
+interface CanonicalRuntimeSettingsEvent {
+  readonly eventId: string;
+  readonly previousSettingsEventId: string | null;
+  readonly settings: RunRuntimeSettingsSnapshot;
+}
+
+interface RuntimeSettingsReconciler {
+  acceptInitial(event: JsonObject, deliver: () => void): void;
+  acceptLive(event: JsonObject, deliver: () => void): void;
+  finishInitialReplay(): void;
+  noteConnectionState(state: AgenCDaemonConnectionState): void;
+  barrier(): Promise<void>;
+}
+
+function canonicalRuntimeSettingsEvent(
+  event: JsonObject,
+): CanonicalRuntimeSettingsEvent | null {
+  if (event.type === "runtime_settings_authority_gap") {
+    throw new Error(
+      "daemon runtime-settings pre-subscribe buffer overflowed; re-attach is required",
+    );
+  }
+  if (event.type !== "run_runtime_settings_changed") return null;
+  const payload = event.payload;
+  const eventId =
+    typeof event.eventId === "string" && event.eventId.length > 0
+      ? event.eventId
+      : typeof event.id === "string" && event.id.length > 0
+        ? event.id
+        : undefined;
+  if (
+    eventId === undefined ||
+    !isJsonObject(payload) ||
+    (payload.previousSettingsEventId !== null &&
+      typeof payload.previousSettingsEventId !== "string")
+  ) {
+    throw new Error("daemon runtime-settings event has no canonical cursor");
+  }
+  return {
+    eventId,
+    previousSettingsEventId: payload.previousSettingsEventId,
+    settings: {
+      permissionMode: payload.permissionMode,
+      prePlanMode: payload.prePlanMode,
+      autoModeActive: payload.autoModeActive,
+      autoModeAvailable: payload.autoModeAvailable,
+      bypassPermissionsModeAvailable: payload.bypassPermissionsModeAvailable,
+      bypassPermissionsWorkspace: payload.bypassPermissionsWorkspace,
+      bypassPermissionsConsentWorkspace:
+        payload.bypassPermissionsConsentWorkspace,
+      model: payload.model,
+      provider: payload.provider,
+      profile: payload.profile,
+      reasoningEffort: payload.reasoningEffort,
+      modelVerbosity: payload.modelVerbosity,
+      serviceTier: payload.serviceTier,
+      hooksDisabled: payload.hooksDisabled,
+    } as RunRuntimeSettingsSnapshot,
+  };
+}
+
+function createRuntimeSettingsReconciler(params: {
+  readonly baseSession: AgenCTuiBridgeSession;
+  readonly cursor: { readonly eventId: string; readonly cwd: string };
+  readonly onFailure: (error: Error) => void;
+}): RuntimeSettingsReconciler {
+  let cursor = params.cursor.eventId;
+  let failure: Error | null = null;
+  let observedConnectionGap = false;
+  let queue: Promise<void> = Promise.resolve();
+  let pendingWork = 0;
+  const initial: Array<{
+    readonly event: CanonicalRuntimeSettingsEvent | null;
+    readonly deliver: () => void;
+  }> = [];
+
+  const fail = (error: unknown): void => {
+    if (failure !== null) return;
+    failure =
+      error instanceof Error
+        ? error
+        : new Error(
+            `daemon runtime-settings reconciliation failed: ${String(error)}`,
+          );
+    params.onFailure(failure);
+  };
+  const enqueue = (work: () => Promise<void> | void): void => {
+    pendingWork += 1;
+    queue = queue
+      .then(work)
+      .catch(fail)
+      .finally(() => {
+        pendingWork -= 1;
+      });
+  };
+  const applySuccessor = async (entry: {
+    readonly event: CanonicalRuntimeSettingsEvent | null;
+    readonly deliver: () => void;
+  }): Promise<void> => {
+    if (failure !== null) return;
+    if (entry.event === null) {
+      entry.deliver();
+      return;
+    }
+    if (entry.event.eventId === cursor) {
+      entry.deliver();
+      return;
+    }
+    if (entry.event.previousSettingsEventId !== cursor) {
+      throw new Error(
+        `daemon runtime-settings cursor gap: expected successor of ${cursor}, received ${entry.event.eventId}`,
+      );
+    }
+    await applyDaemonTuiRuntimeSettingsAuthority(
+      params.baseSession as unknown as AgenCDaemonOnlyTuiSession,
+      params.cursor.cwd,
+      entry.event.settings,
+    );
+    cursor = entry.event.eventId;
+    entry.deliver();
+  };
+  const parse = (
+    event: JsonObject,
+    deliver: () => void,
+  ): {
+    readonly event: CanonicalRuntimeSettingsEvent | null;
+    readonly deliver: () => void;
+  } | null => {
+    try {
+      const parsed = canonicalRuntimeSettingsEvent(event);
+      return { event: parsed, deliver };
+    } catch (error) {
+      fail(error);
+      return null;
+    }
+  };
+
+  return {
+    acceptInitial: (event, deliver) => {
+      const entry = parse(event, deliver);
+      if (entry !== null) initial.push(entry);
+    },
+    acceptLive: (event, deliver) => {
+      const entry = parse(event, deliver);
+      if (entry === null) return;
+      if (entry.event === null && pendingWork === 0 && failure === null) {
+        entry.deliver();
+        return;
+      }
+      enqueue(() => applySuccessor(entry));
+    },
+    finishInitialReplay: () => {
+      if (initial.length === 0 || failure !== null) return;
+      enqueue(async () => {
+        if (failure !== null) return;
+        const baselineIndex = initial.findIndex(
+          (entry) => entry.event?.eventId === cursor,
+        );
+        const successorIndex = initial.findIndex(
+          (entry) => entry.event?.previousSettingsEventId === cursor,
+        );
+        const startIndex = baselineIndex >= 0 ? baselineIndex : successorIndex;
+        if (startIndex < 0) {
+          const containsSettings = initial.some((entry) => entry.event !== null);
+          if (containsSettings) {
+            throw new Error(
+              `daemon runtime-settings replay does not join snapshot cursor ${cursor}`,
+            );
+          }
+          for (const entry of initial) await applySuccessor(entry);
+          initial.length = 0;
+          return;
+        }
+        for (let index = 0; index < startIndex; index += 1) {
+          initial[index]!.deliver();
+        }
+        for (let index = startIndex; index < initial.length; index += 1) {
+          await applySuccessor(initial[index]!);
+        }
+        initial.length = 0;
+      });
+    },
+    noteConnectionState: (state) => {
+      if (state.status !== "connected") {
+        observedConnectionGap = true;
+        return;
+      }
+      if (observedConnectionGap) {
+        fail(
+          new Error(
+            "daemon reconnected without an authoritative runtime-settings snapshot; re-attach is required",
+          ),
+        );
+      }
+    },
+    barrier: async () => {
+      await queue;
+      if (failure !== null) throw failure;
+    },
+  };
+}
+
 function subscribeToDaemonEvents(
   client: AgenCDaemonTuiClient,
   sessionId: string,
@@ -1854,7 +2319,26 @@ function subscribeToDaemonEvents(
   realtime: AgenCRealtimeTuiControls,
   mcpProjection: DaemonMcpProjection,
   cb: (event: unknown) => void,
+  runtimeSettingsReconciler?: RuntimeSettingsReconciler,
 ): () => void {
+  let replayingInitialEvents = true;
+  const deliver = (event: JsonObject): void => {
+    cb(event);
+    void maybeBridgeDaemonApproval(
+      client,
+      sessionId,
+      session,
+      event,
+      cb,
+    );
+    void maybeBridgeDaemonElicitation(
+      client,
+      sessionId,
+      session,
+      event,
+      cb,
+    );
+  };
   const unsubscribeSession = client.subscribeToSessionEvents(
     sessionId,
     (event) => {
@@ -1868,23 +2352,21 @@ function subscribeToDaemonEvents(
         return;
       }
       const transcriptEvent = toTranscriptEvent(event);
-      cb(transcriptEvent);
-      void maybeBridgeDaemonApproval(
-        client,
-        sessionId,
-        session,
-        transcriptEvent,
-        cb,
-      );
-      void maybeBridgeDaemonElicitation(
-        client,
-        sessionId,
-        session,
-        transcriptEvent,
-        cb,
-      );
+      if (runtimeSettingsReconciler === undefined) {
+        deliver(transcriptEvent);
+      } else if (replayingInitialEvents) {
+        runtimeSettingsReconciler.acceptInitial(transcriptEvent, () =>
+          deliver(transcriptEvent),
+        );
+      } else {
+        runtimeSettingsReconciler.acceptLive(transcriptEvent, () =>
+          deliver(transcriptEvent),
+        );
+      }
     },
   );
+  replayingInitialEvents = false;
+  runtimeSettingsReconciler?.finishInitialReplay();
   const unsubscribeRealtime = client.subscribeToNotifications?.((event) => {
     const transcriptEvent = toRealtimeTranscriptEvent(event, realtimeThreadId);
     if (transcriptEvent === null) return;
@@ -1892,6 +2374,7 @@ function subscribeToDaemonEvents(
     cb(transcriptEvent);
   });
   const unsubscribeConnection = client.subscribeToConnectionState?.((state) => {
+    runtimeSettingsReconciler?.noteConnectionState(state);
     mcpProjection.noteConnectionState(state);
     for (const event of connectionNoticeEvents(state)) {
       cb(event);
@@ -2273,6 +2756,9 @@ function toTranscriptEvent(event: JsonObject): JsonObject {
   if (method === "event.session_event" && isJsonObject(params.event)) {
     return {
       ...params.event,
+      ...(typeof params.eventId === "string" && params.eventId.length > 0
+        ? { eventId: params.eventId }
+        : {}),
       id: daemonTranscriptEventId(
         params,
         typeof params.event.id === "string" ? params.event.id : "session-event",

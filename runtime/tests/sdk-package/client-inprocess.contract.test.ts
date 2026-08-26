@@ -116,19 +116,23 @@ async function createFakeDaemon(
         };
       },
       listAgents: async () => ({ agents: [] }),
-      attachAgent: async (params: JsonObject) => {
+      attachAgent: async (params: JsonObject, registerSessionRoute) => {
         const agentId = String(params.agentId ?? "agent_1");
         const listed = await sessionManager.listSessions();
         const match =
           listed.sessions.find((s) => s.agentId === agentId) ??
           listed.sessions[0];
-        const sessionId = match?.sessionId ?? "session_1";
+        if (match === undefined || match.cwd === undefined) {
+          throw new Error("test daemon agent has no authoritative session cwd");
+        }
+        const sessionId = match.sessionId;
         const attachment = await sessionManager.attachSession({
           sessionId,
           ...(params.clientId !== undefined
             ? { clientId: String(params.clientId) }
             : {}),
         });
+        await registerSessionRoute(sessionId);
         return {
           agentId,
           attachmentId: attachment.attachmentId,
@@ -139,6 +143,24 @@ async function createFakeDaemon(
             remoteMode: false,
             allowUntrustedHooks: false,
           },
+          runtimeSettings: {
+            permissionMode: "default",
+            prePlanMode: null,
+            autoModeActive: false,
+            autoModeAvailable: true,
+            bypassPermissionsModeAvailable: false,
+            bypassPermissionsWorkspace: null,
+            bypassPermissionsConsentWorkspace: null,
+            model: "grok-4.3",
+            provider: "grok",
+            profile: null,
+            reasoningEffort: null,
+            modelVerbosity: null,
+            serviceTier: null,
+            hooksDisabled: false,
+          },
+          runtimeSettingsEventId: "run-runtime-settings:agent_1:0:initial",
+          sessions: [{ ...match, cwd: match.cwd }],
         };
       },
       stopAgent: async () => ({ agentId: "agent_1", stopped: true }),
@@ -321,7 +343,7 @@ describe("agenc-sdk client over the in-process transport", () => {
     const initialized = await daemon.client.initialize();
     expect(initialized).toMatchObject({
       type: "initialized",
-      protocol: { version: "1.5.0" },
+      protocol: { version: "1.7.0" },
     });
 
     const session = await daemon.client.createSession({

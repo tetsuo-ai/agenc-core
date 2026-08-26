@@ -38,14 +38,15 @@ describe("MCPManager production disposal chain", () => {
         broker,
         resolve("mcp-production-new"),
       ),
-    ).rejects.toThrow(/old authority restored/);
+    ).rejects.toThrow(/broker was closed/);
 
     expect(oldClient.close).toHaveBeenCalledOnce();
     expect(broker.cwd).toBe(oldCwd);
+    expect(broker.isClosedAfterLifecycleAuthorityFailure()).toBe(true);
     expect(manager.isConnected("strict-close")).toBe(false);
     expect(manager.getConnectionState("strict-close")).toEqual({
       type: "failed",
-      error: expect.stringContaining("cleanup remains unproven"),
+      error: expect.stringContaining("execution authority is permanently closed"),
     });
     expect(mockCreateMCPConnection).toHaveBeenCalledOnce();
 

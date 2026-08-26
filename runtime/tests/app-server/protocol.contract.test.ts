@@ -144,6 +144,7 @@ const expectedInternalMethods = [
   "session.rewindFilesToMessage",
   "session.setModel",
   "session.setPermissionMode",
+  "session.permissions.mutateRule",
   "session.hooks.status",
   "session.hooks.setDisabled",
   "session.applyConfig",
@@ -189,8 +190,8 @@ function compileDefinitionValidator(
 }
 
 describe("AgenC daemon protocol surface", () => {
-  it("defines the 1.5 hook-suppression result contract", () => {
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.5.0");
+  it("defines the 1.6 live attach-settings contract", () => {
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.7.0");
 
     const status: AgenCDaemonInternalResultByMethod["session.hooks.status"] = {
       sessionId: "session-bare",
@@ -297,10 +298,26 @@ describe("AgenC daemon protocol surface", () => {
         baseChangedtick: 4,
         bufferHandle: 7,
       };
+    const permissionRuleMutation: AgenCDaemonInternalResultByMethod["session.permissions.mutateRule"] =
+      {
+        sessionId: "session_contract",
+        applied: true,
+        operation: "add",
+        behavior: "allow",
+        rule: "system.bash(ls)",
+        sessionRules: {
+          allow: ["system.bash(ls)"],
+          deny: [],
+          ask: [],
+        },
+      };
 
     expect(partial.ok).toBe(true);
     expect(rewind.message).toBe("missing");
     expect(proposalStatus.status).toBe("committed");
+    expect(permissionRuleMutation.sessionRules.allow).toEqual([
+      "system.bash(ls)",
+    ]);
   });
 
   it("publishes a schema with the same method list and package target", () => {

@@ -100,9 +100,26 @@ describe('home and runtime-state authority boundary', () => {
       'providerProfiles',
       'activeProviderProfileId',
       'openaiAdditionalModelOptionsCacheByProfile',
+      'fastModePerSessionOptIn',
+      'bypassPermissionsModeAcceptedIn',
     ].filter(field => new RegExp(`\\b${field}\\b`, 'u').test(configSource))
 
     expect(retired).toEqual([])
+  })
+
+  test('keeps the structural state parser inside the explicit migration boundary', () => {
+    const consumers = sourceFiles(sourceRoot)
+      .map(path => ({
+        name: relative(sourceRoot, path),
+        content: readFileSync(path, 'utf8'),
+      }))
+      .filter(({ name }) => name !== 'config/state.ts')
+      .filter(({ content }) =>
+        /\bparseCanonicalStateJsonStructure\b/u.test(content)
+      )
+      .map(({ name }) => name)
+
+    expect(consumers).toEqual(['config/migration.ts'])
   })
 
   test('keeps project state free of trust and executable policy authority', () => {

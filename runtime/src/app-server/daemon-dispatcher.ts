@@ -68,6 +68,8 @@ import {
   validateAgentRuntimeOptions,
 } from "../session/runtime-options.js";
 import { normalizeDaemonClientEnvOverrides } from "./client-env-snapshot.js";
+import { MAX_SESSION_PERMISSION_RULE_UTF8_BYTES } from "../permissions/session-rule-buckets.js";
+import { PermissionRuleMutationPrecommitError } from "../permissions/permission-updates.js";
 import {
   requireAbsoluteWorkspaceCwd,
   WorkspaceCwdError,
@@ -171,6 +173,7 @@ import {
   type SessionFileRewindParams,
   type SessionSetModelParams,
   type SessionSetPermissionModeParams,
+  type SessionPermissionRuleMutationParams,
   type SessionHooksStatusParams,
   type SessionHooksSetDisabledParams,
   type SessionApplyConfigParams,
@@ -247,6 +250,7 @@ const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
   "workspace.editor.topology.recovered.resolve": 1,
   "session.transcript.v2": 2,
   "session.mcp.status": 3,
+  "session.permissions.mutateRule": 7,
 });
 
 const CSV_JOB_REVIEW_MAX_PAGE_SIZE = 100;
@@ -414,6 +418,10 @@ function buildServerCapabilities(
       agentManager,
       "setSessionPermissionMode",
     ),
+    "session.permissions.mutateRule": hasMethod(
+      agentManager,
+      "mutateSessionPermissionRule",
+    ),
     "session.hooks.status": hasMethod(agentManager, "getSessionHooksStatus"),
     "session.hooks.setDisabled": hasMethod(
       agentManager,
@@ -494,6 +502,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "rewindFilesToMessage"
     | "setSessionModel"
     | "setSessionPermissionMode"
+    | "mutateSessionPermissionRule"
     | "applyConfigToSession"
     | "respondToElicitation"
     | "getAgentLogs"
@@ -516,6 +525,7 @@ export interface AgenCDaemonDispatcherOptions {
     AgenCDaemonClientMultiplexer,
     | "attachClientToSession"
     | "broadcastSessionEvent"
+    | "detachClientFromSession"
     | "detachSession"
     | "registerClient"
     | "terminateSession"
@@ -595,6 +605,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "rewindFilesToMessage"
     | "setSessionModel"
     | "setSessionPermissionMode"
+    | "mutateSessionPermissionRule"
     | "applyConfigToSession"
     | "respondToElicitation"
     | "getAgentLogs"
@@ -620,6 +631,7 @@ export class AgenCDaemonJsonRpcDispatcher {
         AgenCDaemonClientMultiplexer,
         | "attachClientToSession"
         | "broadcastSessionEvent"
+        | "detachClientFromSession"
         | "detachSession"
         | "registerClient"
         | "terminateSession"
@@ -1334,6 +1346,13 @@ export class AgenCDaemonJsonRpcDispatcher {
             validateSessionSetPermissionModeParams(params),
           ),
         );
+      case "session.permissions.mutateRule":
+        return internalSuccessResponse(
+          id,
+          await this.#agentManager.mutateSessionPermissionRule(
+            validateSessionPermissionRuleMutationParams(params),
+          ),
+        );
       case "session.hooks.status":
         if (this.#agentManager.getSessionHooksStatus === undefined) {
           return methodNotImplementedResponse(id, method);
@@ -1603,15 +1622,11 @@ export class AgenCDaemonJsonRpcDispatcher {
     params: JsonObject,
   ): Promise<AgenCDaemonResponse> {
     const attachParams = validateAgentAttachParams(params);
-    const result = await this.#agentManager.attachAgent(attachParams);
-    const primarySessionId = result.sessionIds[0];
-    if (primarySessionId !== undefined) {
-      await this.#registerAttachedClient(
-        connection,
-        attachParams,
-        primarySessionId,
-      );
-    }
+    const result = await this.#agentManager.attachAgent(
+      attachParams,
+      (sessionId) =>
+        this.#registerAttachedClient(connection, attachParams, sessionId),
+    );
     return successResponse(id, result);
   }
 
@@ -1685,12 +1700,32 @@ export class AgenCDaemonJsonRpcDispatcher {
     connection: AgenCDaemonJsonRpcConnection,
     params: AgentAttachParams,
     sessionId: string,
-  ): Promise<void> {
-    await this.#attachTrackedClientToSession(
+  ): Promise<() => Promise<void>> {
+    const clientId = params.clientId;
+    const wasTracked =
+      clientId !== undefined && connection.trackedClientIds.includes(clientId);
+    const attachment = await this.#attachTrackedClientToSession(
       connection,
-      params.clientId,
+      clientId,
       sessionId,
     );
+    return async () => {
+      if (
+        attachment === undefined ||
+        clientId === undefined ||
+        this.#clientMultiplexer === undefined
+      ) {
+        return;
+      }
+      if (!wasTracked) {
+        connection.untrackClientId(clientId);
+        await this.#clientMultiplexer.removeClient(clientId).catch(() => {});
+        return;
+      }
+      await this.#clientMultiplexer
+        .detachClientFromSession(sessionId, clientId)
+        .catch(() => {});
+    };
   }
 
   async #registerInitializedCapabilityClient(
@@ -3291,6 +3326,33 @@ function validateSessionSetPermissionModeParams(
   validateRequiredString(validated, "session.setPermissionMode", "sessionId");
   validateRequiredString(validated, "session.setPermissionMode", "mode");
   return validated as SessionSetPermissionModeParams;
+}
+
+function validateSessionPermissionRuleMutationParams(
+  params: JsonObject,
+): SessionPermissionRuleMutationParams {
+  const methodName = "session.permissions.mutateRule";
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: ["sessionId", "operation", "behavior", "rule"],
+  });
+  validateRequiredString(validated, methodName, "sessionId");
+  validateRequiredEnum(validated, methodName, "operation", ["add", "remove"]);
+  validateRequiredEnum(validated, methodName, "behavior", [
+    "allow",
+    "deny",
+    "ask",
+  ]);
+  validateRequiredString(validated, methodName, "rule");
+  if (
+    Buffer.byteLength(validated.rule as string, "utf8") >
+    MAX_SESSION_PERMISSION_RULE_UTF8_BYTES
+  ) {
+    throw invalidParams(
+      `${methodName} rule exceeds ${MAX_SESSION_PERMISSION_RULE_UTF8_BYTES} UTF-8 bytes`,
+    );
+  }
+  return validated as SessionPermissionRuleMutationParams;
 }
 
 function validateSessionHooksStatusParams(
@@ -5289,6 +5351,12 @@ function mapDispatchError(
   id: RequestId | null,
   error: unknown,
 ): AgenCDaemonResponse {
+  if (error instanceof PermissionRuleMutationPrecommitError) {
+    return errorResponse(id, -32602, error.message, {
+      code: "PERMISSION_RULE_MUTATION_REJECTED",
+      authorityPhase: "precommit",
+    });
+  }
   if (error instanceof AgenCDaemonRequestCancelledError) {
     return errorResponse(id, -32000, error.message, {
       code: "REQUEST_CANCELLED",

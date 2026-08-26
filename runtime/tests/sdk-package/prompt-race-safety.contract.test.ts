@@ -41,6 +41,31 @@ function success<Method extends AgencDaemonMethod>(
   } as AgencDaemonResponse<Method>;
 }
 
+const VALID_ATTACH_RUNTIME_OPTIONS = Object.freeze({
+  simpleMode: false,
+  stdinDataMode: false,
+  remoteMode: false,
+  allowUntrustedHooks: false,
+});
+const VALID_ATTACH_CWD = "/tmp/agenc-sdk-agent-workspace";
+
+const VALID_ATTACH_RUNTIME_SETTINGS = Object.freeze({
+  permissionMode: "default",
+  prePlanMode: null,
+  autoModeActive: false,
+  autoModeAvailable: true,
+  bypassPermissionsModeAvailable: false,
+  bypassPermissionsWorkspace: null,
+  bypassPermissionsConsentWorkspace: null,
+  model: "grok-4.3",
+  provider: "grok",
+  profile: null,
+  reasoningEffort: null,
+  modelVerbosity: null,
+  serviceTier: null,
+  hooksDisabled: false,
+});
+
 class PromptTransport implements AgencTransport {
   readonly requests: AgencDaemonRequest[] = [];
   readonly sends: Array<{
@@ -48,9 +73,10 @@ class PromptTransport implements AgencTransport {
     readonly response: Deferred<AgencDaemonResponse<"message.send">>;
   }> = [];
   client?: AgencClient;
-  initializeVersion = "1.5.0";
+  initializeVersion = "1.7.0";
   initializeFailures = 0;
   attachRuntimeOptions: unknown;
+  attachRuntimeSettings: unknown = VALID_ATTACH_RUNTIME_SETTINGS;
   duplicateIncomplete = false;
 
   async request<Method extends AgencDaemonMethod>(
@@ -83,7 +109,9 @@ class PromptTransport implements AgencTransport {
               this.initializeVersion === "1.2.0" ||
               this.initializeVersion === "1.3.0" ||
               this.initializeVersion === "1.4.0" ||
-              this.initializeVersion === "1.5.0",
+              this.initializeVersion === "1.5.0" ||
+              this.initializeVersion === "1.6.0" ||
+              this.initializeVersion === "1.7.0",
           },
         },
       });
@@ -99,9 +127,22 @@ class PromptTransport implements AgencTransport {
         agentId: String((request.params as JsonObject).agentId),
         attachmentId: "attachment_agent_1",
         sessionIds: ["session_1"],
+        runtimeSettingsEventId: "settings:agent_1:initial",
+        sessions: [
+          {
+            sessionId: "session_1",
+            agentId: String((request.params as JsonObject).agentId),
+            status: "running",
+            createdAt: "2026-08-17T00:00:00.000Z",
+            cwd: VALID_ATTACH_CWD,
+          },
+        ],
         ...(this.attachRuntimeOptions === undefined
           ? {}
           : { runtimeOptions: this.attachRuntimeOptions }),
+        ...(this.attachRuntimeSettings === undefined
+          ? {}
+          : { runtimeSettings: this.attachRuntimeSettings }),
       });
     }
     if (request.method === "session.create") {
@@ -270,7 +311,15 @@ function resolveSend(
 }
 
 describe("agenc-sdk prompt race safety", () => {
-  it.each(["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0"])(
+  it.each([
+    "1.0.0",
+    "1.1.0",
+    "1.2.0",
+    "1.3.0",
+    "1.4.0",
+    "1.5.0",
+    "1.6.0",
+  ])(
     "downgrades capability discovery to an older %s daemon",
     async (version) => {
       const transport = new PromptTransport();
@@ -283,7 +332,7 @@ describe("agenc-sdk prompt race safety", () => {
       );
       expect(initializes).toHaveLength(2);
       expect(initializes.map((request) => request.params)).toEqual([
-        expect.objectContaining({ protocol: { version: "1.5.0" } }),
+        expect.objectContaining({ protocol: { version: "1.7.0" } }),
         expect.objectContaining({ protocol: { version } }),
       ]);
       expect(client.negotiatedProtocolVersion).toBe(version);
@@ -292,16 +341,16 @@ describe("agenc-sdk prompt race safety", () => {
     },
   );
 
-  it("rejects agent attachment below protocol 1.4 before dispatch", async () => {
+  it("rejects agent attachment below protocol 1.7 before dispatch", async () => {
     const transport = new PromptTransport();
-    transport.initializeVersion = "1.3.0";
+    transport.initializeVersion = "1.6.0";
     transport.initializeFailures = 1;
     const client = await initializedClient(transport);
 
     await expect(client.attachAgent("agent_1")).rejects.toMatchObject({
       name: "AgencCapabilityUnavailableError",
       capability: "agent.attach runtime authority",
-      negotiatedProtocolVersion: "1.3.0",
+      negotiatedProtocolVersion: "1.6.0",
     });
     expect(
       transport.requests.filter((request) => request.method === "agent.attach"),
@@ -318,7 +367,7 @@ describe("agenc-sdk prompt race safety", () => {
       posixShellPath: 42,
     },
   ])(
-    "rejects malformed protocol 1.4 agent attachment authority %#",
+    "rejects malformed protocol 1.7 agent attachment authority %#",
     async (runtimeOptions) => {
       const transport = new PromptTransport();
       transport.attachRuntimeOptions = runtimeOptions;
@@ -335,7 +384,74 @@ describe("agenc-sdk prompt race safety", () => {
     },
   );
 
-  it("uses session.create below protocol 1.4 without orphaning an agent", async () => {
+  it("accepts protocol 1.7 inactive permission capabilities bound to the primary cwd", async () => {
+    const transport = new PromptTransport();
+    transport.attachRuntimeOptions = VALID_ATTACH_RUNTIME_OPTIONS;
+    transport.attachRuntimeSettings = {
+      ...VALID_ATTACH_RUNTIME_SETTINGS,
+      autoModeAvailable: true,
+      bypassPermissionsModeAvailable: true,
+      bypassPermissionsConsentWorkspace: VALID_ATTACH_CWD,
+    };
+    const client = await initializedClient(transport);
+
+    await expect(client.attachAgent("agent_1")).resolves.toMatchObject({
+      attach: {
+        runtimeSettings: {
+          permissionMode: "default",
+          autoModeAvailable: true,
+          bypassPermissionsModeAvailable: true,
+          bypassPermissionsConsentWorkspace: VALID_ATTACH_CWD,
+        },
+      },
+    });
+  });
+
+  it.each([
+    undefined,
+    {
+      ...VALID_ATTACH_RUNTIME_SETTINGS,
+      permissionMode: "plan",
+      prePlanMode: null,
+    },
+    {
+      ...VALID_ATTACH_RUNTIME_SETTINGS,
+      bypassPermissionsWorkspace: "/tmp/unbound-bypass-authority",
+    },
+    {
+      ...VALID_ATTACH_RUNTIME_SETTINGS,
+      permissionMode: "bypassPermissions",
+      bypassPermissionsModeAvailable: true,
+      bypassPermissionsWorkspace: "relative/workspace",
+      bypassPermissionsConsentWorkspace: "relative/workspace",
+    },
+    { ...VALID_ATTACH_RUNTIME_SETTINGS, autoModeAvailable: undefined },
+    {
+      ...VALID_ATTACH_RUNTIME_SETTINGS,
+      bypassPermissionsModeAvailable: true,
+      bypassPermissionsConsentWorkspace: "/tmp/other-workspace",
+    },
+    { ...VALID_ATTACH_RUNTIME_SETTINGS, model: "   " },
+  ])(
+    "rejects missing or impossible protocol 1.7 runtime settings %#",
+    async (runtimeSettings) => {
+      const transport = new PromptTransport();
+      transport.attachRuntimeOptions = VALID_ATTACH_RUNTIME_OPTIONS;
+      transport.attachRuntimeSettings = runtimeSettings;
+      const client = await initializedClient(transport);
+
+      await expect(client.attachAgent("agent_1")).rejects.toMatchObject({
+        name: "AgencMalformedResponseError",
+      });
+      expect(
+        transport.requests.filter(
+          (request) => request.method === "agent.attach",
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
+  it("uses session.create below protocol 1.7 without orphaning an agent", async () => {
     const transport = new PromptTransport();
     transport.initializeVersion = "1.3.0";
     transport.initializeFailures = 1;

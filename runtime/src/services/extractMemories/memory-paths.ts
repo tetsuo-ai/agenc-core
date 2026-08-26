@@ -23,13 +23,13 @@ import {
   sep,
 } from "node:path";
 import { findGitRoot as findCanonicalGitRoot } from "../../agents/worktree.js";
+import type { AgenCConfig } from "../../config/schema.js";
 import type { ConfigStore } from "../../config/store.js";
 import {
   getAgenCHomeDir,
   isBareMode,
 } from "../../utils/envUtils.js";
 import { findProjectRootSync } from "../../session/session-store.js";
-import type { PermissionSettingsSnapshot } from "../../permissions/settings.js";
 import type { PermissionRuleSource } from "../../permissions/types.js";
 import { getSettingsForSource } from "../../utils/settings/settings.js";
 import {
@@ -68,7 +68,7 @@ export interface ResolveAutoMemoryDirectoryOptions {
     "coworkMemoryPathOverride" | "remoteMode" | "remoteMemoryRoot"
   >;
   readonly settings?: {
-    readonly [K in PermissionRuleSource]?: PermissionSettingsSnapshot | null;
+    readonly [K in PermissionRuleSource]?: AgenCConfig | null;
   };
 }
 
@@ -181,13 +181,13 @@ export function sanitizePathForProjectKey(path: string): string {
 async function readSettings(
   source: CanonicalSettingSource,
   opts: ResolveAutoMemoryDirectoryOptions,
-): Promise<PermissionSettingsSnapshot | null> {
+): Promise<AgenCConfig | null> {
   if (opts.settings) {
     return opts.settings[source] ?? null;
   }
-  return (opts.configStore
+  return opts.configStore
     ? getSettingsForSource(source, opts.configStore)
-    : getSettingsForSource(source)) as PermissionSettingsSnapshot | null;
+    : getSettingsForSource(source);
 }
 
 async function readAutoMemoryEnabledSetting(

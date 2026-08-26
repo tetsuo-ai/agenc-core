@@ -16,11 +16,15 @@ import { buildDefaultRegistry } from "../commands/registry.js";
 import type { SlashCommandContext } from "../commands/types.js";
 import type { ConfigStore } from "../config/store.js";
 import {
+  applyDaemonTuiRuntimeSettingsAuthority,
   createAgenCDaemonOnlyTuiContext,
   findAgenCDaemonAgentBySessionId,
   listAgenCDaemonAgents,
 } from "./index.js";
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
+import {
+  registerSandboxExecutionLifecycleParticipant,
+} from "../sandbox/execution-lifecycle.js";
 
 function createListClient(
   pages: Array<{
@@ -508,6 +512,389 @@ describe("app-server-client daemon helpers", () => {
         "danger_full_access",
       );
     } finally {
+      await context?.close();
+      rmSync(agencHome, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("hydrates config-default bypass authority from the live attach snapshot", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-live-bypass-home-"));
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-live-bypass-workspace-"));
+    writeFileSync(
+      join(agencHome, "config.toml"),
+      [
+        "config_version = 2",
+        'model_provider = "openai"',
+        'model = "stale-model"',
+        '[profiles.live]',
+        'model_provider = "grok"',
+        'model = "profile-model"',
+        'approval_policy = "never"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    let context: Awaited<
+      ReturnType<typeof createAgenCDaemonOnlyTuiContext>
+    > | null = null;
+    try {
+      context = await createAgenCDaemonOnlyTuiContext({
+        env: {
+          ...process.env,
+          AGENC_HOME: agencHome,
+          HOME: agencHome,
+          AGENC_PROFILE: "stale-profile",
+        },
+        cwd: workspace,
+        conversationId: "agenc-live-bypass-attach",
+        provider: "openai",
+        model: "client-only-model",
+        profile: "stale-profile",
+        runtimeSettings: {
+          permissionMode: "bypassPermissions",
+          prePlanMode: null,
+          autoModeActive: false,
+          autoModeAvailable: true,
+          bypassPermissionsModeAvailable: true,
+          bypassPermissionsWorkspace: workspace,
+          bypassPermissionsConsentWorkspace: workspace,
+          provider: "grok",
+          model: "grok-live-model",
+          profile: "live",
+          reasoningEffort: "high",
+          modelVerbosity: "low",
+          serviceTier: "flex",
+          hooksDisabled: false,
+        },
+      });
+
+      const permissionContext =
+        context.baseSession.services.permissionModeRegistry.current();
+      expect(permissionContext).toMatchObject({
+        mode: "bypassPermissions",
+        autoModeActive: false,
+        isBypassPermissionsModeAvailable: true,
+        bypassPermissionsAcceptedIn: [workspace],
+      });
+      expect(context.model).toBe("grok-live-model");
+      expect(context.baseSession.sessionConfiguration).toMatchObject({
+        provider: { slug: "grok" },
+        collaborationMode: {
+          model: "grok-live-model",
+          reasoningEffort: "high",
+        },
+        modelVerbosity: "low",
+        serviceTier: "flex",
+        sandboxPolicy: { value: "danger_full_access" },
+      });
+      expect(context.baseSession.services.sandboxExecutionBroker?.mode).toBe(
+        "danger_full_access",
+      );
+    } finally {
+      await context?.close();
+      rmSync(agencHome, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("hydrates inactive daemon permission capabilities without consulting client config", async () => {
+    const agencHome = mkdtempSync(
+      join(tmpdir(), "agenc-inactive-capability-home-"),
+    );
+    const workspace = mkdtempSync(
+      join(tmpdir(), "agenc-inactive-capability-workspace-"),
+    );
+    writeFileSync(
+      join(agencHome, "config.toml"),
+      [
+        "config_version = 2",
+        'disableAutoMode = "disable"',
+        "[permissions]",
+        'bypassPermissionsMode = "disable"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+    let context: Awaited<
+      ReturnType<typeof createAgenCDaemonOnlyTuiContext>
+    > | null = null;
+    try {
+      context = await createAgenCDaemonOnlyTuiContext({
+        env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
+        cwd: workspace,
+        conversationId: "agenc-inactive-capability-attach",
+        runtimeSettings: {
+          permissionMode: "default",
+          prePlanMode: null,
+          autoModeActive: false,
+          autoModeAvailable: true,
+          bypassPermissionsModeAvailable: true,
+          bypassPermissionsWorkspace: null,
+          bypassPermissionsConsentWorkspace: workspace,
+          provider: "grok",
+          model: "grok-live-model",
+          profile: null,
+          reasoningEffort: null,
+          modelVerbosity: null,
+          serviceTier: null,
+          hooksDisabled: false,
+        } as never,
+      });
+
+      expect(
+        context.baseSession.services.permissionModeRegistry.current(),
+      ).toMatchObject({
+        mode: "default",
+        autoModeActive: false,
+        isAutoModeAvailable: true,
+        isBypassPermissionsModeAvailable: true,
+        bypassPermissionsAcceptedIn: [workspace],
+      });
+    } finally {
+      await context?.close();
+      rmSync(agencHome, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("hydrates plan pre-mode and auto state without activating the bypass sandbox", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-live-plan-home-"));
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-live-plan-workspace-"));
+    let context: Awaited<
+      ReturnType<typeof createAgenCDaemonOnlyTuiContext>
+    > | null = null;
+    try {
+      context = await createAgenCDaemonOnlyTuiContext({
+        env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
+        cwd: workspace,
+        conversationId: "agenc-live-plan-attach",
+        runtimeSettings: {
+          permissionMode: "plan",
+          prePlanMode: "bypassPermissions",
+          autoModeActive: true,
+          autoModeAvailable: true,
+          bypassPermissionsModeAvailable: true,
+          bypassPermissionsWorkspace: workspace,
+          bypassPermissionsConsentWorkspace: workspace,
+          provider: "grok",
+          model: "grok-plan-model",
+          profile: null,
+          reasoningEffort: null,
+          modelVerbosity: null,
+          serviceTier: null,
+          hooksDisabled: false,
+        },
+      });
+
+      expect(
+        context.baseSession.services.permissionModeRegistry.current(),
+      ).toMatchObject({
+        mode: "plan",
+        prePlanMode: "bypassPermissions",
+        autoModeActive: true,
+        bypassPermissionsAcceptedIn: [workspace],
+      });
+      expect(context.baseSession.services.sandboxExecutionBroker?.mode).toBe(
+        "workspace_write",
+      );
+    } finally {
+      await context?.close();
+      rmSync(agencHome, { recursive: true, force: true });
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps client processes quiesced until each live bypass authority is complete", async () => {
+    const agencHome = mkdtempSync(
+      join(tmpdir(), "agenc-live-bypass-exit-home-"),
+    );
+    const workspace = mkdtempSync(
+      join(tmpdir(), "agenc-live-bypass-exit-workspace-"),
+    );
+    writeFileSync(
+      join(agencHome, "config.toml"),
+      ["config_version = 2", 'sandbox_mode = "read-only"', ""].join("\n"),
+      "utf8",
+    );
+    let context: Awaited<
+      ReturnType<typeof createAgenCDaemonOnlyTuiContext>
+    > | null = null;
+    let unregisterParticipant: (() => void) | undefined;
+    try {
+      context = await createAgenCDaemonOnlyTuiContext({
+        env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
+        cwd: workspace,
+        conversationId: "agenc-live-bypass-exit",
+        runtimeSettings: {
+          permissionMode: "bypassPermissions",
+          prePlanMode: null,
+          autoModeActive: false,
+          autoModeAvailable: true,
+          bypassPermissionsModeAvailable: true,
+          bypassPermissionsWorkspace: workspace,
+          bypassPermissionsConsentWorkspace: workspace,
+          provider: "grok",
+          model: "grok-live-model",
+          profile: null,
+          reasoningEffort: null,
+          modelVerbosity: null,
+          serviceTier: null,
+          hooksDisabled: false,
+        },
+      });
+      const broker = context.baseSession.services.sandboxExecutionBroker;
+      expect(broker?.mode).toBe("danger_full_access");
+      expect(context.baseSession.sessionConfiguration.sandboxPolicy.value).toBe(
+        "danger_full_access",
+      );
+      let hooksDisabled = false;
+      Object.assign(context.baseSession.services, {
+        hooksRuntime: {
+          setDisabled: (disabled: boolean) => {
+            hooksDisabled = disabled;
+          },
+        },
+      });
+      const lifecycle: string[] = [];
+      const resumedAuthorities: Array<{
+        readonly brokerMode: string | undefined;
+        readonly permissionMode: string;
+        readonly sandboxPolicy: string;
+        readonly hooksDisabled: boolean;
+      }> = [];
+      unregisterParticipant = registerSandboxExecutionLifecycleParticipant(
+        broker!,
+        {
+          name: "live-client-process",
+          quiesce: async () => {
+            lifecycle.push(`quiesce:${broker?.mode}`);
+          },
+          resume: async () => {
+            lifecycle.push(`resume:${broker?.mode}`);
+            resumedAuthorities.push({
+              brokerMode: broker?.mode,
+              permissionMode:
+                context!.baseSession.services.permissionModeRegistry.current()
+                  .mode,
+              sandboxPolicy:
+                context!.baseSession.sessionConfiguration.sandboxPolicy.value,
+              hooksDisabled,
+            });
+          },
+        },
+      );
+
+      await applyDaemonTuiRuntimeSettingsAuthority(
+        context.baseSession,
+        workspace,
+        {
+          permissionMode: "default",
+          prePlanMode: null,
+          autoModeActive: false,
+          autoModeAvailable: true,
+          bypassPermissionsModeAvailable: true,
+          bypassPermissionsWorkspace: null,
+          bypassPermissionsConsentWorkspace: workspace,
+          provider: "grok",
+          model: "grok-live-model",
+          profile: null,
+          reasoningEffort: null,
+          modelVerbosity: null,
+          serviceTier: null,
+          hooksDisabled: false,
+        },
+      );
+
+      expect(context.baseSession.services.sandboxExecutionBroker).toBe(broker);
+      expect(broker?.mode).toBe("read_only");
+      expect(context.baseSession.sessionConfiguration.sandboxPolicy.value).toBe(
+        "read_only",
+      );
+      expect(lifecycle).toEqual([
+        "quiesce:danger_full_access",
+        "resume:read_only",
+      ]);
+      expect(resumedAuthorities).toEqual([
+        {
+          brokerMode: "read_only",
+          permissionMode: "default",
+          sandboxPolicy: "read_only",
+          hooksDisabled: false,
+        },
+      ]);
+
+      await applyDaemonTuiRuntimeSettingsAuthority(
+        context.baseSession,
+        workspace,
+        {
+          permissionMode: "acceptEdits",
+          prePlanMode: null,
+          autoModeActive: false,
+          autoModeAvailable: true,
+          bypassPermissionsModeAvailable: true,
+          bypassPermissionsWorkspace: null,
+          bypassPermissionsConsentWorkspace: workspace,
+          provider: "grok",
+          model: "grok-live-model",
+          profile: null,
+          reasoningEffort: null,
+          modelVerbosity: null,
+          serviceTier: null,
+          hooksDisabled: true,
+        },
+      );
+
+      expect(lifecycle).toEqual([
+        "quiesce:danger_full_access",
+        "resume:read_only",
+        "quiesce:read_only",
+        "resume:read_only",
+      ]);
+      expect(resumedAuthorities.at(-1)).toEqual({
+        brokerMode: "read_only",
+        permissionMode: "acceptEdits",
+        sandboxPolicy: "read_only",
+        hooksDisabled: true,
+      });
+
+      await applyDaemonTuiRuntimeSettingsAuthority(
+        context.baseSession,
+        workspace,
+        {
+          permissionMode: "bypassPermissions",
+          prePlanMode: null,
+          autoModeActive: false,
+          autoModeAvailable: true,
+          bypassPermissionsModeAvailable: true,
+          bypassPermissionsWorkspace: workspace,
+          bypassPermissionsConsentWorkspace: workspace,
+          provider: "grok",
+          model: "grok-live-model",
+          profile: null,
+          reasoningEffort: null,
+          modelVerbosity: null,
+          serviceTier: null,
+          hooksDisabled: false,
+        },
+      );
+
+      expect(lifecycle).toEqual([
+        "quiesce:danger_full_access",
+        "resume:read_only",
+        "quiesce:read_only",
+        "resume:read_only",
+        "quiesce:read_only",
+        "resume:danger_full_access",
+      ]);
+      expect(resumedAuthorities.at(-1)).toEqual({
+        brokerMode: "danger_full_access",
+        permissionMode: "bypassPermissions",
+        sandboxPolicy: "danger_full_access",
+        hooksDisabled: false,
+      });
+    } finally {
+      unregisterParticipant?.();
       await context?.close();
       rmSync(agencHome, { recursive: true, force: true });
       rmSync(workspace, { recursive: true, force: true });

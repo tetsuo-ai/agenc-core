@@ -1,10 +1,8 @@
 import React, { useContext, useEffect, useState, useSyncExternalStore } from 'react';
 import { MailboxProvider } from '../context/mailbox.js';
 import type { ConfigStore } from '../../config/store.js';
-import { logForDebugging } from '../../utils/debug.js';
-import { createDisabledBypassPermissionsContext } from '../../permissions/permission-mode.js';
-import { loadPermissionRulesSnapshot } from '../../permissions/settings.js';
-import { applyConfigStoreChange } from '../../utils/settings/applyConfigStoreChange.js';
+import { reasoningEffortToEffortLevel } from '../../utils/effort.js';
+import { getInitialSettings } from '../../utils/settings/settings.js';
 import { createStore } from './store.js';
 
 import { type AppState, type AppStateStore, getDefaultAppState } from './AppStateStore.js';
@@ -40,31 +38,28 @@ export function AppStateProvider({
 
   useEffect(() => {
     if (configStore === undefined) return;
-    let disposed = false;
-    void loadPermissionRulesSnapshot({ configStore }).then(snapshot => {
-      if (disposed) return;
-      const { toolPermissionContext } = store.getState();
-      if (
-        toolPermissionContext.isBypassPermissionsModeAvailable &&
-        snapshot.bypassPermissionsModeDisabled
-      ) {
-        logForDebugging("Disabling bypass permissions mode on mount (managed policy loaded before mount)");
-        store.setState(_temp);
-      }
-    }).catch(error => {
-      logForDebugging(`Failed to load canonical permission policy on mount: ${String(error)}`, {
-        level: 'error'
-      });
-    });
-    return () => {
-      disposed = true;
-    };
-  }, [configStore, store]);
-
-  useEffect(() => {
-    if (configStore === undefined) return;
     return configStore.subscribe(() => {
-      applyConfigStoreChange(configStore, store.setState);
+      const settings = getInitialSettings(configStore);
+      store.setState(prev => {
+        const previousEffort = reasoningEffortToEffortLevel(
+          prev.settings.reasoning_effort,
+        );
+        const nextEffort = reasoningEffortToEffortLevel(
+          settings.reasoning_effort,
+        );
+        const effortChanged = previousEffort !== nextEffort;
+        const swarmChanged = prev.settings.swarmMode !== settings.swarmMode;
+        return {
+          ...prev,
+          settings,
+          ...(effortChanged && nextEffort !== undefined
+            ? { effortValue: nextEffort }
+            : {}),
+          ...(swarmChanged && settings.swarmMode !== undefined
+            ? { swarmMode: settings.swarmMode }
+            : {}),
+        };
+      });
     });
   }, [configStore, store]);
 
@@ -73,12 +68,6 @@ export function AppStateProvider({
       <MailboxProvider>{children}</MailboxProvider>
     </AppStoreContext.Provider>
   </HasAppStateContext.Provider>;
-}
-function _temp(prev: AppState): AppState {
-  return {
-    ...prev,
-    toolPermissionContext: createDisabledBypassPermissionsContext(prev.toolPermissionContext)
-  };
 }
 function useAppStore(): AppStateStore {
   // eslint-disable-next-line react-hooks/rules-of-hooks

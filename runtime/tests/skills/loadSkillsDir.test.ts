@@ -9,6 +9,8 @@ import {
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'vitest'
+import { resolveHomeContext } from '../../src/config/home.js'
+import { runWithCurrentRuntimeSession } from '../../src/session/current-session.js'
 
 import {
   getSkillDirCommands,
@@ -40,7 +42,14 @@ test('loads flat and nested skills with colon namespaces', async () => {
     process.env.AGENC_HOME = agencHome
     clearSkillCaches()
 
-    const skills = await getSkillDirCommands(cwd)
+    const homeContext = resolveHomeContext(
+      { AGENC_HOME: agencHome, HOME: agencHome },
+      { platformHome: agencHome },
+    )
+    const skills = await runWithCurrentRuntimeSession(
+      { services: { configStore: { homeContext } } } as never,
+      () => getSkillDirCommands(cwd),
+    )
     const promptSkills = skills.filter(skill => skill.type === 'prompt')
     const skillNames = promptSkills.map(skill => skill.name).sort()
 

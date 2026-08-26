@@ -5,6 +5,7 @@
  * daemon request setup and the minimal TUI session shell outside `bin/agenc.ts`.
  */
 
+import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { resolve as resolvePath } from "node:path";
 import { cwd as processCwd } from "node:process";
@@ -43,7 +44,10 @@ import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { createLocalSkillsServices } from "../skills/local-loader.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
-import { disposeSandboxExecutionBroker } from "../sandbox/execution-lifecycle.js";
+import {
+  disposeSandboxExecutionBroker,
+  transitionSandboxExecutionBrokerMode,
+} from "../sandbox/execution-lifecycle.js";
 import {
   createAgentRoleWorkspace,
   normalizeAgentRoleWorkspace,
@@ -52,6 +56,15 @@ import {
 import { loadFreshAgentDefinitions } from "../tools/AgentTool/loadAgentsDir.js";
 import type { AgenCBridgeSession } from "../tui/session-types.js";
 import { snapshotProviderEnvironment } from "../llm/provider-options.js";
+import {
+  RUN_RUNTIME_MODEL_VERBOSITIES,
+  RUN_RUNTIME_PERMISSION_MODES,
+  RUN_RUNTIME_REASONING_EFFORTS,
+  RUN_RUNTIME_SERVICE_TIERS,
+  type RunRuntimeSettingsSnapshot,
+} from "../contracts/run-contracts.js";
+import { canonicalizeBypassPermissionsCwd } from "../permissions/bypass-consent-state.js";
+import type { SessionConfiguration } from "../session/turn-context.js";
 
 export {
   collectDaemonClientEnvOverrides,
@@ -316,6 +329,8 @@ export interface AgenCDaemonOnlyTuiContextOptions {
   readonly provider?: string;
   readonly profile?: string;
   readonly configPath?: string;
+  /** Live daemon-owned authority returned by `agent.attach`. */
+  readonly runtimeSettings?: RunRuntimeSettingsSnapshot;
   /**
    * Initial permission mode for the bridge session's PermissionModeRegistry.
    * Forwarded from the CLI when
@@ -332,11 +347,314 @@ export interface AgenCDaemonOnlyTuiContextOptions {
     | "auto";
 }
 
+function daemonTuiPermissionContext(
+  cwd: string,
+  runtimeSettings: RunRuntimeSettingsSnapshot | undefined,
+  fallbackMode: AgenCDaemonOnlyTuiContextOptions["permissionMode"],
+) {
+  const canonicalCwd = canonicalizeBypassPermissionsCwd(cwd);
+  if (runtimeSettings === undefined) {
+    const mode = fallbackMode ?? "default";
+    const bypassActive = mode === "bypassPermissions";
+    return createEmptyToolPermissionContext({
+      mode,
+      isBypassPermissionsModeAvailable: bypassActive,
+      ...(bypassActive
+        ? { bypassPermissionsAcceptedIn: [canonicalCwd] }
+        : {}),
+    });
+  }
+
+  const bounded = (value: unknown, maxBytes: number): boolean =>
+    typeof value === "string" &&
+    value.trim().length > 0 &&
+    Buffer.byteLength(value, "utf8") <= maxBytes;
+  const bypassTransitionCritical =
+    runtimeSettings.permissionMode === "bypassPermissions" ||
+    (runtimeSettings.permissionMode === "plan" &&
+      runtimeSettings.prePlanMode === "bypassPermissions");
+  if (
+    !RUN_RUNTIME_PERMISSION_MODES.includes(runtimeSettings.permissionMode) ||
+    (runtimeSettings.prePlanMode !== null &&
+      !RUN_RUNTIME_PERMISSION_MODES.includes(runtimeSettings.prePlanMode)) ||
+    (runtimeSettings.permissionMode === "plan"
+      ? runtimeSettings.prePlanMode === null ||
+        runtimeSettings.prePlanMode === "plan"
+      : runtimeSettings.prePlanMode !== null) ||
+    typeof runtimeSettings.autoModeActive !== "boolean" ||
+    typeof runtimeSettings.autoModeAvailable !== "boolean" ||
+    (runtimeSettings.autoModeActive && !runtimeSettings.autoModeAvailable) ||
+    typeof runtimeSettings.bypassPermissionsModeAvailable !== "boolean" ||
+    (runtimeSettings.permissionMode === "auto"
+      ? runtimeSettings.autoModeActive !== true
+      : runtimeSettings.permissionMode !== "plan" &&
+        runtimeSettings.autoModeActive !== false) ||
+    (bypassTransitionCritical &&
+      (runtimeSettings.bypassPermissionsWorkspace !== canonicalCwd ||
+        !runtimeSettings.bypassPermissionsModeAvailable ||
+        runtimeSettings.bypassPermissionsConsentWorkspace !== canonicalCwd)) ||
+    (!bypassTransitionCritical &&
+      runtimeSettings.bypassPermissionsWorkspace !== null) ||
+    (runtimeSettings.bypassPermissionsConsentWorkspace !== null &&
+      runtimeSettings.bypassPermissionsConsentWorkspace !== canonicalCwd) ||
+    (runtimeSettings.bypassPermissionsConsentWorkspace !== null &&
+      !runtimeSettings.bypassPermissionsModeAvailable) ||
+    !bounded(runtimeSettings.model, 1_024) ||
+    !bounded(runtimeSettings.provider, 256) ||
+    (runtimeSettings.profile !== null &&
+      !bounded(runtimeSettings.profile, 256)) ||
+    (runtimeSettings.reasoningEffort !== null &&
+      !RUN_RUNTIME_REASONING_EFFORTS.includes(
+        runtimeSettings.reasoningEffort,
+      )) ||
+    (runtimeSettings.modelVerbosity !== null &&
+      !RUN_RUNTIME_MODEL_VERBOSITIES.includes(
+        runtimeSettings.modelVerbosity,
+      )) ||
+    (runtimeSettings.serviceTier !== null &&
+      !RUN_RUNTIME_SERVICE_TIERS.includes(runtimeSettings.serviceTier)) ||
+    typeof runtimeSettings.hooksDisabled !== "boolean"
+  ) {
+    throw new Error(
+      "daemon runtime settings are not canonically valid for this cwd",
+    );
+  }
+
+  return createEmptyToolPermissionContext({
+    mode: runtimeSettings.permissionMode,
+    ...(runtimeSettings.permissionMode === "plan" &&
+    runtimeSettings.prePlanMode !== null
+      ? { prePlanMode: runtimeSettings.prePlanMode }
+      : {}),
+    autoModeActive: runtimeSettings.autoModeActive,
+    isAutoModeAvailable: runtimeSettings.autoModeAvailable,
+    isBypassPermissionsModeAvailable:
+      runtimeSettings.bypassPermissionsModeAvailable,
+    ...(runtimeSettings.bypassPermissionsConsentWorkspace === canonicalCwd
+      ? { bypassPermissionsAcceptedIn: [canonicalCwd] }
+      : {}),
+  });
+}
+
+type DaemonTuiSessionConfiguration = Omit<SessionConfiguration, "provider"> & {
+  readonly provider: { readonly slug: string };
+};
+
+interface DaemonTuiSandboxAuthority {
+  readonly broker?: SandboxExecutionBroker;
+  readonly configuredMode: SessionConfiguration["sandboxPolicy"]["value"];
+  readonly configuredApprovalPolicy: SessionConfiguration["approvalPolicy"];
+  readonly configuredSandboxPolicy: SessionConfiguration["sandboxPolicy"];
+  readonly configuredFileSystemPolicy: SessionConfiguration[
+    "fileSystemSandboxPolicy"
+  ];
+  hooksDisabled: boolean;
+}
+
+const daemonTuiSandboxAuthorities = new WeakMap<
+  AgenCDaemonOnlyTuiSession,
+  DaemonTuiSandboxAuthority
+>();
+
+function captureDaemonTuiSandboxAuthority(
+  configuration: DaemonTuiSessionConfiguration,
+  broker?: SandboxExecutionBroker,
+  hooksDisabled = false,
+): DaemonTuiSandboxAuthority {
+  return {
+    ...(broker !== undefined ? { broker } : {}),
+    configuredMode: configuration.sandboxPolicy.value,
+    configuredApprovalPolicy: configuration.approvalPolicy,
+    configuredSandboxPolicy: configuration.sandboxPolicy,
+    configuredFileSystemPolicy: configuration.fileSystemSandboxPolicy,
+    hooksDisabled,
+  };
+}
+
+function replaceDaemonTuiSessionConfiguration(
+  target: DaemonTuiSessionConfiguration,
+  source: DaemonTuiSessionConfiguration,
+): void {
+  for (const key of Object.keys(target)) {
+    if (!Reflect.deleteProperty(target, key)) {
+      throw new Error(`daemon TUI session configuration key is fixed: ${key}`);
+    }
+  }
+  Object.assign(target, source);
+}
+
+function daemonTuiSessionConfiguration(
+  configured: DaemonTuiSessionConfiguration,
+  runtimeSettings: RunRuntimeSettingsSnapshot | undefined,
+  sandboxAuthority?: DaemonTuiSandboxAuthority,
+  bypassActive = runtimeSettings?.permissionMode === "bypassPermissions",
+): DaemonTuiSessionConfiguration {
+  const sandboxProjection =
+    sandboxAuthority === undefined
+      ? {}
+      : bypassActive
+        ? {
+            approvalPolicy: { value: "never" as const },
+            sandboxPolicy: { value: "danger_full_access" as const },
+            fileSystemSandboxPolicy: {
+              allowWrite: [],
+              denyWrite: [],
+              allowRead: [],
+              denyRead: [],
+            },
+          }
+        : {
+            approvalPolicy: sandboxAuthority.configuredApprovalPolicy,
+            sandboxPolicy: sandboxAuthority.configuredSandboxPolicy,
+            fileSystemSandboxPolicy:
+              sandboxAuthority.configuredFileSystemPolicy,
+          };
+  if (runtimeSettings === undefined) {
+    return { ...configured, ...sandboxProjection };
+  }
+  const {
+    modelVerbosity: _configuredModelVerbosity,
+    serviceTier: _configuredServiceTier,
+    collaborationMode,
+    ...base
+  } = configured;
+  const configuredCollaborationMode = collaborationMode ?? {
+    model: runtimeSettings.model,
+  };
+  const {
+    reasoningEffort: _configuredReasoningEffort,
+    ...collaborationModeBase
+  } = configuredCollaborationMode;
+  return {
+    ...base,
+    ...sandboxProjection,
+    provider: { slug: runtimeSettings.provider },
+    collaborationMode: {
+      ...collaborationModeBase,
+      model: runtimeSettings.model,
+      ...(runtimeSettings.reasoningEffort !== null
+        ? { reasoningEffort: runtimeSettings.reasoningEffort }
+        : {}),
+    },
+    ...(runtimeSettings.modelVerbosity !== null
+      ? { modelVerbosity: runtimeSettings.modelVerbosity }
+      : {}),
+    ...(runtimeSettings.serviceTier !== null
+      ? { serviceTier: runtimeSettings.serviceTier }
+      : {}),
+  };
+}
+
 export type AgenCDaemonOnlyTuiSession = Omit<AgenCBridgeSession, "services"> & {
   readonly services: AgenCBridgeSession["services"] & {
     readonly configStore: ConfigStore;
   };
 };
+
+/** Apply one canonical daemon settings successor to the client-side TUI shim. */
+export async function applyDaemonTuiRuntimeSettingsAuthority(
+  session: AgenCDaemonOnlyTuiSession,
+  cwd: string,
+  settings: RunRuntimeSettingsSnapshot,
+): Promise<void> {
+  const permissionContext = daemonTuiPermissionContext(cwd, settings, undefined);
+  const registry = session.services.permissionModeRegistry;
+  if (typeof registry.update !== "function") {
+    throw new Error("daemon TUI session cannot apply live permission settings");
+  }
+  const updateRegistry = registry.update.bind(registry);
+  const mutable = session as AgenCDaemonOnlyTuiSession & {
+    sessionConfiguration: DaemonTuiSessionConfiguration;
+  };
+  const previousConfiguration = { ...mutable.sessionConfiguration };
+  let sandboxAuthority = daemonTuiSandboxAuthorities.get(session);
+  if (sandboxAuthority === undefined) {
+    const broker = session.services.sandboxExecutionBroker;
+    sandboxAuthority = captureDaemonTuiSandboxAuthority(
+      mutable.sessionConfiguration,
+      broker instanceof SandboxExecutionBroker ? broker : undefined,
+      session.services.runtimeOptions?.simpleMode ?? false,
+    );
+    daemonTuiSandboxAuthorities.set(session, sandboxAuthority);
+  }
+  const broker = sandboxAuthority.broker;
+  const nextMode =
+    permissionContext.mode === "bypassPermissions"
+      ? "danger_full_access"
+      : sandboxAuthority.configuredMode;
+  const previousContext = registry.current();
+  const previousHooksDisabled = sandboxAuthority.hooksDisabled;
+  const hooksRuntime = (
+    session.services as typeof session.services & {
+      readonly hooksRuntime?: { setDisabled(disabled: boolean): void };
+    }
+  ).hooksRuntime;
+  const nextConfiguration = daemonTuiSessionConfiguration(
+    mutable.sessionConfiguration,
+    settings,
+    sandboxAuthority,
+    permissionContext.mode === "bypassPermissions",
+  );
+  const commit = async (): Promise<void> => {
+    replaceDaemonTuiSessionConfiguration(
+      mutable.sessionConfiguration,
+      nextConfiguration,
+    );
+    hooksRuntime?.setDisabled(settings.hooksDisabled);
+    await updateRegistry(permissionContext);
+    sandboxAuthority.hooksDisabled = settings.hooksDisabled;
+  };
+  const rollback = async (): Promise<void> => {
+    const rollbackErrors: unknown[] = [];
+    try {
+      replaceDaemonTuiSessionConfiguration(
+        mutable.sessionConfiguration,
+        previousConfiguration,
+      );
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    try {
+      hooksRuntime?.setDisabled(previousHooksDisabled);
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    try {
+      await updateRegistry(previousContext);
+    } catch (rollbackError) {
+      rollbackErrors.push(rollbackError);
+    }
+    sandboxAuthority.hooksDisabled = previousHooksDisabled;
+    if (rollbackErrors.length > 0) {
+      throw new AggregateError(
+        rollbackErrors,
+        "daemon TUI runtime settings rollback was incomplete",
+      );
+    }
+  };
+
+  if (broker !== undefined) {
+    await transitionSandboxExecutionBrokerMode(broker, nextMode, {
+      commit,
+      rollback,
+    });
+    return;
+  }
+  try {
+    await commit();
+  } catch (error) {
+    try {
+      await rollback();
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [error, rollbackError],
+        "daemon TUI runtime settings failed and rollback was incomplete",
+        { cause: error },
+      );
+    }
+    throw error;
+  }
+}
 
 export interface AgenCDaemonOnlyTuiContext {
   readonly baseSession: AgenCDaemonOnlyTuiSession;
@@ -403,30 +721,47 @@ async function createBoundAgenCDaemonOnlyTuiContext(
   runtimeOptions: AgentRuntimeOptions,
 ): Promise<AgenCDaemonOnlyTuiContext> {
   const providerEnvironment = snapshotProviderEnvironment(env);
+  const runtimeSettings = options.runtimeSettings;
   const roleWorkspace = options.roleWorkspace
     ? normalizeAgentRoleWorkspace(options.roleWorkspace)
     : createAgentRoleWorkspace(options.cwd);
   const agencHome = resolveAgencHome(env);
+  const configEnv = { ...env };
+  if (runtimeSettings !== undefined) delete configEnv.AGENC_PROFILE;
+  const selectedProfile =
+    runtimeSettings !== undefined ? runtimeSettings.profile : options.profile;
   const cli: StartupCliFlags = Object.freeze({
-    ...(options.provider !== undefined ? { provider: options.provider } : {}),
-    ...(options.model !== undefined ? { model: options.model } : {}),
-    ...(options.profile !== undefined ? { profile: options.profile } : {}),
+    ...(runtimeSettings !== undefined
+      ? { provider: runtimeSettings.provider, model: runtimeSettings.model }
+      : {
+          ...(options.provider !== undefined
+            ? { provider: options.provider }
+            : {}),
+          ...(options.model !== undefined ? { model: options.model } : {}),
+        }),
+    ...(selectedProfile !== undefined && selectedProfile !== null
+      ? { profile: selectedProfile }
+      : {}),
     ...(options.configPath !== undefined
       ? { configPath: options.configPath }
       : {}),
   });
   const configStore = new ConfigStore({
     home: agencHome,
-    env,
+    env: configEnv,
     cwd: roleWorkspace.cwd,
-    ...startupConfigLayerOptions({ cli, env, cwd: roleWorkspace.cwd }),
+    ...startupConfigLayerOptions({
+      cli,
+      env: configEnv,
+      cwd: roleWorkspace.cwd,
+    }),
     onWarn: (message) => process.stderr.write(`${message}\n`),
   });
   const effectiveConfig = await configStore.reload();
-  const profileName = resolvedStartupProfileName(cli, env);
+  const profileName = resolvedStartupProfileName(cli, configEnv);
   const startup = resolveCanonicalStartupSelection({
     config: effectiveConfig,
-    env,
+    env: configEnv,
     ...(profileName !== undefined ? { profileName } : {}),
   });
   const skillsServices = createLocalSkillsServices({
@@ -443,15 +778,30 @@ async function createBoundAgenCDaemonOnlyTuiContext(
   try {
     await skillsServices.skillsWatcher.start();
     watcherStarted = true;
+    const permissionContext = daemonTuiPermissionContext(
+      options.cwd,
+      runtimeSettings,
+      options.permissionMode,
+    );
+    const selectedProvider = runtimeSettings?.provider ?? startup.provider;
+    const selectedModel = runtimeSettings?.model ?? startup.model;
+    const configuredSessionConfiguration: DaemonTuiSessionConfiguration = {
+      ...sessionConfigurationFromAgenCConfig({
+        config: effectiveConfig,
+        workspaceRoot: options.cwd,
+        provider: selectedProvider,
+        model: selectedModel,
+      }),
+      // The bridge exposes provider identity, not an in-process LLMProvider.
+      provider: { slug: selectedProvider },
+    };
+    const configuredSandboxMode =
+      configuredSessionConfiguration.sandboxPolicy.value;
     sandboxExecutionBroker = new SandboxExecutionBroker({
       mode:
-        options.permissionMode === "bypassPermissions"
+        permissionContext.mode === "bypassPermissions"
           ? "danger_full_access"
-          : effectiveConfig.sandbox_mode === "read-only"
-            ? "read_only"
-            : effectiveConfig.sandbox_mode === "danger-full-access"
-              ? "danger_full_access"
-              : "workspace_write",
+          : configuredSandboxMode,
       // Role authority remains anchored to the canonical checkout, while
       // execution policy must follow the attached worktree/session cwd.
       cwd: options.cwd,
@@ -462,18 +812,17 @@ async function createBoundAgenCDaemonOnlyTuiContext(
     const agentDefinitions = await loadFreshAgentDefinitions(roleWorkspace.cwd);
     const abortController = new AbortController();
     let nextEventId = 0;
-    const sessionConfiguration = {
-      ...sessionConfigurationFromAgenCConfig({
-        config: effectiveConfig,
-        workspaceRoot: options.cwd,
-        provider: startup.provider,
-        model: startup.model,
-        dangerouslyBypassApprovalsAndSandbox:
-          options.permissionMode === "bypassPermissions",
-      }),
-      // The bridge exposes provider identity, not an in-process LLMProvider.
-      provider: { slug: startup.provider },
-    };
+    const sandboxAuthority = captureDaemonTuiSandboxAuthority(
+      configuredSessionConfiguration,
+      activeSandboxExecutionBroker,
+      runtimeSettings?.hooksDisabled ?? runtimeOptions.simpleMode,
+    );
+    const sessionConfiguration = daemonTuiSessionConfiguration(
+      configuredSessionConfiguration,
+      runtimeSettings,
+      sandboxAuthority,
+      permissionContext.mode === "bypassPermissions",
+    );
     const session: AgenCDaemonOnlyTuiSession = {
       conversationId: options.conversationId,
       roleWorkspace,
@@ -485,11 +834,7 @@ async function createBoundAgenCDaemonOnlyTuiContext(
         runtimeOptions,
         providerEnvironment,
         permissionModeRegistry: new PermissionModeRegistry(
-          createEmptyToolPermissionContext({
-            mode: options.permissionMode ?? "default",
-            isBypassPermissionsModeAvailable:
-              options.permissionMode === "bypassPermissions",
-          }),
+          permissionContext,
         ),
         configStore,
         sandboxExecutionBroker: activeSandboxExecutionBroker,
@@ -516,9 +861,10 @@ async function createBoundAgenCDaemonOnlyTuiContext(
       emit: () => {},
       nextInternalSubId: () => `daemon-client-${++nextEventId}-${randomUUID()}`,
     };
+    daemonTuiSandboxAuthorities.set(session, sandboxAuthority);
     return {
       baseSession: session,
-      model: startup.model,
+      model: selectedModel,
       workspaceRoot: options.cwd,
       close: () =>
         closeDaemonOnlyTuiResources({

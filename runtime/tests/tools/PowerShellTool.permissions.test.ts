@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
-import { applyPermissionUpdate } from "../../src/permissions/rules.js";
+import { applyPermissionUpdate } from "../../src/permissions/permission-updates.js";
 import {
   createEmptyToolPermissionContext,
   type ToolPermissionContext,

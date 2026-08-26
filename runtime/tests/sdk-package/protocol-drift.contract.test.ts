@@ -18,6 +18,7 @@ import {
   AGENC_DAEMON_NOTIFICATION_METHODS,
 } from "../../src/app-server/protocol/index.js";
 import { resolveAgenCDaemonSocketPath } from "../../src/app-server/daemon-cli.js";
+import { agenCDaemonLocalEndpoint } from "../../src/app-server/transport/unix-socket.js";
 import {
   AGENC_SDK_DAEMON_PROTOCOL_VERSION,
   AGENC_SDK_DAEMON_METHODS,
@@ -95,9 +96,19 @@ describe("agenc-sdk protocol mirror", () => {
     ] as const) {
       const env = { AGENC_HOME: home };
       expect(resolveDaemonSocketPath(env, home, platform)).toBe(
-        resolveAgenCDaemonSocketPath(env, home, platform),
+        agenCDaemonLocalEndpoint(home, platform),
       );
     }
+    const hostHome = "/tmp/agenc-sdk-host-home";
+    expect(resolveDaemonSocketPath(
+      { AGENC_HOME: hostHome },
+      hostHome,
+      process.platform,
+    )).toBe(resolveAgenCDaemonSocketPath(
+      { AGENC_HOME: hostHome },
+      hostHome,
+      process.platform,
+    ));
   });
 });
 

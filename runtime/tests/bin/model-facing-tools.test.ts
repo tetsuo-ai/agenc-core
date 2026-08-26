@@ -41,7 +41,10 @@ import {
   waitForInitialization,
 } from "../services/lsp/manager.js";
 import type { LSPServerInstance } from "../services/lsp/LSPServerInstance.js";
-import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
+import {
+  SandboxExecutionBroker,
+  type SandboxExecutionBrokerLike,
+} from "../sandbox/execution-broker.js";
 import {
   CsvAgentJobsRepositoryAuthority,
   type CsvAgentJobsRepositoryProvider,
@@ -1453,14 +1456,14 @@ describe("model-facing tools", () => {
 
   it("selects the current session's scoped LSP manager for diagnostics", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-lsp-tool-session-scope-"));
-    const restrictedBroker = {
+    const restrictedBroker = new SandboxExecutionBroker({
       mode: "workspace_write",
       cwd: root,
-    } as SandboxExecutionBrokerLike;
-    const dangerBroker = {
+    });
+    const dangerBroker = new SandboxExecutionBroker({
       mode: "danger_full_access",
       cwd: root,
-    } as SandboxExecutionBrokerLike;
+    });
     try {
       const file = join(root, "a.ts");
       await writeFile(file, "const a = 1;\n", "utf8");
@@ -1490,10 +1493,6 @@ describe("model-facing tools", () => {
         }) as unknown as LSPServerInstance;
 
       initializeLspServerManager({
-        configSource: () => ({ ts: config }),
-        instanceFactory: () => makeServer("default", defaultStart),
-      });
-      initializeLspServerManager({
         sandboxExecutionBroker: restrictedBroker,
         configSource: () => ({ ts: config }),
         instanceFactory: () => makeServer("restricted", restrictedStart),
@@ -1504,7 +1503,6 @@ describe("model-facing tools", () => {
         instanceFactory: () => makeServer("danger", dangerStart),
       });
       await Promise.all([
-        waitForInitialization(),
         waitForInitialization(restrictedBroker),
         waitForInitialization(dangerBroker),
       ]);
@@ -1535,7 +1533,6 @@ describe("model-facing tools", () => {
       expect(dangerStart).not.toHaveBeenCalled();
     } finally {
       await Promise.all([
-        shutdownLspServerManager(),
         shutdownLspServerManager(restrictedBroker),
         shutdownLspServerManager(dangerBroker),
       ]);

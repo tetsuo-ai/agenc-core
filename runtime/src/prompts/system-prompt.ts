@@ -386,7 +386,7 @@ function readGitBranch(
   sandboxExecutionBroker?: SandboxExecutionBrokerLike,
 ): string | null {
   if (sandboxExecutionBroker === undefined) return null;
-  const command = sandboxExecutionBroker.prepareSpawn("tool", {
+  const preparedSpawn = sandboxExecutionBroker.prepareSpawn("tool", {
     program: "git",
     args: hardenGitWorktreeMutationArgs([
       "rev-parse",
@@ -399,14 +399,16 @@ function readGitBranch(
     trustedExecutable: true,
   });
   try {
-    const result = spawnSync(command.program, [...command.args], {
-      cwd: command.cwd,
-      env: command.env,
-      argv0: command.argv0,
-      stdio: ["ignore", "pipe", "ignore"],
-      encoding: "utf8",
-      timeout: 1_000,
-    });
+    const result = preparedSpawn.runSync((command) =>
+      spawnSync(command.program, [...command.args], {
+        cwd: command.cwd,
+        env: command.env,
+        argv0: command.argv0,
+        stdio: ["ignore", "pipe", "ignore"],
+        encoding: "utf8",
+        timeout: 1_000,
+      })
+    );
     if (result.error !== undefined || result.status !== 0) return null;
     const branch = result.stdout.trim();
     return branch.length > 0 ? branch : null;

@@ -101,11 +101,11 @@ vi.mock("./tool-rendering.js", () => ({
 }));
 
 import {
-  createDaemonTuiSession,
   type AgenCDaemonConnectionState,
   type AgenCDaemonTuiClient,
   type AgenCTuiBridgeSession,
 } from "./daemon-session.js";
+import { createDaemonTuiSessionFixture as createDaemonTuiSession } from "../helpers/daemon-tui-session.js";
 import type {
   AgenCDaemonInternalMethod,
   AgenCDaemonMethod,

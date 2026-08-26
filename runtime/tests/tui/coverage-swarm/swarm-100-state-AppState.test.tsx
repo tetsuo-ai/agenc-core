@@ -15,20 +15,11 @@ import {
 } from "../../../src/tui/state/AppState.js";
 
 const harness = vi.hoisted(() => ({
-  bypassDisabled: false,
   configChange: undefined as (() => void) | undefined,
-}));
-
-const mockFns = vi.hoisted(() => ({
-  applyConfigStoreChange: vi.fn(),
-  createDisabledBypassPermissionsContext: vi.fn(
-    (context: Record<string, unknown>) => ({
-      ...context,
-      disabledByRemoteSettings: true,
-      isBypassPermissionsModeAvailable: false,
-    }),
-  ),
-  logForDebugging: vi.fn(),
+  settings: {
+    reasoning_effort: "medium" as string,
+    swarmMode: false,
+  },
 }));
 
 vi.mock("bun:bundle", () => ({
@@ -37,31 +28,6 @@ vi.mock("bun:bundle", () => ({
 
 vi.mock("../../../src/tui/context/mailbox.js", () => ({
   MailboxProvider: ({ children }: { children: React.ReactNode }) => children,
-}));
-
-vi.mock("../../../src/utils/debug.js", () => ({
-  logForDebugging: mockFns.logForDebugging,
-}));
-
-vi.mock("../../../src/permissions/permission-mode.js", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  createDisabledBypassPermissionsContext:
-    mockFns.createDisabledBypassPermissionsContext,
-}));
-
-vi.mock("../../../src/permissions/settings.js", async (importOriginal) => ({
-  ...(await importOriginal<Record<string, unknown>>()),
-  loadPermissionRulesSnapshot: async () => ({
-    rules: [],
-    managedOnly: false,
-    directories: [],
-    bypassPermissionsModeDisabled: harness.bypassDisabled,
-    disableAutoMode: false,
-  }),
-}));
-
-vi.mock("../../../src/utils/settings/applyConfigStoreChange.js", () => ({
-  applyConfigStoreChange: mockFns.applyConfigStoreChange,
 }));
 
 vi.mock("../../../src/services/PromptSuggestion/promptSuggestion.js", () => ({
@@ -85,7 +51,7 @@ vi.mock("../../../src/utils/commitAttribution.js", () => ({
 
 vi.mock("../../../src/utils/settings/settings.js", () => ({
   getExecutionAuthoritySettings: () => ({}),
-  getInitialSettings: () => ({}),
+  getInitialSettings: () => harness.settings,
 }));
 
 vi.mock("../../../src/utils/teammate.js", () => ({
@@ -170,8 +136,11 @@ function MaybeOutsideProbe(): React.ReactNode {
 
 describe("AppState coverage swarm row 100", () => {
   beforeEach(() => {
-    harness.bypassDisabled = false;
     harness.configChange = undefined;
+    harness.settings = {
+      reasoning_effort: "medium",
+      swarmMode: false,
+    };
   });
 
   afterEach(() => {
@@ -184,17 +153,10 @@ describe("AppState coverage swarm row 100", () => {
     expect(output).toContain("outside-missing");
   });
 
-  test("wires store access, setState, mount permission updates, and settings changes", async () => {
-    harness.bypassDisabled = true;
+  test("wires store access, setState, and non-authority settings changes", async () => {
     const initialState = makeState({
       statusLineText: "before",
-      toolPermissionContext: {
-        additionalDirectories: [],
-        alwaysAllowRules: [],
-        alwaysDenyRules: [],
-        isBypassPermissionsModeAvailable: true,
-        mode: "bypassPermissions",
-      },
+      settings: harness.settings as never,
     });
     const onChangeAppState = vi.fn();
     const unsubscribeConfig = vi.fn();
@@ -239,19 +201,10 @@ describe("AppState coverage swarm row 100", () => {
       );
 
       await waitForCondition(
-        () =>
-          capturedStore?.getState().toolPermissionContext
-            .isBypassPermissionsModeAvailable === false,
-        "Timed out waiting for bypass permission mode to be disabled",
+        () => capturedStore !== undefined,
+        "Timed out waiting for AppState store capture",
       );
-
-      expect(mockFns.logForDebugging).toHaveBeenCalledWith(
-        "Disabling bypass permissions mode on mount (managed policy loaded before mount)",
-      );
-      expect(
-        mockFns.createDisabledBypassPermissionsContext,
-      ).toHaveBeenCalledWith(initialState.toolPermissionContext);
-      expect(onChangeAppState).toHaveBeenCalledTimes(1);
+      expect(onChangeAppState).not.toHaveBeenCalled();
 
       capturedSetAppState?.((prev) => ({
         ...prev,
@@ -259,14 +212,21 @@ describe("AppState coverage swarm row 100", () => {
       }));
 
       expect(capturedStore?.getState().statusLineText).toBe("after-set");
-      expect(onChangeAppState).toHaveBeenCalledTimes(2);
+      expect(onChangeAppState).toHaveBeenCalledTimes(1);
 
+      harness.settings = {
+        reasoning_effort: "high",
+        swarmMode: true,
+      };
       harness.configChange?.();
 
-      expect(mockFns.applyConfigStoreChange).toHaveBeenCalledWith(
-        configStore,
-        capturedStore?.setState,
-      );
+      expect(capturedStore?.getState()).toMatchObject({
+        settings: harness.settings,
+        effortValue: "high",
+        swarmMode: true,
+        toolPermissionContext: initialState.toolPermissionContext,
+      });
+      expect(onChangeAppState).toHaveBeenCalledTimes(2);
     } finally {
       root.unmount();
       stdin.end();

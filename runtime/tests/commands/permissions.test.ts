@@ -1,5 +1,6 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, rmSync, existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, rmSync, existsSync, lstatSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,10 +10,12 @@ import {
   exportRules,
   parseRuleArgs,
 } from "./permissions.js";
-import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
-  applyPermissionUpdate,
-} from "../permissions/rules.js";
+  __setAutoModeGateResolverForTesting,
+  PermissionModeRegistry,
+  transitionPermissionMode,
+} from "../permissions/permission-mode.js";
+import { applyPermissionUpdate } from "../permissions/permission-updates.js";
 import {
   createEmptyToolPermissionContext,
   type PermissionMode,
@@ -22,6 +25,24 @@ import type { Session } from "../session/session.js";
 import type { SlashCommandContext } from "./types.js";
 import { parseToml } from "../config/loader.js";
 import { ConfigStore } from "../config/store.js";
+import { RuntimeStateRepository } from "../config/runtime-state-repository.js";
+import { resolveHomeContext } from "../config/home.js";
+import {
+  authorizeBypassPermissionsConsent,
+  canonicalizeBypassPermissionsCwd,
+  loadBypassPermissionsConsent,
+} from "../permissions/bypass-consent-state.js";
+
+function persistedBypassConsent(cwd: string) {
+  const canonicalCwd = canonicalizeBypassPermissionsCwd(cwd);
+  const identity = lstatSync(canonicalCwd, { bigint: true });
+  return {
+    version: 1,
+    canonicalCwd,
+    dev: identity.dev.toString(10),
+    ino: identity.ino.toString(10),
+  } as const;
+}
 
 // ─────────────────────────────────────────────────────────────────────
 // Stubs
@@ -80,6 +101,77 @@ function seedCtx(mode: PermissionMode = "default"): ToolPermissionContext {
     behavior: "deny",
   });
   return ctx;
+}
+
+function bypassAuthorizedContext(workspace: string): ToolPermissionContext {
+  return authorizeBypassPermissionsConsent(
+    createEmptyToolPermissionContext(),
+    canonicalizeBypassPermissionsCwd(workspace),
+  );
+}
+
+async function withInjectedDirectoryFsyncFailure<T>(
+  directory: string,
+  failure: NodeJS.ErrnoException,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const injectedDescriptor = 2_147_483_000;
+  const nodeFs = createRequire(import.meta.url)("node:fs") as {
+    openSync(path: string, flags: string | number, mode?: number): number;
+    fsyncSync(descriptor: number): void;
+    closeSync(descriptor: number): void;
+  };
+  const originalOpenSync = nodeFs.openSync;
+  const originalFsyncSync = nodeFs.fsyncSync;
+  const originalCloseSync = nodeFs.closeSync;
+  nodeFs.openSync = (path, flags, mode) =>
+    path === directory && flags === "r"
+      ? injectedDescriptor
+      : originalOpenSync(path, flags, mode);
+  nodeFs.fsyncSync = (descriptor) => {
+    if (descriptor === injectedDescriptor) throw failure;
+    originalFsyncSync(descriptor);
+  };
+  nodeFs.closeSync = (descriptor) => {
+    if (descriptor !== injectedDescriptor) originalCloseSync(descriptor);
+  };
+  syncBuiltinESMExports();
+
+  try {
+    return await operation();
+  } finally {
+    nodeFs.openSync = originalOpenSync;
+    nodeFs.fsyncSync = originalFsyncSync;
+    nodeFs.closeSync = originalCloseSync;
+    syncBuiltinESMExports();
+  }
+}
+
+async function applyCanonicalDaemonModeEvent(
+  registry: PermissionModeRegistry,
+  mode: PermissionMode,
+  cwd = "/tmp",
+): Promise<{
+  readonly applied: boolean;
+  readonly previousMode: PermissionMode;
+  readonly mode: PermissionMode;
+}> {
+  const current = registry.current();
+  const transitioned = transitionPermissionMode(
+    current.mode,
+    mode,
+    current,
+    { workspacePath: cwd },
+  );
+  if ("error" in transitioned) {
+    throw new Error("canonical daemon settings event was refused");
+  }
+  await registry.update({ ...transitioned, mode });
+  return {
+    applied: current.mode !== mode,
+    previousMode: current.mode,
+    mode,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -256,11 +348,12 @@ describe("permissionsCommand — add", () => {
   it("'add deny invalidsyntax[' returns parse error without mutating registry", async () => {
     const initial = createEmptyToolPermissionContext();
     const registry = new PermissionModeRegistry(initial);
+    const ownedInitial = registry.current();
     const r = await permissionsCommand.execute(
       stubCtx({ registry, argsRaw: "add deny invalidsyntax[" }),
     );
     expect(r.kind).toBe("error");
-    expect(registry.current()).toBe(initial);
+    expect(registry.current()).toBe(ownedInitial);
   });
 
   it("'add allow FileRead --persist user' writes canonical user config.toml", async () => {
@@ -313,6 +406,76 @@ describe("permissionsCommand — add", () => {
       rmSync(tmp, { recursive: true, force: true });
     }
   });
+
+  it("mutates the daemon first and mirrors its complete canonical session buckets", async () => {
+    let initial = createEmptyToolPermissionContext();
+    initial = applyPermissionUpdate(initial, {
+      type: "addRules",
+      destination: "session",
+      behavior: "deny",
+      rules: [{ toolName: "OldRule" }],
+    });
+    const registry = new PermissionModeRegistry(initial);
+    const ownedInitial = registry.current();
+    const commandProjection = vi.spyOn(registry, "transact");
+    const mutateDaemonPermissionRule = vi.fn(async () => {
+      expect(registry.current()).toBe(ownedInitial);
+      let projected = registry.current();
+      for (const [behavior, rules] of [
+        ["allow", [{ toolName: "system.bash", ruleContent: "ls" }]],
+        ["deny", [{ toolName: "Write" }]],
+        ["ask", [{ toolName: "FileRead" }]],
+      ] as const) {
+        projected = applyPermissionUpdate(projected, {
+          type: "replaceRules",
+          destination: "session",
+          behavior,
+          rules,
+        });
+      }
+      await registry.update(projected);
+      return {
+        sessionId: "session_1",
+        applied: true,
+        operation: "add" as const,
+        behavior: "allow" as const,
+        rule: "system.bash(ls)",
+        sessionRules: {
+          allow: ["system.bash(ls)"],
+          deny: ["Write"],
+          ask: ["FileRead"],
+        },
+      };
+    });
+    const session = {
+      services: { permissionModeRegistry: registry },
+      mutateDaemonPermissionRule,
+    } as unknown as Session;
+
+    await expect(
+      permissionsCommand.execute(
+        stubCtx({
+          registry,
+          session,
+          argsRaw: "add allow system.bash(ls)",
+        }),
+      ),
+    ).resolves.toMatchObject({
+      kind: "text",
+      text: "Added ALLOW system.bash(ls)",
+    });
+    expect(mutateDaemonPermissionRule).toHaveBeenCalledWith({
+      operation: "add",
+      behavior: "allow",
+      rule: "system.bash(ls)",
+    });
+    expect(commandProjection).not.toHaveBeenCalled();
+    expect(registry.current().alwaysAllowRules.session).toEqual([
+      "system.bash(ls)",
+    ]);
+    expect(registry.current().alwaysDenyRules.session).toEqual(["Write"]);
+    expect(registry.current().alwaysAskRules.session).toEqual(["FileRead"]);
+  });
 });
 
 describe("permissionsCommand — remove", () => {
@@ -360,6 +523,59 @@ describe("permissionsCommand — remove", () => {
       };
       expect(on_disk.permissions.allow).not.toContain("FileRead");
       expect(on_disk.permissions.allow).toContain("system.bash(ls)");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("does not mirror or persist a daemon-rejected removal", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-perms-daemon-reject-"));
+    try {
+      const file = join(tmp, "config.toml");
+      writeFileSync(
+        file,
+        'config_version = 2\n[permissions]\nallow = ["FileRead"]\n',
+      );
+      let initial = createEmptyToolPermissionContext();
+      initial = applyPermissionUpdate(initial, {
+        type: "addRules",
+        destination: "session",
+        behavior: "allow",
+        rules: [{ toolName: "FileRead" }],
+      });
+      const registry = new PermissionModeRegistry(initial);
+      const ownedInitial = registry.current();
+      const mutateDaemonPermissionRule = vi.fn(async () => {
+        throw new Error("permission rules are managed by policy");
+      });
+      const session = {
+        services: { permissionModeRegistry: registry },
+        mutateDaemonPermissionRule,
+      } as unknown as Session;
+      const configStore = await configStoreFor(tmp);
+
+      await expect(
+        permissionsCommand.execute(
+          stubCtx({
+            registry,
+            session,
+            configStore,
+            home: tmp,
+            cwd: tmp,
+            argsRaw: "remove allow FileRead --persist user",
+          }),
+        ),
+      ).resolves.toMatchObject({
+        kind: "error",
+        message: "permission rules are managed by policy",
+      });
+      expect(mutateDaemonPermissionRule).toHaveBeenCalledWith({
+        operation: "remove",
+        behavior: "allow",
+        rule: "FileRead",
+      });
+      expect(registry.current()).toBe(ownedInitial);
+      expect(readFileSync(file, "utf8")).toContain('allow = ["FileRead"]');
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
@@ -446,13 +662,57 @@ describe("permissionsCommand — mode", () => {
     expect(r.text).toMatch(/already/);
   });
 
+  it("'/permissions mode auto' obeys canonical disable policy when the live gate is open", async () => {
+    const restoreGate = __setAutoModeGateResolverForTesting(() => true);
+    const registry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({ isAutoModeAvailable: false }),
+    );
+    try {
+      const r = await permissionsCommand.execute(
+        stubCtx({ registry, argsRaw: "mode auto" }),
+      );
+      expect(r.kind).toBe("error");
+      if (r.kind !== "error") throw new Error("expected error");
+      expect(r.message).toMatch(/disabled by canonical configuration/);
+      expect(registry.current().mode).toBe("default");
+    } finally {
+      restoreGate();
+    }
+  });
+
+  it("daemon-backed '/permissions mode auto' cannot bypass canonical disable policy", async () => {
+    const restoreGate = __setAutoModeGateResolverForTesting(() => true);
+    const registry = new PermissionModeRegistry(
+      createEmptyToolPermissionContext({ isAutoModeAvailable: false }),
+    );
+    const setDaemonPermissionMode = vi.fn((mode: PermissionMode) =>
+      applyCanonicalDaemonModeEvent(registry, mode),
+    );
+    const session = {
+      services: { permissionModeRegistry: registry },
+      emit: vi.fn(),
+      nextInternalSubId: () => "sub-1",
+      setDaemonPermissionMode,
+    } as unknown as Session;
+    try {
+      const r = await permissionsCommand.execute(
+        stubCtx({ registry, argsRaw: "mode auto", session }),
+      );
+      expect(r.kind).toBe("error");
+      if (r.kind !== "error") throw new Error("expected error");
+      expect(r.message).toMatch(/disabled by canonical configuration/);
+      expect(setDaemonPermissionMode).toHaveBeenCalledWith("auto");
+      expect(registry.current().mode).toBe("default");
+    } finally {
+      restoreGate();
+    }
+  });
+
   it("'/permissions mode plan' routes to the daemon registry on a bridge session", async () => {
     const registry = new PermissionModeRegistry(createEmptyToolPermissionContext());
-    const setDaemonPermissionMode = vi.fn(async (mode: string) => ({
-      applied: true,
-      previousMode: "default",
-      mode,
-    }));
+    const setDaemonPermissionMode = vi.fn((mode: PermissionMode) =>
+      applyCanonicalDaemonModeEvent(registry, mode),
+    );
     // A daemon bridge session exposes setDaemonPermissionMode; the local
     // registry is only a client-side shim, so the command must forward.
     const session = {
@@ -519,70 +779,79 @@ describe("permissionsCommand — mode", () => {
   });
 
   it("'/permissions mode bypassPermissions' forwards to the daemon AFTER consent is recorded", async () => {
-    // Pre-populate consent for this workspace (equivalent to accept-bypass).
-    const registry = new PermissionModeRegistry(
-      createEmptyToolPermissionContext({
-        bypassPermissionsAcceptedIn: ["/workspace/trusted"],
-      }),
-    );
-    const setDaemonPermissionMode = vi.fn(async (mode: string) => ({
-      applied: true,
-      previousMode: "default",
-      mode,
-    }));
-    const session = {
-      services: { permissionModeRegistry: registry },
-      emit: vi.fn(),
-      nextInternalSubId: () => "sub-1",
-      setDaemonPermissionMode,
-    } as unknown as Session;
-    const ctx = stubCtx({
-      registry,
-      argsRaw: "mode bypassPermissions",
-      session,
-      cwd: "/workspace/trusted",
-    });
-    const r = await permissionsCommand.execute(ctx);
-    if (r.kind !== "text") {
-      throw new Error(
-        `expected text, got ${r.kind}: ${
-          r.kind === "error" ? r.message : ""
-        }`,
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-bypass-daemon-"));
+    try {
+      // Pre-populate consent for this real workspace (equivalent to
+      // accept-bypass) so canonicalization cannot be bypassed by a fixture.
+      const workspace = join(tmp, "workspace");
+      mkdirSync(workspace);
+      const registry = new PermissionModeRegistry(
+        bypassAuthorizedContext(workspace),
       );
+      const setDaemonPermissionMode = vi.fn((mode: PermissionMode) =>
+        applyCanonicalDaemonModeEvent(registry, mode, workspace),
+      );
+      const session = {
+        services: { permissionModeRegistry: registry },
+        emit: vi.fn(),
+        nextInternalSubId: () => "sub-1",
+        setDaemonPermissionMode,
+      } as unknown as Session;
+      const ctx = stubCtx({
+        registry,
+        argsRaw: "mode bypassPermissions",
+        session,
+        cwd: workspace,
+      });
+      const r = await permissionsCommand.execute(ctx);
+      if (r.kind !== "text") {
+        throw new Error(
+          `expected text, got ${r.kind}: ${
+            r.kind === "error" ? r.message : ""
+          }`,
+        );
+      }
+      expect(r.text).toContain("default → bypassPermissions");
+      expect(setDaemonPermissionMode).toHaveBeenCalledWith("bypassPermissions");
+      // Local shim synced so subsequent /permissions reads reflect bypass.
+      expect(registry.current().mode).toBe("bypassPermissions");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
     }
-    expect(r.text).toContain("default → bypassPermissions");
-    expect(setDaemonPermissionMode).toHaveBeenCalledWith("bypassPermissions");
-    // Local shim synced so subsequent /permissions reads reflect bypass.
-    expect(registry.current().mode).toBe("bypassPermissions");
   });
 
   it("'/permissions mode bypassPermissions' surfaces a daemon RPC failure as an error after consent", async () => {
-    const registry = new PermissionModeRegistry(
-      createEmptyToolPermissionContext({
-        bypassPermissionsAcceptedIn: ["/workspace/trusted"],
-      }),
-    );
-    const setDaemonPermissionMode = vi.fn(async () => {
-      throw new Error("daemon refused");
-    });
-    const session = {
-      services: { permissionModeRegistry: registry },
-      emit: vi.fn(),
-      nextInternalSubId: () => "sub-1",
-      setDaemonPermissionMode,
-    } as unknown as Session;
-    const ctx = stubCtx({
-      registry,
-      argsRaw: "mode bypassPermissions",
-      session,
-      cwd: "/workspace/trusted",
-    });
-    const r = await permissionsCommand.execute(ctx);
-    expect(r.kind).toBe("error");
-    if (r.kind !== "error") throw new Error("expected error");
-    expect(r.message).toContain("daemon refused");
-    // Local registry untouched when the daemon switch fails.
-    expect(registry.current().mode).toBe("default");
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-bypass-daemon-"));
+    try {
+      const workspace = join(tmp, "workspace");
+      mkdirSync(workspace);
+      const registry = new PermissionModeRegistry(
+        bypassAuthorizedContext(workspace),
+      );
+      const setDaemonPermissionMode = vi.fn(async () => {
+        throw new Error("daemon refused");
+      });
+      const session = {
+        services: { permissionModeRegistry: registry },
+        emit: vi.fn(),
+        nextInternalSubId: () => "sub-1",
+        setDaemonPermissionMode,
+      } as unknown as Session;
+      const ctx = stubCtx({
+        registry,
+        argsRaw: "mode bypassPermissions",
+        session,
+        cwd: workspace,
+      });
+      const r = await permissionsCommand.execute(ctx);
+      expect(r.kind).toBe("error");
+      if (r.kind !== "error") throw new Error("expected error");
+      expect(r.message).toContain("daemon refused");
+      // Local registry untouched when the daemon switch fails.
+      expect(registry.current().mode).toBe("default");
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
 
@@ -609,17 +878,19 @@ describe("permissionsCommand — bypassPermissions consent gate", () => {
   it("'/permissions accept-bypass' sets the session and persisted flag", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-bypass-"));
     try {
+      const workspace = join(tmp, "workspace");
+      mkdirSync(workspace);
       const registry = new PermissionModeRegistry(createEmptyToolPermissionContext());
       const configStore = new ConfigStore({
         home: tmp,
         env: { AGENC_HOME: tmp },
-        cwd: "/workspace/trusted",
+        cwd: workspace,
       });
       const ctx = stubCtx({
         registry,
         argsRaw: "accept-bypass",
         home: tmp,
-        cwd: "/workspace/trusted",
+        cwd: workspace,
         configStore,
       });
       const r = await permissionsCommand.execute(ctx);
@@ -630,21 +901,218 @@ describe("permissionsCommand — bypassPermissions consent gate", () => {
           }`,
         );
       }
-      expect(r.text).toContain("/workspace/trusted");
+      expect(r.text).toContain(workspace);
       // Session-level list updated.
       expect(registry.current().bypassPermissionsAcceptedIn).toContain(
-        "/workspace/trusted",
+        workspace,
       );
-      // Persisted to the canonical acknowledgement state namespace.
-      const stateSettings = configStore.stateRepository.getNamespace(
-        "settings",
-      ) as {
-        readonly bypassPermissionsModeAcceptedIn?: readonly string[];
-      };
-      expect(stateSettings.bypassPermissionsModeAcceptedIn).toContain(
-        "/workspace/trusted",
-      );
+      expect(configStore.stateRepository.getNamespace("permissions")).toEqual({
+        bypassPermissionsAcceptedByCwd: {
+          [workspace]: persistedBypassConsent(workspace),
+        },
+      });
     } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("does not bind daemon-backed consent when persistence is unavailable", async () => {
+    const workspace = mkdtempSync(join(tmpdir(), "agenc-bypass-no-state-"));
+    try {
+      const registry = new PermissionModeRegistry(
+        createEmptyToolPermissionContext(),
+      );
+      const session = {
+        services: { permissionModeRegistry: registry },
+        setDaemonPermissionMode: vi.fn(),
+      } as unknown as Session;
+      const result = await permissionsCommand.execute(
+        stubCtx({
+          registry,
+          session,
+          argsRaw: "accept-bypass",
+          cwd: workspace,
+        }),
+      );
+
+      expect(result).toMatchObject({ kind: "error" });
+      expect(registry.current().bypassPermissionsAcceptedIn).toBeUndefined();
+    } finally {
+      rmSync(workspace, { recursive: true, force: true });
+    }
+  });
+
+  it("does not bind or report daemon-backed consent when persistence fails", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-bypass-state-fail-"));
+    const workspace = join(tmp, "workspace");
+    mkdirSync(workspace);
+    const configStore = new ConfigStore({
+      home: tmp,
+      env: { AGENC_HOME: tmp, HOME: tmp },
+      cwd: workspace,
+    });
+    vi.spyOn(configStore.stateRepository, "updateNamespace").mockImplementation(
+      () => {
+        throw new Error("state fsync failed");
+      },
+    );
+    try {
+      const registry = new PermissionModeRegistry(
+        createEmptyToolPermissionContext(),
+      );
+      const session = {
+        services: { permissionModeRegistry: registry },
+        setDaemonPermissionMode: vi.fn(),
+      } as unknown as Session;
+      const result = await permissionsCommand.execute(
+        stubCtx({
+          registry,
+          session,
+          configStore,
+          argsRaw: "accept-bypass",
+          cwd: workspace,
+        }),
+      );
+
+      expect(result).toMatchObject({
+        kind: "error",
+        message: expect.stringContaining("state fsync failed"),
+      });
+      expect(registry.current().bypassPermissionsAcceptedIn).toBeUndefined();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("binds daemon-backed consent when state committed but directory durability is indeterminate", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-bypass-state-durability-"));
+    const workspace = join(tmp, "workspace");
+    mkdirSync(workspace);
+    const home = resolveHomeContext(
+      { AGENC_HOME: tmp, HOME: tmp },
+      { platformHome: tmp },
+    );
+    const stateRepository = new RuntimeStateRepository(home, {
+      storage: "disk",
+    });
+    const configStore = new ConfigStore({
+      home: tmp,
+      env: { AGENC_HOME: tmp, HOME: tmp },
+      cwd: workspace,
+      stateRepository,
+    });
+    try {
+      const registry = new PermissionModeRegistry(
+        createEmptyToolPermissionContext(),
+      );
+      const session = {
+        services: { permissionModeRegistry: registry },
+        setDaemonPermissionMode: vi.fn(),
+      } as unknown as Session;
+      const failure = Object.assign(
+        new Error("injected post-rename directory fsync failure"),
+        { code: "EIO" },
+      );
+      const result = await withInjectedDirectoryFsyncFailure(
+        tmp,
+        failure,
+        () => permissionsCommand.execute(stubCtx({
+          registry,
+          session,
+          configStore,
+          argsRaw: "accept-bypass",
+          cwd: workspace,
+        })),
+      );
+
+      expect(result).toMatchObject({
+        kind: "text",
+        text: expect.stringContaining("persisted to runtime state"),
+      });
+      expect(registry.current().bypassPermissionsAcceptedIn).toContain(
+        workspace,
+      );
+      expect(
+        loadBypassPermissionsConsent(configStore.stateRepository, workspace),
+      ).toEqual([workspace]);
+      expect(JSON.parse(readFileSync(join(tmp, "state.json"), "utf8")))
+        .toMatchObject({
+          state: {
+            global: {
+              permissions: {
+                bypassPermissionsAcceptedByCwd: {
+                  [workspace]: persistedBypassConsent(workspace),
+                },
+              },
+            },
+          },
+        });
+    } finally {
+      configStore.stateRepository.close();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("bridges persisted consent from the client repository to the daemon repository", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-bypass-repository-bridge-"));
+    const workspace = join(tmp, "workspace");
+    mkdirSync(workspace);
+    const home = resolveHomeContext(
+      { AGENC_HOME: tmp, HOME: tmp },
+      { platformHome: tmp },
+    );
+    const clientRepository = new RuntimeStateRepository(home, {
+      storage: "disk",
+    });
+    const daemonRepository = new RuntimeStateRepository(home, {
+      storage: "disk",
+    });
+    const configStore = new ConfigStore({
+      home: tmp,
+      env: { AGENC_HOME: tmp, HOME: tmp },
+      cwd: workspace,
+      stateRepository: clientRepository,
+    });
+    try {
+      const registry = new PermissionModeRegistry(
+        createEmptyToolPermissionContext(),
+      );
+      const setDaemonPermissionMode = vi.fn(async (mode: PermissionMode) => {
+        if (
+          loadBypassPermissionsConsent(daemonRepository, workspace, {
+            reload: true,
+          }).length === 0
+        ) {
+          throw new Error("daemon did not observe durable consent");
+        }
+        return applyCanonicalDaemonModeEvent(registry, mode, workspace);
+      });
+      const session = {
+        services: { permissionModeRegistry: registry },
+        setDaemonPermissionMode,
+      } as unknown as Session;
+      const base = {
+        registry,
+        session,
+        configStore,
+        cwd: workspace,
+      };
+
+      await expect(
+        permissionsCommand.execute(stubCtx({ ...base, argsRaw: "accept-bypass" })),
+      ).resolves.toMatchObject({ kind: "text" });
+      await expect(
+        permissionsCommand.execute(
+          stubCtx({ ...base, argsRaw: "mode bypassPermissions" }),
+        ),
+      ).resolves.toMatchObject({ kind: "text" });
+      expect(setDaemonPermissionMode).toHaveBeenCalledWith(
+        "bypassPermissions",
+      );
+      expect(registry.current().mode).toBe("bypassPermissions");
+    } finally {
+      clientRepository.close();
+      daemonRepository.close();
       rmSync(tmp, { recursive: true, force: true });
     }
   });
@@ -652,6 +1120,8 @@ describe("permissionsCommand — bypassPermissions consent gate", () => {
   it("second '/permissions mode bypassPermissions' succeeds after accept-bypass", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-bypass-"));
     try {
+      const workspace = join(tmp, "workspace");
+      mkdirSync(workspace);
       const registry = new PermissionModeRegistry(createEmptyToolPermissionContext());
       // Step 1: accept-bypass.
       const acceptRes = await permissionsCommand.execute(
@@ -659,7 +1129,7 @@ describe("permissionsCommand — bypassPermissions consent gate", () => {
           registry,
           argsRaw: "accept-bypass",
           home: tmp,
-          cwd: "/workspace/trusted",
+          cwd: workspace,
         }),
       );
       expect(acceptRes.kind).toBe("text");
@@ -670,7 +1140,7 @@ describe("permissionsCommand — bypassPermissions consent gate", () => {
           registry,
           argsRaw: "mode bypassPermissions",
           home: tmp,
-          cwd: "/workspace/trusted",
+          cwd: workspace,
         }),
       );
       if (modeRes.kind !== "text") {

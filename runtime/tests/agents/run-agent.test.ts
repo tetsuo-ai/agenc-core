@@ -263,6 +263,9 @@ function makeStubSession(
     initialState: state as unknown as SessionOpts["initialState"],
     features: mkFeatures(),
     services: {
+      permissionModeRegistry: new PermissionModeRegistry(
+        createEmptyToolPermissionContext(),
+      ),
       mcpConnectionManager: {
         setApprovalPolicy: () => {},
         setSandboxPolicy: () => {},

@@ -122,7 +122,7 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 ## Protocol
 
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
-- Protocol version constant: **`1.5.0`**
+- Protocol version constant: **`1.7.0`**
   (`AGENC_DAEMON_PROTOCOL_VERSION` in `runtime/src/app-server/protocol/index.ts`).
 - Clients send `initialize` with the protocol version. Negotiation compares the
   numeric major and minor versions: the server accepts the same major when the
@@ -133,12 +133,14 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 - Consequently, a 1.4 daemon accepts 1.0 through 1.3 clients, while a client
   that requires 1.4 is rejected by a still-running 1.0 through 1.3 daemon. The
   embedding SDK retries initialization at the reported older server version and
-  uses advertised capabilities for additive fallbacks; Core/TUI callers may
-  still fail closed. Protocol 1.4 makes the owning runtime authority required
-  in `agent.attach`; Core/TUI callers reject an older daemon during initialize,
-  while the SDK rejects attachment before dispatch on an older negotiated
-  protocol.
-  Protocols 1.0–1.2 advertise `session.mcp.status: false`,
+  uses advertised capabilities for additive fallbacks. Core/TUI callers may
+  still fail closed. Protocol 1.6 made the owning runtime options and the live
+  canonical run-settings snapshot required in `agent.attach`. Protocol 1.7
+  adds required inactive auto availability and exact-workspace bypass
+  capability and consent fields to that snapshot. Core/TUI callers reject an
+  older daemon during initialize. The SDK rejects attachment before dispatch
+  on a negotiated protocol older than 1.7.
+  Protocols 1.0 through 1.2 advertise `session.mcp.status: false`,
   reject that method, and never receive `event.mcp_status_changed`. Update if
   necessary, then run `agenc daemon restart` so the daemon uses the installed
   protocol version.
@@ -184,10 +186,14 @@ reimplementing the workbench. Source:
 | Proposals / changes | `workspace.editor.proposal.get`, `status`, `apply`, `discard`, `changes.list` |
 | Code prediction | `workspace.editor.predict`, `cancelPrediction`, `predictionFeedback` |
 | Compaction / rewind | `session.partialCompactFromMessage`, `rollbackCompaction`, `extendCompactionRollbackRetention`, `rewindConversationToMessage`, `previewFileRewind`, `rewindFilesToMessage` |
-| Session controls | `session.setModel`, `setPermissionMode`, `applyConfig` |
+| Session controls | `session.setModel`, `setPermissionMode`, `applyConfig`, `session.permissions.mutateRule` |
 | Hooks / MCP | `session.hooks.status`, `session.hooks.setDisabled`, `session.mcp.reconnectServer`, `session.mcp.enableServer`, `session.mcp.disableServer` |
 
 Workbench BUFFER and Neovim behavior: [`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md).
+
+Protocol 1.7 adds `session.permissions.mutateRule` for authenticated Core
+clients. It adds or removes one live session permission rule through the
+daemon's permission registry. It is not a public SDK method.
 
 ### Race-safe turns and transcript sync (protocol 1.2+)
 
