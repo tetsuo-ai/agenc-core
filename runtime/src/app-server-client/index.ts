@@ -752,7 +752,6 @@ async function createBoundAgenCDaemonOnlyTuiContext(
     cwd: roleWorkspace.cwd,
     ...startupConfigLayerOptions({
       cli,
-      env: configEnv,
       cwd: roleWorkspace.cwd,
     }),
     onWarn: (message) => process.stderr.write(`${message}\n`),

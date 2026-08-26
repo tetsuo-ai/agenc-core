@@ -325,10 +325,6 @@ export function __setDaemonCliDepsForTest(
   daemonCliDepsForTest = deps;
 }
 
-export {
-  PROVIDER_MODEL_CATALOG,
-  resolveModelOrThrow,
-} from "./bootstrap.js";
 export { sessionConfigurationFromAgenCConfig } from "../session/configuration.js";
 
 /**
@@ -2041,7 +2037,6 @@ export async function oneShotCLI(
     const daemonCwd = cliCwd.cwd;
     const startupLayers = startupConfigLayerOptions({
       cli: startupCliFlags,
-      env: sessionEnv,
       cwd: daemonCwd,
     });
     const configStore = new ConfigStore({
@@ -2291,7 +2286,6 @@ export async function runProjectTrustPreflightForTui(
     cwd: rawWorkspace,
     ...startupConfigLayerOptions({
       cli: startupCliFlags,
-      env,
       cwd: rawWorkspace,
     }),
   });
@@ -4416,7 +4410,6 @@ async function resumeColdDaemonSession(params: {
   });
   const startupLayers = startupConfigLayerOptions({
     cli: startupFlags,
-    env: sessionEnv,
     cwd: params.descriptor.cwd,
   });
   const permissionMode = startupPermissionMode(startupFlags);
@@ -4540,7 +4533,6 @@ export async function bootTUIEntry(
     const daemonCwd = cliCwd.cwd;
     const startupLayers = startupConfigLayerOptions({
       cli: startupCliFlags,
-      env: sessionEnv,
       cwd: daemonCwd,
     });
     const startupImages = args.startupImages ?? [];
@@ -4813,7 +4805,6 @@ export async function attachAgentTuiEntry(
       const bootstrapEnv = envForAttachBootstrap(env, bootstrapCwd);
       const startupLayers = startupConfigLayerOptions({
         cli: startupCliFlags,
-        env: bootstrapEnv,
         cwd: bootstrapCwd,
       });
       const attachedMetadata = attachment.sessions.find(

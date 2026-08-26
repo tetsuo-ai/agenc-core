@@ -133,14 +133,10 @@ export interface LayeredConfigRepositoryOptions {
   readonly managedDropInDir?: string;
   readonly pluginDefaults?: AgenCConfig;
   /**
-   * Immutable command-line layer. A resolver is evaluated after profile and
-   * environment layers so coupled selections such as `--provider` without an
-   * explicit `--model` can choose the configured default from the same
-   * canonical snapshot they override.
+   * Immutable command-line layer. The canonical layer merger couples any
+   * provider/model selector after applying lower-priority authorities.
    */
-  readonly cliOverrides?:
-    | AgenCConfig
-    | ((config: AgenCConfig) => AgenCConfig | undefined);
+  readonly cliOverrides?: AgenCConfig;
   readonly profileName?: string;
   readonly onWarn?: (message: string) => void;
 }
@@ -1424,14 +1420,10 @@ export async function loadLayeredConfig(
     config = merged.config;
     sources.push(merged.source);
   }
-  const cliOverrides =
-    typeof options.cliOverrides === "function"
-      ? options.cliOverrides(config)
-      : options.cliOverrides;
-  if (cliOverrides) {
+  if (options.cliOverrides) {
     if (
       Object.prototype.hasOwnProperty.call(
-        cliOverrides,
+        options.cliOverrides,
         "project_root_markers",
       )
     ) {
@@ -1440,7 +1432,11 @@ export async function loadLayeredConfig(
         "command-line overrides cannot set project_root_markers after root discovery; set root markers in user config.toml, an explicit --config file, or managed config.toml",
       );
     }
-    const cli = syntheticLayer("cli", "command-line overrides", cliOverrides);
+    const cli = syntheticLayer(
+      "cli",
+      "command-line overrides",
+      options.cliOverrides,
+    );
     const merged = mergeLayer(config, cli, true, provenance, ignored);
     config = merged.config;
     sources.push(merged.source);

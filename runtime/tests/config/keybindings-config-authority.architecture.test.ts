@@ -102,6 +102,6 @@ describe("canonical keybinding configuration authority", () => {
     expect(repository).toContain("OPERATOR_ONLY_CONFIG_PATHS");
     expect(repository).toContain("for (const managed of managedLayers)");
     expect(repository.lastIndexOf("for (const managed of managedLayers)"))
-      .toBeGreaterThan(repository.indexOf("const cliOverrides ="));
+      .toBeGreaterThan(repository.indexOf('syntheticLayer(\n      "cli"'));
   });
 });

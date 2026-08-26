@@ -4,7 +4,6 @@
  *   - `system.agent.delegate` built-in tool
  *
  * T10 Group I integration seams:
- *   - I-60 ambiguous-model hard-fail (`resolveModelOrThrow`)
  *   - I-47 between-turn config reload (`maybeReloadConfigBetweenTurns`)
  *   - AgenCConfig → SessionConfiguration bridge
  *   - Memory auto-save sidecar + per-turn attachments
@@ -22,7 +21,6 @@ import { join } from "node:path";
 
 import { buildDelegateTool } from "./delegate-tool.js";
 import {
-  PROVIDER_MODEL_CATALOG,
   __resetActiveInkUnmountForTest,
   __setDaemonCliDepsForTest,
   __setActiveInkUnmountForTest,
@@ -39,7 +37,6 @@ import {
   parseStreamJsonPrompt,
   prepareTurnRuntimeInputs,
   resolveCliCwdForStartup,
-  resolveModelOrThrow,
   resumeTUIEntry,
   runSingleTurn,
   sessionConfigurationFromAgenCConfig,
@@ -48,11 +45,7 @@ import {
   type ConfigReloadLatch,
 } from "./agenc-main.js";
 import { ConfigStore } from "../config/store.js";
-import {
-  AmbiguousModelError,
-  defaultConfig,
-  UnknownModelError,
-} from "../config/schema.js";
+import { defaultConfig } from "../config/schema.js";
 import {
   assembleSystemPrompt,
   SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
@@ -760,87 +753,6 @@ describe("buildDelegateTool — system.agent.delegate", () => {
 // ─────────────────────────────────────────────────────────────────────
 // T10 Group I — integration tests
 // ─────────────────────────────────────────────────────────────────────
-
-describe("PROVIDER_MODEL_CATALOG", () => {
-  it("advertises grok models with grok-4.6 leading", () => {
-    // The grok catalog is derived from REGISTERED_MODEL_CATALOG.
-    expect(PROVIDER_MODEL_CATALOG.grok).toEqual([
-      "grok-4.6",
-      "grok-4.5",
-      "grok-build-0.1",
-      "grok-4.3",
-      "grok-4.20-0309-reasoning",
-      "grok-4.20-0309-non-reasoning",
-      "grok-4.20-multi-agent-0309",
-      "grok-composer-2.5-fast",
-    ]);
-  });
-});
-
-describe("I-60: resolveModelOrThrow hard-fail", () => {
-  it("returns {provider, model} for an unambiguous bare slug", () => {
-    const result = resolveModelOrThrow("grok-4.3", PROVIDER_MODEL_CATALOG);
-    expect(result.provider).toBe("grok");
-    expect(result.model).toBe("grok-4.3");
-  });
-
-  it("accepts explicit provider:model form", () => {
-    const result = resolveModelOrThrow(
-      "grok:grok-4.20-0309-reasoning",
-      PROVIDER_MODEL_CATALOG,
-    );
-    expect(result.provider).toBe("grok");
-    expect(result.model).toBe("grok-4.20-0309-reasoning");
-  });
-
-  it("THROWS a catchable AmbiguousModelError on an ambiguous bare slug (no process.exit)", () => {
-    const catalog = {
-      grok: ["shared-model", "grok-4"] as readonly string[],
-      openai: ["shared-model", "gpt-4"] as readonly string[],
-    };
-    // Spy on process.exit so a regression to the old exit-based code is caught:
-    // shared selection code must never hard-kill the process — it must throw so
-    // daemon/TUI and CLI callers can intercept via their own try/catch.
-    const exitSpy = vi
-      .spyOn(process, "exit")
-      .mockImplementation((() => undefined) as never);
-    try {
-      let captured: unknown;
-      try {
-        resolveModelOrThrow("shared-model", catalog);
-      } catch (err) {
-        captured = err;
-      }
-      expect(captured).toBeInstanceOf(AmbiguousModelError);
-      const message = (captured as Error).message;
-      expect(message).toMatch(/ambiguous/i);
-      expect(message).toMatch(/grok:shared-model/);
-      expect(message).toMatch(/openai:shared-model/);
-      expect(exitSpy).not.toHaveBeenCalled();
-    } finally {
-      exitSpy.mockRestore();
-    }
-  });
-
-  it("THROWS a catchable UnknownModelError on an unknown model slug (no process.exit)", () => {
-    const exitSpy = vi
-      .spyOn(process, "exit")
-      .mockImplementation((() => undefined) as never);
-    try {
-      let captured: unknown;
-      try {
-        resolveModelOrThrow("nope-unknown", PROVIDER_MODEL_CATALOG);
-      } catch (err) {
-        captured = err;
-      }
-      expect(captured).toBeInstanceOf(UnknownModelError);
-      expect((captured as Error).message).toMatch(/unknown model/i);
-      expect(exitSpy).not.toHaveBeenCalled();
-    } finally {
-      exitSpy.mockRestore();
-    }
-  });
-});
 
 describe("sessionConfigurationFromAgenCConfig", () => {
   it("maps AgenCConfig approval_policy + sandbox_mode enums", () => {

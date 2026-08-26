@@ -99,9 +99,7 @@ export interface ConfigStoreOptions {
   readonly managedConfigPath?: string;
   readonly managedDropInDir?: string;
   readonly profileName?: string;
-  readonly cliOverrides?:
-    | AgenCConfig
-    | ((config: AgenCConfig) => AgenCConfig | undefined);
+  readonly cliOverrides?: AgenCConfig;
   /** Explicit test/embedding seam; the repository must own this store's home. */
   readonly stateRepository?: RuntimeStateRepository;
   /**

@@ -15,12 +15,11 @@ import { resetCanonicalSettingsAuthorityForTesting } from "../utils/settings/can
 import {
   readStartupCliFlags,
   resolveCanonicalStartupSelection,
-  resolveStartupSelection,
   startupConfigLayerOptions,
 } from "./startup-selection.js";
 
-describe("resolveStartupSelection", () => {
-  it("uses the captured credential home for a qualified model selector", () => {
+describe("resolveCanonicalStartupSelection", () => {
+  it("uses the captured credential home for the canonical pair", () => {
     const root = mkdtempSync(join(tmpdir(), "agenc-qualified-model-home-"));
     const homeA = resolveHomeContext({
       AGENC_HOME: join(root, "home-a"),
@@ -44,13 +43,12 @@ describe("resolveStartupSelection", () => {
       process.env.AGENC_HOME = homeB.path;
       resetCanonicalSettingsAuthorityForTesting();
 
-      const resolved = resolveStartupSelection({
+      const resolved = resolveCanonicalStartupSelection({
         config: defaultConfig(),
         env: {
           AGENC_HOME: homeA.path,
           HOME: root,
         },
-        cli: { model: "grok:grok-4.6" },
       });
 
       expect(resolved).toMatchObject({
@@ -67,26 +65,8 @@ describe("resolveStartupSelection", () => {
     }
   });
 
-  it("rejects the retired Bedrock model selector", () => {
-    expect(() =>
-      resolveStartupSelection({
-        config: defaultConfig(),
-        env: {
-          AGENC_PROVIDER: "amazon-bedrock",
-          AWS_BEDROCK_MODEL: "amazon.nova-lite-v1:0",
-          AWS_ACCESS_KEY_ID: "bedrock-access-key",
-        },
-        argv: ["node", "agenc"],
-      })
-    ).toThrow(/obsolete configuration environment variable/u);
-  });
-
-  it("resolves config.model over providers.grok.default_model (config set model is honored)", () => {
-    // Regression for the daemon-session model bug: with config.model set via
-    // `agenc config set model` and a `[providers.grok] default_model`, the
-    // session/startup resolution (which seeds collaborationMode.model) must
-    // resolve to the configured model, not the provider default.
-    const resolved = resolveStartupSelection({
+  it("reads the canonical top-level model without provider fallback", () => {
+    const resolved = resolveCanonicalStartupSelection({
       config: {
         ...defaultConfig(),
         model: "grok-build-0.1",
@@ -94,22 +74,29 @@ describe("resolveStartupSelection", () => {
         providers: { grok: { default_model: "grok-4.3" } },
       },
       env: {},
-      argv: ["node", "agenc"],
     });
 
     expect(resolved.provider).toBe("grok");
     expect(resolved.model).toBe("grok-build-0.1");
   });
 
-  it("falls back to grok-4.6 when no config.model is set", () => {
-    const resolved = resolveStartupSelection({
+  it("reads the complete built-in default pair", () => {
+    const resolved = resolveCanonicalStartupSelection({
       config: defaultConfig(),
       env: {},
-      argv: ["node", "agenc"],
     });
 
     expect(resolved.provider).toBe("grok");
     expect(resolved.model).toBe("grok-4.6");
+  });
+
+  it("does not infer a missing half of the canonical pair", () => {
+    expect(() =>
+      resolveCanonicalStartupSelection({
+        config: { model: "gpt-5" },
+        env: {},
+      })
+    ).toThrow(/must contain a provider\/model pair/u);
   });
 });
 
@@ -240,7 +227,52 @@ describe("readStartupCliFlags --permission-mode validation", () => {
 });
 
 describe("canonical startup ConfigStore layers", () => {
-  it("freezes the environment captured by the startup CLI resolver", async () => {
+  it("passes literal provider/model CLI intent to the repository", () => {
+    expect(
+      startupConfigLayerOptions({
+        cli: { provider: "openai" },
+        cwd: "/workspace",
+      }),
+    ).toEqual({ cliOverrides: { model_provider: "openai" } });
+    expect(
+      startupConfigLayerOptions({
+        cli: { model: "gpt-5" },
+        cwd: "/workspace",
+      }),
+    ).toEqual({ cliOverrides: { model: "gpt-5" } });
+  });
+
+  it("resolves a model-only CLI patch through the canonical repository", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-startup-model-only-"));
+    const home = join(root, "home");
+    const workspace = join(root, "workspace");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(workspace, { recursive: true });
+
+    try {
+      const env = { AGENC_HOME: home, HOME: home };
+      const store = new ConfigStore({
+        home,
+        cwd: workspace,
+        env,
+        ...startupConfigLayerOptions({
+          cli: { model: "gpt-5" },
+          cwd: workspace,
+        }),
+      });
+
+      await expect(store.reload()).resolves.toMatchObject({
+        model_provider: "openai",
+        model: "gpt-5",
+      });
+      expect(store.provenance("model_provider")?.scope).toBe("cli");
+      expect(store.provenance("model")?.scope).toBe("cli");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the ConfigStore's immutable environment snapshot", async () => {
     const root = mkdtempSync(join(tmpdir(), "agenc-startup-env-snapshot-"));
     const home = join(root, "home");
     const workspace = join(root, "workspace");
@@ -259,7 +291,7 @@ describe("canonical startup ConfigStore layers", () => {
         home,
         cwd: workspace,
         env,
-        ...startupConfigLayerOptions({ cli, env, cwd: workspace }),
+        ...startupConfigLayerOptions({ cli, cwd: workspace }),
       });
       env.AGENC_PROVIDER = "grok";
       process.env.AGENC_PROVIDER = "grok";
@@ -330,7 +362,7 @@ describe("canonical startup ConfigStore layers", () => {
         home,
         cwd: workspace,
         env,
-        ...startupConfigLayerOptions({ cli, env, cwd: workspace }),
+        ...startupConfigLayerOptions({ cli, cwd: workspace }),
       });
       const observed: unknown[] = [];
       const unsubscribe = store.subscribe((config) => observed.push(config));

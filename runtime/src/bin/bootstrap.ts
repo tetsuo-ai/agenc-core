@@ -140,10 +140,6 @@ import {
   type StartupCliFlags,
 } from "./startup-selection.js";
 import { resolveProjectTrustStateSync } from "../permissions/trust/project-trust.js";
-export {
-  PROVIDER_MODEL_CATALOG,
-  resolveModelOrThrow,
-} from "./startup-selection.js";
 export type { StartupCliFlags, StartupSelection } from "./startup-selection.js";
 import {
   buildBootstrapSessionServices,
@@ -289,7 +285,7 @@ function enforceRemoteSubscriptionGate(params: {
     })
   )
     return;
-  if (requiresAuthModelInference(params.provider, params.model)) {
+  if (isHostedAgencProvider(params.provider)) {
     throw new Error(
       "Hosted AgenC model routing requires an active AgenC subscription",
     );
@@ -306,16 +302,6 @@ function enforceRemoteSubscriptionGate(params: {
   }
 }
 
-function requiresAuthModelInference(provider: string, model: string): boolean {
-  const normalizedProvider = provider.trim().toLowerCase();
-  const normalizedModel = model.trim().toLowerCase();
-  return (
-    normalizedProvider === "agenc" ||
-    normalizedModel === "agenc" ||
-    normalizedModel.startsWith("agenc:")
-  );
-}
-
 async function resolveAuthModelSelection(params: {
   readonly authBackend: AuthBackend | undefined;
   readonly provider: ProviderName;
@@ -325,7 +311,7 @@ async function resolveAuthModelSelection(params: {
 }): Promise<ResolvedAuthModelSelection> {
   if (
     params.authBackend === undefined ||
-    !requiresAuthModelInference(params.provider, params.model)
+    !isHostedAgencProvider(params.provider)
   ) {
     return {
       provider: params.provider,
@@ -345,23 +331,9 @@ async function resolveAuthModelSelection(params: {
   if (inferredModel === undefined) {
     throw new Error("AuthBackend model inference returned an empty model");
   }
-  if (isHostedAgencProvider(params.provider)) {
-    return {
-      provider: params.provider,
-      model: params.model,
-      profileProvider:
-        inferredProvider !== undefined && inferredProvider !== "agenc"
-          ? inferredProvider
-          : params.provider,
-      profileModel: inferredModel,
-    };
-  }
   return {
-    provider:
-      inferredProvider !== undefined && inferredProvider !== "agenc"
-        ? inferredProvider
-        : params.provider,
-    model: inferredModel,
+    provider: params.provider,
+    model: params.model,
     profileProvider:
       inferredProvider !== undefined && inferredProvider !== "agenc"
         ? inferredProvider
@@ -997,7 +969,6 @@ async function bootstrapLocalRuntimeSessionScoped(
       options.runtimeOptions.allowUntrustedHooks,
     ...startupConfigLayerOptions({
       cli: options.cli,
-      env,
       cwd: workspaceRoot,
     }),
   });
