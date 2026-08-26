@@ -69,7 +69,9 @@ import type {
   SubagentStopHook,
 } from "../llm/hooks/types.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
+import { createHookExecutionAuthority } from "../hooks/execution-authority.js";
 import { createAutoFixPostToolHook } from "../services/autoFix/autoFixHook.js";
+import { isProjectTrustedSync } from "../permissions/trust/project-trust.js";
 import { parseLspServersConfig } from "../services/lsp/config.js";
 import {
   getInitializationStatus as getLspInitializationStatus,
@@ -677,6 +679,15 @@ export function buildBootstrapSessionServices(
     opts.mcpManager,
   );
   const hooksService = createHooksService(opts.runtimeOptions);
+  const hookExecutionAuthority = createHookExecutionAuthority({
+    runtimeOptions: opts.runtimeOptions,
+    isWorkspaceTrusted: () =>
+      isProjectTrustedSync({
+        projectRoot: opts.configStore.projectRoot,
+        agencHome: opts.agencHome,
+        env: opts.env,
+      }),
+  });
   initMagicDocs();
   const hooksRuntime = new ConfiguredHooksRuntime({
     cwd: opts.workspaceRoot,
@@ -684,7 +695,7 @@ export function buildBootstrapSessionServices(
     agencHome: opts.agencHome,
     runtimeOptions: opts.runtimeOptions,
     shellPath: opts.runtimeOptions.posixShellPath ?? opts.env.SHELL ?? "/bin/sh",
-    allowUntrustedHooks: opts.runtimeOptions.allowUntrustedHooks,
+    executionAuthority: hookExecutionAuthority,
     sandboxExecutionBroker: opts.sandboxExecutionBroker,
     ...(opts.executionAdmission !== undefined
       ? { executionAdmission: opts.executionAdmission }
@@ -694,6 +705,7 @@ export function buildBootstrapSessionServices(
   const autoFixPostToolHook = createAutoFixPostToolHook({
     configSource: () => opts.configStore.current().autoFix,
     cwd: opts.workspaceRoot,
+    executionAuthority: hookExecutionAuthority,
     sandboxExecutionBroker: opts.sandboxExecutionBroker,
   });
   hooksRuntime.attachTarget(hooksService);
@@ -738,6 +750,7 @@ export function buildBootstrapSessionServices(
 
   const services: SessionServices = {
     runtimeOptions: opts.runtimeOptions,
+    hookExecutionAuthority,
     mcpConnectionManager,
     mcpStartupCancellationToken: createMcpStartupCancellationToken(),
     unifiedExecManager: opts.unifiedExecManager,

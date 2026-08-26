@@ -38,7 +38,7 @@ runtime use; only the migration command may inspect it.
 | Project trust decisions | `trusted-projects.json` |
 | Provider credentials | native secure storage or documented credential environment variables |
 | Gateway credentials | home-bound native secure storage or documented one-shot credential environment variables |
-| Session-local ingress such as reduced UI | typed daemon `runtimeOptions`, captured once |
+| Session startup authority such as `--bare`, shell/temp/plugin roots, and the untrusted-command capability | typed daemon `runtimeOptions`, captured once |
 
 Removed operator `settings.json` files are migration inputs only.
 `$AGENC_HOME/keybindings.json`, project `.mcp.json`, managed
@@ -73,6 +73,8 @@ removed environment aliases `AGENC_SIMPLE` and `AGENC_BARE` are rejected.
 For hooks, this owner value is a hard execution policy, not another spelling
 of the mutable/persisted `hooksDisabled` setting: `/hooks enable` cannot lift
 it and recovery never writes bare mode into the session toggle.
+`--bare` also takes precedence over `runtimeOptions.allowUntrustedHooks`; an
+untrusted-command capability cannot lift hard hook suppression.
 
 ## Layer order
 
@@ -104,7 +106,13 @@ sandbox startup fail open, add sandbox exceptions, or install
 `tui.keybindings` (including command-bearing mappings). Plugin defaults also
 cannot install keybindings. Suppressed values are reported as ignored. Before
 the project is trusted, only restrictive `permissions`, `sandbox_mode`, and
-`sandbox` values are active; other repository values are reported as ignored.
+`sandbox` values are active. An automation session that captured
+`runtimeOptions.allowUntrustedHooks` may also retain the project and local
+`[hooks]` command maps for the session hook policy to evaluate. This exception
+does not retain any other repository executable setting. Project and local
+`statusLine` and `fileSuggestion` commands remain ignored, as does any attempt
+to enable or install executable `autoFix` commands. Other repository values are
+reported as ignored.
 
 ## Migration and removed surfaces
 
@@ -596,8 +604,8 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `buffer.prediction` | Code prediction block. |
 | `buffer.prediction.enabled`, `buffer.prediction.debounce_ms`, `buffer.prediction.timeout_ms`, `buffer.prediction.max_output_tokens` | `ask`/`on`/`off` and limits. |
 | `buffer.prediction.provider`, `buffer.prediction.model` | Optional independent route. |
-| `statusLine`, `statusLine.type`, `statusLine.command`, `statusLine.padding` | Custom status command; `type` is literal `command`. |
-| `fileSuggestion`, `fileSuggestion.type`, `fileSuggestion.command` | Custom file suggestion command; `type` is literal `command`. |
+| `statusLine`, `statusLine.type`, `statusLine.command`, `statusLine.padding` | Operator-owned status command; `type` is literal `command`. Project/local layers cannot install it. Execution follows session command-hook policy and `--bare` suppression. |
+| `fileSuggestion`, `fileSuggestion.type`, `fileSuggestion.command` | Operator-owned file suggestion command; `type` is literal `command`. Project/local layers cannot install it. Execution follows session command-hook policy and `--bare` suppression. |
 | `attribution`, `attribution.commit`, `attribution.pr` | Commit and pull-request attribution strings. |
 | `worktree`, `worktree.symlinkDirectories`, `worktree.sparsePaths` | Worktree directory/sparse-checkout arrays. |
 | `spinnerVerbs`, `spinnerVerbs.mode`, `spinnerVerbs.verbs` | `append`/`replace` verb customization. |
@@ -619,7 +627,7 @@ keybinding file or watcher.
 
 | Paths | Type / meaning |
 | --- | --- |
-| `autoFix`, `autoFix.enabled`, `autoFix.lint`, `autoFix.test` | Post-edit lint/test automation; enabled requires at least one command. |
+| `autoFix`, `autoFix.enabled`, `autoFix.lint`, `autoFix.test` | Operator-owned post-edit lint/test commands; enabled requires at least one command. Project/local layers cannot enable it or install executable commands. Execution follows session command-hook policy and `--bare` suppression. |
 | `autoFix.maxRetries` | Integer `0..10`, runtime default `3`. |
 | `autoFix.timeout` | Integer `1000..300000` ms, runtime default `30000`. |
 | `autoMode`, `autoMode.allow`, `autoMode.soft_deny`, `autoMode.environment` | Classifier allow/soft-deny/environment arrays. |

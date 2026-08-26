@@ -68,6 +68,7 @@ import {
 import type { TurnContext } from "../session/turn-context.js";
 import {
   assertNoRetiredAgentRuntimeEnvironment,
+  resolveAutomationAgentRuntimeOptions,
   resolveAgentRuntimeOptions,
   runWithAgentRuntimeOptions,
   validateAgentRuntimeOptions,
@@ -411,7 +412,7 @@ export function formatCliHelpText(): string {
     "  --output-format <format>                 Print mode output: text, json, or stream-json",
     "  --input-format <format>                  Print mode input: stream-json",
     "  --no-tui                                 Force one-shot CLI mode",
-    "  --bare                                   Run with the reduced startup surface",
+    "  --bare                                   Run reduced startup and suppress all session hook extensions",
     "  -c, --continue                           Continue the latest project session",
     "  -r, --resume <session-id>                Resume a prior project session in the TUI",
     "  --profile <name>                         Use a named config profile",
@@ -1999,11 +2000,10 @@ export async function oneShotCLI(
   };
 
   try {
-    assertNoRetiredAgentRuntimeEnvironment(process.env);
     const startupCliFlags =
       parsedStartupCliFlags ?? readStartupCliFlags(process.argv);
     const sessionEnv = process.env;
-    const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
+    const runtimeOptions = resolveAutomationAgentRuntimeOptions(sessionEnv, {
       simpleMode: startupCliFlags.simpleMode === true,
     });
     validateAgencHome();

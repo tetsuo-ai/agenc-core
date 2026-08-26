@@ -27,7 +27,9 @@ describe("agenc CLI help", () => {
     expect(help).toContain("agenc daemon <stop|status|reload|restart>");
     expect(help).toContain("agenc mcp serve --transport stdio");
     expect(help).toContain("-p, --print");
-    expect(help).toContain("--bare");
+    expect(help).toContain(
+      "--bare                                   Run reduced startup and suppress all session hook extensions",
+    );
     expect(help).toContain("--config <path>");
     expect(help).toContain("--autonomous");
     expect(help).toContain("--dangerously-bypass-approvals-and-sandbox");

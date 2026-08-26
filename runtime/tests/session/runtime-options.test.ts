@@ -6,6 +6,7 @@ import {
   getSessionCoworkMemoryPathOverride,
   getSessionRemoteMemoryRoot,
   isSessionRemoteMode,
+  resolveAutomationAgentRuntimeOptions,
   resolveAgentRuntimeOptions,
   resolveSessionTempRoot,
   runWithAgentRuntimeOptions,
@@ -44,9 +45,27 @@ describe("agent runtime options", () => {
     expect(Object.isFrozen(result.commandWrapperArgv)).toBe(true);
   });
 
-  test("explicit false values beat supported daemon environment", () => {
+  test("generic ingress ignores automation hook authority in the environment", () => {
     expect(
-      resolveAgentRuntimeOptions(
+      resolveAgentRuntimeOptions({
+        AGENC_ALLOW_UNTRUSTED_HOOKS: "true",
+      }).allowUntrustedHooks,
+    ).toBe(false);
+    expect(() =>
+      resolveAgentRuntimeOptions({
+        AGENC_ALLOW_UNTRUSTED_HOOKS: "not-a-boolean",
+      }),
+    ).not.toThrow();
+  });
+
+  test("automation ingress captures hook authority and preserves overrides", () => {
+    expect(
+      resolveAutomationAgentRuntimeOptions({
+        AGENC_ALLOW_UNTRUSTED_HOOKS: "true",
+      }).allowUntrustedHooks,
+    ).toBe(true);
+    expect(
+      resolveAutomationAgentRuntimeOptions(
         {
           AGENC_ALLOW_UNTRUSTED_HOOKS: "true",
         },
@@ -61,6 +80,11 @@ describe("agent runtime options", () => {
       remoteMode: false,
       allowUntrustedHooks: false,
     });
+    expect(() =>
+      resolveAutomationAgentRuntimeOptions({
+        AGENC_ALLOW_UNTRUSTED_HOOKS: "not-a-boolean",
+      }),
+    ).toThrow("AGENC_ALLOW_UNTRUSTED_HOOKS must be one of");
   });
 
   test.each([
@@ -111,13 +135,13 @@ describe("agent runtime options", () => {
         simpleMode: false,
         stdinDataMode: false,
         remoteMode: false,
-        allowUntrustedHooks: false,
+        allowUntrustedHooks: true,
       }),
     ).toEqual({
       simpleMode: false,
       stdinDataMode: false,
       remoteMode: false,
-      allowUntrustedHooks: false,
+      allowUntrustedHooks: true,
     });
 
     expect(() =>

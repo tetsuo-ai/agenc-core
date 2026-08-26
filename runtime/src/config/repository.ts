@@ -126,6 +126,7 @@ export interface LayeredConfigRepositoryOptions {
   readonly cwd?: string;
   readonly projectRoot?: string;
   readonly projectTrusted?: boolean;
+  readonly retainUntrustedProjectCommandHooks?: boolean;
   readonly flagConfigPath?: string;
   readonly managedConfigPath?: string;
   readonly managedDropInDir?: string;
@@ -545,6 +546,7 @@ function sanitizeRepositoryLayer(
   layer: ConfigLayerSnapshot,
   projectTrusted: boolean,
   ignored: IgnoredConfigValue[],
+  retainUntrustedProjectCommandHooks = false,
 ): AgenCConfig {
   const authoritySafe = sanitizeTopLevelAuthority(layer, ignored);
   if (!REPOSITORY_SCOPES.has(layer.scope)) return authoritySafe;
@@ -567,7 +569,12 @@ function sanitizeRepositoryLayer(
 
   if (!projectTrusted) {
     for (const key of Object.keys(raw)) {
-      if (UNTRUSTED_REPOSITORY_ALLOWED_KEYS.has(key)) continue;
+      if (
+        UNTRUSTED_REPOSITORY_ALLOWED_KEYS.has(key) ||
+        (retainUntrustedProjectCommandHooks && key === "hooks")
+      ) {
+        continue;
+      }
       removeKey(
         raw,
         key,
@@ -1115,11 +1122,18 @@ function mergeLayer(
   projectTrusted: boolean,
   provenance: Record<string, ConfigProvenanceEntry>,
   ignored: IgnoredConfigValue[],
+  retainUntrustedProjectCommandHooks = false,
 ): {
   readonly config: AgenCConfig;
   readonly source: ConfigLayerSnapshot;
 } {
-  const safe = sanitizeRepositoryLayer(base, layer, projectTrusted, ignored);
+  const safe = sanitizeRepositoryLayer(
+    base,
+    layer,
+    projectTrusted,
+    ignored,
+    retainUntrustedProjectCommandHooks,
+  );
   const safeLayer = Object.freeze({ ...layer, config: safe });
   const merged = mergeConfigLayerSnapshots([safeLayer], base);
   if (merged === null) {
@@ -1327,7 +1341,14 @@ export async function loadLayeredConfig(
   );
   registerPhysicalSource(project);
   if (project) {
-    const merged = mergeLayer(config, project, options.projectTrusted === true, provenance, ignored);
+    const merged = mergeLayer(
+      config,
+      project,
+      options.projectTrusted === true,
+      provenance,
+      ignored,
+      options.retainUntrustedProjectCommandHooks === true,
+    );
     config = merged.config;
     sources.push(merged.source);
   }
@@ -1338,7 +1359,14 @@ export async function loadLayeredConfig(
   );
   registerPhysicalSource(local);
   if (local) {
-    const merged = mergeLayer(config, local, options.projectTrusted === true, provenance, ignored);
+    const merged = mergeLayer(
+      config,
+      local,
+      options.projectTrusted === true,
+      provenance,
+      ignored,
+      options.retainUntrustedProjectCommandHooks === true,
+    );
     config = merged.config;
     sources.push(merged.source);
   }

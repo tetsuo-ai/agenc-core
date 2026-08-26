@@ -15,6 +15,7 @@ import {
   ConfiguredHooksRuntime,
   type HookInstallTarget,
 } from "../../src/hooks/configured-hooks.js";
+import { createHookExecutionAuthority } from "../../src/hooks/execution-authority.js";
 import { defaultConfig, type HooksMap } from "../../src/config/schema.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 
@@ -75,7 +76,10 @@ describe("hook authority regressions", () => {
       shellPath: "/bin/sh",
       admissionRequired: false,
       sandboxExecutionBroker: explicitDangerBroker,
-      isWorkspaceTrusted: () => true,
+      executionAuthority: createHookExecutionAuthority({
+        runtimeOptions: { simpleMode: false, allowUntrustedHooks: false },
+        isWorkspaceTrusted: () => true,
+      }),
     });
     runtime.attachTarget(target);
 
@@ -180,6 +184,50 @@ describe("hook authority regressions", () => {
       );
       expect(contents).toMatch(/\bprepareUserPromptForTurn\s*\(/u);
     }
+  });
+
+  test("automation hook authority has one parser and three explicit ingresses", () => {
+    const automationResolverSites = productionSources(SOURCE_ROOT)
+      .filter((path) =>
+        /\bresolveAutomationAgentRuntimeOptions\s*\(/u.test(
+          readFileSync(path, "utf8"),
+        ),
+      )
+      .map((path) => relative(SOURCE_ROOT, path).replaceAll("\\", "/"))
+      .sort();
+    expect(automationResolverSites).toEqual([
+      "app-server/agent-cli.ts",
+      "app-server/workflow/session-adapters.ts",
+      "bin/agenc-main.ts",
+      "session/runtime-options.ts",
+    ]);
+
+    const environmentReaderSites = productionSources(SOURCE_ROOT)
+      .filter((path) =>
+        readFileSync(path, "utf8").includes("AGENC_ALLOW_UNTRUSTED_HOOKS"),
+      )
+      .map((path) => relative(SOURCE_ROOT, path).replaceAll("\\", "/"));
+    expect(environmentReaderSites).toEqual(["session/runtime-options.ts"]);
+
+    const authorityConstructionSites = productionSources(SOURCE_ROOT)
+      .filter((path) =>
+        /\bcreateHookExecutionAuthority\s*\(/u.test(
+          readFileSync(path, "utf8"),
+        ),
+      )
+      .map((path) => relative(SOURCE_ROOT, path).replaceAll("\\", "/"))
+      .sort();
+    expect(authorityConstructionSites).toEqual([
+      "bin/bootstrap-services.ts",
+      "hooks/execution-authority.ts",
+    ]);
+
+    expect(source("utils/hooks.ts")).not.toMatch(
+      /shouldSkipHookDueToTrust|allowUntrustedHooksOptIn/u,
+    );
+    expect(source("hooks/configured-hooks.ts")).not.toMatch(
+      /\ballowUntrustedHooks\b/u,
+    );
   });
 
   test("obsolete config snapshot and file watcher are deleted", () => {

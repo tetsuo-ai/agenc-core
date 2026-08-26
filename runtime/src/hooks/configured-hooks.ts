@@ -22,7 +22,6 @@ import type {
   StopRequest,
 } from "../phases/stop-hooks.js";
 import { hookMatcherInputsForToolName } from "../permissions/hook-event-schedule.js";
-import { isProjectTrustedSync } from "../permissions/trust/project-trust.js";
 import type { UserPromptSubmitHook } from "./user-prompt-submit.js";
 import type {
   HookInput,
@@ -54,6 +53,7 @@ import {
   type ConfiguredHookAuthoritySnapshot,
 } from "./configured-hook-sources.js";
 import type { HookRuntimeAuthority } from "./runtime-policy.js";
+import type { HookExecutionAuthority } from "./execution-authority.js";
 
 export type { ConfiguredHookAuthoritySnapshot } from "./configured-hook-sources.js";
 
@@ -122,21 +122,13 @@ export interface ConfiguredHooksRuntimeOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly agencHome: string;
   readonly shellPath: string;
-  /** Explicit session-scoped opt-in; never inferred from daemon process.env. */
-  readonly allowUntrustedHooks?: boolean;
   readonly sandboxExecutionBroker?: import("../sandbox/execution-broker.js").SandboxExecutionBrokerLike;
   readonly executionAdmission?: import("../budget/admission-client.js").ExecutionAdmissionClient;
   readonly admissionRequired?: boolean;
   /** Immutable authority owned by the session whose hooks this runtime runs. */
   readonly runtimeOptions?: HookRuntimeAuthority;
-  /**
-   * SECURITY: trust gate for config/plugin-sourced command hooks. Returns true
-   * when the current workspace is trusted (persisted in trusted-projects.json).
-   * Defaults to the real project-trust lookup; injectable for tests. Hooks
-   * declared in config.toml or plugins execute arbitrary shell commands, so a
-   * freshly-cloned untrusted repo must NOT be able to run them (RCE).
-   */
-  readonly isWorkspaceTrusted?: () => boolean;
+  /** Sole session-owned decision point for every configured command effect. */
+  readonly executionAuthority: HookExecutionAuthority;
 }
 
 interface ManagedHookInstallation {
@@ -205,7 +197,6 @@ export class ConfiguredHooksRuntime {
   private readonly engine: HookEngine;
   private validationIssues: HookValidationIssue[] = [];
   private target: HookInstallTarget | null = null;
-  private readonly isWorkspaceTrusted: () => boolean;
   private configAuthority: ConfiguredHookAuthoritySnapshot | undefined;
   private pluginHooks: HooksMap | undefined;
   private managedInstallation: ManagedHookInstallation | undefined;
@@ -229,14 +220,6 @@ export class ConfiguredHooksRuntime {
         ? { runtimeOptions: opts.runtimeOptions }
         : {}),
     });
-    this.isWorkspaceTrusted =
-      opts.isWorkspaceTrusted ??
-      (() =>
-        isProjectTrustedSync({
-          cwd: opts.cwd,
-          agencHome: opts.agencHome,
-          env: opts.env,
-        }));
   }
 
   attachTarget(target: HookInstallTarget): void {
@@ -1093,29 +1076,10 @@ export class ConfiguredHooksRuntime {
     if (this.isExecutionSuppressed()) {
       return this.engine.runCommandHook(hook, input, signal, inputCwd(input));
     }
-    // SECURITY: config/plugin-sourced command hooks run arbitrary shell commands
-    // (engine/command-runner.ts spawn(shell, ["-c", command])). A freshly-cloned
-    // untrusted repo's config.toml must NOT be able to execute host code. Gate
-    // every spawn behind workspace trust; allow untrusted only via explicit
-    // AGENC_ALLOW_UNTRUSTED_HOOKS opt-in (headless/SDK that vetted the workspace).
-    if (!this.shouldRunUntrustedSafe()) {
+    if (!this.opts.executionAuthority.decision("command").allowed) {
       return skippedUntrustedDiagnostic(hook);
     }
     return this.engine.runCommandHook(hook, input, signal, inputCwd(input));
-  }
-
-  /**
-   * Returns true when configured command hooks are permitted to execute: either
-   * the workspace is trusted, or the AGENC_ALLOW_UNTRUSTED_HOOKS opt-in is set.
-   */
-  private shouldRunUntrustedSafe(): boolean {
-    if (this.isWorkspaceTrusted()) {
-      return true;
-    }
-    if (this.opts.allowUntrustedHooks) {
-      return true;
-    }
-    return false;
   }
 
   private recordHookOutputIssue(
@@ -1211,8 +1175,7 @@ function skippedUntrustedDiagnostic(
     durationMs: 0,
     stdout: "",
     stderr: "",
-    error:
-      "skipped: workspace not trusted (set AGENC_ALLOW_UNTRUSTED_HOOKS=1 to override)",
+    error: "skipped: session hook policy denied command execution",
     startedAtUnixMs: Date.now(),
     rawStdout: "",
     rawStderr: "",

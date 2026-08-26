@@ -234,13 +234,24 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | `AGENC_SHELL_PREFIX` | Wrap bash/hook command argv (POSIX) |
 | `AGENC_TMPDIR` | Temp dir for sandbox/permission paths |
 | `AGENC_PLUGIN_CACHE_DIR` | Explicit sole plugin storage root (the versioned cache remains its `cache/` child) |
-| `AGENC_ALLOW_UNTRUSTED_HOOKS` | Allow untrusted workspace command hooks |
+| `AGENC_ALLOW_UNTRUSTED_HOOKS` | Permit command hook effects in an untrusted workspace at explicit automation startup; see below |
 | `AGENC_ENABLE_TASKS` | TUI task-board pool only. LIVE Task* tools are always registered and deferred |
 | `AGENC_USE_NATIVE_FILE_SEARCH` | Native fuzzy file index path |
 | `AGENC_DISABLE_LANDLOCK_FALLBACK` | Do not use the Landlock helper when bubblewrap cannot run |
 | `AGENC_LINUX_SANDBOX_EXE` | Override the Linux sandbox helper path |
 | `AGENC_DISABLE_EXTRACT_MEMORIES` | Skip turn-end memory extraction |
 | `AGENC_POLICY_LIMITS_URL` | Override hosted policy-limits URL (default `https://id.agenc.ag/v1/policy-limits`) |
+
+`AGENC_ALLOW_UNTRUSTED_HOOKS` is read by `agenc -p`, `agenc agent start`, and
+verified-run workflow startup. AgenC captures the value once as
+`runtimeOptions.allowUntrustedHooks` and does not forward it as mutable daemon
+environment state. TUI startup, cold TUI resume, SDK `createSession()`, and
+generic daemon client helpers ignore the variable. A daemon client can send the
+typed capability explicitly when it creates an agent.
+
+The capability permits command effects only. It never permits HTTP, prompt, or
+agent hook effects, and `--bare` still suppresses every session hook extension
+point.
 
 Exact enablement still depends on the call site. If a switch does nothing in
 your build, `agenc doctor` and the feature flag in

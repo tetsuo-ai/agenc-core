@@ -50,7 +50,7 @@ import {
 import { encodeBoundedJsonLine } from "./transport/stdio.js";
 import { isRecord } from "../utils/record.js";
 import {
-  resolveAgentRuntimeOptions,
+  resolveAutomationAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
 import { collectDaemonClientEnvOverrides } from "./client-env-snapshot.js";
@@ -734,7 +734,7 @@ async function startAgenCAgent(
       // DAE-02: absolute workspace identity from the CLI process (never omit).
       cwd: resolve(options.cwd ?? processCwd()),
       runtimeOptions:
-        options.runtimeOptions ?? resolveAgentRuntimeOptions(env),
+        options.runtimeOptions ?? resolveAutomationAgentRuntimeOptions(env),
       metadata: { source: "agenc agent start" },
       ...(command.unattendedAllow.length > 0
         ? { unattendedAllow: command.unattendedAllow }

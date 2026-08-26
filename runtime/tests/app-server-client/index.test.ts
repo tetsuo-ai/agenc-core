@@ -287,6 +287,7 @@ describe("app-server-client daemon helpers", () => {
         model: "grok-4.3",
         provider: "grok",
         permissionMode: "acceptEdits",
+        env: { AGENC_ALLOW_UNTRUSTED_HOOKS: "true" },
       });
       expect(createAgent).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -297,7 +298,10 @@ describe("app-server-client daemon helpers", () => {
           model: "grok-4.3",
           provider: "grok",
           permissionMode: "acceptEdits",
-          runtimeOptions: expect.objectContaining({ simpleMode: false }),
+          runtimeOptions: expect.objectContaining({
+            simpleMode: false,
+            allowUntrustedHooks: false,
+          }),
         }),
       );
       expect(createAgent.mock.calls[0]?.[0]).not.toHaveProperty("objective");
@@ -342,6 +346,7 @@ describe("app-server-client daemon helpers", () => {
       await startAgenCDaemonPromptAgent({
         prompt: "describe this",
         cwd: "/workspace",
+        env: { AGENC_ALLOW_UNTRUSTED_HOOKS: "true" },
         provider: "grok",
         model: "grok-4.3",
         profile: "fast",
@@ -376,6 +381,9 @@ describe("app-server-client daemon helpers", () => {
           objective: "describe this",
           instructions: "describe this",
           cwd: "/workspace",
+          runtimeOptions: expect.objectContaining({
+            allowUntrustedHooks: false,
+          }),
           provider: "grok",
           model: "grok-4.3",
           profile: "fast",
@@ -409,6 +417,10 @@ describe("app-server-client daemon helpers", () => {
         prompt: "AgenC Editor workspace",
         cwd: "/workspace",
         deferInitialTurn: true,
+        runtimeOptions: resolveAgentRuntimeOptions(
+          {},
+          { allowUntrustedHooks: true },
+        ),
       });
       expect(createAgent).toHaveBeenNthCalledWith(
         2,
@@ -417,6 +429,9 @@ describe("app-server-client daemon helpers", () => {
           instructions: "AgenC Editor workspace",
           cwd: "/workspace",
           deferInitialTurn: true,
+          runtimeOptions: expect.objectContaining({
+            allowUntrustedHooks: true,
+          }),
         }),
       );
       expect(createAgent.mock.calls[1]?.[0]).not.toHaveProperty(

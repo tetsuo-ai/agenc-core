@@ -4,6 +4,7 @@ import hooksCommand from "./hooks.js";
 import type { SlashCommandContext } from "./types.js";
 import type { Session } from "../session/session.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
+import { createHookExecutionAuthority } from "../hooks/execution-authority.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 
 function runtime(simpleMode = false): ConfiguredHooksRuntime {
@@ -15,9 +16,10 @@ function runtime(simpleMode = false): ConfiguredHooksRuntime {
     sandboxExecutionBroker: explicitDangerBroker,
     admissionRequired: false,
     runtimeOptions: { simpleMode },
-    // These tests exercise hook diagnostics/dispatch; treat the workspace as
-    // trusted (production establishes trust before command hooks run).
-    isWorkspaceTrusted: () => true,
+    executionAuthority: createHookExecutionAuthority({
+      runtimeOptions: { simpleMode, allowUntrustedHooks: false },
+      isWorkspaceTrusted: () => true,
+    }),
   });
   r.loadForTesting({
     PreToolUse: [

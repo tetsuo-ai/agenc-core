@@ -27,6 +27,7 @@ import {
 } from "../../src/config/repository.js";
 import { serializeConfigToml } from "../../src/config/serialize.js";
 import type { AgenCConfig } from "../../src/config/schema.js";
+import { ConfigStore } from "../../src/config/store.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -306,6 +307,143 @@ describe("canonical config layer authority", () => {
       disableAllHooks: true,
       disableAutoMode: "disable",
     });
+  });
+
+  test("strips untrusted repository command hooks without captured authority", async () => {
+    const root = temporaryRoot();
+    writeConfig(join(root, "project", ".agenc", "config.toml"), {
+      hooks: {
+        PreToolUse: [{
+          matcher: "system.bash",
+          hooks: [{ type: "command", command: "untrusted-project-hook" }],
+        }],
+      },
+    });
+
+    const loaded = await loadLayeredConfig({
+      ...repositoryOptions(root),
+      projectTrusted: false,
+      retainUntrustedProjectCommandHooks: false,
+    });
+    const project = loaded.sources.find((layer) => layer.scope === "project")
+      ?.config;
+
+    expect(loaded.config.hooks).toBeUndefined();
+    expect(project?.hooks).toBeUndefined();
+    expect(loaded.ignored).toEqual(expect.arrayContaining([
+      expect.objectContaining({ scope: "project", key: "hooks" }),
+    ]));
+  });
+
+  test("retains only captured hooks from untrusted project and local executable config", async () => {
+    const root = temporaryRoot();
+    const executableConfig = {
+      model: "untrusted-model",
+      permissions: { allow: ["system.bash(*)"] },
+      tools_config: { enabled_tools: ["WebSearch"] },
+      mcp_servers: {
+        docs: { command: "untrusted-mcp-command", args: ["--stdio"] },
+      },
+      lsp_servers: {
+        typescript: {
+          command: "untrusted-lsp-command",
+          extensionToLanguage: { ".ts": "typescript" },
+        },
+      },
+      statusLine: { type: "command", command: "untrusted-status-command" },
+      fileSuggestion: {
+        type: "command",
+        command: "untrusted-suggestion-command",
+      },
+      autoFix: { enabled: true, lint: "untrusted-lint-command" },
+      browser: { executable_path: "/untrusted-browser" },
+      shell_environment_policy: { set: { UNTRUSTED_MARKER: "active" } },
+      attachments: { allowedRoots: ["/untrusted-root"] },
+      protocol: {
+        enabled: true,
+        adapter: "marketplace-cli",
+        cli_path: "/untrusted-cli",
+      },
+      daemon: { autostart: true },
+    } as const;
+    writeConfig(join(root, "project", ".agenc", "config.toml"), {
+      ...executableConfig,
+      hooks: {
+        PreToolUse: [{
+          matcher: "system.bash",
+          hooks: [{ type: "command", command: "captured-project-hook" }],
+        }],
+      },
+    });
+    writeConfig(join(root, "project", ".agenc", "config.local.toml"), {
+      ...executableConfig,
+      hooks: {
+        Stop: [{
+          hooks: [{ type: "command", command: "captured-local-hook" }],
+        }],
+      },
+    });
+
+    const options = repositoryOptions(root);
+    const store = new ConfigStore({
+      env: options.env,
+      projectRoot: options.projectRoot,
+      managedConfigPath: options.managedConfigPath,
+      managedDropInDir: options.managedDropInDir,
+      projectTrusted: false,
+      retainUntrustedProjectCommandHooks: true,
+    });
+    const config = await store.reload();
+    const project = store.sources("project")
+      .find((layer) => layer.scope === "project")?.config;
+    const local = store.sources("local")
+      .find((layer) => layer.scope === "local")?.config;
+
+    expect(project?.hooks?.PreToolUse?.[0]?.hooks[0]?.command).toBe(
+      "captured-project-hook",
+    );
+    expect(local?.hooks?.Stop?.[0]?.hooks[0]?.command).toBe(
+      "captured-local-hook",
+    );
+    expect(config.hooks?.PreToolUse?.[0]?.hooks[0]?.command).toBe(
+      "captured-project-hook",
+    );
+    expect(config.hooks?.Stop?.[0]?.hooks[0]?.command).toBe(
+      "captured-local-hook",
+    );
+
+    for (const layer of [project, local]) {
+      expect(layer?.model).toBeUndefined();
+      expect(layer?.permissions?.allow).toBeUndefined();
+      expect(layer?.tools_config).toBeUndefined();
+      expect(layer?.mcp_servers).toBeUndefined();
+      expect(layer?.lsp_servers).toBeUndefined();
+      expect(layer?.statusLine).toBeUndefined();
+      expect(layer?.fileSuggestion).toBeUndefined();
+      expect(layer?.autoFix).toBeUndefined();
+      expect(layer?.browser).toBeUndefined();
+      expect(layer?.shell_environment_policy).toBeUndefined();
+      expect(layer?.attachments).toBeUndefined();
+      expect(layer?.protocol).toBeUndefined();
+      expect(layer?.daemon).toBeUndefined();
+    }
+    expect(store.ignored().map(({ key }) => key)).toEqual(
+      expect.arrayContaining([
+        "model",
+        "permissions.allow",
+        "tools_config",
+        "mcp_servers",
+        "lsp_servers",
+        "statusLine",
+        "fileSuggestion",
+        "autoFix",
+        "browser",
+        "shell_environment_policy",
+        "attachments",
+        "protocol",
+        "daemon",
+      ]),
+    );
   });
 
   test("trusted repository declarations survive while embedded grants are removed without values", async () => {

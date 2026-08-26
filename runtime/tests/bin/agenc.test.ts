@@ -1752,6 +1752,7 @@ describe("main() smoke", () => {
     process.env.AGENC_WORKSPACE = tmpCwd;
     process.env.AGENC_PROVIDER = "openai";
     process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
+    process.env.AGENC_ALLOW_UNTRUSTED_HOOKS = "true";
     process.env.AGENC_CLI_ENTRY_DISABLE = "1";
     const daemon = installDaemonCliDepsForTest({
       agentId: "agent_slash",
@@ -1795,6 +1796,9 @@ describe("main() smoke", () => {
           objective: "/help\nextra",
           instructions: "/help\nextra",
           cwd: tmpCwd,
+          runtimeOptions: expect.objectContaining({
+            allowUntrustedHooks: true,
+          }),
           metadata: { source: "agenc.prompt", mode: "one-shot" },
         }),
       });

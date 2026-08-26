@@ -40,6 +40,8 @@ export interface ConfigStoreOptions {
   readonly projectRoot?: string;
   /** Explicit trust decision; omitted means consult the canonical trust ledger. */
   readonly projectTrusted?: boolean;
+  /** Retain repository command hooks for later session-authority filtering. */
+  readonly retainUntrustedProjectCommandHooks?: boolean;
   readonly flagConfigPath?: string;
   readonly managedConfigPath?: string;
   readonly managedDropInDir?: string;
@@ -222,6 +224,8 @@ export class ConfigStore {
           : {}),
         onWarn,
         projectTrusted: this.opts.projectTrusted ?? false,
+        retainUntrustedProjectCommandHooks:
+          this.opts.retainUntrustedProjectCommandHooks === true,
       };
       let loaded = await loadLayeredConfig(repositoryOptions);
       const projectTrusted = this.opts.projectTrusted ?? isProjectTrustedSync({

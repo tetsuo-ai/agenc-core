@@ -85,10 +85,25 @@ skill metadata schema.
 
 ### Security
 
-- Config/plugin **command** hooks run arbitrary shell → require a **trusted**
-  workspace (`isProjectTrustedSync`), unless
-  `AGENC_ALLOW_UNTRUSTED_HOOKS=1|true|yes` (automation opt-in).
-- Secrets redacted in diagnostics where wired (`configured-hooks.ts`).
+Every session has one hook execution policy. The policy checks the captured
+runtime options, project trust, and hook effect before anything runs.
+
+- Internal callback and function hooks use code already loaded by AgenC. They
+  do not require workspace trust.
+- Command, HTTP, prompt, and agent hook effects require a trusted workspace.
+- An explicit automation session may set `AGENC_ALLOW_UNTRUSTED_HOOKS=1` at
+  startup to permit command effects in an untrusted workspace. The capability
+  also covers command-backed `statusLine`, `fileSuggestion`, and `autoFix`.
+  It never permits HTTP, prompt, or agent effects.
+- `agenc -p`, `agenc agent start`, and verified-run workflow startup capture
+  the variable once as `runtimeOptions.allowUntrustedHooks`. TUI startup, cold
+  TUI resume, `createSession()` in the SDK, and generic daemon client helpers
+  ignore the variable. A daemon client using `spawnAgent()` can send the typed
+  capability explicitly after it has vetted the workspace.
+- AgenC does not forward the variable into the daemon environment. Changing a
+  process environment after session creation cannot change the captured value.
+- AgenC redacts secrets from configured-hook diagnostics where that path is
+  wired (`configured-hooks.ts`).
 
 `--bare` is an immutable, run-owned hard suppression boundary for **every**
 session hook extension point: configured commands, plugin/SDK callbacks,
@@ -96,6 +111,9 @@ prompt/HTTP/agent hooks, tool and permission hooks, lifecycle hooks, async-hook
 responses, and internal post-sampling hooks. Hook registration may still be
 visible for inspection, but no callback, subprocess, request, or background
 hook task is executed for that run.
+
+`--bare` takes precedence over `runtimeOptions.allowUntrustedHooks`. The
+command capability cannot lift hard hook suppression.
 
 This hard state is separate from the mutable session switch:
 

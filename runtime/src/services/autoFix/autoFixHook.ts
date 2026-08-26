@@ -19,6 +19,7 @@ import {
   type AutoFixResult,
 } from "./autoFixRunner.js";
 import type { SandboxExecutionBrokerLike } from "../../sandbox/execution-broker.js";
+import type { HookExecutionAuthority } from "../../hooks/execution-authority.js";
 
 const AUTO_FIX_TOOLS = new Set([
   FILE_EDIT_TOOL_NAME,
@@ -29,6 +30,7 @@ const AUTO_FIX_TOOLS = new Set([
 export interface AutoFixPostToolHookOptions {
   readonly configSource: () => unknown;
   readonly cwd: string;
+  readonly executionAuthority: HookExecutionAuthority;
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
   readonly retryScope?: (input: Parameters<PostToolUseHook>[0]) => string;
   readonly runCheck?: (options: AutoFixCheckOptions) => Promise<AutoFixResult>;
@@ -85,6 +87,9 @@ export function createAutoFixPostToolHook(
   const retryScope = options.retryScope ?? defaultRetryScope;
 
   return async (input) => {
+    if (!options.executionAuthority.decision("command").allowed) {
+      return { kind: "continue" };
+    }
     const config = getAutoFixConfig(options.configSource());
     if (!shouldRunAutoFix(input.tool.name, config) || !config) {
       return { kind: "continue" };

@@ -48,9 +48,11 @@ import type { Message } from "../../src/types/message.js";
 import {
   clearCurrentRuntimeSession,
   getCurrentRuntimeSession,
+  runWithCurrentRuntimeSession,
   setCurrentRuntimeSession,
 } from "../../src/session/current-session.js";
 import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
+import { createHookExecutionAuthority } from "../../src/hooks/execution-authority.js";
 import { SessionProviderService } from "../../src/session/provider-service.js";
 import { ConfigStore } from "../../src/config/store.js";
 import { runWithCanonicalSettingsAuthority } from "../../src/utils/settings/canonicalAuthority.js";
@@ -91,7 +93,12 @@ function createHookProviderService(): SessionProviderService {
   });
 }
 
-async function configureHookSession(): Promise<{
+async function configureHookSession(
+  options: {
+    readonly trusted?: boolean;
+    readonly allowUntrustedCommands?: boolean;
+  } = {},
+): Promise<{
   agencHome: string;
   cwd: string;
 }> {
@@ -107,6 +114,9 @@ async function configureHookSession(): Promise<{
     env: { AGENC_HOME: agencHome },
     cwd,
   });
+  const runtimeOptions = resolveAgentRuntimeOptions({}, {
+    allowUntrustedHooks: options.allowUntrustedCommands ?? false,
+  });
   setCurrentRuntimeSession({
     conversationId: sessionId,
     sessionConfiguration: { cwd },
@@ -115,6 +125,11 @@ async function configureHookSession(): Promise<{
       admissionRequired: false,
       configStore,
       providerService: createHookProviderService(),
+      runtimeOptions,
+      hookExecutionAuthority: createHookExecutionAuthority({
+        runtimeOptions,
+        isWorkspaceTrusted: () => options.trusted ?? true,
+      }),
     },
   } as never);
 
@@ -159,11 +174,16 @@ function bindHookSessionSimpleMode(simpleMode: boolean): void {
   const session = getCurrentRuntimeSession();
   if (session === null) throw new Error("Expected a configured hook session");
   clearCurrentRuntimeSession();
+  const runtimeOptions = resolveAgentRuntimeOptions({}, { simpleMode });
   setCurrentRuntimeSession({
     ...session,
     services: {
       ...session.services,
-      runtimeOptions: resolveAgentRuntimeOptions({}, { simpleMode }),
+      runtimeOptions,
+      hookExecutionAuthority: createHookExecutionAuthority({
+        runtimeOptions,
+        isWorkspaceTrusted: () => true,
+      }),
     },
   } as never);
 }
@@ -624,6 +644,134 @@ test("executes command hooks through the permission generator", async () => {
   ).toBe(true);
 });
 
+test("untrusted automation runs callbacks and commands but blocks other hook effects", async () => {
+  await configureHookSession({
+    trusted: false,
+    allowUntrustedCommands: true,
+  });
+  const callback = vi.fn(async () => ({}));
+  let httpRequests = 0;
+  const server = createServer((_request, response) => {
+    httpRequests += 1;
+    response.writeHead(200, { "content-type": "application/json" });
+    response.end("{}");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+
+  try {
+    const address = server.address();
+    if (!address || typeof address === "string") {
+      throw new Error("Expected TCP server address");
+    }
+    registerHookCallbacks({
+      PermissionRequest: [
+        {
+          matcher: "Bash",
+          hooks: [
+            { type: "callback", callback },
+            { type: "command", command: stdoutCommand("command allowed\n") },
+            { type: "http", url: `http://127.0.0.1:${address.port}/hook` },
+            { type: "prompt", prompt: "must not run" },
+            { type: "agent", prompt: "must not run" },
+          ],
+        },
+      ],
+    } as never);
+
+    const results = await collectAsyncGenerator(
+      executePermissionRequestHooks(
+        "Bash",
+        "tool-untrusted-automation",
+        { command: "pwd" },
+        toolUseContext({ sessionHooks: new Map<string, unknown>() }),
+        "default",
+        [],
+        undefined,
+        hookCommandTimeoutMs,
+      ),
+    );
+
+    expect(callback).toHaveBeenCalledTimes(1);
+    expect(
+      results.some((result) =>
+        JSON.stringify(result.message).includes("command allowed"),
+      ),
+    ).toBe(true);
+    expect(
+      results.filter(
+        (result) => result.message?.type === "progress",
+      ),
+    ).toHaveLength(2);
+    expect(httpRequests).toBe(0);
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+});
+
+test("concurrent sessions apply their own authority to generic command execution", async () => {
+  await configureHookSession();
+  const baseSession = getCurrentRuntimeSession();
+  if (baseSession === null) throw new Error("Expected a configured hook session");
+  registerHookCallbacks({
+    PermissionRequest: [
+      {
+        matcher: "Bash",
+        hooks: [
+          {
+            type: "command",
+            command: stdoutCommand("session command allowed\n"),
+          },
+        ],
+      },
+    ],
+  } as never);
+
+  const sessionWithAuthority = (allowUntrustedHooks: boolean) => {
+    const runtimeOptions = resolveAgentRuntimeOptions({}, {
+      allowUntrustedHooks,
+    });
+    return {
+      ...baseSession,
+      conversationId: `${sessionId}-${allowUntrustedHooks ? "allowed" : "denied"}`,
+      services: {
+        ...baseSession.services,
+        runtimeOptions,
+        hookExecutionAuthority: createHookExecutionAuthority({
+          runtimeOptions,
+          isWorkspaceTrusted: () => false,
+        }),
+      },
+    } as never;
+  };
+  const execute = () =>
+    collectAsyncGenerator(
+      executePermissionRequestHooks(
+        "Bash",
+        "tool-concurrent-authority",
+        { command: "pwd" },
+        toolUseContext({ sessionHooks: new Map<string, unknown>() }),
+        "default",
+        [],
+        undefined,
+        hookCommandTimeoutMs,
+      ),
+    );
+
+  const [allowed, denied] = await Promise.all([
+    runWithCurrentRuntimeSession(sessionWithAuthority(true), execute),
+    runWithCurrentRuntimeSession(sessionWithAuthority(false), execute),
+  ]);
+
+  expect(
+    allowed.some((result) =>
+      JSON.stringify(result.message).includes("session command allowed"),
+    ),
+  ).toBe(true);
+  expect(denied).toEqual([]);
+});
+
 test("registered command hooks stop on the admitted lease signal", async () => {
   const { agencHome, cwd } = await configureHookSession();
   acceptInteractiveWorkspaceTrust();
@@ -644,6 +792,7 @@ test("registered command hooks stop on the admitted lease signal", async () => {
     request: {},
     signal: leaseAbort.signal,
   }));
+  const runtimeOptions = resolveAgentRuntimeOptions({});
   clearCurrentRuntimeSession();
   setCurrentRuntimeSession({
     conversationId: sessionId,
@@ -657,6 +806,11 @@ test("registered command hooks stop on the admitted lease signal", async () => {
         cwd,
       }),
       providerService: createHookProviderService(),
+      runtimeOptions,
+      hookExecutionAuthority: createHookExecutionAuthority({
+        runtimeOptions,
+        isWorkspaceTrusted: () => true,
+      }),
       executionAdmission: {
         scope: {
           runId: "run-legacy",

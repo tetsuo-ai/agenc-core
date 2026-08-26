@@ -970,6 +970,8 @@ async function bootstrapLocalRuntimeSessionScoped(
     home: agencHome,
     cwd: workspaceRoot,
     env,
+    retainUntrustedProjectCommandHooks:
+      options.runtimeOptions.allowUntrustedHooks,
     ...startupConfigLayerOptions({
       cli: options.cli,
       env,

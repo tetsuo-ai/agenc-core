@@ -7,6 +7,7 @@ import {
   ConfiguredHooksRuntime,
   type HookInstallTarget,
 } from "../hooks/configured-hooks.js";
+import { createHookExecutionAuthority } from "../hooks/execution-authority.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 import { EventLog } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
@@ -428,9 +429,10 @@ describe("evaluateStopHooks", () => {
       shellPath: process.env.SHELL ?? "/bin/sh",
       sandboxExecutionBroker: explicitDangerBroker,
       admissionRequired: false,
-      // This test exercises hook dispatch; treat the workspace as trusted
-      // (production establishes trust before command hooks run).
-      isWorkspaceTrusted: () => true,
+      executionAuthority: createHookExecutionAuthority({
+        runtimeOptions: { simpleMode: false, allowUntrustedHooks: false },
+        isWorkspaceTrusted: () => true,
+      }),
     });
     const target: HookInstallTarget = {
       preToolUseHooks: [],

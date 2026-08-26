@@ -32,14 +32,15 @@ import { getPluginDataDir } from "./plugins/pluginDirectories.js";
 import {
   getSessionId,
   getProjectRoot,
-  getIsNonInteractiveSession,
   getRegisteredHooks,
   addToTurnHookDuration,
   getOriginalCwd,
   getMainThreadAgentType,
 } from "../bootstrap/state.js";
-import { checkHasTrustDialogAccepted } from "./config.js";
-import { checkHasProjectTrustAcceptedSync } from "../permissions/trust/project-trust.js";
+import {
+  resolveAmbientHookExecutionDecision,
+  type HookEffect,
+} from "../hooks/execution-authority.js";
 import {
   shouldAllowManagedHooksOnly,
   shouldDisableAllHooksIncludingManaged,
@@ -260,54 +261,6 @@ function executeInBackground({
   });
 
   return true;
-}
-
-/**
- * Checks if a hook should be skipped due to lack of workspace trust.
- *
- * ALL hooks require workspace trust because they execute arbitrary commands from
- * .agenc/config.toml. This is a defense-in-depth security measure.
- *
- * Context: Hooks are captured via captureHooksConfigSnapshot() before the trust
- * dialog is shown. While most hooks won't execute until after trust is established
- * through normal program flow, enforcing trust for ALL hooks prevents:
- * - Future bugs where a hook might accidentally execute before trust
- * - Any codepath that might trigger hooks before trust dialog
- * - Security issues from hook execution in untrusted workspaces
- *
- * Historical vulnerabilities that prompted this check:
- * - SessionEnd hooks executing when user declines trust dialog
- * - SubagentStop hooks executing when subagent completes before trust
- * - Non-interactive/SDK sessions running hooks from an untrusted, freshly-cloned
- *   repo's config with no trust gate at all (RCE).
- *
- * @returns true if hook should be skipped, false if it should execute
- */
-export function shouldSkipHookDueToTrust(): boolean {
-  const isInteractive = !getIsNonInteractiveSession();
-  if (!isInteractive) {
-    // SECURITY: non-interactive/SDK mode has no trust dialog. It must NOT
-    // implicitly trust the workspace — a freshly-cloned untrusted repo's config
-    // would otherwise execute host code. Default to running hooks ONLY when the
-    // workspace is persisted as trusted (trusted-projects.json). An UNTRUSTED
-    // workspace runs hooks only via the explicit session-scoped opt-in
-    // resolved at the client boundary.
-    if (allowUntrustedHooksOptIn()) {
-      return false;
-    }
-    return !checkHasProjectTrustAcceptedSync();
-  }
-
-  // In interactive mode, ALL hooks require trust
-  const hasTrust = checkHasTrustDialogAccepted();
-  return !hasTrust;
-}
-
-function allowUntrustedHooksOptIn(): boolean {
-  return (
-    peekAmbientRuntimeSession()?.services?.runtimeOptions?.allowUntrustedHooks ===
-    true
-  );
 }
 
 /**
@@ -976,7 +929,7 @@ async function execCommandHook(
     ambientSession?.services.sandboxExecutionBroker;
   if (ambientSession === null || sandboxExecutionBroker === undefined) {
     throw new Error(
-      "[sandbox_surface_uncovered] legacy hook execution has no session sandbox boundary",
+      "[sandbox_surface_uncovered] hook command execution has no session sandbox boundary",
     );
   }
   const queueOwner = sessionQueueOwner(ambientSession.conversationId);
@@ -1646,6 +1599,33 @@ function isInternalHook(matched: MatchedHook): boolean {
   return matched.hook.type === "callback" && matched.hook.internal === true;
 }
 
+function hookEffect(matched: MatchedHook): HookEffect {
+  switch (matched.hook.type) {
+    case "callback":
+    case "function":
+      return "internal";
+    case "command":
+    case "http":
+    case "prompt":
+    case "agent":
+      return matched.hook.type;
+  }
+}
+
+function retainAuthorizedHooks(
+  hooks: readonly MatchedHook[],
+  hookName: string,
+): MatchedHook[] {
+  return hooks.filter((matched) => {
+    const decision = resolveAmbientHookExecutionDecision(hookEffect(matched));
+    if (decision.allowed) return true;
+    logForDebugging(
+      `Skipping ${hookName} ${matched.hook.type} hook: ${decision.reason}`,
+    );
+    return false;
+  });
+}
+
 /**
  * Build a dedup key for a matched hook, namespaced by source context.
  *
@@ -2140,14 +2120,6 @@ async function* executeHooks({
   // Bind the prompt callback to this hook's name and tool input summary so the UI can display context
   const boundRequestPrompt = requestPrompt?.(hookName, toolInputSummary);
 
-  // SECURITY: workspace trust gates only hooks that execute external
-  // payloads (command/http/prompt/agent) — those are the RCE vectors a
-  // freshly-cloned untrusted workspace could weaponize. In-process
-  // function/callback hooks carry AgenC-owned TypeScript and must still run
-  // (e.g. structured-output enforcement on SubagentStop), so they are not
-  // gated here.
-  const trustSkipped = shouldSkipHookDueToTrust();
-
   const appState = toolUseContext ? toolUseContext.getAppState() : undefined;
   // Use the agent's session ID if available, otherwise fall back to main session
   const sessionId = toolUseContext?.agentId ?? getSessionId();
@@ -2158,16 +2130,7 @@ async function* executeHooks({
     hookInput,
     toolUseContext?.options?.tools,
   );
-  if (trustSkipped) {
-    matchingHooks = matchingHooks.filter(
-      (m) => m.hook.type === "function" || m.hook.type === "callback",
-    );
-    if (matchingHooks.length === 0) {
-      logForDebugging(
-        `Skipping ${hookName} hook execution - workspace trust not accepted`,
-      );
-    }
-  }
+  matchingHooks = retainAuthorizedHooks(matchingHooks, hookName);
   if (matchingHooks.length === 0) {
     return;
   }
@@ -3093,24 +3056,16 @@ async function executeHooksOutsideREPL({
     return [];
   }
 
-  // SECURITY: ALL hooks require workspace trust in interactive mode
-  // This centralized check prevents RCE vulnerabilities for all current and future hooks
-  if (shouldSkipHookDueToTrust()) {
-    logForDebugging(
-      `Skipping ${hookName} hook execution - workspace trust not accepted`,
-    );
-    return [];
-  }
-
   const appState = getAppState ? getAppState() : undefined;
   // Use main session ID for outside-REPL hooks
   const sessionId = getSessionId();
-  const matchingHooks = await getMatchingHooks(
+  let matchingHooks = await getMatchingHooks(
     appState,
     sessionId,
     hookEvent,
     hookInput,
   );
+  matchingHooks = retainAuthorizedHooks(matchingHooks, hookName);
   if (matchingHooks.length === 0) {
     return [];
   }
@@ -4180,11 +4135,10 @@ export async function executeStatusLineCommand(
     return undefined;
   }
 
-  // SECURITY: ALL hooks require workspace trust in interactive mode
-  // This centralized check prevents RCE vulnerabilities for all current and future hooks
-  if (shouldSkipHookDueToTrust()) {
+  const executionDecision = resolveAmbientHookExecutionDecision("command");
+  if (!executionDecision.allowed) {
     logForDebugging(
-      `Skipping StatusLine command execution - workspace trust not accepted`,
+      `Skipping StatusLine command execution: ${executionDecision.reason}`,
     );
     return undefined;
   }
@@ -4270,11 +4224,10 @@ export async function executeFileSuggestionCommand(
     return [];
   }
 
-  // SECURITY: ALL hooks require workspace trust in interactive mode
-  // This centralized check prevents RCE vulnerabilities for all current and future hooks
-  if (shouldSkipHookDueToTrust()) {
+  const executionDecision = resolveAmbientHookExecutionDecision("command");
+  if (!executionDecision.allowed) {
     logForDebugging(
-      `Skipping FileSuggestion command execution - workspace trust not accepted`,
+      `Skipping FileSuggestion command execution: ${executionDecision.reason}`,
     );
     return [];
   }

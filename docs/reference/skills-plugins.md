@@ -167,8 +167,10 @@ path = "./plugins/my-plugin"
 ```
 
 All plugin enablement entries use `plugins.plugins`; there is no parallel
-enablement map. Untrusted workspace trust gates apply to config/plugin
-**command** hooks (see [hooks.md](hooks.md)).
+enablement map. External plugin and skill command, HTTP, prompt, and agent hook
+effects require workspace trust. An explicit automation capability can permit
+command effects in an untrusted workspace, but it does not permit the other
+external effect types. See [hooks.md](hooks.md).
 
 ### Plugin option storage
 

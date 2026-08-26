@@ -36,6 +36,7 @@ import {
 import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
 import type { ToolPermissionContext } from "../../src/permissions/types.js";
 import { EventLog, type Event } from "../../src/session/event-log.js";
+import type { AgentRuntimeOptions } from "../../src/session/runtime-options.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import {
   openStateDatabases,
@@ -49,6 +50,7 @@ interface FakeBootstrapCall {
   readonly registry: PermissionModeRegistry;
   readonly conversationId: string | undefined;
   readonly resumeConversation: boolean | undefined;
+  readonly runtimeOptions: AgentRuntimeOptions | undefined;
 }
 
 let home: string;
@@ -110,6 +112,7 @@ const fakeBootstrap: AgenCBootstrapFunction = async (options) => {
     registry,
     conversationId: options.conversationId,
     resumeConversation: options.resumeConversation,
+    runtimeOptions: options.runtimeOptions,
   });
   return {
     session: {
@@ -126,10 +129,11 @@ const fakeBootstrap: AgenCBootstrapFunction = async (options) => {
 function makeSeams(
   resolveRunPolicy: (runId: string) => WorkflowRunSessionPolicy | undefined = () =>
     undefined,
+  env: NodeJS.ProcessEnv = {},
 ): WorkflowSessionSeams {
   return createWorkflowSessionSeams({
     agencHome: home,
-    env: {},
+    env,
     argv: ["node", "agenc"],
     kernel: {} as ExecutionAdmissionKernel,
     durability: () => repo,
@@ -146,6 +150,15 @@ function makeSeams(
 }
 
 describe("A2 — spec permission policy on the run session", () => {
+  it("captures untrusted-hook authority at the workflow automation boundary", async () => {
+    const seams = makeSeams(() => undefined, {
+      AGENC_ALLOW_UNTRUSTED_HOOKS: "true",
+    });
+    await seams.journal.open(RUN_ID, { repoPath: cwd });
+    expect(bootstrapCalls[0]?.runtimeOptions?.allowUntrustedHooks).toBe(true);
+    await seams.close();
+  });
+
   it("bypassPermissions rides --dangerously-bypass-approvals-and-sandbox on the bootstrap argv", async () => {
     const seams = makeSeams();
     await seams.journal.open(RUN_ID, {

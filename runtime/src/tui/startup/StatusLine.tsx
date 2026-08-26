@@ -14,7 +14,7 @@ import { type ReadonlySettings, useSettings } from '../hooks/useSettings.js';
 import type { Message } from '../../types/message.js';
 import type { StatusLineCommandInput } from '../../types/statusLine.js';
 import type { VimMode } from '../../types/textInputTypes.js';
-import { checkHasProjectTrustAcceptedSync } from '../../permissions/trust/project-trust.js';
+import { resolveAmbientHookExecutionDecision } from '../../hooks/execution-authority.js';
 import { calculateContextPercentages, getContextWindowForModelForContext } from '../../utils/context.js';
 import { getCwd } from '../../utils/cwd.js';
 import { createBaseHookInput, executeStatusLineCommand } from '../../utils/hooks.js';
@@ -282,17 +282,15 @@ function StatusLineInner({
           level: 'warn'
         });
       }
-      // executeStatusLineCommand (hooks.ts) returns undefined when trust is
-      // blocked — statusLineText stays undefined forever, user sees nothing.
-      const trustCwd = getOriginalCwd() || getCwd();
-      if (!checkHasProjectTrustAcceptedSync({ cwd: trustCwd })) {
+      const executionDecision = resolveAmbientHookExecutionDecision('command');
+      if (!executionDecision.allowed) {
         addNotification({
           key: 'statusline-trust-blocked',
-          text: 'statusline skipped until project trust is accepted',
+          text: 'status line command blocked by session hook policy',
           color: 'warning',
           priority: 'low'
         });
-        logForDebugging('Status line command skipped: workspace trust not accepted', {
+        logForDebugging(`Status line command skipped: ${executionDecision.reason}`, {
           level: 'warn'
         });
       }

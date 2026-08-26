@@ -64,6 +64,11 @@ await client.close();
 - Local endpoint: `${AGENC_HOME:-~/.agenc}/daemon.sock` on Unix; a stable per-home named pipe on Windows
 - Cookie: `${AGENC_HOME:-~/.agenc}/daemon.cookie` (first message must be `initialize` with `authCookie`; `connect()` handles this)
 - Autostart: runs `agenc daemon start` when the socket is down (disable with `autostart: false`)
+- Hook authority: `createSession()` sends `allowUntrustedHooks: false`. A caller using `spawnAgent()` must send complete runtime options and may set the field to `true` only after vetting the workspace. It permits command effects only and cannot override `simpleMode` hook suppression.
+
+`promptViaSubprocess()` invokes `agenc -p`. The child captures
+`AGENC_ALLOW_UNTRUSTED_HOOKS` from `options.env`, or from its inherited
+environment when `options.env` is omitted, at automation startup.
 
 ## Docs & example
 

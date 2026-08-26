@@ -15,7 +15,7 @@ const harness = vi.hoisted(() => ({
     },
     statusLineText: '',
   } as Record<string, unknown>,
-  checkHasProjectTrustAcceptedSync: vi.fn(() => true),
+  hookExecutionDecision: vi.fn(() => ({ allowed: true })),
   contextPercentages: { used: 13, remaining: 87 },
   currentUsage: 130,
   doesMostRecentAssistantMessageExceed200k: vi.fn(() => false),
@@ -97,8 +97,8 @@ vi.mock('../../../src/tui/hooks/useSettings.js', () => ({
   useSettings: () => harness.settings,
 }))
 
-vi.mock('../../../src/permissions/trust/project-trust.js', () => ({
-  checkHasProjectTrustAcceptedSync: harness.checkHasProjectTrustAcceptedSync,
+vi.mock('../../../src/hooks/execution-authority.js', () => ({
+  resolveAmbientHookExecutionDecision: harness.hookExecutionDecision,
 }))
 
 vi.mock('../../../src/utils/context.js', () => ({
@@ -222,8 +222,8 @@ function resetHarness(): void {
     },
     statusLineText: '',
   }
-  harness.checkHasProjectTrustAcceptedSync.mockReset()
-  harness.checkHasProjectTrustAcceptedSync.mockReturnValue(true)
+  harness.hookExecutionDecision.mockReset()
+  harness.hookExecutionDecision.mockReturnValue({ allowed: true })
   harness.contextPercentages = { used: 13, remaining: 87 }
   harness.currentUsage = 130
   harness.doesMostRecentAssistantMessageExceed200k.mockReset()
@@ -323,9 +323,7 @@ describe('StatusLine coverage swarm row 133', () => {
 
     expect(output()).toContain('same-status')
     expect(harness.appState).toBe(stateBefore)
-    expect(harness.checkHasProjectTrustAcceptedSync).toHaveBeenCalledWith({
-      cwd: '/workspace/fallback',
-    })
+    expect(harness.hookExecutionDecision).toHaveBeenCalledWith('command')
 
     const [input, signal, timeout, logResult] =
       harness.executeStatusLineCommand.mock.calls[0]!
@@ -442,7 +440,7 @@ describe('StatusLine coverage swarm row 133', () => {
     expect(harness.executeStatusLineCommand.mock.calls[0]![3]).toBe(true)
   })
 
-  test('reports trust-blocked status lines and swallows command failures', async () => {
+  test('reports policy-blocked status lines and swallows command failures', async () => {
     harness.appState = {
       toolPermissionContext: {
         mode: 'default',
@@ -450,7 +448,10 @@ describe('StatusLine coverage swarm row 133', () => {
       },
       statusLineText: 'before-error',
     }
-    harness.checkHasProjectTrustAcceptedSync.mockReturnValue(false)
+    harness.hookExecutionDecision.mockReturnValue({
+      allowed: false,
+      reason: 'untrusted_workspace',
+    })
     harness.executeStatusLineCommand.mockRejectedValue(new Error('status failed'))
     harness.settings = {
       disableAllHooks: true,
@@ -480,7 +481,7 @@ describe('StatusLine coverage swarm row 133', () => {
     expect(harness.setAppState).not.toHaveBeenCalled()
     expect(harness.addNotification).toHaveBeenCalledWith({
       key: 'statusline-trust-blocked',
-      text: 'statusline skipped until project trust is accepted',
+      text: 'status line command blocked by session hook policy',
       color: 'warning',
       priority: 'low',
     })
@@ -489,7 +490,7 @@ describe('StatusLine coverage swarm row 133', () => {
       { level: 'warn' },
     )
     expect(harness.logForDebugging).toHaveBeenCalledWith(
-      'Status line command skipped: workspace trust not accepted',
+      'Status line command skipped: untrusted_workspace',
       { level: 'warn' },
     )
   })

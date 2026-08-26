@@ -16,6 +16,7 @@ import {
   ConfiguredHooksRuntime,
   type HookInstallTarget,
 } from "../hooks/configured-hooks.js";
+import { createHookExecutionAuthority } from "../hooks/execution-authority.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 import { defaultConfig } from "../config/schema.js";
 import { trustProjectSync } from "../permissions/trust/project-trust.js";
@@ -51,6 +52,10 @@ import { bootstrapSession } from "../session/bootstrap.js";
 const TEST_RUNTIME_OPTIONS = Object.freeze({
   simpleMode: false,
   allowUntrustedHooks: false,
+});
+const TRUSTED_HOOK_EXECUTION_AUTHORITY = createHookExecutionAuthority({
+  runtimeOptions: TEST_RUNTIME_OPTIONS,
+  isWorkspaceTrusted: () => true,
 });
 
 afterEach(() => {
@@ -108,6 +113,7 @@ describe("loadBootstrapHooks", () => {
       agencHome: "/tmp/agenc-bootstrap-hooks-test",
       shellPath: process.env.SHELL ?? "/bin/sh",
       sandboxExecutionBroker: explicitDangerBroker,
+      executionAuthority: TRUSTED_HOOK_EXECUTION_AUTHORITY,
     });
     const target: HookInstallTarget = {
       preToolUseHooks: [],
@@ -175,6 +181,7 @@ describe("loadBootstrapHooks", () => {
       agencHome: "/tmp/agenc-bootstrap-hook-authority-test",
       shellPath: process.env.SHELL ?? "/bin/sh",
       sandboxExecutionBroker: explicitDangerBroker,
+      executionAuthority: TRUSTED_HOOK_EXECUTION_AUTHORITY,
     });
     const target: HookInstallTarget = {
       preToolUseHooks: [],
@@ -277,7 +284,7 @@ describe("loadBootstrapHooks", () => {
       shellPath: "/bin/sh",
       admissionRequired: false,
       sandboxExecutionBroker: explicitDangerBroker,
-      isWorkspaceTrusted: () => true,
+      executionAuthority: TRUSTED_HOOK_EXECUTION_AUTHORITY,
     });
     const fired: string[] = [];
     const initialConfigCommand = "printf 'configured-initial'";
@@ -657,6 +664,7 @@ describe("SessionStart bootstrap hooks", () => {
         current: () => config,
         authoritySnapshot: () => ({ config, layers: [] }),
         subscribe: () => () => {},
+        projectRoot: workspace,
       } as never,
       toolApprovals: {
         get: () => undefined,

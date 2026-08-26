@@ -96,6 +96,14 @@ Key `AgencClient` methods:
 - `onNotification(cb)` / `onSessionNotification(sessionId, cb)` → raw events
 - Path helpers: `resolveAgencHome`, `resolveDaemonSocketPath`, `resolveDaemonCookiePath`
 
+`createSession()` sends safe runtime options with
+`allowUntrustedHooks: false`. The lower-level `spawnAgent()` API requires a
+complete `runtimeOptions` object. Set `allowUntrustedHooks: true` only when the
+embedding application has vetted the workspace and intends to permit command
+hook effects there. The field never permits HTTP, prompt, or agent hook effects.
+`simpleMode: true`, which is the typed form of `--bare`, still suppresses every
+session hook extension point.
+
 Generated public contracts (do not edit by hand):
 `packages/agenc-sdk/src/workflow-handoff.generated.ts` and
 `workflow-result.generated.ts`. Source schemas live under `runtime/src/agents/`.
@@ -200,6 +208,12 @@ prompt written to stdin as `{"type":"prompt","prompt":"..."}`. Exit code 2
 means the run auto-denied a tool permission and gave up (the CLI's
 non-interactive contract); pass `permissionMode: "bypassPermissions"` or use
 the daemon transport when tools must run.
+
+The subprocess transport invokes `agenc -p`, so
+`AGENC_ALLOW_UNTRUSTED_HOOKS` in `options.env`, or in the inherited child
+environment when `options.env` is omitted, is captured as automation startup
+authority. The child does not forward that variable into daemon environment
+state.
 
 ## Runnable example
 

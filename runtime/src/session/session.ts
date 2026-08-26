@@ -101,6 +101,7 @@ import { shutdownEffectSettlementSupervisor } from "../budget/effect-settlement-
 import type { SessionSubmitOptions } from "./autonomous-mode.js";
 import type { CostSidecar } from "./cost.js";
 import type { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
+import type { HookExecutionAuthority } from "../hooks/execution-authority.js";
 import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js";
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import type { ToolRegistry } from "./_deps/tool-registry.js";
@@ -1487,6 +1488,8 @@ export interface SessionServices {
   /** Trusted embedding-host channel for exact external instruction grants. */
   readonly externalInstructionApprovals?: ExternalInstructionApprovalStore;
   readonly costSidecar?: CostSidecar;
+  /** External hook effects fail closed unless this session-owned authority permits them. */
+  readonly hookExecutionAuthority?: HookExecutionAuthority;
   readonly hooksRuntime?: ConfiguredHooksRuntime;
   readonly policyLimits?: PolicyLimitsService;
   /**

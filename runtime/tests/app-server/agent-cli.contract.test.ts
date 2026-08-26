@@ -229,9 +229,9 @@ describe("agenc agent start CLI", () => {
         },
         {
           cwd,
-          // Empty env: no allowlisted overrides get collected, so the
-          // create params stay exactly minimal.
-          env: {},
+          // Automation authority is captured into runtime options, not
+          // forwarded as a mutable daemon environment override.
+          env: { AGENC_ALLOW_UNTRUSTED_HOOKS: "true" },
           ensureDaemonReady: async () => {},
           io,
           client: {
@@ -265,7 +265,7 @@ describe("agenc agent start CLI", () => {
         cwd,
         runtimeOptions: {
           simpleMode: false,
-          allowUntrustedHooks: false,
+          allowUntrustedHooks: true,
         },
         metadata: { source: "agenc agent start" },
         unattendedAllow: ["FileRead"],
@@ -276,6 +276,9 @@ describe("agenc agent start CLI", () => {
       AGENC_MODEL: "",
       OPENAI_BASE_URL: "",
     });
+    expect(requests[0]?.envOverrides).not.toHaveProperty(
+      "AGENC_ALLOW_UNTRUSTED_HOOKS",
+    );
   });
 
   it("forwards allowlisted client env overrides with agent start", async () => {

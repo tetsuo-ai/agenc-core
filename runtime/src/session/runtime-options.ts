@@ -185,10 +185,29 @@ export function assertNoRetiredAgentRuntimeEnvironment(
   );
 }
 
-/** Parse the supported operator environment exactly once at a client boundary. */
+/**
+ * Parse session runtime options without granting automation-only authority from
+ * the ambient environment. Explicit typed overrides remain authoritative.
+ */
 export function resolveAgentRuntimeOptions(
   env: NodeJS.ProcessEnv,
   overrides: Partial<AgentRuntimeOptions> = {},
+): AgentRuntimeOptions {
+  return resolveAgentRuntimeOptionsAtIngress(env, overrides, false);
+}
+
+/** Parse session runtime options at an explicit automation boundary. */
+export function resolveAutomationAgentRuntimeOptions(
+  env: NodeJS.ProcessEnv,
+  overrides: Partial<AgentRuntimeOptions> = {},
+): AgentRuntimeOptions {
+  return resolveAgentRuntimeOptionsAtIngress(env, overrides, true);
+}
+
+function resolveAgentRuntimeOptionsAtIngress(
+  env: NodeJS.ProcessEnv,
+  overrides: Partial<AgentRuntimeOptions>,
+  allowUntrustedHooksFromEnvironment: boolean,
 ): AgentRuntimeOptions {
   assertNoRetiredAgentRuntimeEnvironment(env);
   const parsedWrapper =
@@ -292,7 +311,9 @@ export function resolveAgentRuntimeOptions(
         : {}),
     allowUntrustedHooks:
       overrides.allowUntrustedHooks ??
-      parseBoolean(env, "AGENC_ALLOW_UNTRUSTED_HOOKS", false),
+      (allowUntrustedHooksFromEnvironment
+        ? parseBoolean(env, "AGENC_ALLOW_UNTRUSTED_HOOKS", false)
+        : false),
   };
   return Object.freeze(resolved);
 }

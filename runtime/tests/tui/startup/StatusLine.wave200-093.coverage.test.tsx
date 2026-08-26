@@ -19,7 +19,10 @@ const mocks = vi.hoisted(() => ({
     },
     statusLineText: '\u001b[32mseed-status\u001b[0m',
   } as Record<string, unknown>,
-  checkHasProjectTrustAcceptedSync: vi.fn(() => false),
+  hookExecutionDecision: vi.fn(() => ({
+    allowed: false,
+    reason: 'untrusted_workspace',
+  })),
   doesMostRecentAssistantMessageExceed200k: vi.fn(() => true),
   executeStatusLineCommand: vi.fn(async () => 'updated-status'),
   feature: vi.fn(() => false),
@@ -91,8 +94,8 @@ vi.mock('../context/notifications.js', () => ({
   }),
 }))
 
-vi.mock('../../permissions/trust/project-trust.js', () => ({
-  checkHasProjectTrustAcceptedSync: mocks.checkHasProjectTrustAcceptedSync,
+vi.mock('../../hooks/execution-authority.js', () => ({
+  resolveAmbientHookExecutionDecision: mocks.hookExecutionDecision,
 }))
 
 vi.mock('../../utils/config.js', () => ({
@@ -225,7 +228,7 @@ describe('StatusLine wave200-093 coverage', () => {
       },
       statusLineText: '\u001b[32mseed-status\u001b[0m',
     }
-    mocks.checkHasProjectTrustAcceptedSync.mockClear()
+    mocks.hookExecutionDecision.mockClear()
     mocks.doesMostRecentAssistantMessageExceed200k.mockClear()
     mocks.executeStatusLineCommand.mockClear()
     mocks.feature.mockReset()
@@ -283,7 +286,7 @@ describe('StatusLine wave200-093 coverage', () => {
     )
     expect(mocks.addNotification).toHaveBeenCalledWith({
       key: 'statusline-trust-blocked',
-      text: 'statusline skipped until project trust is accepted',
+      text: 'status line command blocked by session hook policy',
       color: 'warning',
       priority: 'low',
     })
