@@ -16,6 +16,7 @@ export const BENCHMARK_EVIDENCE_PATHS = Object.freeze([
   "runtime/benchmarks/fnd/bounded-file.mjs",
   "runtime/benchmarks/fnd/case-worker.mjs",
   "runtime/benchmarks/fnd/contract.mjs",
+  "runtime/benchmarks/fnd/diagnostic.mjs",
   "runtime/benchmarks/fnd/environment.mjs",
   "runtime/benchmarks/fnd/fixtures.mjs",
   "runtime/benchmarks/fnd/isolation.mjs",

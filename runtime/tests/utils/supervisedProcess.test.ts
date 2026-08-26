@@ -544,6 +544,27 @@ describe("runSupervisedProcess", () => {
     expect(result.stderr.toString()).toMatch(/^b*$/);
   });
 
+  it("gives the output ceiling precedence over a same-chunk consumer stop", async () => {
+    const result = await runSupervisedProcess(
+      nodeCommand(
+        "process.stdout.write('complete\\n' + 'x'.repeat(4096));" +
+          "setInterval(() => {}, 1000)",
+      ),
+      {
+        timeoutMs: 2_000,
+        maxOutputBytes: 16,
+        terminateGraceMs: 50,
+        settleBackstopMs: 500,
+        onStdout(_chunk, control) {
+          control.stop();
+        },
+      },
+    );
+
+    expect(result.stopReason).toBe("output_limit");
+    expect(result.stdout.byteLength).toBe(16);
+  });
+
   it("streams stdout without retaining or charging it to the capture ceiling", async () => {
     const chunks: Buffer[] = [];
     let processId: number | undefined;

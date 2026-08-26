@@ -28,6 +28,7 @@ import {
   normalizeResourceUsageMaxRssBytes,
   summarizeSamples,
 } from "../../benchmarks/fnd/contract.mjs";
+import { formatBoundedDiagnostic } from "../../benchmarks/fnd/diagnostic.mjs";
 import {
   assertBenchmarkWorkerEnvironment,
   assertNoBenchmarkExecArguments,
@@ -82,6 +83,55 @@ const FIXTURE_PRODUCTION_SOURCE = [
 ].join("\n");
 
 describe("FND benchmark harness fault contracts", () => {
+  test("retains both ends of one canonical bounded diagnostic", () => {
+    const formatted = formatBoundedDiagnostic(
+      Buffer.from(`  HEAD-${"m".repeat(3_000)}-TAIL  `),
+    );
+    expect(formatted).toHaveLength(2_000);
+    expect(formatted).toMatch(/^HEAD-/u);
+    expect(formatted).toContain("\n…\n");
+    expect(formatted).toMatch(/-TAIL$/u);
+    expect(formatBoundedDiagnostic("  short diagnostic  ")).toBe(
+      "short diagnostic",
+    );
+  });
+
+  test("routes every benchmark diagnostic through the canonical formatter", () => {
+    for (const relativePath of [
+      "benchmarks/fnd/provenance.mjs",
+      "benchmarks/fnd/run-baselines.mjs",
+      "benchmarks/fnd/supervisor.mjs",
+    ]) {
+      const source = readFileSync(join(RUNTIME_ROOT, relativePath), "utf8");
+      expect(source).toContain('from "./diagnostic.mjs"');
+      expect(source).not.toMatch(
+        /function (?:boundedCommandDiagnostic|trimDiagnostic)\b/u,
+      );
+    }
+  });
+
+  test("retains the tail of a failed metadata command diagnostic", () => {
+    const diagnosticTail = "metadata command diagnostic tail";
+    const source = `process.stderr.write(${JSON.stringify(
+      `${"metadata-record\n".repeat(200)}${diagnosticTail}`,
+    )}); process.exit(1);`;
+    let rejection: unknown;
+    try {
+      runBoundedCommandText(process.execPath, ["-e", source], {
+        cwd: RUNTIME_ROOT,
+        label: "diagnostic tail probe",
+        maxOutputBytes: 8_192,
+        timeoutMs: 5_000,
+      });
+    } catch (error) {
+      rejection = error;
+    }
+    expect(rejection).toBeInstanceOf(Error);
+    expect((rejection as Error & { cause?: Error }).cause?.message).toContain(
+      diagnosticTail,
+    );
+  });
+
   test("pins median and median absolute deviation semantics independently", () => {
     expect(summarizeSamples([9, 1, 5, 3, 7])).toEqual({
       madMs: 2,
@@ -974,6 +1024,26 @@ describe("FND benchmark harness fault contracts", () => {
     },
   );
 
+  test("rejects overflow after an authenticated record in the same chunk", async () => {
+    await withOwnedTemporaryRoot(async (ownedRoot) => {
+      const completionRecord = `${BENCHMARK_WORKER_COMPLETION_PREFIX}${"b".repeat(64)}`;
+      const source =
+        `process.stderr.write(${JSON.stringify(`${completionRecord}\n${"x".repeat(4_096)}`)});` +
+        "setInterval(() => {}, 1_000);";
+      await expect(
+        runBoundedChild({
+          args: ["-e", source],
+          command: process.execPath,
+          cwd: ownedRoot,
+          env: process.env,
+          expectedCompletionRecord: completionRecord,
+          maxOutputBytes: Buffer.byteLength(completionRecord) + 1,
+          timeoutMs: 5_000,
+        }),
+      ).rejects.toThrow(/bounded output ceiling/u);
+    });
+  });
+
   test("contains an ignored-stdio descendant after normal target exit", async () => {
     let descendantPid: number | undefined;
     let temporaryRoot: string | undefined;
@@ -1204,6 +1274,24 @@ describe("FND benchmark harness fault contracts", () => {
     expect(terminationAttempts).toBeGreaterThan(0);
   });
 
+  test("rejects completion authentication on the injected controller seam", () => {
+    expect(() =>
+      runBoundedChild({
+        args: ["-e", "process.exit(0)"],
+        command: process.execPath,
+        cwd: RUNTIME_ROOT,
+        env: process.env,
+        expectedCompletionRecord: "complete",
+        maxOutputBytes: 1_024,
+        processTreeController: {
+          isAlive: () => false,
+          terminate: () => {},
+        },
+        timeoutMs: 100,
+      }),
+    ).toThrow(/completion records require production containment/u);
+  });
+
   test("retains the owned root when process-tree settlement is unproven", async () => {
     let childPid: number | undefined;
     let retainedRoot: string | undefined;
@@ -1296,6 +1384,32 @@ describe("FND benchmark harness fault contracts", () => {
     if (retainedRoot !== undefined) {
       expect(existsSync(retainedRoot)).toBe(false);
     }
+  });
+
+  test("retains the tail of a bounded child failure diagnostic", async () => {
+    const diagnosticTail = "ERR_MODULE_NOT_FOUND injected diagnostic tail";
+    const stderr = Buffer.from(
+      `${"AGENC_FND_MODULE injected-module-record\n".repeat(100)}${diagnosticTail}`,
+    );
+    await expect(
+      runBoundedChild({
+        args: ["--injected"],
+        command: process.execPath,
+        cwd: RUNTIME_ROOT,
+        env: process.env,
+        expectedCompletionRecord: "missing-completion-record",
+        maxOutputBytes: 8_192,
+        productionContainmentRunner: async () => ({
+          backstopExpired: false,
+          exitCode: 1,
+          forced: false,
+          signal: null,
+          stderr,
+          stdout: Buffer.alloc(0),
+        }),
+        timeoutMs: 100,
+      }),
+    ).rejects.toThrow(diagnosticTail);
   });
 
   test("hard-kills a signal-resistant metadata process tree by its deadline", async () => {

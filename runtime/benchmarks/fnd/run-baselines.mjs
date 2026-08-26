@@ -11,6 +11,7 @@ import { rgPath } from "@vscode/ripgrep";
 
 import { publishBenchmarkArtifacts } from "./artifact-output.mjs";
 import { readBoundedRegularFile } from "./bounded-file.mjs";
+import { formatBoundedDiagnostic } from "./diagnostic.mjs";
 
 import {
   BENCHMARK_ARTIFACT_KIND,
@@ -248,7 +249,7 @@ async function runPoint(definition, pointIndex) {
   }
   if (trial.exitCode !== 0) {
     throw new Error(
-      `${definition.id} point ${pointIndex} failed with exit ${trial.exitCode}: ${trimDiagnostic(trial.stderr)}`,
+      `${definition.id} point ${pointIndex} failed with exit ${trial.exitCode}: ${formatBoundedDiagnostic(trial.stderr)}`,
     );
   }
   const expectedFixture = describeFixture(definition.id, pointIndex);
@@ -258,7 +259,7 @@ async function runPoint(definition, pointIndex) {
     result = JSON.parse(trial.stdout);
   } catch (error) {
     throw new Error(
-      `${definition.id} returned invalid worker JSON: ${trimDiagnostic(trial.stdout)}`,
+      `${definition.id} returned invalid worker JSON: ${formatBoundedDiagnostic(trial.stdout)}`,
       { cause: error },
     );
   }
@@ -309,7 +310,7 @@ function runWorker(definition, pointIndex) {
     const startMessage = parseStartMessage(trial.stderr);
     if (startMessage === undefined) {
       throw new Error(
-        `${definition.id} did not emit a start record: ${trimDiagnostic(trial.stderr)}`,
+        `${definition.id} did not emit a start record: ${formatBoundedDiagnostic(trial.stderr)}`,
       );
     }
     return {
@@ -532,13 +533,6 @@ function mergeProductionModulePaths(trials) {
     throw new Error("case production module closure exceeds its named bound");
   }
   return [...paths].sort();
-}
-
-function trimDiagnostic(value) {
-  const maximumCharacters = 2_000;
-  return value.length <= maximumCharacters
-    ? value
-    : `${value.slice(0, maximumCharacters)}…`;
 }
 
 function assertSerializedArtifactWithinBounds(value, maximumBytes, label) {

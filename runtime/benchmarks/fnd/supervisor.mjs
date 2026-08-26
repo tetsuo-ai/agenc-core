@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { performance } from "node:perf_hooks";
 
+import { formatBoundedDiagnostic } from "./diagnostic.mjs";
 import { markOwnedTemporaryRootForRetention } from "./isolation.mjs";
 
 export const MAX_SUPERVISOR_TIMEOUT_MS = 60_000;
@@ -113,7 +114,7 @@ async function runProductionContainedChild(options) {
   ) {
     throw new Error(
       "child exited before authenticated benchmark completion: " +
-        trimDiagnostic(result.stderr.toString("utf8")),
+        formatBoundedDiagnostic(result.stderr),
     );
   }
   return {
@@ -362,14 +363,6 @@ function outputContainsExactLine(output, expectedLine) {
   return output.split(/\r?\n/u).includes(expectedLine);
 }
 
-function trimDiagnostic(value) {
-  const maximumCharacters = 2_000;
-  const trimmed = value.trim();
-  return trimmed.length <= maximumCharacters
-    ? trimmed
-    : `${trimmed.slice(0, maximumCharacters)}…`;
-}
-
 function validateOptions(options) {
   if (options === null || typeof options !== "object") {
     throw new Error("bounded child options must be an object");
@@ -444,6 +437,14 @@ function validateOptions(options) {
     options.productionContainmentRunner !== undefined
   ) {
     throw new Error("bounded child containment seams are mutually exclusive");
+  }
+  if (
+    options.processTreeController !== undefined &&
+    options.expectedCompletionRecord !== undefined
+  ) {
+    throw new Error(
+      "bounded child completion records require production containment",
+    );
   }
   return options;
 }

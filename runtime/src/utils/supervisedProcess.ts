@@ -1677,7 +1677,13 @@ function runSupervisedProcessCommand(
     };
 
     function requestStop(reason: SupervisedProcessStopReason): void {
-      stopReason ??= reason;
+      // A consumer can stop on the accepted prefix of a chunk whose suffix
+      // exceeds the output ceiling. The hard byte bound must win that race.
+      if (reason === "output_limit" && stopReason === "consumer_limit") {
+        stopReason = reason;
+      } else {
+        stopReason ??= reason;
+      }
       // Unblock a pending stdin write before waiting on process-tree cleanup.
       // This is idempotent for the common no-input path, whose stdin was
       // already ended immediately after spawn.
