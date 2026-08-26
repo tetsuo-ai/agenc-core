@@ -2,9 +2,11 @@ import React from "react";
 
 import {
   buildProviderModelCatalog,
+  type ProviderSlug,
+} from "../config/provider-model-authority.js";
+import {
   resolveProviderSlug,
   resolveProviderSettings,
-  type ProviderSlug,
 } from "../config/resolve-provider.js";
 import {
   configuredModelForProvider,
@@ -22,6 +24,7 @@ import {
 } from "./config-context.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
+import { readBuiltInSessionSelection } from "../session/provider-model-selection.js";
 import {
   SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
   hasHostedManagedAccess,
@@ -62,50 +65,6 @@ export type ModelMenuSelectionResult = {
   readonly message: string;
   readonly shouldClose: boolean;
 };
-
-type SessionModelSnapshot = {
-  readonly provider?: string;
-  readonly model?: string;
-};
-
-function readSessionSelection(ctx: SlashCommandContext): SessionModelSnapshot {
-  const peekState = (ctx.session as unknown as {
-    state?: { unsafePeek?: () => unknown };
-  }).state?.unsafePeek;
-  const rawState =
-    typeof peekState === "function"
-      ? (peekState.call((ctx.session as unknown as { state?: unknown }).state) as {
-          sessionConfiguration?: {
-            provider?: { slug?: string };
-            collaborationMode?: { model?: string };
-          };
-        })
-      : null;
-  const directConfig = (ctx.session as unknown as {
-    sessionConfiguration?: {
-      provider?: { slug?: string };
-      collaborationMode?: { model?: string };
-    };
-  }).sessionConfiguration;
-  const sessionConfiguration = rawState?.sessionConfiguration ?? directConfig;
-  return {
-    ...(sessionConfiguration?.provider?.slug
-      ? { provider: sessionConfiguration.provider.slug }
-      : {}),
-    ...(sessionConfiguration?.collaborationMode?.model
-      ? { model: sessionConfiguration.collaborationMode.model }
-      : {}),
-  };
-}
-
-function readAppStateModel(ctx: SlashCommandContext): string | undefined {
-  const state = ctx.appState?.getAppState?.();
-  if (typeof state !== "object" || state === null) return undefined;
-  const model = (state as { mainLoopModel?: unknown }).mainLoopModel;
-  return typeof model === "string" && model.trim().length > 0
-    ? model.trim()
-    : undefined;
-}
 
 function rowStatus(params: {
   readonly model: string;
@@ -292,17 +251,13 @@ function providerRows(params: {
 
 export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapshot {
   const config = readCommandConfig(ctx);
-  const sessionSelection = readSessionSelection(ctx);
-  const provider =
-    resolveProviderSlug(sessionSelection.provider) ??
-    resolveProviderSlug(config?.model_provider) ??
-    "grok";
+  const sessionSelection = readBuiltInSessionSelection(ctx.session, {
+    includePending: true,
+    ...(config !== undefined ? { fallbackConfig: config } : {}),
+  });
+  const provider = sessionSelection.provider;
   const defaultModel = defaultModelForProvider(provider);
-  const currentModel =
-    readAppStateModel(ctx) ??
-    sessionSelection.model?.trim() ??
-    config?.model?.trim() ??
-    defaultModel;
+  const currentModel = sessionSelection.model;
   const configuredModel =
     config !== undefined ? configuredModelForProvider(config, provider) : undefined;
   const catalog = buildProviderModelCatalog(config);

@@ -4,6 +4,8 @@ import {
   buildProviderModelCatalog,
   mergeProviderModelLayer,
   resolveProviderModelLayer,
+  resolveProviderSlugOrThrow,
+  UnknownProviderError,
 } from "../../src/config/provider-model-authority.js";
 import {
   AmbiguousModelError,
@@ -12,6 +14,21 @@ import {
 } from "../../src/config/schema.js";
 
 describe("provider/model configuration authority", () => {
+  test("reports unknown providers with a stable typed error", () => {
+    let error: unknown;
+    try {
+      resolveProviderSlugOrThrow("not-a-provider");
+    } catch (caught) {
+      error = caught;
+    }
+
+    expect(error).toBeInstanceOf(UnknownProviderError);
+    expect(error).toMatchObject({
+      provider: "not-a-provider",
+      expectedProviders: expect.arrayContaining(["grok", "openai"]),
+    });
+  });
+
   test("does not let the current pair teach the model catalog", () => {
     const catalog = buildProviderModelCatalog(
       mergeConfigs(defaultConfig(), {
@@ -41,6 +58,21 @@ describe("provider/model configuration authority", () => {
     ).toMatchObject({
       model_provider: "openai",
       model: "private-openai-model",
+    });
+  });
+
+  test("provider-only selection restores an explicit top-level pair", () => {
+    const base = mergeConfigs(defaultConfig(), {
+      model_provider: "openai",
+      model: "gpt-5-mini",
+      providers: { openai: { default_model: "gpt-5" } },
+    });
+
+    expect(
+      resolveProviderModelLayer(base, { model_provider: "openai" }),
+    ).toMatchObject({
+      model_provider: "openai",
+      model: "gpt-5-mini",
     });
   });
 

@@ -24,6 +24,7 @@ import {
   createStatusDashboardSnapshot,
   openStatusDashboard,
 } from "./status-menu.js";
+import { readSessionSelection } from "../session/provider-model-selection.js";
 
 export interface StatusLine {
   key: string;
@@ -176,40 +177,16 @@ export function collectStatus(
   const peekState = (session as unknown as {
     state?: { unsafePeek?: () => unknown };
   }).state?.unsafePeek;
-  const rawState = (typeof peekState === "function"
-    ? (peekState.call((session as unknown as { state?: unknown }).state) as {
-        sessionConfiguration?: {
-          cwd?: string;
-          collaborationMode?: { model?: string };
-          provider?: { slug?: string };
-          approvalPolicy?: { value?: string };
-        };
-        history?: unknown[];
-      })
-    : null);
+  const rawState =
+    typeof peekState === "function"
+      ? (peekState.call((session as unknown as { state?: unknown }).state) as {
+          history?: unknown[];
+        })
+      : null;
   const stateObj = rawState ?? null;
-  // Bridge sessions surface model/provider via sessionConfiguration on
-  // the session itself; fall back to that when state is unavailable.
-  const fallbackConfig = stateObj?.sessionConfiguration
-    ? undefined
-    : (session as unknown as {
-        sessionConfiguration?: {
-          cwd?: string;
-          collaborationMode?: { model?: string };
-          provider?: { slug?: string };
-        };
-      }).sessionConfiguration;
-
-  const sc = stateObj?.sessionConfiguration ?? fallbackConfig;
-  if (sc) {
-    const model = sc.collaborationMode?.model ?? "unknown";
-    const provider = sc.provider?.slug ?? "unknown";
-    lines.push({ key: "Model", value: model });
-    lines.push({ key: "Provider", value: provider });
-  } else {
-    lines.push({ key: "Model", value: "unknown" });
-    lines.push({ key: "Provider", value: "unknown" });
-  }
+  const selection = readSessionSelection(session, { includePending: true });
+  lines.push({ key: "Model", value: selection.model });
+  lines.push({ key: "Provider", value: selection.provider });
 
   // Turn count: prefer the daemon snapshot when available (bridge
   // sessions have no local `state.history`), then the in-process

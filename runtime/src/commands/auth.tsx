@@ -2,11 +2,15 @@ import { spawn } from "node:child_process";
 
 import type { AuthBackend, AuthIdentity, AuthLlmUsage } from "../auth/backend.js";
 import { createAuthBackend } from "../auth/selection.js";
-import { resolveProviderSlug } from "../config/resolve-provider.js";
+import {
+  resolveProviderSettings,
+  resolveProviderSlug,
+} from "../config/resolve-provider.js";
 import { defaultConfig } from "../config/schema.js";
 import { Box, Text } from "../tui/ink.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { applyProviderSwitch } from "./provider.js";
+import { readBuiltInSessionSelection } from "../session/provider-model-selection.js";
 import {
   providerEnvironmentFromCommandContext,
   remoteAuthContextFromCommandContext,
@@ -23,6 +27,7 @@ import {
   hasHostedManagedAccess,
   subscriptionManagedDefaultModel,
   subscriptionManagedDefaultModelForTier,
+  resolveSubscriptionManagedModelRequest,
   visibleSubscriptionManagedModelsForTier,
 } from "./subscription-managed-models.js";
 
@@ -157,27 +162,6 @@ function managedSubscriptionTier(
   return tier === "free" || tier === "pro" || tier === "team" || tier === "enterprise";
 }
 
-function readSessionProvider(ctx: SlashCommandContext): string | undefined {
-  const peekState = (ctx.session as unknown as {
-    state?: { unsafePeek?: () => unknown };
-  }).state?.unsafePeek;
-  const rawState =
-    typeof peekState === "function"
-      ? (peekState.call((ctx.session as unknown as { state?: unknown }).state) as {
-          sessionConfiguration?: {
-            provider?: { slug?: string };
-          };
-        })
-      : null;
-  const directConfig = (ctx.session as unknown as {
-    sessionConfiguration?: {
-      provider?: { slug?: string };
-    };
-  }).sessionConfiguration;
-  return rawState?.sessionConfiguration?.provider?.slug ??
-    directConfig?.provider?.slug;
-}
-
 async function maybeSelectHostedSubscriptionRoute(
   ctx: SlashCommandContext,
   tier: string | undefined,
@@ -188,10 +172,10 @@ async function maybeSelectHostedSubscriptionRoute(
     return undefined;
   }
 
-  const currentProvider =
-    resolveProviderSlug(readSessionProvider(ctx)) ??
-    resolveProviderSlug(config.model_provider) ??
-    "grok";
+  const currentProvider = readBuiltInSessionSelection(ctx.session, {
+    includePending: true,
+    fallbackConfig: config,
+  }).provider;
   if (currentProvider === SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER) {
     return undefined;
   }
@@ -215,20 +199,35 @@ async function maybeSelectHostedSubscriptionRoute(
     );
   }
 
-  const defaultModel = subscriptionManagedDefaultModelForTier(
+  const environment = providerEnvironmentFromCommandContext(ctx);
+  const settings = resolveProviderSettings(
     SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
-    tier,
+    config,
+    environment,
   );
-  if (defaultModel === undefined) return undefined;
-  const summary = await applyProviderSwitch(
+  const defaultModel = resolveSubscriptionManagedModelRequest({
+    provider: SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
+    managedAccess: true,
+    ...(settings?.apiKey === undefined
+      ? {}
+      : { providerApiKey: settings.apiKey }),
+    tier,
+  });
+  if (defaultModel === undefined) {
+    return (
+      "Hosted models ready through OpenRouter. OpenRouter BYOK was kept; " +
+      "run /provider openrouter to switch."
+    );
+  }
+  const outcome = await applyProviderSwitch(
     ctx.session,
     SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
     defaultModel,
   );
-  if (!summary.startsWith("Provider switched ") && !summary.startsWith("Provider switch staged:")) {
-    return `Hosted models ready, but the automatic OpenRouter switch was blocked: ${summary}`;
+  if (!outcome.applied) {
+    return `Hosted models ready, but the automatic OpenRouter switch was blocked: ${outcome.summary}`;
   }
-  updateHostedRouteChrome(ctx, defaultModel);
+  updateHostedRouteChrome(ctx, outcome.model);
   return (
     `Hosted ${tier === "free" ? "free " : ""}route selected: ${SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER} / ` +
     `${defaultModel}. Run /model to choose another hosted model.`

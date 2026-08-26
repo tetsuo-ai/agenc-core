@@ -241,6 +241,28 @@ function runtimeSettingsRolloutItem(
   };
 }
 
+function canonicalRuntimeSettings(
+  overrides: Partial<RunRuntimeSettingsSnapshot> = {},
+): RunRuntimeSettingsSnapshot {
+  return {
+    permissionMode: "default",
+    prePlanMode: null,
+    autoModeActive: false,
+    autoModeAvailable: false,
+    bypassPermissionsModeAvailable: false,
+    bypassPermissionsWorkspace: null,
+    bypassPermissionsConsentWorkspace: null,
+    model: "base-model",
+    provider: "grok",
+    profile: null,
+    reasoningEffort: null,
+    modelVerbosity: null,
+    serviceTier: null,
+    hooksDisabled: false,
+    ...overrides,
+  };
+}
+
 function recordedRuntimeSettingsEvents(
   rolloutItems: readonly unknown[],
 ): Array<{
@@ -280,7 +302,7 @@ function bypassRestoreSettings(
     bypassPermissionsWorkspace: workspace,
     bypassPermissionsConsentWorkspace: workspace,
     model: "base-model",
-    provider: "base-provider",
+    provider: "grok",
     profile: null,
     reasoningEffort: null,
     modelVerbosity: null,
@@ -646,7 +668,7 @@ function makeTopLevelRunner(opts: {
       cwd: workspaceRoot,
       ...configuredExecutionAuthority,
       collaborationMode: { model: "base-model" },
-      provider: { slug: "base-provider" },
+      provider: { slug: "grok" },
       dynamicTools: [],
       sessionSource: "cli_main" as const,
     },
@@ -1183,7 +1205,7 @@ describe("AgenC delegate background-agent runner", () => {
         bypassPermissionsWorkspace: null,
         bypassPermissionsConsentWorkspace: null,
         model: "base-model",
-        provider: "base-provider",
+        provider: "grok",
         profile: null,
         reasoningEffort: null,
         modelVerbosity: null,
@@ -1571,7 +1593,7 @@ describe("AgenC delegate background-agent runner", () => {
       bypassPermissionsWorkspace: null,
       bypassPermissionsConsentWorkspace: workspace,
       model: "base-model",
-      provider: "base-provider",
+      provider: "grok",
       profile: null,
       reasoningEffort: null,
       modelVerbosity: null,
@@ -1659,7 +1681,7 @@ describe("AgenC delegate background-agent runner", () => {
       bypassPermissionsWorkspace: null,
       bypassPermissionsConsentWorkspace: null,
       model: "base-model",
-      provider: "base-provider",
+      provider: "grok",
       profile: null,
       reasoningEffort: null,
       modelVerbosity: null,
@@ -1702,7 +1724,7 @@ describe("AgenC delegate background-agent runner", () => {
         explicitColdResume: true,
         runtimeSettings: baseline,
         model: "override-model",
-        provider: "override-provider",
+        provider: "openai",
         profile: "override-profile",
         permissionMode: "plan",
       }),
@@ -1727,7 +1749,7 @@ describe("AgenC delegate background-agent runner", () => {
           permissionMode: "plan",
           prePlanMode: "default",
           model: "override-model",
-          provider: "override-provider",
+          provider: "openai",
           profile: "override-profile",
         },
       },
@@ -1737,10 +1759,116 @@ describe("AgenC delegate background-agent runner", () => {
       prePlanMode: "default",
     });
     expect(harness.session.pendingProviderSwitch).toEqual({
-      provider: "override-provider",
+      provider: "openai",
       model: "override-model",
       profile: "override-profile",
     });
+  });
+
+  it.each([
+    {
+      label: "provider-only override",
+      config: { model_provider: "openai", model: "gpt-5-mini" },
+      override: { provider: "openai" },
+      expected: { provider: "openai", model: "gpt-5-mini" },
+    },
+    {
+      label: "model-only override",
+      config: {},
+      override: { model: "gpt-5" },
+      expected: { provider: "openai", model: "gpt-5" },
+    },
+  ])("canonically resolves a $label before durable restore", async (entry) => {
+    const runId = `session-settings-${entry.label.replaceAll(" ", "-")}`;
+    const baseline = canonicalRuntimeSettings();
+    const rolloutItems = [runtimeSettingsRolloutItem(runId, baseline)];
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      rolloutItems,
+      canonicalRuntimeSettings: true,
+    });
+    Object.assign(harness.configStore, {
+      current: () => entry.config,
+    });
+
+    await expect(
+      harness.runner.restoreAgent({
+        agentId: runId,
+        objective: "resolve one restore selection",
+        explicitColdResume: true,
+        runtimeSettings: baseline,
+        ...entry.override,
+      }),
+    ).resolves.toBe(true);
+
+    expect(harness.session.pendingProviderSwitch).toEqual(entry.expected);
+    expect(recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload)
+      .toMatchObject(entry.expected);
+  });
+
+  it.each([
+    {
+      label: "a conflicting pair",
+      override: { provider: "grok", model: "gpt-5" },
+    },
+    {
+      label: "an unknown provider",
+      override: { provider: "retired-provider" },
+    },
+  ])("rejects $label before committing restore overrides", async (entry) => {
+    const runId = `session-settings-reject-${entry.label.replaceAll(" ", "-")}`;
+    const baseline = canonicalRuntimeSettings();
+    const rolloutItems = [runtimeSettingsRolloutItem(runId, baseline)];
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      rolloutItems,
+      canonicalRuntimeSettings: true,
+    });
+
+    await expect(
+      harness.runner.restoreAgent({
+        agentId: runId,
+        objective: "reject an invalid restore selection",
+        explicitColdResume: true,
+        runtimeSettings: baseline,
+        ...entry.override,
+      }),
+    ).rejects.toThrow();
+
+    expect(recordedRuntimeSettingsEvents(rolloutItems)).toHaveLength(1);
+    expect(harness.session.pendingProviderSwitch).toBeNull();
+  });
+
+  it("rejects a noncanonical journal pair before applying restored state", async () => {
+    const runId = "session-settings-invalid-journal-pair";
+    const invalid = canonicalRuntimeSettings({
+      permissionMode: "plan",
+      prePlanMode: "default",
+      provider: "grok",
+      model: "gpt-5",
+    });
+    const rolloutItems = [runtimeSettingsRolloutItem(runId, invalid)];
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      rolloutItems,
+      canonicalRuntimeSettings: true,
+    });
+
+    await expect(
+      harness.runner.restoreAgent({
+        agentId: runId,
+        objective: "reject invalid journal authority",
+        explicitColdResume: true,
+        runtimeSettings: invalid,
+      }),
+    ).rejects.toThrow("runtime settings snapshot is not canonically valid");
+
+    expect(harness.session.pendingProviderSwitch).toBeNull();
+    expect(harness.sessionState.sessionConfiguration).toMatchObject({
+      provider: { slug: "grok" },
+      collaborationMode: { model: "base-model" },
+    });
+    expect(harness.permissionModeRegistry.current().mode).not.toBe("plan");
   });
 
   it("applies restored hook suppression before dispatching SessionStart", async () => {
@@ -1754,7 +1882,7 @@ describe("AgenC delegate background-agent runner", () => {
       bypassPermissionsWorkspace: null,
       bypassPermissionsConsentWorkspace: null,
       model: "base-model",
-      provider: "base-provider",
+      provider: "grok",
       profile: null,
       reasoningEffort: null,
       modelVerbosity: null,
@@ -3591,7 +3719,7 @@ describe("AgenC delegate background-agent runner", () => {
 
   it("publishes a model successor only after the live provider selection is staged and keeps attach snapshots behind the mutation", async () => {
     const agentId = "model-publication-order";
-    const { runner, session } = makeTopLevelRunner({
+    const { runner, session, rolloutItems } = makeTopLevelRunner({
       conversationId: agentId,
       canonicalRuntimeSettings: true,
     });
@@ -3627,13 +3755,23 @@ describe("AgenC delegate background-agent runner", () => {
       });
     });
 
-    await expect(
-      runner.setAgentModel(agentId, {
+    const result = await runner.setAgentModel(agentId, {
         model: "gpt-5",
         provider: "openai",
-      }),
-    ).resolves.toMatchObject({ applied: true });
+      });
+    expect(result).toMatchObject({
+      applied: true,
+      provider: "openai",
+      model: "gpt-5",
+    });
     unsubscribe();
+
+    const successor = recordedRuntimeSettingsEvents(rolloutItems).at(-1);
+    expect(result.runtimeSettingsEventId).toBe(successor?.eventId);
+    expect(successor?.msg?.payload).toMatchObject({
+      provider: result.provider,
+      model: result.model,
+    });
 
     expect(observations).toEqual([
       {
@@ -3647,6 +3785,62 @@ describe("AgenC delegate background-agent runner", () => {
     await attachBarrierProbe;
     expect(attachBarrierHeld).toBe(true);
     expect(snapshotSettled).toBe(true);
+  });
+
+  it("resolves a model-only background change before staging durable settings", async () => {
+    const agentId = "model-only-canonical-selection";
+    const { runner, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+
+    await expect(
+      runner.setAgentModel(agentId, { model: "gpt-5" }),
+    ).resolves.toMatchObject({ applied: true });
+
+    expect(session.pendingProviderSwitch).toEqual({
+      provider: "openai",
+      model: "gpt-5",
+    });
+    expect(recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload)
+      .toMatchObject({
+        reason: "model_provider_changed",
+        provider: "openai",
+        model: "gpt-5",
+      });
+    await expect(runner.getAgentSnapshot(agentId)).resolves.toMatchObject({
+      runtimeSettings: { provider: "openai", model: "gpt-5" },
+    });
+  });
+
+  it("rejects an impossible background provider/model pair before durable staging", async () => {
+    const agentId = "conflicting-model-provider-selection";
+    const { runner, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const before = recordedRuntimeSettingsEvents(rolloutItems);
+    const beforeEvents = before.length;
+    const originalCursor = before.at(-1)?.eventId;
+
+    const result = await runner.setAgentModel(agentId, {
+      provider: "grok",
+      model: "gpt-5",
+    });
+    expect(result).toMatchObject({
+      applied: false,
+      provider: "grok",
+      model: "base-model",
+      runtimeSettingsEventId: originalCursor,
+      summary: expect.stringContaining("belongs to provider 'openai'"),
+    });
+
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(recordedRuntimeSettingsEvents(rolloutItems)).toHaveLength(
+      beforeEvents,
+    );
   });
 
   it("keeps canonical runtime settings detached from mutable in-process snapshots", async () => {
@@ -3823,7 +4017,7 @@ describe("AgenC delegate background-agent runner", () => {
       pending: null,
       payload: {
         reason: "compensating_rollback",
-        provider: "base-provider",
+        provider: "grok",
         model: "base-model",
       },
     });
@@ -3847,7 +4041,7 @@ describe("AgenC delegate background-agent runner", () => {
     expect(rolloutStore.recordRunRuntimeSettingsEvent).toHaveBeenCalledTimes(3);
     await expect(runner.getAgentSnapshot(agentId)).resolves.toMatchObject({
       runtimeSettingsEventId: settingsEvents[2]?.eventId,
-      runtimeSettings: { provider: "base-provider", model: "base-model" },
+      runtimeSettings: { provider: "grok", model: "base-model" },
     });
   });
 
@@ -4842,7 +5036,7 @@ describe("AgenC delegate background-agent runner", () => {
         configStore: {
           current: () => ({
             model: "base-model",
-            model_provider: "base-provider",
+            model_provider: "grok",
             profiles: {
               fast: {
                 model: "fast-model",
@@ -4908,7 +5102,7 @@ describe("AgenC delegate background-agent runner", () => {
         configStore: {
           current: () => ({
             model: "base-model",
-            model_provider: "base-provider",
+            model_provider: "grok",
             profiles: {
               fast: {
                 model: "fast-model",
@@ -5017,7 +5211,7 @@ describe("AgenC delegate background-agent runner", () => {
         configStore: {
           current: () => ({
             model: "base-model",
-            model_provider: "base-provider",
+            model_provider: "grok",
             profiles: {
               fast: {
                 model: "fast-model",
@@ -5099,7 +5293,7 @@ describe("AgenC delegate background-agent runner", () => {
         configStore: {
           current: () => ({
             model: "base-model",
-            model_provider: "base-provider",
+            model_provider: "grok",
             profiles: {
               fast: {
                 model: "fast-model",

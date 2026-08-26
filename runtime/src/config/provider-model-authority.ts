@@ -14,6 +14,26 @@ import {
 
 export type ProviderSlug = BuiltInProviderSlug;
 
+export class UnknownProviderError extends Error {
+  readonly provider: string;
+  readonly expectedProviders: readonly ProviderSlug[];
+
+  constructor(
+    provider: string,
+    expectedProviders: readonly ProviderSlug[] = Object.keys(
+      BUILT_IN_PROVIDER_DEFAULT_MODELS,
+    ) as ProviderSlug[],
+  ) {
+    const expected = Object.freeze([...expectedProviders]);
+    super(
+      `unknown provider '${provider}'. Expected one of: ${expected.join(", ")}`,
+    );
+    this.name = "UnknownProviderError";
+    this.provider = provider;
+    this.expectedProviders = expected;
+  }
+}
+
 export function buildProviderModelCatalog(
   config?: AgenCConfig,
 ): Readonly<Record<string, readonly string[]>> {
@@ -48,9 +68,7 @@ export function buildProviderModelCatalog(
 export function resolveProviderSlugOrThrow(raw: string): ProviderSlug {
   const provider = resolveBuiltInProviderSlug(raw);
   if (provider !== undefined) return provider;
-  throw new Error(
-    `unknown provider '${raw}'. Expected one of: ${Object.keys(BUILT_IN_PROVIDER_DEFAULT_MODELS).join(", ")}`,
-  );
+  throw new UnknownProviderError(raw);
 }
 
 function selectionConflict(
@@ -179,7 +197,13 @@ export function resolveProviderModelLayer(
       const modelInput = requireSelectionValue(layer.model, "model");
       selection = resolveExplicitPair(provider, modelInput, catalog);
     } else {
+      const configuredProvider = resolveBuiltInProviderSlug(
+        base.model_provider ?? "",
+      );
+      const configuredModel =
+        configuredProvider === provider ? base.model?.trim() : undefined;
       const defaultModel =
+        configuredModel ||
         combined.providers?.[provider]?.default_model?.trim() ||
         BUILT_IN_PROVIDER_DEFAULT_MODELS[provider];
       selection = resolveExplicitPair(provider, defaultModel, catalog);

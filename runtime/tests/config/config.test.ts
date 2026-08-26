@@ -1495,14 +1495,39 @@ describe("profiles: resolveProfile", () => {
     const cfg = mergeConfigs(defaultConfig(), {
       profiles: {
         remote: {
-          model: "grok-4.3",
+          model: "x-ai/grok-4.3",
           model_provider: "openrouter",
         },
       },
     });
     const out = resolveProfile(cfg, "remote");
-    expect(out.model).toBe("grok-4.3");
+    expect(out.model).toBe("x-ai/grok-4.3");
     expect(out.model_provider).toBe("openrouter");
+  });
+
+  test("provider-only profiles select that provider's canonical default", () => {
+    const cfg = mergeConfigs(defaultConfig(), {
+      profiles: {
+        remote: { model_provider: "openai" },
+      },
+    });
+
+    expect(resolveProfile(cfg, "remote")).toMatchObject({
+      model_provider: "openai",
+      model: "gpt-5",
+    });
+  });
+
+  test("profiles cannot bind a known model to the wrong provider", () => {
+    const cfg = mergeConfigs(defaultConfig(), {
+      profiles: {
+        invalid: { model_provider: "grok", model: "gpt-5" },
+      },
+    });
+
+    expect(() => resolveProfile(cfg, "invalid")).toThrow(
+      "belongs to provider 'openai'",
+    );
   });
 
   test("resolveProfile does not apply fields outside the profile contract", () => {

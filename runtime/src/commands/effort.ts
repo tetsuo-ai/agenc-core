@@ -20,8 +20,8 @@ import {
   reasoningEffortToEffortLevel,
   type AvailableEffortLevel,
 } from "../utils/effort.js";
-import { readSessionSelection } from "./model.js";
-import { providerAuthContextFromCommandContext } from "./config-context.js";
+import { readSessionSelection } from "../session/provider-model-selection.js";
+import { remoteAuthContextFromCommandContext } from "./config-context.js";
 import {
   getSettingsForSource,
   updateSettingsForSource,
@@ -52,16 +52,24 @@ export const effortCommand: SlashCommand = {
       // from what the daemon session actually runs (e.g. grok-4.5 from the
       // provider switch), and effort support must be judged against the
       // model that will receive the parameter.
-      const sessionSelection = readSessionSelection(ctx.session);
+      const sessionSelection = readSessionSelection(ctx.session, {
+        includePending: true,
+      });
       const sessionModel = sessionSelection.model;
-      if (sessionModel === "unknown") {
+      if (
+        sessionSelection.provider === "unknown" ||
+        sessionModel === "unknown"
+      ) {
         return {
           kind: "error",
-          message: "Unable to determine the current session model.",
+          message: "Unable to determine the current session provider and model.",
         };
       }
       const model = sessionModel;
-      const providerAuthContext = providerAuthContextFromCommandContext(ctx);
+      const providerAuthContext = Object.freeze({
+        ...remoteAuthContextFromCommandContext(ctx),
+        provider: sessionSelection.provider,
+      });
       const arg = ctx.argsRaw.trim().toLowerCase();
 
       if (arg === "") {

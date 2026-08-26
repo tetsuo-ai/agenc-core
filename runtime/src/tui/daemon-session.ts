@@ -236,6 +236,10 @@ export interface AgenCDaemonConnectionState extends JsonObject {
 
 export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   readonly conversationId: string;
+  readonly sessionConfiguration?: {
+    readonly provider?: { readonly slug?: string };
+    readonly collaborationMode?: { readonly model?: string };
+  };
   /** Preserved from the daemon/bootstrap session for immutable role discovery. */
   readonly roleWorkspace?: Pick<AgentRoleWorkspace, "id" | "cwd">;
   readonly services: {
@@ -293,6 +297,10 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
   rewindFilesToMessage?(params: {
     readonly messageOrdinal: number;
   }): Promise<SessionRewindFilesToMessageResult>;
+  applyProviderModelSelection?(selection: {
+    readonly provider: string;
+    readonly model: string;
+  }): Promise<SessionSetModelResult>;
   setPendingProviderSwitch?(
     pending: { provider: string; model: string; profile?: string } | null,
   ): void;
@@ -923,18 +931,24 @@ export function createDaemonTuiSession<
       throw runtimeSettingsAuthorityError;
     }
   };
-  const failPermissionRuleAuthority = (cause: unknown): never => {
+  const failRuntimeSettingsAuthority = (
+    cause: unknown,
+    failureCause: string,
+  ): never => {
+    if (runtimeSettingsAuthorityError !== null) {
+      throw runtimeSettingsAuthorityError;
+    }
     const error =
       cause instanceof Error
         ? cause
-        : new Error(`permission-rule reconciliation failed: ${String(cause)}`);
+        : new Error(`runtime-settings reconciliation failed: ${String(cause)}`);
     runtimeSettingsAuthorityError = error;
     try {
       broadcastDaemonEvent({
-        id: `daemon-permission-rule-authority-failed-${Date.now()}`,
+        id: `daemon-runtime-settings-authority-failed-${Date.now()}`,
         type: "error",
         payload: {
-          cause: "permission_rule_authority_reconciliation_failed",
+          cause: failureCause,
           message: error.message,
         },
       });
@@ -946,7 +960,7 @@ export function createDaemonTuiSession<
         baseSession as AgenCTuiBridgeSession & {
           abortTerminal?: (reason: string) => void;
         }
-      ).abortTerminal?.("permission_rule_authority_reconciliation_failed");
+      ).abortTerminal?.(failureCause);
     } catch {
       // The sticky authority error still fences every subsequent bridge call.
     }
@@ -960,12 +974,12 @@ export function createDaemonTuiSession<
       error.data.authorityPhase === "precommit"
     );
   };
-  let permissionAuthorityMutationTail: Promise<void> = Promise.resolve();
-  const runPermissionAuthorityMutation = <T>(
+  let runtimeSettingsAuthorityMutationTail: Promise<void> = Promise.resolve();
+  const runRuntimeSettingsAuthorityMutation = <T>(
     operation: () => Promise<T>,
   ): Promise<T> => {
-    const result = permissionAuthorityMutationTail.then(operation);
-    permissionAuthorityMutationTail = result.then(
+    const result = runtimeSettingsAuthorityMutationTail.then(operation);
+    runtimeSettingsAuthorityMutationTail = result.then(
       () => undefined,
       () => undefined,
     );
@@ -1096,6 +1110,7 @@ export function createDaemonTuiSession<
   const daemonSessionBase = { ...baseSession };
   Reflect.deleteProperty(daemonSessionBase, "listMcpClients");
   Reflect.deleteProperty(daemonSessionBase, "listMcpTools");
+  Reflect.deleteProperty(daemonSessionBase, "setPendingProviderSwitch");
   if (runtimeSettingsReconciler !== undefined) {
     ensureDaemonEventsSubscribed();
   }
@@ -1119,7 +1134,7 @@ export function createDaemonTuiSession<
         activeTurnSnapshot ?? baseSession.activeTurn?.unsafePeek?.() ?? null,
     },
     submit: async (message, opts) => {
-      await permissionAuthorityMutationTail;
+      await runtimeSettingsAuthorityMutationTail;
       await awaitRuntimeSettingsAuthority();
       const queuedInputsBeforeSubmission = [...queuedInputs];
       const queuedEntries: DaemonQueuedInput[] = [];
@@ -1386,61 +1401,57 @@ export function createDaemonTuiSession<
         sessionId,
         messageOrdinal: params.messageOrdinal,
       } satisfies SessionFileRewindParams),
-    // `/model` and `/provider` stage their switch by calling
-    // `session.setPendingProviderSwitch` on this bridge. The in-process
-    // session would mutate `pendingProviderSwitch` directly, but on the
-    // daemon path that field lives on the REAL session inside the daemon.
-    // Forward the spec as `session.setModel` so the daemon runs the
-    // genuine I-13/I-57 switch machinery; its turn loop's
-    // `consumePendingProviderSwitch` is the authority.
-    //
-    // The mutator's signature is synchronous `void` (the commands build
-    // an optimistic "Model switched" summary inline and do not await
-    // this call), so we keep the active-session UX responsive by NOT
-    // blocking on the round-trip. But the daemon — not the optimistic
-    // client — is the authority on whether the switch was *applied*: it
-    // can REJECT a switch (history-incompatible target, or a staged turn
-    // that later refuses the pending marker). When the daemon reports
-    // `applied === false`, the optimistic success is a lie, so we surface
-    // the daemon's authoritative `summary` back to the transcript as a
-    // `provider_switch_rejected` warning (an allow-listed, user-visible
-    // cause). That way the user sees the real rejection rather than only
-    // the false "Model switched" line.
-    setPendingProviderSwitch: (pending) => {
-      if (pending === null) return;
-      void client
-        .request("session.setModel", {
-          sessionId,
-          ...(pending.model !== undefined ? { model: pending.model } : {}),
-          ...(pending.provider !== undefined
-            ? { provider: pending.provider }
-            : {}),
-        } satisfies SessionSetModelParams)
-        .then((result) => {
-          if (result.applied) return;
-          // Daemon rejected the switch. Override the optimistic chrome by
-          // emitting the daemon's authoritative summary; without this the
-          // user is told the model switched when it did not.
-          broadcastDaemonEvent({
-            id: `agenc-model-switch-rejected-${Date.now()}`,
-            type: "warning",
-            payload: {
-              message:
-                result.summary.length > 0
-                  ? result.summary
-                  : "Model switch rejected by the daemon.",
-              cause: "provider_switch_rejected",
-            },
-          } satisfies JsonObject);
-        })
-        .catch(() => {
-          // Best-effort: a disconnected daemon socket throws. The user's
-          // optimistic chrome update already landed; the next snapshot /
-          // turn surfaces any disconnection separately.
-        });
-    },
+    applyProviderModelSelection: (selection) =>
+      runRuntimeSettingsAuthorityMutation(async () => {
+        await awaitRuntimeSettingsAuthority();
+        try {
+          const result = await client.request("session.setModel", {
+            sessionId,
+            provider: selection.provider,
+            model: selection.model,
+          } satisfies SessionSetModelParams);
+          if (
+            result.provider.length === 0 ||
+            result.model.length === 0 ||
+            result.runtimeSettingsEventId.length === 0 ||
+            result.summary.length === 0
+          ) {
+            throw new Error(
+              "daemon model response omitted its canonical runtime-settings coordinates",
+            );
+          }
+          await runtimeSettingsReconciler.waitFor(
+            result.runtimeSettingsEventId,
+          );
+          const configuration = eventBridgeSession.sessionConfiguration;
+          if (
+            configuration?.provider?.slug !== result.provider ||
+            configuration.collaborationMode?.model !== result.model
+          ) {
+            throw new Error(
+              "daemon model response was not followed by a matching canonical runtime-settings successor",
+            );
+          }
+          if (
+            result.applied &&
+            (result.provider !== selection.provider ||
+              result.model !== selection.model)
+          ) {
+            throw new Error(
+              "daemon applied a provider/model pair other than the requested canonical pair",
+            );
+          }
+          return result;
+        } catch (error) {
+          if (isProvenPrecommitAuthorityRejection(error)) throw error;
+          return failRuntimeSettingsAuthority(
+            error,
+            "provider_model_authority_reconciliation_failed",
+          );
+        }
+      }),
     setDaemonPermissionMode: (mode) =>
-      runPermissionAuthorityMutation(async () => {
+      runRuntimeSettingsAuthorityMutation(async () => {
         await awaitRuntimeSettingsAuthority();
         try {
           const result = await client.request("session.setPermissionMode", {
@@ -1467,11 +1478,14 @@ export function createDaemonTuiSession<
           return result;
         } catch (error) {
           if (isProvenPrecommitAuthorityRejection(error)) throw error;
-          return failPermissionRuleAuthority(error);
+          return failRuntimeSettingsAuthority(
+            error,
+            "permission_rule_authority_reconciliation_failed",
+          );
         }
       }),
     mutateDaemonPermissionRule: (params) =>
-      runPermissionAuthorityMutation(async () => {
+      runRuntimeSettingsAuthorityMutation(async () => {
         await awaitRuntimeSettingsAuthority();
         try {
         const result = await client.request("session.permissions.mutateRule", {
@@ -1502,7 +1516,10 @@ export function createDaemonTuiSession<
         return result;
         } catch (error) {
           if (isProvenPrecommitAuthorityRejection(error)) throw error;
-          return failPermissionRuleAuthority(error);
+          return failRuntimeSettingsAuthority(
+            error,
+            "permission_rule_authority_reconciliation_failed",
+          );
         }
       }),
     getDaemonHooksStatus: async () =>
@@ -1514,19 +1531,55 @@ export function createDaemonTuiSession<
         sessionId,
         disabled,
       } satisfies SessionHooksSetDisabledParams),
-    applyDaemonConfig: async (p) => {
-      if (p.reload === true) {
-        // session.applyConfig refreshes only this agent's live config store.
-        // Predictions are daemon-owned, so reload the daemon-global snapshot
-        // first to make first-run consent effective without a restart.
-        await client.request("daemon.reload", {});
-      }
-      return client.request("session.applyConfig", {
-        sessionId,
-        ...(p.profile !== undefined ? { profile: p.profile } : {}),
-        ...(p.reload !== undefined ? { reload: p.reload } : {}),
-      } satisfies SessionApplyConfigParams);
-    },
+    applyDaemonConfig: (p) =>
+      runRuntimeSettingsAuthorityMutation(async () => {
+        await awaitRuntimeSettingsAuthority();
+        try {
+          if (p.reload === true) {
+            // session.applyConfig refreshes only this agent's live config
+            // store. Predictions are daemon-owned, so reload the daemon-global
+            // snapshot first.
+            await client.request("daemon.reload", {});
+          }
+          const result = await client.request("session.applyConfig", {
+            sessionId,
+            ...(p.profile !== undefined ? { profile: p.profile } : {}),
+            ...(p.reload !== undefined ? { reload: p.reload } : {}),
+          } satisfies SessionApplyConfigParams);
+          if (!result.applied) return result;
+          if (
+            result.provider === undefined ||
+            result.provider.length === 0 ||
+            result.model === undefined ||
+            result.model.length === 0 ||
+            result.runtimeSettingsEventId === undefined ||
+            result.runtimeSettingsEventId.length === 0
+          ) {
+            throw new Error(
+              "daemon config response omitted its canonical runtime-settings coordinates",
+            );
+          }
+          await runtimeSettingsReconciler.waitFor(
+            result.runtimeSettingsEventId,
+          );
+          const configuration = eventBridgeSession.sessionConfiguration;
+          if (
+            configuration?.provider?.slug !== result.provider ||
+            configuration.collaborationMode?.model !== result.model
+          ) {
+            throw new Error(
+              "daemon config response was not followed by matching canonical runtime settings",
+            );
+          }
+          return result;
+        } catch (error) {
+          if (isProvenPrecommitAuthorityRejection(error)) throw error;
+          return failRuntimeSettingsAuthority(
+            error,
+            "config_authority_reconciliation_failed",
+          );
+        }
+      }),
     acquireWorkspaceEditor: async (params) =>
       editorCoherenceClient.request("workspace.editor.acquire", params),
     syncWorkspaceEditor: async (params) =>
@@ -2121,6 +2174,7 @@ interface RuntimeSettingsReconciler {
   finishInitialReplay(): void;
   noteConnectionState(state: AgenCDaemonConnectionState): void;
   barrier(): Promise<void>;
+  waitFor(eventId: string): Promise<void>;
 }
 
 function canonicalRuntimeSettingsEvent(
@@ -2180,6 +2234,14 @@ function createRuntimeSettingsReconciler(params: {
   let observedConnectionGap = false;
   let queue: Promise<void> = Promise.resolve();
   let pendingWork = 0;
+  const appliedEventIds = new Set<string>([cursor]);
+  const waiters = new Map<
+    string,
+    Set<{
+      readonly resolve: () => void;
+      readonly reject: (error: Error) => void;
+    }>
+  >();
   const initial: Array<{
     readonly event: CanonicalRuntimeSettingsEvent | null;
     readonly deliver: () => void;
@@ -2191,9 +2253,20 @@ function createRuntimeSettingsReconciler(params: {
       error instanceof Error
         ? error
         : new Error(
-            `daemon runtime-settings reconciliation failed: ${String(error)}`,
-          );
+             `daemon runtime-settings reconciliation failed: ${String(error)}`,
+           );
+    for (const pending of waiters.values()) {
+      for (const waiter of pending) waiter.reject(failure);
+    }
+    waiters.clear();
     params.onFailure(failure);
+  };
+  const markApplied = (eventId: string): void => {
+    appliedEventIds.add(eventId);
+    const pending = waiters.get(eventId);
+    if (pending === undefined) return;
+    waiters.delete(eventId);
+    for (const waiter of pending) waiter.resolve();
   };
   const enqueue = (work: () => Promise<void> | void): void => {
     pendingWork += 1;
@@ -2214,6 +2287,7 @@ function createRuntimeSettingsReconciler(params: {
       return;
     }
     if (entry.event.eventId === cursor) {
+      markApplied(entry.event.eventId);
       entry.deliver();
       return;
     }
@@ -2228,6 +2302,7 @@ function createRuntimeSettingsReconciler(params: {
       entry.event.settings,
     );
     cursor = entry.event.eventId;
+    markApplied(entry.event.eventId);
     entry.deliver();
   };
   const parse = (
@@ -2294,6 +2369,13 @@ function createRuntimeSettingsReconciler(params: {
     noteConnectionState: (state) => {
       if (state.status !== "connected") {
         observedConnectionGap = true;
+        if (waiters.size > 0) {
+          fail(
+            new Error(
+              "daemon disconnected before the canonical runtime-settings successor arrived; re-attach is required",
+            ),
+          );
+        }
         return;
       }
       if (observedConnectionGap) {
@@ -2307,6 +2389,40 @@ function createRuntimeSettingsReconciler(params: {
     barrier: async () => {
       await queue;
       if (failure !== null) throw failure;
+    },
+    waitFor: async (eventId) => {
+      if (eventId.length === 0) {
+        throw new Error("runtime-settings event id must be non-empty");
+      }
+      if (failure !== null) throw failure;
+      if (appliedEventIds.has(eventId)) return;
+      if (observedConnectionGap) {
+        fail(
+          new Error(
+            "daemon connection changed before the canonical runtime-settings successor arrived; re-attach is required",
+          ),
+        );
+        if (failure !== null) throw failure;
+      }
+      let resolveWaiter!: () => void;
+      let rejectWaiter!: (error: Error) => void;
+      const promise = new Promise<void>((resolve, reject) => {
+        resolveWaiter = resolve;
+        rejectWaiter = reject;
+      });
+      const waiter = {
+        resolve: resolveWaiter,
+        reject: rejectWaiter,
+      };
+      const pending = waiters.get(eventId) ?? new Set();
+      pending.add(waiter);
+      waiters.set(eventId, pending);
+      if (failure !== null) {
+        pending.delete(waiter);
+        if (pending.size === 0) waiters.delete(eventId);
+        throw failure;
+      }
+      await promise;
     },
   };
 }

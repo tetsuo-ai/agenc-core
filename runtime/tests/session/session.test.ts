@@ -775,6 +775,42 @@ describe("Session.consumePendingProviderSwitch", () => {
     }
   });
 
+  it("consumes the exact staged pair when its profile definition changes", async () => {
+    const session = buildSession({
+      services: {
+        provider: createProvider("grok", {
+          apiKey: "test-key",
+          model: "grok-4",
+        }),
+        configStore: {
+          current: () => ({
+            profiles: {
+              coding: {
+                model_provider: "grok",
+                model: "grok-4",
+              },
+            },
+          }),
+        },
+      },
+    });
+    session.setPendingProviderSwitch({
+      provider: "grok",
+      model: "grok-4.3",
+      profile: "coding",
+    });
+
+    await expect(session.consumePendingProviderSwitch()).resolves.toEqual({
+      applied: true,
+      provider: "grok",
+      model: "grok-4.3",
+    });
+    expect(session.providerBinding).toMatchObject({
+      provider: "grok",
+      model: "grok-4.3",
+    });
+  });
+
   it("refuses impossible switches without mutating the live session", async () => {
     await withEnv({ OPENAI_API_KEY: undefined }, async () => {
       const startingProvider = createProvider("grok", {

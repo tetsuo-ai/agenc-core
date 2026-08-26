@@ -28,6 +28,7 @@ function makeCtx(overrides: Partial<SlashCommandContext> = {}): SlashCommandCont
       },
       sessionConfiguration: {
         provider: { slug: TEST_REMOTE_AUTH_SESSION_CONTEXT.provider },
+        collaborationMode: { model: "claude-sonnet-4-5" },
       },
     } as SlashCommandContext["session"],
     argsRaw: "",

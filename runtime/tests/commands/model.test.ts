@@ -53,6 +53,10 @@ interface StubSessionOpts {
   reasoningEffort?: string;
   configStore?: CommandConfigStore;
   environment?: EnvSnapshot;
+  providerServiceSelection?: {
+    readonly provider?: unknown;
+    readonly model?: unknown;
+  };
 }
 
 function stubSession(opts: StubSessionOpts = {}): Session {
@@ -74,6 +78,12 @@ function stubSession(opts: StubSessionOpts = {}): Session {
     services: {
       configStore: CommandConfigStore;
       providerEnvironment: EnvSnapshot;
+      providerService?: {
+        current: () => {
+          readonly provider?: unknown;
+          readonly model?: unknown;
+        };
+      };
     };
     setPendingProviderSwitch(next: unknown): void;
   } = {
@@ -89,6 +99,13 @@ function stubSession(opts: StubSessionOpts = {}): Session {
     services: {
       configStore: opts.configStore ?? commandConfigStore(),
       providerEnvironment: opts.environment ?? TEST_ENVIRONMENT,
+      ...(opts.providerServiceSelection !== undefined
+        ? {
+            providerService: {
+              current: () => opts.providerServiceSelection!,
+            },
+          }
+        : {}),
     },
     setPendingProviderSwitch(next) {
       this.pendingProviderSwitch = next;
@@ -246,6 +263,39 @@ describe("modelCommand", () => {
     });
   });
 
+  it("routes picker selections through provider-model authority", async () => {
+    const session = stubSession({ provider: "grok", model: "grok-4" });
+    const setToolJSX = vi.fn();
+
+    const res = await modelCommand.execute(
+      mkctx(session, "", { setToolJSX }),
+    );
+
+    expect(res.kind).toBe("skip");
+    const payload = setToolJSX.mock.calls[0]?.[0] as {
+      jsx?: {
+        props?: {
+          onSelect?: (
+            provider: "grok",
+            model: string,
+          ) => Promise<{ message: string; shouldClose: boolean }>;
+        };
+      };
+    };
+    const onSelect = payload.jsx?.props?.onSelect;
+    expect(onSelect).toBeTypeOf("function");
+    await expect(onSelect!("grok", "gpt-5")).resolves.toEqual({
+      message: expect.stringContaining(
+        "belongs to provider 'openai', not explicitly selected provider 'grok'",
+      ),
+      shouldClose: false,
+    });
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown })
+        .pendingProviderSwitch,
+    ).toBeNull();
+  });
+
   it("applies the switch immediately when no turn is active", async () => {
     const session = stubSession({
       provider: "grok",
@@ -288,6 +338,69 @@ describe("modelCommand", () => {
     expect(pending).toEqual({ provider: "openai", model: "gpt-5" });
   });
 
+  it("resolves a known bare model without inheriting the current provider", async () => {
+    const session = stubSession({ provider: "grok", model: "grok-4" });
+
+    const res = await modelCommand.execute(mkctx(session, "gpt-5"));
+
+    expect(res.kind).toBe("text");
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown })
+        .pendingProviderSwitch,
+    ).toEqual({ provider: "openai", model: "gpt-5" });
+  });
+
+  it("keeps an unknown bare model on the current provider", async () => {
+    const session = stubSession({ provider: "grok", model: "grok-4" });
+
+    const res = await modelCommand.execute(
+      mkctx(session, "private-grok-model"),
+    );
+
+    expect(res.kind).toBe("text");
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown })
+        .pendingProviderSwitch,
+    ).toEqual({ provider: "grok", model: "private-grok-model" });
+  });
+
+  it("accepts an explicitly qualified private provider model", async () => {
+    const session = stubSession({ provider: "grok", model: "grok-4" });
+
+    const res = await modelCommand.execute(
+      mkctx(session, "openai:private-openai-model"),
+    );
+
+    expect(res.kind).toBe("text");
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown })
+        .pendingProviderSwitch,
+    ).toEqual({ provider: "openai", model: "private-openai-model" });
+  });
+
+  it("surfaces ambiguous configured models without staging a switch", async () => {
+    const configStore = commandConfigStore(TEST_HOME, {
+      providers: {
+        grok: { default_model: "shared-private-model" },
+        openai: { default_model: "shared-private-model" },
+      },
+    });
+    const session = stubSession({ configStore });
+
+    const res = await modelCommand.execute(
+      mkctx(session, "shared-private-model"),
+    );
+
+    expect(res).toEqual({
+      kind: "text",
+      text: expect.stringMatching(/ambiguous.*provider:model/i),
+    });
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown })
+        .pendingProviderSwitch,
+    ).toBeNull();
+  });
+
   it("does not let provider-qualified model chrome overwrite pending provider", async () => {
     const session = stubSession({
       provider: "grok",
@@ -321,6 +434,49 @@ describe("modelCommand", () => {
     expect(pending).toEqual({ provider: "openai", model: "gpt-5" });
   });
 
+  it("stages a same-provider command once while updating cosmetic chrome", async () => {
+    const session = stubSession({ provider: "grok", model: "grok-4" });
+    const stage = vi.spyOn(session, "setPendingProviderSwitch");
+    const setModel = vi.fn();
+
+    const result = await modelCommand.execute(
+      mkctx(session, "grok-4-fast", { setModel }),
+    );
+
+    expect(result.kind).toBe("text");
+    expect(stage).toHaveBeenCalledTimes(1);
+    expect(stage).toHaveBeenCalledWith({
+      provider: "grok",
+      model: "grok-4-fast",
+    });
+    expect(setModel).toHaveBeenCalledOnce();
+    expect(setModel).toHaveBeenCalledWith("grok-4-fast");
+  });
+
+  it("returns an authoritative daemon rejection without updating chrome", async () => {
+    const session = stubSession({ provider: "grok", model: "grok-4" });
+    const summary =
+      'Model switch to "gpt-5" blocked: history incompatible with target model';
+    Object.assign(session, {
+      applyProviderModelSelection: vi.fn(async () => ({
+        applied: false,
+        provider: "grok",
+        model: "grok-4",
+        summary,
+      })),
+    });
+    const setModel = vi.fn();
+    const setAppState = vi.fn();
+
+    const result = await modelCommand.execute(
+      mkctx(session, "openai:gpt-5", { setModel, setAppState }),
+    );
+
+    expect(result).toEqual({ kind: "text", text: summary });
+    expect(setModel).not.toHaveBeenCalled();
+    expect(setAppState).not.toHaveBeenCalled();
+  });
+
   it("stages pending switch + aborts current turn when I-13 applies", async () => {
     const abortTerminal = vi.fn();
     const session = stubSession({
@@ -347,7 +503,7 @@ describe("modelCommand", () => {
   it("blocks the switch when the target model is incompatible with current history", async () => {
     const session = stubSession({
       provider: "openrouter",
-      model: "gpt-5",
+      model: "x-ai/grok-4.3",
       history: [
         {
           role: "user",
@@ -376,7 +532,7 @@ describe("modelCommand", () => {
   it("does not update TUI model chrome when compatibility blocks the switch", async () => {
     const session = stubSession({
       provider: "openrouter",
-      model: "gpt-5",
+      model: "x-ai/grok-4.3",
       history: [
         {
           role: "user",
@@ -404,6 +560,21 @@ describe("modelCommand", () => {
     expect(abortTerminal).not.toHaveBeenCalled();
   });
 
+  it("blocks an invalid explicit provider without staging", async () => {
+    const session = stubSession();
+
+    await expect(
+      applyModelSwitch(session, "private-model", "not-a-provider"),
+    ).resolves.toMatchObject({
+      applied: false,
+      summary: expect.stringContaining("unknown provider 'not-a-provider'"),
+    });
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown })
+        .pendingProviderSwitch,
+    ).toBeNull();
+  });
+
   it("whitespace-only args are treated as empty", async () => {
     const res = await modelCommand.execute(mkctx(stubSession(), "   "));
     expect(res.kind).toBe("text");
@@ -427,6 +598,72 @@ describe("modelCommand", () => {
     expect(snapshot.rows.some((row) => row.provider === "openai")).toBe(true);
     expect(snapshot.rows[snapshot.activeIndex]?.status).toBe("current");
     expect(snapshot.providerCounts.openai).toBeGreaterThan(0);
+  });
+
+  it("uses the provider service pair instead of mixing stale projections", () => {
+    const configStore = commandConfigStore(TEST_HOME, {
+      model_provider: "ollama",
+      model: "llama3.3",
+    });
+    const snapshot = readModelMenuSnapshot(
+      mkctx(
+        stubSession({
+          provider: "grok",
+          model: "grok-4",
+          configStore,
+          providerServiceSelection: {
+            provider: "openai",
+            model: "gpt-5",
+          },
+        }),
+        "",
+        {
+          getAppState: () => ({ mainLoopModel: "stale-react-model" }),
+        },
+      ),
+    );
+
+    expect(snapshot.provider).toBe("openai");
+    expect(snapshot.currentModel).toBe("gpt-5");
+    expect(snapshot.rows[snapshot.activeIndex]).toMatchObject({
+      provider: "openai",
+      model: "gpt-5",
+      status: "current",
+    });
+  });
+
+  it("ignores an incomplete higher-priority pair instead of mixing sources", () => {
+    const snapshot = readModelMenuSnapshot(
+      mkctx(
+        stubSession({
+          provider: "grok",
+          model: "grok-4",
+          providerServiceSelection: { provider: "openai" },
+        }),
+        "",
+        {
+          getAppState: () => ({ mainLoopModel: "gpt-5" }),
+        },
+      ),
+    );
+
+    expect(snapshot.provider).toBe("grok");
+    expect(snapshot.currentModel).toBe("grok-4");
+  });
+
+  it("shows the complete pair staged for the next turn", () => {
+    const snapshot = readModelMenuSnapshot(
+      mkctx(
+        stubSession({
+          provider: "grok",
+          model: "grok-4",
+          pendingProviderSwitch: { provider: "openai", model: "gpt-5" },
+        }),
+      ),
+    );
+
+    expect(snapshot.provider).toBe("openai");
+    expect(snapshot.currentModel).toBe("gpt-5");
   });
 
   it("model menu snapshot reports managed key mode from config", () => {
@@ -689,4 +926,38 @@ describe("modelCommand", () => {
       });
     },
   );
+
+  it("preserves a bare Bedrock model id that contains a colon", async () => {
+    const configStore = commandConfigStore(TEST_HOME, {
+      auth: { managedKeys: { enabled: true } },
+    });
+    const session = stubSession({
+      provider: "grok",
+      model: "grok-4.3",
+      configStore,
+      environment: Object.freeze({
+        ...TEST_ENVIRONMENT,
+        AWS_BEDROCK_ACCESS_KEY_ID: "access",
+        AWS_BEDROCK_SECRET_ACCESS_KEY: "secret",
+      }),
+    });
+
+    const result = await modelCommand.execute(
+      mkctx(session, "amazon.nova-pro-v1:0"),
+    );
+
+    expect(result).toEqual({
+      kind: "text",
+      text: expect.stringContaining(
+        'Model switched to "amazon.nova-pro-v1:0"',
+      ),
+    });
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown })
+        .pendingProviderSwitch,
+    ).toEqual({
+      provider: "amazon-bedrock",
+      model: "amazon.nova-pro-v1:0",
+    });
+  });
 });

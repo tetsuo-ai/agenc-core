@@ -221,7 +221,6 @@ import {
   createAgentRoleWorkspace,
   normalizeAgentRoleWorkspace,
 } from "../../agents/role.js";
-import { buildPendingProviderSwitch } from "../model-switch.js";
 import { pastedContentsToLLMMessage } from "../../llm/pasted-content.js";
 import { renderUntrustedWorkspaceData } from "../../prompts/untrusted-workspace-content.js";
 import type { PromptInputContext } from "../input/inputContext.js";
@@ -4566,12 +4565,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         mainLoopModel: next,
         mainLoopModelForSession: next,
       }));
-      const switchSpec = buildPendingProviderSwitch(props.session, next);
-      if (switchSpec !== null) {
-        props.session.setPendingProviderSwitch?.(switchSpec);
-      }
     },
-    [setAppState, props.session],
+    [setAppState],
   );
   const applyOnboardingSelection = useCallback(
     async (next_0: FirstRunOnboardingState) => {
@@ -4580,11 +4575,19 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           logError(error);
         },
       );
-      setModel(next_0.selectedModel);
-      props.session.setPendingProviderSwitch?.({
+      const selection = {
         provider: next_0.selectedProvider,
         model: next_0.selectedModel,
-      });
+      };
+      if (typeof props.session.applyProviderModelSelection === "function") {
+        const outcome =
+          await props.session.applyProviderModelSelection(selection);
+        if (!outcome.applied) throw new Error(outcome.summary);
+        setModel(outcome.model);
+        return;
+      }
+      props.session.setPendingProviderSwitch?.(selection);
+      setModel(selection.model);
     },
     [agencHome, props, setModel],
   );

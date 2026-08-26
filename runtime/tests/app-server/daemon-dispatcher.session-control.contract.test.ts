@@ -204,6 +204,9 @@ describe("daemon session-control internal method dispatch", () => {
     const setSessionModel = vi.fn(async (params: SessionSetModelParams) => ({
       sessionId: params.sessionId,
       applied: true,
+      provider: "openai",
+      model: "gpt-x",
+      runtimeSettingsEventId: "settings-1",
       summary: "Model switched.",
     }));
     const dispatcher = new AgenCDaemonJsonRpcDispatcher({
@@ -229,6 +232,9 @@ describe("daemon session-control internal method dispatch", () => {
       result: {
         sessionId: "session_1",
         applied: true,
+        provider: "openai",
+        model: "gpt-x",
+        runtimeSettingsEventId: "settings-1",
         summary: "Model switched.",
       },
     });

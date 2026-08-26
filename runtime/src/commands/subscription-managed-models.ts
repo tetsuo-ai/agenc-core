@@ -143,6 +143,19 @@ export function subscriptionManagedDefaultModelForTier(
   return visibleSubscriptionManagedModelsForTier(provider, tier)[0];
 }
 
+export function resolveSubscriptionManagedModelRequest(params: {
+  readonly provider: ProviderSlug | string;
+  readonly explicitModel?: string;
+  readonly managedAccess: boolean;
+  readonly providerApiKey?: string;
+  readonly tier: AuthSubscriptionTier | undefined;
+}): string | undefined {
+  if (params.explicitModel !== undefined) return params.explicitModel;
+  if (!params.managedAccess) return undefined;
+  if (params.providerApiKey?.trim()) return undefined;
+  return subscriptionManagedDefaultModelForTier(params.provider, params.tier);
+}
+
 export function isSubscriptionManagedModel(
   provider: ProviderSlug | string,
   model: string,

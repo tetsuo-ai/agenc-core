@@ -124,8 +124,8 @@ async function executeGrokLogin(
     const lines = [`Signed in to xAI as ${who}.`];
 
     // OAuth always wins over env BYOK — switch to grok regardless of keys.
-    const switchSummary = await applyProviderSwitch(ctx.session, "grok");
-    lines.push(switchSummary);
+    const switchOutcome = await applyProviderSwitch(ctx.session, "grok");
+    lines.push(switchOutcome.summary);
     lines.push("Run /model to pick a Grok model (e.g. grok-4.5).");
     lines.push(
       "This sign-in takes precedence over any XAI_API_KEY / GROK_API_KEY " +

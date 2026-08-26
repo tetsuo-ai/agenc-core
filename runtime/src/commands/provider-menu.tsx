@@ -2,15 +2,20 @@ import React from "react";
 
 import {
   buildProviderModelCatalog,
+  mergeProviderModelLayer,
+  type ProviderSlug,
+} from "../config/provider-model-authority.js";
+import {
   resolveProviderSlug,
   readProviderConfig,
-  type ProviderSlug,
+  resolveProviderSettings,
 } from "../config/resolve-provider.js";
+import { configuredModelForProvider } from "../config/resolve-model.js";
 import {
-  configuredModelForProvider,
-  defaultModelForProvider,
-} from "../config/resolve-model.js";
-import type { AgenCConfig, ProviderConfig } from "../config/schema.js";
+  defaultConfig,
+  type AgenCConfig,
+  type ProviderConfig,
+} from "../config/schema.js";
 import type { EnvSnapshot } from "../config/env.js";
 import { readLocalByokCredential } from "../auth/native-credentials.js";
 import {
@@ -41,12 +46,13 @@ import {
 } from "./config-context.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
+import { readBuiltInSessionSelection } from "../session/provider-model-selection.js";
 import {
   SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
   hasHostedManagedAccess,
   hostedManagedSubscriptionTier,
   providerHasLiveSubscriptionRoute,
-  subscriptionManagedDefaultModelForTier,
+  resolveSubscriptionManagedModelRequest,
   visibleSubscriptionManagedModelsForTier,
 } from "./subscription-managed-models.js";
 import type { SlashCommandContext } from "./types.js";
@@ -98,75 +104,29 @@ export type ProviderMenuSelectionResult = {
   readonly shouldClose: boolean;
 };
 
-function readSessionSelection(ctx: SlashCommandContext): {
-  readonly provider?: string;
-  readonly model?: string;
-} {
-  const peekState = (ctx.session as unknown as {
-    state?: { unsafePeek?: () => unknown };
-  }).state?.unsafePeek;
-  const rawState =
-    typeof peekState === "function"
-      ? (peekState.call((ctx.session as unknown as { state?: unknown }).state) as {
-          sessionConfiguration?: {
-            provider?: { slug?: string };
-            collaborationMode?: { model?: string };
-          };
-        })
-      : null;
-  const directConfig = (ctx.session as unknown as {
-    sessionConfiguration?: {
-      provider?: { slug?: string };
-      collaborationMode?: { model?: string };
-    };
-  }).sessionConfiguration;
-  const sessionConfiguration = rawState?.sessionConfiguration ?? directConfig;
-  return {
-    ...(sessionConfiguration?.provider?.slug
-      ? { provider: sessionConfiguration.provider.slug }
-      : {}),
-    ...(sessionConfiguration?.collaborationMode?.model
-      ? { model: sessionConfiguration.collaborationMode.model }
-      : {}),
-  };
-}
-
-function readAppStateModel(ctx: SlashCommandContext): string | undefined {
-  const state = ctx.appState?.getAppState?.();
-  if (typeof state !== "object" || state === null) return undefined;
-  const model = (state as { mainLoopModel?: unknown }).mainLoopModel;
-  return typeof model === "string" && model.trim().length > 0
-    ? model.trim()
-    : undefined;
-}
-
 function providerModel(params: {
   readonly config?: AgenCConfig;
   readonly provider: ProviderSlug;
   readonly currentProvider: ProviderSlug;
   readonly currentModel: string;
-  readonly managedKeysEnabled?: boolean;
-  readonly managedSubscriptionAvailable?: boolean;
-  readonly managedSubscriptionTier?: string;
+  readonly requestedModel?: string;
 }): string {
   if (params.provider === params.currentProvider) return params.currentModel;
-  if (params.managedSubscriptionAvailable === true) {
-    const managedDefault = subscriptionManagedDefaultModelForTier(
-      params.provider,
-      params.managedSubscriptionTier === "free" ||
-        params.managedSubscriptionTier === "pro" ||
-        params.managedSubscriptionTier === "team" ||
-        params.managedSubscriptionTier === "enterprise"
-        ? params.managedSubscriptionTier
-        : undefined,
-    );
-    if (managedDefault !== undefined) return managedDefault;
-  }
-  return (
-    (params.config !== undefined
-      ? configuredModelForProvider(params.config, params.provider)
-      : undefined) ?? defaultModelForProvider(params.provider)
+  const base = mergeProviderModelLayer(defaultConfig(), params.config ?? {});
+  const selection = mergeProviderModelLayer(
+    base,
+    {
+      model_provider: params.provider,
+      ...(params.requestedModel === undefined
+        ? {}
+        : { model: params.requestedModel }),
+    },
   );
+  const model = selection.model?.trim();
+  if (model === undefined || model.length === 0) {
+    throw new Error(`No model resolved for provider ${params.provider}`);
+  }
+  return model;
 }
 
 function rowStatus(params: {
@@ -573,25 +533,19 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
   const environment = providerEnvironmentFromCommandContext(ctx);
   const authContext = remoteAuthContextFromCommandContext(ctx);
   const config = readCommandConfig(ctx);
-  const sessionSelection = readSessionSelection(ctx);
+  const sessionSelection = readBuiltInSessionSelection(ctx.session, {
+    includePending: true,
+    ...(config !== undefined ? { fallbackConfig: config } : {}),
+  });
   const diagnostics: string[] = [];
-  if (
-    sessionSelection.provider !== undefined &&
-    resolveProviderSlug(sessionSelection.provider) === undefined
-  ) {
-    diagnostics.push(`Unknown session provider: ${sessionSelection.provider}`);
+  if (sessionSelection.rejectedProvider !== undefined) {
+    diagnostics.push(
+      `Unknown session provider: ${sessionSelection.rejectedProvider}`,
+    );
   }
-  const currentProvider =
-    resolveProviderSlug(sessionSelection.provider) ??
-    resolveProviderSlug(config?.model_provider) ??
-    "grok";
-  const currentModel =
-    readAppStateModel(ctx) ??
-    sessionSelection.model?.trim() ??
-    config?.model?.trim() ??
-    defaultModelForProvider(currentProvider);
+  const currentProvider = sessionSelection.provider;
+  const currentModel = sessionSelection.model;
   const modelCatalog = buildProviderModelCatalog(config);
-  const managedKeysEnabled = config?.auth?.managedKeys?.enabled === true;
   const managedSubscriptionAvailable = hasHostedManagedAccess(
     config,
     authContext,
@@ -608,14 +562,24 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
       providerConfig,
       environment,
     );
+    const providerApiKey =
+      config === undefined
+        ? undefined
+        : resolveProviderSettings(provider, config, environment)?.apiKey;
+    const managedModelRequest = resolveSubscriptionManagedModelRequest({
+      provider,
+      managedAccess: managedSubscriptionAvailable,
+      ...(providerApiKey === undefined ? {} : { providerApiKey }),
+      tier: managedSubscriptionTier,
+    });
     const model = providerModel({
       config,
       provider,
       currentProvider,
       currentModel,
-      managedKeysEnabled,
-      managedSubscriptionAvailable,
-      managedSubscriptionTier,
+      ...(managedModelRequest === undefined
+        ? {}
+        : { requestedModel: managedModelRequest }),
     });
     let baseURL = configuredBaseURL;
     let geminiCredentialPlan: GeminiCredentialPlan | undefined;
@@ -662,7 +626,7 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     });
     const rawModels = modelCatalog[provider] ?? [];
     const managedModels =
-      managedSubscriptionAvailable && providerHasLiveSubscriptionRoute(provider)
+      managedModelRequest !== undefined && providerHasLiveSubscriptionRoute(provider)
         ? visibleSubscriptionManagedModelsForTier(provider, managedSubscriptionTier)
         : undefined;
     const models = managedModels !== undefined ? managedModels : rawModels;

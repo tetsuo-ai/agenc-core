@@ -122,7 +122,7 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 ## Protocol
 
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
-- Protocol version constant: **`1.7.0`**
+- Protocol version constant: **`1.8.0`**
   (`AGENC_DAEMON_PROTOCOL_VERSION` in `runtime/src/app-server/protocol/index.ts`).
 - Clients send `initialize` with the protocol version. Negotiation compares the
   numeric major and minor versions: the server accepts the same major when the
@@ -140,6 +140,10 @@ const client = await connect(); // socket + cookie under AGENC_HOME
   capability and consent fields to that snapshot. Core/TUI callers reject an
   older daemon during initialize. The SDK rejects attachment before dispatch
   on a negotiated protocol older than 1.7.
+  Protocol 1.8 makes successful `session.setModel` and
+  `session.applyConfig` responses identify the exact canonical settings event
+  and provider/model pair. Core/TUI clients wait for that event before they
+  report success.
   Protocols 1.0 through 1.2 advertise `session.mcp.status: false`,
   reject that method, and never receive `event.mcp_status_changed`. Update if
   necessary, then run `agenc daemon restart` so the daemon uses the installed
@@ -194,6 +198,10 @@ Workbench BUFFER and Neovim behavior: [`../embedded-neovim-buffer.md`](../embedd
 Protocol 1.7 adds `session.permissions.mutateRule` for authenticated Core
 clients. It adds or removes one live session permission rule through the
 daemon's permission registry. It is not a public SDK method.
+
+Protocol 1.8 adds the provider, model, and runtime-settings event ID to
+successful model and config mutation responses. Core waits for that exact
+event before updating the TUI or accepting the next runtime-dependent action.
 
 ### Race-safe turns and transcript sync (protocol 1.2+)
 

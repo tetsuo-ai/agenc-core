@@ -7,6 +7,7 @@
  */
 
 import type { RunRuntimeSettingsSnapshot } from "../../contracts/run-contracts.js";
+import type { ProviderModelSelectionOutcome } from "../../contracts/provider-model-selection.js";
 
 /** JSON-RPC version required on daemon requests, responses, and notifications. */
 export const JSON_RPC_VERSION = "2.0" as const;
@@ -19,10 +20,12 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.6 makes the live canonical run-settings snapshot part of agent.attach.
  * 1.7 adds inactive permission capabilities to that required snapshot and an
  * authenticated internal session permission-rule mutation authority.
+ * 1.8 binds successful model and config mutation responses to the exact
+ * canonical runtime-settings event that clients must apply.
  * Clients that need any of these additive surfaces must not negotiate an older
  * daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.7.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.8.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -3344,12 +3347,12 @@ export interface SessionRewindFilesToMessageResult extends JsonObject {
   readonly displayText?: string;
 }
 
-export interface SessionSetModelResult extends JsonObject {
+export interface SessionSetModelResult
+  extends JsonObject,
+    ProviderModelSelectionOutcome {
   readonly sessionId: string;
-  /** `true` when the switch was applied or staged on the live session. */
-  readonly applied: boolean;
-  /** Human-readable summary of the switch outcome, surfaced to the user. */
-  readonly summary: string;
+  /** Canonical settings cursor proving the returned pair. */
+  readonly runtimeSettingsEventId: string;
 }
 
 export interface SessionSetPermissionModeResult extends JsonObject {
@@ -3407,6 +3410,10 @@ export interface SessionApplyConfigResult extends JsonObject {
   readonly sessionId: string;
   /** `true` when any config change was applied to the live session. */
   readonly applied: boolean;
+  /** Exact pair and cursor when the live runtime settings changed. */
+  readonly provider?: string;
+  readonly model?: string;
+  readonly runtimeSettingsEventId?: string;
   /** Human-readable summary of what was re-applied, surfaced to the user. */
   readonly summary: string;
 }

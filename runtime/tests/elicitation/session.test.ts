@@ -20,10 +20,6 @@ vi.mock("../agents/role-definitions.js", () => ({
   listAgentRoleDefinitions: () => [],
 }));
 
-vi.mock("../tui/model-switch.js", () => ({
-  buildPendingProviderSwitch: () => null,
-}));
-
 vi.mock("../llm/pasted-content.js", () => ({
   pastedContentsToLLMMessage: () => null,
 }));

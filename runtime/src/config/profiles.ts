@@ -19,7 +19,8 @@ import type {
   AgenCConfig,
   ProfileOverride,
 } from "./schema.js";
-import { mergeConfigs, PROFILE_OVERRIDE_KEYS } from "./schema.js";
+import { PROFILE_OVERRIDE_KEYS } from "./schema.js";
+import { mergeProviderModelLayer } from "./provider-model-authority.js";
 
 // Writable scratch view — `AgenCConfig` fields are readonly by design,
 // but building the override payload needs assignability.
@@ -93,7 +94,7 @@ export function resolveProfile(
     };
   }
 
-  return mergeConfigs(config, override);
+  return mergeProviderModelLayer(config, override);
 }
 
 /** List all profile names declared in `config.profiles`. */

@@ -84,6 +84,7 @@ import {
 } from "../session/session-store.js";
 import { runSlashCommand } from "./slash.js";
 import type { SlashCommandAppStateBridge } from "../commands/types.js";
+import type { ProviderModelSelectionOutcome } from "../contracts/provider-model-selection.js";
 import { ConfigStore } from "../config/store.js";
 import {
   resolveAgencHome,
@@ -2530,6 +2531,10 @@ type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & {
   setPendingProviderSwitch?: (
     pending: { provider: string; model: string; profile?: string } | null,
   ) => void;
+  applyProviderModelSelection?: (selection: {
+    readonly provider: string;
+    readonly model: string;
+  }) => Promise<ProviderModelSelectionOutcome>;
   setDaemonPermissionMode?: (mode: string) => Promise<unknown>;
   getDaemonHooksStatus?: () => Promise<unknown>;
   setDaemonHooksDisabled?: (disabled: boolean) => Promise<unknown>;
@@ -3470,6 +3475,32 @@ async function createDeferredDaemonPromptTuiSession(params: {
     typeof base.emit === "function"
       ? (base.emit as (event: unknown) => void).bind(base)
       : undefined;
+  const stageDeferredProviderModel = (selection: {
+    readonly provider: string;
+    readonly model: string;
+    readonly profile?: string;
+  }): void => {
+    pendingProvider = selection.provider;
+    pendingModel = selection.model;
+    if (selection.profile !== undefined) pendingProfile = selection.profile;
+    const sessionConfiguration = (
+      base as {
+        sessionConfiguration?: {
+          provider?: { slug?: string };
+          collaborationMode?: { model?: string };
+        };
+      }
+    ).sessionConfiguration;
+    if (sessionConfiguration === undefined) return;
+    sessionConfiguration.provider = {
+      ...(sessionConfiguration.provider ?? {}),
+      slug: selection.provider,
+    };
+    sessionConfiguration.collaborationMode = {
+      ...(sessionConfiguration.collaborationMode ?? {}),
+      model: selection.model,
+    };
+  };
   const session: TuiSessionShape & Record<string, unknown> = {
     ...daemonSessionBase,
     // The deferred TUI never owns an MCP runtime. This stable facade forwards
@@ -3728,46 +3759,38 @@ async function createDeferredDaemonPromptTuiSession(params: {
       }
       return live.partialCompactFromMessage(compactParams);
     },
-    // `/model` and `/provider` stage their switch by calling
-    // setPendingProviderSwitch; forward to liveSession so the daemon's
-    // session.setModel RPC runs the real switch machinery. Pre-first-turn
-    // (no live session yet) persist the choice into the deferred-session
-    // bootstrap config so the FIRST created turn picks it up, and mirror it
-    // into baseSession.sessionConfiguration so `/model`'s readSessionSelection
-    // and the chrome reflect the staged switch instead of silently faking
-    // success.
+    applyProviderModelSelection: async (selection) => {
+      const live = liveSession as TuiSessionShape | null;
+      if (live !== null) {
+        if (typeof live.applyProviderModelSelection !== "function") {
+          throw new Error(
+            "Provider/model switching is not supported by this daemon session.",
+          );
+        }
+        return live.applyProviderModelSelection(selection);
+      }
+      stageDeferredProviderModel(selection);
+      return {
+        applied: true,
+        provider: selection.provider,
+        model: selection.model,
+        summary:
+          `Provider/model selection staged: ${selection.provider}/${selection.model}; ` +
+          "the first conversation will use it.",
+      };
+    },
+    // The synchronous mutator exists only for pre-session bootstrap staging.
+    // Once a live daemon session exists every caller must use the awaited
+    // authority above so rejection and disconnects cannot be hidden.
     setPendingProviderSwitch: (pending) => {
       const live = liveSession as TuiSessionShape | null;
       if (live !== null) {
-        live.setPendingProviderSwitch?.(pending);
-        return;
+        throw new Error(
+          "Live daemon provider/model changes require applyProviderModelSelection().",
+        );
       }
       if (pending === null) return;
-      if (pending.model !== undefined) pendingModel = pending.model;
-      if (pending.provider !== undefined) pendingProvider = pending.provider;
-      if (pending.profile !== undefined) pendingProfile = pending.profile;
-      const sessionConfiguration = (
-        base as {
-          sessionConfiguration?: {
-            provider?: { slug?: string };
-            collaborationMode?: { model?: string };
-          };
-        }
-      ).sessionConfiguration;
-      if (sessionConfiguration !== undefined) {
-        if (pending.provider !== undefined) {
-          sessionConfiguration.provider = {
-            ...(sessionConfiguration.provider ?? {}),
-            slug: pending.provider,
-          };
-        }
-        if (pending.model !== undefined) {
-          sessionConfiguration.collaborationMode = {
-            ...(sessionConfiguration.collaborationMode ?? {}),
-            model: pending.model,
-          };
-        }
-      }
+      stageDeferredProviderModel(pending);
     },
     // `/permissions mode` and `/plan` route their mode change to the
     // daemon's real registry through liveSession.setDaemonPermissionMode.

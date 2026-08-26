@@ -22,7 +22,7 @@
 
 import type { AgenCConfig } from "../config/schema.js";
 import type { ConfigStore } from "../config/store.js";
-import { listProfiles } from "../config/profiles.js";
+import { listProfiles, resolveProfile } from "../config/profiles.js";
 import {
   editCanonicalUserConfig,
   parseConfigEditorCommand,
@@ -44,6 +44,7 @@ import {
   getConfigFilePath,
 } from "./config-context.js";
 import { asRecord } from "../utils/record.js";
+import { resolveSessionProviderModelSelection } from "../session/provider-model-selection.js";
 
 export { getConfigFilePath } from "./config-context.js";
 
@@ -169,22 +170,7 @@ async function handleProfileSubcommand(
       }`,
     };
   }
-  // Stage the switch. Preserve any existing provider/model if already
-  // set by recovery/fallback — the turn loop applies provider+profile
-  // together at top-of-loop (I-13 + I-30). Route through the typed
-  // mutator so the staging site stays consistent across commands.
-  const prior = ctx.session.pendingProviderSwitch;
-  const profile = snapshot.profiles?.[name];
-  const nextProvider = profile?.model_provider ?? prior?.provider ?? "";
-  const nextModel = profile?.model ?? prior?.model ?? "";
-  ctx.session.setPendingProviderSwitch({
-    provider: nextProvider,
-    model: nextModel,
-    profile: name,
-  });
-  // On the daemon path the staged switch above is client-only; re-apply the
-  // profile (model/provider + reasoning effort/verbosity/service tier) to the
-  // live daemon session through the bridge forwarder.
+  const resolvedProfile = resolveProfile(snapshot, name);
   const applyDaemonConfig = daemonApplyConfigFn(ctx);
   if (applyDaemonConfig !== null) {
     try {
@@ -193,10 +179,26 @@ async function handleProfileSubcommand(
     } catch (error) {
       return {
         kind: "error",
-        message: `Profile staged client-side, but daemon apply failed: ${errorMessage(error)}`,
+        message: `Profile apply failed: ${errorMessage(error)}`,
       };
     }
   }
+  const selection = resolveSessionProviderModelSelection(
+    ctx.session,
+    {
+      model_provider: resolvedProfile.model_provider,
+      model: resolvedProfile.model,
+    },
+    {
+      includePending: true,
+      fallbackConfig: snapshot,
+    },
+  );
+  ctx.session.setPendingProviderSwitch({
+    provider: selection.provider,
+    model: selection.model,
+    profile: name,
+  });
   return {
     kind: "text",
     text: `Profile switch to "${name}" staged — takes effect on next turn.`,

@@ -8,6 +8,7 @@ import type {
   McpSurfaceSnapshot,
   SessionServices,
 } from "../session/session.js";
+import type { ProviderModelSelectionOutcome } from "../contracts/provider-model-selection.js";
 import type { ApprovalResolver } from "../tools/orchestrator.js";
 import type { ToolPermissionContext } from "../permissions/types.js";
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
@@ -341,6 +342,10 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     setExpandedView?: (next: "none" | "tasks") => void;
     setAppState?: (updater: (prev: unknown) => unknown) => void;
   };
+  applyProviderModelSelection?(selection: {
+    readonly provider: string;
+    readonly model: string;
+  }): Promise<ProviderModelSelectionOutcome>;
   setPendingProviderSwitch?(
     pending: { provider: string; model: string; profile?: string } | null,
   ): void;

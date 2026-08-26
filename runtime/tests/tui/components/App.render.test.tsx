@@ -7390,7 +7390,8 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           await submit("", "PressEntertofinishonboarding");
           await submit("", "spinner:requesting:");
 
-          expect(session.setPendingProviderSwitch).toHaveBeenLastCalledWith({
+          expect(session.setPendingProviderSwitch).toHaveBeenCalledTimes(1);
+          expect(session.setPendingProviderSwitch).toHaveBeenCalledWith({
             provider: "openai",
             model: "gpt-5",
           });
@@ -7537,7 +7538,8 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
           await submit("next");
           await submit("done");
 
-          expect(session.setPendingProviderSwitch).toHaveBeenLastCalledWith({
+          expect(session.setPendingProviderSwitch).toHaveBeenCalledTimes(1);
+          expect(session.setPendingProviderSwitch).toHaveBeenCalledWith({
             provider: "deepseek",
             model: "deepseek-v4-flash",
           });

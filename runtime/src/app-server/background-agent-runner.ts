@@ -99,9 +99,16 @@ import {
   mutatePermissionRuleSource,
   PermissionRuleMutationPrecommitError,
 } from "../permissions/permission-updates.js";
-import { applyModelSwitch, readSessionSelection } from "../commands/model.js";
+import { applyModelSwitch } from "../commands/model.js";
+import type { ProviderModelSelectionOutcome } from "../contracts/provider-model-selection.js";
+import {
+  readSessionSelection,
+  resolveProviderModelSelection,
+} from "../session/provider-model-selection.js";
 import { applyProviderSwitch } from "../commands/provider.js";
 import { resolveProfile } from "../config/profiles.js";
+import { mergeProviderModelLayer } from "../config/provider-model-authority.js";
+import type { AgenCConfig } from "../config/schema.js";
 import {
   COORDINATED_CONFIG_STORE_PUBLICATION,
   type PreparedConfigStoreReload,
@@ -495,6 +502,9 @@ export interface AgenCBackgroundAgentSetModelParams {
 
 export interface AgenCBackgroundAgentSetModelResult {
   readonly applied: boolean;
+  readonly provider: string;
+  readonly model: string;
+  readonly runtimeSettingsEventId: string;
   readonly summary: string;
 }
 
@@ -572,6 +582,9 @@ export interface AgenCBackgroundAgentApplyConfigParams {
 
 export interface AgenCBackgroundAgentApplyConfigResult {
   readonly applied: boolean;
+  readonly provider?: string;
+  readonly model?: string;
+  readonly runtimeSettingsEventId?: string;
   readonly summary: string;
 }
 
@@ -1784,6 +1797,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             restoredBaseline,
             params,
             runtimeWorkspaceRoot(bootstrap),
+            bootstrap.configStore.current(),
           );
           if (
             stableStringify(restoreOverrides) !==
@@ -3178,6 +3192,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       const previousPending = session.pendingProviderSwitch;
       const previousSettings = ensureInitialRuntimeSettings(active, agentId);
       let preparedSettingsChange: PreparedRuntimeSettingsChange | undefined;
+      let preparedSettings: RunRuntimeSettingsSnapshot | undefined;
       const beforeStage = (selection: {
         readonly provider: string;
         readonly model: string;
@@ -3190,6 +3205,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           provider: selection.provider,
           model: selection.model,
         };
+        preparedSettings = nextSettings;
         preparedSettingsChange = prepareDurableRuntimeSettingsChange(
           active,
           agentId,
@@ -3197,27 +3213,48 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           "model_provider_changed",
         );
       };
-      let summary: string;
+      let outcome: ProviderModelSelectionOutcome;
       try {
         if (params.model !== undefined) {
-          summary = await applyModelSwitch(
+          outcome = await applyModelSwitch(
             session,
             params.model,
             params.provider,
             { beforeStage },
           );
         } else if (params.provider !== undefined) {
-          summary = await applyProviderSwitch(
+          outcome = await applyProviderSwitch(
             session,
             params.provider,
             undefined,
             { beforeStage },
           );
         } else {
+          const settingsEventId = active.runtimeSettingsEventId;
+          if (settingsEventId === undefined) {
+            throw new Error(`run ${agentId} has no runtime-settings cursor`);
+          }
           return {
             applied: false,
+            provider: previousSettings.provider,
+            model: previousSettings.model,
+            runtimeSettingsEventId: settingsEventId,
             summary: "No model or provider was supplied.",
           };
+        }
+        if (outcome.applied !== (preparedSettingsChange !== undefined)) {
+          throw new Error(
+            `run ${agentId} model outcome disagrees with its prepared runtime-settings successor`,
+          );
+        }
+        if (
+          outcome.applied &&
+          (preparedSettings?.provider !== outcome.provider ||
+            preparedSettings?.model !== outcome.model)
+        ) {
+          throw new Error(
+            `run ${agentId} model outcome does not match its prepared provider/model pair`,
+          );
         }
       } catch (error) {
         if (preparedSettingsChange !== undefined) {
@@ -3250,12 +3287,18 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         throw error;
       }
       preparedSettingsChange?.finalize();
-      const applied =
-        summary.startsWith("Model switched ") ||
-        summary.startsWith("Model switch staged:") ||
-        summary.startsWith("Provider switched ") ||
-        summary.startsWith("Provider switch staged:");
-      return { applied, summary };
+      const settings = active.runtimeSettings ?? previousSettings;
+      const settingsEventId = active.runtimeSettingsEventId;
+      if (settingsEventId === undefined) {
+        throw new Error(`run ${agentId} has no runtime-settings cursor`);
+      }
+      return {
+        applied: outcome.applied,
+        provider: settings.provider,
+        model: settings.model,
+        runtimeSettingsEventId: settingsEventId,
+        summary: outcome.summary,
+      };
     });
   }
 
@@ -3894,6 +3937,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         throw error;
       }
       preparedSettingsChange?.finalize();
+      const runtimeSettings = active.runtimeSettings ?? previousSettings;
+      const runtimeSettingsEventId = active.runtimeSettingsEventId;
       const label =
         params.profile !== undefined
           ? `profile ${params.profile}`
@@ -3902,6 +3947,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             : "config";
       return {
         applied,
+        ...(runtimeSettingsEventId === undefined
+          ? {}
+          : {
+              provider: runtimeSettings.provider,
+              model: runtimeSettings.model,
+              runtimeSettingsEventId,
+            }),
         summary:
           changes.length > 0
             ? `${label} applied: ${changes.join(", ")}`
@@ -7330,7 +7382,7 @@ function captureRuntimeSettings(
       hasExactBypassConsent);
 
   const pending = session.pendingProviderSwitch;
-  const selection = readSessionSelection(session);
+  const selection = readSessionSelection(session, { includePending: true });
   const configuration = (
     session as Session & {
       readonly sessionConfiguration?: Session["sessionConfiguration"];
@@ -7361,8 +7413,8 @@ function captureRuntimeSettings(
     bypassPermissionsConsentWorkspace: hasExactBypassConsent
       ? workspaceRoot
       : null,
-    model: pending?.model ?? selection.model,
-    provider: pending?.provider ?? selection.provider,
+    model: selection.model,
+    provider: selection.provider,
     profile:
       options.profile ??
       pending?.profile ??
@@ -8027,6 +8079,18 @@ function assertValidRuntimeSettingsSnapshot(
     settings.prePlanMode === "bypassPermissions";
   const hasExactBypassConsent =
     settings.bypassPermissionsConsentWorkspace === workspaceRoot;
+  let providerModelIsCanonical = false;
+  try {
+    const selection = mergeProviderModelLayer({}, {
+      model_provider: settings.provider,
+      model: settings.model,
+    });
+    providerModelIsCanonical =
+      selection.model_provider === settings.provider &&
+      selection.model === settings.model;
+  } catch {
+    providerModelIsCanonical = false;
+  }
   if (
     !RUN_RUNTIME_PERMISSION_MODES.includes(settings.permissionMode) ||
     (settings.prePlanMode !== null &&
@@ -8051,6 +8115,7 @@ function assertValidRuntimeSettingsSnapshot(
       : settings.bypassPermissionsWorkspace !== null) ||
     !bounded(settings.model, 1_024) ||
     !bounded(settings.provider, 256) ||
+    !providerModelIsCanonical ||
     !nullableBounded(settings.profile, 256) ||
     (settings.reasoningEffort !== null &&
       !RUN_RUNTIME_REASONING_EFFORTS.includes(settings.reasoningEffort)) ||
@@ -8992,6 +9057,7 @@ function runtimeSettingsWithRestoreOverrides(
   canonical: RunRuntimeSettingsSnapshot,
   params: AgenCBackgroundAgentRestoreParams,
   workspaceRoot: string,
+  config: AgenCConfig,
 ): RunRuntimeSettingsSnapshot {
   const permissionMode = params.permissionMode ?? canonical.permissionMode;
   const permissionChanged = permissionMode !== canonical.permissionMode;
@@ -9004,6 +9070,16 @@ function runtimeSettingsWithRestoreOverrides(
   const bypassTransitionCritical =
     permissionMode === "bypassPermissions" ||
     prePlanMode === "bypassPermissions";
+  const resolvedSelection = resolveProviderModelSelection(
+    config,
+    { provider: canonical.provider, model: canonical.model },
+    {
+      ...(params.provider !== undefined
+        ? { model_provider: params.provider }
+        : {}),
+      ...(params.model !== undefined ? { model: params.model } : {}),
+    },
+  );
   return {
     ...canonical,
     permissionMode,
@@ -9015,8 +9091,8 @@ function runtimeSettingsWithRestoreOverrides(
           ? canonical.autoModeActive
           : false,
     bypassPermissionsWorkspace: bypassTransitionCritical ? workspaceRoot : null,
-    model: params.model ?? canonical.model,
-    provider: params.provider ?? canonical.provider,
+    model: resolvedSelection.model,
+    provider: resolvedSelection.provider,
     profile: params.profile ?? canonical.profile,
   };
 }

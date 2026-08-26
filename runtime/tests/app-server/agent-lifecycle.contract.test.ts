@@ -1599,6 +1599,9 @@ describe("AgenC background agent lifecycle", () => {
     });
     const setAgentModel = vi.fn(async () => ({
       applied: true,
+      provider: "openai",
+      model: "gpt-x",
+      runtimeSettingsEventId: "settings-1",
       summary: 'Model switched to "gpt-x" on "openai".',
     }));
     const agents = new AgenCDaemonAgentManager({
@@ -1630,6 +1633,9 @@ describe("AgenC background agent lifecycle", () => {
     ).resolves.toEqual({
       sessionId: "session-setmodel",
       applied: true,
+      provider: "openai",
+      model: "gpt-x",
+      runtimeSettingsEventId: "settings-1",
       summary: 'Model switched to "gpt-x" on "openai".',
     });
     expect(setAgentModel).toHaveBeenCalledWith("agent-setmodel", {
@@ -5805,7 +5811,7 @@ describe("AgenC background agent lifecycle", () => {
         id: "future-protocol",
         method: "initialize",
         params: {
-          protocol: { version: "1.8.0" },
+          protocol: { version: "1.9.0" },
           clientName: "contract-test",
         },
       }),
@@ -5817,8 +5823,8 @@ describe("AgenC background agent lifecycle", () => {
         message: "Unsupported protocol version",
         data: {
           code: "PROTOCOL_VERSION_UNSUPPORTED",
-          clientVersion: "1.8.0",
-          serverVersion: "1.7.0",
+          clientVersion: "1.9.0",
+          serverVersion: "1.8.0",
         },
       },
     });
@@ -5883,16 +5889,16 @@ describe("AgenC background agent lifecycle", () => {
       id: 1,
       result: {
         type: "initialized",
-        protocolVersion: "1.7.0",
-        protocol: { version: "1.7.0" },
+        protocolVersion: "1.8.0",
+        protocol: { version: "1.8.0" },
         capabilities: {},
       },
     });
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.7.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.8.0");
     expect(connection.initializeState).toMatchObject({
-      protocol: { version: "1.7.0" },
+      protocol: { version: "1.8.0" },
       clientProtocol: { version: "1.0.0" },
-      serverProtocol: { version: "1.7.0" },
+      serverProtocol: { version: "1.8.0" },
       clientCapabilities: { experimentalApi: true },
     });
     expect(

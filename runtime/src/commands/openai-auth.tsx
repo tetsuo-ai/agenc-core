@@ -167,8 +167,8 @@ async function executeOpenAiLogin(
     if (completion.authMode === "chatgpt") {
       lines[0] = `Signed in to ChatGPT as ${who} (subscription).`;
     }
-    const switchSummary = await applyProviderSwitch(ctx.session, "openai");
-    lines.push(switchSummary);
+    const switchOutcome = await applyProviderSwitch(ctx.session, "openai");
+    lines.push(switchOutcome.summary);
     lines.push(
       "This sign-in takes precedence over any OPENAI_API_KEY in the " +
         "environment. /openai-logout to fall back to the env key.",

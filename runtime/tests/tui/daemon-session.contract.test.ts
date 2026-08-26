@@ -20,10 +20,6 @@ vi.mock("../agents/role-definitions.js", () => ({
   listAgentRoleDefinitions: () => [],
 }));
 
-vi.mock("./model-switch.js", () => ({
-  buildPendingProviderSwitch: () => null,
-}));
-
 vi.mock("../llm/pasted-content.js", () => ({
   pastedContentsToLLMMessage: () => null,
 }));
@@ -514,6 +510,8 @@ function runtimeSettingsEvent(
     readonly autoModeAvailable?: boolean;
     readonly bypassPermissionsModeAvailable?: boolean;
     readonly bypassPermissionsConsentWorkspace?: string | null;
+    readonly provider?: string;
+    readonly model?: string;
   } = {},
 ): JsonObject {
   return {
@@ -537,8 +535,8 @@ function runtimeSettingsEvent(
           bypassPermissionsWorkspace: null,
           bypassPermissionsConsentWorkspace:
             capabilities.bypassPermissionsConsentWorkspace ?? null,
-          model: "grok-4.5",
-          provider: "grok",
+          model: capabilities.model ?? "grok-4.5",
+          provider: capabilities.provider ?? "grok",
           profile: null,
           reasoningEffort: null,
           modelVerbosity: null,
@@ -1832,28 +1830,79 @@ describe("AgenC TUI daemon session adapter", () => {
     ]);
   });
 
-  it("forwards setPendingProviderSwitch to the daemon session.setModel RPC", async () => {
+  it("awaits the exact model-settings successor before returning success", async () => {
+    const authority = runtimeAuthorityBase();
     const client = createClient();
+    const request = client.request.bind(client);
+    let resolveModelResponse!: (value: unknown) => void;
+    const modelResponse = new Promise<unknown>((resolve) => {
+      resolveModelResponse = resolve;
+    });
+    client.request = async (method, params, options) => {
+      if (method !== "session.setModel") {
+        return request(method, params, options);
+      }
+      client.requests.push({ method, params });
+      return (await modelResponse) as never;
+    };
     const session = createDaemonTuiSession({
-      baseSession: createBaseSession(),
+      baseSession: authority.baseSession,
       client,
       sessionId: "session_1",
       clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
     });
 
-    // /model and /provider stage the switch synchronously; the bridge
-    // fires session.setModel fire-and-forget. Flush the microtask queue
-    // so the request lands before assertion.
-    (
-      session as unknown as {
-        setPendingProviderSwitch: (
-          spec: { provider: string; model: string } | null,
-        ) => void;
-      }
-    ).setPendingProviderSwitch({ provider: "openai", model: "gpt-x" });
-    await Promise.resolve();
-    await Promise.resolve();
+    let settled = false;
+    const mutation = session.applyProviderModelSelection?.({
+      provider: "openai",
+      model: "gpt-x",
+    });
+    void mutation?.finally(() => {
+      settled = true;
+    });
+    await flush();
+    expect(settled).toBe(false);
 
+    resolveModelResponse({
+      sessionId: "session_1",
+      applied: true,
+      provider: "openai",
+      model: "gpt-x",
+      runtimeSettingsEventId: "E1",
+      summary: 'Model switched to "gpt-x" on "openai".',
+    });
+    await flush();
+    expect(settled).toBe(false);
+    expect(
+      (
+        authority.baseSession as unknown as {
+          sessionConfiguration: {
+            provider: { slug: string };
+            collaborationMode: { model: string };
+          };
+        }
+      ).sessionConfiguration,
+    ).toMatchObject({
+      provider: { slug: "grok" },
+      collaborationMode: { model: "grok-4.5" },
+    });
+
+    client.emit(
+      "session_1",
+      runtimeSettingsEvent("E1", "E0", "default", null, {
+        provider: "openai",
+        model: "gpt-x",
+      }),
+    );
+    const result = await mutation;
+
+    expect(result).toMatchObject({
+      applied: true,
+      provider: "openai",
+      model: "gpt-x",
+      runtimeSettingsEventId: "E1",
+    });
     expect(client.requests).toEqual([
       {
         method: "session.setModel",
@@ -1864,25 +1913,127 @@ describe("AgenC TUI daemon session adapter", () => {
         },
       },
     ]);
+    expect(
+      (
+        authority.baseSession as unknown as {
+          sessionConfiguration: {
+            provider: { slug: string };
+            collaborationMode: { model: string };
+          };
+        }
+      ).sessionConfiguration,
+    ).toMatchObject({
+      provider: { slug: "openai" },
+      collaborationMode: { model: "gpt-x" },
+    });
   });
 
-  it("ignores a null setPendingProviderSwitch without issuing an RPC", async () => {
+  it("serializes model changes so a second request follows the first successor", async () => {
+    const authority = runtimeAuthorityBase();
     const client = createClient();
+    const request = client.request.bind(client);
+    let cursor = "E0";
+    const pairs: Array<readonly [string, string]> = [];
+    client.request = async (method, params, options) => {
+      if (method !== "session.setModel") {
+        return request(method, params, options);
+      }
+      client.requests.push({ method, params });
+      const provider = String(params?.provider);
+      const model = String(params?.model);
+      pairs.push([provider, model]);
+      const nextCursor = `E${pairs.length}`;
+      client.emit(
+        "session_1",
+        runtimeSettingsEvent(nextCursor, cursor, "default", null, {
+          provider,
+          model,
+        }),
+      );
+      cursor = nextCursor;
+      return {
+        sessionId: "session_1",
+        applied: true,
+        provider,
+        model,
+        runtimeSettingsEventId: nextCursor,
+        summary: `Model switched to "${model}" on "${provider}".`,
+      } as never;
+    };
     const session = createDaemonTuiSession({
-      baseSession: createBaseSession(),
+      baseSession: authority.baseSession,
       client,
       sessionId: "session_1",
       clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
     });
 
-    (
-      session as unknown as {
-        setPendingProviderSwitch: (spec: null) => void;
-      }
-    ).setPendingProviderSwitch(null);
-    await Promise.resolve();
+    const first = session.applyProviderModelSelection?.({
+      provider: "openai",
+      model: "gpt-x",
+    });
+    const second = session.applyProviderModelSelection?.({
+      provider: "grok",
+      model: "grok-4.5",
+    });
+    await Promise.all([first, second]);
 
-    expect(client.requests).toEqual([]);
+    expect(pairs).toEqual([
+      ["openai", "gpt-x"],
+      ["grok", "grok-4.5"],
+    ]);
+    expect(
+      (
+        authority.baseSession as unknown as {
+          sessionConfiguration: {
+            provider: { slug: string };
+            collaborationMode: { model: string };
+          };
+        }
+      ).sessionConfiguration,
+    ).toMatchObject({
+      provider: { slug: "grok" },
+      collaborationMode: { model: "grok-4.5" },
+    });
+  });
+
+  it("rejects when the connection gaps after the model response but before its successor", async () => {
+    const authority = runtimeAuthorityBase();
+    const client = createClient();
+    const request = client.request.bind(client);
+    client.request = async (method, params, options) => {
+      if (method !== "session.setModel") {
+        return request(method, params, options);
+      }
+      client.requests.push({ method, params });
+      client.emitConnection({ status: "disconnected" });
+      return {
+        sessionId: "session_1",
+        applied: true,
+        provider: "openai",
+        model: "gpt-x",
+        runtimeSettingsEventId: "E1",
+        summary: 'Model switched to "gpt-x" on "openai".',
+      } as never;
+    };
+    const session = createDaemonTuiSession({
+      baseSession: authority.baseSession,
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+      runtimeSettingsCursor: { eventId: "E0", cwd: process.cwd() },
+    });
+
+    await expect(
+      session.applyProviderModelSelection?.({
+        provider: "openai",
+        model: "gpt-x",
+      }),
+    ).rejects.toThrow(/connection changed.*re-attach/u);
+    await expect(session.submit("must stay fenced")).rejects.toThrow(
+      /connection changed.*re-attach/u,
+    );
+    expect(authority.abortTerminal).toHaveBeenCalledTimes(1);
   });
 
   it("forwards setDaemonPermissionMode to the daemon session.setPermissionMode RPC", async () => {

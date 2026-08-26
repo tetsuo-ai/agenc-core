@@ -18,6 +18,10 @@ import type {
 function createBaseSession(): AgenCTuiBridgeSession {
   return {
     conversationId: "local_session",
+    sessionConfiguration: {
+      provider: { slug: "grok" },
+      collaborationMode: { model: "grok-4.5" },
+    },
     services: {
       permissionModeRegistry: {
         current: () =>
@@ -87,23 +91,15 @@ function createClient(): FakeClient {
   };
 }
 
-const flush = (): Promise<void> =>
-  new Promise<void>((resolve) => {
-    setTimeout(resolve, 0);
-  });
-
 describe("daemon-backed /model switch surfaces the daemon's authoritative outcome", () => {
-  it("surfaces a provider_switch_rejected warning when the daemon REJECTS the switch", async () => {
-    // GAP #2: setPendingProviderSwitch previously fired session.setModel
-    // fire-and-forget and swallowed SessionSetModelResult.applied, so a
-    // daemon rejection (history-incompat / staged-turn) was hidden behind
-    // the command's optimistic "Model switched" line. The daemon is the
-    // authority: when it reports applied=false the rejection must reach
-    // the user.
+  it("returns a daemon rejection directly instead of optimistic success", async () => {
     const client = createClient();
     client.results.set("session.setModel", {
       sessionId: "session_1",
       applied: false,
+      provider: "grok",
+      model: "grok-4.5",
+      runtimeSettingsEventId: "test-runtime-settings:initial",
       summary:
         "Model switch to \"opus\" blocked: history incompatible with target model",
     });
@@ -114,64 +110,22 @@ describe("daemon-backed /model switch surfaces the daemon's authoritative outcom
       clientId: "tui_1",
     });
 
-    const received: JsonObject[] = [];
-    const unsubscribe = session.subscribeToEvents((event) => {
-      received.push(event as JsonObject);
+    const result = await session.applyProviderModelSelection?.({
+      provider: "anthropic",
+      model: "opus",
     });
 
-    session.setPendingProviderSwitch?.({ provider: "anthropic", model: "opus" });
-    await flush();
-    unsubscribe();
-
-    // The RPC was awaited (forwarded), and the daemon's rejection summary
-    // reached the transcript as an allow-listed, user-visible warning.
-    expect(
-      client.requests.some((r) => r.method === "session.setModel"),
-    ).toBe(true);
-    const rejection = received.find(
-      (event) =>
-        (event as { type?: unknown }).type === "warning" &&
-        (event as { payload?: { cause?: unknown } }).payload?.cause ===
-          "provider_switch_rejected",
-    );
-    expect(rejection).toBeDefined();
-    expect(
-      (rejection as { payload: { message: string } }).payload.message,
-    ).toContain("history incompatible");
+    expect(result).toMatchObject({
+      applied: false,
+      provider: "grok",
+      model: "grok-4.5",
+      summary: expect.stringContaining("history incompatible"),
+    });
+    expect(client.requests.filter((r) => r.method === "session.setModel"))
+      .toHaveLength(1);
   });
 
-  it("does NOT surface a rejection warning when the daemon APPLIES the switch", async () => {
-    const client = createClient();
-    client.results.set("session.setModel", {
-      sessionId: "session_1",
-      applied: true,
-      summary: "Model switched to \"opus\" on \"anthropic\".",
-    });
-    const session = createDaemonTuiSession({
-      baseSession: createBaseSession(),
-      client,
-      sessionId: "session_1",
-      clientId: "tui_1",
-    });
-
-    const received: JsonObject[] = [];
-    const unsubscribe = session.subscribeToEvents((event) => {
-      received.push(event as JsonObject);
-    });
-
-    session.setPendingProviderSwitch?.({ provider: "anthropic", model: "opus" });
-    await flush();
-    unsubscribe();
-
-    const rejection = received.find(
-      (event) =>
-        (event as { payload?: { cause?: unknown } }).payload?.cause ===
-        "provider_switch_rejected",
-    );
-    expect(rejection).toBeUndefined();
-  });
-
-  it("stays responsive: a disconnected daemon socket is swallowed, not thrown", async () => {
+  it("rejects a disconnected daemon mutation and never reports success", async () => {
     const client = createClient();
     client.request = async (method, params) => {
       client.requests.push({ method, ...(params !== undefined ? { params } : {}) });
@@ -187,15 +141,12 @@ describe("daemon-backed /model switch surfaces the daemon's authoritative outcom
       clientId: "tui_1",
     });
 
-    // Synchronous void mutator must not throw even though the round-trip
-    // rejects; the next snapshot / turn surfaces the disconnection.
-    expect(() =>
-      session.setPendingProviderSwitch?.({
+    await expect(
+      session.applyProviderModelSelection?.({
         provider: "anthropic",
         model: "opus",
       }),
-    ).not.toThrow();
-    await flush();
+    ).rejects.toThrow("daemon disconnected");
   });
 });
 

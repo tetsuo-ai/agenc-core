@@ -3029,39 +3029,11 @@ export class Session {
       peeked.sessionConfiguration?.provider?.slug ??
       "unknown";
 
-    let resolvedModel = pending.model;
-    let resolvedProvider = pending.provider;
-    if (pending.profile) {
-      const configStore = (this.services as Partial<SessionServices>)
-        .configStore;
-      if (configStore && typeof configStore.current === "function") {
-        try {
-          const { resolveProfile } = await import("../config/profiles.js");
-          const overlaid = resolveProfile(
-            configStore.current(),
-            pending.profile,
-          );
-          if (overlaid.model && overlaid.model.length > 0) {
-            resolvedModel = overlaid.model;
-          }
-          if (
-            typeof overlaid.model_provider === "string" &&
-            overlaid.model_provider.length > 0
-          ) {
-            resolvedProvider = overlaid.model_provider;
-          }
-        } catch {
-          // The staging site already validated the profile; keep the marker's
-          // raw model when the overlay lookup is unavailable here.
-        }
-      }
-    }
-
     let preparedSwitch: PreparedProviderBinding;
     let targetProviderSettings: ResolvedProviderSettings | undefined;
     try {
       const targetNormalizedProvider =
-        resolveBuiltInProviderSlug(resolvedProvider);
+        resolveBuiltInProviderSlug(pending.provider);
       const reusableLiveProviderOptions = targetNormalizedProvider === undefined
         ? undefined
         : providerService.committedFactoryOptions(targetNormalizedProvider);
@@ -3079,7 +3051,7 @@ export class Session {
         targetNormalizedProvider !== undefined
           ? await providerFactoryOptionsFromSettings({
               provider: targetNormalizedProvider,
-              model: resolvedModel,
+              model: pending.model,
               settings: targetProviderSettings,
               authBackend: this.services.authBackend,
               authSubscriptionTier: this.services.authSubscriptionTier,
@@ -3093,13 +3065,13 @@ export class Session {
             })
           : {};
       preparedSwitch = await providerService.prepare(
-        { provider: resolvedProvider, model: resolvedModel },
+        { provider: pending.provider, model: pending.model },
         {
           ...mergeProviderFactoryOptions(
             reusableLiveProviderOptions,
             settingsOptions,
           ),
-          model: settingsOptions.model ?? resolvedModel,
+          model: settingsOptions.model ?? pending.model,
           tools: this.services.registry.toLLMTools(),
         },
       );

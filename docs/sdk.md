@@ -342,16 +342,18 @@ evidence shape (`toolCallId`, `disposition`, `evidenceRef`, and
 `evidenceSha256`), and partial mixtures are rejected. An earlier-shape request
 leaves durable effects unchanged in `remaining`.
 
-Protocol version constant: **`1.7.0`**
+Protocol version constant: **`1.8.0`**
 (`AGENC_SDK_DAEMON_PROTOCOL_VERSION`). Handshake rules and
 `PROTOCOL_VERSION_UNSUPPORTED` live in [daemon.md](reference/daemon.md).
-The SDK retries initialization at a daemon running protocol 1.0 through 1.6 and
+The SDK retries initialization at a daemon running protocol 1.0 through 1.7 and
 uses advertised capabilities for additive fallbacks. Protocol 1.6 made the
 owning runtime options and live run-settings snapshot required in `agent.attach`.
 Protocol 1.7 adds required inactive auto availability and exact-workspace bypass
 capability and consent fields to that snapshot. The SDK rejects attachment
 before dispatch on an older negotiated protocol and uses `session.create`
 directly instead of spawning an agent it cannot safely attach to.
+Protocol 1.8 binds Core model and config mutation responses to the exact
+runtime-settings event that follows them.
 
 Server→client notifications (`AGENC_SDK_DAEMON_NOTIFICATION_METHODS`, 18 names):
 

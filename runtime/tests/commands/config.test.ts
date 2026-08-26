@@ -538,6 +538,69 @@ describe("configCommand — profile", () => {
     expect(staged.provider).toBe("grok");
   });
 
+  it("resolves a provider-only profile without mixing the prior model", async () => {
+    const store = makeStore({
+      profiles: {
+        remote: { model_provider: "openai" },
+      },
+    });
+    const session = stubSession();
+    session.setPendingProviderSwitch({
+      provider: "grok",
+      model: "grok-4.3",
+    });
+
+    const result = await configCommand.execute(
+      stubCtx({
+        configStore: store,
+        argsRaw: "profile remote",
+        session,
+      }),
+    );
+
+    expect(result.kind).toBe("text");
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown })
+        .pendingProviderSwitch,
+    ).toEqual({
+      provider: "openai",
+      model: "gpt-5",
+      profile: "remote",
+    });
+  });
+
+  it("stages the same config-based pair that profile consumption will apply", async () => {
+    const store = makeStore({
+      model_provider: "openai",
+      model: "gpt-5-mini",
+      profiles: {
+        strict: { reasoning_effort: "low" },
+      },
+    });
+    const session = stubSession();
+    session.setPendingProviderSwitch({
+      provider: "grok",
+      model: "grok-4.3",
+    });
+
+    await configCommand.execute(
+      stubCtx({
+        configStore: store,
+        argsRaw: "profile strict",
+        session,
+      }),
+    );
+
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown })
+        .pendingProviderSwitch,
+    ).toEqual({
+      provider: "openai",
+      model: "gpt-5-mini",
+      profile: "strict",
+    });
+  });
+
   it("'profile unknown' returns an error", async () => {
     const store = makeStore({ profiles: { dev: { model: "grok-dev" } } });
     const r = await configCommand.execute(
@@ -562,6 +625,7 @@ describe("configCommand — profile", () => {
       summary: "profile dev applied: model base->grok-dev",
     }));
     const session = Object.assign(stubSession(), { applyDaemonConfig });
+    const stage = vi.spyOn(session, "setPendingProviderSwitch");
     const r = await configCommand.execute(
       stubCtx({
         configStore: store,
@@ -570,13 +634,10 @@ describe("configCommand — profile", () => {
       }),
     );
     if (r.kind !== "text") throw new Error("expected text");
-    // Daemon summary is surfaced verbatim, and the staging still happened.
+    // The daemon transaction is the only mutation path.
     expect(r.text).toBe("profile dev applied: model base->grok-dev");
     expect(applyDaemonConfig).toHaveBeenCalledWith({ profile: "dev" });
-    expect(
-      (session as unknown as { pendingProviderSwitch: { profile?: string } })
-        .pendingProviderSwitch?.profile,
-    ).toBe("dev");
+    expect(stage).not.toHaveBeenCalled();
   });
 
   it("does NOT call the daemon forwarder on the in-process path", async () => {
@@ -607,7 +668,7 @@ describe("configCommand — profile", () => {
     );
     expect(r.kind).toBe("error");
     if (r.kind !== "error") throw new Error("expected error");
-    expect(r.message).toContain("daemon apply failed");
+    expect(r.message).toContain("Profile apply failed");
   });
 });
 

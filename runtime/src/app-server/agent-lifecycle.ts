@@ -3219,6 +3219,9 @@ export class AgenCDaemonAgentManager {
     return {
       sessionId: params.sessionId,
       applied: summary.applied,
+      provider: summary.provider,
+      model: summary.model,
+      runtimeSettingsEventId: summary.runtimeSettingsEventId,
       summary: summary.summary,
     };
   }
@@ -3382,6 +3385,11 @@ export class AgenCDaemonAgentManager {
     return {
       sessionId: params.sessionId,
       applied: result.applied,
+      ...(result.provider === undefined ? {} : { provider: result.provider }),
+      ...(result.model === undefined ? {} : { model: result.model }),
+      ...(result.runtimeSettingsEventId === undefined
+        ? {}
+        : { runtimeSettingsEventId: result.runtimeSettingsEventId }),
       summary: result.summary,
     };
   }
