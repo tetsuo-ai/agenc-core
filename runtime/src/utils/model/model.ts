@@ -5,7 +5,6 @@
  * literals with process.env.USER_TYPE === 'ant' for Bun to remove the codenames
  * during dead code elimination
  */
-import { getMainLoopModelOverride } from '../../bootstrap/state.js'
 import {
   getSubscriptionType,
   isAgenCAISubscriber,
@@ -21,7 +20,6 @@ import {
 import { getModelStrings, resolveOverriddenModel } from './modelStrings.js'
 import { formatModelPricing, getOpus46CostTier } from '../modelCost.js'
 import { getExecutionAuthoritySettings } from '../settings/settings.js'
-import type { PermissionMode } from '../permissions/PermissionMode.js'
 import {
   getAPIProvider,
   getSelectedProviderEnvironment,
@@ -35,7 +33,9 @@ import { resolveSecureStorageHome } from '../secureStorage/home.js'
 function credentialHome() {
   return resolveSecureStorageHome()
 }
-import { isModelAllowed } from './modelAllowlist.js'
+import {
+  isModelAllowed,
+} from './modelAllowlist.js'
 import { type ModelAlias, isModelAlias } from './aliases.js'
 import {
   getAntModelOverrideConfig,
@@ -73,7 +73,7 @@ export function getSmallFastModel(): ModelName {
   }
   // AgenC uses the session-owned canonical model.
   if (getAPIProvider() === 'agenc') {
-    return getActiveProviderModel() || 'agencspark'
+    return getActiveProviderModel() || 'agenc'
   }
   // For GitHub Copilot provider
   if (getAPIProvider() === 'github') {
@@ -106,33 +106,25 @@ export function isNonCustomOpusModel(model: ModelName): boolean {
 }
 
 /**
- * Helper to get the model from the session override or immutable canonical
- * startup/session selection. The returned value can be a model alias.
+ * Get the model from the immutable canonical startup/session selection. The
+ * returned value can be a model alias.
  * Undefined if the user didn't configure anything, in which case we fall back to
  * the default (null).
  *
  * Priority order within this function:
- * 1. Model override during session (from /model command) - highest priority
- * 2. Session/startup canonical selection (`--model`, `AGENC_MODEL`, or config)
- * 3. Canonical settings snapshot
+ * 1. Session-owned provider/model selection
+ * 2. Canonical execution settings snapshot
  */
 export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
-  let specifiedModel: ModelSetting | undefined
-
-  const modelOverride = getMainLoopModelOverride()
-  if (modelOverride !== undefined) {
-    specifiedModel = modelOverride
-  } else {
-    const settings = getExecutionAuthoritySettings()
-    const setting = normalizeModelSetting(settings.model)
-    specifiedModel =
-      getActiveProviderModel() ||
-      setting ||
-      undefined
-  }
+  const settings = getExecutionAuthoritySettings()
+  const setting = normalizeModelSetting(settings.model)
+  const specifiedModel = getActiveProviderModel() || setting || undefined
 
   // Ignore the user-specified model if it's not in the availableModels allowlist.
-  if (specifiedModel && !isModelAllowed(specifiedModel)) {
+  if (
+    specifiedModel &&
+    !isModelAllowed(getSelectedProviderName(), specifiedModel, settings)
+  ) {
     return undefined
   }
 
@@ -143,10 +135,9 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
  * Get the main loop model to use for the current session.
  *
  * Model Selection Priority Order:
- * 1. Model override during session (from /model command) - highest priority
- * 2. Session/startup canonical selection (`--model`, `AGENC_MODEL`, or config)
- * 3. Canonical settings snapshot
- * 4. Built-in default
+ * 1. Session-owned provider/model selection
+ * 2. Canonical execution settings snapshot
+ * 3. Built-in default
  *
  * @returns The resolved model name to use
  */
@@ -283,41 +274,6 @@ export function getDefaultHaikuModel(): ModelName {
 
   // Haiku 4.5 is available on all platforms (first-party, Foundry, Bedrock, Vertex)
   return getModelStrings().haiku45
-}
-
-/**
- * Get the model to use for runtime, depending on the runtime context.
- * @param params Subset of the runtime context to determine the model to use.
- * @returns The model to use
- */
-export function getRuntimeMainLoopModel(params: {
-  permissionMode: PermissionMode
-  mainLoopModel: string
-  modelSetting: ModelSetting | undefined
-  exceeds200kTokens?: boolean
-}): ModelName {
-  const {
-    permissionMode,
-    mainLoopModel,
-    modelSetting,
-    exceeds200kTokens = false,
-  } = params
-
-  // opusplan uses Opus in plan mode without [1m] suffix.
-  if (
-    modelSetting === 'opusplan' &&
-    permissionMode === 'plan' &&
-    !exceeds200kTokens
-  ) {
-    return getDefaultOpusModel()
-  }
-
-  // sonnetplan by default
-  if (modelSetting === 'haiku' && permissionMode === 'plan') {
-    return getDefaultSonnetModel()
-  }
-
-  return mainLoopModel
 }
 
 /**
@@ -505,9 +461,6 @@ export function getAgenCAiUserDefaultModelDescription(
 export function renderDefaultModelSetting(
   setting: ModelName | ModelAlias,
 ): string {
-  if (setting === 'opusplan') {
-    return 'Opus 4.7 in plan mode, else Sonnet 4.6'
-  }
   return renderModelName(parseUserSpecifiedModel(setting))
 }
 
@@ -542,16 +495,6 @@ export function isOpus1mMergeEnabled(): boolean {
 }
 
 export function renderModelSetting(setting: ModelName | ModelAlias): string {
-  if (setting === 'opusplan') {
-    return 'Opus Plan'
-  }
-  // Handle Agenc models - show actual model name + resolved model
-  if (setting === 'agencplan') {
-    return 'agencplan (gpt-5.5)'
-  }
-  if (setting === 'agencspark') {
-    return 'agencspark (gpt-5.3-codex-spark)'
-  }
   if (isModelAlias(setting)) {
     return capitalize(setting)
   }
@@ -769,8 +712,6 @@ export function parseUserSpecifiedModel(
 
   if (isModelAlias(modelString)) {
     switch (modelString) {
-      case 'opusplan':
-        return getDefaultSonnetModel() + (has1mTag ? '[1m]' : '') // Sonnet is default, Opus in plan mode
       case 'sonnet':
         return getDefaultSonnetModel() + (has1mTag ? '[1m]' : '')
       case 'haiku':
@@ -781,14 +722,6 @@ export function parseUserSpecifiedModel(
         return getBestModel() + (has1mTag ? '[1m]' : '')
       default:
     }
-  }
-
-  // Handle Agenc aliases - map to actual model names
-  if (modelString === 'agencplan') {
-    return 'gpt-5.5'
-  }
-  if (modelString === 'agencspark') {
-    return 'gpt-5.3-codex-spark'
   }
 
   if (process.env.USER_TYPE === 'ant') {

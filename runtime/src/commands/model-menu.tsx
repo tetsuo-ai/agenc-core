@@ -13,6 +13,10 @@ import {
   defaultModelForProvider,
 } from "../config/resolve-model.js";
 import { resolveRegisteredModelCatalogEntry } from "../llm/registry/model-catalog.js";
+import {
+  providerLocalModelIdFromCatalog,
+} from "../llm/registry/provider-info.js";
+import { isModelAllowed } from "../utils/model/modelAllowlist.js";
 import type { AgenCConfig } from "../config/schema.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
@@ -43,6 +47,7 @@ type ModelRowStatus =
 
 type ModelMenuRow = {
   readonly model: string;
+  readonly displayModel: string;
   readonly provider: ProviderSlug;
   readonly status: ModelRowStatus;
   readonly detail: string;
@@ -67,7 +72,7 @@ export type ModelMenuSelectionResult = {
 };
 
 function rowStatus(params: {
-  readonly model: string;
+  readonly displayModel: string;
   readonly provider: ProviderSlug;
   readonly currentProvider: ProviderSlug;
   readonly currentModel: string;
@@ -76,17 +81,28 @@ function rowStatus(params: {
 }): ModelRowStatus {
   if (
     params.provider === params.currentProvider &&
-    params.model === params.currentModel
+    params.displayModel === providerLocalModelIdFromCatalog(
+      params.provider,
+      params.currentModel,
+    )
   ) {
     return "current";
   }
   if (
     params.configuredModel !== undefined &&
-    params.model === params.configuredModel
+    params.displayModel === providerLocalModelIdFromCatalog(
+      params.provider,
+      params.configuredModel,
+    )
   ) {
     return "configured";
   }
-  if (params.model === params.defaultModel) return "default";
+  if (
+    params.displayModel === providerLocalModelIdFromCatalog(
+      params.provider,
+      params.defaultModel,
+    )
+  ) return "default";
   return "available";
 }
 
@@ -195,39 +211,59 @@ function providerRows(params: {
       ? configuredModelForProvider(params.config, params.provider)
       : undefined;
   const defaultModel = defaultModelForProvider(params.provider);
-  const candidates = new Set<string>();
-  if (params.provider === params.currentProvider) candidates.add(params.currentModel);
-  if (configuredModel !== undefined) candidates.add(configuredModel);
-  candidates.add(defaultModel);
+  const candidates = new Map<string, string>();
+  const addCandidate = (model: string, preferCatalogSpelling = false): void => {
+    const displayModel = providerLocalModelIdFromCatalog(
+      params.provider,
+      model,
+    );
+    if (
+      !isModelAllowed(
+        params.provider,
+        displayModel,
+        params.config ?? {},
+      )
+    ) return;
+    if (preferCatalogSpelling || !candidates.has(displayModel)) {
+      candidates.set(displayModel, model);
+    }
+  };
+  if (params.provider === params.currentProvider) addCandidate(params.currentModel);
+  if (configuredModel !== undefined) addCandidate(configuredModel);
+  addCandidate(defaultModel);
   for (const model of params.catalogModels) {
     const trimmed = model.trim();
     if (trimmed.length === 0) continue;
     // `visibility: "hide"` models (e.g. internal review models) stay resolvable
     // via the flat catalog but must not be offered as new picker selections.
-    // The current/configured/default candidates above are added unconditionally,
-    // so a hidden model that is the active selection still renders its row.
+    // Current/configured/default candidates bypass visibility filtering, but
+    // every candidate still passes through managed model policy above.
     if (isHiddenCatalogModel(params.provider, trimmed)) continue;
-    candidates.add(trimmed);
+    addCandidate(trimmed, true);
   }
 
   if (candidates.size === 0) {
     return [{
       provider: params.provider,
       model: "(no models)",
+      displayModel: "(no models)",
       status: "unavailable",
       selectable: false,
       groupLabel: params.provider,
-      detail: rowDetailForRoute(
-        "unavailable",
-        params.provider,
-        params.managedRoute === true,
-      ),
+      detail:
+        params.config?.availableModels === undefined
+          ? rowDetailForRoute(
+              "unavailable",
+              params.provider,
+              params.managedRoute === true,
+            )
+          : "no models allowed by managed policy",
     }];
   }
 
-  return [...candidates].map((model): ModelMenuRow => {
+  return [...candidates].map(([displayModel, model]): ModelMenuRow => {
     const status = rowStatus({
-      model,
+      displayModel,
       provider: params.provider,
       currentProvider: params.currentProvider,
       currentModel: params.currentModel,
@@ -236,6 +272,7 @@ function providerRows(params: {
     });
     return {
       model,
+      displayModel,
       provider: params.provider,
       status,
       selectable: status !== "unavailable",
@@ -327,15 +364,21 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
         )
       : -1;
   const currentActiveIndex = rows.findIndex(row => row.status === "current");
+  const firstSelectableIndex = rows.findIndex(row => row.selectable);
   const activeIndex = Math.max(
     0,
-    preferredActiveIndex >= 0 ? preferredActiveIndex : currentActiveIndex,
+    preferredActiveIndex >= 0
+      ? preferredActiveIndex
+      : currentActiveIndex >= 0
+        ? currentActiveIndex
+        : firstSelectableIndex,
   );
   // Count the rows actually offered per provider (hidden models are filtered
   // out in providerRows) so the displayed count matches the selectable list.
   const providerCounts = Object.freeze(
     rows.reduce<Record<string, number>>((counts, row) => {
-      counts[row.provider] = (counts[row.provider] ?? 0) + 1;
+      counts[row.provider] =
+        (counts[row.provider] ?? 0) + (row.selectable ? 1 : 0);
       return counts;
     }, {}),
   );
@@ -362,7 +405,7 @@ export function modelMenuFallback(snapshot: ModelMenuSnapshot): string {
   ];
   for (const row of snapshot.rows) {
     lines.push(
-      `  ${row.status === "current" ? "*" : "-"} ${row.provider}:${row.model} (${row.detail})`,
+      `  ${row.status === "current" ? "*" : "-"} ${row.provider}:${row.displayModel} (${row.detail})`,
     );
   }
   lines.push(
@@ -460,7 +503,7 @@ function ModelMenuView({
             {row.provider}
           </ThemedText>,
           <ThemedText key="model" color={active ? "agenc" : "text2"} wrap="truncate-middle">
-            {row.model}
+            {row.displayModel}
           </ThemedText>,
           <ThemedText key="group" color="inactive" wrap="truncate-end">
             {row.groupLabel}
@@ -486,7 +529,7 @@ function ModelMenuView({
             or local routes unless they show hosted subscription detail.
           </ThemedText>
           <ThemedText color="subtle" wrap="wrap">
-            Selected: {selected?.provider ?? snapshot.provider}:{selected?.model ?? snapshot.currentModel}
+            Selected: {selected?.provider ?? snapshot.provider}:{selected?.displayModel ?? snapshot.currentModel}
           </ThemedText>
           {selected ? (
             <>

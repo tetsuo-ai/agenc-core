@@ -79,8 +79,6 @@ export type Theme = {
   memoryBackgroundColor: string
   rate_limit_fill: string
   rate_limit_empty: string
-  fastMode: string
-  fastModeShimmer: string
   // Brief/assistant mode label colors
   briefLabelYou: string
   briefLabelAgenC: string
@@ -204,8 +202,6 @@ const lightTheme: Theme = {
   memoryBackgroundColor: 'rgb(230, 245, 250)',
   rate_limit_fill: 'rgb(87,105,247)', // Medium blue
   rate_limit_empty: 'rgb(39,47,111)', // Dark blue
-  fastMode: 'rgb(255,106,0)', // Electric orange
-  fastModeShimmer: 'rgb(255,150,50)', // Lighter orange for shimmer
   // Brief/assistant mode
   briefLabelYou: 'rgb(37,99,235)', // Blue
   briefLabelAgenC: 'rgb(215,119,87)', // Brand orange
@@ -298,8 +294,6 @@ const lightAnsiTheme: Theme = {
   memoryBackgroundColor: 'ansi:white',
   rate_limit_fill: 'ansi:yellow',
   rate_limit_empty: 'ansi:black',
-  fastMode: 'ansi:red',
-  fastModeShimmer: 'ansi:redBright',
   briefLabelYou: 'ansi:blue',
   briefLabelAgenC: 'ansi:redBright',
   rainbow_red: 'ansi:red',
@@ -391,8 +385,6 @@ const darkAnsiTheme: Theme = {
   memoryBackgroundColor: 'ansi:blackBright',
   rate_limit_fill: 'ansi:yellow',
   rate_limit_empty: 'ansi:white',
-  fastMode: 'ansi:redBright',
-  fastModeShimmer: 'ansi:redBright',
   briefLabelYou: 'ansi:blueBright',
   briefLabelAgenC: 'ansi:magentaBright',
   rainbow_red: 'ansi:red',
@@ -484,8 +476,6 @@ const lightDaltonizedTheme: Theme = {
   memoryBackgroundColor: 'rgb(230, 245, 250)',
   rate_limit_fill: 'rgb(51,102,255)', // Bright blue
   rate_limit_empty: 'rgb(23,46,114)', // Dark blue
-  fastMode: 'rgb(255,106,0)', // Electric orange (color-blind safe)
-  fastModeShimmer: 'rgb(255,150,50)', // Lighter orange for shimmer
   briefLabelYou: 'rgb(37,99,235)', // Blue
   briefLabelAgenC: 'rgb(255,153,51)', // Orange adjusted for deuteranopia (matches agenc)
   rainbow_red: 'rgb(235,95,87)',
@@ -577,8 +567,6 @@ const chromaticDarkTheme: Theme = {
   memoryBackgroundColor: 'rgb(22, 40, 48)',
   rate_limit_fill: 'rgb(178,95,255)',
   rate_limit_empty: 'rgb(55,39,72)',
-  fastMode: 'rgb(255,151,72)',
-  fastModeShimmer: 'rgb(255,195,124)',
   briefLabelYou: 'rgb(82,214,255)',
   briefLabelAgenC: 'rgb(206,92,255)',
   rainbow_red: 'rgb(235,95,87)',
@@ -714,8 +702,6 @@ const darkDaltonizedTheme: Theme = {
   memoryBackgroundColor: 'rgb(55, 65, 70)',
   rate_limit_fill: 'rgb(153,204,255)', // Light blue
   rate_limit_empty: 'rgb(69,92,115)', // Dark blue
-  fastMode: 'rgb(255,120,20)', // Electric orange for dark bg (color-blind safe)
-  fastModeShimmer: 'rgb(255,165,70)', // Lighter orange for shimmer
   briefLabelYou: 'rgb(122,180,232)', // Light blue
   briefLabelAgenC: 'rgb(255,153,51)', // Orange adjusted for deuteranopia (matches agenc)
   rainbow_red: 'rgb(235,95,87)',

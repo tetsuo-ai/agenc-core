@@ -132,7 +132,10 @@ import {
   dispatchSlashCommand,
 } from "../../commands/dispatcher.js";
 import { buildDefaultRegistry } from "../../commands/registry.js";
-import { setGlobalCommandRegistry } from "../../commands/types.js";
+import {
+  setGlobalCommandRegistry,
+  type SlashCommandContext,
+} from "../../commands/types.js";
 import { PromptOverlayProvider } from "../context/promptOverlayContext.js";
 import { KeybindingSetup } from "../keybindings/KeybindingProviderSetup.js";
 import { CancelRequestHandler } from "../hooks/useCancelRequest.js";
@@ -172,10 +175,6 @@ import {
   getContextWindowForModelForContext,
 } from "../../utils/context.js";
 import {
-  getRuntimeMainLoopModel,
-} from "../../utils/model/model.js";
-import {
-  doesMostRecentAssistantMessageExceed200k,
   getCurrentUsage,
 } from "../../utils/tokens.js";
 import type { LLMMessage } from "../../llm/types.js";
@@ -245,6 +244,9 @@ import {
   type AgenCBridgeSession,
   type AgenCTuiProps,
 } from "../session-types.js";
+import {
+  resolveSessionProviderModelSelection,
+} from "../../session/provider-model-selection.js";
 import { useMcpConnectivityStatus } from "../hooks/notifs/useMcpConnectivityStatus.js";
 import { useCostSummary } from "../../cost/hook.js";
 import { getTotalCost } from "../../cost/tracker.js";
@@ -4523,9 +4525,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // when a new assistant message lands (its usage block carries the token
   // counts) or the model/permission mode changes — never per streaming delta.
   // Derivation mirrors StatusLine so both surfaces show the same number.
-  const mainLoopModelSetting = useAppState(
-    (state) => state.mainLoopModelForSession ?? state.mainLoopModel,
-  );
   const resolvedMainLoopModel = useMainLoopModel();
   const contextPctLabel = useMemo(() => {
     const messages = transcriptMessagesRef.current as any[];
@@ -4535,14 +4534,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     // fall back to the message walk for embedded/local transcripts.
     const usage = transcript.latestUsage ?? getCurrentUsage(messages);
     if (!usage) return null;
-    const runtimeModel = getRuntimeMainLoopModel({
-      permissionMode: toolPermissionContext.mode,
-      mainLoopModel: resolvedMainLoopModel,
-      modelSetting: mainLoopModelSetting,
-      exceeds200kTokens: doesMostRecentAssistantMessageExceed200k(messages),
-    });
     const windowSize = getContextWindowForModelForContext(
-      runtimeModel,
+      resolvedMainLoopModel,
       remoteAuthSessionContext,
       getSdkBetas(),
     );
@@ -4551,10 +4544,8 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   }, [
     lastAssistantMessageId,
     transcript.latestUsage,
-    mainLoopModelSetting,
     resolvedMainLoopModel,
     remoteAuthSessionContext,
-    toolPermissionContext.mode,
   ]);
   const realtimeState = useRealtimeState(props.session.realtime);
   const [toolJSX, setToolJSX] = useToolJSX();
@@ -4570,26 +4561,45 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   );
   const applyOnboardingSelection = useCallback(
     async (next_0: FirstRunOnboardingState) => {
-      await persistOnboardingSelection(props, agencHome, next_0).catch(
-        (error) => {
-          logError(error);
-        },
-      );
-      const selection = {
+      const requestedSelection = {
         provider: next_0.selectedProvider,
         model: next_0.selectedModel,
       };
       if (typeof props.session.applyProviderModelSelection === "function") {
+        await persistOnboardingSelection(props, agencHome, next_0).catch(
+          (error) => {
+            logError(error);
+          },
+        );
         const outcome =
-          await props.session.applyProviderModelSelection(selection);
+          await props.session.applyProviderModelSelection(requestedSelection);
         if (!outcome.applied) throw new Error(outcome.summary);
         setModel(outcome.model);
         return;
       }
+      const admittedSelection = resolveSessionProviderModelSelection(
+        props.session,
+        {
+          model_provider: requestedSelection.provider,
+          model: requestedSelection.model,
+        },
+        { fallbackConfig: configStore.current() },
+      );
+      const selection = {
+        provider: admittedSelection.provider,
+        model: admittedSelection.model,
+      };
+      await persistOnboardingSelection(props, agencHome, {
+        ...next_0,
+        selectedProvider: selection.provider,
+        selectedModel: selection.model,
+      }).catch((error) => {
+        logError(error);
+      });
       props.session.setPendingProviderSwitch?.(selection);
       setModel(selection.model);
     },
-    [agencHome, props, setModel],
+    [agencHome, configStore, props, setModel],
   );
   const onboarding = useFirstRunOnboardingController({
     ...onboardingContext,
@@ -4861,6 +4871,15 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
 
   // Transient-message helper for local slash-command results.
   const transientResultTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const cancelTransientResult = useCallback(
+    (clearSurface: boolean) => {
+      if (transientResultTimerRef.current === null) return;
+      clearTimeout(transientResultTimerRef.current);
+      transientResultTimerRef.current = null;
+      if (clearSurface) setToolJSX(null);
+    },
+    [setToolJSX],
+  );
   const showTransientResult = useCallback(
     (
       text: string,
@@ -4869,10 +4888,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         persistent?: boolean;
       },
     ) => {
-      if (transientResultTimerRef.current !== null) {
-        clearTimeout(transientResultTimerRef.current);
-        transientResultTimerRef.current = null;
-      }
+      cancelTransientResult(false);
       const isError = (opts?.display ?? "").toLowerCase() === "error";
       setToolJSX({
         jsx: (
@@ -4893,16 +4909,85 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         setToolJSX(null);
       }, 3000);
     },
-    [setToolJSX],
+    [cancelTransientResult, setToolJSX],
   );
   useEffect(() => {
-    return () => {
-      if (transientResultTimerRef.current !== null) {
-        clearTimeout(transientResultTimerRef.current);
-        transientResultTimerRef.current = null;
+    return () => cancelTransientResult(false);
+  }, [cancelTransientResult]);
+  const createSlashCommandContext = useCallback(
+    (argsRaw: string): SlashCommandContext => ({
+      session: props.session as unknown as SlashCommandContext["session"],
+      argsRaw,
+      cwd:
+        props.session.cwd ??
+        props.session.sessionConfiguration?.cwd ??
+        process.cwd(),
+      home: process.env.HOME ?? "",
+      agencHome,
+      ...(props.session.services?.configStore
+        ? { configStore: props.session.services.configStore }
+        : {}),
+      appState: {
+        getAppState: () => appStateStore.getState(),
+        setModel,
+        setAppState,
+        setToolJSX,
+        tools: availableTools,
+        requestResumeSession: (sessionId: string) => {
+          requestAppExitRef.current(sessionId);
+        },
+        requestShowMessageSelector: () => {
+          setSelectorNotice(null);
+          setIsMessageSelectorVisible(true);
+        },
+      },
+      commandRegistry,
+    }),
+    [
+      agencHome,
+      appStateStore,
+      availableTools,
+      commandRegistry,
+      props.session,
+      setAppState,
+      setModel,
+      setToolJSX,
+    ],
+  );
+  const openCanonicalModelMenu = useCallback(async (): Promise<void> => {
+    cancelTransientResult(true);
+    try {
+      const parsed = parseSlashCommand("/model");
+      if (parsed === null) {
+        throw new Error("Unable to parse the model menu command");
       }
-    };
-  }, []);
+      const outcome = await dispatchSlashCommand(
+        parsed,
+        createSlashCommandContext(parsed.argsRaw),
+        commandRegistry,
+      );
+      if (outcome.result.kind === "error") {
+        showTransientResult(outcome.result.message, { display: "error" });
+        return;
+      }
+      if (
+        outcome.result.kind === "text" ||
+        outcome.result.kind === "compact"
+      ) {
+        showTransientResult(outcome.result.text);
+      }
+    } catch (error) {
+      showTransientResult(
+        error instanceof Error ? error.message : String(error),
+        { display: "error" },
+      );
+    }
+  }, [
+    cancelTransientResult,
+    commandRegistry,
+    createSlashCommandContext,
+    showTransientResult,
+  ]);
   const runQueuedBashCommand = useCallback(
     async (command: string, admittedCwd?: string) => {
       const trimmedBash = command.trim();
@@ -5348,11 +5433,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       // usage error) so the prior status doesn't bleed into the new turn.
       // The 3s auto-clear timer is a safety net; this is the immediate
       // user-input clear path.
-      if (transientResultTimerRef.current !== null) {
-        clearTimeout(transientResultTimerRef.current);
-        transientResultTimerRef.current = null;
-        setToolJSX(null);
-      }
+      cancelTransientResult(true);
       const startPendingSubmission = () => {
         setPendingSubmission(true);
         effectiveInputBusyRef.current = true;
@@ -5635,44 +5716,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
 
           const outcome = await dispatchSlashCommand(
             parsedSlashCommand,
-            {
-              session: props.session,
-              argsRaw: parsedSlashCommand.argsRaw,
-              cwd:
-                props.session.cwd ??
-                props.session.sessionConfiguration?.cwd ??
-                process.cwd(),
-              home: process.env.HOME ?? "",
-              agencHome,
-              ...(props.session.services?.configStore
-                ? {
-                    configStore: props.session.services.configStore,
-                  }
-                : {}),
-              appState: {
-                getAppState: () => appStateStore.getState(),
-                setModel,
-                setAppState,
-                setToolJSX,
-                tools: availableTools,
-                // /resume picker: record the chosen session id, then drain Ink.
-                // After waitUntilExit() the boot entrypoint relaunches into the
-                // proven attach path for this id (see tui/pending-resume.ts). We
-                // never touch props.session here — commands must not swap it in
-                // place — so the prior session is cleanly detached on exit first.
-                requestResumeSession: (sessionId: string) => {
-                  requestAppExitRef.current(sessionId);
-                },
-                // /rewind: open the message selector (the rewind dialog).
-                // Inlined on stable state setters (not handleShowMessageSelector)
-                // so this callback never goes stale inside the submit closure.
-                requestShowMessageSelector: () => {
-                  setSelectorNotice(null);
-                  setIsMessageSelectorVisible(true);
-                },
-              },
-              commandRegistry,
-            },
+            createSlashCommandContext(parsedSlashCommand.argsRaw),
             commandRegistry,
           );
           if (outcome.result.kind !== "skip" || outcome.command !== undefined) {
@@ -5874,9 +5918,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       props.session,
       appStateStore,
       setToolJSX,
+      cancelTransientResult,
       showTransientResult,
       addNotification,
       commandRegistry,
+      createSlashCommandContext,
       commands,
       submitToSession,
       workbenchEnabled,
@@ -7045,6 +7091,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       onSubmissionBlocked={(reason) => {
         showTransientResult(reason, { display: "error" });
       }}
+      onOpenModelMenu={openCanonicalModelMenu}
       onSubmit={async (value_1, helpers_0, _speculation, submitOptions) => {
         if (isLocalJSXCommandActive) {
           return;

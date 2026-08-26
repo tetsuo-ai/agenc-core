@@ -5,9 +5,7 @@ import type { EnvSnapshot } from "../config/env.js";
 import type { AgenCConfig } from "../config/schema.js";
 import type { ConfigStore } from "../config/store.js";
 import type { RemoteAuthSessionReadContext } from "../auth/session-state.js";
-import type { ProviderAuthReadContext } from "../utils/auth.js";
 import { asRecord } from "../utils/record.js";
-import { readSessionSelection } from "../session/provider-model-selection.js";
 import type { SlashCommandContext } from "./types.js";
 
 function readConfigStoreCurrent(store: unknown): AgenCConfig | undefined {
@@ -82,31 +80,6 @@ export function remoteAuthContextFromCommandContext(
   return Object.freeze({
     home: requireCommandConfigStore(ctx).homeContext,
     environment: providerEnvironmentFromCommandContext(ctx),
-  });
-}
-
-/** Resolve the exact provider identity paired with the command's environment. */
-export function providerNameFromCommandContext(
-  ctx: SlashCommandContext,
-): string {
-  const config = readCommandConfig(ctx);
-  const provider = readSessionSelection(ctx.session, {
-    includePending: true,
-    ...(config === undefined ? {} : { fallbackConfig: config }),
-  }).provider;
-  if (provider !== "unknown") return provider;
-  throw new Error(
-    "Slash command requires the session's captured provider identity",
-  );
-}
-
-export function providerAuthContextFromCommandContext(
-  ctx: SlashCommandContext,
-): ProviderAuthReadContext {
-  const remoteContext = remoteAuthContextFromCommandContext(ctx);
-  return Object.freeze({
-    ...remoteContext,
-    provider: providerNameFromCommandContext(ctx),
   });
 }
 

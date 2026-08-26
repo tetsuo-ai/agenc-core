@@ -1,8 +1,8 @@
 import { expect, test } from 'bun:test'
 
+import { normalizeGithubModelForEndpoint } from '../../../src/llm/providers/github/model-routing.ts'
+import { BUILT_IN_PROVIDER_DEFAULT_MODELS } from '../../../src/llm/registry/provider-info.ts'
 import {
-  DEFAULT_GITHUB_MODELS_API_MODEL,
-  normalizeGithubModelsApiModel,
   resolveProviderRequest,
 } from '../../../src/services/api/providerConfig.ts'
 
@@ -17,27 +17,27 @@ function providerEnvironment(
 }
 
 test.each([
-  ['copilot', DEFAULT_GITHUB_MODELS_API_MODEL],
-  ['github:copilot', DEFAULT_GITHUB_MODELS_API_MODEL],
-  ['', DEFAULT_GITHUB_MODELS_API_MODEL],
-  ['github:gpt-4o', 'gpt-4o'],
-  ['gpt-4o', 'gpt-4o'],
-  ['github:copilot?reasoning=high', DEFAULT_GITHUB_MODELS_API_MODEL],
-  // normalizeGithubModelsApiModel preserves provider prefix for models.github.ai compatibility
+  ['copilot', BUILT_IN_PROVIDER_DEFAULT_MODELS.github],
+  ['github:copilot', BUILT_IN_PROVIDER_DEFAULT_MODELS.github],
+  ['', BUILT_IN_PROVIDER_DEFAULT_MODELS.github],
+  ['github:gpt-5.3-codex', 'gpt-5.3-codex'],
+  ['gpt-5.3-codex', 'gpt-5.3-codex'],
+  ['github:copilot?reasoning=high', BUILT_IN_PROVIDER_DEFAULT_MODELS.github],
+  // The shared endpoint projector preserves provider qualification for GitHub Models.
   ['github:openai/gpt-4.1', 'openai/gpt-4.1'],
   ['openai/gpt-4.1', 'openai/gpt-4.1'],
-] as const)('normalizeGithubModelsApiModel(%s) -> %s', (input, expected) => {
-  expect(normalizeGithubModelsApiModel(input)).toBe(expected)
+] as const)('normalizeGithubModelForEndpoint(%s, models) -> %s', (input, expected) => {
+  expect(normalizeGithubModelForEndpoint(input, 'models')).toBe(expected)
 })
 
-test('resolveProviderRequest applies GitHub normalization for the GitHub provider', () => {
+test('resolveProviderRequest applies GitHub normalization and transport for the GitHub provider', () => {
   const r = resolveProviderRequest({
     provider: 'github',
-    model: 'github:gpt-4o',
-    environment: providerEnvironment('github', 'github:gpt-4o'),
+    model: 'github:gpt-5.3-codex',
+    environment: providerEnvironment('github', 'github:gpt-5.3-codex'),
   })
-  expect(r.resolvedModel).toBe('gpt-4o')
-  expect(r.transport).toBe('chat_completions')
+  expect(r.resolvedModel).toBe('gpt-5.3-codex')
+  expect(r.transport).toBe('providerCode_responses')
 })
 
 test('resolveProviderRequest routes GitHub GPT-5 providerCode models to responses transport', () => {
@@ -63,8 +63,8 @@ test('resolveProviderRequest keeps gpt-5-mini on chat_completions for GitHub', (
 test('resolveProviderRequest leaves model unchanged without GitHub flag', () => {
   const r = resolveProviderRequest({
     provider: 'openai',
-    model: 'github:gpt-4o',
-    environment: providerEnvironment('openai', 'github:gpt-4o'),
+    model: 'github:gpt-5.3-codex',
+    environment: providerEnvironment('openai', 'github:gpt-5.3-codex'),
   })
-  expect(r.resolvedModel).toBe('github:gpt-4o')
+  expect(r.resolvedModel).toBe('github:gpt-5.3-codex')
 })

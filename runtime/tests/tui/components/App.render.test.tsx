@@ -654,6 +654,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       setToolPermissionContext,
       submissionBlockedReason,
       onSubmissionBlocked,
+      onOpenModelMenu,
       onboardingInput,
     }: {
       input: string;
@@ -684,6 +685,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       setToolPermissionContext?: unknown;
       submissionBlockedReason?: string | null;
       onSubmissionBlocked?: (reason: string) => void;
+      onOpenModelMenu?: () => Promise<void> | void;
       onboardingInput?: unknown;
     }) => {
       const guardedOnSubmit: typeof onSubmit = async (...args) => {
@@ -719,6 +721,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         setToolPermissionContext,
         submissionBlockedReason,
         onSubmissionBlocked,
+        onOpenModelMenu,
         onboardingInput,
       });
       return React.createElement("ink-text", null, `prompt:${input}`);
@@ -5852,6 +5855,213 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
+  test("opens the model menu through the canonical slash-command context", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const dispatcher = await import("../../commands/dispatcher.js");
+    const { applyWorkbenchCommand } = await import("../workbench/state.js");
+    const dispatchSpy = vi
+      .spyOn(dispatcher, "dispatchSlashCommand")
+      .mockImplementation(async (parsed, context, registry) => {
+        expect(parsed).toEqual({ name: "model", argsRaw: "", isMcp: false });
+        expect(context).toMatchObject({
+          argsRaw: "",
+          session,
+          commandRegistry: registry,
+        });
+        expect(context.appState).toMatchObject({
+          getAppState: expect.any(Function),
+          setModel: expect.any(Function),
+          setAppState: expect.any(Function),
+          setToolJSX: expect.any(Function),
+        });
+        return {
+          result: { kind: "skip" },
+          immediate: true,
+          trace: {
+            name: "model",
+            aliasUsed: "model",
+            argsRaw: "",
+            sensitive: false,
+            immediate: true,
+            isMcp: false,
+            resultKind: "skip",
+          },
+        } as never;
+      });
+    const submit = vi.fn(async () => {});
+    const session = {
+      ...createSession(),
+      submit,
+    } satisfies AgenCBridgeSession;
+    const pastedContents = {
+      7: {
+        id: 7,
+        type: "image",
+        content: "base64-model-menu-draft",
+        mediaType: "image/png",
+        filename: "model-menu-draft.png",
+      },
+    };
+
+    try {
+      await withRenderedApp(
+        <AgenCTuiApp
+          session={session}
+          initialComposerText="keep this draft"
+          isInteractive={false}
+        />,
+        async () => {
+          providerProbe.setAppState!(
+            (state) =>
+              applyWorkbenchCommand(state as never, {
+                type: "attach",
+                attachment: {
+                  id: "file:src/model-menu.ts",
+                  kind: "file",
+                  label: "src/model-menu.ts",
+                  path: "src/model-menu.ts",
+                },
+              }) as never,
+          );
+          (
+            providerProbe.promptProps.at(-1)?.setPastedContents as (
+              next: Record<number, unknown>,
+            ) => void
+          )(pastedContents);
+          await vi.waitFor(() => {
+            expect(providerProbe.promptProps.at(-1)).toMatchObject({
+              input: "keep this draft",
+              pastedContents,
+            });
+          });
+          const promptSubmitCount = providerProbe.promptSubmits.length;
+          const historyCount = providerProbe.historyEntries.length;
+          const openModelMenu = providerProbe.promptProps.at(-1)
+            ?.onOpenModelMenu as
+            | (() => Promise<void>)
+            | undefined;
+          expect(openModelMenu).toBeDefined();
+
+          await openModelMenu!();
+
+          expect(dispatchSpy).toHaveBeenCalledOnce();
+          expect(submit).not.toHaveBeenCalled();
+          expect(providerProbe.promptSubmits).toHaveLength(promptSubmitCount);
+          expect(providerProbe.historyEntries).toHaveLength(historyCount);
+          expect(providerProbe.promptProps.at(-1)).toMatchObject({
+            input: "keep this draft",
+            pastedContents,
+          });
+          expect(
+            (
+              providerProbe.currentAppState?.workbench as {
+                readonly composerAttachmentIds?: readonly string[];
+              }
+            )?.composerAttachmentIds,
+          ).toEqual(["file:src/model-menu.ts"]);
+        },
+      );
+    } finally {
+      dispatchSpy.mockRestore();
+    }
+  });
+
+  test("keeps the canonical model menu open after a prior transient result expires", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const dispatcher = await import("../../commands/dispatcher.js");
+    function CanonicalModelMenuFixture(): React.ReactNode {
+      return React.createElement("ink-text", null, "canonical model menu");
+    }
+    const dispatchSpy = vi
+      .spyOn(dispatcher, "dispatchSlashCommand")
+      .mockImplementation(async (parsed, context) => {
+        if (parsed.name === "notice") {
+          return {
+            result: { kind: "text", text: "temporary command result" },
+            immediate: true,
+            trace: {
+              name: "notice",
+              aliasUsed: "notice",
+              argsRaw: "",
+              sensitive: false,
+              immediate: true,
+              isMcp: false,
+              resultKind: "text",
+            },
+          } as never;
+        }
+
+        expect(parsed).toEqual({ name: "model", argsRaw: "", isMcp: false });
+        context.appState?.setToolJSX?.({
+          jsx: React.createElement(CanonicalModelMenuFixture),
+          shouldHidePromptInput: true,
+        });
+        return {
+          result: { kind: "skip" },
+          immediate: true,
+          trace: {
+            name: "model",
+            aliasUsed: "model",
+            argsRaw: "",
+            sensitive: false,
+            immediate: true,
+            isMcp: false,
+            resultKind: "skip",
+          },
+        } as never;
+      });
+    const helpers = {
+      clearBuffer: vi.fn(),
+      resetHistory: vi.fn(),
+      setCursorOffset: vi.fn(),
+    };
+
+    try {
+      await withRenderedApp(
+        <AgenCTuiApp session={createSession()} isInteractive={false} />,
+        async ({ output }) => {
+          vi.useFakeTimers();
+          try {
+            const onSubmit = providerProbe.promptSubmits.at(-1);
+            expect(onSubmit).toBeDefined();
+            await onSubmit!("/notice", helpers);
+            await vi.advanceTimersByTimeAsync(0);
+            expect(stripAnsi(output()).replaceAll(/\s/g, "")).toContain(
+              "temporarycommandresult",
+            );
+
+            const openModelMenu = providerProbe.promptProps.at(-1)
+              ?.onOpenModelMenu as
+              | (() => Promise<void>)
+              | undefined;
+            expect(openModelMenu).toBeDefined();
+            await openModelMenu!();
+            await vi.advanceTimersByTimeAsync(0);
+            expect(
+              containsElementNamed(
+                providerProbe.fullscreenLayoutProps.at(-1)?.scrollable,
+                "CanonicalModelMenuFixture",
+              ),
+            ).toBe(true);
+
+            await vi.advanceTimersByTimeAsync(3000);
+            expect(
+              containsElementNamed(
+                providerProbe.fullscreenLayoutProps.at(-1)?.scrollable,
+                "CanonicalModelMenuFixture",
+              ),
+            ).toBe(true);
+            expect(dispatchSpy).toHaveBeenCalledTimes(2);
+          } finally {
+            vi.useRealTimers();
+          }
+        },
+      );
+    } finally {
+      dispatchSpy.mockRestore();
+    }
+  });
+
   test("hides the main composer while the /agents wizard owns input", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const dispatcher = await import("../../commands/dispatcher.js");
@@ -7410,6 +7620,101 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
       rmSync(agencHome, { recursive: true, force: true });
     }
   });
+
+  test.each([
+    {
+      policyName: "deny-all",
+      availableModels: [] as string[],
+    },
+    {
+      policyName: "restricted",
+      availableModels: ["grok-4.6"],
+    },
+  ])(
+    "keeps the onboarding fallback from staging a model rejected by the $policyName managed policy",
+    async ({ availableModels }) => {
+      const { AgenCTuiApp } = await import("./App.js");
+      const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-policy-"));
+      const configStore = createAppConfigStore(
+        { ...defaultConfig(), availableModels },
+        agencHome,
+      );
+      const session = {
+        ...createSession({ configStore }),
+        submit: vi.fn(async () => {}),
+        setPendingProviderSwitch: vi.fn(),
+      };
+      const previousAgencHome = process.env.AGENC_HOME;
+      process.env.AGENC_HOME = agencHome;
+      const fetchSpy = mockOfflineOnboardingFetch();
+      providerProbe.promptSubmits.length = 0;
+
+      try {
+        const helpers = {
+          clearBuffer: vi.fn(),
+          resetHistory: vi.fn(),
+          setCursorOffset: vi.fn(),
+        };
+        await withRenderedApp(
+          <AgenCTuiApp session={session} isInteractive={true} />,
+          async ({ output }) => {
+            const currentFrameText = (): string =>
+              stripAnsi(extractLastSynchronizedFrame(output())).replace(
+                /\s+/gu,
+                "",
+              );
+            const submit = async (
+              value: string,
+              nextFrameMarker: string,
+            ): Promise<void> => {
+              const onSubmit = providerProbe.promptSubmits.at(-1);
+              expect(onSubmit).toBeDefined();
+              await onSubmit!(value, helpers);
+              await vi.waitFor(
+                () => expect(currentFrameText()).toContain(nextFrameMarker),
+                { interval: 10, timeout: 5_000 },
+              );
+            };
+
+            await submit(
+              "next",
+              "PressEntertokeepdark,ortypeanumberorthemename.",
+            );
+            await submit(
+              "1",
+              "PressEntertokeepgrok,ortypeanumberorproviderslug.",
+            );
+            await submit("2", "OPENAI_API_KEY");
+            await submit("skip", "PressEntertoruntheconnectioncheck");
+            await submit("test", "Sandboxworkspace-write");
+            await submit("", "PressEntertofinishonboarding");
+
+            const completeOnboarding = providerProbe.promptSubmits.at(-1);
+            expect(completeOnboarding).toBeDefined();
+            await expect(completeOnboarding!("", helpers)).rejects.toThrow(
+              "model 'gpt-5' is not allowed by managed availableModels policy",
+            );
+
+            expect(session.setPendingProviderSwitch).not.toHaveBeenCalled();
+            expect(session.submit).not.toHaveBeenCalled();
+            expect(providerProbe.currentAppState?.mainLoopModel).toBe(
+              "test-model",
+            );
+            expect(readOnboardingState({ agencHome }).completed).toBe(false);
+          },
+        );
+      } finally {
+        fetchSpy.mockRestore();
+        providerProbe.promptSubmits.length = 0;
+        if (previousAgencHome === undefined) {
+          delete process.env.AGENC_HOME;
+        } else {
+          process.env.AGENC_HOME = previousAgencHome;
+        }
+        rmSync(agencHome, { recursive: true, force: true });
+      }
+    },
+  );
 
   test("routes BYOK key approval through the real first-run TUI submission path", async () => {
     const { AgenCTuiApp } = await import("./App.js");

@@ -2,7 +2,6 @@ import React from "react";
 import { describe, expect, test, vi } from "vitest";
 
 import { renderToString } from "../../../utils/staticRender.js";
-import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../../remoteAuthSessionContext.fixture.js";
 import { General } from "./General.js";
 
 vi.mock("bun:bundle", () => ({
@@ -18,11 +17,6 @@ vi.mock("../../keybindings/loadUserBindings.js", () => ({
   isKeybindingCustomizationEnabled: () => false,
 }));
 
-vi.mock("../../../utils/fastMode.js", () => ({
-  isFastModeAvailableForContext: () => false,
-  isFastModeEnabledForContext: () => false,
-}));
-
 vi.mock("../../../utils/platform.js", () => ({
   getPlatform: () => "linux",
 }));
@@ -36,7 +30,7 @@ function RerenderGeneral() {
     }
   }, [tick]);
 
-  return <General remoteAuthSessionContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />;
+  return <General />;
 }
 
 describe("HelpV2 General", () => {

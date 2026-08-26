@@ -14,11 +14,15 @@ import {
   type ChatGptSubscriptionCredentialInput,
   type ResolvedChatGptSubscriptionCredentials,
 } from '../../llm/providers/openai/chatgpt-backend.js'
+import { BUILT_IN_PROVIDER_BASE_URLS } from '../../llm/registry/provider-info.js'
+import {
+  getGithubEndpointType,
+  normalizeGithubModelForEndpoint,
+  shouldUseGithubCopilotResponsesApi,
+} from '../../llm/providers/github/model-routing.js'
 
 export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1'
 const DEFAULT_MISTRAL_BASE_URL = 'https://api.mistral.ai/v1'
-/** Default GitHub Copilot API model when user selects copilot / github:copilot */
-export const DEFAULT_GITHUB_MODELS_API_MODEL = 'gpt-4o'
 const warnedUndefinedEnvNames = new Set<string>()
 
 const PROVIDER_CODE_ALIAS_MODELS: Record<
@@ -254,21 +258,6 @@ export function shouldUseProviderCodeTransport(
   return isChatGptSubscriptionBaseUrl(explicitBaseUrl) || (!explicitBaseUrl && isProviderCodeAlias(model))
 }
 
-function shouldUseGithubResponsesApi(model: string): boolean {
-  const normalized = model.trim().toLowerCase()
-
-  // ProviderCode-branded models require /responses.
-  if (normalized.includes('providercode')) return true
-
-  // GPT-5+ models use /responses, except gpt-5-mini.
-  const match = /^gpt-(\d+)/.exec(normalized)
-  if (!match) return false
-  const major = Number(match[1])
-  if (major < 5) return false
-  if (normalized.startsWith('gpt-5-mini')) return false
-  return true
-}
-
 export function isLocalProviderUrl(baseUrl: string | undefined): boolean {
   if (!baseUrl) return false
   try {
@@ -419,61 +408,6 @@ export function isChatGptSubscriptionBaseUrl(
   }
 }
 
-/**
- * Normalize user model string for GitHub Copilot API inference.
- * Mirrors how Copilot resolves model IDs internally.
- */
-function normalizeGithubCopilotModel(requestedModel: string): string {
-  const noQuery = requestedModel.split('?', 1)[0] ?? requestedModel
-  const segment =
-    noQuery.includes(':') ? noQuery.split(':', 2)[1]!.trim() : noQuery.trim()
-  if (!segment || segment.toLowerCase() === 'copilot') {
-    return DEFAULT_GITHUB_MODELS_API_MODEL
-  }
-  // Strip provider prefix if present (e.g., "openai/gpt-4o" -> "gpt-4o")
-  const slashIndex = segment.indexOf('/')
-  if (slashIndex !== -1) {
-    return segment.slice(slashIndex + 1)
-  }
-  return segment
-}
-
-/**
- * Normalize user model string for GitHub Models API inference.
- * Only normalizes the default alias, preserves provider-qualified models.
- */
-export function normalizeGithubModelsApiModel(requestedModel: string): string {
-  const noQuery = requestedModel.split('?', 1)[0] ?? requestedModel
-  const segment =
-    noQuery.includes(':') ? noQuery.split(':', 2)[1]!.trim() : noQuery.trim()
-  // Only normalize the default alias for GitHub Models
-  if (!segment || segment.toLowerCase() === 'copilot') {
-    return DEFAULT_GITHUB_MODELS_API_MODEL
-  }
-  // Preserve provider prefix for GitHub Models (e.g., "openai/gpt-4.1" stays as-is)
-  return segment
-}
-
-const GITHUB_COPILOT_BASE_URL = 'https://api.githubcopilot.com'
-
-export function getGithubEndpointType(
-  baseUrl: string | undefined,
-): 'copilot' | 'models' | 'custom' {
-  if (!baseUrl) return 'copilot'
-  try {
-    const hostname = new URL(baseUrl).hostname.toLowerCase()
-    if (hostname === 'api.githubcopilot.com') {
-      return 'copilot'
-    }
-    if (hostname === 'models.github.ai' || hostname.endsWith('.github.ai')) {
-      return 'models'
-    }
-    return 'custom'
-  } catch {
-    return 'copilot'
-  }
-}
-
 export function resolveProviderRequest(options?: {
   provider?: string
   model?: string
@@ -524,13 +458,7 @@ export function resolveProviderRequest(options?: {
     primaryEnvBaseUrl ??
     fallbackEnvBaseUrl
 
-  const isProviderCodeModelForGithub = isGithubMode && isProviderCodeAlias(requestedModel)
-  const envBaseUrl =
-    isProviderCodeModelForGithub && envBaseUrlRaw && getGithubEndpointType(envBaseUrlRaw) === 'custom'
-      ? undefined
-      : envBaseUrlRaw
-
-  const rawBaseUrl = explicitBaseUrl ?? envBaseUrl
+  const rawBaseUrl = explicitBaseUrl ?? envBaseUrlRaw
 
   const isProviderCodeAliasModel =
     isOpenAiProviderCodeShortcutAlias(requestedModel)
@@ -544,33 +472,28 @@ export function resolveProviderRequest(options?: {
     ? getGithubEndpointType(rawBaseUrl)
     : 'custom'
   const isGithubCopilot = isGithubMode && githubEndpointType === 'copilot'
-  const isGithubModels = isGithubMode && githubEndpointType === 'models'
-  const isGithubCustom = isGithubMode && githubEndpointType === 'custom'
-
-  const githubResolvedModel = isGithubMode
-    ? normalizeGithubModelsApiModel(requestedModel)
-    : requestedModel
 
   const requestedApiFormat =
     parseOpenAiCompatibleApiFormat(options?.apiFormat) ??
     parseOpenAiCompatibleApiFormat(environment.OPENAI_API_FORMAT)
   const transport: ProviderTransport =
-    shouldUseProviderCodeTransport(requestedModel, finalBaseUrl) ||
-      (isGithubCopilot && shouldUseGithubResponsesApi(githubResolvedModel))
-      ? 'providerCode_responses'
-      : requestedApiFormat === 'responses'
-        ? 'responses'
+    isGithubMode
+      ? shouldUseGithubCopilotResponsesApi(requestedModel, rawBaseUrl)
+        ? 'providerCode_responses'
         : 'chat_completions'
+      : shouldUseProviderCodeTransport(requestedModel, finalBaseUrl)
+        ? 'providerCode_responses'
+        : requestedApiFormat === 'responses'
+          ? 'responses'
+          : 'chat_completions'
 
-  // For GitHub Copilot API, normalize to real model ID (e.g., "github:copilot" -> "gpt-4o")
+  // For GitHub Copilot API, normalize to the current LTS model ID.
   // For GitHub Models/custom endpoints:
-  //   - Normalize default alias (github:copilot -> gpt-4o)
+  //   - Normalize the default alias to the current LTS model
   //   - Preserve provider-qualified models (openai/gpt-4.1 stays as-is)
-  const resolvedModel = isGithubCopilot
-    ? normalizeGithubCopilotModel(descriptor.baseModel)
-    : (isGithubModels || isGithubCustom
-      ? normalizeGithubModelsApiModel(descriptor.baseModel)
-      : descriptor.baseModel)
+  const resolvedModel = isGithubMode
+    ? normalizeGithubModelForEndpoint(descriptor.baseModel, githubEndpointType)
+    : descriptor.baseModel
 
   const reasoning = options?.reasoningEffortOverride
     ? { effort: options.reasoningEffortOverride }
@@ -583,49 +506,13 @@ export function resolveProviderRequest(options?: {
     baseUrl:
       (finalBaseUrl ??
         (isGithubCopilot && transport === 'providerCode_responses'
-          ? GITHUB_COPILOT_BASE_URL
+          ? BUILT_IN_PROVIDER_BASE_URLS.github
           : (isGithubMode
-            ? GITHUB_COPILOT_BASE_URL
+            ? BUILT_IN_PROVIDER_BASE_URLS.github
             : DEFAULT_OPENAI_BASE_URL))
       ).replace(/\/+$/, ''),
     reasoning,
   }
-}
-
-export function getAdditionalModelOptionsCacheScope(
-  provider?: string,
-  selection?: {
-    model?: string
-    environment?: ProviderEnvironment
-  },
-): string | null {
-  const selectedProvider = getSelectedProviderName(provider)
-  if (selectedProvider === 'anthropic') return 'firstParty'
-  if (
-    selectedProvider !== 'openai' &&
-    selectedProvider !== 'openai-compatible' &&
-    selectedProvider !== 'lmstudio' &&
-    selectedProvider !== 'ollama'
-  ) {
-    return null
-  }
-
-  const request = resolveProviderRequest({
-    provider: selectedProvider,
-    ...(selection?.model !== undefined ? { model: selection.model } : {}),
-    ...(selection?.environment !== undefined
-      ? { environment: selection.environment }
-      : {}),
-  })
-  if (request.transport !== 'chat_completions') {
-    return null
-  }
-
-  if (!isLocalProviderUrl(request.baseUrl)) {
-    return null
-  }
-
-  return `openai:${request.baseUrl.toLowerCase()}`
 }
 
 /**

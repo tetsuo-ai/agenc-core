@@ -163,7 +163,7 @@ export function CancelRequestHandler(props: CancelRequestHandlerProps): null {
 
   // Determine if this handler should be active
   // Other contexts (Transcript, HistorySearch, Help) have their own escape handlers
-  // Overlays (ModelPicker, ThinkingToggle, etc.) register themselves via useRegisterOverlay
+  // Overlays (ThinkingToggle, selectors, etc.) register via useRegisterOverlay.
   // Local JSX commands handle their own input
   const isModalOverlayActive = useIsModalOverlayActive();
   const hasQueuedCommands = queuedCommandsLength > 0;

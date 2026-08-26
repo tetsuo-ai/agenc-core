@@ -56,7 +56,6 @@ type State = {
   hasUnknownModelCost: boolean;
   cwd: string;
   modelUsage: { [modelName: string]: ModelUsage };
-  mainLoopModelOverride: ModelSetting | undefined;
   initialMainLoopModel: ModelSetting;
   modelStrings: ModelStrings | null;
   isInteractive: boolean;
@@ -260,7 +259,6 @@ function getInitialState(): State {
     hasUnknownModelCost: false,
     cwd: resolvedCwd,
     modelUsage: {},
-    mainLoopModelOverride: undefined,
     initialMainLoopModel: null,
     modelStrings: null,
     isInteractive: false,
@@ -759,22 +757,8 @@ export function getUsageForModel(model: string): ModelUsage | undefined {
   return STATE.modelUsage[model];
 }
 
-/**
- * Gets the model override set from the --model CLI flag or after the user
- * updates their configured model.
- */
-export function getMainLoopModelOverride(): ModelSetting | undefined {
-  return STATE.mainLoopModelOverride;
-}
-
 export function getInitialMainLoopModel(): ModelSetting {
   return STATE.initialMainLoopModel;
-}
-
-export function setMainLoopModelOverride(
-  model: ModelSetting | undefined,
-): void {
-  STATE.mainLoopModelOverride = model;
 }
 
 export function setInitialMainLoopModel(model: ModelSetting): void {

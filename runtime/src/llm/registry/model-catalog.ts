@@ -516,8 +516,8 @@ export function resolveModelCatalogMetadata(input: {
  * default-model resolution still work). They are NOT user-selectable: each
  * picker is responsible for excluding "hide" models from its offered options
  * (see `providerRows` in commands/model-menu.tsx and the visibility filters in
- * models-manager.ts / utils/model/modelOptions.ts). Order within a provider
- * follows ascending `priority`.
+ * models-manager.ts and the provider-neutral command catalog). Order within
+ * a provider follows ascending `priority`.
  *
  * This makes REGISTERED_MODEL_CATALOG the single source of truth: adding one
  * entry here surfaces the model in every flat-catalog consumer.

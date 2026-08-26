@@ -1243,7 +1243,7 @@ describe("createProvider", () => {
     );
 
     expect((bare as unknown as { config: OpenAIProviderConfig }).config.model)
-      .toBe("gpt-4o");
+      .toBe("gpt-5.3-codex");
     expect((compound as unknown as { config: OpenAIProviderConfig }).config.model)
       .toBe("gpt-5.4");
   });

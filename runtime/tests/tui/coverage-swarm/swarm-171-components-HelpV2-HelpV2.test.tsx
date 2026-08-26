@@ -5,7 +5,6 @@ import stripAnsi from "strip-ansi";
 import { beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { Command } from "../../../src/commands.js";
-import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from "../remoteAuthSessionContext.fixture.js";
 
 type KeybindingRecord = {
   action: string;
@@ -263,7 +262,6 @@ async function renderHelp(props: {
   commands: Command[];
   onClose: (result?: string, options?: { display?: string }) => void;
   query?: string;
-  remoteAuthSessionContext: typeof TEST_REMOTE_AUTH_SESSION_CONTEXT;
 }): Promise<{
   output: () => string;
   render: (nextProps: typeof props) => Promise<void>;
@@ -340,7 +338,6 @@ describe("HelpV2 coverage swarm row 171", () => {
       commands,
       onClose,
       query: "deploy",
-      remoteAuthSessionContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
     };
     const rendered = await renderHelp(props);
 
@@ -395,7 +392,6 @@ describe("HelpV2 coverage swarm row 171", () => {
       commands: initialCommands,
       onClose,
       query: "initial",
-      remoteAuthSessionContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
     });
 
     try {
@@ -408,7 +404,6 @@ describe("HelpV2 coverage swarm row 171", () => {
       await rendered.render({
         commands: [makeCommand("help")],
         onClose,
-        remoteAuthSessionContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
       });
 
       expect(latestPanel("Browse default commands:")).toMatchObject({

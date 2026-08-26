@@ -10,7 +10,6 @@ const harness = vi.hoisted(() => {
     coordinatorTaskIndex: -1,
     effortValue: undefined,
     expandedView: 'transcript',
-    fastMode: false,
     footerSelection: null as null | 'tasks' | 'teams',
     isBriefOnly: false,
     mainLoopModel: 'gpt-5.4',
@@ -105,7 +104,6 @@ const harness = vi.hoisted(() => {
     isSSH: false,
     keybindingRegistrations: [] as Array<Record<string, unknown>>,
     keybindings: {} as Record<string, () => unknown>,
-    modelPickerProps: undefined as undefined | Record<string, unknown>,
     nextPermissionMode: 'plan',
     onRender: vi.fn(),
     platform: 'linux',
@@ -143,7 +141,6 @@ const harness = vi.hoisted(() => {
       suggestionType: undefined as undefined | string,
       suggestions: [] as Array<{ description?: string; label: string }>,
     },
-    updateSettingsForSource: vi.fn(),
     visibleAgentTasks: [] as Array<{ id: string; status?: string }>,
     viewedTeammate: undefined as
       | undefined
@@ -152,14 +149,6 @@ const harness = vi.hoisted(() => {
           identity: { agentName: string; color?: string }
           permissionMode: string
         },
-    fastMode: {
-      available: false,
-      cooldown: false,
-      enabled: false,
-      runtimeState: { status: 'available' },
-      supportedByModel: true,
-      unavailableReason: null as string | null,
-    },
     reset: () => {
       harness.activeAgent = { type: 'leader' }
       harness.addNotification.mockClear()
@@ -203,7 +192,6 @@ const harness = vi.hoisted(() => {
       harness.isSSH = false
       harness.keybindingRegistrations = []
       harness.keybindings = {}
-      harness.modelPickerProps = undefined
       harness.nextPermissionMode = 'plan'
       harness.onRender.mockClear()
       harness.platform = 'linux'
@@ -238,21 +226,11 @@ const harness = vi.hoisted(() => {
         suggestionType: undefined,
         suggestions: [],
       }
-      harness.updateSettingsForSource.mockClear()
       harness.visibleAgentTasks = []
       harness.viewedTeammate = undefined
-      harness.fastMode = {
-        available: false,
-        cooldown: false,
-        enabled: false,
-        runtimeState: { status: 'available' },
-        supportedByModel: true,
-        unavailableReason: null,
-      }
       appState.coordinatorTaskIndex = -1
       appState.effortValue = undefined
       appState.expandedView = 'transcript'
-      appState.fastMode = false
       appState.footerSelection = null
       appState.isBriefOnly = false
       appState.mainLoopModel = 'gpt-5.4'
@@ -521,22 +499,6 @@ vi.mock('../../utils/errors.js', async importOriginal => {
   }
 })
 
-vi.mock('../../utils/extraUsage.js', () => ({
-  isBilledAsExtraUsage: () => false,
-}))
-
-vi.mock('../../utils/fastMode.js', () => ({
-  FAST_MODE_MODEL_DISPLAY: 'fast-model',
-  clearFastModeCooldown: vi.fn(),
-  getFastModeModel: () => 'fast-model',
-  getFastModeRuntimeStateForContext: () => harness.fastMode.runtimeState,
-  getFastModeUnavailableReasonForContext: () => harness.fastMode.unavailableReason,
-  isFastModeAvailableForContext: () => harness.fastMode.available,
-  isFastModeCooldownForContext: () => harness.fastMode.cooldown,
-  isFastModeEnabledForContext: () => harness.fastMode.enabled,
-  isFastModeSupportedByModelForContext: () => harness.fastMode.supportedByModel,
-}))
-
 vi.mock('../context/fullscreenModeContext.js', () => ({
   useFullscreenMode: () => harness.fullscreen,
 }))
@@ -597,7 +559,6 @@ vi.mock('../input/processBashCommand.js', () => ({
 
 vi.mock('../../utils/settings/settings.js', () => ({
   hasAutoModeOptIn: () => harness.hasAutoModeOptIn,
-  updateSettingsForSource: harness.updateSettingsForSource,
 }))
 
 vi.mock('../../utils/suggestions/commandSuggestions.js', () => ({
@@ -661,10 +622,6 @@ vi.mock('../components/EffortIndicator.js', () => ({
   getEffortNotificationText: () => undefined,
 }))
 
-vi.mock('../components/FastIcon.js', () => ({
-  getFastIconString: () => 'FAST',
-}))
-
 vi.mock('../components/FullscreenLayout.js', () => ({
   calculateFullscreenLayoutBudget: (rows: number) => ({
     bottomMaxHeight: Math.max(1, Math.floor(rows / 2)),
@@ -681,13 +638,6 @@ vi.mock('../components/GlobalSearchDialog.js', () => ({
 vi.mock('../history/HistorySearchDialog.js', () => ({
   HistorySearchDialog: (props: Record<string, unknown>) => {
     harness.historySearchProps = props
-    return null
-  },
-}))
-
-vi.mock('../components/ModelPicker.js', () => ({
-  ModelPicker: (props: Record<string, unknown>) => {
-    harness.modelPickerProps = props
     return null
   },
 }))
@@ -773,10 +723,6 @@ vi.mock('../components/PromptInput/useMaybeTruncateInput.js', () => ({
 
 vi.mock('../components/PromptInput/usePromptInputPlaceholder.js', () => ({
   usePromptInputPlaceholder: () => 'Type a prompt',
-}))
-
-vi.mock('../components/PromptInput/useShowFastIconHint.js', () => ({
-  useShowFastIconHint: () => false,
 }))
 
 vi.mock('../components/PromptInput/useSwarmBanner.js', () => ({

@@ -103,7 +103,6 @@ export type GlobalRuntimeState = {
   hasIdeOnboardingBeenShown?: Record<string, boolean>;
   iterm2It2SetupComplete?: boolean;
   skillUsage?: Record<string, { usageCount: number; lastUsedAt: number }>;
-  penguinModeOrgEnabled?: boolean;
   cachedExtraUsageDisabledReason?: string | null;
   permissions?: {
     bypassPermissionsAcceptedByCwd?: Record<

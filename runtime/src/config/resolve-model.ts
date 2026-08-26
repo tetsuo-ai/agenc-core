@@ -4,14 +4,12 @@ import {
 } from "./env.js";
 import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
-  buildProviderModelCatalog,
   isAgencModelShortcut,
   resolveProviderSlug,
   readProviderConfig,
   type ProviderSlug,
 } from "./resolve-provider.js";
-import type { AgenCConfig, ProviderModelPair } from "./schema.js";
-import { resolveModelDisambiguated } from "./schema.js";
+import type { AgenCConfig } from "./schema.js";
 import {
   REGISTERED_MODEL_CATALOG,
   resolveRegisteredModelCatalogEntry,
@@ -123,15 +121,4 @@ export function resolveModelSelection(params: {
 
   // Ultimate default reads from the one defaults map rather than a literal.
   return BUILT_IN_PROVIDER_DEFAULT_MODELS.grok;
-}
-
-export function resolveDisambiguatedModelSelection(params: {
-  readonly slug: string;
-  readonly config?: AgenCConfig;
-  readonly catalog?: Readonly<Record<string, readonly string[]>>;
-}): ProviderModelPair {
-  return resolveModelDisambiguated(
-    params.slug,
-    params.catalog ?? buildProviderModelCatalog(params.config),
-  );
 }

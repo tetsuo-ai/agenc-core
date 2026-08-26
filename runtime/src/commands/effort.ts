@@ -1,11 +1,9 @@
 /**
  * /effort — show or set the reasoning effort level for the current model.
  *
- * The spinner already advertises "◐ <level> · /effort" during thinking, but
- * the command itself did not exist — the only way to change effort was the
- * ModelPicker's ←/→ cycling. This closes that gap. Levels are validated
- * against the current model's catalog capabilities (grok-4.3/4.5 accept
- * low/medium/high via xAI reasoning_effort); `default` clears the explicit
+ * Levels are validated against the current model's catalog capabilities
+ * (grok-4.3/4.5 accept low/medium/high via xAI reasoning_effort); `default`
+ * clears the explicit
  * choice so the level follows the model default again.
  */
 

@@ -1,7 +1,7 @@
 import {
   readProviderConfig,
-  type AgenCConfig,
-} from "./_deps/config.js";
+} from "../config/resolve-provider.js";
+import type { AgenCConfig } from "../config/schema.js";
 import { resolveModelCatalogMetadata } from "./registry/model-catalog.js";
 import { normalizeProviderMetadataIdentity } from "../provider-identity.js";
 import {

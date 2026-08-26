@@ -98,6 +98,41 @@ describe("resolveCanonicalStartupSelection", () => {
       })
     ).toThrow(/must contain a provider\/model pair/u);
   });
+
+  it("rejects a startup model denied by managed availableModels policy", () => {
+    expect(() =>
+      resolveCanonicalStartupSelection({
+        config: {
+          ...defaultConfig(),
+          model_provider: "openai",
+          model: "gpt-5",
+          availableModels: ["grok-4.6"],
+        },
+        env: {},
+      })
+    ).toThrow(/managed availableModels policy/u);
+  });
+
+  it("accepts and provider-localizes an allowed qualified GitHub model", () => {
+    const resolved = resolveCanonicalStartupSelection({
+      config: {
+        ...defaultConfig(),
+        model_provider: "github",
+        model: "github:copilot:gpt-5.3-codex",
+        availableModels: ["github:copilot:gpt-5.3-codex"],
+      },
+      env: {},
+    });
+
+    expect(resolved).toMatchObject({
+      provider: "github",
+      model: "gpt-5.3-codex",
+      config: {
+        model_provider: "github",
+        model: "gpt-5.3-codex",
+      },
+    });
+  });
 });
 
 describe("readStartupCliFlags --permission-mode validation", () => {

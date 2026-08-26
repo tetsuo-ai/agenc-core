@@ -5,7 +5,6 @@
 import {
   getChromeFlagOverride,
   getInlinePlugins,
-  getMainLoopModelOverride,
   getSessionBypassPermissionsMode,
 } from '../../bootstrap/state.js'
 import { quote } from '../bash/shellQuote.js'
@@ -36,7 +35,7 @@ export function getTeammateCommand(): string {
  *
  * @param options.planModeRequired - If true, don't inherit bypass permissions (plan mode takes precedence)
  * @param options.permissionMode - Permission mode to propagate
- * @param options.model - Teammate-specific model to use instead of the leader's CLI model override
+ * @param options.model - Resolved model to pass to the teammate
  */
 export function buildInheritedCliFlags(options?: {
   planModeRequired?: boolean
@@ -63,10 +62,8 @@ export function buildInheritedCliFlags(options?: {
     flags.push('--permission-mode auto')
   }
 
-  // Propagate --model if explicitly set via CLI
-  const modelOverride = model || getMainLoopModelOverride()
-  if (modelOverride) {
-    flags.push(`--model ${quote([modelOverride])}`)
+  if (model) {
+    flags.push(`--model ${quote([model])}`)
   }
 
   // Propagate --plugin-dir for each inline plugin

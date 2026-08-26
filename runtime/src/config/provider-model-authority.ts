@@ -1,6 +1,8 @@
 import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   BUILT_IN_PROVIDER_MODEL_CATALOG,
+  providerCatalogModelId,
+  providerLocalModelIdFromCatalog,
   resolveBuiltInProviderSlug,
   type BuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
@@ -11,8 +13,14 @@ import {
   resolveModelDisambiguated,
   UnknownModelError,
 } from "./schema.js";
+import { resolveProviderModelAlias } from "../utils/model/configs.js";
 
 export type ProviderSlug = BuiltInProviderSlug;
+
+export interface ProviderModelCatalogOptions {
+  /** Include the selected top-level pair in model-list projections. */
+  readonly includeConfiguredSelection?: boolean;
+}
 
 export class UnknownProviderError extends Error {
   readonly provider: string;
@@ -36,6 +44,7 @@ export class UnknownProviderError extends Error {
 
 export function buildProviderModelCatalog(
   config?: AgenCConfig,
+  options: ProviderModelCatalogOptions = {},
 ): Readonly<Record<string, readonly string[]>> {
   const catalog: Record<string, string[]> = Object.fromEntries(
     Object.entries(BUILT_IN_PROVIDER_MODEL_CATALOG).map(([provider, models]) => [
@@ -47,8 +56,23 @@ export function buildProviderModelCatalog(
   if (config?.providers) {
     for (const [provider, providerConfig] of Object.entries(config.providers)) {
       const slug = resolveBuiltInProviderSlug(provider);
-      const model = providerConfig.default_model?.trim();
-      if (!slug || !model) continue;
+      const configuredModel = providerConfig.default_model?.trim();
+      if (!slug || !configuredModel) continue;
+      const model = providerCatalogModelId(slug, configuredModel);
+      const entries = catalog[slug] ?? [];
+      if (!entries.includes(model)) entries.push(model);
+      catalog[slug] = entries;
+    }
+  }
+
+  if (
+    options.includeConfiguredSelection === true &&
+    config?.model_provider &&
+    config.model?.trim()
+  ) {
+    const slug = resolveBuiltInProviderSlug(config.model_provider);
+    if (slug !== undefined) {
+      const model = providerCatalogModelId(slug, config.model.trim());
       const entries = catalog[slug] ?? [];
       if (!entries.includes(model)) entries.push(model);
       catalog[slug] = entries;
@@ -81,7 +105,9 @@ function selectionConflict(
   );
 }
 
-function explicitQualification(model: string): ProviderModelPair | undefined {
+function explicitQualification(model: string):
+  | { readonly provider: ProviderSlug; readonly model: string }
+  | undefined {
   const separator = model.indexOf(":");
   if (separator <= 0) return undefined;
   const provider = resolveBuiltInProviderSlug(model.slice(0, separator));
@@ -110,23 +136,52 @@ function catalogQualifiedModel(
   catalog: Readonly<Record<string, readonly string[]>>,
 ): ProviderModelPair | undefined {
   const qualification = explicitQualification(model);
-  if (
-    qualification === undefined ||
-    !catalog[qualification.provider]?.includes(model)
-  ) return undefined;
-  return Object.freeze({ provider: qualification.provider, model });
+  if (qualification === undefined) return undefined;
+  return (
+    providerCatalogPair(qualification.provider, model, catalog) ??
+    providerCatalogPair(
+      qualification.provider,
+      qualification.model,
+      catalog,
+    )
+  );
+}
+
+function providerCatalogPair(
+  provider: ProviderSlug,
+  model: string,
+  catalog: Readonly<Record<string, readonly string[]>>,
+): ProviderModelPair | undefined {
+  const localInput = providerLocalModelIdFromCatalog(provider, model);
+  const entry = catalog[provider]?.find(
+    (candidate) =>
+      candidate === model ||
+      providerLocalModelIdFromCatalog(provider, candidate) === localInput,
+  );
+  if (entry === undefined) return undefined;
+  return Object.freeze({
+    provider,
+    model: providerLocalModelIdFromCatalog(provider, entry),
+  });
 }
 
 function resolveExplicitPair(
   provider: ProviderSlug,
   model: string,
   catalog: Readonly<Record<string, readonly string[]>>,
+  config: AgenCConfig,
 ): ProviderModelPair {
   if (model === "agenc") {
     if (provider !== "agenc") {
       throw selectionConflict(provider, model, "agenc");
     }
     return Object.freeze({ provider: "agenc", model: "agenc" });
+  }
+  const providerCatalog = providerCatalogPair(provider, model, catalog);
+  if (providerCatalog !== undefined) return providerCatalog;
+  const providerLocalModel = providerLocalModelIdFromCatalog(provider, model);
+  if (providerLocalModel !== model) {
+    return Object.freeze({ provider, model: providerLocalModel });
   }
   const catalogQualified = catalogQualifiedModel(model, catalog);
   if (catalogQualified !== undefined) {
@@ -135,11 +190,34 @@ function resolveExplicitPair(
     }
     return catalogQualified;
   }
+  const qualification = explicitQualification(model);
+  if (qualification !== undefined) {
+    if (qualification.provider !== provider) {
+      throw selectionConflict(provider, model, qualification.provider);
+    }
+    return resolveExplicitPair(
+      provider,
+      qualification.model,
+      catalog,
+      config,
+    );
+  }
+  const projectedModel = resolveProviderModelAlias(
+    provider,
+    model,
+    config.modelOverrides,
+  );
+  if (projectedModel !== model) {
+    return (
+      providerCatalogPair(provider, projectedModel, catalog) ??
+      Object.freeze({ provider, model: projectedModel })
+    );
+  }
 
   try {
-    const resolved = resolveModelDisambiguated(model, catalog);
+    const resolved = resolveModelDisambiguated(projectedModel, catalog);
     if (resolved.provider !== provider) {
-      throw selectionConflict(provider, model, resolved.provider);
+      throw selectionConflict(provider, projectedModel, resolved.provider);
     }
     return resolved;
   } catch (error) {
@@ -150,17 +228,89 @@ function resolveExplicitPair(
       if (selected !== undefined) return Object.freeze({ ...selected });
     }
     if (error instanceof UnknownModelError) {
-      const qualification = explicitQualification(model);
-      if (qualification !== undefined) {
-        if (qualification.provider !== provider) {
-          throw selectionConflict(provider, model, qualification.provider);
-        }
-        return qualification;
-      }
-      return Object.freeze({ provider, model });
+      return Object.freeze({ provider, model: projectedModel });
     }
     throw error;
   }
+}
+
+/**
+ * Resolve a model lookup against one known runtime provider. Provider-local
+ * entries win. A uniquely owned foreign model selects its owner, while an
+ * unknown model stays on the runtime provider.
+ */
+export function resolveProviderModelInput(
+  config: AgenCConfig,
+  fallbackProviderInput: string,
+  modelInput: string,
+): ProviderModelPair {
+  const fallbackProvider = resolveProviderSlugOrThrow(fallbackProviderInput);
+  const model = requireSelectionValue(modelInput, "model");
+  const catalog = buildProviderModelCatalog(config, {
+    includeConfiguredSelection: true,
+  });
+  const qualification = explicitQualification(model);
+  if (qualification !== undefined) {
+    return resolveExplicitPair(
+      qualification.provider,
+      model,
+      catalog,
+      config,
+    );
+  }
+
+  const providerPair = providerCatalogPair(
+    fallbackProvider,
+    model,
+    catalog,
+  );
+  if (providerPair !== undefined) return providerPair;
+
+  const projectedModel = resolveProviderModelAlias(
+    fallbackProvider,
+    model,
+    config.modelOverrides,
+  );
+  if (projectedModel !== model) {
+    return resolveExplicitPair(
+      fallbackProvider,
+      projectedModel,
+      catalog,
+      config,
+    );
+  }
+
+  try {
+    const resolved = resolveModelDisambiguated(model, catalog);
+    const provider = resolveProviderSlugOrThrow(resolved.provider);
+    return Object.freeze({
+      provider,
+      model: providerLocalModelIdFromCatalog(provider, resolved.model),
+    });
+  } catch (error) {
+    if (error instanceof AmbiguousModelError) {
+      const selected = error.candidates.find(
+        (candidate) => candidate.provider === fallbackProvider,
+      );
+      if (selected !== undefined) {
+        return Object.freeze({
+          provider: fallbackProvider,
+          model: providerLocalModelIdFromCatalog(
+            fallbackProvider,
+            selected.model,
+          ),
+        });
+      }
+    }
+    if (!(error instanceof UnknownModelError)) throw error;
+  }
+
+  return resolveExplicitPair(
+    fallbackProvider,
+    model,
+    catalog,
+    config,
+  );
 }
 
 /**
@@ -195,7 +345,7 @@ export function resolveProviderModelLayer(
     const provider = resolveProviderSlugOrThrow(providerInput);
     if (hasModel) {
       const modelInput = requireSelectionValue(layer.model, "model");
-      selection = resolveExplicitPair(provider, modelInput, catalog);
+      selection = resolveExplicitPair(provider, modelInput, catalog, combined);
     } else {
       const configuredProvider = resolveBuiltInProviderSlug(
         base.model_provider ?? "",
@@ -206,7 +356,7 @@ export function resolveProviderModelLayer(
         configuredModel ||
         combined.providers?.[provider]?.default_model?.trim() ||
         BUILT_IN_PROVIDER_DEFAULT_MODELS[provider];
-      selection = resolveExplicitPair(provider, defaultModel, catalog);
+      selection = resolveExplicitPair(provider, defaultModel, catalog, combined);
     }
   } else if (hasModel) {
     const modelInput = requireSelectionValue(layer.model, "model");
@@ -222,12 +372,26 @@ export function resolveProviderModelLayer(
         } catch (error) {
           if (!(error instanceof UnknownModelError)) throw error;
           const qualification = explicitQualification(modelInput);
-          selection = qualification ?? Object.freeze({
-            provider: resolveProviderSlugOrThrow(
-              base.model_provider ?? combined.model_provider ?? "",
-            ),
-            model: modelInput,
-          });
+          if (qualification === undefined) {
+            const inheritedProvider =
+              base.model_provider?.trim() ??
+              combined.model_provider?.trim();
+            if (!inheritedProvider) return layer;
+            const provider = resolveProviderSlugOrThrow(inheritedProvider);
+            selection = resolveExplicitPair(
+              provider,
+              modelInput,
+              catalog,
+              combined,
+            );
+          } else {
+            selection = resolveExplicitPair(
+              qualification.provider,
+              modelInput,
+              catalog,
+              combined,
+            );
+          }
         }
       }
     }

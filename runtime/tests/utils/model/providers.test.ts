@@ -78,10 +78,10 @@ test("credentials never select a provider", () => {
   });
 });
 
-test("provider selection is not inferred from model aliases", () => {
+test("provider selection is not inferred from an unknown model identifier", () => {
   clearProviderEnv();
 
-  runWithStartupProviderSelection(selection("openai", "agencplan"), () => {
+  runWithStartupProviderSelection(selection("openai", "custom-model"), () => {
     expect(getAPIProvider()).toBe("openai");
   });
 });

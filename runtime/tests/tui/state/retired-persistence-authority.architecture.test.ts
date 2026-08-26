@@ -15,6 +15,9 @@ describe('TUI persistence authority', () => {
 
     expect(appStateObserver).not.toMatch(/\b(?:get|update)RuntimeState\b/u)
     expect(appStateObserver).not.toMatch(
+      /\b(?:setMainLoopModelOverride|updateSettingsForSource)\b/u,
+    )
+    expect(appStateObserver).not.toMatch(
       /\b(?:showExpandedTodos|showSpinnerTree|tungstenPanelVisible|verbose)\b/u,
     )
   })
@@ -26,5 +29,33 @@ describe('TUI persistence authority', () => {
     expect(
       source('tui/components/PromptInput/usePromptInputPlaceholder.ts'),
     ).not.toContain('queuedCommandUpHintCount')
+  })
+
+  test('does not retain the retired Fast Mode TUI state', () => {
+    expect(source('tui/state/AppStateStore.ts')).not.toMatch(
+      /\bfastMode\??\s*:/u,
+    )
+  })
+
+  test('does not retain the retired Fast Mode organization cache', () => {
+    expect(source('config/runtime-state-repository.ts')).not.toContain(
+      'penguinModeOrgEnabled',
+    )
+    expect(source('config/state.ts')).not.toContain(
+      'penguinModeOrgEnabled',
+    )
+    expect(source('utils/fastMode.ts')).not.toContain(
+      'penguinModeOrgEnabled',
+    )
+  })
+
+  test('does not retain the producerless main-loop model override', () => {
+    expect(source('bootstrap/state.ts')).not.toContain('mainLoopModelOverride')
+    expect(source('utils/model/model.ts')).not.toContain(
+      'getMainLoopModelOverride',
+    )
+    expect(source('utils/swarm/spawnUtils.ts')).not.toContain(
+      'getMainLoopModelOverride',
+    )
   })
 })

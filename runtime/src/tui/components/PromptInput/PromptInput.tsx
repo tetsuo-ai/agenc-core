@@ -126,21 +126,8 @@ import {
   parseDirectMemberMessage,
   sendDirectMemberMessage,
 } from "../../../utils/directMemberMessage.js";
-import type { AvailableEffortLevel } from "../../../utils/effort.js";
 import { env } from "../../../utils/env.js";
 import { errorMessage } from "../../../utils/errors.js";
-import { isBilledAsExtraUsage } from "../../../utils/extraUsage.js";
-import {
-  clearFastModeCooldown,
-  FAST_MODE_MODEL_DISPLAY,
-  getFastModeModel,
-  getFastModeRuntimeStateForContext,
-  getFastModeUnavailableReasonForContext,
-  isFastModeAvailableForContext,
-  isFastModeCooldownForContext,
-  isFastModeEnabledForContext,
-  isFastModeSupportedByModelForContext,
-} from "../../../utils/fastMode.js";
 import type { VimRoutingState } from "../../input/processTextPrompt.js";
 import { extractDraggedFilePaths } from "../../../utils/dragDropPaths.js";
 import {
@@ -155,10 +142,6 @@ import {
 } from "../../../utils/keyboardShortcuts.js";
 import { logError } from "../../../utils/log.js";
 import {
-  isOpus1mMergeEnabled,
-  modelDisplayString,
-} from "../../../utils/model/model.js";
-import {
   getNextPermissionMode,
   isAutoModeGateEnabled,
   transitionPermissionMode,
@@ -166,10 +149,7 @@ import {
 import { getPlatform } from "../../../utils/platform.js";
 import type { PromptInputContext } from "../../input/inputContext.js";
 import { editPromptInEditor } from "../../../utils/promptEditor.js";
-import {
-  hasAutoModeOptIn,
-  updateSettingsForSource,
-} from "../../../utils/settings/settings.js";
+import { hasAutoModeOptIn } from "../../../utils/settings/settings.js";
 import { findSlashCommandPositions } from "../../../utils/suggestions/commandSuggestions.js";
 import {
   findSlackChannelPositions,
@@ -205,7 +185,6 @@ import { getEffortNotificationText } from "../EffortIndicator.js";
 import { calculateFullscreenLayoutBudget } from "../FullscreenLayout.js";
 import { GlobalSearchDialog } from "../GlobalSearchDialog.js";
 import { HistorySearchDialog } from "../../history/HistorySearchDialog.js";
-import { ModelPicker } from "../ModelPicker.js";
 import { QuickOpenDialog } from "../QuickOpenDialog.js";
 import { materializeAttachmentMentions } from "../../workbench/commands.js";
 import {
@@ -241,7 +220,6 @@ import { PromptInputQueuedCommands } from "./PromptInputQueuedCommands.js";
 import { PromptInputStashNotice } from "./PromptInputStashNotice.js";
 import { useMaybeTruncateInput } from "./useMaybeTruncateInput.js";
 import { usePromptInputPlaceholder } from "./usePromptInputPlaceholder.js";
-import { useShowFastIconHint } from "./useShowFastIconHint.js";
 import { useSwarmBanner } from "./useSwarmBanner.js";
 import {
   clampPromptTextInputColumns,
@@ -254,15 +232,6 @@ import {
 type PromptSuggestionHookProps = {
   inputValue: string;
   isAssistantResponding: boolean;
-};
-
-type FastModePickerProps = {
-  onDone: (
-    result?: string,
-    options?: { display?: "system" | "user" | "skip" },
-  ) => void;
-  unavailableReason: string | null;
-  remoteAuthSessionContext: ProviderAuthReadContext;
 };
 
 const NATIVE_CSIU_TERMINALS: Record<string, string> = {
@@ -278,126 +247,6 @@ function getNativeCSIuTerminalDisplayName(): string | null {
     return null;
   }
   return NATIVE_CSIU_TERMINALS[env.terminal] ?? null;
-}
-
-function applyFastMode(
-  enable: boolean,
-  setAppState: (updater: (prev: AppState) => AppState) => void,
-  remoteAuthSessionContext: ProviderAuthReadContext,
-): void {
-  clearFastModeCooldown();
-  void updateSettingsForSource("userSettings", {
-    fastMode: enable ? true : undefined,
-  });
-  setAppState((prev) => {
-    if (!enable) {
-      return { ...prev, fastMode: false };
-    }
-    const needsModelSwitch = !isFastModeSupportedByModelForContext(
-      prev.mainLoopModel,
-      remoteAuthSessionContext,
-    );
-    return {
-      ...prev,
-      ...(needsModelSwitch
-        ? {
-            mainLoopModel: getFastModeModel(),
-            mainLoopModelForSession: null,
-          }
-        : {}),
-      fastMode: true,
-    };
-  });
-}
-
-function FastModePicker({
-  onDone,
-  unavailableReason,
-  remoteAuthSessionContext,
-}: FastModePickerProps): React.ReactNode {
-  const model = useAppState((state) => state.mainLoopModel);
-  const initialFastMode = useAppState((state) => state.fastMode);
-  const setAppState = useSetAppState();
-  const [enabled, setEnabled] = React.useState(initialFastMode ?? false);
-  const isUnavailable = unavailableReason !== null;
-  const runtimeState = getFastModeRuntimeStateForContext(
-    remoteAuthSessionContext,
-  );
-
-  const confirm = React.useCallback(() => {
-    if (isUnavailable) return;
-    applyFastMode(enabled, setAppState, remoteAuthSessionContext);
-    if (enabled) {
-      const modelUpdated = !isFastModeSupportedByModelForContext(
-        model,
-        remoteAuthSessionContext,
-      )
-        ? `; model set to ${FAST_MODE_MODEL_DISPLAY}`
-        : "";
-      onDone(`Fast mode ON${modelUpdated}`);
-    } else {
-      onDone("Fast mode OFF");
-    }
-  }, [
-    enabled,
-    isUnavailable,
-    model,
-    onDone,
-    remoteAuthSessionContext,
-    setAppState,
-  ]);
-
-  const cancel = React.useCallback(() => {
-    if (isUnavailable && initialFastMode) {
-      applyFastMode(false, setAppState, remoteAuthSessionContext);
-      onDone("Fast mode OFF", { display: "system" });
-      return;
-    }
-    onDone(initialFastMode ? "Kept Fast mode ON" : "Kept Fast mode OFF", {
-      display: "system",
-    });
-  }, [
-    initialFastMode,
-    isUnavailable,
-    onDone,
-    remoteAuthSessionContext,
-    setAppState,
-  ]);
-
-  useInput((input, key) => {
-    if (key.escape) {
-      cancel();
-      return;
-    }
-    if (key.return) {
-      confirm();
-      return;
-    }
-    if (key.tab || input === " ") {
-      if (!isUnavailable) setEnabled((value) => !value);
-    }
-  });
-
-  return (
-    <Box flexDirection="column" marginLeft={2}>
-      <Box flexDirection="row" gap={2}>
-        <Text bold>Fast mode</Text>
-        <Text color={enabled ? "fastMode" : undefined} bold={enabled}>
-          {enabled ? "ON" : "OFF"}
-        </Text>
-        <Text dimColor>for {FAST_MODE_MODEL_DISPLAY}</Text>
-      </Box>
-      {unavailableReason ? (
-        <Text color="error">{unavailableReason}</Text>
-      ) : runtimeState.status === "cooldown" ? (
-        <Text color="warning">
-          Fast mode is temporarily unavailable; try again later.
-        </Text>
-      ) : (
-        <Text dimColor>Tab toggles, Enter confirms, Esc cancels</Text>
-      )}
-    </Box>
-  );
 }
 
 function isUltrareviewEnabled(): boolean {
@@ -644,6 +493,8 @@ type Props = {
    */
   submissionBlockedReason?: string | null;
   onSubmissionBlocked?: (reason: string) => void;
+  /** Opens the App-owned provider-neutral model selection surface. */
+  onOpenModelMenu?: () => Promise<void> | void;
   onboardingInput?: {
     readonly placeholder: string;
     readonly footerHint: string;
@@ -797,15 +648,10 @@ function PromptInput({
   isLocalJSXCommandActive = false,
   submissionBlockedReason = null,
   onSubmissionBlocked,
+  onOpenModelMenu,
   onboardingInput,
 }: Props): React.ReactNode {
   const isFullscreen = useFullscreenMode();
-  const fastModeEnabled = isFastModeEnabledForContext(
-    remoteAuthSessionContext,
-  );
-  const fastModeAvailable =
-    fastModeEnabled &&
-    isFastModeAvailableForContext(remoteAuthSessionContext);
   const mainLoopModel = useMainLoopModel();
   // A local-jsx command (e.g., /mcp while agent is running) renders a full-
   // screen dialog on top of PromptInput via the immediate-command path with
@@ -968,12 +814,7 @@ function PromptInput({
       ? // biome-ignore lint/correctness/useHookAtTopLevel: feature() is a compile-time constant
         useAppState((s) => s.isBriefOnly) && !viewingAgentTaskId
       : false;
-  const mainLoopModel_ = useAppState((s) => s.mainLoopModel);
-  const mainLoopModelForSession = useAppState((s) => s.mainLoopModelForSession);
   const thinkingEnabled = useAppState((s) => s.thinkingEnabled);
-  const isFastMode = useAppState((s) =>
-    fastModeEnabled ? s.fastMode : false,
-  );
   const effortValue = useAppState((s) => s.effortValue);
   const viewedTeammate = getViewedTeammateTask(store.getState());
   const viewingAgentName = viewedTeammate?.identity.agentName;
@@ -1095,11 +936,9 @@ function PromptInput({
   }, [coordinatorTaskCount, coordinatorTaskIndex, minCoordinatorIndex]);
   const [isPasting, setIsPasting] = useState(false);
   const [isExternalEditorActive, setIsExternalEditorActive] = useState(false);
-  const [showModelPicker, setShowModelPicker] = useState(false);
   const [showQuickOpen, setShowQuickOpen] = useState(false);
   const [showGlobalSearch, setShowGlobalSearch] = useState(false);
   const [showHistoryPicker, setShowHistoryPicker] = useState(false);
-  const [showFastModePicker, setShowFastModePicker] = useState(false);
   const [showThinkingToggle, setShowThinkingToggle] = useState(false);
   const [showModeSwitcher, setShowModeSwitcher] = useState(false);
   const [showAutoModeOptIn, setShowAutoModeOptIn] = useState(false);
@@ -2682,21 +2521,14 @@ function PromptInput({
     });
   }, [addNotification, queueOwner]);
 
-  // Handler for chat:modelPicker - toggle model picker
+  // The shortcut and typed /model command share the App-owned command
+  // context, so model selection cannot bypass daemon runtime authority.
   const handleModelPicker = useCallback(() => {
-    setShowModelPicker((prev) => !prev);
+    void onOpenModelMenu?.();
     if (helpOpen) {
       setHelpOpen(false);
     }
-  }, [helpOpen]);
-
-  // Handler for chat:fastMode - toggle fast mode picker
-  const handleFastModePicker = useCallback(() => {
-    setShowFastModePicker((prev) => !prev);
-    if (helpOpen) {
-      setHelpOpen(false);
-    }
-  }, [helpOpen]);
+  }, [helpOpen, onOpenModelMenu, setHelpOpen]);
 
   // Handler for chat:thinkingToggle - toggle thinking mode
   const handleThinkingToggle = useCallback(() => {
@@ -3058,7 +2890,9 @@ function PromptInput({
       "chat:externalEditor": handleExternalEditor,
       "chat:stash": handleStash,
       "chat:dropQueuedInput": handleDropQueuedInput,
-      "chat:modelPicker": handleModelPicker,
+      ...(onOpenModelMenu === undefined
+        ? {}
+        : { "chat:modelPicker": handleModelPicker }),
       "chat:thinkingToggle": handleThinkingToggle,
       "chat:imagePaste": handleImagePaste,
     }),
@@ -3069,6 +2903,7 @@ function PromptInput({
       handleStash,
       handleDropQueuedInput,
       handleModelPicker,
+      onOpenModelMenu,
       handleThinkingToggle,
       handleImagePaste,
     ],
@@ -3090,12 +2925,6 @@ function PromptInput({
   useKeybinding("chat:messageActions", () => onMessageActionsEnter?.(), {
     context: "Chat",
     isActive: promptKeyboardActive && !isSearchingHistory,
-  });
-
-  // Fast mode keybinding is only active when fast mode is enabled and available
-  useKeybinding("chat:fastMode", handleFastModePicker, {
-    context: "Chat",
-    isActive: promptKeyboardActive && fastModeEnabled && fastModeAvailable,
   });
 
   // Handle help:dismiss keybinding (ESC closes help menu)
@@ -3440,18 +3269,11 @@ function PromptInput({
     }
   });
   const swarmBanner = useSwarmBanner();
-  const fastModeCooldown = fastModeEnabled
-    ? isFastModeCooldownForContext(remoteAuthSessionContext)
-    : false;
-  const showFastIcon = fastModeEnabled
-    ? isFastMode && (fastModeAvailable || fastModeCooldown)
-    : false;
-  const showFastIconHint = useShowFastIconHint(showFastIcon ?? false);
 
   // Show the effort notification only when the level CHANGES mid-session,
   // never on startup (UX request: the pinned bottom-right label read as a
   // permanent login/auth chip). The change itself flashes for 12s and then
-  // clears; /effort and the ModelPicker already confirm their own change.
+  // clears; /effort confirms its own change.
   // Suppressed in brief/assistant mode — the value reflects the local
   // client's effort, not the connected agent's.
   const effortNotificationText = briefOwnsGap
@@ -3555,131 +3377,6 @@ function PromptInput({
 
   // Calculate if input has multiple lines
   const isInputWrapped = useMemo(() => input.includes("\n"), [input]);
-
-  // Memoized callbacks for model picker to prevent re-renders when unrelated
-  // state (like notifications) changes. This prevents the inline model picker
-  // from visually "jumping" when notifications arrive.
-  const handleModelSelect = useCallback(
-    (model: string | null, _effort: AvailableEffortLevel | undefined) => {
-      let wasFastModeDisabled = false;
-      setAppState((prev) => {
-        wasFastModeDisabled =
-          fastModeEnabled &&
-          !isFastModeSupportedByModelForContext(
-            model,
-            remoteAuthSessionContext,
-          ) &&
-          !!prev.fastMode;
-        return {
-          ...prev,
-          mainLoopModel: model,
-          mainLoopModelForSession: null,
-          // Turn off fast mode if switching to a model that doesn't support it
-          ...(wasFastModeDisabled && {
-            fastMode: false,
-          }),
-        };
-      });
-      setShowModelPicker(false);
-      const effectiveFastMode = (isFastMode ?? false) && !wasFastModeDisabled;
-      let message = `Model set to ${modelDisplayString(model)}`;
-      if (
-        isBilledAsExtraUsage(model, effectiveFastMode, isOpus1mMergeEnabled())
-      ) {
-        message += " · Billed as extra usage";
-      }
-      if (wasFastModeDisabled) {
-        message += " · Fast mode OFF";
-      }
-      addNotification({
-        key: "model-switched",
-        jsx: <Text>{message}</Text>,
-        priority: "immediate",
-        timeoutMs: 3000,
-      });
-    },
-    [
-      addNotification,
-      fastModeEnabled,
-      isFastMode,
-      remoteAuthSessionContext,
-      setAppState,
-    ],
-  );
-  const handleModelCancel = useCallback(() => {
-    setShowModelPicker(false);
-  }, []);
-
-  // Memoize the model picker element to prevent unnecessary re-renders
-  // when AppState changes for unrelated reasons (e.g., notifications arriving)
-  const modelPickerElement = useMemo(() => {
-    if (!showModelPicker) return null;
-    return (
-      <Box flexDirection="column" marginTop={1}>
-        <ModelPicker
-          initial={mainLoopModel_}
-          sessionModel={mainLoopModelForSession}
-          onSelect={handleModelSelect}
-          onCancel={handleModelCancel}
-          isStandaloneCommand
-          remoteAuthSessionContext={remoteAuthSessionContext}
-          showFastModeNotice={
-            fastModeEnabled &&
-            isFastMode &&
-            isFastModeSupportedByModelForContext(
-              mainLoopModel_,
-              remoteAuthSessionContext,
-            ) &&
-            fastModeAvailable
-          }
-        />
-      </Box>
-    );
-  }, [
-    showModelPicker,
-    mainLoopModel_,
-    mainLoopModelForSession,
-    fastModeAvailable,
-    fastModeEnabled,
-    handleModelSelect,
-    handleModelCancel,
-    isFastMode,
-    remoteAuthSessionContext,
-  ]);
-  const handleFastModeSelect = useCallback(
-    (result?: string) => {
-      setShowFastModePicker(false);
-      if (result) {
-        addNotification({
-          key: "fast-mode-toggled",
-          jsx: <Text>{result}</Text>,
-          priority: "immediate",
-          timeoutMs: 3000,
-        });
-      }
-    },
-    [addNotification],
-  );
-
-  // Memoize the fast mode picker element
-  const fastModePickerElement = useMemo(() => {
-    if (!showFastModePicker) return null;
-    return (
-      <Box flexDirection="column" marginTop={1}>
-        <FastModePicker
-          onDone={handleFastModeSelect}
-          unavailableReason={getFastModeUnavailableReasonForContext(
-            remoteAuthSessionContext,
-          )}
-          remoteAuthSessionContext={remoteAuthSessionContext}
-        />
-      </Box>
-    );
-  }, [
-    handleFastModeSelect,
-    remoteAuthSessionContext,
-    showFastModePicker,
-  ]);
 
   // Memoized callbacks for thinking toggle
   const handleThinkingSelect = useCallback(
@@ -3839,13 +3536,6 @@ function PromptInput({
     );
   }
 
-  // Show loop mode menu when requested (internal-only, eliminated from external builds)
-  if (modelPickerElement) {
-    return modelPickerElement;
-  }
-  if (fastModePickerElement) {
-    return fastModePickerElement;
-  }
   if (thinkingToggleElement) {
     return thinkingToggleElement;
   }

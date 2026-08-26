@@ -27,7 +27,7 @@ describe("built-in provider info", () => {
       ["mistral", "Mistral", "mistral-medium-latest", "https://api.mistral.ai/v1", "api-key", ["MISTRAL_API_KEY"], ["MISTRAL_BASE_URL"], 110, "api-key", false],
       ["nvidia-nim", "NVIDIA NIM", "nvidia/llama-3.1-nemotron-70b-instruct", "https://integrate.api.nvidia.com/v1", "api-key", ["NVIDIA_API_KEY"], ["NVIDIA_BASE_URL"], 120, "api-key", false],
       ["minimax", "MiniMax", "MiniMax-M2.5", "https://api.minimax.io/v1", "api-key", ["MINIMAX_API_KEY"], ["MINIMAX_BASE_URL"], 130, "api-key", false],
-      ["github", "GitHub Copilot", "gpt-4o", "https://api.githubcopilot.com", "api-key", ["GITHUB_TOKEN", "GH_TOKEN"], ["GITHUB_BASE_URL"], 140, "api-key", false],
+      ["github", "GitHub Copilot", "gpt-5.3-codex", "https://api.githubcopilot.com", "api-key", ["GITHUB_TOKEN", "GH_TOKEN"], ["GITHUB_BASE_URL"], 140, "api-key", false],
       ["amazon-bedrock", "Amazon Bedrock", "amazon.nova-pro-v1:0", "https://bedrock-runtime.us-east-1.amazonaws.com", "aws-sigv4", [], ["AWS_BEDROCK_BASE_URL"], 150, "environment", false],
       ["agenc", "AgenC", "agenc", "https://id.agenc.ag/v1", "none", [], ["AGENC_BASE_URL"], 160, "managed", false],
     ] as const;

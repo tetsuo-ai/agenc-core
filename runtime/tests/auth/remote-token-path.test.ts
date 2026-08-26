@@ -313,7 +313,6 @@ async function loadSpawnUtils(): Promise<
   vi.doMock("../bootstrap/state.js", () => ({
     getChromeFlagOverride: () => undefined,
     getInlinePlugins: () => [],
-    getMainLoopModelOverride: () => undefined,
     getSessionBypassPermissionsMode: () => false,
   }));
   vi.doMock("../utils/bundledMode.js", () => ({

@@ -320,7 +320,6 @@ describe("provider authority architecture", () => {
     for (const path of [
       "config/env.ts",
       "config/resolve-provider.ts",
-      "llm/_deps/config.ts",
       "llm/registry/provider-info.ts",
       "llm/model-registry.ts",
       "llm/model-metadata.ts",
@@ -672,7 +671,7 @@ describe("provider authority architecture", () => {
     }
   });
 
-  test("provider-dependent TUI labels and fast mode use captured session authority", () => {
+  test("provider-dependent TUI labels use captured session authority", () => {
     const capturedKeys = new Set(CANONICAL_SESSION_ENV_KEYS);
     expect(capturedKeys).toContain("AGENC_ONBOARDING");
     expect(capturedKeys).toContain("AGENC_DISABLE_1M_CONTEXT");
@@ -681,9 +680,53 @@ describe("provider authority architecture", () => {
 
     const fastModeSource = readFileSync(`${SRC}/utils/fastMode.ts`, "utf8");
     expect(fastModeSource).not.toContain("process.env");
+    for (const retiredFastModeSurface of [
+      "prefetchFastModeStatus",
+      "resolveFastModeStatusFromCache",
+      "onCooldownTriggered",
+      "onCooldownExpired",
+      "onFastModeOverageRejection",
+      "onOrgFastModeChanged",
+      "fast_mode_state",
+    ]) {
+      expect(fastModeSource).not.toContain(retiredFastModeSurface);
+    }
+
+    expect(existsSync(`${SRC}/tui/components/ModelPicker.tsx`)).toBe(false);
+    expect(existsSync(`${SRC}/tui/components/FastIcon.tsx`)).toBe(false);
+    expect(
+      existsSync(`${SRC}/tui/components/PromptInput/useShowFastIconHint.ts`),
+    ).toBe(false);
+    const typecheckConfig = readFileSync(`${RUNTIME}/tsconfig.json`, "utf8");
+    expect(typecheckConfig).not.toContain("tui/components/ModelPicker.tsx");
+    expect(typecheckConfig).not.toContain("tui/components/FastIcon.tsx");
+    for (const sdkSurface of [
+      "entrypoints/sdk/coreSchemas.ts",
+      "entrypoints/sdk/coreTypes.generated.ts",
+    ]) {
+      const source = readFileSync(`${SRC}/${sdkSurface}`, "utf8");
+      expect(source).not.toContain("fast_mode_state");
+      expect(source).not.toContain("FastModeState");
+      expect(source).not.toContain("supportsFastMode");
+    }
+    for (const retiredCatalog of [
+      "utils/model/modelOptions.ts",
+      "utils/model/minimaxModels.ts",
+      "utils/model/nvidiaNimModels.ts",
+      "utils/model/ollamaModels.ts",
+      "utils/model/copilotModels.ts",
+      "utils/extraUsage.ts",
+    ]) {
+      expect(existsSync(`${SRC}/${retiredCatalog}`), retiredCatalog).toBe(false);
+    }
+    expect(
+      readFileSync(`${SRC}/services/api/providerConfig.ts`, "utf8"),
+    ).not.toContain("getAdditionalModelOptionsCacheScope");
+    expect(
+      readFileSync(`${SRC}/commands/config-context.ts`, "utf8"),
+    ).not.toContain("providerNameFromCommandContext");
 
     for (const relativePath of [
-      "tui/components/ModelPicker.tsx",
       "tui/components/PromptInput/PromptInput.tsx",
       "tui/components/PromptInput/PromptInputHelpMenu.tsx",
     ]) {
@@ -704,18 +747,17 @@ describe("provider authority architecture", () => {
     expect(appSource).toMatch(
       /modelDisplayContext=\{remoteAuthSessionContext\}/u,
     );
-    expect(appSource).toMatch(/modelSetting:\s*mainLoopModelSetting/u);
+    expect(appSource).not.toContain("getRuntimeMainLoopModel");
+    expect(appSource).not.toContain("mainLoopModelSetting");
     expect(appSource).toMatch(
       /getContextWindowForModelForContext\([\s\S]*?remoteAuthSessionContext/u,
     );
 
     const modelSource = readFileSync(`${SRC}/utils/model/model.ts`, "utf8");
-    const runtimeResolver = modelSource.match(
-      /export function getRuntimeMainLoopModel\([\s\S]*?\n\}/u,
-    )?.[0];
-    expect(runtimeResolver).toBeDefined();
-    expect(runtimeResolver).toContain("modelSetting: ModelSetting | undefined");
-    expect(runtimeResolver).not.toContain("getUserSpecifiedModelSetting(");
+    expect(modelSource).not.toContain("getRuntimeMainLoopModel");
+    expect(modelSource).not.toContain("opusplan");
+    expect(modelSource).not.toContain("agencplan");
+    expect(modelSource).not.toContain("agencspark");
 
     expect(
       getContextWindowForModelForContext(
@@ -750,14 +792,6 @@ describe("provider authority architecture", () => {
     );
     expect(effortIndicatorSource).not.toMatch(
       /\b(?:modelSupportsEffort|getDisplayedEffortLevel)\(/u,
-    );
-
-    const modelPickerSource = readFileSync(
-      `${SRC}/tui/components/ModelPicker.tsx`,
-      "utf8",
-    );
-    expect(modelPickerSource).not.toMatch(
-      /\b(?:convertEffortValueToLevel|getAvailableEffortLevels|getDefaultEffortForModel|modelSupportsEffort)\(/u,
     );
 
     const spinnerSource = readFileSync(

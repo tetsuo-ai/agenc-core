@@ -338,6 +338,20 @@ describe("modelCommand", () => {
     expect(pending).toEqual({ provider: "openai", model: "gpt-5" });
   });
 
+  it("stores provider-qualified Copilot input as one provider-local pair", async () => {
+    const session = stubSession({ provider: "grok", model: "grok-4" });
+
+    const res = await modelCommand.execute(
+      mkctx(session, "github:gpt-5.3-codex"),
+    );
+
+    expect(res.kind).toBe("text");
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown })
+        .pendingProviderSwitch,
+    ).toEqual({ provider: "github", model: "gpt-5.3-codex" });
+  });
+
   it("resolves a known bare model without inheriting the current provider", async () => {
     const session = stubSession({ provider: "grok", model: "grok-4" });
 
@@ -575,6 +589,95 @@ describe("modelCommand", () => {
     ).toBeNull();
   });
 
+  it("blocks disallowed direct switches before staging, aborting, or callbacks", async () => {
+    const abortTerminal = vi.fn();
+    const beforeStage = vi.fn();
+    const session = stubSession({
+      provider: "grok",
+      model: "grok-4.6",
+      activeTurn: { turnId: "active" },
+      abortTerminal,
+      configStore: commandConfigStore(TEST_HOME, {
+        availableModels: ["grok-4.6"],
+      }),
+    });
+    const stage = vi.spyOn(session, "setPendingProviderSwitch");
+
+    await expect(
+      applyModelSwitch(session, "gpt-5", "openai", { beforeStage }),
+    ).resolves.toMatchObject({
+      applied: false,
+      summary: expect.stringContaining("managed availableModels policy"),
+    });
+    expect(stage).not.toHaveBeenCalled();
+    expect(abortTerminal).not.toHaveBeenCalled();
+    expect(beforeStage).not.toHaveBeenCalled();
+  });
+
+  it("blocks typed provider-qualified models without updating TUI chrome", async () => {
+    const session = stubSession({
+      provider: "grok",
+      model: "grok-4.6",
+      configStore: commandConfigStore(TEST_HOME, {
+        availableModels: ["grok-4.6"],
+      }),
+    });
+    const setModel = vi.fn();
+    const setAppState = vi.fn();
+
+    const result = await modelCommand.execute(
+      mkctx(session, "openai:gpt-5", { setModel, setAppState }),
+    );
+
+    expect(result).toEqual({
+      kind: "text",
+      text: expect.stringContaining("managed availableModels policy"),
+    });
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown })
+        .pendingProviderSwitch,
+    ).toBeNull();
+    expect(setModel).not.toHaveBeenCalled();
+    expect(setAppState).not.toHaveBeenCalled();
+  });
+
+  it("treats an explicit empty model allowlist as deny-all", async () => {
+    const session = stubSession({
+      provider: "grok",
+      model: "grok-4.6",
+      configStore: commandConfigStore(TEST_HOME, { availableModels: [] }),
+    });
+
+    const result = await modelCommand.execute(mkctx(session, "grok-4.6"));
+
+    expect(result).toEqual({
+      kind: "text",
+      text: expect.stringContaining("managed availableModels policy"),
+    });
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown })
+        .pendingProviderSwitch,
+    ).toBeNull();
+  });
+
+  it("allows an explicitly admitted model", async () => {
+    const session = stubSession({
+      provider: "grok",
+      model: "grok-4.6",
+      configStore: commandConfigStore(TEST_HOME, {
+        availableModels: ["gpt-5"],
+      }),
+    });
+
+    const result = await modelCommand.execute(mkctx(session, "openai:gpt-5"));
+
+    expect(result.kind).toBe("text");
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown })
+        .pendingProviderSwitch,
+    ).toEqual({ provider: "openai", model: "gpt-5" });
+  });
+
   it("whitespace-only args are treated as empty", async () => {
     const res = await modelCommand.execute(mkctx(stubSession(), "   "));
     expect(res.kind).toBe("text");
@@ -598,6 +701,141 @@ describe("modelCommand", () => {
     expect(snapshot.rows.some((row) => row.provider === "openai")).toBe(true);
     expect(snapshot.rows[snapshot.activeIndex]?.status).toBe("current");
     expect(snapshot.providerCounts.openai).toBeGreaterThan(0);
+  });
+
+  it("offers Copilot models without creating bare-slug collisions", () => {
+    const snapshot = readModelMenuSnapshot(
+      mkctx(stubSession({ provider: "github", model: "gpt-5-mini" }), ""),
+    );
+    const row = snapshot.rows.find(
+      (candidate) =>
+        candidate.provider === "github" &&
+        candidate.displayModel === "gpt-5.3-codex",
+    );
+
+    expect(row).toMatchObject({
+      provider: "github",
+      model: "github:copilot:gpt-5.3-codex",
+      displayModel: "gpt-5.3-codex",
+      status: "default",
+      selectable: true,
+    });
+    expect(modelMenuFallback(snapshot)).toContain("github:gpt-5.3-codex");
+    expect(modelMenuFallback(snapshot)).not.toContain(
+      "github:github:copilot:gpt-5.3-codex",
+    );
+  });
+
+  it("applies a Copilot menu route as the same provider-local pair", async () => {
+    const session = stubSession({ provider: "github", model: "gpt-5-mini" });
+    const setToolJSX = vi.fn();
+
+    const result = await modelCommand.execute(
+      mkctx(session, "", { setToolJSX }),
+    );
+
+    expect(result.kind).toBe("skip");
+    const payload = setToolJSX.mock.calls[0]?.[0] as {
+      jsx?: {
+        props?: {
+          onSelect?: (
+            provider: "github",
+            model: string,
+          ) => Promise<{ message: string; shouldClose: boolean }>;
+        };
+      };
+    };
+    const onSelect = payload.jsx?.props?.onSelect;
+    expect(onSelect).toBeTypeOf("function");
+    await expect(
+      onSelect!("github", "github:copilot:gpt-5.3-codex"),
+    ).resolves.toMatchObject({ shouldClose: true });
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown })
+        .pendingProviderSwitch,
+    ).toEqual({ provider: "github", model: "gpt-5.3-codex" });
+  });
+
+  it("filters menu rows and counts through collision-safe managed policy", () => {
+    const configStore = commandConfigStore(TEST_HOME, {
+      availableModels: ["github:copilot:gpt-5.3-codex"],
+    });
+    const snapshot = readModelMenuSnapshot(
+      mkctx(
+        stubSession({
+          provider: "github",
+          model: "gpt-5-mini",
+          configStore,
+        }),
+      ),
+    );
+    const selectable = snapshot.rows.filter(row => row.selectable);
+
+    expect(selectable).toEqual([
+      expect.objectContaining({
+        provider: "github",
+        model: "github:copilot:gpt-5.3-codex",
+        displayModel: "gpt-5.3-codex",
+      }),
+    ]);
+    expect(snapshot.providerCounts.github).toBe(1);
+    expect(snapshot.providerCounts.openai).toBe(0);
+    expect(snapshot.rows[snapshot.activeIndex]).toMatchObject({
+      provider: "github",
+      selectable: true,
+    });
+  });
+
+  it("keeps bare managed IDs compatible across provider-local catalogs", () => {
+    const configStore = commandConfigStore(TEST_HOME, {
+      availableModels: ["gpt-5.3-codex"],
+    });
+    const snapshot = readModelMenuSnapshot(
+      mkctx(stubSession({ configStore })),
+    );
+    const matching = snapshot.rows.filter(
+      row => row.selectable && row.displayModel === "gpt-5.3-codex",
+    );
+
+    expect(matching.map(row => row.provider).sort()).toEqual([
+      "github",
+      "openai",
+    ]);
+  });
+
+  it("focuses the first allowed row when the current model is forbidden", () => {
+    const configStore = commandConfigStore(TEST_HOME, {
+      availableModels: ["gpt-5"],
+    });
+    const snapshot = readModelMenuSnapshot(
+      mkctx(
+        stubSession({
+          provider: "grok",
+          model: "grok-4.6",
+          configStore,
+        }),
+      ),
+    );
+
+    expect(snapshot.rows[snapshot.activeIndex]).toMatchObject({
+      provider: "openai",
+      model: "gpt-5",
+      selectable: true,
+    });
+    expect(snapshot.providerCounts.grok).toBe(0);
+  });
+
+  it("renders no selectable model rows for an empty managed allowlist", () => {
+    const configStore = commandConfigStore(TEST_HOME, { availableModels: [] });
+    const snapshot = readModelMenuSnapshot(
+      mkctx(stubSession({ configStore })),
+    );
+
+    expect(snapshot.rows.length).toBeGreaterThan(0);
+    expect(snapshot.rows.every(row => !row.selectable)).toBe(true);
+    expect(Object.values(snapshot.providerCounts).every(count => count === 0))
+      .toBe(true);
+    expect(snapshot.rows[0]?.detail).toBe("no models allowed by managed policy");
   });
 
   it("uses the provider service pair instead of mixing stale projections", () => {

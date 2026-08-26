@@ -13,6 +13,172 @@ import { normalizeProviderIdentity } from "../../provider-identity.js";
 export const GEMINI_DEVELOPER_NATIVE_BASE_URL =
   "https://generativelanguage.googleapis.com/v1beta";
 
+export const GITHUB_COPILOT_MODEL_PREFIX = "github:copilot:";
+
+const GITHUB_COPILOT_MODEL_IDS = Object.freeze([
+  "gpt-5-mini",
+  "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.4-nano",
+  "gpt-5.5",
+  "gpt-5.6-luna",
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "claude-fable-5",
+  "claude-haiku-4.5",
+  "claude-opus-4.5",
+  "claude-opus-4.6",
+  "claude-opus-4.7",
+  "claude-opus-4.8",
+  "claude-opus-5",
+  "claude-sonnet-4.5",
+  "claude-sonnet-4.6",
+  "claude-sonnet-5",
+  "gemini-3.1-pro-preview",
+  "gemini-3.5-flash",
+  "gemini-3.6-flash",
+  "gemini-3.7-flash",
+  "mai-code-1-flash-picker",
+  "mai-code-1.1-flash",
+  "raptor-mini",
+  "kimi-k2.7-code",
+  "kimi-k3",
+  "grok-4.5",
+  "grok-4.6",
+] as const);
+
+const GITHUB_COPILOT_CATALOG_MODELS = Object.freeze(
+  GITHUB_COPILOT_MODEL_IDS.map(
+    (model) => `${GITHUB_COPILOT_MODEL_PREFIX}${model}`,
+  ),
+);
+
+const NVIDIA_NIM_MODEL_IDS = Object.freeze([
+  "nvidia/cosmos-reason2-8b",
+  "microsoft/phi-4-mini-flash-reasoning",
+  "qwen/qwen3-next-80b-a3b-thinking",
+  "deepseek-ai/deepseek-r1-distill-qwen-32b",
+  "deepseek-ai/deepseek-r1-distill-qwen-14b",
+  "deepseek-ai/deepseek-r1-distill-qwen-7b",
+  "deepseek-ai/deepseek-r1-distill-llama-8b",
+  "qwen/qwq-32b",
+  "meta/codellama-70b",
+  "bigcode/starcoder2-15b",
+  "bigcode/starcoder2-7b",
+  "mistralai/codestral-22b-instruct-v0.1",
+  "mistralai/mamba-codestral-7b-v0.1",
+  "deepseek-ai/deepseek-coder-6.7b-instruct",
+  "google/codegemma-7b",
+  "google/codegemma-1.1-7b",
+  "qwen/qwen2.5-coder-32b-instruct",
+  "qwen/qwen2.5-coder-7b-instruct",
+  "qwen/qwen3-coder-480b-a35b-instruct",
+  "ibm/granite-34b-code-instruct",
+  "ibm/granite-8b-code-instruct",
+  "nvidia/llama-3.1-nemotron-70b-instruct",
+  "nvidia/llama-3.1-nemotron-51b-instruct",
+  "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+  "nvidia/llama-3.3-nemotron-super-49b-v1",
+  "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+  "nvidia/nemotron-4-340b-instruct",
+  "nvidia/nemotron-3-super-120b-a12b",
+  "nvidia/nemotron-3-nano-30b-a3b",
+  "nvidia/nemotron-mini-4b-instruct",
+  "nvidia/llama-3.1-nemotron-nano-8b-v1",
+  "nvidia/llama-3.1-nemotron-nano-4b-v1.1",
+  "nvidia/llama3-chatqa-1.5-70b",
+  "nvidia/llama3-chatqa-1.5-8b",
+  "meta/llama-3.1-405b-instruct",
+  "meta/llama-3.1-70b-instruct",
+  "meta/llama-3.1-8b-instruct",
+  "meta/llama-3.2-90b-vision-instruct",
+  "meta/llama-3.2-11b-vision-instruct",
+  "meta/llama-3.2-3b-instruct",
+  "meta/llama-3.2-1b-instruct",
+  "meta/llama-3.3-70b-instruct",
+  "meta/llama-4-maverick-17b-128e-instruct",
+  "meta/llama-4-scout-17b-16e-instruct",
+  "google/gemma-4-31b-it",
+  "google/gemma-3-27b-it",
+  "google/gemma-3-12b-it",
+  "google/gemma-3-4b-it",
+  "google/gemma-3-1b-it",
+  "google/gemma-3n-e4b-it",
+  "google/gemma-3n-e2b-it",
+  "google/gemma-2-27b-it",
+  "google/gemma-2-9b-it",
+  "google/gemma-2-2b-it",
+  "mistralai/mistral-large-3-675b-instruct-2512",
+  "mistralai/mistral-large-2-instruct",
+  "mistralai/mistral-large",
+  "mistralai/mistral-medium-3-instruct",
+  "mistralai/mistral-small-4-119b-2603",
+  "mistralai/mistral-small-3.1-24b-instruct-2503",
+  "mistralai/mistral-small-24b-instruct",
+  "mistralai/mistral-7b-instruct-v0.3",
+  "mistralai/mistral-7b-instruct-v0.2",
+  "mistralai/mixtral-8x22b-instruct-v0.1",
+  "mistralai/mixtral-8x7b-instruct-v0.1",
+  "mistralai/mistral-nemotron",
+  "mistralai/ministral-14b-instruct-2512",
+  "mistralai/devstral-2-123b-instruct-2512",
+  "mistralai/magistral-small-2506",
+  "mistralai/mathstral-7b-v0.1",
+  "microsoft/phi-4-multimodal-instruct",
+  "microsoft/phi-4-mini-instruct",
+  "microsoft/phi-3.5-mini-instruct",
+  "microsoft/phi-3-small-128k-instruct",
+  "microsoft/phi-3-small-8k-instruct",
+  "microsoft/phi-3-medium-128k-instruct",
+  "microsoft/phi-3-medium-4k-instruct",
+  "microsoft/phi-3-mini-128k-instruct",
+  "microsoft/phi-3-mini-4k-instruct",
+  "qwen/qwen3.5-397b-a17b",
+  "qwen/qwen3.5-122b-a10b",
+  "qwen/qwen3-next-80b-a3b-instruct",
+  "qwen/qwen2.5-7b-instruct",
+  "qwen/qwen2-7b-instruct",
+  "qwen/qwen3-32b",
+  "qwen/qwen3-8b",
+  "deepseek-ai/deepseek-r1",
+  "deepseek-ai/deepseek-v3",
+  "deepseek-ai/deepseek-v3.2",
+  "deepseek-ai/deepseek-v3.1-terminus",
+  "deepseek-ai/deepseek-v3.1",
+  "ibm/granite-3.3-8b-instruct",
+  "ibm/granite-3.0-8b-instruct",
+  "ibm/granite-3.0-3b-a800m-instruct",
+  "databricks/dbrx-instruct",
+  "01-ai/yi-large",
+  "ai21labs/jamba-1.5-large-instruct",
+  "ai21labs/jamba-1.5-mini-instruct",
+  "writer/palmyra-creative-122b",
+  "writer/palmyra-fin-70b-32k",
+  "writer/palmyra-med-70b",
+  "writer/palmyra-med-70b-32k",
+  "z-ai/glm5",
+  "z-ai/glm4.7",
+  "minimaxai/minimax-m2.5",
+  "moonshotai/kimi-k2.5",
+  "moonshotai/kimi-k2-instruct",
+  "moonshotai/kimi-k2-thinking",
+  "moonshotai/kimi-k2.5-thinking",
+  "moonshotai/kimi-k2-instruct-0905",
+] as const);
+
+const MINIMAX_MODEL_IDS = Object.freeze([
+  "MiniMax-M3",
+  "MiniMax-M2.7",
+  "MiniMax-M2",
+  "MiniMax-M2.1",
+  "MiniMax-M2.5",
+  "MiniMax-Text-01",
+  "MiniMax-Text-01-Preview",
+  "MiniMax-Vision-01",
+  "MiniMax-Vision-01-Fast",
+] as const);
+
 // Single source of truth: model lists for providers that have entries in
 // REGISTERED_MODEL_CATALOG are computed from it. model-catalog.ts does not
 // import this module, so this one-directional import introduces no cycle.
@@ -301,7 +467,7 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
   }),
   github: providerDefinition({
     name: "GitHub Copilot",
-    defaultModel: "gpt-4o",
+    defaultModel: "gpt-5.3-codex", // branding-scan: allow OpenAI model identifier
     baseURL: "https://api.githubcopilot.com",
     credentials: apiKeyCredentials(["GITHUB_TOKEN", "GH_TOKEN"]),
     baseURLEnvVars: ["GITHUB_BASE_URL"],
@@ -345,6 +511,41 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
 } as const);
 
 export type BuiltInProviderSlug = keyof typeof BUILT_IN_PROVIDER_DEFINITIONS;
+
+/** Project a globally collision-safe catalog value into its provider-local ID. */
+export function providerLocalModelIdFromCatalog(
+  provider: BuiltInProviderSlug,
+  model: string,
+): string {
+  const trimmed = model.trim();
+  if (provider === "github") {
+    const normalized = trimmed.toLowerCase();
+    if (normalized === "github:copilot" || normalized === "copilot") {
+      return BUILT_IN_PROVIDER_DEFINITIONS.github.defaultModel;
+    }
+    if (normalized.startsWith(GITHUB_COPILOT_MODEL_PREFIX)) {
+      return trimmed.slice(GITHUB_COPILOT_MODEL_PREFIX.length).trim();
+    }
+    if (normalized.startsWith("copilot:")) {
+      return trimmed.slice("copilot:".length).trim();
+    }
+    if (normalized.startsWith("github:")) {
+      return trimmed.slice("github:".length).trim();
+    }
+    return trimmed;
+  }
+  return model;
+}
+
+/** Project a provider-local model into its collision-safe catalog spelling. */
+export function providerCatalogModelId(
+  provider: BuiltInProviderSlug,
+  model: string,
+): string {
+  const localModel = providerLocalModelIdFromCatalog(provider, model);
+  if (provider !== "github") return localModel;
+  return `${GITHUB_COPILOT_MODEL_PREFIX}${localModel}`;
+}
 
 function projectProviderStrings(
   field: "defaultModel" | "baseURL",
@@ -415,17 +616,11 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   deepseek: Object.freeze(["deepseek-v4-flash", "deepseek-v4-pro"]),
   gemini: Object.freeze(["gemini-2.5-pro"]),
   mistral: Object.freeze(["mistral-medium-latest"]),
-  "nvidia-nim": Object.freeze([
-    "nvidia/llama-3.1-nemotron-70b-instruct",
-    "meta/llama-3.1-8b-instruct",
-  ]),
-  minimax: Object.freeze(["MiniMax-M3", "MiniMax-M2.7", "MiniMax-M2.5"]),
-  // `gpt-5.4` is registry-owned by openai (REGISTERED_MODEL_CATALOG,
-  // visibility: "list") and surfaces under openai via deriveFlatCatalog. Listing
-  // the bare alias here too made the slug match two providers and threw
-  // AmbiguousModelError on bare-slug selection (startup abort / silent /model
-  // provider drop). github copilot proxies it under a github-qualified name.
-  github: Object.freeze(["gpt-4o", "github:copilot"]),
+  "nvidia-nim": NVIDIA_NIM_MODEL_IDS,
+  minimax: MINIMAX_MODEL_IDS,
+  // Copilot proxies models owned by several providers. Keep those entries
+  // qualified here so bare slugs such as gpt-5.4 retain one global owner.
+  github: GITHUB_COPILOT_CATALOG_MODELS,
   "amazon-bedrock": Object.freeze([
     "amazon.nova-pro-v1:0",
     "amazon.nova-lite-v1:0",
@@ -433,6 +628,37 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   ]),
   agenc: Object.freeze(["agenc"]),
 });
+
+/**
+ * Return every catalog spelling for one provider-local model. The local ID is
+ * always first; collision-safe compatibility spellings follow without
+ * becoming additional runtime state representations.
+ */
+export function providerModelCatalogIdentifiers(
+  provider: BuiltInProviderSlug,
+  model: string,
+): readonly string[] {
+  const localModel = providerLocalModelIdFromCatalog(provider, model);
+  const identifiers = [localModel];
+  for (const candidate of BUILT_IN_PROVIDER_MODEL_CATALOG[provider]) {
+    if (
+      providerLocalModelIdFromCatalog(provider, candidate) === localModel &&
+      !identifiers.includes(candidate)
+    ) {
+      identifiers.push(candidate);
+    }
+  }
+  if (provider === "github") {
+    const qualifiedModel = `${GITHUB_COPILOT_MODEL_PREFIX}${localModel}`;
+    if (!identifiers.includes(qualifiedModel)) {
+      identifiers.push(qualifiedModel);
+    }
+    if (localModel === BUILT_IN_PROVIDER_DEFINITIONS.github.defaultModel) {
+      identifiers.push("github:copilot", "copilot");
+    }
+  }
+  return Object.freeze(identifiers);
+}
 
 export interface BuiltInProviderInfo {
   readonly id: BuiltInProviderSlug;

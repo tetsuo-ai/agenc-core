@@ -470,7 +470,6 @@ const GLOBAL_STATE_FIELDS = new Set<string>([
   "hasIdeOnboardingBeenShown",
   "iterm2It2SetupComplete",
   "skillUsage",
-  "penguinModeOrgEnabled",
   "cachedExtraUsageDisabledReason",
 ]);
 

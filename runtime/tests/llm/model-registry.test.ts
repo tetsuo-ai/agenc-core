@@ -146,6 +146,29 @@ describe("ModelRegistry", () => {
     });
   });
 
+  it("resolves GitHub-qualified and provider-local Copilot IDs as one pair", () => {
+    const registry = new ModelRegistry({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "github",
+        model: "gpt-5.3-codex",
+      }),
+    });
+
+    expect(
+      registry.resolveSelection(
+        "github:copilot:gpt-5.3-codex",
+        "github",
+      ),
+    ).toEqual({
+      provider: "github",
+      model: "gpt-5.3-codex",
+    });
+    expect(registry.resolveSelection("gpt-5.3-codex", "github")).toEqual({
+      provider: "github",
+      model: "gpt-5.3-codex",
+    });
+  });
+
   it("preserves unknown-cost fallback without hiding registry misses", () => {
     const registry = new ModelRegistry({
       config: defaultConfig(),

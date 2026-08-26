@@ -1,7 +1,7 @@
 import {
   resolveProviderSlug,
-  type AgenCConfig,
-} from "./_deps/config.js";
+} from "../config/resolve-provider.js";
+import type { AgenCConfig } from "../config/schema.js";
 import {
   ModelRegistry,
   modelRegistryEntryToModelInfo,

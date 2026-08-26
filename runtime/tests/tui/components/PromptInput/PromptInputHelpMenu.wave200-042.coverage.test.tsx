@@ -5,7 +5,6 @@ import stripAnsi from 'strip-ansi'
 import { describe, expect, test, vi } from 'vitest'
 
 import { createRoot } from '../../ink/root.js'
-import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../../remoteAuthSessionContext.fixture.js'
 
 vi.mock('bun:bundle', () => ({
   feature: () => false,
@@ -15,7 +14,6 @@ vi.mock('../../keybindings/useShortcutDisplay.js', () => ({
   useShortcutDisplay: (action: string, _context: string, fallback: string) => {
     const shortcuts: Record<string, string> = {
       'app:toggleTranscript': 'ctrl+shift+o',
-      'chat:fastMode': 'alt+shift+o',
     }
 
     return shortcuts[action] ?? fallback
@@ -24,11 +22,6 @@ vi.mock('../../keybindings/useShortcutDisplay.js', () => ({
 
 vi.mock('../../keybindings/loadUserBindings.js', () => ({
   isKeybindingCustomizationEnabled: () => true,
-}))
-
-vi.mock('../../../utils/fastMode.js', () => ({
-  isFastModeAvailableForContext: () => true,
-  isFastModeEnabledForContext: () => true,
 }))
 
 vi.mock('../../../utils/platform.js', () => ({
@@ -83,7 +76,7 @@ describe('PromptInputHelpMenu optional shortcuts coverage', () => {
       stdout: stdout as unknown as NodeJS.WriteStream,
     })
     const renderNode = () => (
-      <PromptInputHelpMenu dimColor fixedWidth gap={1} paddingX={1} remoteAuthSessionContext={TEST_REMOTE_AUTH_SESSION_CONTEXT} />
+      <PromptInputHelpMenu dimColor fixedWidth gap={1} paddingX={1} />
     )
 
     try {
@@ -94,7 +87,7 @@ describe('PromptInputHelpMenu optional shortcuts coverage', () => {
 
       const text = stripAnsi(output)
       expect(text).toContain('ctrl + shift + o for verbose output')
-      expect(text).toContain('alt + shift + o to toggle fast mode')
+      expect(text).not.toContain('toggle fast mode')
       expect(text).toContain('/keybindings to customize')
     } finally {
       root.unmount()

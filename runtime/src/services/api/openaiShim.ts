@@ -50,9 +50,9 @@ import {
 import { buildproviderUsageFromRawUsage } from './cacheMetrics.js'
 import { compressToolHistory } from './compressToolHistory.js'
 import { fetchWithProxyRetry } from './fetchWithProxyRetry.js'
+import { getGithubEndpointType } from '../../llm/providers/github/model-routing.js'
 import {
   getLocalProviderRetryBaseUrls,
-  getGithubEndpointType,
   isLocalProviderUrl,
   resolveRuntimeChatGptSubscriptionCredentials,
   resolveProviderRequest,

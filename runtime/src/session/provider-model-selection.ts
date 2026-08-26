@@ -8,6 +8,10 @@ import { defaultConfig, type AgenCConfig } from "../config/schema.js";
 import { resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
 import type { Session } from "./session.js";
 import { asRecord } from "../utils/record.js";
+import {
+  isModelAllowed,
+  ModelNotAllowedError,
+} from "../utils/model/modelAllowlist.js";
 
 export interface SessionSelection {
   readonly provider: string;
@@ -56,6 +60,9 @@ export function resolveProviderModelSelection(
   const model = nonEmptyString(resolved.model);
   if (model === undefined) {
     throw new Error("model selection values must be non-empty");
+  }
+  if (!isModelAllowed(provider, model, config ?? {})) {
+    throw new ModelNotAllowedError(model);
   }
   return Object.freeze({
     provider,

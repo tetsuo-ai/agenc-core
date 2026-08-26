@@ -77,15 +77,45 @@ describe("provider/model configuration authority", () => {
   });
 
   test.each([
-    ["gpt-5", "openai"],
-    ["claude-opus-4-7", "anthropic"],
-    ["agenc", "agenc"],
-    ["amazon.nova-pro-v1:0", "amazon-bedrock"],
-    ["github:copilot", "github"],
-  ])("known model-only selection couples %s to %s", (model, provider) => {
-    expect(resolveProviderModelLayer(defaultConfig(), { model })).toMatchObject(
-      { model_provider: provider, model },
-    );
+    ["gpt-5", "openai", "gpt-5"],
+    ["claude-opus-4-7", "anthropic", "claude-opus-4-7"],
+    ["agenc", "agenc", "agenc"],
+    ["amazon.nova-pro-v1:0", "amazon-bedrock", "amazon.nova-pro-v1:0"],
+    ["github:copilot", "github", "gpt-5.3-codex"],
+  ])(
+    "known model-only selection couples %s to %s",
+    (model, provider, expectedModel) => {
+      expect(
+        resolveProviderModelLayer(defaultConfig(), { model }),
+      ).toMatchObject({ model_provider: provider, model: expectedModel });
+    },
+  );
+
+  test.each([
+    { model: "github:copilot:gpt-5.3-codex" },
+    { model: "GitHub:Copilot:gpt-5.3-codex" },
+    { model: "github:gpt-5.3-codex" },
+    { model_provider: "github", model: "gpt-5.3-codex" },
+    {
+      model_provider: "github",
+      model: "github:copilot:gpt-5.3-codex",
+    },
+  ])("canonicalizes Copilot selection %#", (layer) => {
+    expect(resolveProviderModelLayer(defaultConfig(), layer)).toMatchObject({
+      model_provider: "github",
+      model: "gpt-5.3-codex",
+    });
+  });
+
+  test("keeps a bare shared Copilot slug owned by its native provider", () => {
+    expect(
+      resolveProviderModelLayer(defaultConfig(), {
+        model: "gpt-5.3-codex",
+      }),
+    ).toMatchObject({
+      model_provider: "openai",
+      model: "gpt-5.3-codex",
+    });
   });
 
   test("unknown bare models stay on the inherited provider", () => {
@@ -100,6 +130,12 @@ describe("provider/model configuration authority", () => {
       model_provider: "openai",
       model: "private-openai-model",
     });
+  });
+
+  test("unknown model-only partial layers remain partial without a provider", () => {
+    expect(
+      resolveProviderModelLayer({}, { model: "profile-private-model" }),
+    ).toEqual({ model: "profile-private-model" });
   });
 
   test("a live provider qualifier explicitly selects an unknown model", () => {
@@ -160,6 +196,35 @@ describe("provider/model configuration authority", () => {
     ).toMatchObject({
       model_provider: "openai",
       model: "private-openai-model",
+    });
+  });
+
+  test("persists provider-local model IDs instead of family aliases", () => {
+    expect(
+      resolveProviderModelLayer(defaultConfig(), {
+        model_provider: "openai",
+        model: "opus",
+      }),
+    ).toMatchObject({
+      model_provider: "openai",
+      model: "gpt-4o",
+    });
+  });
+
+  test("applies model overrides while projecting an alias", () => {
+    const override = "arn:aws:bedrock:example:opus-4-7";
+    const base = mergeConfigs(defaultConfig(), {
+      modelOverrides: { "claude-opus-4-7": override },
+    });
+
+    expect(
+      resolveProviderModelLayer(base, {
+        model_provider: "amazon-bedrock",
+        model: "opus",
+      }),
+    ).toMatchObject({
+      model_provider: "amazon-bedrock",
+      model: override,
     });
   });
 

@@ -52,6 +52,11 @@ import { MistralProvider } from "./providers/mistral/index.js";
 import { NvidiaNimProvider } from "./providers/nvidia-nim/index.js";
 import { MiniMaxProvider } from "./providers/minimax/index.js";
 import { GitHubProvider } from "./providers/github/index.js";
+import {
+  getGithubEndpointType,
+  normalizeGithubModelForEndpoint,
+  shouldUseGithubCopilotResponsesApi,
+} from "./providers/github/model-routing.js";
 import { OpenAICompatibleProvider } from "./providers/openai-compatible/index.js";
 import type { ProviderFallbackLadderOptions } from "./api/fallback-ladder.js";
 import {
@@ -1199,16 +1204,29 @@ function buildOpenAICompatibleProvider(
   opts: ProviderFactoryOptions,
   input: {
     readonly apiKeyMode: "required" | "optional";
-    readonly useResponsesApi: boolean;
+    readonly normalizeModel?: (
+      model: string,
+      baseURL: string | undefined,
+    ) => string;
+    readonly useResponsesApi:
+      | boolean
+      | ((model: string, baseURL: string | undefined) => boolean);
     readonly providerCtor?: new (config: OpenAIProviderConfig) => LLMProvider;
   },
 ): LLMProvider {
   const extra = readRuntimeExtra(opts.extra);
-  const model = requireModel(
+  const requestedModel = requireModel(
     provider,
     opts.model,
     defaultModelFor(provider),
   );
+  const baseURL =
+    normalizeBaseURL(opts.baseURL) ??
+    defaultBaseURLFor(provider);
+  const model = input.normalizeModel?.(requestedModel, baseURL) ?? requestedModel;
+  const useResponsesApi = typeof input.useResponsesApi === "function"
+    ? input.useResponsesApi(model, baseURL)
+    : extra.useResponsesApi ?? input.useResponsesApi;
   const oauthConfig =
     extra.authMode === "oauth" &&
     extra.oauth &&
@@ -1226,10 +1244,8 @@ function buildOpenAICompatibleProvider(
     model,
     providerName: provider,
     tools: opts.tools ? [...opts.tools] : undefined,
-    baseURL:
-      normalizeBaseURL(opts.baseURL) ??
-      defaultBaseURLFor(provider),
-    useResponsesApi: extra.useResponsesApi ?? input.useResponsesApi,
+    baseURL,
+    useResponsesApi,
     ...(extra.store !== undefined ? { store: extra.store } : {}),
     ...(extra.contextWindowTokens !== undefined
       ? { contextWindowTokens: extra.contextWindowTokens }
@@ -1702,7 +1718,12 @@ export function createProvider(
     case "github":
       return buildOpenAICompatibleProvider("github", opts, {
         apiKeyMode: "required",
-        useResponsesApi: false,
+        normalizeModel: (model, baseURL) =>
+          normalizeGithubModelForEndpoint(
+            model,
+            getGithubEndpointType(baseURL),
+          ),
+        useResponsesApi: shouldUseGithubCopilotResponsesApi,
         providerCtor: GitHubProvider,
       });
     case "gemini": {

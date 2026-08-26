@@ -14,7 +14,6 @@ const harness = vi.hoisted(() => {
     coordinatorTaskIndex: -1,
     effortValue: undefined,
     expandedView: "transcript",
-    fastMode: false,
     footerSelection: null as null | "tasks" | "teams",
     isBriefOnly: false,
     mainLoopModel: "gpt-5.4",
@@ -67,7 +66,6 @@ const harness = vi.hoisted(() => {
     onRender: vi.fn(),
     pushToBuffer: vi.fn(),
     removeNotification: vi.fn(),
-    updateSettingsForSource: vi.fn(),
     activeAgent: { type: "leader" } as { type: string; task?: unknown },
     autoModeOptInProps: undefined as undefined | Record<string, unknown>,
     backgroundTasksPanelProps: undefined as undefined | Record<string, unknown>,
@@ -118,7 +116,6 @@ const harness = vi.hoisted(() => {
     isMacosOptionChar: false,
     isSSH: false,
     keybindingRegistrations: [] as Array<Record<string, unknown>>,
-    modelPickerProps: undefined as undefined | Record<string, unknown>,
     nextPermissionMode: "plan",
     autoModeGateEnabled: true,
     platform: "linux",
@@ -153,15 +150,6 @@ const harness = vi.hoisted(() => {
           identity: { agentName: string; color?: string };
           permissionMode: string;
         },
-    fastMode: {
-      authorityContexts: [] as unknown[],
-      available: false,
-      cooldown: false,
-      enabled: false,
-      runtimeState: { status: "available" },
-      supportedByModel: true,
-      unavailableReason: null as string | null,
-    },
     reset: () => {
       harness.addNotification.mockClear();
       harness.clearBuffer.mockClear();
@@ -177,7 +165,6 @@ const harness = vi.hoisted(() => {
       harness.editPromptResult = { content: null, error: null };
       harness.keybindings = {};
       harness.inputHandlers = [];
-      harness.fastMode.authorityContexts = [];
       appState.coordinatorTaskIndex = -1;
       appState.footerSelection = null;
       appState.promptSuggestion = {
@@ -199,7 +186,6 @@ const harness = vi.hoisted(() => {
       appState.viewingAgentTaskId = null;
       appState.viewSelectionMode = null;
       appState.workbench = undefined;
-      harness.updateSettingsForSource.mockClear();
       harness.activeAgent = { type: "leader" };
       harness.autoModeOptInProps = undefined;
       harness.backgroundTasksPanelProps = undefined;
@@ -233,7 +219,6 @@ const harness = vi.hoisted(() => {
       harness.isMacosOptionChar = false;
       harness.isSSH = false;
       harness.keybindingRegistrations = [];
-      harness.modelPickerProps = undefined;
       harness.nextPermissionMode = "plan";
       harness.autoModeGateEnabled = true;
       harness.platform = "linux";
@@ -257,15 +242,6 @@ const harness = vi.hoisted(() => {
       };
       harness.visibleAgentTasks = [];
       harness.viewedTeammate = undefined;
-      harness.fastMode = {
-        authorityContexts: [],
-        available: false,
-        cooldown: false,
-        enabled: false,
-        runtimeState: { status: "available" },
-        supportedByModel: true,
-        unavailableReason: null,
-      };
     },
     setAppState: vi.fn((updater: unknown) => {
       const next =
@@ -548,43 +524,6 @@ vi.mock("../../../utils/errors.js", async (importOriginal) => {
   };
 });
 
-vi.mock("../../../utils/extraUsage.js", () => ({
-  isBilledAsExtraUsage: () => false,
-}));
-
-vi.mock("../../../utils/fastMode.js", () => ({
-  FAST_MODE_MODEL_DISPLAY: "fast-model",
-  clearFastModeCooldown: vi.fn(),
-  getFastModeModel: () => "fast-model",
-  getFastModeRuntimeStateForContext: (context: unknown) => {
-    harness.fastMode.authorityContexts.push(context);
-    return harness.fastMode.runtimeState;
-  },
-  getFastModeUnavailableReasonForContext: (context: unknown) => {
-    harness.fastMode.authorityContexts.push(context);
-    return harness.fastMode.unavailableReason;
-  },
-  isFastModeAvailableForContext: (context: unknown) => {
-    harness.fastMode.authorityContexts.push(context);
-    return harness.fastMode.available;
-  },
-  isFastModeCooldownForContext: (context: unknown) => {
-    harness.fastMode.authorityContexts.push(context);
-    return harness.fastMode.cooldown;
-  },
-  isFastModeEnabledForContext: (context: unknown) => {
-    harness.fastMode.authorityContexts.push(context);
-    return harness.fastMode.enabled;
-  },
-  isFastModeSupportedByModelForContext: (
-    _model: unknown,
-    context: unknown,
-  ) => {
-    harness.fastMode.authorityContexts.push(context);
-    return harness.fastMode.supportedByModel;
-  },
-}));
-
 vi.mock("../../context/fullscreenModeContext.js", () => ({
   useFullscreenMode: () => false,
 }));
@@ -642,7 +581,6 @@ vi.mock("../../input/processBashCommand.js", () => ({
 
 vi.mock("../../../utils/settings/settings.js", () => ({
   hasAutoModeOptIn: () => harness.hasAutoModeOptIn,
-  updateSettingsForSource: harness.updateSettingsForSource,
 }));
 
 vi.mock("../../../utils/suggestions/commandSuggestions.js", () => ({
@@ -712,10 +650,6 @@ vi.mock("../EffortIndicator.js", () => ({
   getEffortNotificationText: () => undefined,
 }));
 
-vi.mock("../FastIcon.js", () => ({
-  getFastIconString: () => "FAST",
-}));
-
 vi.mock("../FullscreenLayout.js", () => ({
   calculateFullscreenLayoutBudget: (rows: number) => ({
     bottomMaxHeight: Math.max(1, Math.floor(rows / 2)),
@@ -732,13 +666,6 @@ vi.mock("../GlobalSearchDialog.js", () => ({
 vi.mock("../../history/HistorySearchDialog.js", () => ({
   HistorySearchDialog: (props: Record<string, unknown>) => {
     harness.historySearchProps = props;
-    return null;
-  },
-}));
-
-vi.mock("../ModelPicker.js", () => ({
-  ModelPicker: (props: Record<string, unknown>) => {
-    harness.modelPickerProps = props;
     return null;
   },
 }));
@@ -828,10 +755,6 @@ vi.mock("./useMaybeTruncateInput.js", () => ({
 
 vi.mock("./usePromptInputPlaceholder.js", () => ({
   usePromptInputPlaceholder: () => "Type a prompt",
-}));
-
-vi.mock("./useShowFastIconHint.js", () => ({
-  useShowFastIconHint: () => false,
 }));
 
 vi.mock("./useSwarmBanner.js", () => ({
@@ -1027,14 +950,12 @@ describe("PromptInput render surface", () => {
     vi.mocked(editPromptInEditor).mockClear();
   });
 
-  test("uses the captured session provider authority for every fast-mode read", async () => {
+  test("does not register the retired fast-mode keybinding", async () => {
     const rendered = await renderPromptInput();
 
     try {
-      expect(harness.fastMode.authorityContexts.length).toBeGreaterThan(0);
-      expect(new Set(harness.fastMode.authorityContexts)).toEqual(
-        new Set([TEST_REMOTE_AUTH_SESSION_CONTEXT]),
-      );
+      await waitForPromptInputProps();
+      expect(harness.keybindings["chat:fastMode"]).toBeUndefined();
     } finally {
       await rendered.dispose();
     }
@@ -2662,72 +2583,6 @@ describe("PromptInput render surface", () => {
     }
   });
 
-  test("opens fast mode picker and enables fast mode with model switch when confirmed", async () => {
-    harness.fastMode.enabled = true;
-    harness.fastMode.available = true;
-    harness.fastMode.supportedByModel = false;
-    const setHelpOpen = vi.fn();
-    const rendered = await renderPromptInput({
-      helpOpen: true,
-      setHelpOpen,
-    });
-
-    try {
-      await waitForPromptInputProps();
-      const handlersBeforePicker = harness.inputHandlers.length;
-      harness.keybindings["chat:fastMode"]?.();
-      await waitForInputHandlerCount(handlersBeforePicker + 1);
-      expect(setHelpOpen).toHaveBeenCalledWith(false);
-
-      latestInputHandler()(" ", { tab: false });
-      await sleep(25);
-      latestInputHandler()("", { return: true });
-      await sleep(25);
-
-      expect(harness.updateSettingsForSource).toHaveBeenCalledWith(
-        "userSettings",
-        { fastMode: true },
-      );
-      expect(harness.appState.fastMode).toBe(true);
-      expect(harness.appState.mainLoopModel).toBe("fast-model");
-      expect(harness.appState.mainLoopModelForSession).toBeNull();
-      expect(harness.addNotification).toHaveBeenCalledWith(
-        expect.objectContaining({ key: "fast-mode-toggled" }),
-      );
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
-  test("cancels unavailable fast mode by disabling an existing fast-mode session", async () => {
-    harness.appState.fastMode = true;
-    harness.fastMode.enabled = true;
-    harness.fastMode.available = true;
-    harness.fastMode.unavailableReason = "Fast mode unavailable";
-    const rendered = await renderPromptInput();
-
-    try {
-      await waitForPromptInputProps();
-      const handlersBeforePicker = harness.inputHandlers.length;
-      harness.keybindings["chat:fastMode"]?.();
-      await waitForInputHandlerCount(handlersBeforePicker + 1);
-
-      latestInputHandler()("", { escape: true });
-      await sleep(25);
-
-      expect(harness.updateSettingsForSource).toHaveBeenCalledWith(
-        "userSettings",
-        { fastMode: undefined },
-      );
-      expect(harness.appState.fastMode).toBe(false);
-      expect(harness.addNotification).toHaveBeenCalledWith(
-        expect.objectContaining({ key: "fast-mode-toggled" }),
-      );
-    } finally {
-      await rendered.dispose();
-    }
-  });
-
   test("accepts a visible prompt suggestion on empty submit", async () => {
     harness.appState.promptSuggestion = {
       acceptedAt: 0,
@@ -3176,14 +3031,15 @@ describe("PromptInput render surface", () => {
     }
   });
 
-  test("drives model and thinking picker callbacks from chat keybindings", async () => {
-    harness.fastMode.enabled = true;
-    harness.fastMode.available = true;
-    harness.fastMode.supportedByModel = false;
-    harness.appState.fastMode = true;
+  test("routes model selection to App and keeps thinking local", async () => {
+    const onOpenModelMenu = vi.fn();
+    const onSubmit = vi.fn(async () => {});
     const setHelpOpen = vi.fn();
     const rendered = await renderPromptInput({
       helpOpen: true,
+      input: "preserve this model-menu draft",
+      onOpenModelMenu,
+      onSubmit,
       setHelpOpen,
     });
 
@@ -3193,18 +3049,12 @@ describe("PromptInput render surface", () => {
       harness.keybindings["chat:modelPicker"]?.();
       await sleep(25);
       expect(setHelpOpen).toHaveBeenCalledWith(false);
-      expect(harness.modelPickerProps).toBeDefined();
-
-      (
-        harness.modelPickerProps?.onSelect as (
-          model: string | null,
-          effort: unknown,
-        ) => void
-      )("gpt-slow", undefined);
-      expect(harness.appState.mainLoopModel).toBe("gpt-slow");
-      expect(harness.appState.mainLoopModelForSession).toBeNull();
-      expect(harness.appState.fastMode).toBe(false);
-      expect(harness.addNotification).toHaveBeenCalledWith(
+      expect(onOpenModelMenu).toHaveBeenCalledOnce();
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(harness.history.resetHistory).not.toHaveBeenCalled();
+      expect(rendered.props.input).toBe("preserve this model-menu draft");
+      expect(harness.appState.mainLoopModel).toBe("gpt-5.4");
+      expect(harness.addNotification).not.toHaveBeenCalledWith(
         expect.objectContaining({ key: "model-switched" }),
       );
 
@@ -4022,7 +3872,7 @@ describe("PromptInput render surface", () => {
     }
   });
 
-  test("exercises picker cancel callbacks and help/message action keybindings", async () => {
+  test("exercises thinking cancel and help/message action keybindings", async () => {
     const onMessageActionsEnter = vi.fn();
     const setHelpOpen = vi.fn();
     const rendered = await renderPromptInput({
@@ -4039,11 +3889,6 @@ describe("PromptInput render surface", () => {
 
       harness.keybindings["chat:messageActions"]?.();
       expect(onMessageActionsEnter).toHaveBeenCalled();
-
-      harness.keybindings["chat:modelPicker"]?.();
-      await sleep(25);
-      expect(harness.modelPickerProps).toBeDefined();
-      (harness.modelPickerProps?.onCancel as () => void)();
 
       harness.keybindings["chat:thinkingToggle"]?.();
       await sleep(25);

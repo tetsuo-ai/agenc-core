@@ -1185,7 +1185,7 @@ describe("app-server-client daemon helpers", () => {
         result: {
           kind: "text",
           text: expect.stringContaining(
-            "not yet supported when running against the daemon",
+            "not supported by this session",
           ),
         },
       });

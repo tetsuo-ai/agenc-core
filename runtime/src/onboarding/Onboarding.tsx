@@ -2121,6 +2121,7 @@ export function useFirstRunOnboardingController(
         stateRef.current = nextState;
         setState(nextState);
         if (result.completed) {
+          await options.onComplete?.(nextState);
           if (options.agencHome !== undefined) {
             markFirstRunOnboardingComplete({
               agencHome: options.agencHome,
@@ -2130,7 +2131,6 @@ export function useFirstRunOnboardingController(
               completedStepIds: nextState.completedStepIds,
             });
           }
-          await options.onComplete?.(nextState);
           setActive(false);
         }
         return true;

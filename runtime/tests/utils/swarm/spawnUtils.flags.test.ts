@@ -4,7 +4,6 @@ type SpawnFlagState = {
   readonly bypassPermissions?: boolean
   readonly chromeFlag?: boolean
   readonly inlinePlugins?: readonly string[]
-  readonly mainLoopModel?: string
   readonly settingsPath?: string
   readonly teammateMode?: string
 }
@@ -22,7 +21,6 @@ async function loadSpawnUtils(state: SpawnFlagState = {}) {
     getChromeFlagOverride: () => state.chromeFlag,
     getFlagSettingsPath: () => state.settingsPath,
     getInlinePlugins: () => state.inlinePlugins ?? [],
-    getMainLoopModelOverride: () => state.mainLoopModel,
     getSessionBypassPermissionsMode: () => state.bypassPermissions ?? false,
   }))
   vi.doMock('../../../src/utils/bundledMode.js', () => ({
@@ -49,10 +47,8 @@ describe('buildInheritedCliFlags', () => {
     )
   })
 
-  test('uses explicit teammate model instead of the leader model override', async () => {
-    const { buildInheritedCliFlags } = await loadSpawnUtils({
-      mainLoopModel: 'leader model with spaces',
-    })
+  test('uses the explicit teammate model', async () => {
+    const { buildInheritedCliFlags } = await loadSpawnUtils()
 
     const flags = buildInheritedCliFlags({
       permissionMode: 'acceptEdits',
@@ -62,16 +58,11 @@ describe('buildInheritedCliFlags', () => {
     expect(flags).toBe(
       "--permission-mode acceptEdits --model 'worker model with spaces' --teammate-mode default",
     )
-    expect(flags).not.toContain('leader model')
   })
 
-  test('falls back to the leader model when no teammate model is provided', async () => {
-    const { buildInheritedCliFlags } = await loadSpawnUtils({
-      mainLoopModel: 'leader model with spaces',
-    })
+  test('does not infer a model when the caller omits the resolved model', async () => {
+    const { buildInheritedCliFlags } = await loadSpawnUtils()
 
-    expect(buildInheritedCliFlags()).toBe(
-      "--model 'leader model with spaces' --teammate-mode default",
-    )
+    expect(buildInheritedCliFlags()).toBe('--teammate-mode default')
   })
 })

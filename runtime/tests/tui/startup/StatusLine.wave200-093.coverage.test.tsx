@@ -29,7 +29,6 @@ const mocks = vi.hoisted(() => ({
   getContextWindowForModel: vi.fn(() => 200000),
   getCurrentUsage: vi.fn(() => 4096),
   getKairosActive: vi.fn(() => false),
-  getRuntimeMainLoopModel: vi.fn(() => 'runtime-gpt-5'),
   logForDebugging: vi.fn(),
 }))
 
@@ -138,7 +137,6 @@ vi.mock('../../utils/messages.js', () => ({
 }))
 
 vi.mock('../../utils/model/model.js', () => ({
-  getRuntimeMainLoopModel: mocks.getRuntimeMainLoopModel,
   renderModelName: (model: string) => `Rendered ${model}`,
 }))
 
@@ -237,7 +235,6 @@ describe('StatusLine wave200-093 coverage', () => {
     mocks.getCurrentUsage.mockClear()
     mocks.getKairosActive.mockReset()
     mocks.getKairosActive.mockReturnValue(false)
-    mocks.getRuntimeMainLoopModel.mockClear()
     mocks.logForDebugging.mockClear()
   })
 
@@ -301,8 +298,8 @@ describe('StatusLine wave200-093 coverage', () => {
       transcript_path: '/workspace/transcript.jsonl',
       session_name: 'Wave 093 session',
       model: {
-        id: 'runtime-gpt-5',
-        display_name: 'Rendered runtime-gpt-5',
+        id: 'gpt-5',
+        display_name: 'Rendered gpt-5',
       },
       workspace: {
         current_dir: '/workspace/app',
@@ -355,14 +352,8 @@ describe('StatusLine wave200-093 coverage', () => {
         original_branch: 'main',
       },
     })
-    expect(mocks.getRuntimeMainLoopModel).toHaveBeenCalledWith({
-      permissionMode: 'acceptEdits',
-      mainLoopModel: 'gpt-5',
-      modelSetting: undefined,
-      exceeds200kTokens: true,
-    })
     expect(mocks.getContextWindowForModel).toHaveBeenCalledWith(
-      'runtime-gpt-5',
+      'gpt-5',
       TEST_REMOTE_AUTH_SESSION_CONTEXT,
       ['context-window-beta'],
     )

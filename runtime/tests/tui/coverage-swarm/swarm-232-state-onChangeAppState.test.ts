@@ -6,12 +6,6 @@ import { onChangeAppState } from "../../../src/tui/state/onChangeAppState.js";
 const harness = vi.hoisted(() => ({
   applyConfigEnvironmentVariables: vi.fn(),
   logError: vi.fn(),
-  setMainLoopModelOverride: vi.fn(),
-  updateSettingsForSource: vi.fn(),
-}));
-
-vi.mock("../../../src/bootstrap/state.js", () => ({
-  setMainLoopModelOverride: harness.setMainLoopModelOverride,
 }));
 
 vi.mock("../../../src/utils/errors.js", () => ({
@@ -25,10 +19,6 @@ vi.mock("../../../src/utils/log.js", () => ({
 
 vi.mock("../../../src/utils/managedEnv.js", () => ({
   applyConfigEnvironmentVariables: harness.applyConfigEnvironmentVariables,
-}));
-
-vi.mock("../../../src/utils/settings/settings.js", () => ({
-  updateSettingsForSource: harness.updateSettingsForSource,
 }));
 
 function makeState(overrides: Partial<AppState> = {}): AppState {
@@ -47,43 +37,15 @@ describe("onChangeAppState coverage swarm", () => {
   beforeEach(() => {
     harness.applyConfigEnvironmentVariables.mockReset();
     harness.logError.mockReset();
-    harness.setMainLoopModelOverride.mockReset();
-    harness.updateSettingsForSource.mockReset();
   });
 
-  test("writes selected models to canonical settings", () => {
+  test("keeps projected model and effort changes out of durable settings authority", () => {
     onChangeAppState({
-      oldState: makeState({ mainLoopModel: null }),
-      newState: makeState({ mainLoopModel: "gpt-5.4" }),
+      oldState: makeState({ effortValue: undefined, mainLoopModel: null }),
+      newState: makeState({ effortValue: "high", mainLoopModel: "gpt-5.4" }),
     });
-
-    expect(harness.updateSettingsForSource).toHaveBeenCalledWith(
-      "userSettings",
-      { model: "gpt-5.4" },
-    );
-    expect(harness.setMainLoopModelOverride).toHaveBeenCalledWith("gpt-5.4");
-
-    onChangeAppState({
-      oldState: makeState({ mainLoopModel: "gpt-5.4" }),
-      newState: makeState({ mainLoopModel: "gpt-5.4-mini" }),
-    });
-    expect(harness.updateSettingsForSource).toHaveBeenLastCalledWith(
-      "userSettings",
-      { model: "gpt-5.4-mini" },
-    );
-  });
-
-  test("clears selected model settings", () => {
-    onChangeAppState({
-      oldState: makeState({ mainLoopModel: "gpt-5.4" }),
-      newState: makeState({ mainLoopModel: null }),
-    });
-
-    expect(harness.updateSettingsForSource).toHaveBeenCalledWith(
-      "userSettings",
-      { model: undefined },
-    );
-    expect(harness.setMainLoopModelOverride).toHaveBeenCalledWith(null);
+    expect(harness.applyConfigEnvironmentVariables).not.toHaveBeenCalled();
+    expect(harness.logError).not.toHaveBeenCalled();
   });
 
   test("keeps transient presentation state out of durable settings", () => {
@@ -100,7 +62,6 @@ describe("onChangeAppState coverage swarm", () => {
       }),
     });
 
-    expect(harness.updateSettingsForSource).not.toHaveBeenCalled();
     expect(harness.applyConfigEnvironmentVariables).not.toHaveBeenCalled();
   });
 

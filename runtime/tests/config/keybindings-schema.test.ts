@@ -43,6 +43,16 @@ describe("canonical tui.keybindings schema", () => {
     ["unknown block field", [{ context: "Chat", bindings: {}, extra: true }]],
     ["unknown context", [{ context: "Unknown", bindings: {} }]],
     ["unknown action", [{ context: "Chat", bindings: { a: "chat:nope" } }]],
+    ["retired model-picker context", [{ context: "ModelPicker", bindings: {} }]],
+    ["retired fast-mode action", [{ context: "Chat", bindings: { a: "chat:fastMode" } }]],
+    [
+      "retired model-picker decrease action",
+      [{ context: "Chat", bindings: { a: "modelPicker:decreaseEffort" } }],
+    ],
+    [
+      "retired model-picker increase action",
+      [{ context: "Chat", bindings: { a: "modelPicker:increaseEffort" } }],
+    ],
     ["malformed chord", [{ context: "Chat", bindings: { "ctrl++": "chat:submit" } }]],
     ["command outside Chat", [{ context: "Global", bindings: { a: "command:todos" } }]],
     [

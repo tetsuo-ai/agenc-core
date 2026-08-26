@@ -3704,92 +3704,121 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
     const changes: string[] = [];
     let applied = false;
+    let preparedReloadSelection:
+      | ReturnType<typeof resolveProviderModelSelection>
+      | undefined;
     if (params.reload === true) {
-      const preparedConfigReload = await configStore.prepareReload();
-      const preparedMcpAuthorityRefresh =
-        prepareMcpAuthorityRefresh(session);
-      try {
-        const permissionSnapshot = await loadPermissionRulesSnapshot({
-          configStore: preparedConfigReload.authority,
-        });
-        await session.permissionModeRegistry.transact((current) => {
-          const configuredExecutionAuthority =
-            active.bootstrap.prepareConfiguredExecutionAuthority(
-              preparedConfigReload.config,
-            );
-          return {
-            next: applyPermissionRulesSnapshot(current, permissionSnapshot),
-            metadata: {
-              runtimeSettings: {
-                reason: "config_applied" as const,
-                rollbackOfSettingsEventId: null,
+        const preparedConfigReload = await configStore.prepareReload();
+        const preparedMcpAuthorityRefresh =
+          prepareMcpAuthorityRefresh(session);
+        try {
+          const preparedConfig = preparedConfigReload.config;
+          const preparedResolved =
+            params.profile !== undefined
+              ? resolveProfile(preparedConfig, params.profile)
+              : preparedConfig;
+          if (
+            typeof preparedResolved.model === "string" ||
+            typeof preparedResolved.model_provider === "string"
+          ) {
+            preparedReloadSelection = resolveProviderModelSelection(
+              preparedConfig,
+              readSessionSelection(session, {
+                includePending: true,
+                fallbackConfig: preparedConfig,
+              }),
+              {
+                ...(typeof preparedResolved.model_provider === "string"
+                  ? { model_provider: preparedResolved.model_provider }
+                  : {}),
+                ...(typeof preparedResolved.model === "string"
+                  ? { model: preparedResolved.model }
+                  : {}),
               },
-              configuredExecutionAuthority,
-              preparedConfigReload,
-              ...(preparedMcpAuthorityRefresh !== undefined
-                ? { preparedMcpAuthorityRefresh }
-                : {}),
-            },
-            result: () => undefined,
-          };
-        });
-      } catch (error) {
-        const cleanupErrors: unknown[] = [];
-        if (!preparedConfigReload.settled) {
-          if (preparedConfigReload.state !== "rolled_back") {
+            );
+          }
+          const permissionSnapshot = await loadPermissionRulesSnapshot({
+            configStore: preparedConfigReload.authority,
+          });
+          await session.permissionModeRegistry.transact((current) => {
+            const configuredExecutionAuthority =
+              active.bootstrap.prepareConfiguredExecutionAuthority(
+                preparedConfigReload.config,
+              );
+            return {
+              next: applyPermissionRulesSnapshot(current, permissionSnapshot),
+              metadata: {
+                runtimeSettings: {
+                  reason: "config_applied" as const,
+                  rollbackOfSettingsEventId: null,
+                },
+                configuredExecutionAuthority,
+                preparedConfigReload,
+                ...(preparedMcpAuthorityRefresh !== undefined
+                  ? { preparedMcpAuthorityRefresh }
+                  : {}),
+              },
+              result: () => undefined,
+            };
+          });
+        } catch (error) {
+          const cleanupErrors: unknown[] = [];
+          if (!preparedConfigReload.settled) {
+            if (preparedConfigReload.state !== "rolled_back") {
+              try {
+                preparedConfigReload.rollback();
+              } catch (rollbackError) {
+                cleanupErrors.push(rollbackError);
+              }
+            }
             try {
-              preparedConfigReload.rollback();
-            } catch (rollbackError) {
-              cleanupErrors.push(rollbackError);
+              preparedConfigReload.settle();
+            } catch (settleError) {
+              cleanupErrors.push(settleError);
             }
           }
-          try {
-            preparedConfigReload.settle();
-          } catch (settleError) {
-            cleanupErrors.push(settleError);
+          if (cleanupErrors.length > 0) {
+            failClosedDaemonRuntimeAuthority(
+              active,
+              new AggregateError(
+                [error, ...cleanupErrors],
+                "canonical config reload rollback was incomplete",
+                { cause: error },
+              ),
+              {
+                brokerReason:
+                  "daemon permission authority failed after canonical publication",
+                abortReason: "permission_authority_failure",
+                abortFailureMessage:
+                  `agent config reload failed and session abort was incomplete for ${agentId}`,
+              },
+            );
           }
+          throw error;
         }
-        if (cleanupErrors.length > 0) {
-          failClosedDaemonRuntimeAuthority(
-            active,
-            new AggregateError(
-              [error, ...cleanupErrors],
-              "canonical config reload rollback was incomplete",
-              { cause: error },
-            ),
-            {
-              brokerReason:
-                "daemon permission authority failed after canonical publication",
-              abortReason: "permission_authority_failure",
-              abortFailureMessage:
-                `agent config reload failed and session abort was incomplete for ${agentId}`,
-            },
+        changes.push("config reloaded from disk");
+        if (preparedMcpAuthorityRefresh !== undefined) {
+          const refreshed = preparedMcpAuthorityRefresh.result;
+          if (refreshed === undefined) {
+            throw new Error(
+              "coordinated MCP authority refresh completed without a result",
+            );
+          }
+          changes.push(
+            `MCP refreshed (${refreshed.configuredServers.length} configured, ${refreshed.requiredServers.length} required)`,
           );
         }
-        throw error;
-      }
-      changes.push("config reloaded from disk");
-      if (preparedMcpAuthorityRefresh !== undefined) {
-        const refreshed = preparedMcpAuthorityRefresh.result;
-        if (refreshed === undefined) {
-          throw new Error(
-            "coordinated MCP authority refresh completed without a result",
-          );
+        applied = true;
+        if (params.profile !== undefined) {
+          resolveProfile(configStore.current(), params.profile);
         }
-        changes.push(
-          `MCP refreshed (${refreshed.configuredServers.length} configured, ${refreshed.requiredServers.length} required)`,
-        );
-      }
-      applied = true;
-      if (params.profile !== undefined) {
-        resolveProfile(configStore.current(), params.profile);
-      }
     }
     return withRuntimeSettingsMutation(active, async () => {
       if (!isRunnableActiveAgent(active)) {
         throw new Error(`AgenC daemon agent not running: ${agentId}`);
       }
-      const base = configStore.current() as unknown as Record<string, unknown>;
+      const canonicalConfig = configStore.current();
+      const base = canonicalConfig as unknown as Record<string, unknown>;
       const resolved =
         params.profile !== undefined
           ? (resolveProfile(
@@ -3800,19 +3829,35 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       const previousSettings = ensureInitialRuntimeSettings(active, agentId);
       const previousPending = session.pendingProviderSwitch;
       const previousConfiguration = session.sessionConfiguration;
-      const targetModel =
+      const requestedModel =
         typeof resolved.model === "string" ? resolved.model : undefined;
-      const targetProvider =
+      const requestedProvider =
         typeof resolved.model_provider === "string"
           ? resolved.model_provider
           : undefined;
       const currentModel =
         typeof base.model === "string" ? base.model : undefined;
-      const currentProvider =
-        typeof base.model_provider === "string"
-          ? base.model_provider
-          : undefined;
-      const stageProvider = targetProvider ?? currentProvider;
+      const targetSelection =
+        preparedReloadSelection ??
+        (requestedModel !== undefined || requestedProvider !== undefined
+          ? resolveProviderModelSelection(
+              canonicalConfig,
+              readSessionSelection(session, {
+                includePending: true,
+                fallbackConfig: canonicalConfig,
+              }),
+              {
+                ...(requestedProvider !== undefined
+                  ? { model_provider: requestedProvider }
+                  : {}),
+                ...(requestedModel !== undefined
+                  ? { model: requestedModel }
+                  : {}),
+              },
+            )
+          : undefined);
+      const targetModel = targetSelection?.model;
+      const stageProvider = targetSelection?.provider;
       const nextReasoning = normalizeRuntimeSetting(
         resolved.reasoning_effort,
         RUN_RUNTIME_REASONING_EFFORTS,

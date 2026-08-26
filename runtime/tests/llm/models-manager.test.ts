@@ -187,6 +187,30 @@ describe("StaticModelsManager", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("uses GitHub metadata for qualified and provider-local Copilot IDs", async () => {
+    const manager = new StaticModelsManager({
+      config: mergeConfigs(defaultConfig(), {
+        model_provider: "github",
+        model: "gpt-5.3-codex",
+      }),
+      fallbackProvider: "github",
+    });
+
+    const qualified = await manager.getModelInfo(
+      "github:copilot:gpt-5.3-codex",
+    );
+    const local = await manager.getModelInfo("gpt-5.3-codex");
+
+    expect(qualified).toMatchObject({
+      slug: "gpt-5.3-codex",
+      contextWindow: 128_000,
+    });
+    expect(local).toMatchObject({
+      slug: "gpt-5.3-codex",
+      contextWindow: 128_000,
+    });
+  });
+
   it("uses explicit provider context metadata before fetching anything", async () => {
     const fetchImpl = vi.fn<typeof fetch>();
     const manager = new StaticModelsManager({

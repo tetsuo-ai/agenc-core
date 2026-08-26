@@ -1,7 +1,6 @@
 import { expect, test } from 'bun:test'
 
 import {
-  getAdditionalModelOptionsCacheScope,
   getLocalProviderRetryBaseUrls,
   isLocalProviderUrl,
   resolveProviderRequest,
@@ -55,16 +54,6 @@ test('treats public hosts as remote', () => {
   expect(isLocalProviderUrl('http://[2001:4860:4860::8888]:11434/v1')).toBe(false)
 })
 
-test('creates a cache scope for local openai-compatible providers', () => {
-  const selection = providerSelection('llama-3.2-3b-instruct', {
-    OPENAI_BASE_URL: 'http://localhost:1234/v1',
-  })
-
-  expect(getAdditionalModelOptionsCacheScope('openai-compatible', selection)).toBe(
-    'openai:http://localhost:1234/v1',
-  )
-})
-
 test('keeps providerCode alias models on chat completions for local openai-compatible providers', () => {
   const selection = providerSelection('gpt-5.4', {
     OPENAI_BASE_URL: 'http://127.0.0.1:8080/v1',
@@ -76,9 +65,17 @@ test('keeps providerCode alias models on chat completions for local openai-compa
     resolvedModel: 'gpt-5.4',
     baseUrl: 'http://127.0.0.1:8080/v1',
   })
-  expect(getAdditionalModelOptionsCacheScope('openai-compatible', selection)).toBe(
-    'openai:http://127.0.0.1:8080/v1',
-  )
+})
+
+test('normalizes collision-safe GitHub Copilot catalog models for requests', () => {
+  expect(resolveProviderRequest({
+    provider: 'github',
+    model: 'github:copilot:gpt-5.3-codex',
+    environment: {},
+  })).toMatchObject({
+    requestedModel: 'github:copilot:gpt-5.3-codex',
+    resolvedModel: 'gpt-5.3-codex',
+  })
 })
 
 test('uses responses transport when provider-compatible API format requests responses', () => {
@@ -107,14 +104,6 @@ test('keeps ProviderCode backend on ProviderCode responses transport even when A
     resolvedModel: 'gpt-5.5',
     baseUrl: 'https://chatgpt.com/backend-api/codex',
   })
-})
-
-test('skips local model cache scope for remote openai-compatible providers', () => {
-  const selection = providerSelection('gpt-4o', {
-    OPENAI_BASE_URL: 'https://api.openai.com/v1',
-  })
-
-  expect(getAdditionalModelOptionsCacheScope('openai-compatible', selection)).toBeNull()
 })
 
 test('uses the captured provider environment after ambient selection mutates', () => {

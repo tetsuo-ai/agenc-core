@@ -51,13 +51,22 @@ describe("config layer authority architecture", () => {
     for (const relativePath of [
       "tools/WebFetchTool/utils.ts",
       "memory/agencmd.ts",
-      "utils/model/modelAllowlist.ts",
-      "utils/model/modelOptions.ts",
     ]) {
       expect(source(relativePath), relativePath).toContain(
         "getSettingsForSource('policySettings')",
       );
     }
+  });
+
+  test("model policy reads only the final config passed by its caller", () => {
+    const matcher = source("utils/model/modelAllowlist.ts");
+    expect(matcher).not.toMatch(
+      /getSettingsForSource|getExecutionAuthoritySettings|ConfigStore/u,
+    );
+    expect(source("session/provider-model-selection.ts")).toContain(
+      "isModelAllowed",
+    );
+    expect(source("commands/model-menu.tsx")).toContain("isModelAllowed");
   });
 
   test("every generic user-config write boundary checks source authority", () => {

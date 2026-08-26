@@ -1,6 +1,10 @@
 import { OpenAIProvider } from "../openai/adapter.js";
 import type { OpenAIProviderConfig } from "../openai/types.js";
-import { BUILT_IN_PROVIDER_DEFAULT_MODELS } from "../../registry/provider-info.js";
+import {
+  getGithubEndpointType,
+  normalizeGithubModelForEndpoint,
+  shouldUseGithubCopilotResponsesApi,
+} from "./model-routing.js";
 
 export type GitHubProviderConfig = OpenAIProviderConfig;
 
@@ -20,29 +24,20 @@ function buildGitHubHeaders(
   };
 }
 
-function normalizeGitHubModel(model: string | undefined): string | undefined {
-  const trimmed = model?.trim();
-  const lower = trimmed?.toLowerCase();
-  if (!trimmed || lower === "github:copilot" || lower === "copilot") {
-    return BUILT_IN_PROVIDER_DEFAULT_MODELS.github;
-  }
-  const prefix = "github:copilot:";
-  if (lower?.startsWith(prefix)) {
-    return trimmed.slice(prefix.length);
-  }
-  return trimmed;
-}
-
 export class GitHubProvider extends OpenAIProvider {
   constructor(config: GitHubProviderConfig) {
     super({
       ...config,
       providerName: "github",
-      useResponsesApi: false,
+      useResponsesApi: shouldUseGithubCopilotResponsesApi(
+        config.model,
+        config.baseURL,
+      ),
       defaultHeaders: buildGitHubHeaders(config.defaultHeaders),
-      model:
-        normalizeGitHubModel(config.model) ??
-        BUILT_IN_PROVIDER_DEFAULT_MODELS.github,
+      model: normalizeGithubModelForEndpoint(
+        config.model,
+        getGithubEndpointType(config.baseURL),
+      ),
     });
   }
 }

@@ -3,8 +3,10 @@ import {
   checkIsAgenCNativeProvider as checkIsAgenCNativeProviderUnbound,
   getAgentModel as getAgentModelUnbound,
 } from '../../../src/utils/model/agent.ts'
-import { getRuntimeMainLoopModel as getRuntimeMainLoopModelUnbound } from '../../../src/utils/model/model.ts'
+import { ConfigStore } from '../../../src/config/store.ts'
+import { defaultConfig } from '../../../src/config/schema.ts'
 import { runWithStartupProviderSelection } from '../../../src/utils/model/providers.ts'
+import { runWithCanonicalSettingsAuthority } from '../../../src/utils/settings/canonicalAuthority.ts'
 
 const providerEnvKeys = [
   'AGENC_PROVIDER',
@@ -52,7 +54,7 @@ function useProvider(
   switch (provider) {
     case 'agenc':
       process.env.AGENC_PROVIDER = 'agenc'
-      process.env.AGENC_MODEL = 'agencspark'
+      process.env.AGENC_MODEL = 'agenc'
       break
     case 'custom-first-party':
       process.env.AGENC_PROVIDER = 'anthropic'
@@ -83,22 +85,42 @@ function useProvider(
   }
 }
 
-function withSelectedProvider<T>(operation: () => T): T {
+function withSelectedProvider<T>(
+  operation: () => T,
+  availableModels?: readonly string[],
+): T {
   const provider = process.env.AGENC_PROVIDER
   if (!provider) throw new Error('test provider must be selected')
   const model = process.env.AGENC_MODEL ?? 'test-model'
-  return runWithStartupProviderSelection({ provider, model, environment: { ...process.env } }, operation)
+  const store = new ConfigStore({
+    home: '/tmp/agenc-agent-model-authority',
+    env: {},
+    base: {
+      ...defaultConfig(),
+      ...(availableModels === undefined ? {} : { availableModels }),
+    },
+  })
+  return runWithCanonicalSettingsAuthority(store, () =>
+    runWithStartupProviderSelection(
+      { provider, model, environment: { ...process.env } },
+      operation,
+    )
+  )
 }
 
 const getAgentModel = (...args: Parameters<typeof getAgentModelUnbound>) =>
   withSelectedProvider(() => getAgentModelUnbound(...args))
 
+const getAgentModelWithPolicy = (
+  args: Parameters<typeof getAgentModelUnbound>,
+  availableModels: readonly string[],
+) => withSelectedProvider(
+  () => getAgentModelUnbound(...args),
+  availableModels,
+)
+
 const checkIsAgenCNativeProvider = () =>
   withSelectedProvider(checkIsAgenCNativeProviderUnbound)
-
-const getRuntimeMainLoopModel = (
-  ...args: Parameters<typeof getRuntimeMainLoopModelUnbound>
-) => withSelectedProvider(() => getRuntimeMainLoopModelUnbound(...args))
 
 describe('getAgentModel provider-aware fallback', () => {
   afterEach(() => {
@@ -113,13 +135,28 @@ describe('getAgentModel provider-aware fallback', () => {
         'haiku',
         'claude-sonnet-4-6',
         undefined,
-        'default',
-        undefined,
       )
 
       expect(result).toContain('haiku')
       expect(result).not.toBe('claude-sonnet-4-6')
     })
+
+    test.each([
+      ['agent definition', ['best', 'claude-sonnet-4-6', undefined]],
+      ['tool argument', [undefined, 'claude-sonnet-4-6', 'opus']],
+    ] as const)(
+      'rejects a %s model outside managed availableModels',
+      (_source, args) => {
+        useProvider('first-party')
+
+        expect(() =>
+          getAgentModelWithPolicy(
+            args as Parameters<typeof getAgentModelUnbound>,
+            ['sonnet'],
+          )
+        ).toThrow('managed availableModels policy')
+      },
+    )
   })
 
   describe('Non-AgenC-native providers', () => {
@@ -129,8 +166,6 @@ describe('getAgentModel provider-aware fallback', () => {
       const result = getAgentModel(
         'haiku',
         'gpt-4o-mini',
-        undefined,
-        'default',
         undefined,
       )
 
@@ -144,8 +179,6 @@ describe('getAgentModel provider-aware fallback', () => {
         'haiku',
         'gemini-2.5-pro',
         undefined,
-        'default',
-        undefined,
       )
 
       expect(result).toBe('gemini-2.5-pro')
@@ -157,8 +190,6 @@ describe('getAgentModel provider-aware fallback', () => {
       const result = getAgentModel(
         'haiku',
         'claude-sonnet-4-6',
-        undefined,
-        'default',
         undefined,
       )
 
@@ -172,8 +203,6 @@ describe('getAgentModel provider-aware fallback', () => {
         'sonnet',
         'gpt-4o-mini',
         undefined,
-        'default',
-        undefined,
       )
 
       expect(result).toBe('gpt-4o-mini')
@@ -185,8 +214,6 @@ describe('getAgentModel provider-aware fallback', () => {
       const result = getAgentModel(
         'haiku',
         'mistral-small-latest',
-        undefined,
-        'default',
         undefined,
       )
 
@@ -200,8 +227,6 @@ describe('getAgentModel provider-aware fallback', () => {
         'haiku',
         'gpt-4o-mini',
         undefined,
-        'default',
-        undefined,
       )
 
       expect(result).toBe('gpt-4o-mini')
@@ -213,8 +238,6 @@ describe('getAgentModel provider-aware fallback', () => {
       const result = getAgentModel(
         'haiku',
         'meta/llama-3.1-8b-instruct',
-        undefined,
-        'default',
         undefined,
       )
 
@@ -228,8 +251,6 @@ describe('getAgentModel provider-aware fallback', () => {
         'haiku',
         'MiniMax-M2.5-highspeed',
         undefined,
-        'default',
-        undefined,
       )
 
       expect(result).toBe('MiniMax-M2.5-highspeed')
@@ -241,8 +262,6 @@ describe('getAgentModel provider-aware fallback', () => {
       const result = getAgentModel(
         'haiku',
         'gpt-5.5-mini',
-        undefined,
-        'default',
         undefined,
       )
 
@@ -258,26 +277,11 @@ describe('getAgentModel provider-aware fallback', () => {
         'inherit',
         'gpt-4o',
         undefined,
-        'default',
-        undefined,
       )
 
       expect(result).toBe('gpt-4o')
     })
 
-    test('inherit applies the explicit parent alias in plan mode without ambient settings', () => {
-      useProvider('first-party')
-
-      const result = getAgentModel(
-        'inherit',
-        'claude-sonnet-4-6',
-        undefined,
-        'plan',
-        'opusplan',
-      )
-
-      expect(result).toContain('opus')
-    })
   })
 
   describe('checkIsAgenCNativeProvider helper', () => {
@@ -298,64 +302,5 @@ describe('getAgentModel provider-aware fallback', () => {
 
       expect(checkIsAgenCNativeProvider()).toBe(false)
     })
-  })
-})
-
-describe('getRuntimeMainLoopModel explicit setting authority', () => {
-  afterEach(() => {
-    restoreProviderEnv()
-  })
-
-  test('uses opusplan only for plan mode below the 200k threshold', () => {
-    useProvider('first-party')
-
-    expect(
-      getRuntimeMainLoopModel({
-        permissionMode: 'plan',
-        mainLoopModel: 'claude-sonnet-4-6',
-        modelSetting: 'opusplan',
-      }),
-    ).toContain('opus')
-    expect(
-      getRuntimeMainLoopModel({
-        permissionMode: 'default',
-        mainLoopModel: 'claude-sonnet-4-6',
-        modelSetting: 'opusplan',
-      }),
-    ).toBe('claude-sonnet-4-6')
-    expect(
-      getRuntimeMainLoopModel({
-        permissionMode: 'plan',
-        mainLoopModel: 'claude-sonnet-4-6',
-        modelSetting: 'opusplan',
-        exceeds200kTokens: true,
-      }),
-    ).toBe('claude-sonnet-4-6')
-  })
-
-  test('uses the plan model for an explicit haiku setting', () => {
-    useProvider('first-party')
-
-    expect(
-      getRuntimeMainLoopModel({
-        permissionMode: 'plan',
-        mainLoopModel: 'claude-haiku-4-5',
-        modelSetting: 'haiku',
-      }),
-    ).toContain('sonnet')
-  })
-
-  test('does not reinterpret a resolved provider model when the raw setting is absent', () => {
-    useProvider('first-party')
-
-    for (const modelSetting of [null, undefined]) {
-      expect(
-        getRuntimeMainLoopModel({
-          permissionMode: 'plan',
-          mainLoopModel: 'haiku',
-          modelSetting,
-        }),
-      ).toBe('haiku')
-    }
   })
 })

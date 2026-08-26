@@ -528,6 +528,34 @@ describe("providerCommand", () => {
     ).toBeNull();
   });
 
+  it("blocks a provider default denied by managed policy before staging", async () => {
+    const abortTerminal = vi.fn();
+    const session = stubSession({
+      provider: "grok",
+      model: "grok-4",
+      abortTerminal,
+      configStore: commandConfigStore(TEST_HOME, {
+        model_provider: "grok",
+        model: "grok-4",
+        availableModels: ["grok-4"],
+      }),
+    });
+
+    await expect(
+      applyProviderSwitch(session, "openai"),
+    ).resolves.toMatchObject({
+      applied: false,
+      provider: "grok",
+      model: "grok-4",
+      summary: expect.stringContaining("managed availableModels policy"),
+    });
+    expect(
+      (session as unknown as { pendingProviderSwitch: unknown })
+        .pendingProviderSwitch,
+    ).toBeNull();
+    expect(abortTerminal).not.toHaveBeenCalled();
+  });
+
   it("resolves a later unqualified model against the awaited provider successor", async () => {
     const session = stubSession({ provider: "grok", model: "grok-4.5" });
     const configuration = (

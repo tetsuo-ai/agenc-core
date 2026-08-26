@@ -75,13 +75,13 @@ afterEach(() => {
 test('agenc provider reads the canonical startup model', async () => {
   process.env.AGENC_PROVIDER = 'agenc'
   process.env.OPENAI_BASE_URL = 'https://chatgpt.com/backend-api/agenc'
-  process.env.AGENC_MODEL = 'agencplan'
+  process.env.AGENC_MODEL = 'agenc'
   process.env.AGENC_API_KEY = 'agenc-test'
   process.env.CHATGPT_ACCOUNT_ID = 'acct_test'
 
   const { getUserSpecifiedModelSetting } = await importFreshModelModule()
   const model = getUserSpecifiedModelSetting()
-  expect(model).toBe('agencplan')
+  expect(model).toBe('agenc')
 })
 
 test('nvidia-nim provider reads the canonical startup model', async () => {
@@ -149,12 +149,12 @@ test('getSmallFastModel returns the canonical MiniMax model (regression: WebFetc
 test('getSmallFastModel returns the canonical AgenC model (regression)', async () => {
   process.env.AGENC_PROVIDER = 'agenc'
   process.env.OPENAI_BASE_URL = 'https://chatgpt.com/backend-api/agenc'
-  process.env.AGENC_MODEL = 'agencspark'
+  process.env.AGENC_MODEL = 'agenc'
   process.env.AGENC_API_KEY = 'agenc-test'
   process.env.CHATGPT_ACCOUNT_ID = 'acct_test'
 
   const { getSmallFastModel } = await importFreshModelModule()
-  expect(getSmallFastModel()).toBe('agencspark')
+  expect(getSmallFastModel()).toBe('agenc')
 })
 
 test('getSmallFastModel returns the canonical NVIDIA NIM model (regression)', async () => {

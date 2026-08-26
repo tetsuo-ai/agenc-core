@@ -36,7 +36,6 @@ const CONTEXT_PRIORITY: Partial<Record<KeybindingContextName, number>> = {
   MessageSelector: 100,
   MessageActions: 100,
   DiffDialog: 100,
-  ModelPicker: 100,
   Select: 100,
   Plugin: 100,
 };

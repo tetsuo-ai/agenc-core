@@ -702,6 +702,61 @@ describe("Session rollout persistence suspension", () => {
 });
 
 describe("Session.consumePendingProviderSwitch", () => {
+  it.each([
+    {
+      policyName: "deny-all",
+      availableModels: [] as string[],
+    },
+    {
+      policyName: "restricted",
+      availableModels: ["grok-4.6"],
+    },
+  ])(
+    "rejects a pending switch before provider preparation under the $policyName availableModels policy",
+    async ({ availableModels }) => {
+      const session = buildSession({
+        services: {
+          provider: createProvider("grok", {
+            apiKey: "test-key",
+            model: "grok-4",
+          }),
+          configStore: {
+            current: () => ({ availableModels }),
+          },
+        },
+      });
+      const prepareSpy = vi.spyOn(session.providerService, "prepare");
+      session.setPendingProviderSwitch({
+        provider: "grok",
+        model: "grok-4.3",
+        profile: "coding",
+      });
+
+      await expect(session.consumePendingProviderSwitch()).resolves.toEqual({
+        applied: false,
+        reason:
+          "model 'grok-4.3' is not allowed by managed availableModels policy",
+      });
+
+      expect(prepareSpy).not.toHaveBeenCalled();
+      expect(session.providerBinding).toMatchObject({
+        provider: "grok",
+        model: "grok-4",
+      });
+      expect(session.pendingProviderSwitch).toBeNull();
+      expect(session.txEvent.tryRecv()).toMatchObject({
+        msg: {
+          type: "warning",
+          payload: {
+            cause: "provider_switch_rejected",
+            message:
+              "provider switch rejected: model 'grok-4.3' is not allowed by managed availableModels policy",
+          },
+        },
+      });
+    },
+  );
+
   it("resets ProviderHttpClient continuity state on provider/model switches and re-binds the session conversation id", async () => {
     const bindSpy = vi.spyOn(
       ProviderHttpClient.prototype,
@@ -808,6 +863,15 @@ describe("Session.consumePendingProviderSwitch", () => {
     expect(session.providerBinding).toMatchObject({
       provider: "grok",
       model: "grok-4.3",
+    });
+    expect(session.txEvent.tryRecv()).toMatchObject({
+      msg: {
+        type: "warning",
+        payload: {
+          cause: "provider_switched",
+          message: expect.stringContaining("profile coding"),
+        },
+      },
     });
   });
 

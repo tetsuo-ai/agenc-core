@@ -146,7 +146,7 @@ function PromptInputFooter({
       </Box>;
   }
   if (helpOpen) {
-    return <PromptInputHelpMenu dimColor={true} fixedWidth={true} paddingX={2} remoteAuthSessionContext={remoteAuthSessionContext} />;
+    return <PromptInputHelpMenu dimColor={true} fixedWidth={true} paddingX={2} />;
   }
   return <>
       <Box flexDirection={isNarrow ? 'column' : 'row'} justifyContent={isNarrow ? 'flex-start' : 'space-between'} paddingX={2} gap={isNarrow ? 0 : 1} backgroundColor="surfaceBackground" opaque>

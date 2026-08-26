@@ -31,7 +31,6 @@ const harness = vi.hoisted(() => ({
   logForDebugging: vi.fn(),
   mainLoopModel: 'gpt-5',
   rawUtilization: {} as Record<string, unknown>,
-  runtimeModel: 'runtime-gpt-5',
   sessionTitle: undefined as string | undefined,
   settings: {
     statusLine: { command: 'statusline', padding: 0 },
@@ -131,7 +130,6 @@ vi.mock('../../../src/utils/messages.js', () => ({
 }))
 
 vi.mock('../../../src/utils/model/model.js', () => ({
-  getRuntimeMainLoopModel: () => harness.runtimeModel,
   renderModelName: (model: string) => `Rendered ${model}`,
 }))
 
@@ -247,7 +245,6 @@ function resetHarness(): void {
   harness.logForDebugging.mockClear()
   harness.mainLoopModel = 'gpt-5'
   harness.rawUtilization = {}
-  harness.runtimeModel = 'runtime-gpt-5'
   harness.sessionTitle = undefined
   harness.settings = {
     statusLine: { command: 'statusline', padding: 0 },
@@ -333,8 +330,8 @@ describe('StatusLine coverage swarm row 133', () => {
     expect(input).toMatchObject({
       transcript_path: '/workspace/transcript.jsonl',
       model: {
-        id: 'runtime-gpt-5',
-        display_name: 'Rendered runtime-gpt-5',
+        id: 'gpt-5',
+        display_name: 'Rendered gpt-5',
       },
       workspace: {
         current_dir: '/workspace/fallback',

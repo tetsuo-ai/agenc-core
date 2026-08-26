@@ -1573,6 +1573,12 @@ describe("retired-field migration manifest", () => {
       action: "drop",
     });
     expect(
+      classifyRetiredField("global-state", "penguinModeOrgEnabled"),
+    ).toMatchObject({
+      authority: "removed",
+      action: "drop",
+    });
+    expect(
       classifyRetiredField("global-state", "agencAiMcpEverConnected"),
     ).toMatchObject({
       authority: "removed",

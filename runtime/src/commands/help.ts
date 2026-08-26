@@ -24,7 +24,6 @@ import {
   helpWorkflowTitleForCommand,
 } from "./help-groups.js";
 import { openAsyncLocalJsxCommand } from "./local-jsx-command.js";
-import { providerAuthContextFromCommandContext } from "./config-context.js";
 import { sanitizeSuggestionMetadataText } from "../utils/suggestions/sanitizeSuggestionMetadataText.js";
 
 export interface HelpCommand {
@@ -246,7 +245,6 @@ async function openHelpMenu(
       commands: commands as never,
       query,
       onClose: close,
-      remoteAuthSessionContext: providerAuthContextFromCommandContext(ctx),
     });
   });
 }

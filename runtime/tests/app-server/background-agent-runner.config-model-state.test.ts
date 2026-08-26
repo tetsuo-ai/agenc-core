@@ -334,4 +334,112 @@ describe("daemon config/model state refresh + atomicity", () => {
     expect(result.applied).toBe(true);
     expect(result.summary).toContain("config reloaded from disk");
   });
+
+  it("rejects a profile model denied by managed availableModels before staging", async () => {
+    const stagedSwitches: Array<{
+      provider: string;
+      model: string;
+      profile?: string;
+    }> = [];
+    const config = {
+      model: "base-model",
+      model_provider: "openai",
+      availableModels: ["base-model"],
+      profiles: {
+        forbidden: { model: "gpt-5", model_provider: "openai" },
+      },
+    };
+    const { runner } = makeRunnerHarness({
+      configStore: {
+        current: () => config,
+      },
+      onStagedSwitch: (selection) => stagedSwitches.push(selection),
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+
+    await expect(
+      runner.applyAgentConfig("parent-session", {
+        sessionId: "session_1",
+        profile: "forbidden",
+      }),
+    ).rejects.toThrow(/managed availableModels policy/u);
+    expect(stagedSwitches).toEqual([]);
+  });
+
+  it("rejects a reloaded model policy before publishing the prepared config", async () => {
+    const currentConfig = {
+      model: "base-model",
+      model_provider: "openai",
+      availableModels: ["base-model"],
+    };
+    const reloadedConfig = {
+      model: "gpt-5",
+      model_provider: "openai",
+      availableModels: ["base-model"],
+    };
+    const commit = vi.fn();
+    const publish = vi.fn();
+    const rollback = vi.fn();
+    const settle = vi.fn();
+    let reloadState = "prepared";
+    let reloadSettled = false;
+    const prepareReload = vi.fn(async () => ({
+      config: reloadedConfig,
+      authority: {
+        current: () => reloadedConfig,
+        authoritySnapshot: () => ({ config: reloadedConfig, layers: [] }),
+        sources: () => [],
+      },
+      get state() {
+        return reloadState;
+      },
+      get settled() {
+        return reloadSettled;
+      },
+      commit: () => {
+        commit();
+        reloadState = "committed";
+      },
+      publish: () => {
+        publish();
+        reloadState = "published";
+      },
+      rollback: () => {
+        rollback();
+        reloadState = "rolled_back";
+      },
+      settle: () => {
+        settle();
+        reloadSettled = true;
+      },
+    }));
+    const stagedSwitches: Array<{ provider: string; model: string }> = [];
+    const { runner } = makeRunnerHarness({
+      configStore: {
+        current: () => currentConfig,
+        prepareReload,
+      },
+      onStagedSwitch: (selection) => stagedSwitches.push(selection),
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+
+    await expect(
+      runner.applyAgentConfig("parent-session", {
+        sessionId: "session_1",
+        reload: true,
+      }),
+    ).rejects.toThrow(/managed availableModels policy/u);
+
+    expect(prepareReload).toHaveBeenCalledTimes(1);
+    expect(commit).not.toHaveBeenCalled();
+    expect(publish).not.toHaveBeenCalled();
+    expect(rollback).toHaveBeenCalledTimes(1);
+    expect(settle).toHaveBeenCalledTimes(1);
+    expect(stagedSwitches).toEqual([]);
+    expect(currentConfig).toEqual({
+      model: "base-model",
+      model_provider: "openai",
+      availableModels: ["base-model"],
+    });
+  });
 });

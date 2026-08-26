@@ -40,6 +40,9 @@ describe("catalog drift: bare slug 'gpt-5.4' must not collide across providers",
   it("does not list the bare 'gpt-5.4' alias under the github provider", () => {
     // The bare alias under github is what created the cross-provider collision.
     expect(BUILT_IN_PROVIDER_MODEL_CATALOG.github).not.toContain(AMBIGUOUS_SLUG);
+    expect(BUILT_IN_PROVIDER_MODEL_CATALOG.github).toContain(
+      "github:copilot:gpt-5.4",
+    );
   });
 
   it("appears under exactly one provider in the built provider catalog", () => {

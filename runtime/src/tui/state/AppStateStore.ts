@@ -375,8 +375,6 @@ export type AppState = DeepImmutable<{
   denialTracking?: DenialTrackingState
   // Active overlays (Select dialogs, etc.) for Escape key coordination
   activeOverlays: ReadonlySet<string>
-  // Fast mode
-  fastMode?: boolean
   // Advisor model for server-side advisor tool (undefined = disabled).
   advisorModel?: string
   // Effort value
@@ -521,6 +519,5 @@ export function getDefaultAppStateForProviderEnvironment(
     // enabled in the daemon while the badge and local command state said off.
     swarmMode: initialSettings.swarmMode === true,
     activeOverlays: new Set<string>(),
-    fastMode: false,
   }
 }

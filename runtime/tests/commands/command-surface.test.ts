@@ -339,7 +339,7 @@ describe("AgenC command surface compatibility", () => {
 
     expect(outcome.result).toEqual({
       kind: "text",
-      text: "Model switching from the TUI is not yet supported when running against the daemon. Set `model` in config.toml or use `agenc config set model <name>`.",
+      text: "Model switching is not supported by this session. Set `model` in config.toml or use `agenc config set model <name>`.",
     });
   });
 

@@ -381,7 +381,6 @@ export const GLOBAL_RUNTIME_STATE_FIELDS = Object.freeze([
   "hasIdeOnboardingBeenShown",
   "iterm2It2SetupComplete",
   "skillUsage",
-  "penguinModeOrgEnabled",
   "cachedExtraUsageDisabledReason",
   // Explicit bypass consent, keyed by the exact canonical working directory.
   "permissions",

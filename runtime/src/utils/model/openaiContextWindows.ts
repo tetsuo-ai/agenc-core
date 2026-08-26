@@ -64,9 +64,8 @@ const OPENAI_CONTEXT_WINDOWS: Record<string, number> = {
   // keep their "<provider>/<model>" naming convention (standard LiteLLM routing)
   // instead of AgenC's "github:copilot:<model>" namespaced form.
   // Entries below cover the aliases currently exposed by LiteLLM's github_copilot
-  // provider — this is a curated subset, not an exhaustive mirror of the
-  // namespaced entries above. Values are sourced from copilotModels.ts to stay
-  // consistent with the native provider path.
+  // provider. This is a curated subset rather than an exhaustive mirror of the
+  // namespaced entries above.
   'github_copilot/claude-sonnet-4.6':        200_000,
   'github_copilot/claude-opus-4.6':          200_000,
   'github_copilot/claude-haiku-4.5':         144_000,

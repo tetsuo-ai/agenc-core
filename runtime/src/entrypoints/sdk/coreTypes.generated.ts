@@ -1168,7 +1168,6 @@ export type ModelInfo = {
   supportsEffort?: boolean
   supportedEffortLevels?: "low" | "medium" | "high" | "max"[]
   supportsAdaptiveThinking?: boolean
-  supportsFastMode?: boolean
   supportsAutoMode?: boolean
 }
 
@@ -1364,7 +1363,6 @@ export type SDKResultSuccess = {
     tool_input: Record<string, unknown>
   }[]
   structured_output?: unknown
-  fast_mode_state?: "off" | "cooldown" | "on"
   uuid: string
   session_id: string
 }
@@ -1395,7 +1393,6 @@ export type SDKResultError = {
     tool_input: Record<string, unknown>
   }[]
   errors: string[]
-  fast_mode_state?: "off" | "cooldown" | "on"
   uuid: string
   session_id: string
 }
@@ -1427,7 +1424,6 @@ export type SDKResultMessage = ({
     tool_input: Record<string, unknown>
   }[]
   structured_output?: unknown
-  fast_mode_state?: "off" | "cooldown" | "on"
   uuid: string
   session_id: string
 }) | ({
@@ -1456,7 +1452,6 @@ export type SDKResultMessage = ({
     tool_input: Record<string, unknown>
   }[]
   errors: string[]
-  fast_mode_state?: "off" | "cooldown" | "on"
   uuid: string
   session_id: string
 })
@@ -1484,7 +1479,6 @@ export type SDKSystemMessage = {
     path: string
     source?: string
   }[]
-  fast_mode_state?: "off" | "cooldown" | "on"
   uuid: string
   session_id: string
 }
@@ -1786,7 +1780,6 @@ export type SDKMessage = ({
     tool_input: Record<string, unknown>
   }[]
   structured_output?: unknown
-  fast_mode_state?: "off" | "cooldown" | "on"
   uuid: string
   session_id: string
 }) | ({
@@ -1815,7 +1808,6 @@ export type SDKMessage = ({
     tool_input: Record<string, unknown>
   }[]
   errors: string[]
-  fast_mode_state?: "off" | "cooldown" | "on"
   uuid: string
   session_id: string
 })) | ({
@@ -1841,7 +1833,6 @@ export type SDKMessage = ({
     path: string
     source?: string
   }[]
-  fast_mode_state?: "off" | "cooldown" | "on"
   uuid: string
   session_id: string
 }) | ({
@@ -2038,9 +2029,6 @@ export type SDKMessage = ({
   uuid: string
   session_id: string
 })
-
-/** Fast mode state: off, in cooldown after rate limit, or actively enabled. */
-export type FastModeState = "off" | "cooldown" | "on"
 
 export type ExitReason = "clear" | "resume" | "logout" | "prompt_input_exit" | "other" | "bypass_permissions_disabled"
 

@@ -148,7 +148,6 @@ export async function resumeAgentBackground({
   // reaches the root store so task registration/progress/kill stay visible.
   const rootSetAppState =
     toolUseContext.setAppStateForTasks ?? toolUseContext.setAppState;
-  const permissionMode = appState.toolPermissionContext.mode;
   const parentSession = requireCurrentRuntimeSession("subagent resume");
   const queueOwner = sessionQueueOwner(parentSession.conversationId);
   assertAgentRoleWorkspaceMatches(
@@ -277,8 +276,6 @@ export async function resumeAgentBackground({
     repositoryControlledAgent ? undefined : selectedAgent.model,
     toolUseContext.options.mainLoopModel,
     undefined,
-    permissionMode,
-    appState.mainLoopModelForSession ?? appState.mainLoopModel,
   );
 
   // `selectedAgent.permissionMode` is typed with the permissions/types.ts

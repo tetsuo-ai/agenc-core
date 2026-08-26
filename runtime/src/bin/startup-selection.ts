@@ -7,7 +7,10 @@ import {
   type PermissionMode,
 } from "../permissions/types.js";
 import { resolveProviderSettings } from "../config/resolve-provider.js";
-import { resolveProviderSlugOrThrow } from "../config/provider-model-authority.js";
+import {
+  resolveProviderModelLayer,
+  resolveProviderSlugOrThrow,
+} from "../config/provider-model-authority.js";
 import { resolveProfileName } from "../config/env.js";
 import type { AgenCConfig } from "../config/schema.js";
 import { tokenizeCliOptionRegion } from "./cli-option-region.js";
@@ -17,6 +20,10 @@ import {
   AUTONOMOUS_FLAG,
   DANGEROUS_BYPASS_FLAG,
 } from "./startup-flags.js";
+import {
+  isModelAllowed,
+  ModelNotAllowedError,
+} from "../utils/model/modelAllowlist.js";
 
 export interface StartupCliFlags {
   readonly provider?: string;
@@ -154,16 +161,43 @@ export function resolveCanonicalStartupSelection(params: {
       "canonical startup config must contain a provider/model pair",
     );
   }
-  const provider: ProviderName = resolveProviderSlugOrThrow(configuredProvider);
+  const canonicalPair = resolveProviderModelLayer(config, {
+    model_provider: configuredProvider,
+    model,
+  });
+  const provider: ProviderName = resolveProviderSlugOrThrow(
+    canonicalPair.model_provider ?? "",
+  );
+  const canonicalModel = canonicalPair.model?.trim();
+  if (!canonicalModel) {
+    throw new Error(
+      "canonical startup config must contain a provider/model pair",
+    );
+  }
+  if (!isModelAllowed(provider, canonicalModel, config)) {
+    throw new ModelNotAllowedError(canonicalModel);
+  }
+  const canonicalConfig =
+    provider === configuredProvider && canonicalModel === model
+      ? config
+      : Object.freeze({
+          ...config,
+          model_provider: provider,
+          model: canonicalModel,
+        });
 
-  const providerSettings = resolveProviderSettings(provider, config, env);
+  const providerSettings = resolveProviderSettings(
+    provider,
+    canonicalConfig,
+    env,
+  );
   return {
-    config,
+    config: canonicalConfig,
     ...(params.profileName !== undefined
       ? { profileName: params.profileName }
       : {}),
     provider,
-    model,
+    model: canonicalModel,
     ...(providerSettings?.apiKey ? { apiKey: providerSettings.apiKey } : {}),
   };
 }

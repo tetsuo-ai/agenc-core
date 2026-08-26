@@ -442,7 +442,6 @@ export const AgentTool = buildTool({
       parentSession.roleWorkspace,
       appState.agentDefinitions.agentRoleWorkspaceId,
     );
-    const permissionMode = appState.toolPermissionContext.mode;
     // In-process teammates get a no-op setAppState; setAppStateForTasks
     // reaches the root store so task registration/progress/kill stay visible.
     const rootSetAppState =
@@ -697,8 +696,6 @@ export const AgentTool = buildTool({
       repositoryControlledAgent ? undefined : selectedAgent.model,
       toolUseContext.options.mainLoopModel,
       repositoryControlledAgent || isForkPath ? undefined : model,
-      permissionMode,
-      appState.mainLoopModelForSession ?? appState.mainLoopModel,
     );
 
     // Resolve effective isolation mode (explicit param overrides agent def)

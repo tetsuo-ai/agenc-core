@@ -112,7 +112,6 @@ vi.mock('../../utils/messages.js', () => ({
 }))
 
 vi.mock('../../utils/model/model.js', () => ({
-  getRuntimeMainLoopModel: () => 'gpt-5',
   renderModelName: (model: string) => model,
 }))
 

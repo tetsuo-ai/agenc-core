@@ -403,7 +403,6 @@ export async function* runAgent({
   // Track subagent usage for feature discovery
 
   const appState = toolUseContext.getAppState()
-  const permissionMode = appState.toolPermissionContext.mode
   // Always-shared channel to the root AppState store. toolUseContext.setAppState
   // is a no-op when the *parent* is itself an async agent (nested async→async),
   // so session-scoped writes (hooks, bash tasks) must go through this instead.
@@ -427,8 +426,6 @@ export async function* runAgent({
     repositoryControlledAgent ? undefined : agentDefinition.model,
     toolUseContext.options.mainLoopModel,
     model,
-    permissionMode,
-    appState.mainLoopModelForSession ?? appState.mainLoopModel,
   )
 
   const agentId = override?.agentId ? override.agentId : createAgentId()

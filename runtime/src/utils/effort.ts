@@ -305,29 +305,6 @@ export function getInitialEffortSetting(): EffortLevel | undefined {
 }
 
 /**
- * Decide what effort level (if any) to persist when the user selects a model
- * in ModelPicker. Keeps an explicit prior /effort choice sticky even when it
- * matches the picked model's default, while letting purely-default and
- * session-ephemeral effort (CLI --effort, EffortCallout default) fall through
- * to undefined so it follows future model-default changes.
- *
- * priorPersisted must come from userSettings on disk
- * (getSettingsForSource('userSettings')?.reasoning_effort), NOT merged settings
- * (project/policy layers would leak into the user's global config.toml)
- * and NOT AppState.effortValue (includes session-scoped sources that
- * deliberately do not write to config.toml).
- */
-export function resolvePickerEffortPersistence(
-  picked: AvailableEffortLevel | undefined,
-  modelDefault: AvailableEffortLevel,
-  priorPersisted: EffortLevel | undefined,
-  toggledInPicker: boolean,
-): AvailableEffortLevel | undefined {
-  const hadExplicit = priorPersisted !== undefined || toggledInPicker
-  return hadExplicit || picked !== modelDefault ? picked : undefined
-}
-
-/**
  * Resolve the effort value that will actually be sent to the API for a given
  * model from the session-captured value, falling back to the model default.
  *

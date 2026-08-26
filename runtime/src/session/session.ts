@@ -92,6 +92,7 @@ import {
   type PreparedProviderBinding,
   type ProviderBinding,
 } from "./provider-service.js";
+import { resolveProviderModelSelection } from "./provider-model-selection.js";
 import type { ProviderFallbackLadderOptions } from "../llm/api/fallback-ladder.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
@@ -3032,46 +3033,55 @@ export class Session {
     let preparedSwitch: PreparedProviderBinding;
     let targetProviderSettings: ResolvedProviderSettings | undefined;
     try {
-      const targetNormalizedProvider =
-        resolveBuiltInProviderSlug(pending.provider);
-      const reusableLiveProviderOptions = targetNormalizedProvider === undefined
-        ? undefined
-        : providerService.committedFactoryOptions(targetNormalizedProvider);
       const configStore = (this.services as Partial<SessionServices>)
         .configStore;
+      const configSnapshot = configStore?.current();
+      const admittedSelection = resolveProviderModelSelection(
+        configSnapshot,
+        { provider: beforeProvider, model: beforeModel },
+        { model_provider: pending.provider, model: pending.model },
+      );
+      const admittedPending: PendingProviderSwitch = Object.freeze({
+        ...pending,
+        provider: admittedSelection.provider,
+        model: admittedSelection.model,
+      });
+      const targetNormalizedProvider = admittedSelection.provider;
+      const reusableLiveProviderOptions =
+        providerService.committedFactoryOptions(targetNormalizedProvider);
       targetProviderSettings =
-        targetNormalizedProvider !== undefined && configStore?.current
+        configSnapshot !== undefined
           ? resolveProviderSettings(
               targetNormalizedProvider,
-              configStore.current(),
+              configSnapshot,
               providerService.environment(),
             )
           : undefined;
-      const settingsOptions =
-        targetNormalizedProvider !== undefined
-          ? await providerFactoryOptionsFromSettings({
-              provider: targetNormalizedProvider,
-              model: pending.model,
-              settings: targetProviderSettings,
-              authBackend: this.services.authBackend,
-              authSubscriptionTier: this.services.authSubscriptionTier,
-              managedKeysEnabled: configStore?.current
-                ? resolveAuthManagedKeysEnabled(configStore.current())
-                : false,
-              sessionId: this.conversationId,
-              reusableApiKey: reusableLiveProviderOptions?.apiKey,
-              executionAdmissionRequired:
-                this.services.admissionRequired !== false,
-            })
-          : {};
+      const settingsOptions = await providerFactoryOptionsFromSettings({
+        provider: targetNormalizedProvider,
+        model: admittedPending.model,
+        settings: targetProviderSettings,
+        authBackend: this.services.authBackend,
+        authSubscriptionTier: this.services.authSubscriptionTier,
+        managedKeysEnabled:
+          configSnapshot === undefined
+            ? false
+            : resolveAuthManagedKeysEnabled(configSnapshot),
+        sessionId: this.conversationId,
+        reusableApiKey: reusableLiveProviderOptions?.apiKey,
+        executionAdmissionRequired: this.services.admissionRequired !== false,
+      });
       preparedSwitch = await providerService.prepare(
-        { provider: pending.provider, model: pending.model },
+        {
+          provider: admittedPending.provider,
+          model: admittedPending.model,
+        },
         {
           ...mergeProviderFactoryOptions(
             reusableLiveProviderOptions,
             settingsOptions,
           ),
-          model: settingsOptions.model ?? pending.model,
+          model: settingsOptions.model ?? admittedPending.model,
           tools: this.services.registry.toLLMTools(),
         },
       );
