@@ -55,6 +55,7 @@ export interface HookEngineOptions {
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
   readonly shellPath: string;
+  readonly commandWrapperArgv?: readonly string[];
   readonly sourcePath: string;
   readonly maxDiagnostics?: number;
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;

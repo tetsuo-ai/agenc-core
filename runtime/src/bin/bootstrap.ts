@@ -116,6 +116,7 @@ import {
 } from "../config/env.js";
 import { resolveProviderSettings } from "../config/resolve-provider.js";
 import {
+  resolveCommandExecutionAuthority,
   resolveAgentRuntimeOptions,
   runWithAgentRuntimeOptions,
   type AgentRuntimeOptions,
@@ -140,6 +141,8 @@ import {
   type StartupCliFlags,
 } from "./startup-selection.js";
 import { resolveProjectTrustStateSync } from "../permissions/trust/project-trust.js";
+import { findSuitableShell } from "../utils/Shell.js";
+import { subprocessEnv } from "../utils/subprocessEnv.js";
 export type { StartupCliFlags, StartupSelection } from "./startup-selection.js";
 import {
   buildBootstrapSessionServices,
@@ -912,15 +915,27 @@ function assertPinnedResumeCwd(
 export async function bootstrapLocalRuntimeSession(
   options: BootstrapLocalRuntimeSessionOptions,
 ): Promise<LocalRuntimeBootstrap> {
-  const env = options.env ?? process.env;
+  const env = { ...(options.env ?? process.env) };
   const providerEnvironment = snapshotProviderEnvironment(env);
   const mcpRequestEnvironment = snapshotMcpRequestEnvironment(env);
   const argv = options.argv ?? process.argv;
   const cli = readStartupCliFlags(argv);
-  const runtimeOptions = options.runtimeOptions ?? resolveAgentRuntimeOptions(
-    env,
-    cli.simpleMode === true ? { simpleMode: true } : {},
+  const parsedRuntimeOptions =
+    options.runtimeOptions ??
+    resolveAgentRuntimeOptions(
+      env,
+      cli.simpleMode === true ? { simpleMode: true } : {},
+    );
+  const commandShellPath = await findSuitableShell(parsedRuntimeOptions, env);
+  const commandExecutionAuthority = resolveCommandExecutionAuthority(
+    parsedRuntimeOptions,
+    commandShellPath,
+    subprocessEnv(env),
   );
+  const runtimeOptions = Object.freeze({
+    ...parsedRuntimeOptions,
+    posixShellPath: commandExecutionAuthority.path,
+  });
   return runWithAgentRuntimeOptions(runtimeOptions, () =>
     bootstrapLocalRuntimeSessionScoped({
       ...options,
@@ -929,6 +944,7 @@ export async function bootstrapLocalRuntimeSession(
       mcpRequestEnvironment,
       cli,
       runtimeOptions,
+      commandExecutionAuthority,
     })
   );
 }
@@ -940,6 +956,9 @@ async function bootstrapLocalRuntimeSessionScoped(
     readonly mcpRequestEnvironment: ReturnType<typeof snapshotMcpRequestEnvironment>;
     readonly cli: StartupCliFlags;
     readonly runtimeOptions: AgentRuntimeOptions;
+    readonly commandExecutionAuthority: ReturnType<
+      typeof resolveCommandExecutionAuthority
+    >;
   },
 ): Promise<LocalRuntimeBootstrap> {
   const env = options.env ?? process.env;
@@ -1293,8 +1312,12 @@ async function bootstrapLocalRuntimeSessionScoped(
     environment: mcpRequestEnvironment,
     sandboxExecutionBroker,
   });
+  const commandExecutionAuthority = options.commandExecutionAuthority;
   const unifiedExecManager = new UnifiedExecProcessManager({
     cwd: workspaceRoot,
+    baseEnv: env,
+    shellPath: commandExecutionAuthority.path,
+    commandWrapperArgv: commandExecutionAuthority.commandWrapperArgv,
   });
   const unifiedExecLifecycleParticipantName = "unified-exec-manager";
   let unifiedExecQuiesceToken:
@@ -1654,6 +1677,7 @@ async function bootstrapLocalRuntimeSessionScoped(
         localByokAuthBackend.readByokKey(provider),
       sessionConfiguration,
       runtimeOptions,
+      commandExecutionAuthority,
       codeModeService,
       sandboxExecutionBroker,
       executionAdmission,

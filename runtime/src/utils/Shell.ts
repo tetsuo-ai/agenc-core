@@ -2,7 +2,7 @@ import { spawn } from "child_process";
 import { constants as fsConstants, readFileSync, unlinkSync } from "fs";
 import { type FileHandle, mkdir, open, stat } from "fs/promises";
 import memoize from "lodash-es/memoize.js";
-import { isAbsolute, resolve } from "path";
+import { isAbsolute, join, resolve } from "path";
 import { join as posixJoin } from "path/posix";
 import {
   getOriginalCwd,
@@ -23,7 +23,6 @@ import {
 } from "./ShellCommand.js";
 import { getTaskOutputDir } from "./task/diskOutput.js";
 import { TaskOutput } from "./task/TaskOutput.js";
-import { which } from "./which.js";
 
 export type { ExecResult } from "./ShellCommand.js";
 
@@ -58,8 +57,14 @@ import {
   spawnContainedProcess,
   terminateProcessTreeAndWait,
 } from "./supervisedProcess.js";
-import { peekAmbientRuntimeSession } from "../session/current-session.js";
-import type { AgentRuntimeOptions } from "../session/runtime-options.js";
+import {
+  peekAmbientRuntimeSession,
+  requireCurrentRuntimeSession,
+} from "../session/current-session.js";
+import {
+  resolveSessionTempRoot,
+  type AgentRuntimeOptions,
+} from "../session/runtime-options.js";
 
 export type ShellConfig = {
   provider: ShellProvider;
@@ -70,8 +75,10 @@ export type ShellConfig = {
  */
 export async function findSuitableShell(
   runtimeOptions?: AgentRuntimeOptions,
+  environment: NodeJS.ProcessEnv = process.env,
 ): Promise<string> {
   const ambientSession = peekAmbientRuntimeSession();
+  const childEnvironment = subprocessEnv(environment);
   const resolvedOptions =
     runtimeOptions ?? ambientSession?.services?.runtimeOptions;
   // Check the immutable per-session override first.
@@ -82,7 +89,7 @@ export async function findSuitableShell(
         `Configured shell ${JSON.stringify(shellOverride)} must name a bash or zsh executable`,
       );
     }
-    if (!isExecutableShellPath(shellOverride)) {
+    if (!isExecutableShellPath(shellOverride, childEnvironment)) {
       throw new Error(
         `Configured shell ${JSON.stringify(shellOverride)} is not executable`,
       );
@@ -92,58 +99,54 @@ export async function findSuitableShell(
   }
 
   // Check user's preferred shell from environment
-  const env_shell = ambientSession?.services.userShell.path ?? process.env.SHELL;
+  const env_shell =
+    runtimeOptions === undefined
+      ? ambientSession?.services.userShell.path ?? environment.SHELL
+      : environment.SHELL;
   // Only consider SHELL if it's bash or zsh
   const envShellKind = env_shell === undefined
     ? undefined
     : supportedPosixShellKind(env_shell);
   const preferBash = envShellKind === "bash";
 
-  // Try to locate shells using which (uses Bun.which when available)
-  const [zshPath, bashPath] = await Promise.all([which("zsh"), which("bash")]);
-
-  // Populate shell paths from which results and fallback locations
-  const shellPaths = [
-    "/bin",
-    "/usr/bin",
-    "/usr/local/bin",
-    "/opt/homebrew/bin",
-  ];
+  const platformIsWindows = getPlatform() === "windows";
+  // Automatic discovery is restricted to fixed platform locations. Client
+  // PATH is not executable authority; use AGENC_SHELL for non-standard paths.
+  const shellPaths = platformIsWindows
+    ? [
+        "C:\\Program Files\\Git\\bin",
+        "C:\\Program Files (x86)\\Git\\bin",
+      ]
+    : ["/bin", "/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"];
 
   // Order shells based on user preference
   const shellOrder = preferBash ? ["bash", "zsh"] : ["zsh", "bash"];
-  const supportedShells = shellOrder.flatMap((shell) =>
-    shellPaths.map((path) => `${path}/${shell}`),
-  );
-
-  // Add discovered paths to the beginning of our search list
-  // Put the user's preferred shell type first
-  if (preferBash) {
-    if (bashPath) supportedShells.unshift(bashPath);
-    if (zshPath) supportedShells.push(zshPath);
-  } else {
-    if (zshPath) supportedShells.unshift(zshPath);
-    if (bashPath) supportedShells.push(bashPath);
-  }
+  const executableName = (shell: string): string =>
+    platformIsWindows ? `${shell}.exe` : shell;
+  const supportedShells = [
+    ...shellOrder.flatMap((shell) =>
+      shellPaths.map((path) => join(path, executableName(shell))),
+    ),
+  ];
 
   // Always prioritize SHELL env variable if it's a supported shell type
   if (
     env_shell !== undefined &&
     envShellKind !== undefined &&
-    isExecutableShellPath(env_shell)
+    isExecutableShellPath(env_shell, childEnvironment)
   ) {
     supportedShells.unshift(env_shell);
   }
 
   const shellPath = supportedShells.find(
-    (shell) => shell && isExecutableShellPath(shell),
+    (shell) => shell && isExecutableShellPath(shell, childEnvironment),
   );
 
   // If no valid shell found, throw a helpful error
   if (!shellPath) {
     const errorMsg =
       "No suitable shell found. AgenC CLI requires a Posix shell environment. " +
-      "Please ensure you have a valid shell installed and the SHELL environment variable set.";
+      "Install bash or zsh, or set AGENC_SHELL to its absolute executable path.";
     logError(new Error(errorMsg));
     throw new Error(errorMsg);
   }
@@ -151,32 +154,28 @@ export async function findSuitableShell(
   return shellPath;
 }
 
-async function getShellConfigImpl(): Promise<ShellConfig> {
-  const runtimeOptions =
-    peekAmbientRuntimeSession()?.services?.runtimeOptions;
-  const binShell = await findSuitableShell(runtimeOptions);
+async function getShellConfigImpl(
+  userShell: ReturnType<
+    typeof requireCurrentRuntimeSession
+  >["services"]["userShell"],
+): Promise<ShellConfig> {
+  const binShell = userShell.path;
   const provider = await createBashShellProvider(binShell, {
-    ...(runtimeOptions?.commandWrapperArgv !== undefined
-      ? { commandWrapperArgv: runtimeOptions.commandWrapperArgv }
-      : {}),
+    commandWrapperArgv: userShell.commandWrapperArgv,
+    childEnvironment: userShell.childEnvironment,
   });
   return { provider };
 }
 
-const shellConfigs = new Map<string, Promise<ShellConfig>>();
+const shellConfigs = new WeakMap<object, Promise<ShellConfig>>();
 
 /** Cache by immutable session shell policy, never by daemon-global state. */
 export function getShellConfig(): Promise<ShellConfig> {
-  const runtimeOptions =
-    peekAmbientRuntimeSession()?.services?.runtimeOptions;
-  const key = JSON.stringify({
-    shell: runtimeOptions?.posixShellPath ?? null,
-    wrapper: runtimeOptions?.commandWrapperArgv ?? [],
-  });
-  let pending = shellConfigs.get(key);
+  const session = requireCurrentRuntimeSession("shell command execution");
+  let pending = shellConfigs.get(session);
   if (pending === undefined) {
-    pending = getShellConfigImpl();
-    shellConfigs.set(key, pending);
+    pending = getShellConfigImpl(session.services.userShell);
+    shellConfigs.set(session, pending);
   }
   return pending;
 }
@@ -222,6 +221,8 @@ export async function exec(
   shellType: ShellType,
   options?: ExecOptions,
 ): Promise<ShellCommand> {
+  const session = requireCurrentRuntimeSession("shell command execution");
+  const commandAuthority = session.services.userShell;
   const {
     timeout,
     onProgress,
@@ -244,23 +245,20 @@ export async function exec(
     .padStart(4, "0");
 
   // Sandbox temp directory - use per-user directory name to prevent multi-user permission conflicts
-  const runtimeOptions =
-    peekAmbientRuntimeSession()?.services?.runtimeOptions;
-  const sandboxTmpDir = posixJoin(
-    runtimeOptions?.sessionTempRoot || "/tmp",
-    getAgenCTempDirName(),
-  );
+  const tempRoot = resolveSessionTempRoot();
+  const sandboxTmpDir = posixJoin(tempRoot, getAgenCTempDirName());
 
-  const { commandString: builtCommand, cwdFilePath } =
-    await provider.buildExecCommand(command, {
-      id,
-      sandboxTmpDir:
-        shouldUseSandbox && sandboxExecutionBroker === undefined
-          ? sandboxTmpDir
-          : undefined,
-      useSandbox:
-        sandboxExecutionBroker === undefined && (shouldUseSandbox ?? false),
-    });
+  const preparedCommand = await provider.prepareExecCommand(command, {
+    id,
+    tempRoot,
+    sandboxTmpDir:
+      shouldUseSandbox && sandboxExecutionBroker === undefined
+        ? sandboxTmpDir
+        : undefined,
+    useSandbox:
+      sandboxExecutionBroker === undefined && (shouldUseSandbox ?? false),
+  });
+  const { commandString: builtCommand, cwdFilePath } = preparedCommand;
 
   let commandString = builtCommand;
 
@@ -308,7 +306,7 @@ export async function exec(
   // Sandboxed PowerShell: wrapWithSandbox hardcodes `<binShell> -c '<cmd>'` —
   // using pwsh there would lose -NoProfile -NonInteractive (profile load
   // inside sandbox → delays, stray output, may hang on prompts). Instead:
-  //   • powershellProvider.buildExecCommand (useSandbox) pre-wraps as
+  //   • powershellProvider.prepareExecCommand (useSandbox) pre-wraps as
   //     `pwsh -NoProfile -NonInteractive -EncodedCommand <base64>` — base64
   //     survives the runtime's shellquote.quote() layer
   //   • pass /bin/sh as the sandbox's inner shell to exec that invocation
@@ -339,15 +337,15 @@ export async function exec(
   const spawnBinary = isSandboxedPowerShell ? "/bin/sh" : binShell;
   const shellArgs = isSandboxedPowerShell
     ? ["-c", commandString]
-    : provider.getSpawnArgs(commandString);
-  const envOverrides = await provider.getEnvironmentOverrides(command);
+    : preparedCommand.spawnArgs(commandString);
+  const envOverrides = preparedCommand.environmentOverrides;
   const spawnEnv = {
-    ...subprocessEnv(),
+    ...commandAuthority.childEnvironment,
     ...(shellType === "bash" ? { SHELL: binShell } : {}),
     GIT_EDITOR: "true",
     AGENCCODE: "1",
     ...envOverrides,
-    ...(process.env.USER_TYPE === "ant"
+    ...(commandAuthority.childEnvironment.USER_TYPE === "ant"
       ? { AGENC_SESSION_ID: getSessionId() }
       : {}),
   };

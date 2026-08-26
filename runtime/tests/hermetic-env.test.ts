@@ -186,7 +186,6 @@ describe("suite-level hermetic env (vitest.setup.ts)", () => {
       "AGENC_BUBBLEWRAP",
       "AGENC_DISABLE_NONESSENTIAL_TRAFFIC",
       "AGENC_EXTRA_BODY",
-      "AGENC_GIT_BASH_PATH",
       "AGENC_OVERRIDE_DATE",
       "AGENC_TEST_FIXTURES_ROOT",
       "AGENC_TMPDIR",

@@ -21,8 +21,13 @@ import instances from '../tui/ink/instances.js'
 import { registerCleanup } from './cleanupRegistry.js'
 import { pwd } from './cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
+import { requireCurrentRuntimeSession } from '../session/current-session.js'
 
 const TMUX_SESSION = 'panel'
+
+function sessionShellAuthority() {
+  return requireCurrentRuntimeSession('terminal panel shell').services.userShell
+}
 
 /**
  * Get the tmux socket name for the terminal panel.
@@ -61,7 +66,10 @@ class TerminalPanel {
 
   private checkTmux(): boolean {
     if (this.hasTmux !== undefined) return this.hasTmux
-    const result = spawnSync('tmux', ['-V'], { encoding: 'utf-8' })
+    const result = spawnSync('tmux', ['-V'], {
+      encoding: 'utf-8',
+      env: sessionShellAuthority().childEnvironment,
+    })
     this.hasTmux = result.status === 0
     if (!this.hasTmux) {
       logForDebugging(
@@ -75,13 +83,18 @@ class TerminalPanel {
     const result = spawnSync(
       'tmux',
       ['-L', getTerminalPanelSocket(), 'has-session', '-t', TMUX_SESSION],
-      { encoding: 'utf-8' },
+      {
+        encoding: 'utf-8',
+        env: sessionShellAuthority().childEnvironment,
+      },
     )
     return result.status === 0
   }
 
   private createSession(): boolean {
-    const shell = process.env.SHELL || '/bin/bash'
+    const commandAuthority = sessionShellAuthority()
+    const shell = commandAuthority.path
+    const childEnvironment = commandAuthority.childEnvironment
     const cwd = pwd()
     const socket = getTerminalPanelSocket()
 
@@ -99,7 +112,7 @@ class TerminalPanel {
         shell,
         '-l',
       ],
-      { encoding: 'utf-8' },
+      { encoding: 'utf-8', env: childEnvironment },
     )
 
     if (result.status !== 0) {
@@ -120,7 +133,7 @@ class TerminalPanel {
       'set-option', '-g', 'status-left', '', ';',
       'set-option', '-g', 'status-right', ' Alt+J to return to AgenC ', ';',
       'set-option', '-g', 'status-right-style', 'fg=brightblack',
-    ])
+    ], { env: childEnvironment })
 
     if (!this.cleanupRegistered) {
       this.cleanupRegistered = true
@@ -132,6 +145,7 @@ class TerminalPanel {
         spawn('tmux', ['-L', socket, 'kill-server'], {
           detached: true,
           stdio: 'ignore',
+          env: childEnvironment,
         })
           .on('error', () => {})
           .unref()
@@ -145,7 +159,10 @@ class TerminalPanel {
     spawnSync(
       'tmux',
       ['-L', getTerminalPanelSocket(), 'attach-session', '-t', TMUX_SESSION],
-      { stdio: 'inherit' },
+      {
+        stdio: 'inherit',
+        env: sessionShellAuthority().childEnvironment,
+      },
     )
   }
 
@@ -180,12 +197,13 @@ class TerminalPanel {
 
   /** Fallback when tmux is not available — runs a non-persistent shell. */
   private runShellDirect(): void {
-    const shell = process.env.SHELL || '/bin/bash'
+    const commandAuthority = sessionShellAuthority()
+    const shell = commandAuthority.path
     const cwd = pwd()
     spawnSync(shell, ['-i', '-l'], {
       stdio: 'inherit',
       cwd,
-      env: process.env,
+      env: commandAuthority.childEnvironment,
     })
   }
 }

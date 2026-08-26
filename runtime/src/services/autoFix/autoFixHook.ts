@@ -32,6 +32,9 @@ export interface AutoFixPostToolHookOptions {
   readonly cwd: string;
   readonly executionAuthority: HookExecutionAuthority;
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly shellPath?: string;
+  readonly commandWrapperArgv?: readonly string[];
   readonly retryScope?: (input: Parameters<PostToolUseHook>[0]) => string;
   readonly runCheck?: (options: AutoFixCheckOptions) => Promise<AutoFixResult>;
   readonly onError?: (error: unknown) => void;
@@ -110,6 +113,13 @@ export function createAutoFixPostToolHook(
         test: config.test,
         timeout: config.timeout,
         cwd: options.cwd,
+        ...(options.env !== undefined ? { env: options.env } : {}),
+        ...(options.shellPath !== undefined
+          ? { shellPath: options.shellPath }
+          : {}),
+        ...(options.commandWrapperArgv !== undefined
+          ? { commandWrapperArgv: options.commandWrapperArgv }
+          : {}),
         signal: input.signal,
         sandboxExecutionBroker: options.sandboxExecutionBroker,
       });

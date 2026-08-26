@@ -122,6 +122,7 @@ export interface ConfiguredHooksRuntimeOptions {
   readonly env: NodeJS.ProcessEnv;
   readonly agencHome: string;
   readonly shellPath: string;
+  readonly commandWrapperArgv?: readonly string[];
   readonly sandboxExecutionBroker?: import("../sandbox/execution-broker.js").SandboxExecutionBrokerLike;
   readonly executionAdmission?: import("../budget/admission-client.js").ExecutionAdmissionClient;
   readonly admissionRequired?: boolean;
@@ -206,6 +207,9 @@ export class ConfiguredHooksRuntime {
       cwd: opts.cwd,
       env: opts.env,
       shellPath: opts.shellPath,
+      ...(opts.commandWrapperArgv !== undefined
+        ? { commandWrapperArgv: opts.commandWrapperArgv }
+        : {}),
       sourcePath: this.sourcePath(),
       ...(opts.sandboxExecutionBroker !== undefined
         ? { sandboxExecutionBroker: opts.sandboxExecutionBroker }

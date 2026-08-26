@@ -9,12 +9,19 @@ import {
 } from "../../sandbox/execution-broker.js";
 import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
 import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
+import {
+  commandShellArgs,
+  wrapCommandForShell,
+} from "../../utils/shell/commandExecution.js";
 
 export interface AutoFixCheckOptions {
   readonly lint?: string;
   readonly test?: string;
   readonly timeout: number;
   readonly cwd: string;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly shellPath?: string;
+  readonly commandWrapperArgv?: readonly string[];
   readonly signal?: AbortSignal;
   readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
 }
@@ -63,24 +70,28 @@ async function runCommand(
   command: string,
   cwd: string,
   timeout: number,
+  env: NodeJS.ProcessEnv | undefined,
+  shellPath: string | undefined,
+  commandWrapperArgv: readonly string[] | undefined,
   sandboxExecutionBroker: SandboxExecutionBrokerLike | undefined,
   signal?: AbortSignal,
 ): Promise<CommandResult> {
   if (sandboxExecutionBroker === undefined) {
     throw missingSandboxExecutionBoundary("hook");
   }
-  const isWindows = process.platform === "win32";
-  const shellProgram = isWindows
-    ? process.env.ComSpec ?? "cmd.exe"
-    : process.env.SHELL ?? "/bin/sh";
-  const shellArgs = isWindows
-    ? ["/d", "/s", "/c", command]
-    : ["-c", command];
+  const shellProgram =
+    shellPath ?? (process.platform === "win32" ? "cmd.exe" : "/bin/sh");
+  const finalCommand = wrapCommandForShell(
+    shellProgram,
+    commandWrapperArgv,
+    command,
+  );
+  const shellArgs = commandShellArgs(shellProgram, finalCommand);
   const preparedSpawn = sandboxExecutionBroker.prepareSpawn("hook", {
     program: shellProgram,
     args: shellArgs,
     cwd,
-    env: scrubEnvForChildProcess(process.env),
+    env: scrubEnvForChildProcess(env ?? process.env),
   });
   const result = await runSupervisedProcess(preparedSpawn, {
     timeoutMs: timeout,
@@ -133,6 +144,9 @@ export async function runAutoFixCheck(
     test,
     timeout,
     cwd,
+    env,
+    shellPath,
+    commandWrapperArgv,
     signal,
     sandboxExecutionBroker,
   } = options;
@@ -159,6 +173,9 @@ export async function runAutoFixCheck(
       lint,
       cwd,
       timeout,
+      env,
+      shellPath,
+      commandWrapperArgv,
       sandboxExecutionBroker,
       signal,
     );
@@ -183,6 +200,9 @@ export async function runAutoFixCheck(
       test,
       cwd,
       timeout,
+      env,
+      shellPath,
+      commandWrapperArgv,
       sandboxExecutionBroker,
       signal,
     );

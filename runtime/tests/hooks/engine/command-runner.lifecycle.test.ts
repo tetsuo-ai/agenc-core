@@ -5,7 +5,38 @@ import { SandboxExecutionBroker } from "../../../src/sandbox/execution-broker.js
 import { transitionSandboxExecutionBrokerMode } from "../../../src/sandbox/execution-lifecycle.js";
 
 describe("configured hook sandbox lifecycle", () => {
-  test("cancels and drains a running hook before tightening authority", async () => {
+  test.skipIf(process.platform === "win32")(
+    "applies the captured command wrapper",
+    async () => {
+      const result = await runHookCommand({
+        command: 'printf "%s" "$AGENC_WRAPPER_TEST"',
+        cwd: process.cwd(),
+        env: process.env,
+        shellPath: "/bin/sh",
+        commandWrapperArgv: [
+          "env",
+          "AGENC_WRAPPER_TEST=wrapped-hook",
+          "/bin/sh",
+          "-c",
+        ],
+        stdin: "",
+        timeoutMs: 5_000,
+        sandboxExecutionBroker: new SandboxExecutionBroker({
+          mode: "danger_full_access",
+          cwd: process.cwd(),
+        }),
+      });
+
+      expect(result).toMatchObject({
+        status: "success",
+        stdout: "wrapped-hook",
+      });
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "cancels and drains a running hook before tightening authority",
+    async () => {
     const broker = new SandboxExecutionBroker({
       mode: "danger_full_access",
       cwd: process.cwd(),
@@ -35,5 +66,6 @@ describe("configured hook sandbox lifecycle", () => {
     });
     expect(published).toEqual(["tightened"]);
     expect(broker.isClosedAfterLifecycleAuthorityFailure()).toBe(false);
-  });
+    },
+  );
 });

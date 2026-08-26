@@ -30,10 +30,25 @@ import { toError } from './errors.js'
 import { execFileNoThrow } from './execFileNoThrow.js'
 import { logError } from './log.js'
 import { getPlatform } from './platform.js'
+import { subprocessEnv } from './subprocessEnv.js'
 
 // Constants for tmux socket management
 const TMUX_COMMAND = 'tmux'
 const AGENC_SOCKET_PREFIX = 'agenc'
+// The tmux server is daemon-global, not session-owned. Pin its socket root and
+// launch environment once so session temp policy and mutable process env cannot
+// move a process-global socket between directories.
+const TMUX_SOCKET_TEMP_ROOT = '/tmp'
+const TMUX_COMMAND_ENV = Object.freeze({
+  ...subprocessEnv(process.env),
+  TMUX_TMPDIR: TMUX_SOCKET_TEMP_ROOT,
+})
+
+function tmuxCommandEnvironment(
+  additions: NodeJS.ProcessEnv = {},
+): NodeJS.ProcessEnv {
+  return { ...TMUX_COMMAND_ENV, ...additions }
+}
 
 /**
  * Executes a tmux command, routing through WSL on Windows.
@@ -52,7 +67,7 @@ async function execTmux(
     // we silently fall back to the guessed path and never learn the real
     // server PID. Same root cause as earlier tmux command helpers.
     const result = await execFileNoThrow('wsl', ['-e', TMUX_COMMAND, ...args], {
-      env: { ...process.env, WSL_UTF8: '1' },
+      env: tmuxCommandEnvironment({ WSL_UTF8: '1' }),
       ...opts,
     })
     return {
@@ -61,7 +76,10 @@ async function execTmux(
       code: result.code || 0,
     }
   }
-  const result = await execFileNoThrow(TMUX_COMMAND, args, opts)
+  const result = await execFileNoThrow(TMUX_COMMAND, args, {
+    env: tmuxCommandEnvironment(),
+    ...opts,
+  })
   return {
     stdout: result.stdout || '',
     stderr: result.stderr || '',
@@ -153,10 +171,11 @@ export async function checkTmuxAvailable(): Promise<boolean> {
     const result =
       getPlatform() === 'windows'
         ? await execFileNoThrow('wsl', ['-e', TMUX_COMMAND, '-V'], {
-            env: { ...process.env, WSL_UTF8: '1' },
+            env: tmuxCommandEnvironment({ WSL_UTF8: '1' }),
             useCwd: false,
           })
         : await execFileNoThrow('which', [TMUX_COMMAND], {
+            env: tmuxCommandEnvironment(),
             useCwd: false,
           })
     tmuxAvailable = result.code === 0
@@ -373,13 +392,16 @@ async function doInitialize(): Promise<void> {
     )
   }
 
-  // Fallback: construct the socket path from standard tmux location
-  // tmux sockets are typically at $TMPDIR/tmux-<UID>/<socket_name> (or /tmp/tmux-<UID>/ if TMPDIR is not set)
+  // Fallback: construct the socket path from the daemon-global root pinned in
+  // TMUX_TMPDIR for every tmux process above.
   // On Windows this path is inside WSL, so always use POSIX separators.
   // process.getuid() is undefined on Windows; WSL default user is root (uid 0) in CI.
   const uid = process.getuid?.() ?? 0
-  const baseTmpDir = process.env.TMPDIR || '/tmp'
-  const fallbackPath = posix.join(baseTmpDir, `tmux-${uid}`, socket)
+  const fallbackPath = posix.join(
+    TMUX_SOCKET_TEMP_ROOT,
+    `tmux-${uid}`,
+    socket,
+  )
 
   // Get server PID separately
   const pidResult = await execTmux([

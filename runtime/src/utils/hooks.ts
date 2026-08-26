@@ -10,19 +10,18 @@ import { wrapSpawn } from "./ShellCommand.js";
 import { TaskOutput } from "./task/TaskOutput.js";
 import { getCwd } from "./cwd.js";
 import { randomUUID } from "crypto";
-import { formatShellWrapperCommand } from "./bash/shellPrefix.js";
 import {
   getHookEnvFilePath,
   invalidateSessionEnvCache,
 } from "./sessionEnvironment.js";
-import { subprocessEnv } from "./subprocessEnv.js";
 import { getPlatform } from "./platform.js";
-import { findGitBashPath, windowsPathToPosixPath } from "./windowsPaths.js";
+import { windowsPathToPosixPath } from "./windowsPaths.js";
 import { getCachedPowerShellPath } from "./shell/powershellDetection.js";
 import { peekAmbientRuntimeSession } from "../session/current-session.js";
 import { AdmissionDeniedError } from "../budget/admission-client.js";
 import { DEFAULT_HOOK_SHELL } from "./shell/shellProvider.js";
 import { buildPowerShellArgs } from "./shell/powershellProvider.js";
+import { wrapCommandForShell } from "./shell/commandExecution.js";
 import {
   loadPluginOptions,
   substituteUserConfigVariables,
@@ -839,14 +838,16 @@ async function execCommandHook(
     }
   }
 
+  const ambientSession = peekAmbientRuntimeSession();
+  const sandboxExecutionBroker =
+    ambientSession?.services.sandboxExecutionBroker;
+  if (ambientSession === null || sandboxExecutionBroker === undefined) {
+    throw new Error(
+      "[sandbox_surface_uncovered] hook command execution has no session sandbox boundary",
+    );
+  }
   const commandWrapperArgv =
-    peekAmbientRuntimeSession()?.services?.runtimeOptions?.commandWrapperArgv;
-  // The client boundary tokenizes the POSIX wrapper once. PowerShell hooks do
-  // not receive a POSIX wrapper.
-  const finalCommand =
-    !isPowerShell && (commandWrapperArgv?.length ?? 0) > 0
-      ? formatShellWrapperCommand(commandWrapperArgv!, command)
-      : command;
+    ambientSession.services.userShell.commandWrapperArgv;
 
   const hookTimeoutMs = hook.timeout
     ? hook.timeout * 1000
@@ -854,7 +855,7 @@ async function execCommandHook(
 
   // Build env vars — all paths go through toHookPath for Windows POSIX conversion
   const envVars: NodeJS.ProcessEnv = {
-    ...subprocessEnv(),
+    ...ambientSession.services.userShell.childEnvironment,
     AGENC_PROJECT_DIR: toHookPath(projectDir),
   };
 
@@ -922,20 +923,7 @@ async function execCommandHook(
   //   skips user profile scripts (faster, deterministic).
   //   -NonInteractive fails fast instead of prompting.
   //
-  // The Git Bash hard-exit in findGitBashPath() is still in place for
-  // bash hooks. PowerShell hooks never call it, so a Windows user with
-  // only pwsh and shell: 'powershell' on every hook could in theory run
-  // without Git Bash — but init.ts still calls setShellIfWindows() on
-  // startup, which will exit first. Relaxing that is phase 1 of the
-  // design's implementation order (separate PR).
-  const ambientSession = peekAmbientRuntimeSession();
-  const sandboxExecutionBroker =
-    ambientSession?.services.sandboxExecutionBroker;
-  if (ambientSession === null || sandboxExecutionBroker === undefined) {
-    throw new Error(
-      "[sandbox_surface_uncovered] hook command execution has no session sandbox boundary",
-    );
-  }
+  // Both paths use executable identities captured at session ingress.
   const queueOwner = sessionQueueOwner(ambientSession.conversationId);
   const spawnEnv = Object.fromEntries(
     Object.entries(envVars).filter(
@@ -1003,13 +991,14 @@ async function execCommandHook(
         );
       }
       spawnProgram = pwshPath;
-      spawnArgs = buildPowerShellArgs(finalCommand);
+      spawnArgs = buildPowerShellArgs(command);
     } else {
-      // On Windows, use Git Bash explicitly (cmd.exe can't run bash syntax).
-      // On other platforms, shell: true uses /bin/sh.
-      const shell = isWindows ? findGitBashPath() : "/bin/sh";
+      const shell = ambientSession.services.userShell.path;
       spawnProgram = shell;
-      spawnArgs = ["-c", finalCommand];
+      spawnArgs = [
+        "-c",
+        wrapCommandForShell(shell, commandWrapperArgv, command),
+      ];
     }
     const preparedSpawn = sandboxExecutionBroker.prepareSpawn("hook", {
       program: spawnProgram,

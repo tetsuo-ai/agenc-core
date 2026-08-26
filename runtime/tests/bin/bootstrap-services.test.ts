@@ -65,6 +65,13 @@ const TEST_RUNTIME_OPTIONS = Object.freeze({
   simpleMode: false,
   allowUntrustedHooks: false,
 });
+const TEST_COMMAND_EXECUTION_AUTHORITY = Object.freeze({
+  path: "/bin/sh",
+  commandWrapperArgv: Object.freeze([]),
+  childEnvironment: Object.freeze({
+    PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+  }),
+});
 const TRUSTED_HOOK_EXECUTION_AUTHORITY = createHookExecutionAuthority({
   runtimeOptions: TEST_RUNTIME_OPTIONS,
   isWorkspaceTrusted: () => true,
@@ -709,6 +716,7 @@ describe("SessionStart bootstrap hooks", () => {
       model: "test-model",
       sessionConfiguration: sessionConfiguration as never,
       runtimeOptions: TEST_RUNTIME_OPTIONS,
+      commandExecutionAuthority: TEST_COMMAND_EXECUTION_AUTHORITY,
       admissionRequired: false,
     });
     const session = await bootstrapSession({
@@ -884,6 +892,7 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
         model: "agenc-opus-4-7",
         sessionConfiguration: {} as never,
         runtimeOptions: TEST_RUNTIME_OPTIONS,
+        commandExecutionAuthority: TEST_COMMAND_EXECUTION_AUTHORITY,
       });
 
       expect(
@@ -977,6 +986,7 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
         model: "test-model",
         sessionConfiguration: {} as never,
         runtimeOptions: TEST_RUNTIME_OPTIONS,
+        commandExecutionAuthority: TEST_COMMAND_EXECUTION_AUTHORITY,
         admissionRequired: false,
       });
 
@@ -1137,6 +1147,7 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
         model: "test-model",
         sessionConfiguration: {} as never,
         runtimeOptions: TEST_RUNTIME_OPTIONS,
+        commandExecutionAuthority: TEST_COMMAND_EXECUTION_AUTHORITY,
         admissionRequired: false,
       });
 
@@ -1264,6 +1275,7 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
       model: "agenc-opus-4-7",
       sessionConfiguration: {} as never,
       runtimeOptions: TEST_RUNTIME_OPTIONS,
+      commandExecutionAuthority: TEST_COMMAND_EXECUTION_AUTHORITY,
     });
     try {
       await new Promise((resolve) => setTimeout(resolve, 0));

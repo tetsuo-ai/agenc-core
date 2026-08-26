@@ -126,6 +126,12 @@ async function configureHookSession(
       configStore,
       providerService: createHookProviderService(),
       runtimeOptions,
+      userShell: {
+        path: "/bin/sh",
+        commandWrapperArgv: [],
+        childEnvironment: { ...process.env },
+        deriveExecArgs: (input: string) => ["-c", input],
+      },
       hookExecutionAuthority: createHookExecutionAuthority({
         runtimeOptions,
         isWorkspaceTrusted: () => options.trusted ?? true,
@@ -807,6 +813,12 @@ test("registered command hooks stop on the admitted lease signal", async () => {
       }),
       providerService: createHookProviderService(),
       runtimeOptions,
+      userShell: {
+        path: "/bin/sh",
+        commandWrapperArgv: [],
+        childEnvironment: { ...process.env },
+        deriveExecArgs: (input: string) => ["-c", input],
+      },
       hookExecutionAuthority: createHookExecutionAuthority({
         runtimeOptions,
         isWorkspaceTrusted: () => true,

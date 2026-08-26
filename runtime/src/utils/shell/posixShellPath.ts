@@ -1,5 +1,4 @@
 import { execFileSync } from "node:child_process";
-import { accessSync, constants as fsConstants } from "node:fs";
 import { basename } from "node:path";
 
 export type SupportedPosixShell = "bash" | "zsh";
@@ -25,21 +24,27 @@ export function isSupportedPosixShellPath(shellPath: string): boolean {
 }
 
 /** Verify that a selected shell path can actually be executed. */
-export function isExecutableShellPath(shellPath: string): boolean {
+export function isExecutableShellPath(
+  shellPath: string,
+  childEnvironment: Readonly<NodeJS.ProcessEnv>,
+): boolean {
   try {
-    accessSync(shellPath, fsConstants.X_OK);
-    return true;
-  } catch {
-    // Some Nix-style environments can execute a shell even when access(X_OK)
-    // does not describe the final interpreter chain accurately.
-    try {
-      execFileSync(shellPath, ["--version"], {
+    const marker = "__agenc_supported_posix_shell__";
+    const output = execFileSync(
+      shellPath,
+      [
+        "-c",
+        `if [ -n "$BASH_VERSION" ] || [ -n "$ZSH_VERSION" ]; then printf %s ${marker}; else exit 1; fi`,
+      ],
+      {
         timeout: 1_000,
-        stdio: "ignore",
-      });
-      return true;
-    } catch {
-      return false;
-    }
+        encoding: "utf8",
+        env: childEnvironment,
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    );
+    return output === marker;
+  } catch {
+    return false;
   }
 }

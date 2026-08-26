@@ -65,6 +65,7 @@ import { getCachedMCConfig as getCachedMCConfigForFRCSource } from '../services/
 import { getAntModelOverrideConfig } from '../utils/model/antModels.js'
 import { getTokenBudgetPromptSection } from '../conversation/token-budget.js'
 import { BRIEF_TOOL_NAME } from '../tools/BriefTool/prompt.js'
+import { getActiveAgentRuntimeOptions } from '../session/runtime-options.js'
 
 // Dead code elimination: conditional imports for feature-gated modules
 /* eslint-disable @typescript-eslint/no-require-imports */
@@ -773,7 +774,7 @@ function getKnowledgeCutoff(modelId: string): string | null {
 }
 
 function getShellInfoLine(): string {
-  const shell = process.env.SHELL || 'unknown'
+  const shell = getActiveAgentRuntimeOptions()?.posixShellPath ?? 'unknown'
   const shellName = shell.includes('zsh')
     ? 'zsh'
     : shell.includes('bash')

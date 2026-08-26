@@ -8,6 +8,7 @@ import {
   isSessionRemoteMode,
   resolveAutomationAgentRuntimeOptions,
   resolveAgentRuntimeOptions,
+  resolveCommandExecutionAuthority,
   resolveSessionTempRoot,
   runWithAgentRuntimeOptions,
   validateAgentRuntimeOptions,
@@ -43,6 +44,27 @@ describe("agent runtime options", () => {
     });
     expect(Object.isFrozen(result)).toBe(true);
     expect(Object.isFrozen(result.commandWrapperArgv)).toBe(true);
+  });
+
+  test("captures one immutable shell and wrapper authority", () => {
+    const runtimeOptions = resolveAgentRuntimeOptions({
+      AGENC_SHELL: "/bin/zsh",
+      AGENC_SHELL_PREFIX: 'env "MODE=safe" runner',
+    });
+    const authority = resolveCommandExecutionAuthority(
+      runtimeOptions,
+      "/bin/zsh",
+      { PATH: "/usr/bin", SECRET: undefined },
+    );
+
+    expect(authority).toEqual({
+      path: "/bin/zsh",
+      commandWrapperArgv: ["env", "MODE=safe", "runner"],
+      childEnvironment: { PATH: "/usr/bin", SECRET: undefined },
+    });
+    expect(Object.isFrozen(authority)).toBe(true);
+    expect(Object.isFrozen(authority.commandWrapperArgv)).toBe(true);
+    expect(Object.isFrozen(authority.childEnvironment)).toBe(true);
   });
 
   test("generic ingress ignores automation hook authority in the environment", () => {
@@ -137,7 +159,7 @@ describe("agent runtime options", () => {
         remoteMode: false,
         allowUntrustedHooks: true,
       }),
-    ).toEqual({
+    ).toMatchObject({
       simpleMode: false,
       stdinDataMode: false,
       remoteMode: false,
@@ -199,6 +221,20 @@ describe("agent runtime options", () => {
       if (previous === undefined) delete process.env.TMPDIR;
       else process.env.TMPDIR = previous;
     }
+  });
+
+  test("does not treat generic temp variables as session authority", () => {
+    const baseline = resolveAgentRuntimeOptions({}).sessionTempRoot;
+    const options = resolveAgentRuntimeOptions({
+      TMPDIR: "/not-session-authority-a",
+      TMP: "/not-session-authority-b",
+      TEMP: "/not-session-authority-c",
+    });
+
+    expect(options.sessionTempRoot).toBe(baseline);
+    expect(
+      runWithAgentRuntimeOptions(options, () => resolveSessionTempRoot()),
+    ).toBe(baseline);
   });
 
   test("isolates concurrent remote mode and memory roots", async () => {

@@ -197,7 +197,10 @@ import type { ToolLatencyStore } from "../tools/tool-latency-store.js";
 import type { PolicyLimitsService } from "../services/policyLimits/index.js";
 import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import type { AgentStatus as RuntimeAgentStatus } from "../agents/status.js";
-import type { AgentRuntimeOptions } from "./runtime-options.js";
+import type {
+  AgentRuntimeOptions,
+  CommandExecutionAuthority,
+} from "./runtime-options.js";
 import type {
   PostCompactHookInput,
   PreCompactHookInput,
@@ -1322,8 +1325,7 @@ export interface NetworkApprovalService {
 }
 
 /** agenc runtime `Shell`. */
-export interface UserShell {
-  readonly path: string;
+export interface UserShell extends CommandExecutionAuthority {
   deriveExecArgs(input: string, useLoginShell: boolean): string[];
 }
 

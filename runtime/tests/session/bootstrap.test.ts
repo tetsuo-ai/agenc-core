@@ -155,6 +155,8 @@ function mkServices(overrides: Partial<SessionServices> = {}): SessionServices {
     provider: mkProvider(),
     userShell: {
       path: "/test/session-shell",
+      commandWrapperArgv: [],
+      childEnvironment: {},
       deriveExecArgs: (input: string) => ["-c", input],
     },
     registry: {

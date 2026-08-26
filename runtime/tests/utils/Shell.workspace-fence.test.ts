@@ -63,6 +63,8 @@ describe("Shell workspace-operation lifetime", () => {
         runtimeOptions: resolveAgentRuntimeOptions({}),
         userShell: {
           path: "/bin/bash",
+          commandWrapperArgv: [],
+          childEnvironment: { ...process.env },
           deriveExecArgs: (input: string) => ["-c", input],
         },
       },

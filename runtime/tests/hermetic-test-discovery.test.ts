@@ -502,7 +502,6 @@ describe("hermetic test discovery", () => {
       AGENC_BUBBLEWRAP: "/ambient/bwrap",
       AGENC_DISABLE_NONESSENTIAL_TRAFFIC: "1",
       AGENC_EXTRA_BODY: '{"ambient":true}',
-      AGENC_GIT_BASH_PATH: "/ambient/bash",
       AGENC_OVERRIDE_DATE: "1900-01-01",
       AGENC_TEST_FIXTURES_ROOT: "/ambient/fixtures",
       AGENC_TMPDIR: "/ambient/tmp",

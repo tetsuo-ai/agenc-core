@@ -24,6 +24,28 @@ export interface AgentRuntimeOptions {
   readonly allowUntrustedHooks: boolean;
 }
 
+/** Immutable command policy captured from one client environment at ingress. */
+export interface CommandExecutionAuthority {
+  readonly path: string;
+  readonly commandWrapperArgv: readonly string[];
+  readonly childEnvironment: Readonly<NodeJS.ProcessEnv>;
+}
+
+/** Resolve the shell and wrapper once; command runners must not reread env. */
+export function resolveCommandExecutionAuthority(
+  options: AgentRuntimeOptions,
+  resolvedShellPath: string,
+  scrubbedChildEnvironment: NodeJS.ProcessEnv,
+): CommandExecutionAuthority {
+  return Object.freeze({
+    path: resolvedShellPath,
+    commandWrapperArgv: Object.freeze([
+      ...(options.commandWrapperArgv ?? []),
+    ]),
+    childEnvironment: Object.freeze({ ...scrubbedChildEnvironment }),
+  });
+}
+
 export class AgentRuntimeOptionsError extends Error {
   constructor(message: string) {
     super(message);
@@ -88,8 +110,10 @@ export function isSessionRemoteMode(): boolean {
  * `getCurrentRuntimeSession()` instead of guessing.
  */
 export function resolveSessionTempRoot(): string {
-  return getActiveAgentRuntimeOptions()?.sessionTempRoot ?? normalize(tmpdir());
+  return getActiveAgentRuntimeOptions()?.sessionTempRoot ?? DEFAULT_SESSION_TEMP_ROOT;
 }
+
+const DEFAULT_SESSION_TEMP_ROOT = normalize(tmpdir());
 
 const TRUE_VALUES = new Set(["1", "true", "yes", "on"]);
 const FALSE_VALUES = new Set(["0", "false", "no", "off"]);
@@ -279,21 +303,15 @@ function resolveAgentRuntimeOptionsAtIngress(
       : parsedWrapper !== undefined
         ? { commandWrapperArgv: parsedWrapper }
         : {}),
-    ...(overrides.sessionTempRoot !== undefined
-      ? {
-          sessionTempRoot: optionalAbsolutePath(
+    sessionTempRoot:
+      overrides.sessionTempRoot !== undefined
+        ? optionalAbsolutePath(
             overrides.sessionTempRoot,
             "runtimeOptions.sessionTempRoot",
-          ),
-        }
-      : env.AGENC_TMPDIR !== undefined
-        ? {
-            sessionTempRoot: optionalAbsolutePath(
-              env.AGENC_TMPDIR,
-              "AGENC_TMPDIR",
-            ),
-          }
-        : {}),
+          )
+        : env.AGENC_TMPDIR !== undefined
+          ? optionalAbsolutePath(env.AGENC_TMPDIR, "AGENC_TMPDIR")
+          : DEFAULT_SESSION_TEMP_ROOT,
     ...(overrides.pluginStorageRoot !== undefined
       ? {
           pluginStorageRoot: optionalAbsolutePath(

@@ -108,7 +108,10 @@ import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { isRecord } from "../utils/record.js";
 import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import { bindExecutionAdmissionJournal } from "../session/execution-admission-journal.js";
-import type { AgentRuntimeOptions } from "../session/runtime-options.js";
+import {
+  type AgentRuntimeOptions,
+  type CommandExecutionAuthority,
+} from "../session/runtime-options.js";
 import {
   SessionProviderService,
   type ReadSavedProviderApiKey,
@@ -149,6 +152,7 @@ export interface BootstrapSessionServicesOptions {
   readonly readSavedApiKey?: ReadSavedProviderApiKey;
   readonly sessionConfiguration: SessionConfiguration;
   readonly runtimeOptions: AgentRuntimeOptions;
+  readonly commandExecutionAuthority: CommandExecutionAuthority;
   readonly codeModeService?: CodeModeService;
   readonly executionAdmission?: ExecutionAdmissionClient;
   readonly admissionRequired?: boolean;
@@ -546,10 +550,11 @@ export async function shutdownBootstrapLspServers(
 function createShellSnapshotTx(
   workspaceRoot: string,
   env: NodeJS.ProcessEnv,
+  shellPath: string,
 ): SessionServices["shellSnapshotTx"] {
   return new BehaviorSubject<unknown | null>({
     cwd: workspaceRoot,
-    shell: env.SHELL?.trim() || null,
+    shell: shellPath,
     path: env.PATH?.trim() || null,
     capturedAtUnixMs: Date.now(),
   } satisfies BootstrapShellSnapshot);
@@ -639,6 +644,7 @@ function resolveToolLatencyConfig(
 export function buildBootstrapSessionServices(
   opts: BootstrapSessionServicesOptions,
 ): BootstrapSessionServicesHandle {
+  const commandExecutionAuthority = opts.commandExecutionAuthority;
   const skillsServices = createLocalSkillsServices({
     agencHome: opts.agencHome,
     workspaceRoot: opts.workspaceRoot,
@@ -702,10 +708,11 @@ export function buildBootstrapSessionServices(
   initMagicDocs();
   const hooksRuntime = new ConfiguredHooksRuntime({
     cwd: opts.workspaceRoot,
-    env: opts.env,
+    env: commandExecutionAuthority.childEnvironment,
     agencHome: opts.agencHome,
     runtimeOptions: opts.runtimeOptions,
-    shellPath: opts.runtimeOptions.posixShellPath ?? opts.env.SHELL ?? "/bin/sh",
+    shellPath: commandExecutionAuthority.path,
+    commandWrapperArgv: commandExecutionAuthority.commandWrapperArgv,
     executionAuthority: hookExecutionAuthority,
     sandboxExecutionBroker: opts.sandboxExecutionBroker,
     ...(opts.executionAdmission !== undefined
@@ -716,8 +723,11 @@ export function buildBootstrapSessionServices(
   const autoFixPostToolHook = createAutoFixPostToolHook({
     configSource: () => opts.configStore.current().autoFix,
     cwd: opts.workspaceRoot,
+    env: opts.env,
     executionAuthority: hookExecutionAuthority,
     sandboxExecutionBroker: opts.sandboxExecutionBroker,
+    shellPath: commandExecutionAuthority.path,
+    commandWrapperArgv: commandExecutionAuthority.commandWrapperArgv,
   });
   hooksRuntime.attachTarget(hooksService);
   const loadHooks = (): void => {
@@ -821,14 +831,18 @@ export function buildBootstrapSessionServices(
     hooksRuntime,
     rollout: rolloutRecorder,
     rolloutTrace,
-    userShell: {
-      path: opts.runtimeOptions.posixShellPath ?? opts.env.SHELL ?? "/bin/sh",
+    userShell: Object.freeze({
+      ...commandExecutionAuthority,
       deriveExecArgs: (input: string) => ["-c", input],
-    },
+    }),
     agentIdentityManager: new BootstrapAgentIdentityManager(
       opts.conversationId,
     ),
-    shellSnapshotTx: createShellSnapshotTx(opts.workspaceRoot, opts.env),
+    shellSnapshotTx: createShellSnapshotTx(
+      opts.workspaceRoot,
+      opts.env,
+      commandExecutionAuthority.path,
+    ),
     showRawAgentReasoning: false,
     execPolicy,
     authManager: createAuthManager({

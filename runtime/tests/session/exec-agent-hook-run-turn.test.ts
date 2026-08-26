@@ -1893,7 +1893,12 @@ function createParentSession(
     },
     unifiedExecManager: {},
     rollout: undefined,
-    userShell: { path: "/bin/sh", deriveExecArgs: () => [] },
+    userShell: {
+      path: "/bin/sh",
+      commandWrapperArgv: [],
+      childEnvironment: {},
+      deriveExecArgs: () => [],
+    },
     agentIdentityManager: {},
     shellSnapshotTx: {},
     showRawAgentReasoning: false,

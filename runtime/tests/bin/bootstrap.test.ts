@@ -1661,7 +1661,7 @@ describe("bootstrapLocalRuntimeSession", () => {
         readonly shell?: string;
       };
       expect(shellSnapshot.cwd).toBe(workspace);
-      expect(shellSnapshot.shell).toBe("/bin/sh");
+      expect(shellSnapshot.shell).toBe(services.userShell.path);
 
       services.modelClient.setWindowGeneration(7);
       expect(services.modelClient.currentWindowGeneration()).toBe(7);

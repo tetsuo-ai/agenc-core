@@ -38,6 +38,10 @@ import {
   spawnContainedProcess,
   terminateProcessTreeAndWait,
 } from "../utils/supervisedProcess.js";
+import {
+  commandShellArgs,
+  wrapCommandForShell,
+} from "../utils/shell/commandExecution.js";
 
 const DEFAULT_EXEC_YIELD_TIME_MS = 10_000;
 const DEFAULT_WRITE_STDIN_YIELD_TIME_MS = 250;
@@ -339,24 +343,17 @@ function makeDeferredExit(): {
   return { promise, resolve: resolveExit };
 }
 
-function resolveShell(shell: string | undefined): string {
+function resolveShell(shell: string | undefined, fallback: string): string {
   if (shell && shell.trim().length > 0) return shell;
-  return (
-    process.env.SHELL ??
-    (process.platform === "win32" ? "cmd.exe" : "/bin/bash")
-  );
-}
-
-function shellArgs(command: string, login: boolean | undefined): string[] {
-  if (process.platform === "win32") return ["/d", "/s", "/c", command];
-  return [login === true ? "-lc" : "-c", command];
+  return fallback;
 }
 
 /** SEC-01: never pass raw process.env (API keys) into shell children. */
 function buildEnv(
+  baseEnv: Readonly<Record<string, string | undefined>>,
   env: Record<string, string> | undefined,
 ): Record<string, string> {
-  return buildScrubbedSpawnEnv(env);
+  return buildScrubbedSpawnEnv(env, baseEnv);
 }
 
 function clampExecYield(value: number | undefined): number {
@@ -426,6 +423,9 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   readonly maxTimeoutMs: number;
   private readonly cwd: string;
   private readonly env?: Record<string, string>;
+  private readonly baseEnv: Readonly<Record<string, string | undefined>>;
+  private readonly shellPath: string;
+  private readonly commandWrapperArgv: readonly string[];
   private readonly maxProcesses: number;
   private readonly sandboxManager: UnifiedExecSandboxManager;
   private readonly sandboxAuthorityQuiesceTimeoutMs: number;
@@ -440,7 +440,15 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
 
   constructor(options: UnifiedExecManagerOptions = {}) {
     this.cwd = options.cwd ?? process.cwd();
-    this.env = options.env;
+    this.env = options.env === undefined
+      ? undefined
+      : Object.freeze({ ...options.env });
+    this.baseEnv = Object.freeze({ ...(options.baseEnv ?? process.env) });
+    this.shellPath = options.shellPath ??
+      (process.platform === "win32" ? "cmd.exe" : "/bin/bash");
+    this.commandWrapperArgv = Object.freeze([
+      ...(options.commandWrapperArgv ?? []),
+    ]);
     this.maxTimeoutMs = options.maxTimeoutMs ?? Number.POSITIVE_INFINITY;
     this.maxProcesses = options.maxProcesses ?? DEFAULT_MAX_PROCESSES;
     this.sandboxManager = options.sandboxManager ?? new SandboxManager();
@@ -552,13 +560,18 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
 
     const processId = this.allocateProcessId();
     const cwd = resolve(request.workdir ?? this.cwd);
-    const shell = resolveShell(request.shell);
-    const args = shellArgs(request.cmd, request.login);
+    const shell = resolveShell(request.shell, this.shellPath);
+    const command = wrapCommandForShell(
+      shell,
+      this.commandWrapperArgv,
+      request.cmd,
+    );
+    const args = commandShellArgs(shell, command, request.login === true);
     const spawnCommand = this.buildSpawnCommand({
       program: shell,
       args,
       cwd,
-      env: buildEnv(this.env),
+      env: buildEnv(this.baseEnv, this.env),
       ...(request.runtimeSandbox !== undefined
         ? { runtimeSandbox: request.runtimeSandbox }
         : {}),

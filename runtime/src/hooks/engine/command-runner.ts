@@ -9,6 +9,10 @@ import {
   type SandboxExecutionBrokerLike,
 } from "../../sandbox/execution-broker.js";
 import { runSupervisedProcess } from "../../utils/supervisedProcess.js";
+import {
+  commandShellArgs,
+  wrapCommandForShell,
+} from "../../utils/shell/commandExecution.js";
 
 import type { CommandRunResult } from "./types.js";
 
@@ -19,6 +23,7 @@ export interface RunHookCommandOptions {
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
   readonly shellPath: string;
+  readonly commandWrapperArgv?: readonly string[];
   readonly stdin: string;
   readonly timeoutMs: number;
   readonly signal?: AbortSignal;
@@ -42,9 +47,14 @@ export async function runHookCommand(
   if (opts.sandboxExecutionBroker === undefined) {
     throw missingSandboxExecutionBoundary("hook");
   }
+  const command = wrapCommandForShell(
+    opts.shellPath,
+    opts.commandWrapperArgv,
+    opts.command,
+  );
   const preparedSpawn = opts.sandboxExecutionBroker.prepareSpawn("hook", {
     program: opts.shellPath,
-    args: ["-c", opts.command],
+    args: commandShellArgs(opts.shellPath, command),
     cwd: opts.cwd,
     env,
   });

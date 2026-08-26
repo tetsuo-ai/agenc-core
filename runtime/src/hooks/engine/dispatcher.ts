@@ -123,6 +123,9 @@ export class HookEngine {
         cwd: cwd ?? this.opts.cwd,
         env: this.opts.env,
         shellPath: this.opts.shellPath,
+        ...(this.opts.commandWrapperArgv !== undefined
+          ? { commandWrapperArgv: this.opts.commandWrapperArgv }
+          : {}),
         stdin: `${JSON.stringify(input)}\n`,
         timeoutMs: hook.command.timeout_ms ?? DEFAULT_HOOK_TIMEOUT_MS,
         signal: effectSignal,

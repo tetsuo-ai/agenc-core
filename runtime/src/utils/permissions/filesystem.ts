@@ -3,7 +3,7 @@ import { feature } from 'bun:bundle'
 import { randomBytes } from 'crypto'
 import ignore from 'ignore'
 import memoize from 'lodash-es/memoize.js'
-import { homedir, tmpdir } from 'os'
+import { homedir } from 'os'
 import { join, normalize, posix, sep } from 'path'
 import {
   hasAutoMemPathOverride,
@@ -15,6 +15,7 @@ import {
   isAuthorizedAgentMemoryPath,
 } from 'src/tools/AgentTool/agentMemory.js'
 import { peekAmbientRuntimeSession } from '../../session/current-session.js'
+import { resolveSessionTempRoot } from '../../session/runtime-options.js'
 import { getAgentMemoryAuthorization } from '../agentContext.js'
 import {
   AGENC_FOLDER_PERMISSION_PATTERN,
@@ -346,9 +347,7 @@ export function getAgenCTempDirName(): string {
 
 /**
  * Returns the AgenC temp directory path with symlinks resolved.
- * Uses TMPDIR env var if set, otherwise:
- * - On Unix: /tmp/agenc-{uid}/ (resolved to /private/tmp/agenc-{uid}/ on macOS)
- * - On Windows: {tmpdir}/agenc/ (e.g., C:\Users\{user}\AppData\Local\Temp\agenc\)
+ * Uses the temporary root captured for the active session.
  * This is a per-user short-lived directory used by AgenC for all temp files.
  *
  * NOTE: We resolve symlinks to ensure this path matches the resolved paths used
@@ -356,14 +355,12 @@ export function getAgenCTempDirName(): string {
  * resolution, paths like /tmp/agenc-{uid}/... wouldn't match /private/tmp/agenc-{uid}/...
  */
 // Memoized: called per-tool from permission checks (yoloClassifier, sandbox-runtime)
-// and per-turn from BashTool prompt. Inputs (AGENC_TMPDIR env + platform) are
-// fixed at startup, and the realpath of the system tmp dir does not change mid-session.
+// and per-turn from BashTool prompt. The captured root is fixed at startup,
+// and the realpath of the system temp directory does not change mid-session.
 const agencTempDirs = new Map<string, string>()
 
 export function getAgenCTempDir(): string {
-  const baseTmpDir =
-    peekAmbientRuntimeSession()?.services?.runtimeOptions?.sessionTempRoot ||
-    (getPlatform() === 'windows' ? tmpdir() : '/tmp')
+  const baseTmpDir = resolveSessionTempRoot()
 
   const cached = agencTempDirs.get(baseTmpDir)
   if (cached !== undefined) return cached

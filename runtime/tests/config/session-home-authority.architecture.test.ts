@@ -74,11 +74,63 @@ describe("session home authority architecture", () => {
       "permissions/rpc/request-permissions.ts",
       "sandbox/engine/index.ts",
       "sandbox/engine/manager.ts",
+      "utils/Shell.ts",
       "utils/imagePaste.ts",
+      "utils/permissions/filesystem.ts",
+      "utils/tmuxSocket.ts",
     ]) {
-      expect(source(name), name).toContain("resolveSessionTempRoot")
+      if (name !== "utils/tmuxSocket.ts") {
+        expect(source(name), name).toContain("resolveSessionTempRoot")
+      }
       expect(source(name), name).not.toMatch(/process\.env(?:\.|\[)["']?TMPDIR/u)
     }
+  });
+
+  test("routes every session command runner through captured shell authority", () => {
+    const runtimeOptions = source("session/runtime-options.ts");
+    const bootstrap = source("bin/bootstrap.ts");
+    const bootstrapServices = source("bin/bootstrap-services.ts");
+    const callbackHooks = source("utils/hooks.ts");
+    const configuredHooks = source("hooks/engine/command-runner.ts");
+    const autoFix = source("services/autoFix/autoFixRunner.ts");
+    const unifiedExec = source("unified-exec/process-manager.ts");
+    const commandExecution = source("utils/shell/commandExecution.ts");
+    const shell = source("utils/Shell.ts");
+    const bashProvider = source("utils/shell/bashProvider.ts");
+    const shellSnapshot = source("utils/bash/ShellSnapshot.ts");
+    const terminalPanel = source("utils/terminalPanel.ts");
+    const tmuxSocket = source("utils/tmuxSocket.ts");
+    const posixShellPath = source("utils/shell/posixShellPath.ts");
+
+    expect(runtimeOptions).toContain("resolveCommandExecutionAuthority");
+    expect(bootstrap).toContain("const commandExecutionAuthority =");
+    expect(bootstrap).toContain("subprocessEnv(env)");
+    expect(bootstrap).toContain("commandWrapperArgv: commandExecutionAuthority.commandWrapperArgv");
+    expect(bootstrapServices).toContain("commandExecutionAuthority.path");
+    expect(bootstrapServices).toContain("commandExecutionAuthority.commandWrapperArgv");
+    expect(bootstrapServices).toContain(
+      "env: commandExecutionAuthority.childEnvironment",
+    );
+    expect(callbackHooks).toContain("ambientSession.services.userShell.path");
+    expect(callbackHooks).toContain(
+      "ambientSession.services.userShell.childEnvironment",
+    );
+    expect(callbackHooks).not.toContain("subprocessEnv()");
+    expect(shell).toContain("commandAuthority.childEnvironment");
+    expect(shell).not.toContain("subprocessEnv()");
+    expect(bashProvider).not.toContain("process.env");
+    expect(shellSnapshot).toContain("childEnvironment");
+    expect(shellSnapshot).not.toContain("process.env");
+    expect(terminalPanel).toContain("childEnvironment");
+    expect(terminalPanel).not.toContain("process.env");
+    expect(tmuxSocket).toContain("subprocessEnv(process.env)");
+    expect(posixShellPath).toContain("env: childEnvironment");
+    expect(commandExecution).toContain("formatShellWrapperCommand");
+    expect(configuredHooks).toContain("wrapCommandForShell");
+    expect(autoFix).toContain("wrapCommandForShell");
+    expect(autoFix).not.toContain("process.env.SHELL");
+    expect(unifiedExec).toContain("wrapCommandForShell");
+    expect(unifiedExec).not.toContain("process.env.SHELL");
   });
 
   test("keys session environment scripts by explicit home and session identity", () => {

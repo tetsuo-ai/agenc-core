@@ -64,6 +64,9 @@ export interface UnifiedExecRuntimeSandbox {
 export interface UnifiedExecManagerOptions {
   readonly cwd?: string;
   readonly env?: Record<string, string>;
+  readonly baseEnv?: Readonly<Record<string, string | undefined>>;
+  readonly shellPath?: string;
+  readonly commandWrapperArgv?: readonly string[];
   /** Optional cap applied only when a request explicitly supplies timeoutMs. */
   readonly maxTimeoutMs?: number;
   readonly maxProcesses?: number;

@@ -325,6 +325,55 @@ describe("UnifiedExecProcessManager", () => {
     expect(result.process_id).toBeUndefined();
   });
 
+  test("uses the captured shell and wrapper for default commands", async () => {
+    if (process.platform === "win32") return;
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      shellPath: "/bin/sh",
+      commandWrapperArgv: [
+        "env",
+        "AGENC_WRAPPER_TEST=wrapped-unified-exec",
+        "/bin/sh",
+        "-c",
+      ],
+    });
+
+    try {
+      const result = await manager.execCommand({
+        cmd: 'printf "%s" "$AGENC_WRAPPER_TEST"',
+        yield_time_ms: 250,
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe("wrapped-unified-exec");
+    } finally {
+      await manager.closeAll("test cleanup");
+    }
+  });
+
+  test("snapshots its base child environment at construction", async () => {
+    if (process.platform === "win32") return;
+    const baseEnv = {
+      ...process.env,
+      AGENC_UNIFIED_EXEC_ENV_TEST: "captured",
+    };
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      baseEnv,
+      shellPath: "/bin/sh",
+    });
+    baseEnv.AGENC_UNIFIED_EXEC_ENV_TEST = "changed";
+
+    try {
+      const result = await manager.execCommand({
+        cmd: 'printf "%s" "$AGENC_UNIFIED_EXEC_ENV_TEST"',
+        yield_time_ms: 250,
+      });
+      expect(result.stdout).toBe("captured");
+    } finally {
+      await manager.closeAll("test cleanup");
+    }
+  });
+
   test("transforms restricted commands through the configured sandbox manager", async () => {
     const transforms: SandboxTransformRequest[] = [];
     const selections: Array<{
