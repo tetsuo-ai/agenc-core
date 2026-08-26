@@ -7,8 +7,9 @@
  * land.
  */
 
-import { isAbsolute } from "node:path";
+import { basename, isAbsolute } from "node:path";
 import { isSafeSessionIdSegment } from "../session/session-store.js";
+import { AUDIO_MEDIA_TYPES } from "../llm/transcribe-audio.js";
 
 import {
   AgenCDaemonAgentLifecycleError,
@@ -55,6 +56,12 @@ import {
   type AgenCDaemonOverloadLimitOptions,
 } from "./overload.js";
 import {
+  AgenCAudioTranscriptionServiceImpl,
+  MAX_AUDIO_TRANSCRIPTION_BYTES,
+  type AgenCAudioTranscriptionRequest,
+  type AgenCAudioTranscriptionService,
+} from "./audio-transcription.js";
+import {
   AgenCDaemonRunInspectionError,
   type AgenCDaemonRunInspectionService,
 } from "./run-inspection.js";
@@ -87,6 +94,7 @@ import {
   type AgentListParams,
   type AgentLogsParams,
   type AgentStopParams,
+  type AudioTranscribeParams,
   type RunEvidenceParams,
   type RunReplayParams,
   type RunResultParams,
@@ -263,6 +271,7 @@ interface AgenCDaemonServerCapabilityInputs {
   readonly workflow: AgenCDaemonDispatcherOptions["workflow"];
   readonly csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly codePrediction: AgenCDaemonDispatcherOptions["codePrediction"];
+  readonly audioTranscription: AgenCAudioTranscriptionService;
 }
 
 function buildServerCapabilities(
@@ -273,6 +282,7 @@ function buildServerCapabilities(
   const methodCapabilities = {
     initialize: true,
     "request.cancel": true,
+    "audio.transcribe": hasMethod(inputs.audioTranscription, "transcribe"),
     "agent.create": hasMethod(agentManager, "createAgent"),
     "agent.list": hasMethod(agentManager, "listAgents"),
     "agent.attach": hasMethod(agentManager, "attachAgent"),
@@ -518,6 +528,8 @@ export interface AgenCDaemonDispatcherOptions {
     CodePredictionService,
     "complete" | "cancel" | "feedback"
   >;
+  /** Provider-aware, one-shot pre-turn speech-to-text service. */
+  readonly audioTranscription?: AgenCAudioTranscriptionService;
   readonly healthStateCounter?: AgenCHealthStateCounter;
   readonly now?: () => string;
 }
@@ -622,6 +634,7 @@ export class AgenCDaemonJsonRpcDispatcher {
   readonly #csvJobReview: AgenCCsvJobReviewService | undefined;
   readonly #codePrediction:
     Pick<CodePredictionService, "complete" | "cancel" | "feedback"> | undefined;
+  readonly #audioTranscription: AgenCAudioTranscriptionService;
   readonly #serverCapabilities: AgenCDaemonServerCapabilities;
   readonly #now: () => string;
 
@@ -653,6 +666,8 @@ export class AgenCDaemonJsonRpcDispatcher {
     this.#workflow = options.workflow;
     this.#csvJobReview = options.csvJobReview;
     this.#codePrediction = options.codePrediction;
+    this.#audioTranscription =
+      options.audioTranscription ?? new AgenCAudioTranscriptionServiceImpl();
     this.#authHandlers =
       options.authBackend !== undefined
         ? createAgenCDaemonAuthHandlers(options.authBackend)
@@ -674,6 +689,7 @@ export class AgenCDaemonJsonRpcDispatcher {
       workflow: this.#workflow,
       csvJobReview: this.#csvJobReview,
       codePrediction: this.#codePrediction,
+      audioTranscription: this.#audioTranscription,
     });
     this.#now = options.now ?? (() => new Date().toISOString());
   }
@@ -832,6 +848,14 @@ export class AgenCDaemonJsonRpcDispatcher {
     signal: AbortSignal,
   ): Promise<AgenCDaemonResponse> {
     switch (method) {
+      case "audio.transcribe":
+        return successResponse(
+          id,
+          await this.#audioTranscription.transcribe(
+            validateAudioTranscribeParams(params),
+            { signal },
+          ),
+        );
       case "agent.create":
         return successResponse(
           id,
@@ -2042,6 +2066,7 @@ function methodSupportsRequestCancellation(
   method: AgenCDaemonKnownMethod,
 ): boolean {
   return (
+    method === "audio.transcribe" ||
     method === "fs.fuzzy_search" ||
     method === "commandExec.start" ||
     method === "csvJob.review.list" ||
@@ -2200,6 +2225,112 @@ function validateRequestCancelParams(params: JsonObject): RequestCancelParams {
     throw invalidParams("request.cancel requires requestId");
   }
   return validated as RequestCancelParams;
+}
+
+const AUDIO_TRANSCRIBE_MIME_TYPES = new Set(
+  Object.values(AUDIO_MEDIA_TYPES),
+);
+const MAX_AUDIO_TRANSCRIPTION_BASE64_LENGTH =
+  Math.ceil(MAX_AUDIO_TRANSCRIPTION_BYTES / 3) * 4;
+
+function isStrictBase64(data: string): boolean {
+  if (data.length === 0 || data.length % 4 !== 0) return false;
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  const contentEnd = data.length - padding;
+  for (let index = 0; index < contentEnd; index += 1) {
+    const code = data.charCodeAt(index);
+    if (
+      !(
+        (code >= 65 && code <= 90) ||
+        (code >= 97 && code <= 122) ||
+        (code >= 48 && code <= 57) ||
+        code === 43 ||
+        code === 47
+      )
+    ) {
+      return false;
+    }
+  }
+  for (let index = contentEnd; index < data.length; index += 1) {
+    if (data.charCodeAt(index) !== 61) return false;
+  }
+  return true;
+}
+
+function validateAudioTranscribeParams(
+  params: JsonObject,
+): AgenCAudioTranscriptionRequest {
+  const validated = validateObjectShape(params, {
+    methodName: "audio.transcribe",
+    objectFields: ["audio"],
+    stringFields: ["preferredProvider"],
+  }) as AudioTranscribeParams;
+  if (!isPlainJsonObject(validated.audio)) {
+    throw invalidParams("audio.transcribe requires audio");
+  }
+  const audio = validateObjectShape(validated.audio, {
+    methodName: "audio.transcribe.audio",
+    stringFields: ["data", "mimeType", "fileName"],
+  });
+  validateRequiredString(audio, "audio.transcribe.audio", "data");
+  validateRequiredString(audio, "audio.transcribe.audio", "mimeType");
+  validateRequiredString(audio, "audio.transcribe.audio", "fileName");
+
+  const data = audio.data as string;
+  const mimeType = audio.mimeType as string;
+  const fileName = audio.fileName as string;
+  validateOptionalEnumOrNull(
+    validated,
+    "audio.transcribe",
+    "preferredProvider",
+    ["openai", "gemini", "local"],
+  );
+  if (!AUDIO_TRANSCRIBE_MIME_TYPES.has(mimeType)) {
+    throw invalidParams(
+      `audio.transcribe audio.mimeType must be one of: ${[
+        ...AUDIO_TRANSCRIBE_MIME_TYPES,
+      ].join(", ")}`,
+    );
+  }
+  if (
+    fileName !== basename(fileName) ||
+    fileName.includes("/") ||
+    fileName.includes("\\") ||
+    fileName === "." ||
+    fileName === ".." ||
+    fileName.includes("\0")
+  ) {
+    throw invalidParams(
+      "audio.transcribe audio.fileName must be a basename without path components",
+    );
+  }
+  if (data.length > MAX_AUDIO_TRANSCRIPTION_BASE64_LENGTH) {
+    throw invalidParams(
+      `audio.transcribe audio.data exceeds the ${MAX_AUDIO_TRANSCRIPTION_BYTES} byte decoded limit`,
+    );
+  }
+  if (!isStrictBase64(data)) {
+    throw invalidParams("audio.transcribe audio.data must be strict base64");
+  }
+  const padding = data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0;
+  const decodedBytes = (data.length / 4) * 3 - padding;
+  if (decodedBytes > MAX_AUDIO_TRANSCRIPTION_BYTES) {
+    throw invalidParams(
+      `audio.transcribe audio.data exceeds the ${MAX_AUDIO_TRANSCRIPTION_BYTES} byte decoded limit`,
+    );
+  }
+  const bytes = Buffer.from(data, "base64");
+  if (bytes.length !== decodedBytes || bytes.toString("base64") !== data) {
+    throw invalidParams("audio.transcribe audio.data must be strict base64");
+  }
+  return {
+    bytes,
+    mimeType,
+    fileName,
+    ...(validated.preferredProvider !== undefined
+      ? { preferredProvider: validated.preferredProvider }
+      : {}),
+  };
 }
 
 function validateAgentCreateParams(params: JsonObject): AgentCreateParams {

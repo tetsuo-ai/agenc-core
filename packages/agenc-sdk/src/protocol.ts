@@ -39,6 +39,7 @@ export type RequestId = string | number;
 export const AGENC_SDK_DAEMON_METHODS = [
   "initialize",
   "request.cancel",
+  "audio.transcribe",
   "agent.create",
   "agent.list",
   "agent.attach",
@@ -148,6 +149,18 @@ export interface InitializeParams extends JsonObject {
 export interface RequestCancelParams extends JsonObject {
   readonly requestId: RequestId;
   readonly reason?: string;
+}
+
+export interface AudioTranscribeInput extends JsonObject {
+  readonly data: string;
+  readonly mimeType: string;
+  readonly fileName: string;
+}
+
+export interface AudioTranscribeParams extends JsonObject {
+  readonly audio: AudioTranscribeInput;
+  /** Local is always attempted first; cloud upload requires this opt-in. */
+  readonly preferredProvider?: "openai" | "gemini" | "local";
 }
 
 export interface DaemonShutdownParams extends JsonObject {
@@ -508,6 +521,7 @@ export type CsvJobReviewResolveWireParams = CsvJobReviewResolveParams & {
 export interface AgencParamsByMethod {
   readonly initialize: InitializeParams;
   readonly "request.cancel": RequestCancelParams;
+  readonly "audio.transcribe": AudioTranscribeParams;
   readonly "agent.create": AgentCreateParams;
   readonly "agent.list": AgentListParams;
   readonly "agent.attach": AgentAttachParams;
@@ -612,6 +626,12 @@ export interface RequestCancelResult extends JsonObject {
   readonly requestId: RequestId;
   readonly cancelled: boolean;
   readonly reason?: string;
+}
+
+export interface AudioTranscribeResult extends JsonObject {
+  readonly text: string;
+  readonly model: string;
+  readonly provider: "openai" | "gemini" | "local";
 }
 
 export interface AgentCreateResult extends AgentSummary {
@@ -1322,6 +1342,7 @@ export interface AuthLogoutResult extends JsonObject {
 export interface AgencResultByMethod {
   readonly initialize: InitializeResult;
   readonly "request.cancel": RequestCancelResult;
+  readonly "audio.transcribe": AudioTranscribeResult;
   readonly "agent.create": AgentCreateResult;
   readonly "agent.list": AgentListResult;
   readonly "agent.attach": AgentAttachResult;

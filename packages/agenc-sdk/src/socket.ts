@@ -50,6 +50,9 @@ const MAX_CLIENT_BUFFER_BYTES = 16 * 1024 * 1024;
 // hours. Explicit cancellation, socket closure, and daemon shutdown still
 // settle them.
 const UNBOUNDED_DAEMON_METHODS: ReadonlySet<AgencDaemonMethod> = new Set([
+  // The daemon enforces its own bounded cloud/local transcription deadline.
+  // Do not let the shorter control-RPC timeout race that operation.
+  "audio.transcribe",
   "message.send",
   "message.stream",
 ]);

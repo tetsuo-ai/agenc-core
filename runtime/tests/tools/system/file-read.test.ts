@@ -11,7 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
 import type { ToolEvaluatorContext } from "../../permissions/evaluator.js";
 import { applyPermissionUpdate } from "../../permissions/rules.js";
@@ -42,6 +42,7 @@ import {
   setPlanSlug,
 } from "../../planning/plan-files.js";
 import { workspaceMutationCoordinators } from "../../../src/workspace/mutation-coordinator.js";
+import type { transcribeAudio } from "../../../src/llm/transcribe-audio.js";
 
 function attachTrustedEditorContext(
   args: Record<string, unknown>,
@@ -252,6 +253,53 @@ describe("FileRead tool", () => {
     if (image?.type === "input_image") {
       expect(image.image_url).not.toContain(outsideBytes.toString("base64"));
     }
+  });
+
+  test("never transcribes outside audio bytes after a final ancestor exchange", async () => {
+    const workspace = join(root, "workspace");
+    const displaced = join(root, "workspace-displaced");
+    const outside = join(root, "outside");
+    await mkdir(workspace);
+    await mkdir(outside);
+    const insideAudio = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x01]);
+    const outsideAudio = Buffer.from("outside-audio-secret", "utf8");
+    await writeFile(join(workspace, "target.webm"), insideAudio);
+    await writeFile(join(outside, "target.webm"), outsideAudio);
+    workspaceMutationCoordinators.getOrCreate(workspace).acquire({
+      workspaceRoot: workspace,
+      editorInstanceId: "file-read-audio-editor",
+    });
+    let exchangeOutcome: "pending" | "exchanged" | "kernel_denied" = "pending";
+    const audioTranscriber = vi.fn(async () => ({
+      text: "inside transcript",
+      model: "test-local",
+      provider: "local" as const,
+    }));
+    const tool = createFileReadTool({
+      allowedPaths: [workspace],
+      audioTranscriber,
+      __testAfterFinalPathCheck: async () => {
+        exchangeOutcome = await exchangeDirectory(
+          workspace,
+          displaced,
+          outside,
+        );
+      },
+    });
+
+    const result = await tool.execute({
+      file_path: join(workspace, "target.webm"),
+    });
+
+    expectCompletedExchangeAttempt(exchangeOutcome);
+    expect(result.isError).toBeUndefined();
+    expect(audioTranscriber).toHaveBeenCalledOnce();
+    expect(Buffer.from(audioTranscriber.mock.calls[0]![0].bytes)).toEqual(
+      insideAudio,
+    );
+    expect(Buffer.from(audioTranscriber.mock.calls[0]![0].bytes)).not.toEqual(
+      outsideAudio,
+    );
   });
 
   test("never reads outside notebook bytes after a final ancestor exchange", async () => {
@@ -1127,5 +1175,109 @@ describe("FileRead tool", () => {
     const result = await tool.execute({ file_path: file });
     expect(result.isError).toBe(true);
     expect(result.content).toContain("cannot read binary files");
+  });
+
+  test("supported WebM audio crosses binary preflight and is transcribed", async () => {
+    const file = join(root, "voice.webm");
+    const bytes = Buffer.from([0x1a, 0x45, 0xdf, 0xa3, 0x00, 0x01]);
+    await writeFile(file, bytes);
+    const audioTranscriber = vi.fn(async () => ({
+      text: "testing one two three",
+      model: "test-transcriber",
+      provider: "local" as const,
+    }));
+    const tool = createFileReadTool({
+      allowedPaths: [root],
+      audioTranscriber,
+    });
+
+    const result = await tool.execute({ file_path: file });
+
+    expect(result.isError).toBeUndefined();
+    expect(result.content).toContain("testing one two three");
+    expect(result.metadata).toMatchObject({
+      mediaType: "audio/webm",
+      transcribedBy: "test-transcriber",
+      transcriptionProvider: "local",
+    });
+    expect(audioTranscriber).toHaveBeenCalledOnce();
+    expect(audioTranscriber.mock.calls[0]?.[0]).toMatchObject({
+      filename: "voice.webm",
+      mimeType: "audio/webm",
+    });
+    expect(Buffer.from(audioTranscriber.mock.calls[0]![0].bytes)).toEqual(
+      bytes,
+    );
+  });
+
+  test("oversized audio is rejected before bytes reach the transcriber", async () => {
+    const file = join(root, "oversized.webm");
+    await writeFile(file, Buffer.alloc(9, 0x61));
+    const audioTranscriber = vi.fn();
+    const tool = createFileReadTool({
+      allowedPaths: [root],
+      maxImageBytes: 8,
+      audioTranscriber,
+    });
+
+    const result = await tool.execute({ file_path: file });
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("over the 8B limit");
+    expect(audioTranscriber).not.toHaveBeenCalled();
+  });
+
+  test("forwards the tool abort signal to audio transcription", async () => {
+    const file = join(root, "cancelled.webm");
+    await writeFile(file, Buffer.from([0x1a, 0x45, 0xdf, 0xa3]));
+    const controller = new AbortController();
+    let observedSignal: AbortSignal | undefined;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const audioTranscriber = vi.fn(
+      async (
+        params: Parameters<typeof transcribeAudio>[0],
+      ): ReturnType<typeof transcribeAudio> => {
+        observedSignal = params.signal;
+        markStarted();
+        await new Promise<never>((_resolve, reject) => {
+          if (params.signal === undefined) {
+            reject(new Error("missing audio transcription signal"));
+            return;
+          }
+          const rejectCancelled = () => {
+            reject(
+              Object.assign(new Error("audio transcription cancelled"), {
+                name: "AbortError",
+              }),
+            );
+          };
+          if (params.signal.aborted) rejectCancelled();
+          else {
+            params.signal.addEventListener("abort", rejectCancelled, {
+              once: true,
+            });
+          }
+        });
+      },
+    );
+    const tool = createFileReadTool({
+      allowedPaths: [root],
+      audioTranscriber,
+    });
+
+    const execution = tool.execute({
+      file_path: file,
+      __abortSignal: controller.signal,
+    });
+    await started;
+    expect(observedSignal).toBe(controller.signal);
+    controller.abort(new Error("turn cancelled"));
+    await expect(execution).resolves.toMatchObject({
+      isError: true,
+      content: expect.stringContaining("audio transcription cancelled"),
+    });
   });
 });

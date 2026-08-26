@@ -220,6 +220,7 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
     expect(minimalMethods).toMatchObject({
       initialize: true,
       "request.cancel": true,
+      "audio.transcribe": true,
       "commandExec.start": false,
       "thread/realtime/start": false,
       "health.ping": true,

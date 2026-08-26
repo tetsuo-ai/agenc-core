@@ -27,6 +27,8 @@ import {
   type AgentListResult,
   type AgentLogsResult,
   type AgentStopResult,
+  type AudioTranscribeParams,
+  type AudioTranscribeResult,
   type InitializeParams,
   type InitializeResult,
   type JsonObject,
@@ -895,6 +897,13 @@ export class AgencClient {
       result.protocol.version,
     );
     return result;
+  }
+
+  /** Transcribe one bounded audio attachment before submitting a model turn. */
+  transcribeAudio(
+    params: AudioTranscribeParams,
+  ): Promise<AudioTranscribeResult> {
+    return this.request("audio.transcribe", params);
   }
 
   /**

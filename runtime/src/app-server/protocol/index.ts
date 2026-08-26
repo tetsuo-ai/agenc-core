@@ -44,6 +44,7 @@ export type RequestId = string | number;
 export const AGENC_DAEMON_METHODS = [
   "initialize",
   "request.cancel",
+  "audio.transcribe",
   "agent.create",
   "agent.list",
   "agent.attach",
@@ -242,6 +243,13 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description: "Cancel an in-flight daemon request on the same connection.",
+  },
+  "audio.transcribe": {
+    method: "audio.transcribe",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description: "Transcribe one bounded audio attachment before a model turn.",
   },
   "agent.create": {
     method: "agent.create",
@@ -1159,6 +1167,20 @@ export interface InitializeParams extends JsonObject {
 export interface RequestCancelParams extends JsonObject {
   readonly requestId: RequestId;
   readonly reason?: string;
+}
+
+export interface AudioTranscribeInput extends JsonObject {
+  /** Strict RFC 4648 base64. Data URLs and whitespace are rejected. */
+  readonly data: string;
+  readonly mimeType: string;
+  /** Basename only. Paths never cross this daemon boundary. */
+  readonly fileName: string;
+}
+
+export interface AudioTranscribeParams extends JsonObject {
+  readonly audio: AudioTranscribeInput;
+  /** Local is always attempted first; cloud upload requires this opt-in. */
+  readonly preferredProvider?: "openai" | "gemini" | "local";
 }
 
 export interface DaemonShutdownParams extends JsonObject {
@@ -2138,6 +2160,7 @@ export interface AgenCDaemonRequestWithoutParams<
 export type AgenCDaemonRequest =
   | AgenCDaemonRequestWithParams<"initialize", InitializeParams>
   | AgenCDaemonRequestWithParams<"request.cancel", RequestCancelParams>
+  | AgenCDaemonRequestWithParams<"audio.transcribe", AudioTranscribeParams>
   | AgenCDaemonRequestWithParams<"agent.create", AgentCreateParams>
   | AgenCDaemonRequestWithParams<"agent.list", AgentListParams>
   | AgenCDaemonRequestWithParams<"agent.attach", AgentAttachParams>
@@ -2801,6 +2824,12 @@ export interface RequestCancelResult extends JsonObject {
   readonly requestId: RequestId;
   readonly cancelled: boolean;
   readonly reason?: string;
+}
+
+export interface AudioTranscribeResult extends JsonObject {
+  readonly text: string;
+  readonly model: string;
+  readonly provider: "openai" | "gemini" | "local";
 }
 
 export interface SessionCreateResult extends SessionSummary {}
@@ -3468,6 +3497,7 @@ export interface AuthLogoutResult extends JsonObject {
 export interface AgenCDaemonResultByMethod {
   readonly initialize: InitializeResult;
   readonly "request.cancel": RequestCancelResult;
+  readonly "audio.transcribe": AudioTranscribeResult;
   readonly "agent.create": AgentCreateResult;
   readonly "agent.list": AgentListResult;
   readonly "agent.attach": AgentAttachResult;
