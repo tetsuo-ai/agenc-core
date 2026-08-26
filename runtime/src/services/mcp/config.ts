@@ -1527,13 +1527,35 @@ function isDefaultDisabledBuiltin(name: string): boolean {
 }
 
 /**
+ * A server a plugin brought with it.
+ *
+ * Plugin MCP servers are named `plugin:<plugin>:<server>` throughout, which
+ * is also how duplicate suppression identifies them.
+ */
+function isPluginProvidedServer(name: string): boolean {
+  return name.startsWith('plugin:')
+}
+
+/**
  * Check if an MCP server is disabled
+ *
+ * Plugin-provided servers are opt-in, like the default-disabled builtin.
+ * Everything else stays opt-out: a server the user configured by hand is one
+ * they already decided to run.
+ *
+ * Installing a plugin used to be the same act as running whatever processes
+ * it declared. A stdio server is a `command` core spawns, so a plugin could
+ * arrive from a marketplace and start executing without anyone approving it
+ * — and one of the plugins in this very repository launches `npx -y`, which
+ * fetches from the network at run time. Other harnesses ship their MCP
+ * catalogues disabled for exactly this reason.
+ *
  * @param name The name of the server
  * @returns true if the server is disabled
  */
 export function isMcpServerDisabled(name: string): boolean {
   const projectConfig = getCurrentProjectConfig()
-  if (isDefaultDisabledBuiltin(name)) {
+  if (isDefaultDisabledBuiltin(name) || isPluginProvidedServer(name)) {
     const enabledServers = projectConfig.enabledMcpServers || []
     return !enabledServers.includes(name)
   }
@@ -1558,7 +1580,10 @@ function toggleMembership(
  */
 export function setMcpServerEnabled(name: string, enabled: boolean): void {
   saveCurrentProjectConfig(current => {
-    if (isDefaultDisabledBuiltin(name)) {
+    // Opt-in servers are governed by the enabled list, so both sides have to
+    // agree on which list to write. Toggling the disabled list here would
+    // report success and change nothing a plugin server ever reads.
+    if (isDefaultDisabledBuiltin(name) || isPluginProvidedServer(name)) {
       const prev = current.enabledMcpServers || []
       const next = toggleMembership(prev, name, enabled)
       if (next === prev) return current
