@@ -440,18 +440,6 @@ describe("SessionProviderService", () => {
     expect(service.current().model).toBe("replacement");
   });
 
-  test("rejects obsolete selectors even when set to a historically false value", () => {
-    expect(
-      () =>
-        new SessionProviderService({
-          initialProvider: initialProvider("initial"),
-          environment: { AGENC_USE_OPENAI: "0" },
-        }),
-    ).toThrow(
-      /obsolete provider selector.*AGENC_USE_OPENAI.*AGENC_PROVIDER=openai/i,
-    );
-  });
-
   test("fails closed when two switches were prepared from the same revision", async () => {
     const service = new SessionProviderService({
       initialProvider: initialProvider("initial"),

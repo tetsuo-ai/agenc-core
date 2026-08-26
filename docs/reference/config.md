@@ -233,12 +233,8 @@ removed names are rejected in a v2 document. The migration-only `_unknown`
 normalization side table exists only to report unmapped v1/JSON data;
 `_unknown` itself is not accepted in schema v2.
 
-Removed provider selector variables (`AGENC_USE_GEMINI`,
-`AGENC_USE_OPENAI`, `AGENC_USE_MISTRAL`, `AGENC_USE_GITHUB`,
-`AGENC_USE_MINIMAX`, `AGENC_USE_BEDROCK`, `AGENC_USE_VERTEX`,
-`AGENC_USE_FOUNDRY`, and `NVIDIA_NIM`) are rejected. Select exactly one route
-with `--provider`, `AGENC_PROVIDER`, or `model_provider`; all converge on the
-same captured provider authority. See [env.md](env.md).
+Select exactly one provider route with `--provider`, `AGENC_PROVIDER`, or
+`model_provider`; all three converge on the same captured provider authority.
 
 ## Built-in defaults
 

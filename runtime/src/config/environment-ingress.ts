@@ -1,7 +1,4 @@
-import {
-  assertNoObsoleteConfigEnvironment,
-  assertNoObsoleteProviderSelectors,
-} from "./env.js";
+import { assertNoObsoleteConfigEnvironment } from "./env.js";
 import { assertNoRetiredAgentRuntimeEnvironment } from "../session/runtime-options.js";
 
 export type RuntimeIngressEnvironment = Readonly<
@@ -14,5 +11,4 @@ export function assertCanonicalEnvironmentIngress(
 ): void {
   assertNoRetiredAgentRuntimeEnvironment(environment);
   assertNoObsoleteConfigEnvironment(environment);
-  assertNoObsoleteProviderSelectors(environment);
 }

@@ -4,10 +4,7 @@ import ts from "typescript";
 import { describe, expect, test } from "vitest";
 
 import { DAEMON_CLIENT_ENV_SNAPSHOT_KEYS } from "../../src/app-server/client-env-snapshot.js";
-import {
-  OBSOLETE_CONFIG_ENV_REPLACEMENTS,
-  OBSOLETE_PROVIDER_SELECTOR_REPLACEMENTS,
-} from "../../src/config/env.js";
+import { OBSOLETE_CONFIG_ENV_REPLACEMENTS } from "../../src/config/env.js";
 import { RETIRED_CONFIG_DIR_ENV } from "../../src/config/home.js";
 import { RETIRED_AGENT_RUNTIME_ENV_REPLACEMENTS } from "../../src/session/runtime-options.js";
 
@@ -81,7 +78,7 @@ function runtimeEnvironmentNames(): Set<string> {
         const name = member.name && ts.isIdentifier(member.name)
           ? member.name.text
           : undefined;
-        if (name && (/^AGENC_[A-Z0-9_]+$/u.test(name) || name === "NVIDIA_NIM")) {
+        if (name && /^AGENC_[A-Z0-9_]+$/u.test(name)) {
           names.add(name);
         }
       }
@@ -96,7 +93,6 @@ function obsoleteConfigNames(): Set<string> {
     RETIRED_CONFIG_DIR_ENV,
     ...Object.keys(RETIRED_AGENT_RUNTIME_ENV_REPLACEMENTS),
     ...Object.keys(OBSOLETE_CONFIG_ENV_REPLACEMENTS),
-    ...Object.keys(OBSOLETE_PROVIDER_SELECTOR_REPLACEMENTS),
   ]);
 }
 

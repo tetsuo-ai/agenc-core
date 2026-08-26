@@ -17,9 +17,6 @@ import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 
 import {
-  assertNoObsoleteProviderSelectors,
-} from "./env.js";
-import {
   RetiredConfigDirError,
   resolveHomeContext,
   resolveMigrationHomeContext,
@@ -137,17 +134,6 @@ describe("HomeContext", () => {
       AGENC_HOME: join(platformHome, "one"),
       AGENC_CONFIG_DIR: join(platformHome, "two"),
     }, { platformHome })).toThrow(/refuses to guess/u);
-  });
-});
-
-describe("obsolete provider selectors", () => {
-  test("rejects every defined selector, including empty and false-like values", () => {
-    expect(() => assertNoObsoleteProviderSelectors({
-      AGENC_USE_OPENAI: "false",
-      AGENC_USE_BEDROCK: "0",
-      AGENC_USE_VERTEX: "1",
-      NVIDIA_NIM: "",
-    })).toThrow(/AGENC_PROVIDER=openai.*AGENC_PROVIDER=amazon-bedrock.*no canonical provider adapter/su);
   });
 });
 

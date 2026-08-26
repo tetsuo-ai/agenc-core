@@ -37,9 +37,8 @@ base URLs, and local endpoint availability never choose a provider.
 The client captures this selection once and binds it to a session-owned
 provider service before daemon work begins. `/provider` replaces that binding
 for only the current session. It does not stamp `process.env`, change the
-daemon default, or affect concurrent sessions. The removed `AGENC_USE_*` and
-`NVIDIA_NIM` selectors are rejected rather than assigned secondary
-precedence; see [env.md](env.md#removed-and-rejected-names).
+daemon default, or affect concurrent sessions. `AGENC_PROVIDER` is the only
+provider-selection environment variable.
 
 Live provider selection accepts canonical slugs only. The retired selector
 spellings `xai`, `custom`, and `openai_compatible` are rejected at strict-v2
@@ -109,7 +108,7 @@ they run only through the Grok Build CLI ACP path. See
 | `mistral` | Mistral | `mistral-medium-latest` | `https://api.mistral.ai/v1` | `MISTRAL_API_KEY` | `MISTRAL_BASE_URL` | `api-key` |
 | `nvidia-nim` | NVIDIA NIM | `nvidia/llama-3.1-nemotron-70b-instruct` | `https://integrate.api.nvidia.com/v1` | `NVIDIA_API_KEY` | `NVIDIA_BASE_URL` | `api-key` |
 | `minimax` | MiniMax | `MiniMax-M2.5` | `https://api.minimax.io/v1` | `MINIMAX_API_KEY` | `MINIMAX_BASE_URL` | `api-key` |
-| `github` | GitHub Copilot | `gpt-4o` | `https://api.githubcopilot.com` | `GITHUB_TOKEN`, `GH_TOKEN` | `GITHUB_BASE_URL` | `api-key` |
+| `github` | GitHub Copilot | `gpt-5.3-codex` | `https://api.githubcopilot.com` | `GITHUB_TOKEN`, `GH_TOKEN` | `GITHUB_BASE_URL` | `api-key` |
 | `amazon-bedrock` | Amazon Bedrock | `amazon.nova-pro-v1:0` | `https://bedrock-runtime.us-east-1.amazonaws.com` | access: `AWS_BEDROCK_ACCESS_KEY_ID`, `AWS_ACCESS_KEY_ID`; secret: `AWS_BEDROCK_SECRET_ACCESS_KEY`, `AWS_SECRET_ACCESS_KEY`; optional session: `AWS_BEDROCK_SESSION_TOKEN`, `AWS_SESSION_TOKEN` | `AWS_BEDROCK_BASE_URL` | `environment` |
 | `agenc` | AgenC | `agenc` | `https://id.agenc.ag/v1` | _(managed auth; no BYOK key alias)_ | `AGENC_BASE_URL` | `managed` |
 

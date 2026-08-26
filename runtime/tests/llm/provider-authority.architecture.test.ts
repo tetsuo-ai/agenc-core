@@ -10,15 +10,6 @@ import { BUILT_IN_PROVIDER_BASE_URLS } from "../../src/llm/registry/provider-inf
 const SRC = fileURLToPath(new URL("../../src/", import.meta.url));
 const TESTS = fileURLToPath(new URL("../", import.meta.url));
 const RUNTIME = fileURLToPath(new URL("../../", import.meta.url));
-const OBSOLETE_SELECTOR_FIXTURES = new Set([
-  "config/canonical-repository.test.ts",
-  "config/env-documentation-coverage.architecture.test.ts",
-  "app-server/agent-lifecycle.contract.test.ts",
-  "app-server/client-env-snapshot.test.ts",
-  "llm/provider-authority.architecture.test.ts",
-  "session/provider-service.test.ts",
-]);
-
 function sourceFiles(path: string): string[] {
   if (statSync(path).isFile()) return [path];
   return readdirSync(path).flatMap((entry) => sourceFiles(`${path}/${entry}`));
@@ -340,21 +331,6 @@ describe("provider authority architecture", () => {
     expect(existsSync(`${SRC}/utils/providerValidation.ts`)).toBe(false);
   });
 
-  test("production code cannot consume, generate, or forward obsolete selectors", () => {
-    const obsoleteSelector =
-      /\b(?:AGENC_USE_(?:OPENAI|GEMINI|MISTRAL|GITHUB|MINIMAX|BEDROCK|VERTEX|FOUNDRY)|NVIDIA_NIM)\b/;
-    const offenders = sourceFiles(SRC)
-      .filter((path) => path.endsWith(".ts") || path.endsWith(".tsx"))
-      .filter((path) => !path.endsWith("/config/env.ts"))
-      .filter((path) => obsoleteSelector.test(readFileSync(path, "utf8")));
-    expect(offenders).toEqual([]);
-    const envSource = readFileSync(`${SRC}/config/env.ts`, "utf8");
-    const snapshot =
-      envSource.match(/export interface EnvSnapshot \{([\s\S]*?)\n\}/u)?.[1] ??
-      "";
-    expect(snapshot).not.toMatch(obsoleteSelector);
-  });
-
   test("the retired AgenC-specific xAI credential alias is rejection-only", () => {
     const offenders = sourceFiles(SRC)
       .filter((path) => /\.(?:ts|tsx)$/u.test(path))
@@ -369,19 +345,6 @@ describe("provider authority architecture", () => {
           name !== "utils/secretEnv.ts",
       )
       .map(({ name }) => name);
-    expect(offenders).toEqual([]);
-  });
-
-  test("behavioral tests cannot install obsolete provider selectors", () => {
-    const obsoleteSelector =
-      /\b(?:AGENC_USE_(?:OPENAI|GEMINI|MISTRAL|GITHUB|MINIMAX|BEDROCK|VERTEX|FOUNDRY)|NVIDIA_NIM)\b/;
-    const offenders = sourceFiles(TESTS)
-      .filter((path) => /\.(?:mjs|ts|tsx)$/.test(path))
-      .flatMap((path) => {
-        const name = relative(TESTS, path);
-        if (OBSOLETE_SELECTOR_FIXTURES.has(name)) return [];
-        return obsoleteSelector.test(readFileSync(path, "utf8")) ? [name] : [];
-      });
     expect(offenders).toEqual([]);
   });
 

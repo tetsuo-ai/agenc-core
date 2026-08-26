@@ -416,8 +416,6 @@ migration contract.
 | `DISABLE_AUTO_COMPACT` | `AGENC_DISABLE_AUTO_COMPACT` |
 | `DISABLE_COMPACT` | `AGENC_DISABLE_COMPACT` |
 | `DISABLE_TOOL_HISTORY_COMPRESSION` | `AGENC_DISABLE_TOOL_HISTORY_COMPRESSION` |
-| `AGENC_USE_GEMINI`, `AGENC_USE_OPENAI`, `AGENC_USE_MISTRAL`, `AGENC_USE_GITHUB`, `AGENC_USE_MINIMAX`, `AGENC_USE_BEDROCK`, `NVIDIA_NIM` | `AGENC_PROVIDER=<slug>` or `--provider <slug>` |
-| `AGENC_USE_VERTEX`, `AGENC_USE_FOUNDRY` | Choose a provider with a supported canonical adapter |
 | `AGENC_PROVIDER=xai` | `AGENC_PROVIDER=grok` |
 | `AGENC_PROVIDER=custom`, `AGENC_PROVIDER=openai_compatible` | `AGENC_PROVIDER=openai-compatible` |
 | `AGENC_DISABLE_STREAM_WATCHDOG` | `AGENC_STREAM_IDLE_TIMEOUT_MS=0` |
@@ -438,11 +436,11 @@ migration contract.
 home migration, including the historical native-vault namespace it selected.
 Ordinary runtime identity comes only from `AGENC_HOME`; see the config
 migration reference for copy/retain and exact-retirement rules. The removed
-provider selectors, watchdog switches, effort
-switch, `AGENC_SIMPLE`, and `AGENC_BARE` are rejection-only diagnostics. None can select
-runtime behavior. Every removed name is rejected whenever defined, including
-`0`, `false`, or an empty string. Retired `AGENC_PROVIDER` values are also rejected at live
-startup; they are translated only while explicitly migrating a v1 config.
+watchdog switches, the effort switch, `AGENC_SIMPLE`, and `AGENC_BARE` are
+rejection-only diagnostics. None can select runtime behavior. Every removed
+name is rejected whenever defined, including `0`, `false`, or an empty string.
+Retired `AGENC_PROVIDER` values are also rejected at live startup; they are
+translated only while explicitly migrating a v1 config.
 
 ## Related
 

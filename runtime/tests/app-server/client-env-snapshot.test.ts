@@ -210,9 +210,6 @@ describe("daemon client environment snapshots", () => {
       normalizeDaemonClientEnvOverrides({ OPENAI_MODEL: "retired" }),
     ).toThrow(/obsolete configuration environment variable.*OPENAI_MODEL/i);
     expect(() =>
-      normalizeDaemonClientEnvOverrides({ AGENC_USE_OPENAI: "0" }),
-    ).toThrow(/obsolete provider selector.*AGENC_USE_OPENAI/i);
-    expect(() =>
       normalizeDaemonClientEnvOverrides({ DOCS_MCP_AUTHORIZATION: "secret" }),
     ).toThrow(/unsupported key.*DOCS_MCP_AUTHORIZATION/i);
   });

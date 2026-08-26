@@ -6296,11 +6296,6 @@ describe("AgenC background agent lifecycle", () => {
         { OPENAI_MODEL: "retired" },
         /envOverrides.*obsolete configuration environment variable.*OPENAI_MODEL/i,
       ],
-      [
-        "retired-provider-env-override",
-        { AGENC_USE_OPENAI: "0" },
-        /envOverrides.*obsolete provider selector.*AGENC_USE_OPENAI/i,
-      ],
     ] as const) {
       await expect(
         connection.dispatch({

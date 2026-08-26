@@ -148,18 +148,6 @@ export function resolveAgencHome(env: EnvSnapshot = process.env): string {
   }).path;
 }
 
-export const OBSOLETE_PROVIDER_SELECTOR_REPLACEMENTS = Object.freeze({
-  AGENC_USE_GEMINI: "gemini",
-  AGENC_USE_OPENAI: "openai",
-  AGENC_USE_MISTRAL: "mistral",
-  AGENC_USE_GITHUB: "github",
-  AGENC_USE_MINIMAX: "minimax",
-  AGENC_USE_BEDROCK: "amazon-bedrock",
-  AGENC_USE_VERTEX: null,
-  AGENC_USE_FOUNDRY: null,
-  NVIDIA_NIM: "nvidia-nim",
-} as const);
-
 export const OBSOLETE_CONFIG_ENV_REPLACEMENTS = Object.freeze({
   AGENC_XAI_API_KEY: "XAI_API_KEY or GROK_API_KEY",
   AGENC_MCP_SERVERS: "mcp_servers in config.toml or agenc mcp add",
@@ -239,36 +227,6 @@ export function assertNoObsoleteConfigEnvironment(
   );
 }
 
-export function assertNoObsoleteProviderSelectors(
-  env: EnvSnapshot = process.env,
-): void {
-  const e = readEnv(env);
-  const present = Object.entries(OBSOLETE_PROVIDER_SELECTOR_REPLACEMENTS)
-    .filter(([name]) => e[name] !== undefined);
-  if (present.length === 0) return;
-  const names = present.map(([name]) => name).join(", ");
-  const replacements = [...new Set(present.flatMap(([, slug]) =>
-    slug === null ? [] : [slug]
-  ))]
-    .map((slug) => `AGENC_PROVIDER=${slug}`)
-    .join(" or ");
-  const unsupported = present
-    .filter(([, slug]) => slug === null)
-    .map(([name]) => name);
-  const guidance = [
-    replacements.length > 0 ? `use ${replacements}` : undefined,
-    unsupported.length > 0
-      ? `${unsupported.join(" and ")} ${unsupported.length === 1 ? "has" : "have"} no canonical provider adapter; choose a supported AGENC_PROVIDER=<slug>`
-      : undefined,
-  ].filter((value): value is string => value !== undefined).join("; ");
-  throw new Error(
-    `obsolete provider selector environment variable${present.length === 1 ? "" : "s"} ` +
-      `${names} ${present.length === 1 ? "is" : "are"} set; remove ` +
-      `${present.length === 1 ? "it" : "them"} and ${guidance}. ` +
-      `Defined values such as \"0\" or \"false\" are still rejected.`,
-  );
-}
-
 /**
  * xAI API key resolution with aliases. Returns `undefined` if none set.
  * Priority: XAI_API_KEY → GROK_API_KEY.
@@ -289,7 +247,6 @@ function readNonEmpty(
 export function resolveProvider(
   env: EnvSnapshot = process.env,
 ): string | undefined {
-  assertNoObsoleteProviderSelectors(env);
   return normalizeProviderIdentity(
     readEnv(env).AGENC_PROVIDER,
     "AGENC_PROVIDER",
@@ -414,7 +371,6 @@ export function applyEnvOverrides(
   onWarn?: (msg: string) => void,
 ): AgenCConfig {
   assertNoRetiredConfigDir(env);
-  assertNoObsoleteProviderSelectors(env);
   assertNoObsoleteConfigEnvironment(env);
   const e = readEnv(env);
   const override: Mutable<Partial<AgenCConfig>> = {};

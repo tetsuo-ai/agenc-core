@@ -105,7 +105,7 @@ type SelectedShimProvider =
 
 const GITHUB_COPILOT_BASE = 'https://api.githubcopilot.com'
 const DEFAULT_MISTRAL_MODEL = 'mistral-medium-latest'
-const DEFAULT_NVIDIA_NIM_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
+const DEFAULT_NVIDIA_PROVIDER_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
 const DEFAULT_MINIMAX_MODEL = 'MiniMax-M2.5'
 const DEFAULT_GITHUB_MODEL = 'gpt-4o'
 const GITHUB_429_MAX_RETRIES = 3
@@ -218,7 +218,7 @@ function buildNvidiaNimProviderOverride(
 ): ResolvedShimConnection {
   return {
     model:
-      firstProviderEnvString(selectedModel) ?? DEFAULT_NVIDIA_NIM_MODEL,
+      firstProviderEnvString(selectedModel) ?? DEFAULT_NVIDIA_PROVIDER_MODEL,
     baseURL:
       firstProviderEnvString(environment.NVIDIA_BASE_URL) ??
       'https://integrate.api.nvidia.com/v1',

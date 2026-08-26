@@ -54,7 +54,7 @@ const GITHUB_COPILOT_CATALOG_MODELS = Object.freeze(
   ),
 );
 
-const NVIDIA_NIM_MODEL_IDS = Object.freeze([
+const NVIDIA_PROVIDER_MODEL_IDS = Object.freeze([
   "nvidia/cosmos-reason2-8b",
   "microsoft/phi-4-mini-flash-reasoning",
   "qwen/qwen3-next-80b-a3b-thinking",
@@ -616,7 +616,7 @@ export const BUILT_IN_PROVIDER_MODEL_CATALOG: Readonly<
   deepseek: Object.freeze(["deepseek-v4-flash", "deepseek-v4-pro"]),
   gemini: Object.freeze(["gemini-2.5-pro"]),
   mistral: Object.freeze(["mistral-medium-latest"]),
-  "nvidia-nim": NVIDIA_NIM_MODEL_IDS,
+  "nvidia-nim": NVIDIA_PROVIDER_MODEL_IDS,
   minimax: MINIMAX_MODEL_IDS,
   // Copilot proxies models owned by several providers. Keep those entries
   // qualified here so bare slugs such as gpt-5.4 retain one global owner.
