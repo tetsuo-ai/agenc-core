@@ -316,6 +316,146 @@ describe("strict layered repository", () => {
     } satisfies Partial<ConfigRepositoryError>);
   });
 
+  test("attributes an inferred model to the provider-only layer that selected it", async () => {
+    const root = temp("agenc-provider-only-layer");
+    const home = join(root, "home");
+    write(join(home, "config.toml"), [
+      "config_version = 2",
+      'model_provider = "openai"',
+      "",
+    ].join("\n"));
+
+    const resolved = await loadLayeredConfig({
+      env: { AGENC_HOME: home },
+      projectRoot: root,
+      managedConfigPath: join(root, "missing-managed.toml"),
+      managedDropInDir: join(root, "missing-managed.d"),
+    });
+
+    expect(resolved.config).toMatchObject({
+      model_provider: "openai",
+      model: "gpt-5",
+    });
+    expect(resolved.provenance.model_provider?.scope).toBe("user");
+    expect(resolved.provenance.model?.scope).toBe("user");
+    expect(resolved.sources.find((layer) => layer.scope === "user")?.config)
+      .toMatchObject({ model_provider: "openai", model: "gpt-5" });
+  });
+
+  test("keeps the provider/model pair atomic across every authority layer", async () => {
+    const root = temp("agenc-provider-model-layers");
+    const home = join(root, "home");
+    const managed = join(root, "managed.toml");
+    write(join(home, "config.toml"), [
+      "config_version = 2",
+      'model_provider = "openai"',
+      "",
+    ].join("\n"));
+    write(managed, [
+      "config_version = 2",
+      'model = "gpt-5"',
+      "",
+    ].join("\n"));
+
+    const resolved = await loadLayeredConfig({
+      env: {
+        AGENC_HOME: home,
+        AGENC_MODEL: "claude-opus-4-7",
+      },
+      projectRoot: root,
+      managedConfigPath: managed,
+      managedDropInDir: join(root, "missing-managed.d"),
+      cliOverrides: { model_provider: "grok" },
+    });
+
+    expect(resolved.sources.find((layer) => layer.scope === "user")?.config)
+      .toMatchObject({ model_provider: "openai", model: "gpt-5" });
+    expect(
+      resolved.sources.find((layer) => layer.scope === "environment")?.config,
+    ).toMatchObject({
+      model_provider: "anthropic",
+      model: "claude-opus-4-7",
+    });
+    expect(resolved.sources.find((layer) => layer.scope === "cli")?.config)
+      .toMatchObject({ model_provider: "grok", model: "grok-4.6" });
+    expect(resolved.sources.find((layer) => layer.scope === "managed")?.config)
+      .toMatchObject({ model_provider: "openai", model: "gpt-5" });
+    expect(resolved.config).toMatchObject({
+      model_provider: "openai",
+      model: "gpt-5",
+    });
+    expect(resolved.provenance.model_provider?.scope).toBe("managed");
+    expect(resolved.provenance.model?.scope).toBe("managed");
+  });
+
+  test.each([
+    { selection: { AGENC_PROVIDER: "grok" }, selector: "provider" },
+    { selection: { AGENC_MODEL: "grok-4.6" }, selector: "model" },
+  ])(
+    "preserves explicit environment $selector intent when the selected pair is unchanged",
+    async ({ selection }) => {
+      const root = temp("agenc-equal-environment-selection");
+      const home = join(root, "home");
+      const resolved = await loadLayeredConfig({
+        env: { AGENC_HOME: home, ...selection },
+        projectRoot: root,
+        managedConfigPath: join(root, "missing-managed.toml"),
+        managedDropInDir: join(root, "missing-managed.d"),
+      });
+
+      expect(
+        resolved.sources.find((layer) => layer.scope === "environment")?.config,
+      ).toMatchObject({ model_provider: "grok", model: "grok-4.6" });
+      expect(resolved.provenance.model_provider?.scope).toBe("environment");
+      expect(resolved.provenance.model?.scope).toBe("environment");
+    },
+  );
+
+  test("preserves an explicit profile pair when it equals the inherited pair", async () => {
+    const root = temp("agenc-equal-profile-selection");
+    const home = join(root, "home");
+    write(join(home, "config.toml"), [
+      "config_version = 2",
+      "[profiles.same]",
+      'model_provider = "grok"',
+      "",
+    ].join("\n"));
+
+    const resolved = await loadLayeredConfig({
+      env: { AGENC_HOME: home },
+      profileName: "same",
+      projectRoot: root,
+      managedConfigPath: join(root, "missing-managed.toml"),
+      managedDropInDir: join(root, "missing-managed.d"),
+    });
+
+    expect(resolved.sources.find((layer) => layer.scope === "profile")?.config)
+      .toMatchObject({ model_provider: "grok", model: "grok-4.6" });
+    expect(resolved.provenance.model_provider?.scope).toBe("profile");
+    expect(resolved.provenance.model?.scope).toBe("profile");
+  });
+
+  test("rejects an ambiguous model at the layer that introduces it", async () => {
+    const root = temp("agenc-ambiguous-model-layer");
+    const home = join(root, "home");
+    write(join(home, "config.toml"), [
+      "config_version = 2",
+      'model = "shared-model"',
+      "[providers.grok]",
+      'default_model = "shared-model"',
+      "[providers.openai]",
+      'default_model = "shared-model"',
+      "",
+    ].join("\n"));
+
+    await expect(loadLayeredConfig({
+      env: { AGENC_HOME: home },
+      projectRoot: root,
+      managedConfigPath: join(root, "missing-managed.toml"),
+      managedDropInDir: join(root, "missing-managed.d"),
+    })).rejects.toThrow(/ambiguous/u);
+  });
+
   test("tracks provenance and prevents untrusted repository grants", async () => {
     const root = temp("agenc-layered-config");
     const home = join(root, "home");

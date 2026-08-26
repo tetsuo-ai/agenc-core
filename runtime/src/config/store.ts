@@ -24,6 +24,7 @@ import { isProjectTrustedSync } from "../permissions/trust/project-trust.js";
 import { enterCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import { RuntimeStateRepository } from "./runtime-state-repository.js";
 import type { CanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import { mergeProviderModelLayer } from "./provider-model-authority.js";
 
 export interface ConfigStorePublicationMetadata {
   /**
@@ -147,7 +148,7 @@ export class ConfigStore {
     });
     this.opts = Object.freeze({ ...opts, env: this.environment });
     // Start from defaults + env — safe to call before first reload().
-    const base = opts.base ?? defaultConfig();
+    const base = mergeProviderModelLayer(defaultConfig(), opts.base ?? {});
     this.snapshot = applyEnvOverrides(base, this.environment, opts.onWarn);
     this.resolvedProjectRoot = opts.projectRoot ?? opts.cwd ?? process.cwd();
     this.resolvedHomeContext = resolveHomeContext(this.environment, {
@@ -337,7 +338,10 @@ export class ConfigStore {
   ): Promise<PreparedConfigStoreReload> {
     const previous = this.captureState();
     const generation = this.reloadGeneration;
-    const base = this.opts.base ?? defaultConfig();
+    const base = mergeProviderModelLayer(
+      defaultConfig(),
+      this.opts.base ?? {},
+    );
     const warningMessages: string[] = [];
     const onWarn = (message: string): void => {
       warningMessages.push(message);
@@ -354,7 +358,11 @@ export class ConfigStore {
         base,
         onWarn,
       });
-      next = applyEnvOverrides(loaded, this.environment, onWarn);
+      next = applyEnvOverrides(
+        mergeProviderModelLayer(defaultConfig(), loaded),
+        this.environment,
+        onWarn,
+      );
     } else {
       const env = this.environment;
       const home = this.resolvedHomeContext;

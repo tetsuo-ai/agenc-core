@@ -32,6 +32,7 @@ import {
   type AgenCConfig,
   type McpServerConfig,
 } from "./schema.js";
+import { resolveProviderModelLayer } from "./provider-model-authority.js";
 
 export const CANONICAL_CONFIG_VERSION = 2 as const;
 export const CANONICAL_CONFIG_VERSION_KEY = "config_version" as const;
@@ -1134,7 +1135,10 @@ function mergeLayer(
     ignored,
     retainUntrustedProjectCommandHooks,
   );
-  const safeLayer = Object.freeze({ ...layer, config: safe });
+  const safeLayer = Object.freeze({
+    ...layer,
+    config: resolveProviderModelLayer(base, safe),
+  });
   const merged = mergeConfigLayerSnapshots([safeLayer], base);
   if (merged === null) {
     throw new Error("repository layer merge unexpectedly produced no config");
@@ -1220,11 +1224,17 @@ function diffLayer(
   after: AgenCConfig,
   scope: ConfigScope,
   label: string,
+  preserveKeys: readonly (keyof AgenCConfig)[] = [],
 ): ConfigLayerSnapshot | null {
   const patch: JsonRecord = {};
   const beforeRecord = before as Readonly<Record<string, unknown>>;
   for (const [key, value] of Object.entries(after)) {
-    if (JSON.stringify(beforeRecord[key]) !== JSON.stringify(value)) patch[key] = value;
+    if (
+      preserveKeys.includes(key as keyof AgenCConfig) ||
+      JSON.stringify(beforeRecord[key]) !== JSON.stringify(value)
+    ) {
+      patch[key] = value;
+    }
   }
   if (Object.keys(patch).length === 0) return null;
   return syntheticLayer(scope, label, normalizeRawConfig(patch));
@@ -1379,7 +1389,18 @@ export async function loadLayeredConfig(
   const profileName = options.profileName ?? resolveProfileName(env);
   if (profileName) {
     const profiled = resolveProfile(config, profileName);
-    const profile = diffLayer(config, profiled, "profile", `profile ${profileName}`);
+    const selectedProfile = config.profiles?.[profileName];
+    const hasProfileSelection =
+      selectedProfile !== undefined &&
+      (Object.prototype.hasOwnProperty.call(selectedProfile, "model_provider") ||
+        Object.prototype.hasOwnProperty.call(selectedProfile, "model"));
+    const profile = diffLayer(
+      config,
+      profiled,
+      "profile",
+      `profile ${profileName}`,
+      hasProfileSelection ? ["model_provider", "model"] : [],
+    );
     if (profile) {
       const merged = mergeLayer(config, profile, true, provenance, ignored);
       config = merged.config;
@@ -1388,7 +1409,16 @@ export async function loadLayeredConfig(
   }
 
   const withEnv = applyEnvOverrides(config, env, options.onWarn);
-  const environment = diffLayer(config, withEnv, "environment", "environment overrides");
+  const hasEnvironmentSelection =
+    (env.AGENC_PROVIDER?.trim().length ?? 0) > 0 ||
+    (env.AGENC_MODEL?.trim().length ?? 0) > 0;
+  const environment = diffLayer(
+    config,
+    withEnv,
+    "environment",
+    "environment overrides",
+    hasEnvironmentSelection ? ["model_provider", "model"] : [],
+  );
   if (environment) {
     const merged = mergeLayer(config, environment, true, provenance, ignored);
     config = merged.config;

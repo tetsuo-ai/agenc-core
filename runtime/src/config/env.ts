@@ -39,6 +39,7 @@ import {
   resolveProviderBaseURLEnvironment,
 } from "../llm/registry/provider-ingress.js";
 import { parseHeartbeatTarget } from "../heartbeat/config.js";
+import { resolveProviderModelLayer } from "./provider-model-authority.js";
 
 // Writable mirror used internally to build override payloads; the public
 // `AgenCConfig` surface stays readonly.
@@ -786,7 +787,10 @@ export function applyEnvOverrides(
   // NOTE: API-key env vars (XAI_API_KEY / GROK_API_KEY)
   // are intentionally NOT layered onto the config snapshot. `resolveApiKey`
   // is the right seam — secrets should not be persisted into the config.
-  const merged = mergeConfigs(config, override);
+  const merged = mergeConfigs(
+    config,
+    resolveProviderModelLayer(config, override),
+  );
   if (!clearHeartbeatTarget) return merged;
   const {
     target_channel: _targetChannel,

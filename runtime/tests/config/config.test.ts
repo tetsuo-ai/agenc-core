@@ -1586,6 +1586,30 @@ describe("env: resolvers", () => {
     const base = mergeConfigs(defaultConfig(), { model_provider: "grok" });
     const out = applyEnvOverrides(base, { AGENC_PROVIDER: "openai" });
     expect(out.model_provider).toBe("openai");
+    expect(out.model).toBe("gpt-5");
+  });
+
+  test.each([
+    ["gpt-5", "openai"],
+    ["claude-opus-4-7", "anthropic"],
+  ])(
+    "applyEnvOverrides resolves model-only %s to its provider",
+    (model, provider) => {
+      const out = applyEnvOverrides(defaultConfig(), { AGENC_MODEL: model });
+      expect(out).toMatchObject({ model, model_provider: provider });
+    },
+  );
+
+  test("applyEnvOverrides rejects an ambiguous model-only selector", () => {
+    const base = mergeConfigs(defaultConfig(), {
+      providers: {
+        grok: { default_model: "shared-model" },
+        openai: { default_model: "shared-model" },
+      },
+    });
+    expect(() =>
+      applyEnvOverrides(base, { AGENC_MODEL: "shared-model" }),
+    ).toThrow(AmbiguousModelError);
   });
 
   test("applyEnvOverrides captures only canonical AGENC_EFFORT_LEVEL values", () => {
@@ -1911,6 +1935,45 @@ describe("ConfigStore", () => {
       env: { AGENC_MODEL: "grok-3" },
     });
     expect(store.current().model).toBe("grok-3");
+    expect(store.current().model_provider).toBe("grok");
+  });
+
+  test("current() resolves a provider-only base before the first reload", () => {
+    const store = new ConfigStore({
+      home: dir,
+      env: {},
+      base: { model_provider: "openai" },
+    });
+
+    expect(store.current()).toMatchObject({
+      model_provider: "openai",
+      model: "gpt-5",
+    });
+  });
+
+  test("current() resolves a known environment model provider-neutrally", () => {
+    const store = new ConfigStore({
+      home: dir,
+      env: { AGENC_MODEL: "claude-opus-4-7" },
+    });
+
+    expect(store.current()).toMatchObject({
+      model_provider: "anthropic",
+      model: "claude-opus-4-7",
+    });
+  });
+
+  test("fixture reloads fold provider-only snapshots through the same authority", async () => {
+    const store = new ConfigStore({
+      home: dir,
+      env: {},
+      loader: async () => ({ model_provider: "openai" }),
+    });
+
+    await expect(store.reload()).resolves.toMatchObject({
+      model_provider: "openai",
+      model: "gpt-5",
+    });
   });
 
   test("reload() uses an immutable snapshot of a caller-supplied environment", async () => {

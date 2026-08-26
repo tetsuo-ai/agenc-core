@@ -7,9 +7,9 @@ import {
 } from "./env.js";
 import {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
-  BUILT_IN_PROVIDER_MODEL_CATALOG,
   resolveBuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
+import type { ProviderSlug } from "./provider-model-authority.js";
 import { normalizeProviderIdentity } from "../provider-identity.js";
 import type {
   AgenCConfig,
@@ -25,8 +25,8 @@ export {
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   BUILT_IN_PROVIDER_MODEL_CATALOG,
 } from "../llm/registry/provider-info.js";
-
-export type ProviderSlug = keyof typeof BUILT_IN_PROVIDER_DEFAULT_MODELS;
+export { buildProviderModelCatalog } from "./provider-model-authority.js";
+export type { ProviderSlug } from "./provider-model-authority.js";
 
 export function isAgencModelShortcut(
   model: string | undefined,
@@ -217,49 +217,4 @@ function normalizeProviderFallbackTargets(
     });
   }
   return Object.freeze(out);
-}
-
-export function buildProviderModelCatalog(
-  config?: AgenCConfig,
-): Readonly<Record<string, readonly string[]>> {
-  const catalog: Record<string, string[]> = Object.fromEntries(
-    Object.entries(BUILT_IN_PROVIDER_MODEL_CATALOG).map(([provider, models]) => [
-      provider,
-      [...models],
-    ]),
-  );
-
-  if (config?.providers) {
-    for (const [provider, providerConfig] of Object.entries(config.providers)) {
-      const slug = resolveBuiltInProviderSlug(provider);
-      const model = providerConfig.default_model?.trim();
-      if (!slug || !model) continue;
-      const entries = catalog[slug] ?? [];
-      if (!entries.includes(model)) {
-        entries.push(model);
-      }
-      catalog[slug] = entries;
-    }
-  }
-
-  if (config?.model_provider && config.model?.trim()) {
-    const slug = resolveBuiltInProviderSlug(config.model_provider);
-    const model = config.model.trim();
-    if (slug) {
-      const entries = catalog[slug] ?? [];
-      if (!entries.includes(model)) {
-        entries.push(model);
-      }
-      catalog[slug] = entries;
-    }
-  }
-
-  return Object.freeze(
-    Object.fromEntries(
-      Object.entries(catalog).map(([provider, models]) => [
-        provider,
-        Object.freeze([...models]),
-      ]),
-    ),
-  );
 }
