@@ -1133,7 +1133,16 @@ async function findGitRepoRoot(start: string): Promise<string | undefined> {
 
 function marketplaceRootDir(marketplacePath: string): string {
   const resolved = resolve(marketplacePath);
-  for (const relativePath of MARKETPLACE_MANIFEST_RELATIVE_PATHS) {
+  // Longest suffix first. "marketplace.json" is a suffix of every supported
+  // location, so checking it first matched `.agents/plugins/marketplace.json`
+  // too and returned `.agents/plugins` as the root — which sent every
+  // repo-relative plugin source looking under `.agents/plugins/plugins/…`.
+  // That is the layout the multi-harness marketplaces use, so none of them
+  // could be added.
+  const candidates = [...MARKETPLACE_MANIFEST_RELATIVE_PATHS].sort(
+    (a, b) => b.split(/[\\/]+/u).length - a.split(/[\\/]+/u).length,
+  );
+  for (const relativePath of candidates) {
     const suffix = relativePath.split(/[\\/]+/u);
     const pathParts = resolved.split(/[\\/]+/u);
     if (pathParts.slice(-suffix.length).join("/") === suffix.join("/")) {

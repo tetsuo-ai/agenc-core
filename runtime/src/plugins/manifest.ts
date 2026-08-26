@@ -10,6 +10,24 @@ export const PLUGIN_MANIFEST_DIR = ".agenc-plugin";
 export const PLUGIN_MANIFEST_FILE = "plugin.json";
 export const PLUGIN_MANIFEST_RELATIVE_PATH = `${PLUGIN_MANIFEST_DIR}/${PLUGIN_MANIFEST_FILE}`;
 const ROOT_PLUGIN_MANIFEST_RELATIVE_PATH = PLUGIN_MANIFEST_FILE;
+
+/**
+ * Where other harnesses keep the same file.
+ *
+ * There is no shared standard for agent plugins — Claude Code, Codex and the
+ * rest each picked their own directory — but the manifest inside is the same
+ * shape: name, version, description, author, license, and component folders
+ * discovered by convention. The multi-harness marketplaces ship one plugin
+ * carrying several of these side by side, so reading them costs nothing and
+ * opens the whole ecosystem instead of asking every author to add one more.
+ *
+ * Ours is preferred: a plugin that ships an `.agenc-plugin` manifest meant it
+ * for this harness.
+ */
+const FOREIGN_PLUGIN_MANIFEST_RELATIVE_PATHS = [
+  ".claude-plugin/plugin.json",
+  ".codex-plugin/plugin.json",
+] as const;
 const MAX_PLUGIN_JSON_BYTES = 1_048_576;
 
 export interface ParsedPluginManifest {
@@ -23,6 +41,7 @@ export async function findPluginManifestPath(
   for (const relativePath of [
     PLUGIN_MANIFEST_RELATIVE_PATH,
     ROOT_PLUGIN_MANIFEST_RELATIVE_PATH,
+    ...FOREIGN_PLUGIN_MANIFEST_RELATIVE_PATHS,
   ]) {
     const candidate = join(pluginRoot, relativePath);
     try {
