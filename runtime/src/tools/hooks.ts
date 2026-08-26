@@ -20,6 +20,7 @@
  */
 
 import type { ToolDispatchResult } from "../tool-registry.js";
+import { isHookExecutionSuppressed } from "../hooks/runtime-policy.js";
 import type { ToolInvocation } from "./context.js";
 import type { Tool } from "./types.js";
 
@@ -299,6 +300,17 @@ export async function runPreToolUseHooks(
   onCancelled?: (idx: number) => void,
   onOrphaned?: (idx: number) => void,
 ): Promise<PreHooksResult> {
+  if (
+    isHookExecutionSuppressed(
+      base.invocation.session?.services?.runtimeOptions,
+    )
+  ) {
+    return {
+      kind: "continue",
+      args: base.args,
+      additionalContexts: [],
+    };
+  }
   let args = base.args;
   let hookPermissionResult: HookPermissionResult | undefined;
   const additionalContexts: string[] = [];
@@ -536,6 +548,18 @@ export async function runPostToolUseHooks(
   onCancelled?: (idx: number) => void,
   onOrphaned?: (idx: number) => void,
 ): Promise<PostHooksResult> {
+  if (
+    isHookExecutionSuppressed(
+      base.invocation.session?.services?.runtimeOptions,
+    )
+  ) {
+    return {
+      kind: "continue",
+      result: base.result,
+      additionalContexts: [],
+      blockingErrors: [],
+    };
+  }
   let result = base.result;
   const additionalContexts: string[] = [];
   const blockingErrors: string[] = [];
@@ -682,6 +706,13 @@ export async function runPostToolUseFailureHooks(
   onCancelled?: (idx: number) => void,
   onOrphaned?: (idx: number) => void,
 ): Promise<ReadonlyArray<HookTimingRecord>> {
+  if (
+    isHookExecutionSuppressed(
+      base.invocation.session?.services?.runtimeOptions,
+    )
+  ) {
+    return [];
+  }
   const records: HookTimingRecord[] = [];
   for (let i = 0; i < hooks.length; i += 1) {
     const hook = hooks[i];
@@ -849,6 +880,13 @@ export async function resolveHookPermissionDecision(
   onCancelled?: (idx: number) => void,
   onOrphaned?: (idx: number) => void,
 ): Promise<PermissionDecisionResult> {
+  if (
+    isHookExecutionSuppressed(
+      context.invocation?.session?.services?.runtimeOptions,
+    )
+  ) {
+    return { kind: "pass" };
+  }
   for (let i = 0; i < hooks.length; i += 1) {
     const hook = hooks[i];
     if (!hook) continue;

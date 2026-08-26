@@ -24,6 +24,7 @@ import {
   type PersistNetworkPolicyAmendment,
   type SandboxPolicy,
 } from "../../permissions/network-approval.js";
+import type { HookRuntimeAuthority } from "../../hooks/runtime-policy.js";
 
 export type NetworkApprovalGate =
   | { readonly kind: "allowed" }
@@ -36,6 +37,7 @@ export interface ManagedNetworkApprovalOptions {
   readonly approvalPolicy: ApprovalPolicy;
   readonly resolver?: NetworkApprovalResolver;
   readonly hooks?: ReadonlyArray<NetworkApprovalHook>;
+  readonly runtimeOptions?: HookRuntimeAuthority;
   readonly persistAmendment?: PersistNetworkPolicyAmendment;
   readonly onAmendmentPersistError?: (err: unknown) => void;
   readonly signal?: AbortSignal;
@@ -70,6 +72,9 @@ export async function requestManagedNetworkApprovalForSandbox(
     approvalPolicy: opts.approvalPolicy,
     ...(opts.resolver !== undefined ? { resolver: opts.resolver } : {}),
     ...(opts.hooks !== undefined ? { hooks: opts.hooks } : {}),
+    ...(opts.runtimeOptions !== undefined
+      ? { runtimeOptions: opts.runtimeOptions }
+      : {}),
     ...(opts.persistAmendment !== undefined
       ? { persistAmendment: opts.persistAmendment }
       : {}),

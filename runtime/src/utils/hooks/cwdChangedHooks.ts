@@ -6,6 +6,7 @@ import {
   type HookOutsideReplResult,
 } from '../hooks.js'
 import { clearCwdEnvFiles } from '../sessionEnvironment.js'
+import { isHookExecutionSuppressed } from '../../hooks/runtime-policy.js'
 
 let notifyCallback: ((text: string, isError: boolean) => void) | null = null
 
@@ -19,6 +20,7 @@ export async function onCwdChangedForHooks(
   oldCwd: string,
   newCwd: string,
 ): Promise<void> {
+  if (isHookExecutionSuppressed()) return
   if (oldCwd === newCwd) return
 
   if ((getRegisteredHooks()?.CwdChanged?.length ?? 0) === 0) return

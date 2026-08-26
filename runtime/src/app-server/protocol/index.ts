@@ -16,7 +16,7 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * Clients that need any of these additive surfaces must not negotiate an older
  * daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.4.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.5.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -3330,6 +3330,12 @@ export interface SessionHooksStatusResult extends JsonObject {
   readonly available: boolean;
   readonly sourcePath: string;
   readonly disabled: boolean;
+  /** Present on protocol >=1.5; immutable owner suppression from `--bare`. */
+  readonly hardSuppressed?: boolean;
+  /** Present on protocol >=1.5; `disabled || hardSuppressed`. */
+  readonly effectiveDisabled?: boolean;
+  /** Present on protocol >=1.5; why execution is currently suppressed. */
+  readonly suppressionReason?: "bare_mode" | "session_disabled" | null;
   readonly issues: readonly SessionHookValidationIssueShape[];
   readonly hooks: readonly SessionHookConfigShape[];
   readonly diagnostics: readonly SessionHookRunDiagnosticShape[];
@@ -3339,6 +3345,12 @@ export interface SessionHooksSetDisabledResult extends JsonObject {
   readonly sessionId: string;
   readonly applied: boolean;
   readonly disabled: boolean;
+  /** Present on protocol >=1.5; immutable owner suppression from `--bare`. */
+  readonly hardSuppressed?: boolean;
+  /** Present on protocol >=1.5; `disabled || hardSuppressed`. */
+  readonly effectiveDisabled?: boolean;
+  /** Present on protocol >=1.5; why execution is currently suppressed. */
+  readonly suppressionReason?: "bare_mode" | "session_disabled" | null;
 }
 
 export interface SessionApplyConfigResult extends JsonObject {

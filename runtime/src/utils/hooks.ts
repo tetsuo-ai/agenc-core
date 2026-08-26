@@ -152,7 +152,6 @@ import {
 } from "./hooks/sessionHooks.js";
 import type { AppState } from "../tui/state/AppState.js";
 import { jsonStringify, jsonParse } from "./slowOperations.js";
-import { isBareMode } from "./envUtils.js";
 import { errorMessage, getErrnoCode } from "./errors.js";
 import { getSelectedProviderEnvironment } from "./model/providers.js";
 
@@ -257,6 +256,7 @@ function executeInBackground({
     command,
     shellCommand,
     pluginId,
+    queueOwner,
   });
 
   return true;
@@ -2134,10 +2134,6 @@ async function* executeHooks({
     return;
   }
 
-  if (isBareMode()) {
-    return;
-  }
-
   const hookEvent = hookInput.hook_event_name;
   const hookName = matchQuery ? `${hookEvent}:${matchQuery}` : hookEvent;
 
@@ -3088,15 +3084,11 @@ async function executeHooksOutsideREPL({
   signal?: AbortSignal;
   timeoutMs: number;
 }): Promise<HookOutsideReplResult[]> {
-  if (isBareMode()) {
-    return [];
-  }
-
   const hookEvent = hookInput.hook_event_name;
   const hookName = matchQuery ? `${hookEvent}:${matchQuery}` : hookEvent;
   if (shouldDisableAllHooksIncludingManaged()) {
     logForDebugging(
-      `Skipping hooks for ${hookName} due to 'disableAllHooks' managed setting`,
+      `Skipping hooks for ${hookName} due to hook execution policy`,
     );
     return [];
   }
@@ -3897,6 +3889,7 @@ export type InstructionsMemoryType = "User" | "Project" | "Local" | "Managed";
  * (structured output enforcement etc.) are internal and not checked.
  */
 export function hasInstructionsLoadedHook(): boolean {
+  if (shouldDisableAllHooksIncludingManaged()) return false;
   const registeredHooks = getRegisteredHooks()?.["InstructionsLoaded"];
   if (registeredHooks && registeredHooks.length > 0) return true;
   return false;
@@ -4502,6 +4495,7 @@ async function executeHookCallback({
  * blocking the git-worktree fallback.
  */
 export function hasWorktreeCreateHook(): boolean {
+  if (shouldDisableAllHooksIncludingManaged()) return false;
   const registeredHooks = getRegisteredHooks()?.["WorktreeCreate"];
   if (!registeredHooks || registeredHooks.length === 0) return false;
   // Mirror getHooksConfig(): skip plugin hooks in managed-only mode
@@ -4558,6 +4552,7 @@ export async function executeWorktreeCreateHook(
 export async function executeWorktreeRemoveHook(
   worktreePath: string,
 ): Promise<boolean> {
+  if (shouldDisableAllHooksIncludingManaged()) return false;
   const registeredHooks = getRegisteredHooks()?.["WorktreeRemove"];
   const hasRegisteredHooks = registeredHooks && registeredHooks.length > 0;
   if (!hasRegisteredHooks) {

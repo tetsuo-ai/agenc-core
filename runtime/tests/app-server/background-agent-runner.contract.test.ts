@@ -211,6 +211,7 @@ function makeTopLevelRunner(opts: {
   };
   readonly canonicalRuntimeSettings?: boolean;
   readonly userPromptSubmitHooks?: readonly UserPromptSubmitHook[];
+  readonly runtimeSimpleMode?: boolean;
 }) {
   const shutdownImpl = opts.bootstrapShutdown ?? vi.fn(async () => {});
   const durableOperations = new Set<Promise<unknown>>();
@@ -402,6 +403,10 @@ function makeTopLevelRunner(opts: {
     services: {
       conversationThreadManager: stub,
       providerService,
+      runtimeOptions: resolveAgentRuntimeOptions(
+        {},
+        { simpleMode: opts.runtimeSimpleMode ?? false },
+      ),
       hooks: {
         userPromptSubmitHooks: [...(opts.userPromptSubmitHooks ?? [])],
       },
@@ -2795,6 +2800,8 @@ describe("AgenC delegate background-agent runner", () => {
         hooksRuntime: {
           sourcePath: () => "/home/agent/.agenc/config.toml",
           isDisabled: () => false,
+          isHardSuppressed: () => false,
+          isExecutionSuppressed: () => false,
           issues: () => [{ level: "warning", message: "heads up" }],
           listHooks: () => [
             {
@@ -2821,7 +2828,12 @@ describe("AgenC delegate background-agent runner", () => {
     const status = await runner.getAgentHooksStatus("parent-session");
     expect(status.available).toBe(true);
     expect(status.sourcePath).toBe("/home/agent/.agenc/config.toml");
-    expect(status.disabled).toBe(false);
+    expect(status).toMatchObject({
+      disabled: false,
+      hardSuppressed: false,
+      effectiveDisabled: false,
+      suppressionReason: null,
+    });
     expect(status.issues).toEqual([{ level: "warning", message: "heads up" }]);
     expect(status.hooks).toHaveLength(1);
     expect(status.hooks[0]).toMatchObject({
@@ -2844,6 +2856,9 @@ describe("AgenC delegate background-agent runner", () => {
       available: false,
       sourcePath: "",
       disabled: true,
+      hardSuppressed: false,
+      effectiveDisabled: true,
+      suppressionReason: null,
       issues: [],
       hooks: [],
       diagnostics: [],
@@ -2851,7 +2866,10 @@ describe("AgenC delegate background-agent runner", () => {
   });
 
   it("setAgentHooksDisabled toggles the daemon session's real hooks runtime", async () => {
-    const setDisabled = vi.fn();
+    let disabled = false;
+    const setDisabled = vi.fn((next: boolean) => {
+      disabled = next;
+    });
     const { runner, session } = makeTopLevelRunner({
       conversationId: "parent-session",
       argv: ["node", "agenc"],
@@ -2861,7 +2879,9 @@ describe("AgenC delegate background-agent runner", () => {
         ...(session as { services: Record<string, unknown> }).services,
         hooksRuntime: {
           sourcePath: () => "/home/agent/.agenc/config.toml",
-          isDisabled: () => false,
+          isDisabled: () => disabled,
+          isHardSuppressed: () => false,
+          isExecutionSuppressed: () => disabled,
           issues: () => [],
           listHooks: () => [],
           latestDiagnostics: () => [],
@@ -2874,8 +2894,63 @@ describe("AgenC delegate background-agent runner", () => {
     const result = await runner.setAgentHooksDisabled("parent-session", {
       disabled: true,
     });
-    expect(result).toEqual({ applied: true, disabled: true });
+    expect(result).toEqual({
+      applied: true,
+      disabled: true,
+      hardSuppressed: false,
+      effectiveDisabled: true,
+      suppressionReason: "session_disabled",
+    });
     expect(setDisabled).toHaveBeenCalledWith(true);
+  });
+
+  it("keeps the mutable hook switch separate when enabling under immutable bare mode", async () => {
+    let disabled = false;
+    const setDisabled = vi.fn((next: boolean) => {
+      disabled = next;
+    });
+    const { runner, session } = makeTopLevelRunner({
+      conversationId: "parent-session",
+      argv: ["node", "agenc", "--bare"],
+      runtimeSimpleMode: true,
+    });
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        hooksRuntime: {
+          sourcePath: () => "/home/agent/.agenc/config.toml",
+          isDisabled: () => disabled,
+          isHardSuppressed: () => true,
+          isExecutionSuppressed: () => disabled || true,
+          issues: () => [],
+          listHooks: () => [],
+          latestDiagnostics: () => [],
+          setDisabled,
+        },
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: "/workspace" });
+
+    await expect(runner.getAgentHooksStatus("parent-session")).resolves.toMatchObject({
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode",
+    });
+    await runner.setAgentHooksDisabled("parent-session", { disabled: true });
+    const enabled = await runner.setAgentHooksDisabled("parent-session", {
+      disabled: false,
+    });
+
+    expect(enabled).toEqual({
+      applied: true,
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode",
+    });
+    expect(setDisabled).toHaveBeenNthCalledWith(1, true);
+    expect(setDisabled).toHaveBeenNthCalledWith(2, false);
   });
 
   it("applyAgentConfig applies reasoning effort and stages a profile switch", async () => {

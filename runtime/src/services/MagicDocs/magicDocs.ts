@@ -7,6 +7,7 @@
 import { readFile, stat } from "node:fs/promises";
 
 import type { LLMMessage } from "../../llm/types.js";
+import { isHookExecutionSuppressed } from "../../hooks/runtime-policy.js";
 import type { Session } from "../../session/session.js";
 import type { Tool } from "../../tools/types.js";
 import { FILE_EDIT_TOOL_NAME } from "../../tools/system/file-edit.js";
@@ -453,6 +454,11 @@ async function updateMagicDocs(
 export function runMagicDocsPostSamplingHook(
   context: MagicDocsPostSamplingContext,
 ): Promise<void> {
+  if (
+    isHookExecutionSuppressed(context.session?.services.runtimeOptions)
+  ) {
+    return Promise.resolve();
+  }
   const scopeId = scopeIdForContext(context);
   const prev = updateQueueByScope.get(scopeId) ?? Promise.resolve();
   const next = prev.then(
@@ -474,8 +480,10 @@ export function runMagicDocsPostSamplingHook(
 }
 
 export function initMagicDocs(): void {
+  if (isHookExecutionSuppressed()) return;
   if (unregisterReadListener !== null) return;
   unregisterReadListener = registerFileReadListener((event) => {
+    if (isHookExecutionSuppressed()) return;
     if (detectMagicDocHeader(event.content)) {
       registerMagicDoc(event.filePath, event.sessionId);
     }

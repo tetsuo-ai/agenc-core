@@ -6,7 +6,7 @@ import type { Session } from "../session/session.js";
 import { ConfiguredHooksRuntime } from "../hooks/configured-hooks.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 
-function runtime(): ConfiguredHooksRuntime {
+function runtime(simpleMode = false): ConfiguredHooksRuntime {
   const r = new ConfiguredHooksRuntime({
     cwd: process.cwd(),
     env: process.env,
@@ -14,6 +14,7 @@ function runtime(): ConfiguredHooksRuntime {
     shellPath: process.env.SHELL ?? "/bin/sh",
     sandboxExecutionBroker: explicitDangerBroker,
     admissionRequired: false,
+    runtimeOptions: { simpleMode },
     // These tests exercise hook diagnostics/dispatch; treat the workspace as
     // trusted (production establishes trust before command hooks run).
     isWorkspaceTrusted: () => true,
@@ -120,6 +121,32 @@ describe("/hooks command", () => {
       expect(result.text).toContain("success");
     }
   });
+
+  it("reports immutable --bare suppression and cannot enable past it", async () => {
+    const r = runtime(true);
+
+    let result = await hooksCommand.execute(ctx("list", r));
+    expect(result.kind).toBe("text");
+    if (result.kind === "text") {
+      expect(result.text).toContain("suppressed by immutable --bare mode");
+      expect(result.text).toContain("Mutable switch: enabled");
+    }
+
+    result = await hooksCommand.execute(ctx("enable", r));
+    expect(result.kind).toBe("text");
+    if (result.kind === "text") {
+      expect(result.text).toContain("remain suppressed");
+    }
+    expect(r.isDisabled()).toBe(false);
+    expect(r.isExecutionSuppressed()).toBe(true);
+
+    result = await hooksCommand.execute(ctx("test PreToolUse 0", r));
+    expect(result.kind).toBe("text");
+    if (result.kind === "text") {
+      expect(result.text).toContain("Hook test skipped");
+      expect(result.text).toContain("immutable --bare mode");
+    }
+  });
 });
 
 function daemonStatusSnapshot() {
@@ -149,6 +176,8 @@ function daemonCtx(
   overrides?: {
     getDaemonHooksStatus?: () => Promise<unknown>;
     setDaemonHooksDisabled?: (disabled: boolean) => Promise<unknown>;
+    hooksRuntime?: ConfiguredHooksRuntime;
+    simpleMode?: boolean;
   },
 ): SlashCommandContext {
   const getDaemonHooksStatus =
@@ -157,7 +186,12 @@ function daemonCtx(
     // Daemon-backed bridge session: services has no hooksRuntime, only the
     // daemon forwarders, so /hooks must route through the RPC.
     session: {
-      services: {},
+      services: {
+        runtimeOptions: { simpleMode: overrides?.simpleMode ?? false },
+        ...(overrides?.hooksRuntime
+          ? { hooksRuntime: overrides.hooksRuntime }
+          : {}),
+      },
       getDaemonHooksStatus,
       ...(overrides?.setDaemonHooksDisabled
         ? { setDaemonHooksDisabled: overrides.setDaemonHooksDisabled }
@@ -191,6 +225,19 @@ describe("/hooks command (daemon path)", () => {
     }
   });
 
+  it("prefers daemon authority over a local shadow hooks runtime", async () => {
+    const localShadow = runtime();
+    const result = await hooksCommand.execute(
+      daemonCtx("list", { hooksRuntime: localShadow }),
+    );
+
+    expect(result.kind).toBe("text");
+    if (result.kind === "text") {
+      expect(result.text).toContain("printf daemon-ok");
+      expect(result.text).not.toContain("printf ok");
+    }
+  });
+
   it("toggles hooks through the daemon setDisabled RPC", async () => {
     const setDaemonHooksDisabled = vi.fn(async () => ({
       sessionId: "session_1",
@@ -202,6 +249,27 @@ describe("/hooks command (daemon path)", () => {
     );
     expect(result.kind).toBe("text");
     expect(setDaemonHooksDisabled).toHaveBeenCalledWith(true);
+  });
+
+  it("does not claim daemon enable overrides immutable --bare mode", async () => {
+    const setDaemonHooksDisabled = vi.fn(async () => ({
+      sessionId: "session_1",
+      applied: true,
+      disabled: false,
+    }));
+    const result = await hooksCommand.execute(
+      daemonCtx("enable", {
+        setDaemonHooksDisabled,
+        simpleMode: true,
+      }),
+    );
+
+    expect(result.kind).toBe("text");
+    expect(setDaemonHooksDisabled).toHaveBeenCalledWith(false);
+    if (result.kind === "text") {
+      expect(result.text).toContain("remain suppressed");
+      expect(result.text).toContain("immutable --bare mode");
+    }
   });
 
   it("defers /hooks test against the daemon", async () => {

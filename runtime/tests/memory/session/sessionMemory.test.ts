@@ -20,6 +20,7 @@ import {
 import type { AdmissionLease } from "../../budget/admission-types.js";
 import type { LLMMessage } from "../../llm/types.js";
 import type { Session } from "../../session/session.js";
+import { resolveAgentRuntimeOptions } from "../../session/runtime-options.js";
 import { EventLog, type Event } from "../../session/event-log.js";
 import {
   clearSessionReadState,
@@ -563,6 +564,32 @@ describe("session memory runtime", () => {
 
     expect(harness.acquire).toHaveBeenCalledOnce();
     expect(runAgentMockState.calls).toHaveLength(1);
+  });
+
+  it("does not queue or run extraction for a simple-mode session owner", async () => {
+    const sessionId = "session-simple-mode";
+    const baseSession = makeSession(sessionId, "child-simple-mode");
+    const session = {
+      ...baseSession,
+      services: {
+        ...baseSession.services,
+        runtimeOptions: resolveAgentRuntimeOptions({}, { simpleMode: true }),
+      },
+    } as Session;
+    const memoryPath = resolveSessionMemoryPath({
+      cwd: projectRoot,
+      sessionId,
+      configHomeDir: tempRoot,
+    });
+
+    await runSessionMemoryPostSamplingHook({
+      messages: idleMessages,
+      querySource: "repl_main_thread",
+      session,
+    });
+
+    expect(runAgentMockState.calls).toEqual([]);
+    await expect(stat(memoryPath)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it("runs an Edit-only subagent and seeds the notes file read state", async () => {

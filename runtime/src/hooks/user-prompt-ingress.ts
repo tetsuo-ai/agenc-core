@@ -13,6 +13,7 @@ import {
   executeUserPromptSubmitHooks,
   getUserPromptSubmitHookBlockingMessage,
 } from "./user-prompt-submit.js";
+import { isHookExecutionSuppressed } from "./runtime-policy.js";
 
 const MAX_USER_PROMPT_SUBMIT_CONTEXT_LENGTH = 10_000;
 
@@ -286,10 +287,14 @@ export async function prepareUserPromptForTurn(params: {
   readonly hookPrompt?: string;
 }): Promise<PreparedUserPrompt> {
   const prompt = params.hookPrompt ?? userPromptDisplayText(params.input);
-  const hookOutcome = await collectUserPromptSubmitHookOutcome({
-    session: params.session,
-    prompt,
-  });
+  const hookOutcome = isHookExecutionSuppressed(
+    params.session.services.runtimeOptions,
+  )
+    ? { blocked: false as const, additionalContexts: [] as const }
+    : await collectUserPromptSubmitHookOutcome({
+        session: params.session,
+        prompt,
+      });
   if (hookOutcome.blocked) {
     return {
       blocked: true,

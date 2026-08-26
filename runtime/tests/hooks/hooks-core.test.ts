@@ -47,15 +47,25 @@ import {
 import type { Message } from "../../src/types/message.js";
 import {
   clearCurrentRuntimeSession,
+  getCurrentRuntimeSession,
   setCurrentRuntimeSession,
 } from "../../src/session/current-session.js";
+import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
 import { SessionProviderService } from "../../src/session/provider-service.js";
 import { ConfigStore } from "../../src/config/store.js";
+import { runWithCanonicalSettingsAuthority } from "../../src/utils/settings/canonicalAuthority.js";
 import { explicitDangerBroker } from "../helpers/explicit-danger-boundary.js";
 import {
   getCommandQueueSnapshot,
   resetCommandQueueForTesting,
 } from "../../src/utils/messageQueueManager.js";
+import {
+  checkForAsyncHookResponses,
+  clearAllAsyncHooks,
+  getPendingAsyncHooks,
+  registerPendingAsyncHook,
+} from "../../src/utils/hooks/AsyncHookRegistry.js";
+import type { ShellCommand } from "../../src/utils/ShellCommand.js";
 
 const tempDirs: string[] = [];
 const sessionId = "00000000-0000-4000-8000-000000000901";
@@ -145,6 +155,54 @@ function acceptInteractiveWorkspaceTrust(): void {
   setSessionTrustAccepted(true);
 }
 
+function bindHookSessionSimpleMode(simpleMode: boolean): void {
+  const session = getCurrentRuntimeSession();
+  if (session === null) throw new Error("Expected a configured hook session");
+  clearCurrentRuntimeSession();
+  setCurrentRuntimeSession({
+    ...session,
+    services: {
+      ...session.services,
+      runtimeOptions: resolveAgentRuntimeOptions({}, { simpleMode }),
+    },
+  } as never);
+}
+
+function completedAsyncHookCommand(stdout: string): ShellCommand {
+  return {
+    background: () => false,
+    result: Promise.resolve({
+      stdout,
+      stderr: "",
+      code: 0,
+      interrupted: false,
+    }),
+    kill: () => undefined,
+    status: "completed",
+    cleanup: () => undefined,
+    taskOutput: {
+      getStdout: async () => stdout,
+      getStderr: () => "",
+    },
+  } as unknown as ShellCommand;
+}
+
+function registerCompletedAsyncHook(
+  processId: string,
+  conversationId: string,
+): void {
+  registerPendingAsyncHook({
+    processId,
+    hookId: `hook-${processId}`,
+    asyncResponse: { async: true },
+    hookName: `hook ${processId}`,
+    hookEvent: "Stop",
+    command: "printf response",
+    shellCommand: completedAsyncHookCommand('{"continue":true}\n'),
+    queueOwner: { kind: "session", conversationId },
+  });
+}
+
 afterEach(async () => {
   resetCommandQueueForTesting();
   clearCurrentRuntimeSession();
@@ -205,6 +263,62 @@ test("async rewake completion retains the session that launched the hook", async
     kind: "session",
     conversationId: sessionId,
   });
+});
+
+test("async hook registry returns empty in bare mode without consuming pending work", async () => {
+  await configureHookSession();
+  clearAllAsyncHooks();
+  registerCompletedAsyncHook("bare-pending", sessionId);
+  const owner = { kind: "session" as const, conversationId: sessionId };
+
+  try {
+    bindHookSessionSimpleMode(true);
+    expect(getPendingAsyncHooks(owner)).toEqual([]);
+    await expect(checkForAsyncHookResponses(owner)).resolves.toEqual([]);
+
+    bindHookSessionSimpleMode(false);
+    expect(getPendingAsyncHooks(owner).map((hook) => hook.processId)).toEqual([
+      "bare-pending",
+    ]);
+    await expect(checkForAsyncHookResponses(owner)).resolves.toMatchObject([
+      { processId: "bare-pending" },
+    ]);
+  } finally {
+    clearAllAsyncHooks();
+  }
+});
+
+test("async hook registry filters pending hooks and responses by queue owner", async () => {
+  await configureHookSession();
+  bindHookSessionSimpleMode(false);
+  clearAllAsyncHooks();
+  registerCompletedAsyncHook("owner-a", "conversation-a");
+  registerCompletedAsyncHook("owner-b", "conversation-b");
+  const ownerA = {
+    kind: "session" as const,
+    conversationId: "conversation-a",
+  };
+  const ownerB = {
+    kind: "session" as const,
+    conversationId: "conversation-b",
+  };
+
+  try {
+    expect(getPendingAsyncHooks(ownerA).map((hook) => hook.processId)).toEqual([
+      "owner-a",
+    ]);
+    await expect(checkForAsyncHookResponses(ownerA)).resolves.toMatchObject([
+      { processId: "owner-a" },
+    ]);
+    expect(getPendingAsyncHooks(ownerB).map((hook) => hook.processId)).toEqual([
+      "owner-b",
+    ]);
+    await expect(checkForAsyncHookResponses(ownerB)).resolves.toMatchObject([
+      { processId: "owner-b" },
+    ]);
+  } finally {
+    clearAllAsyncHooks();
+  }
 });
 
 test("parses session end hook timeout from the environment", () => {
@@ -1366,4 +1480,140 @@ test("returns empty results for public no-hook execution paths", async () => {
   await expect(executeWorktreeCreateHook("feature")).rejects.toThrow(
     "WorktreeCreate hook failed: no successful output",
   );
+});
+
+test("simple-mode ownership hard-suppresses callback and command hook surfaces", async () => {
+  await configureHookSession();
+  acceptInteractiveWorkspaceTrust();
+  bindHookSessionSimpleMode(true);
+
+  const permissionCallback = vi.fn(async () => ({
+    decision: "block" as const,
+    reason: "must never run in simple mode",
+  }));
+  const notificationCallback = vi.fn(async () => ({}));
+  const instructionsCallback = vi.fn(async () => ({}));
+  const worktreeCreateCallback = vi.fn(async () => ({
+    hookSpecificOutput: {
+      hookEventName: "WorktreeCreate" as const,
+      worktreePath: "/tmp/should-not-be-created",
+    },
+  }));
+  const worktreeRemoveCallback = vi.fn(async () => ({}));
+  registerHookCallbacks({
+    PermissionRequest: [
+      {
+        matcher: "Bash",
+        hooks: [{ type: "callback", callback: permissionCallback }],
+      },
+    ],
+    Notification: [
+      {
+        matcher: "turn_complete",
+        hooks: [{ type: "callback", callback: notificationCallback }],
+      },
+    ],
+    InstructionsLoaded: [
+      {
+        matcher: "session_start",
+        hooks: [{ type: "callback", callback: instructionsCallback }],
+      },
+    ],
+    WorktreeCreate: [
+      {
+        matcher: "*",
+        hooks: [{ type: "callback", callback: worktreeCreateCallback }],
+      },
+    ],
+    WorktreeRemove: [
+      {
+        matcher: "*",
+        hooks: [{ type: "callback", callback: worktreeRemoveCallback }],
+      },
+    ],
+  } as never);
+
+  const permissionResults = await collectAsyncGenerator(
+    executePermissionRequestHooks(
+      "Bash",
+      "tool-simple-mode",
+      { command: "pwd" },
+      toolUseContext({ sessionHooks: new Map<string, unknown>() }),
+      "default",
+      [],
+      undefined,
+      hookCommandTimeoutMs,
+    ),
+  );
+  await executeNotificationHooks(
+    {
+      message: "done",
+      notificationType: "turn_complete",
+    },
+    hookCommandTimeoutMs,
+  );
+
+  expect(permissionResults).toEqual([]);
+  expect(permissionCallback).not.toHaveBeenCalled();
+  expect(notificationCallback).not.toHaveBeenCalled();
+  expect(hasInstructionsLoadedHook()).toBe(false);
+  expect(instructionsCallback).not.toHaveBeenCalled();
+  expect(hasWorktreeCreateHook()).toBe(false);
+  await expect(executeWorktreeRemoveHook("/tmp/worktree")).resolves.toBe(
+    false,
+  );
+  expect(worktreeCreateCallback).not.toHaveBeenCalled();
+  expect(worktreeRemoveCallback).not.toHaveBeenCalled();
+
+  const session = getCurrentRuntimeSession();
+  if (session === null) throw new Error("Expected a configured hook session");
+  const configStore = session.services.configStore;
+  if (configStore === undefined) {
+    throw new Error("Expected a canonical ConfigStore");
+  }
+  const commandConfig = Object.freeze({
+    statusLine: {
+      type: "command" as const,
+      command: stdoutCommand("status-hook-ran"),
+    },
+    fileSuggestion: {
+      type: "command" as const,
+      command: stdoutCommand("/tmp/first.ts\n/tmp/second.ts"),
+    },
+  });
+  const commandAuthority = {
+    authoritySnapshot: () => ({ config: commandConfig, layers: [] }),
+    current: () => commandConfig,
+    sources: () => [],
+    projectRoot: configStore.projectRoot,
+    homeContext: configStore.homeContext,
+    stateRepository: configStore.stateRepository,
+    reload: async () => commandConfig,
+    subscribe: () => () => undefined,
+  } as never;
+
+  await runWithCanonicalSettingsAuthority(commandAuthority, async () => {
+    await expect(
+      executeStatusLineCommand({} as never, undefined, hookCommandTimeoutMs),
+    ).resolves.toBeUndefined();
+    await expect(
+      executeFileSuggestionCommand(
+        {} as never,
+        undefined,
+        hookCommandTimeoutMs,
+      ),
+    ).resolves.toEqual([]);
+
+    bindHookSessionSimpleMode(false);
+    await expect(
+      executeStatusLineCommand({} as never, undefined, hookCommandTimeoutMs),
+    ).resolves.toBe("status-hook-ran");
+    await expect(
+      executeFileSuggestionCommand(
+        {} as never,
+        undefined,
+        hookCommandTimeoutMs,
+      ),
+    ).resolves.toEqual(["/tmp/first.ts", "/tmp/second.ts"]);
+  });
 });

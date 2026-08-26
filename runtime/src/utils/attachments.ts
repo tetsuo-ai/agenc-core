@@ -163,6 +163,7 @@ import {
   checkForAsyncHookResponses,
   removeDeliveredAsyncHooks,
 } from './hooks/AsyncHookRegistry.js'
+import { captureToolQueueOwner } from './queueOwnership.js'
 import {
   checkForLSPDiagnostics,
   clearAllLSPDiagnostics,
@@ -936,7 +937,7 @@ export async function getAttachments(
           getLSPDiagnosticAttachments(toolUseContext),
         ),
         maybe('async_hook_responses', async () =>
-          getAsyncHookResponseAttachments(),
+          getAsyncHookResponseAttachments(toolUseContext),
         ),
         maybe('token_usage', async () =>
           Promise.resolve(
@@ -3148,8 +3149,12 @@ async function maintainUnifiedTaskState(
   }
 }
 
-async function getAsyncHookResponseAttachments(): Promise<Attachment[]> {
-  const responses = await checkForAsyncHookResponses()
+async function getAsyncHookResponseAttachments(
+  toolUseContext: ToolUseContext,
+): Promise<Attachment[]> {
+  const responses = await checkForAsyncHookResponses(
+    captureToolQueueOwner(toolUseContext),
+  )
 
   if (responses.length === 0) {
     return []

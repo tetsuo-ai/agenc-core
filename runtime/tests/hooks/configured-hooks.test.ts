@@ -2216,6 +2216,55 @@ describe("configured hooks runtime", () => {
   });
 });
 
+describe("configured hooks immutable --bare authority", () => {
+  test("testHook never spawns and lifecycle wrappers return neutral results", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "agenc-bare-hooks-"));
+    const sentinel = join(dir, "ran.txt");
+    const command = `printf ran > ${JSON.stringify(sentinel)}`;
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+      isWorkspaceTrusted: () => true,
+      runtimeOptions: { simpleMode: true },
+    });
+    const target = makeLifecycleTarget();
+    runtime.attachTarget(target);
+    runtime.load({
+      SessionStart: [{ hooks: [{ type: "command", command }] }],
+    });
+
+    expect(runtime.isDisabled()).toBe(false);
+    expect(runtime.isHardSuppressed()).toBe(true);
+    expect(runtime.isExecutionSuppressed()).toBe(true);
+
+    const diagnostic = await runtime.testHook(runtime.listHooks()[0]!);
+    const lifecycle = await target.sessionStartHooks[0]!({
+      hook_event_name: "SessionStart",
+      source: "startup",
+      cwd: process.cwd(),
+      model: "model-a",
+      permission_mode: "default",
+    });
+
+    expect(diagnostic).toMatchObject({
+      status: "skipped",
+      error: expect.stringContaining("immutable --bare mode"),
+    });
+    expect(lifecycle).toEqual({
+      succeeded: true,
+      output: "",
+      command,
+    });
+    expect(existsSync(sentinel)).toBe(false);
+
+    runtime.setDisabled(false);
+    expect(runtime.isDisabled()).toBe(false);
+    expect(runtime.isExecutionSuppressed()).toBe(true);
+  });
+});
+
 describe("configured hooks trust gate", () => {
   async function tempSentinel(): Promise<string> {
     const dir = await mkdtemp(join(tmpdir(), "agenc-trust-gate-"));

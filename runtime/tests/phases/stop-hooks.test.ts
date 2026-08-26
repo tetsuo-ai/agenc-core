@@ -12,6 +12,7 @@ import { EventLog } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { TurnState } from "../session/turn-state.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import {
   evaluateStopHooks,
   executeStopFailureHooks,
@@ -61,6 +62,7 @@ function mkSession(
   log: EventLog,
   stopHooks: ReadonlyArray<StopHookHandler>,
   stopFailureHooks: ReadonlyArray<StopHookHandler> = [],
+  simpleMode = false,
 ): Session {
   let i = 0;
   return {
@@ -69,6 +71,7 @@ function mkSession(
     services: {
       hooks: { stopHooks, stopFailureHooks },
       admissionRequired: false,
+      runtimeOptions: resolveAgentRuntimeOptions({}, { simpleMode }),
     },
     nextInternalSubId: () => `s-${++i}`,
   } as unknown as Session;
@@ -111,6 +114,41 @@ describe("evaluateStopHooks", () => {
     const result = await evaluateStopHooks(mkState(), mkCtx(), session);
     expect(result.allowStop).toBe(true);
     expect(result.blocking).toBe(false);
+  });
+
+  test("owner simple mode returns neutral before hook counters or events", async () => {
+    const log = new EventLog();
+    const events: unknown[] = [];
+    log.subscribe((event) => events.push(event));
+    let called = 0;
+    const session = mkSession(
+      log,
+      [
+        {
+          name: "must-not-run",
+          run: () => {
+            called += 1;
+            return {
+              shouldStop: false,
+              shouldBlock: true,
+              blockReason: "must not block",
+              continuationFragments: ["must not inject"],
+            };
+          },
+        },
+      ],
+      [],
+      true,
+    );
+    const state = mkState({ stopHookBlockingCount: MAX_STOP_HOOK_BLOCKS });
+
+    await expect(evaluateStopHooks(state, mkCtx(), session)).resolves.toEqual({
+      allowStop: true,
+      blocking: false,
+    });
+    expect(called).toBe(0);
+    expect(state.stopHookBlockingCount).toBe(MAX_STOP_HOOK_BLOCKS);
+    expect(events).toEqual([]);
   });
 
   test("blocking hook injects continuation + bumps counter", async () => {
@@ -541,6 +579,43 @@ describe("executeStopFailureHooks", () => {
     });
     await executeStopFailureHooks(state, mkCtx(), session);
     expect(called).toBe(1);
+  });
+
+  test("owner simple mode returns before StopFailure work", async () => {
+    const log = new EventLog();
+    const events: unknown[] = [];
+    log.subscribe((event) => events.push(event));
+    let called = 0;
+    const session = mkSession(
+      log,
+      [],
+      [
+        {
+          name: "must-not-run",
+          run: () => {
+            called += 1;
+            throw new Error("must not emit");
+          },
+        },
+      ],
+      true,
+    );
+    const state = mkState({
+      assistantMessages: [
+        {
+          uuid: "a",
+          role: "assistant",
+          text: "",
+          toolCalls: [],
+          apiError: "context_window_exceeded",
+        },
+      ],
+    });
+
+    await executeStopFailureHooks(state, mkCtx(), session);
+
+    expect(called).toBe(0);
+    expect(events).toEqual([]);
   });
 
   test("Editor interactions never execute configured StopFailure hooks", async () => {

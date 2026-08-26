@@ -2,10 +2,11 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { defaultConfig } from "../../src/config/schema.js";
 import { prepareUserPromptForTurn } from "../../src/hooks/user-prompt-ingress.js";
+import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
 import {
   canonicalizePath,
   clearSessionReadState,
@@ -15,6 +16,7 @@ import {
 function promptSession(
   cwd: string,
   hooks: Array<(input: { readonly prompt: string }) => unknown>,
+  simpleMode = false,
 ) {
   const events: unknown[] = [];
   const session = {
@@ -27,6 +29,7 @@ function promptSession(
     },
     services: {
       hooks: { userPromptSubmitHooks: hooks },
+      runtimeOptions: resolveAgentRuntimeOptions({}, { simpleMode }),
     },
     sessionConfiguration: { cwd },
   };
@@ -105,5 +108,26 @@ describe("canonical user prompt ingress", () => {
       clearSessionReadState(session.conversationId);
       await rm(cwd, { recursive: true, force: true });
     }
+  });
+
+  it("returns neutral prompt ingress without invoking hooks in owner simple mode", async () => {
+    const hook = vi.fn(() => ({
+      blockingError: { blockingError: "must not block" },
+      additionalContexts: ["must not append"],
+    }));
+    const { session, events } = promptSession("/workspace", [hook], true);
+
+    const result = await prepareUserPromptForTurn({
+      session: session as never,
+      input: "unchanged prompt",
+    });
+
+    expect(hook).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      blocked: false,
+      input: "unchanged prompt",
+      displayInput: "unchanged prompt",
+    });
+    expect(events).toEqual([]);
   });
 });

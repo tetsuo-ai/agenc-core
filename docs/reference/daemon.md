@@ -122,7 +122,7 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 ## Protocol
 
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
-- Protocol version constant: **`1.4.0`**
+- Protocol version constant: **`1.5.0`**
   (`AGENC_DAEMON_PROTOCOL_VERSION` in `runtime/src/app-server/protocol/index.ts`).
 - Clients send `initialize` with the protocol version. Negotiation compares the
   numeric major and minor versions: the server accepts the same major when the

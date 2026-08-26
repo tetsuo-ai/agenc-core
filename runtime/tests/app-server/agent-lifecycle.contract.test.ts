@@ -1691,6 +1691,9 @@ describe("AgenC background agent lifecycle", () => {
       available: true,
       sourcePath: "/home/agent/.agenc/config.toml",
       disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode" as const,
       issues: [],
       hooks: [
         {
@@ -1730,6 +1733,10 @@ describe("AgenC background agent lifecycle", () => {
       sessionId: "session-hooks",
       available: true,
       sourcePath: "/home/agent/.agenc/config.toml",
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode",
       hooks: [{ event: "PreToolUse", index: 0 }],
     });
     expect(getAgentHooksStatus).toHaveBeenCalledWith("agent-hooks");
@@ -1746,7 +1753,10 @@ describe("AgenC background agent lifecycle", () => {
     });
     const setAgentHooksDisabled = vi.fn(async () => ({
       applied: true,
-      disabled: true,
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode" as const,
     }));
     const agents = new AgenCDaemonAgentManager({
       sessionManager: sessions,
@@ -1771,15 +1781,18 @@ describe("AgenC background agent lifecycle", () => {
     await expect(
       agents.setSessionHooksDisabled({
         sessionId: "session-hooks-toggle",
-        disabled: true,
+        disabled: false,
       }),
     ).resolves.toEqual({
       sessionId: "session-hooks-toggle",
       applied: true,
-      disabled: true,
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode",
     });
     expect(setAgentHooksDisabled).toHaveBeenCalledWith("agent-hooks-toggle", {
-      disabled: true,
+      disabled: false,
     });
   });
 
@@ -5445,7 +5458,7 @@ describe("AgenC background agent lifecycle", () => {
         id: "future-protocol",
         method: "initialize",
         params: {
-          protocol: { version: "1.5.0" },
+          protocol: { version: "1.6.0" },
           clientName: "contract-test",
         },
       }),
@@ -5457,8 +5470,8 @@ describe("AgenC background agent lifecycle", () => {
         message: "Unsupported protocol version",
         data: {
           code: "PROTOCOL_VERSION_UNSUPPORTED",
-          clientVersion: "1.5.0",
-          serverVersion: "1.4.0",
+          clientVersion: "1.6.0",
+          serverVersion: "1.5.0",
         },
       },
     });
@@ -5523,16 +5536,16 @@ describe("AgenC background agent lifecycle", () => {
       id: 1,
       result: {
         type: "initialized",
-        protocolVersion: "1.4.0",
-        protocol: { version: "1.4.0" },
+        protocolVersion: "1.5.0",
+        protocol: { version: "1.5.0" },
         capabilities: {},
       },
     });
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.4.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.5.0");
     expect(connection.initializeState).toMatchObject({
-      protocol: { version: "1.4.0" },
+      protocol: { version: "1.5.0" },
       clientProtocol: { version: "1.0.0" },
-      serverProtocol: { version: "1.4.0" },
+      serverProtocol: { version: "1.5.0" },
       clientCapabilities: { experimentalApi: true },
     });
     expect(

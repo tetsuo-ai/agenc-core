@@ -10,6 +10,7 @@
 
 import type { AgentStatus } from "../agents/status.js";
 import type { RunAgentResult } from "../agents/run-agent.js";
+import type { HookRuntimeAuthority } from "../hooks/runtime-policy.js";
 import { dispatchSubagentStop } from "../llm/hooks/dispatcher.js";
 import type { LLMMessage } from "../llm/types.js";
 import type {
@@ -17,6 +18,7 @@ import type {
   ForkedAgentResult,
 } from "../services/PromptSuggestion/runtime.js";
 import type { Message } from "../types/message.js";
+import { peekAmbientRuntimeSession } from "../session/current-session.js";
 import type { BackgroundTaskSnapshot } from "./lifecycle.js";
 import {
   BackgroundTaskLifecycle,
@@ -102,6 +104,8 @@ export interface RegisterAgentThreadTaskOptions {
   readonly prompt?: string;
   readonly onStop?: (thread: AgentThreadTaskHandle, reason: string) => Promise<void> | void;
   readonly onSnapshot?: (snapshot: BackgroundTaskSnapshot) => void;
+  /** Immutable hook authority owned by the parent session. */
+  readonly runtimeOptions?: HookRuntimeAuthority;
   /**
    * Cadence (ms) for polling the live subagent's accumulated token/tool
    * counters and emitting refreshed progress snapshots. Defaults to 1000ms.
@@ -168,6 +172,13 @@ export function registerAgentThreadTask(
   opts: RegisterAgentThreadTaskOptions = {},
 ): BackgroundTaskSnapshot {
   const threadId = thread.threadId ?? thread.live.agentId;
+  // `join()` completes after the spawning turn may have left its ALS scope.
+  // Capture the parent authority now; when no owner can be proven, fail closed
+  // instead of letting the detached callback inherit another daemon session.
+  const hookRuntimeOptions =
+    opts.runtimeOptions ??
+    peekAmbientRuntimeSession()?.services.runtimeOptions ??
+    ({ simpleMode: true } as const);
   const description = opts.description ?? thread.taskPrompt;
   // The full task prompt, carried separately from `description` so a short
   // display label (e.g. the humanized task_name) never erases the agent's
@@ -366,22 +377,25 @@ export function registerAgentThreadTask(
         // task-notification.
         let hookFeedback: string | undefined;
         try {
-          const dispatched = await dispatchSubagentStop({
-            hook_event_name: "SubagentStop",
-            task_name: description,
-            agent_id: threadId,
-            ...((): { agent_type?: string } => {
-              const roleName = (
-                thread.live as { role?: { name?: string } }
-              ).role?.name;
-              return typeof roleName === "string"
-                ? { agent_type: roleName }
-                : {};
-            })(),
-            outcome: result.outcome,
-            final_message: result.finalMessage ?? "",
-            duration_ms: result.durationMs,
-          });
+          const dispatched = await dispatchSubagentStop(
+            {
+              hook_event_name: "SubagentStop",
+              task_name: description,
+              agent_id: threadId,
+              ...((): { agent_type?: string } => {
+                const roleName = (
+                  thread.live as { role?: { name?: string } }
+                ).role?.name;
+                return typeof roleName === "string"
+                  ? { agent_type: roleName }
+                  : {};
+              })(),
+              outcome: result.outcome,
+              final_message: result.finalMessage ?? "",
+              duration_ms: result.durationMs,
+            },
+            { runtimeOptions: hookRuntimeOptions },
+          );
           hookFeedback = dispatched.feedback;
         } catch {
           /* hook infrastructure failures never break task completion */

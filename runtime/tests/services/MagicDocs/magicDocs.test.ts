@@ -19,6 +19,10 @@ import {
 } from "../../tools/system/filesystem.js";
 import type { Session } from "../../session/session.js";
 import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from "../../session/runtime-options.js";
+import {
   createMagicDocsEditPolicy,
   detectMagicDocHeader,
   initMagicDocs,
@@ -177,6 +181,45 @@ describe("MagicDocs", () => {
     expect(result.isError).not.toBe(true);
     expect(result.content).not.toContain("MAGIC DOC");
     expect(trackedMagicDocPathsForTests("session-partial")).toEqual([docPath]);
+  });
+
+  it("does not register or queue MagicDocs work for simple-mode owners", async () => {
+    const sessionId = "session-simple-mode";
+    const docPath = join(tempRoot, "simple-mode.md");
+    await writeFile(docPath, "# MAGIC DOC: Suppressed\n\nBody\n", "utf8");
+    const simpleMode = resolveAgentRuntimeOptions({}, { simpleMode: true });
+
+    await runWithAgentRuntimeOptions(simpleMode, async () => {
+      initMagicDocs();
+      const tool = createFileReadTool({ allowedPaths: [tempRoot] });
+      await tool.execute({
+        file_path: docPath,
+        [SESSION_ID_ARG]: sessionId,
+      });
+    });
+    expect(trackedMagicDocPathsForTests(sessionId)).toEqual([]);
+
+    registerMagicDoc(docPath, sessionId);
+    const baseSession = makeMagicDocsSession(sessionId, "child-simple-mode");
+    const session = {
+      ...baseSession,
+      services: {
+        ...baseSession.services,
+        runtimeOptions: simpleMode,
+      },
+    } as Session;
+    const runner = vi.fn(async () => undefined);
+    setMagicDocsAgentRunnerForTests(runner);
+
+    await runMagicDocsPostSamplingHook({
+      messages: idleMessages,
+      querySource: "repl_main_thread",
+      session,
+    });
+
+    expect(runner).not.toHaveBeenCalled();
+    expect(runAgentMockState.calls).toEqual([]);
+    expect(trackedMagicDocPathsForTests(sessionId)).toEqual([docPath]);
   });
 
   it("does not let listener failures break successful FileRead calls", async () => {

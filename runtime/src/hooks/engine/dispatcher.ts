@@ -14,6 +14,7 @@ import { redactSecrets } from "../../secrets/index.js";
 import { runHookCommand } from "./command-runner.js";
 import { flattenHooks } from "./discovery.js";
 import { AdmissionDeniedError } from "../../budget/admission-client.js";
+import { isHookExecutionSuppressed } from "../runtime-policy.js";
 import type {
   CommandRunResult,
   HookCommandRunDiagnostic,
@@ -42,6 +43,16 @@ export class HookEngine {
 
   isDisabled(): boolean {
     return this.disabled;
+  }
+
+  /** Immutable owner policy; unlike `isDisabled`, callers cannot toggle it. */
+  isHardSuppressed(): boolean {
+    return isHookExecutionSuppressed(this.opts.runtimeOptions);
+  }
+
+  /** Effective execution state across mutable and immutable policy. */
+  isExecutionSuppressed(): boolean {
+    return this.disabled || this.isHardSuppressed();
   }
 
   listHooks(): readonly IndividualHookConfig[] {
@@ -91,7 +102,7 @@ export class HookEngine {
     cwd?: string,
   ): Promise<HookCommandRunDiagnostic> {
     const startedAtUnixMs = Date.now();
-    if (this.disabled) {
+    if (this.isExecutionSuppressed()) {
       return this.recordDiagnostic(
         hook,
         {
@@ -99,6 +110,9 @@ export class HookEngine {
           stdout: "",
           stderr: "",
           durationMs: 0,
+          error: this.isHardSuppressed()
+            ? "skipped: hooks are suppressed by immutable --bare mode"
+            : "skipped: hooks are disabled for this session",
         },
         startedAtUnixMs,
       );

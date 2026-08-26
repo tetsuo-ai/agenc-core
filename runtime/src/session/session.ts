@@ -5740,7 +5740,12 @@ export class Session {
             // Dispatch against THIS session's registry (plus process-global
             // hooks); shutdown runs outside the turn ALS scope, so ambient
             // resolution cannot identify the session on its own.
-            lifecycleHooks !== undefined ? { registry: lifecycleHooks } : {},
+            {
+              ...(lifecycleHooks !== undefined
+                ? { registry: lifecycleHooks }
+                : {}),
+              runtimeOptions: this.services.runtimeOptions,
+            },
           ),
           hookTimeout,
         ]);

@@ -48,7 +48,7 @@ class PromptTransport implements AgencTransport {
     readonly response: Deferred<AgencDaemonResponse<"message.send">>;
   }> = [];
   client?: AgencClient;
-  initializeVersion = "1.4.0";
+  initializeVersion = "1.5.0";
   initializeFailures = 0;
   attachRuntimeOptions: unknown;
   duplicateIncomplete = false;
@@ -82,7 +82,8 @@ class PromptTransport implements AgencTransport {
             "session.transcript.v2":
               this.initializeVersion === "1.2.0" ||
               this.initializeVersion === "1.3.0" ||
-              this.initializeVersion === "1.4.0",
+              this.initializeVersion === "1.4.0" ||
+              this.initializeVersion === "1.5.0",
           },
         },
       });
@@ -269,7 +270,7 @@ function resolveSend(
 }
 
 describe("agenc-sdk prompt race safety", () => {
-  it.each(["1.0.0", "1.1.0", "1.2.0", "1.3.0"])(
+  it.each(["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0"])(
     "downgrades capability discovery to an older %s daemon",
     async (version) => {
       const transport = new PromptTransport();
@@ -282,7 +283,7 @@ describe("agenc-sdk prompt race safety", () => {
       );
       expect(initializes).toHaveLength(2);
       expect(initializes.map((request) => request.params)).toEqual([
-        expect.objectContaining({ protocol: { version: "1.4.0" } }),
+        expect.objectContaining({ protocol: { version: "1.5.0" } }),
         expect.objectContaining({ protocol: { version } }),
       ]);
       expect(client.negotiatedProtocolVersion).toBe(version);

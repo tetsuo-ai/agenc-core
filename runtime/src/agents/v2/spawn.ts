@@ -753,6 +753,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     try {
       registerAgentThreadTask(backgroundTaskLifecycle, thread, {
         toolUseId: callId,
+        runtimeOptions: session.services.runtimeOptions,
         // Short title (from task_name), not the full prompt — the rail /
         // transcript / `/cost` show this as the agent's label. The full prompt
         // is preserved separately on the task's `prompt` field.

@@ -7,6 +7,7 @@ import {
   AGENC_DAEMON_PROTOCOL_PUBLISH_TARGET,
   AGENC_DAEMON_PROTOCOL_SCHEMA_EXPORT,
   AGENC_DAEMON_PROTOCOL_SCHEMA_ID,
+  AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_METHOD_SPECS,
   AGENC_DAEMON_INTERNAL_METHODS,
@@ -188,6 +189,44 @@ function compileDefinitionValidator(
 }
 
 describe("AgenC daemon protocol surface", () => {
+  it("defines the 1.5 hook-suppression result contract", () => {
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.5.0");
+
+    const status: AgenCDaemonInternalResultByMethod["session.hooks.status"] = {
+      sessionId: "session-bare",
+      available: true,
+      sourcePath: "/home/agent/.agenc/config.toml",
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode",
+      issues: [],
+      hooks: [],
+      diagnostics: [],
+    };
+    const enabled: AgenCDaemonInternalResultByMethod["session.hooks.setDisabled"] = {
+      sessionId: "session-bare",
+      applied: true,
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode",
+    };
+
+    expect(status).toMatchObject({
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode",
+    });
+    expect(enabled).toMatchObject({
+      disabled: false,
+      hardSuppressed: true,
+      effectiveDisabled: true,
+      suppressionReason: "bare_mode",
+    });
+  });
+
   it("exports the exact initial daemon method list", () => {
     expect(AGENC_DAEMON_METHODS).toEqual(expectedMethods);
     expect(Object.keys(AGENC_DAEMON_METHOD_SPECS)).toEqual(expectedMethods);

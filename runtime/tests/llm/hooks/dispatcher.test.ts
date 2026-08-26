@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   dispatchPostCompact,
   dispatchPreCompact,
@@ -248,5 +248,60 @@ describe("dispatchSessionStart", () => {
       hookEvent: "SessionStart",
       content: ["ctx-before-stop"],
     });
+  });
+});
+
+describe("bare lifecycle authority", () => {
+  it("hard-neutralizes compact and session-start hooks before invocation", async () => {
+    const preHook: PreCompactHook = vi.fn(() => ({
+      succeeded: true,
+      output: "pre ran",
+    }));
+    const postHook: PostCompactHook = vi.fn(() => ({
+      succeeded: true,
+      output: "post ran",
+    }));
+    const startHook: SessionStartHook = vi.fn(() => ({
+      succeeded: true,
+      output: "",
+      additionalContexts: ["start ran"],
+    }));
+    const runtimeOptions = { simpleMode: true } as const;
+
+    await expect(
+      dispatchPreCompact(
+        {
+          ...compactHookContext,
+          hook_event_name: "PreCompact",
+          trigger: "manual",
+          custom_instructions: null,
+        },
+        { hooks: [preHook], runtimeOptions },
+      ),
+    ).resolves.toEqual({});
+    await expect(
+      dispatchPostCompact(
+        {
+          ...compactHookContext,
+          hook_event_name: "PostCompact",
+          trigger: "manual",
+          compact_summary: "summary",
+        },
+        { hooks: [postHook], runtimeOptions },
+      ),
+    ).resolves.toEqual({});
+    await expect(
+      dispatchSessionStart(
+        {
+          hook_event_name: "SessionStart",
+          source: "startup",
+        },
+        { hooks: [startHook], runtimeOptions },
+      ),
+    ).resolves.toEqual([]);
+
+    expect(preHook).not.toHaveBeenCalled();
+    expect(postHook).not.toHaveBeenCalled();
+    expect(startHook).not.toHaveBeenCalled();
   });
 });

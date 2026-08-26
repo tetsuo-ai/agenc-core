@@ -343,7 +343,9 @@ class BootstrapAgentIdentityManager {
   }
 }
 
-export function createHooksService(): Hooks & {
+export function createHooksService(
+  runtimeOptions?: AgentRuntimeOptions,
+): Hooks & {
   readonly stopHooks: StopHookHandler[];
   readonly stopFailureHooks: StopHookHandler[];
   readonly preToolUseHooks: PreToolUseHook[];
@@ -396,9 +398,17 @@ export function createHooksService(): Hooks & {
     },
     startupWarnings: () => [],
     executePreCompact: async (input, signal) =>
-      dispatchPreCompact(input, { signal, registry: lifecycleHooks }),
+      dispatchPreCompact(input, {
+        signal,
+        registry: lifecycleHooks,
+        ...(runtimeOptions !== undefined ? { runtimeOptions } : {}),
+      }),
     executePostCompact: async (input, signal) =>
-      dispatchPostCompact(input, { signal, registry: lifecycleHooks }),
+      dispatchPostCompact(input, {
+        signal,
+        registry: lifecycleHooks,
+        ...(runtimeOptions !== undefined ? { runtimeOptions } : {}),
+      }),
     executeStop: async (...args: unknown[]) => {
       if (args.length >= 3 && isRecord(args[2])) {
         return evaluateStopHooks(
@@ -420,7 +430,11 @@ export function createHooksService(): Hooks & {
       }
     },
     processSessionStart: (input, opts) =>
-      dispatchSessionStart(input, { ...opts, registry: lifecycleHooks }),
+      dispatchSessionStart(input, {
+        ...opts,
+        registry: lifecycleHooks,
+        ...(runtimeOptions !== undefined ? { runtimeOptions } : {}),
+      }),
   };
 }
 
@@ -662,12 +676,13 @@ export function buildBootstrapSessionServices(
   const mcpConnectionManager = new BootstrapMcpConnectionManager(
     opts.mcpManager,
   );
-  const hooksService = createHooksService();
+  const hooksService = createHooksService(opts.runtimeOptions);
   initMagicDocs();
   const hooksRuntime = new ConfiguredHooksRuntime({
     cwd: opts.workspaceRoot,
     env: opts.env,
     agencHome: opts.agencHome,
+    runtimeOptions: opts.runtimeOptions,
     shellPath: opts.runtimeOptions.posixShellPath ?? opts.env.SHELL ?? "/bin/sh",
     allowUntrustedHooks: opts.runtimeOptions.allowUntrustedHooks,
     sandboxExecutionBroker: opts.sandboxExecutionBroker,
@@ -788,12 +803,19 @@ export function buildBootstrapSessionServices(
         opts.networkApproval.clearSessionHosts();
       },
       requestNetworkApproval: (request: unknown) =>
-        requestBootstrapNetworkApproval(opts.networkApproval, request),
+        requestBootstrapNetworkApproval(
+          opts.networkApproval,
+          request,
+          opts.runtimeOptions,
+        ),
       requestDeferredApproval: (request: unknown) =>
         opts.networkApproval.requestDeferredApproval(
-          request as Parameters<
-            typeof opts.networkApproval.requestDeferredApproval
-          >[0],
+          {
+            ...(request as Parameters<
+              typeof opts.networkApproval.requestDeferredApproval
+            >[0]),
+            runtimeOptions: opts.runtimeOptions,
+          },
         ),
     },
     threadStore: threadNameStore,
@@ -887,17 +909,22 @@ function abortSignalOrUndefined(value: unknown): AbortSignal | undefined {
 function requestBootstrapNetworkApproval(
   service: RuntimeNetworkApprovalService,
   request: unknown,
+  runtimeOptions: AgentRuntimeOptions,
 ): Promise<unknown> {
   if (isManagedNetworkApprovalRequest(request)) {
     return requestManagedNetworkApprovalForSandbox({
       ...request,
       service,
+      runtimeOptions,
     });
   }
   return service.requestNetworkApproval(
-    request as Parameters<
-      RuntimeNetworkApprovalService["requestNetworkApproval"]
-    >[0],
+    {
+      ...(request as Parameters<
+        RuntimeNetworkApprovalService["requestNetworkApproval"]
+      >[0]),
+      runtimeOptions,
+    },
   );
 }
 

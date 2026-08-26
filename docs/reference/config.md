@@ -70,6 +70,9 @@ background response can then update the detected light/dark palette.
 embedding clients carry the same required typed value on the daemon protocol.
 The client passes that immutable value to the daemon and turn loop. The
 removed environment aliases `AGENC_SIMPLE` and `AGENC_BARE` are rejected.
+For hooks, this owner value is a hard execution policy, not another spelling
+of the mutable/persisted `hooksDisabled` setting: `/hooks enable` cannot lift
+it and recovery never writes bare mode into the session toggle.
 
 ## Layer order
 

@@ -41,7 +41,7 @@ From `formatCliHelpText()`:
 | `--output-format <format>` | Print mode output: `text`, `json`, or `stream-json` |
 | `--input-format <format>` | Print mode input: `stream-json` |
 | `--no-tui` | Force one-shot CLI mode (no interactive TUI) |
-| `--bare` | Use reduced startup mode (skip hooks, LSP, plugin sync, skill discovery, and credential-store reads) |
+| `--bare` | Use reduced startup mode; immutably suppress every session hook extension point and skip LSP, plugin sync, skill discovery, and credential-store reads |
 | `-c`, `--continue` | Continue the latest project session |
 | `-r`, `--resume <session-id>` | Resume a prior project session in the TUI |
 | `--config <path>` | Load an explicit schema-v2 `config.toml` layer for this invocation |

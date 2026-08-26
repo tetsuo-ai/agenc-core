@@ -4499,6 +4499,7 @@ async function initializeCsvRecoverySupervisor(opts: {
         registerAgentThreadTask(backgroundTaskLifecycle, thread as never, {
           description: `csv-job:${ctx.itemId}`,
           prompt: `CSV job item ${ctx.itemId}`,
+          runtimeOptions: opts.session.services.runtimeOptions,
         });
       } catch {
         /* pill registration is best-effort */

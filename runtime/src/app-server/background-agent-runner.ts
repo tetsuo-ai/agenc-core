@@ -475,6 +475,9 @@ export interface AgenCBackgroundAgentHooksStatusResult {
   readonly available: boolean;
   readonly sourcePath: string;
   readonly disabled: boolean;
+  readonly hardSuppressed: boolean;
+  readonly effectiveDisabled: boolean;
+  readonly suppressionReason: "bare_mode" | "session_disabled" | null;
   readonly issues: readonly SessionHookValidationIssueShape[];
   readonly hooks: readonly SessionHookConfigShape[];
   readonly diagnostics: readonly SessionHookRunDiagnosticShape[];
@@ -487,6 +490,28 @@ export interface AgenCBackgroundAgentSetHooksDisabledParams {
 export interface AgenCBackgroundAgentSetHooksDisabledResult {
   readonly applied: boolean;
   readonly disabled: boolean;
+  readonly hardSuppressed: boolean;
+  readonly effectiveDisabled: boolean;
+  readonly suppressionReason: "bare_mode" | "session_disabled" | null;
+}
+
+function configuredHookExecutionState(runtime: {
+  isDisabled(): boolean;
+  isHardSuppressed(): boolean;
+  isExecutionSuppressed(): boolean;
+}): Omit<AgenCBackgroundAgentSetHooksDisabledResult, "applied"> {
+  const disabled = runtime.isDisabled();
+  const hardSuppressed = runtime.isHardSuppressed();
+  return {
+    disabled,
+    hardSuppressed,
+    effectiveDisabled: runtime.isExecutionSuppressed(),
+    suppressionReason: hardSuppressed
+      ? "bare_mode"
+      : disabled
+        ? "session_disabled"
+        : null,
+  };
 }
 
 export interface AgenCBackgroundAgentApplyConfigParams {
@@ -3204,6 +3229,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         available: false,
         sourcePath: "",
         disabled: true,
+        hardSuppressed:
+          active.bootstrap.session.services.runtimeOptions.simpleMode,
+        effectiveDisabled: true,
+        suppressionReason: active.bootstrap.session.services.runtimeOptions
+          .simpleMode
+          ? "bare_mode"
+          : null,
         issues: [],
         hooks: [],
         diagnostics: [],
@@ -3214,7 +3246,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     return {
       available: true,
       sourcePath: rt.sourcePath(),
-      disabled: rt.isDisabled(),
+      ...configuredHookExecutionState(rt),
       issues: rt.issues().map((issue) => ({
         level: issue.level,
         message: issue.message,
@@ -3271,7 +3303,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       }
       const previousSettings = ensureInitialRuntimeSettings(active, agentId);
       if (previousSettings.hooksDisabled === params.disabled) {
-        return { applied: false, disabled: params.disabled };
+        return { applied: false, ...configuredHookExecutionState(rt) };
       }
       const nextSettings = {
         ...captureRuntimeSettings(active, { authorizeBypass: true }),
@@ -3295,7 +3327,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         );
         throw error;
       }
-      return { applied: true, disabled: params.disabled };
+      return { applied: true, ...configuredHookExecutionState(rt) };
     });
   }
 

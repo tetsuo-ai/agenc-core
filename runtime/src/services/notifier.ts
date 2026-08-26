@@ -11,6 +11,7 @@
 
 import { logForDebugging } from "../utils/debug.js";
 import { runCommand } from "../utils/process.js";
+import { isHookExecutionSuppressed } from "../hooks/runtime-policy.js";
 
 export type TerminalNotification = {
   readonly notifyITerm2: (opts: { readonly message: string; readonly title?: string }) => void;
@@ -65,7 +66,9 @@ export async function sendNotification(
 ): Promise<void> {
   const channel = runtime.preferredChannel ?? "auto";
 
-  await runtime.executeNotificationHooks?.(notification);
+  if (!isHookExecutionSuppressed()) {
+    await runtime.executeNotificationHooks?.(notification);
+  }
 
   await sendToChannel(channel, notification, terminal, runtime);
 }

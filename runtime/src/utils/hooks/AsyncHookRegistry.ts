@@ -8,6 +8,8 @@ import type { ShellCommand } from '../ShellCommand.js'
 import { invalidateSessionEnvCache } from '../sessionEnvironment.js'
 import { jsonParse, jsonStringify } from '../slowOperations.js'
 import { emitHookResponse, startHookProgressInterval } from './hookEvents.js'
+import { isHookExecutionSuppressed } from '../../hooks/runtime-policy.js'
+import type { SessionQueueOwner } from '../queueOwnership.js'
 
 export type PendingAsyncHook = {
   processId: string
@@ -20,6 +22,7 @@ export type PendingAsyncHook = {
   timeout: number
   command: string
   responseAttachmentSent: boolean
+  queueOwner: SessionQueueOwner
   shellCommand?: ShellCommand
   stopProgressInterval: () => void
 }
@@ -37,6 +40,7 @@ export function registerPendingAsyncHook({
   shellCommand,
   toolName,
   pluginId,
+  queueOwner,
 }: {
   processId: string
   hookId: string
@@ -47,6 +51,7 @@ export function registerPendingAsyncHook({
   shellCommand: ShellCommand
   toolName?: string
   pluginId?: string
+  queueOwner: SessionQueueOwner
 }): void {
   const timeout = asyncResponse.asyncTimeout || 15000 // Default 15s
   logForDebugging(
@@ -77,14 +82,21 @@ export function registerPendingAsyncHook({
     startTime: Date.now(),
     timeout,
     responseAttachmentSent: false,
+    queueOwner,
     shellCommand,
     stopProgressInterval,
   })
 }
 
-export function getPendingAsyncHooks(): PendingAsyncHook[] {
+export function getPendingAsyncHooks(
+  queueOwner?: SessionQueueOwner,
+): PendingAsyncHook[] {
+  if (isHookExecutionSuppressed()) return []
   return Array.from(pendingHooks.values()).filter(
-    hook => !hook.responseAttachmentSent,
+    hook =>
+      !hook.responseAttachmentSent &&
+      (queueOwner === undefined ||
+        hook.queueOwner.conversationId === queueOwner.conversationId),
   )
 }
 
@@ -110,7 +122,9 @@ async function finalizeHook(
   })
 }
 
-export async function checkForAsyncHookResponses(): Promise<
+export async function checkForAsyncHookResponses(
+  queueOwner?: SessionQueueOwner,
+): Promise<
   Array<{
     processId: string
     response: SyncHookJSONOutput
@@ -123,6 +137,7 @@ export async function checkForAsyncHookResponses(): Promise<
     exitCode?: number
   }>
 > {
+  if (isHookExecutionSuppressed()) return []
   const responses: {
     processId: string
     response: SyncHookJSONOutput
@@ -139,7 +154,11 @@ export async function checkForAsyncHookResponses(): Promise<
   logForDebugging(`Hooks: Found ${pendingCount} total hooks in registry`)
 
   // Snapshot hooks before processing — we'll mutate the map after.
-  const hooks = Array.from(pendingHooks.values())
+  const hooks = Array.from(pendingHooks.values()).filter(
+    hook =>
+      queueOwner === undefined ||
+      hook.queueOwner.conversationId === queueOwner.conversationId,
+  )
 
   const settled = await Promise.allSettled(
     hooks.map(async hook => {

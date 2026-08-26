@@ -3223,6 +3223,9 @@ export class AgenCDaemonAgentManager {
       available: status.available,
       sourcePath: status.sourcePath,
       disabled: status.disabled,
+      hardSuppressed: status.hardSuppressed,
+      effectiveDisabled: status.effectiveDisabled,
+      suppressionReason: status.suppressionReason,
       issues: status.issues,
       hooks: status.hooks,
       diagnostics: status.diagnostics,
@@ -3255,6 +3258,9 @@ export class AgenCDaemonAgentManager {
       sessionId: params.sessionId,
       applied: result.applied,
       disabled: result.disabled,
+      hardSuppressed: result.hardSuppressed,
+      effectiveDisabled: result.effectiveDisabled,
+      suppressionReason: result.suppressionReason,
     };
   }
 

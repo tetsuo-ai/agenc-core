@@ -90,6 +90,23 @@ skill metadata schema.
   `AGENC_ALLOW_UNTRUSTED_HOOKS=1|true|yes` (automation opt-in).
 - Secrets redacted in diagnostics where wired (`configured-hooks.ts`).
 
+`--bare` is an immutable, run-owned hard suppression boundary for **every**
+session hook extension point: configured commands, plugin/SDK callbacks,
+prompt/HTTP/agent hooks, tool and permission hooks, lifecycle hooks, async-hook
+responses, and internal post-sampling hooks. Hook registration may still be
+visible for inspection, but no callback, subprocess, request, or background
+hook task is executed for that run.
+
+This hard state is separate from the mutable session switch:
+
+- `hardSuppressed` comes only from the owning run's captured `simpleMode`.
+- `disabled` is the operator-controlled, durably persisted session switch.
+- `effectiveDisabled` is true when either state is true.
+
+Consequently, `/hooks enable` can clear `disabled` but cannot lift `--bare`.
+Status and mutation responses report why execution remains suppressed instead
+of claiming hooks were enabled.
+
 ### Engine
 
 | Module | Role |
@@ -119,6 +136,10 @@ Plugin hooks merge via `plugins/registration/load-plugin-hooks.ts`.
 - No args / interactive: menu (`hooks-menu.tsx`) when runtime available
 - Against daemon: `enable`/`disable` use `session.hooks.setDisabled`.
   `test` and `clear-diagnostics` may still report deferred.
+- A daemon-backed TUI always reads and mutates the daemon-owned runtime, even
+  when its bridge session also contains a local inspection runtime.
+- Under `--bare`, `test` is recorded as skipped and `enable` changes only the
+  mutable switch; the UI continues to report immutable suppression.
 - Description: “Inspect and test AgenC hook configuration”
 
 ---

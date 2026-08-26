@@ -21,6 +21,7 @@ import type {
 import type { LLMMessage } from "../../llm/types.js";
 import { AdmissionDeniedError } from "../../budget/admission-client.js";
 import { runAdmittedToolCall } from "../../budget/admitted-tool-call.js";
+import { isHookExecutionSuppressed } from "../../hooks/runtime-policy.js";
 import { cloneLlmMessageSnapshot as cloneMessage } from "../../llm/content-conversion.js";
 import { roughTokenCountEstimationForMessages } from "../../llm/token-estimation.js";
 import type { Session } from "../../session/session.js";
@@ -636,6 +637,11 @@ async function extractSessionMemory(
 export function runSessionMemoryPostSamplingHook(
   context: SessionMemoryPostSamplingContext,
 ): Promise<void> {
+  if (
+    isHookExecutionSuppressed(context.session?.services.runtimeOptions)
+  ) {
+    return Promise.resolve();
+  }
   const lane = laneForContext(context);
   lane.pending += 1;
   lane.queue = lane.queue.then(

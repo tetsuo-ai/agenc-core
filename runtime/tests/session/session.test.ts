@@ -2383,6 +2383,30 @@ describe("Session.shutdown dispatches SessionEnd hooks", () => {
       resetLifecycleHookRegistry();
     }
   });
+
+  it("passes its captured bare authority to SessionEnd outside turn scope", async () => {
+    const { registerSessionEndHook, resetLifecycleHookRegistry } =
+      await import("../llm/hooks/registry.js");
+    const sessionEnd = vi.fn(async () => ({
+      succeeded: true,
+      output: "must not run",
+    }));
+    resetLifecycleHookRegistry();
+    registerSessionEndHook(sessionEnd);
+    try {
+      const session = buildSession({
+        services: {
+          runtimeOptions: { simpleMode: true } as never,
+        },
+      });
+
+      await session.shutdown();
+
+      expect(sessionEnd).not.toHaveBeenCalled();
+    } finally {
+      resetLifecycleHookRegistry();
+    }
+  });
 });
 
 describe("Session file rewind (previewFileRewind / rewindFilesToMessage)", () => {

@@ -758,6 +758,7 @@ async function executeWorkflowNode(
       registerAgentThreadTask(context.lifecycle, thread as never, {
         description: `workflow:${safeIdentity}`,
         prompt: invocation.instruction,
+        runtimeOptions: context.options.session.services.runtimeOptions,
       });
     } catch {
       // Task-pill registration is observational; lifecycle retirement is not.

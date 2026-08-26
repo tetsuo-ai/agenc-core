@@ -53,6 +53,7 @@ import {
   resolveConfiguredHookSources,
   type ConfiguredHookAuthoritySnapshot,
 } from "./configured-hook-sources.js";
+import type { HookRuntimeAuthority } from "./runtime-policy.js";
 
 export type { ConfiguredHookAuthoritySnapshot } from "./configured-hook-sources.js";
 
@@ -126,6 +127,8 @@ export interface ConfiguredHooksRuntimeOptions {
   readonly sandboxExecutionBroker?: import("../sandbox/execution-broker.js").SandboxExecutionBrokerLike;
   readonly executionAdmission?: import("../budget/admission-client.js").ExecutionAdmissionClient;
   readonly admissionRequired?: boolean;
+  /** Immutable authority owned by the session whose hooks this runtime runs. */
+  readonly runtimeOptions?: HookRuntimeAuthority;
   /**
    * SECURITY: trust gate for config/plugin-sourced command hooks. Returns true
    * when the current workspace is trusted (persisted in trusted-projects.json).
@@ -222,6 +225,9 @@ export class ConfiguredHooksRuntime {
       ...(opts.admissionRequired !== undefined
         ? { admissionRequired: opts.admissionRequired }
         : {}),
+      ...(opts.runtimeOptions !== undefined
+        ? { runtimeOptions: opts.runtimeOptions }
+        : {}),
     });
     this.isWorkspaceTrusted =
       opts.isWorkspaceTrusted ??
@@ -289,6 +295,16 @@ export class ConfiguredHooksRuntime {
 
   isDisabled(): boolean {
     return this.engine.isDisabled();
+  }
+
+  /** Immutable owner policy; unlike `isDisabled`, callers cannot toggle it. */
+  isHardSuppressed(): boolean {
+    return this.engine.isHardSuppressed();
+  }
+
+  /** Effective execution state across mutable and immutable policy. */
+  isExecutionSuppressed(): boolean {
+    return this.engine.isExecutionSuppressed();
   }
 
   listHooks(): readonly IndividualHookConfig[] {
@@ -569,7 +585,10 @@ export class ConfiguredHooksRuntime {
   private createPreToolUseHook(hook: IndividualHookConfig): PreToolUseHook {
     return async ({ invocation, tool, args }) => {
       const toolName = tool.name;
-      if (this.isDisabled() || !matchesToolMatcher(toolName, hook.matcher)) {
+      if (
+        this.isExecutionSuppressed() ||
+        !matchesToolMatcher(toolName, hook.matcher)
+      ) {
         return { kind: "continue" };
       }
       const result = await this.runCommandHook(hook, {
@@ -618,7 +637,10 @@ export class ConfiguredHooksRuntime {
   private createPostToolUseHook(hook: IndividualHookConfig): PostToolUseHook {
     return async ({ invocation, tool, args, result }) => {
       const toolName = tool.name;
-      if (this.isDisabled() || !matchesToolMatcher(toolName, hook.matcher)) {
+      if (
+        this.isExecutionSuppressed() ||
+        !matchesToolMatcher(toolName, hook.matcher)
+      ) {
         return { kind: "continue" };
       }
       const run = await this.runCommandHook(hook, {
@@ -681,7 +703,10 @@ export class ConfiguredHooksRuntime {
   ): PostToolUseFailureHook {
     return async ({ invocation, tool, args, error, isInterrupt }) => {
       const toolName = tool.name;
-      if (this.isDisabled() || !matchesToolMatcher(toolName, hook.matcher))
+      if (
+        this.isExecutionSuppressed() ||
+        !matchesToolMatcher(toolName, hook.matcher)
+      )
         return;
       await this.runCommandHook(hook, {
         ...toolInvocationHookContext(invocation, this.opts.cwd),
@@ -700,7 +725,7 @@ export class ConfiguredHooksRuntime {
   private createPermissionHook(): PermissionDecisionHook {
     return async (input) => {
       const { toolName, args } = input;
-      if (this.isDisabled()) {
+      if (this.isExecutionSuppressed()) {
         return { kind: "pass" };
       }
       const hookInput = {
@@ -746,7 +771,7 @@ export class ConfiguredHooksRuntime {
   ): UserPromptSubmitHook {
     return async (input) => {
       const { prompt, permissionMode, cwd, signal } = input;
-      if (this.isDisabled()) {
+      if (this.isExecutionSuppressed()) {
         return undefined;
       }
       const run = await this.runCommandHook(
@@ -820,7 +845,7 @@ export class ConfiguredHooksRuntime {
     return {
       name: hookCommandLabel(hook),
       run: async (request) => {
-        if (this.isDisabled()) {
+        if (this.isExecutionSuppressed()) {
           return allowStopOutcome();
         }
         const run = await this.runCommandHook(hook, stopInput("Stop", request));
@@ -883,7 +908,10 @@ export class ConfiguredHooksRuntime {
       name: hookCommandLabel(hook),
       run: async (request) => {
         const error = classifyStopFailure(request);
-        if (this.isDisabled() || !matchesPattern(error, hook.matcher)) {
+        if (
+          this.isExecutionSuppressed() ||
+          !matchesPattern(error, hook.matcher)
+        ) {
           return allowStopOutcome();
         }
         await this.runCommandHook(hook, {
@@ -907,7 +935,10 @@ export class ConfiguredHooksRuntime {
     matchKey: (input: I) => string,
   ): (input: I, signal?: AbortSignal) => Promise<HookResult> {
     return async (input, signal) => {
-      if (this.isDisabled() || !matchesPattern(matchKey(input), hook.matcher)) {
+      if (
+        this.isExecutionSuppressed() ||
+        !matchesPattern(matchKey(input), hook.matcher)
+      ) {
         return { succeeded: true, output: "", command: hook.command.command };
       }
       const run = await this.runCommandHook(
@@ -951,7 +982,10 @@ export class ConfiguredHooksRuntime {
     return async (input, signal) => {
       const matchQuery =
         input.hook_event_name === "SessionStart" ? input.source : input.trigger;
-      if (this.isDisabled() || !matchesPattern(matchQuery, hook.matcher)) {
+      if (
+        this.isExecutionSuppressed() ||
+        !matchesPattern(matchQuery, hook.matcher)
+      ) {
         return { succeeded: true, output: "", command: hook.command.command };
       }
       const run = await this.runCommandHook(
@@ -986,7 +1020,10 @@ export class ConfiguredHooksRuntime {
     signal?: AbortSignal,
   ) => Promise<HookResult> {
     return async (input, signal) => {
-      if (this.isDisabled() || !matchesPattern(input.source, hook.matcher)) {
+      if (
+        this.isExecutionSuppressed() ||
+        !matchesPattern(input.source, hook.matcher)
+      ) {
         return { succeeded: true, output: "", command: hook.command.command };
       }
       const run = await this.runCommandHook(
@@ -1050,6 +1087,12 @@ export class ConfiguredHooksRuntime {
     input: Record<string, unknown>,
     signal?: AbortSignal,
   ): Promise<HookCommandRunDiagnostic> {
+    // Route mutable and immutable suppression through the engine so every
+    // direct/test invocation records the same skipped diagnostic and never
+    // reaches trust evaluation or the subprocess boundary.
+    if (this.isExecutionSuppressed()) {
+      return this.engine.runCommandHook(hook, input, signal, inputCwd(input));
+    }
     // SECURITY: config/plugin-sourced command hooks run arbitrary shell commands
     // (engine/command-runner.ts spawn(shell, ["-c", command])). A freshly-cloned
     // untrusted repo's config.toml must NOT be able to execute host code. Gate

@@ -1,4 +1,5 @@
 import * as settingsModule from '../settings/settings.js'
+import { isHookExecutionSuppressed } from '../../hooks/runtime-policy.js'
 
 /**
  * Whether non-managed registered hooks are suppressed by policy.
@@ -19,9 +20,15 @@ export function shouldAllowManagedHooksOnly(): boolean {
   )
 }
 
-/** Managed policy is the only authority that may suppress every hook source. */
+/**
+ * Canonical hard policy for every hook source.
+ *
+ * Bare mode is immutable owner authority. Managed policy remains the only
+ * settings source that may suppress managed hooks as well as user hooks.
+ */
 export function shouldDisableAllHooksIncludingManaged(): boolean {
   return (
+    isHookExecutionSuppressed() ||
     settingsModule.getSettingsForSource('policySettings')?.disableAllHooks ===
     true
   )

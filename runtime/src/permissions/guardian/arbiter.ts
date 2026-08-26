@@ -13,6 +13,7 @@
  */
 
 import type { Event, EventLog } from "../../session/event-log.js";
+import { isHookExecutionSuppressed } from "../../hooks/runtime-policy.js";
 import { asRecord } from "../../utils/record.js";
 import { nonEmptyString as stringValue } from "../../utils/stringUtils.js";
 import type { ToolInvocation, ToolPayload } from "../../tools/context.js";
@@ -464,22 +465,31 @@ async function resolveApproval(
     return { decision: { kind: "abort" }, source: "aborted" };
   }
 
-  for (const hook of opts.hooks ?? []) {
-    let result: ReviewDecision | undefined;
-    try {
-      result = await awaitWithAbort(Promise.resolve(hook(opts.ctx)), signal);
-    } catch (err) {
-      if (alreadyAborted(signal) || isAbortError(err, signal)) {
-        return { decision: { kind: "abort" }, source: "aborted" };
+  const hookExecutionSuppressed = isHookExecutionSuppressed(
+    opts.ctx.invocation.session.services.runtimeOptions,
+  );
+  if (!hookExecutionSuppressed) {
+    for (const hook of opts.hooks ?? []) {
+      let result: ReviewDecision | undefined;
+      try {
+        result = await awaitWithAbort(Promise.resolve(hook(opts.ctx)), signal);
+      } catch (err) {
+        if (alreadyAborted(signal) || isAbortError(err, signal)) {
+          return { decision: { kind: "abort" }, source: "aborted" };
+        }
+        throw err;
       }
-      throw err;
-    }
-    if (result !== undefined) {
-      return { decision: result, source: "hook" };
+      if (result !== undefined) {
+        return { decision: result, source: "hook" };
+      }
     }
   }
 
-  if (opts.permissionDecisionHooks && opts.permissionDecisionHooks.length > 0) {
+  if (
+    !hookExecutionSuppressed &&
+    opts.permissionDecisionHooks &&
+    opts.permissionDecisionHooks.length > 0
+  ) {
     let decision;
     try {
       decision = await awaitWithAbort(
@@ -1113,11 +1123,16 @@ function emitApprovalPromptEvents(
     try {
       const { dispatchNotification } =
         await import("../../llm/hooks/dispatcher.js");
-      await dispatchNotification({
-        hook_event_name: "Notification",
-        notification_type: "permission_request",
-        message: `AgenC is waiting for permission to run ${opts.tool.name}`,
-      });
+      await dispatchNotification(
+        {
+          hook_event_name: "Notification",
+          notification_type: "permission_request",
+          message: `AgenC is waiting for permission to run ${opts.tool.name}`,
+        },
+        {
+          runtimeOptions: opts.invocation.session.services.runtimeOptions,
+        },
+      );
     } catch {
       /* notification hooks are best-effort */
     }

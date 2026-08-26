@@ -148,6 +148,39 @@ describe("HookEngine dispatcher", () => {
     expect(engine.latestDiagnostics()[0]?.status).toBe("skipped");
   });
 
+  test("hard-suppresses the final spawn choke without mutating the session switch", async () => {
+    const engine = new HookEngine({
+      cwd: process.cwd(),
+      env: process.env,
+      shellPath: process.env.SHELL ?? "/bin/sh",
+      sourcePath: "/tmp/agenc-hooks-test/config.toml",
+      sandboxExecutionBroker: explicitDangerBroker,
+      admissionRequired: true,
+      runtimeOptions: { simpleMode: true },
+    });
+    engine.load({
+      PreToolUse: [
+        {
+          hooks: [{ type: "command", command: "printf should-not-run" }],
+        },
+      ],
+    });
+
+    expect(engine.isDisabled()).toBe(false);
+    expect(engine.isHardSuppressed()).toBe(true);
+    expect(engine.isExecutionSuppressed()).toBe(true);
+
+    const skipped = await engine.runCommandHook(engine.listHooks()[0]!, {});
+
+    expect(skipped).toMatchObject({
+      status: "skipped",
+      stdout: "",
+      error: expect.stringContaining("immutable --bare mode"),
+    });
+    expect(engine.latestDiagnostics()[0]?.id).toBe(skipped.id);
+    expect(engine.isDisabled()).toBe(false);
+  });
+
   test("does not spawn hooks when the signal is already aborted", async () => {
     const engine = makeEngine({
       UserPromptSubmit: [
