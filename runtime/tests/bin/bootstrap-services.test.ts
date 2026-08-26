@@ -138,7 +138,7 @@ describe("loadBootstrapHooks", () => {
     loadBootstrapHooks({
       hooksRuntime: runtime,
       hooksService: target,
-      config,
+      authoritySnapshot: { config, layers: [] },
       autoFixPostToolHook: autoFixHook,
     });
     expect(target.postToolUseHooks).toHaveLength(2);
@@ -147,7 +147,7 @@ describe("loadBootstrapHooks", () => {
     loadBootstrapHooks({
       hooksRuntime: runtime,
       hooksService: target,
-      config,
+      authoritySnapshot: { config, layers: [] },
       autoFixPostToolHook: autoFixHook,
     });
     expect(target.postToolUseHooks).toHaveLength(2);
@@ -158,7 +158,10 @@ describe("loadBootstrapHooks", () => {
     loadBootstrapHooks({
       hooksRuntime: runtime,
       hooksService: target,
-      config: { ...defaultConfig(), hooks: undefined },
+      authoritySnapshot: {
+        config: { ...defaultConfig(), hooks: undefined },
+        layers: [],
+      },
       autoFixPostToolHook: autoFixHook,
     });
     expect(target.postToolUseHooks).toEqual([autoFixHook]);
@@ -450,6 +453,7 @@ describe("SessionStart bootstrap hooks", () => {
       ),
       configStore: {
         current: () => config,
+        authoritySnapshot: () => ({ config, layers: [] }),
         subscribe: () => () => {},
       } as never,
       toolApprovals: {
@@ -634,6 +638,7 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
         ),
         configStore: {
           current: () => defaultConfig(),
+          authoritySnapshot: () => ({ config: defaultConfig(), layers: [] }),
           subscribe: () => () => {},
         } as never,
         toolApprovals: {
@@ -735,6 +740,7 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
       ),
       configStore: {
         current: () => defaultConfig(),
+        authoritySnapshot: () => ({ config: defaultConfig(), layers: [] }),
         subscribe: () => () => {},
       } as never,
       toolApprovals: {

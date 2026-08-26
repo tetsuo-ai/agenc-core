@@ -1,9 +1,8 @@
 /**
  * Teammate mode snapshot module.
  *
- * Captures the teammate mode at session startup, following the same pattern
- * as hooksConfigSnapshot.ts. This ensures that runtime config changes don't
- * affect the teammate mode for the current session.
+ * Captures teammate mode at session startup so runtime config changes do not
+ * alter the current session's execution backend.
  */
 
 import { logForDebugging } from 'src/utils/debug.js'

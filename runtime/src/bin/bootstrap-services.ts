@@ -26,7 +26,6 @@ import type {
   AuthManager,
   SessionConfiguration,
 } from "../session/turn-context.js";
-import type { AgenCConfig } from "../config/schema.js";
 import type {
   ExecPolicyManager,
   Hooks,
@@ -461,12 +460,12 @@ export function createHooksService(): Hooks & {
 }
 
 export function loadBootstrapHooks(opts: {
-  readonly hooksRuntime: Pick<ConfiguredHooksRuntime, "load">;
+  readonly hooksRuntime: Pick<ConfiguredHooksRuntime, "loadConfigAuthority">;
   readonly hooksService: { readonly postToolUseHooks: PostToolUseHook[] };
-  readonly config: Pick<AgenCConfig, "hooks">;
+  readonly authoritySnapshot: ReturnType<ConfigStore["authoritySnapshot"]>;
   readonly autoFixPostToolHook: PostToolUseHook;
 }): void {
-  opts.hooksRuntime.load(opts.config.hooks);
+  opts.hooksRuntime.loadConfigAuthority(opts.authoritySnapshot);
   if (!opts.hooksService.postToolUseHooks.includes(opts.autoFixPostToolHook)) {
     opts.hooksService.postToolUseHooks.push(opts.autoFixPostToolHook);
   }
@@ -718,15 +717,15 @@ export function buildBootstrapSessionServices(
     sandboxExecutionBroker: opts.sandboxExecutionBroker,
   });
   hooksRuntime.attachTarget(hooksService);
-  const loadHooks = (cfg: ReturnType<ConfigStore["current"]>): void => {
+  const loadHooks = (): void => {
     loadBootstrapHooks({
       hooksRuntime,
       hooksService,
-      config: cfg,
+      authoritySnapshot: opts.configStore.authoritySnapshot(),
       autoFixPostToolHook,
     });
   };
-  loadHooks(opts.configStore.current());
+  loadHooks();
   loadBootstrapLspServersInBackground(opts.configStore.current(), {
     workspaceRoot: opts.workspaceRoot,
     sandboxExecutionBroker: opts.sandboxExecutionBroker,
@@ -739,7 +738,7 @@ export function buildBootstrapSessionServices(
       }),
   };
   const unsubscribeHooksConfig = opts.configStore.subscribe((cfg) => {
-    loadHooks(cfg);
+    loadHooks();
     loadBootstrapLspServersInBackground(cfg, {
       workspaceRoot: opts.workspaceRoot,
       sandboxExecutionBroker: opts.sandboxExecutionBroker,

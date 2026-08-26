@@ -405,29 +405,13 @@ export async function refreshActivePlugins(
   return snapshot;
 }
 
-function mergeHookMaps(
-  base: HooksMap | undefined,
-  pluginHooks: HooksMap | undefined,
-): HooksMap | undefined {
-  if (!base) return pluginHooks;
-  if (!pluginHooks) return base;
-  const out: Record<string, NonNullable<HooksMap[string]>> = {};
-  for (const [event, matchers] of Object.entries(base)) {
-    out[event] = [...matchers];
-  }
-  for (const [event, matchers] of Object.entries(pluginHooks)) {
-    out[event] = [...(out[event] ?? []), ...matchers];
-  }
-  return out;
-}
-
 function registerPluginHooksWithRuntime(
   ctx: SlashCommandContext,
   hooks: HooksMap | undefined,
 ): void {
   const runtime = ctx.session.services.hooksRuntime;
   if (!runtime) return;
-  runtime.load(mergeHookMaps(currentConfig(ctx)?.hooks, hooks));
+  runtime.setPluginHooks(hooks);
 }
 
 export function clearPluginRegistrationCaches(): void {

@@ -404,7 +404,7 @@ describe("evaluateStopHooks", () => {
       stopFailureHooks: [],
     };
     runtime.attachTarget(target);
-    runtime.load({
+    runtime.loadForTesting({
       Stop: [
         {
           hooks: [{ type: "command", command }],

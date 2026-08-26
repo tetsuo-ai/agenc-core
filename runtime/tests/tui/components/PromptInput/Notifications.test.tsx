@@ -112,7 +112,7 @@ vi.mock('../../../utils/format.js', () => ({
   formatDuration: (ms: number) => `${ms}ms`,
 }))
 
-vi.mock('../../../utils/hooks/fileChangedWatcher.js', () => ({
+vi.mock('../../../utils/hooks/cwdChangedHooks.js', () => ({
   setEnvHookNotifier: (
     notifier: null | ((text: string, isError?: boolean) => void),
   ) => {

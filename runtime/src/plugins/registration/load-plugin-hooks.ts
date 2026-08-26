@@ -1,6 +1,5 @@
 import type { HookCommand, HookMatcher, HooksMap } from "../../config/schema.js";
 import { validateHooksConfig } from "../../config/schema.js";
-import type { ConfiguredHooksRuntime } from "../../hooks/configured-hooks.js";
 import {
   isRepositoryControlledPlugin,
   type LoadedPlugin,
@@ -90,13 +89,4 @@ export async function loadPluginHooks(
     }
   }
   return validateHooksConfig(merged);
-}
-
-export async function registerPluginHooks(
-  runtime: Pick<ConfiguredHooksRuntime, "load">,
-  options: PluginHookRegistrationOptions = {},
-): Promise<HooksMap | undefined> {
-  const hooks = await loadPluginHooks(options);
-  runtime.load(hooks);
-  return hooks;
 }

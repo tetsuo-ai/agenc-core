@@ -939,8 +939,8 @@ export function openHooksMenu(
   return openLocalJsxCommand(ctx, close => {
     const reload = ctx.configStore
       ? async (): Promise<string> => {
-          const config = await ctx.configStore!.reload();
-          runtime.load(config.hooks);
+          await ctx.configStore!.reload();
+          runtime.loadConfigAuthority(ctx.configStore!.authoritySnapshot());
           const issues = runtime.issues();
           return issues.length === 0
             ? "Hooks reloaded from config."

@@ -841,7 +841,7 @@ describe("plugin registration", () => {
   test("active refresh registers hooks, preserves AppState shapes, and publishes active discovery snapshots", async () => {
     await withTempPlugin(async ({ root, pluginRoot, options }) => {
       const roleWorkspace = createAgentRoleWorkspace(root);
-      const hooksRuntime = { load: vi.fn() };
+      const hooksRuntime = { setPluginHooks: vi.fn() };
       const configStore = {
         current: () => ({
           plugins: {
@@ -916,11 +916,13 @@ describe("plugin registration", () => {
       const snapshot = await refreshActivePlugins(ctx);
 
       expect(snapshot.enabled_count).toBe(1);
-      expect(hooksRuntime.load).toHaveBeenCalledWith(
+      expect(hooksRuntime.setPluginHooks).toHaveBeenCalledWith(
         expect.objectContaining({
-          Stop: expect.any(Array),
           PreToolUse: expect.any(Array),
         }),
+      );
+      expect(hooksRuntime.setPluginHooks.mock.calls[0]?.[0]).not.toHaveProperty(
+        "Stop",
       );
       expect(appState.plugins).toMatchObject({
         needsRefresh: false,
@@ -976,7 +978,7 @@ describe("plugin registration", () => {
           },
         })),
       };
-      const hooksRuntime = { load: vi.fn() };
+      const hooksRuntime = { setPluginHooks: vi.fn() };
       const staleError = {
         type: "lsp-manager",
         server: "stale",
@@ -1026,7 +1028,7 @@ describe("plugin registration", () => {
         "live agent catalog provenance is unavailable",
       );
       expect(configStore.current).not.toHaveBeenCalled();
-      expect(hooksRuntime.load).not.toHaveBeenCalled();
+      expect(hooksRuntime.setPluginHooks).not.toHaveBeenCalled();
       expect(setAppState).not.toHaveBeenCalled();
       expect(appState).toBe(initialAppState);
     });
@@ -1040,7 +1042,7 @@ describe("plugin registration", () => {
           plugins: { plugins: { sample: { path: pluginRoot } } },
         })),
       };
-      const hooksRuntime = { load: vi.fn() };
+      const hooksRuntime = { setPluginHooks: vi.fn() };
       const setAppState = vi.fn();
       const ctx = {
         cwd: root,
@@ -1059,7 +1061,7 @@ describe("plugin registration", () => {
         "live agent catalog provenance is unavailable",
       );
       expect(configStore.current).not.toHaveBeenCalled();
-      expect(hooksRuntime.load).not.toHaveBeenCalled();
+      expect(hooksRuntime.setPluginHooks).not.toHaveBeenCalled();
       expect(setAppState).not.toHaveBeenCalled();
     });
   });

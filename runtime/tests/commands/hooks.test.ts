@@ -18,7 +18,7 @@ function runtime(): ConfiguredHooksRuntime {
     // trusted (production establishes trust before command hooks run).
     isWorkspaceTrusted: () => true,
   });
-  r.load({
+  r.loadForTesting({
     PreToolUse: [
       {
         matcher: "Read",

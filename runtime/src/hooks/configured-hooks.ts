@@ -49,6 +49,12 @@ import type {
   HookRunStatus,
   IndividualHookConfig,
 } from "./engine/types.js";
+import {
+  resolveConfiguredHookSources,
+  type ConfiguredHookAuthoritySnapshot,
+} from "./configured-hook-sources.js";
+
+export type { ConfiguredHookAuthoritySnapshot } from "./configured-hook-sources.js";
 
 export { groupHooksByEvent, matchesPattern };
 export type {
@@ -135,6 +141,8 @@ export class ConfiguredHooksRuntime {
   private validationIssues: HookValidationIssue[] = [];
   private target: HookInstallTarget | null = null;
   private readonly isWorkspaceTrusted: () => boolean;
+  private configAuthority: ConfiguredHookAuthoritySnapshot | undefined;
+  private pluginHooks: HooksMap | undefined;
 
   constructor(private readonly opts: ConfiguredHooksRuntimeOptions) {
     this.engine = new HookEngine({
@@ -167,7 +175,32 @@ export class ConfiguredHooksRuntime {
     this.rebuildTarget();
   }
 
-  load(raw: HooksMap | undefined): void {
+  /** Replace canonical config authority without disturbing plugin hooks. */
+  loadConfigAuthority(snapshot: ConfiguredHookAuthoritySnapshot): void {
+    this.configAuthority = snapshot;
+    this.refreshSources();
+  }
+
+  /** Replace explicit plugin command hooks without reconstructing config. */
+  setPluginHooks(hooks: HooksMap | undefined): void {
+    this.pluginHooks = hooks;
+    this.refreshSources();
+  }
+
+  /** @internal Test-only raw loader. Production must bind source authority. */
+  loadForTesting(raw: HooksMap | undefined): void {
+    this.configAuthority = undefined;
+    this.pluginHooks = undefined;
+    this.loadResolved(raw);
+  }
+
+  private refreshSources(): void {
+    this.loadResolved(
+      resolveConfiguredHookSources(this.configAuthority, this.pluginHooks),
+    );
+  }
+
+  private loadResolved(raw: HooksMap | undefined): void {
     try {
       this.engine.load(validateHooksConfig(raw));
       this.validationIssues = [];

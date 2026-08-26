@@ -27,7 +27,7 @@ import { which } from "./which.js";
 
 export type { ExecResult } from "./ShellCommand.js";
 
-import { onCwdChangedForHooks } from "./hooks/fileChangedWatcher.js";
+import { onCwdChangedForHooks } from "./hooks/cwdChangedHooks.js";
 import { getAgenCTempDirName } from "./permissions/filesystem.js";
 import { getPlatform } from "./platform.js";
 import { SandboxManager } from "./sandbox/sandbox-runtime.js";

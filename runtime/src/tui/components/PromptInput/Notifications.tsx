@@ -26,7 +26,7 @@ import {
 import type { AutoUpdaterResult } from '../../../utils/autoUpdater.js';
 import { getExternalEditor } from '../../../utils/editor.js';
 import { getIsRemoteMode } from '../../../bootstrap/state.js';
-import { setEnvHookNotifier } from '../../../utils/hooks/fileChangedWatcher.js';
+import { setEnvHookNotifier } from '../../../utils/hooks/cwdChangedHooks.js';
 import { toIDEDisplayName } from '../../../utils/ide.js';
 import { getMessagesAfterCompactBoundary } from '../../../utils/messages.js';
 import { isRegistryOwnedNonAnthropicModel, usesAnthropicAccountFlow } from '../../../utils/model/providers.js';

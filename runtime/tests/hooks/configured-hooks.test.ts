@@ -11,6 +11,7 @@ import {
   type HookInstallTarget,
 } from "./configured-hooks.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
+import type { HooksMap } from "../config/schema.js";
 
 const explicitDangerBroker = new SandboxExecutionBroker({
   mode: "danger_full_access",
@@ -27,6 +28,11 @@ class ConfiguredHooksRuntime extends ProductionConfiguredHooksRuntime {
       sandboxExecutionBroker:
         options.sandboxExecutionBroker ?? explicitDangerBroker,
     });
+  }
+
+  /** Keeps existing behavioral fixtures on the explicitly test-only raw seam. */
+  load(raw: HooksMap | undefined): void {
+    this.loadForTesting(raw);
   }
 }
 

@@ -1420,7 +1420,7 @@ function createOneShotHookTarget(): HookInstallTarget {
 
 async function prepareOneShotPromptForDaemon(params: {
   readonly prompt: string;
-  readonly configStore: Pick<ConfigStore, "current">;
+  readonly configStore: Pick<ConfigStore, "current" | "authoritySnapshot">;
   readonly agencHome: string;
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
@@ -1456,7 +1456,7 @@ async function prepareOneShotPromptForDaemon(params: {
     admissionRequired: true,
   });
   hooksRuntime.attachTarget(target);
-  hooksRuntime.load(params.configStore.current().hooks);
+  hooksRuntime.loadConfigAuthority(params.configStore.authoritySnapshot());
 
   const additionalContexts: string[] = [];
   let hookExecutionFailure: string | undefined;
@@ -4741,7 +4741,7 @@ function isDaemonSessionGoneError(error: unknown): boolean {
 
 async function prepareDaemonTuiPrompt(params: {
   readonly message: string;
-  readonly configStore: Pick<ConfigStore, "current">;
+  readonly configStore: Pick<ConfigStore, "current" | "authoritySnapshot">;
   readonly agencHome: string;
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;

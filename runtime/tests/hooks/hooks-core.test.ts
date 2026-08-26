@@ -20,36 +20,24 @@ import {
   executeCwdChangedHooks,
   executeElicitationHooks,
   executeElicitationResultHooks,
-  executeFileChangedHooks,
   executeFileSuggestionCommand,
   executeInstructionsLoadedHooks,
-  executePermissionDeniedHooks,
   executePermissionRequestHooks,
   executeNotificationHooks,
-  executePostCompactHooks,
-  executePostToolHooks,
-  executePostToolUseFailureHooks,
-  executePreCompactHooks,
-  executePreToolHooks,
   executeSessionEndHooks,
-  executeSessionStartHooks,
-  executeSetupHooks,
   executeStatusLineCommand,
   executeStopHooks,
   executeSubagentStartHooks,
   executeTaskCompletedHooks,
   executeTaskCreatedHooks,
   executeTeammateIdleHooks,
-  executeUserPromptSubmitHooks,
   executeWorktreeCreateHook,
   executeWorktreeRemoveHook,
-  getPreToolHookBlockingMessage,
   getSessionEndHookTimeoutMs,
   getStopHookMessage,
   getTaskCompletedHookMessage,
   getTaskCreatedHookMessage,
   getTeammateIdleHookMessage,
-  getUserPromptSubmitHookBlockingMessage,
   getMatchingHooks,
   hasBlockingResult,
   hasInstructionsLoadedHook,
@@ -278,9 +266,6 @@ test("formats blocking hook messages and detects blocked outside-repl results", 
     blockingError: "revise the output",
     command: "hook.sh",
   };
-  expect(getPreToolHookBlockingMessage("PreToolUse", blockingError)).toBe(
-    "PreToolUse hook error: revise the output",
-  );
   expect(getStopHookMessage(blockingError)).toBe(
     "Stop hook feedback:\nrevise the output",
   );
@@ -292,9 +277,6 @@ test("formats blocking hook messages and detects blocked outside-repl results", 
   );
   expect(getTaskCompletedHookMessage(blockingError)).toBe(
     "TaskCompleted hook feedback:\nrevise the output",
-  );
-  expect(getUserPromptSubmitHookBlockingMessage(blockingError)).toBe(
-    "UserPromptSubmit operation blocked by hook:\nrevise the output",
   );
 
   expect(
@@ -410,12 +392,12 @@ test("filters HTTP hooks from startup events during matching", async () => {
   ]);
 });
 
-test("executes registered callback hooks through the pre-tool generator", async () => {
+test("executes registered callback hooks through the permission generator", async () => {
   await configureHookSession();
   acceptInteractiveWorkspaceTrust();
   const appState = { sessionHooks: new Map<string, unknown>() };
   registerHookCallbacks({
-    PreToolUse: [
+    PermissionRequest: [
       {
         matcher: "Bash",
         hooks: [
@@ -432,12 +414,13 @@ test("executes registered callback hooks through the pre-tool generator", async 
   } as never);
 
   const results = await collectAsyncGenerator(
-    executePreToolHooks(
+    executePermissionRequestHooks(
       "Bash",
       "tool-1",
       { command: "rm -rf /tmp/nope" },
       toolUseContext(appState),
       "default",
+      [],
       undefined,
       hookCommandTimeoutMs,
     ),
@@ -462,12 +445,12 @@ test("executes registered callback hooks through the pre-tool generator", async 
   ).toBe(true);
 });
 
-test("executes command hooks through the pre-tool generator", async () => {
+test("executes command hooks through the permission generator", async () => {
   await configureHookSession();
   acceptInteractiveWorkspaceTrust();
   const appState = { sessionHooks: new Map<string, unknown>() };
   registerHookCallbacks({
-    PreToolUse: [
+    PermissionRequest: [
       {
         matcher: "Bash",
         hooks: [
@@ -480,11 +463,12 @@ test("executes command hooks through the pre-tool generator", async () => {
                 reason: "approved by command",
                 systemMessage: "command system message",
                 hookSpecificOutput: {
-                  hookEventName: "PreToolUse",
-                  permissionDecision: "ask",
-                  permissionDecisionReason: "ask after command",
-                  updatedInput: { command: "pwd" },
-                  additionalContext: "command context",
+                  hookEventName: "PermissionRequest",
+                  decision: {
+                    behavior: "allow",
+                    updatedInput: { command: "pwd" },
+                    updatedPermissions: [],
+                  },
                 },
               }),
             ),
@@ -495,12 +479,13 @@ test("executes command hooks through the pre-tool generator", async () => {
   } as never);
 
   const results = await collectAsyncGenerator(
-    executePreToolHooks(
+    executePermissionRequestHooks(
       "Bash",
       "tool-command",
       { command: "ls" },
       toolUseContext(appState),
       "default",
+      [],
       undefined,
       hookCommandTimeoutMs,
     ),
@@ -517,21 +502,15 @@ test("executes command hooks through the pre-tool generator", async () => {
     ),
   ).toBe(true);
   expect(
-    results.some((result) =>
-      result.additionalContexts?.includes("command context"),
-    ),
-  ).toBe(true);
-  expect(
     results.some(
       (result) =>
-        result.permissionBehavior === "ask" &&
-        result.hookPermissionDecisionReason === "ask after command" &&
+        result.permissionBehavior === "allow" &&
         result.updatedInput?.command === "pwd",
     ),
   ).toBe(true);
 });
 
-test("legacy command hooks stop on the admitted lease signal", async () => {
+test("registered command hooks stop on the admitted lease signal", async () => {
   const { agencHome, cwd } = await configureHookSession();
   acceptInteractiveWorkspaceTrust();
   const leaseAbort = new AbortController();
@@ -585,7 +564,7 @@ test("legacy command hooks stop on the admitted lease signal", async () => {
   } as never);
   const appState = { sessionHooks: new Map<string, unknown>() };
   registerHookCallbacks({
-    PreToolUse: [
+    PermissionRequest: [
       {
         matcher: "Bash",
         hooks: [
@@ -599,12 +578,13 @@ test("legacy command hooks stop on the admitted lease signal", async () => {
   } as never);
 
   const running = collectAsyncGenerator(
-    executePreToolHooks(
+    executePermissionRequestHooks(
       "Bash",
       "tool-cancelled-hook",
       { command: "pwd" },
       toolUseContext(appState),
       "default",
+      [],
       undefined,
       10_000,
     ),
@@ -627,12 +607,12 @@ test("legacy command hooks stop on the admitted lease signal", async () => {
   expect(acknowledgeCompletion).toHaveBeenCalledWith("legacy-hook-reservation");
 });
 
-test("executes blocking command hook output through the pre-tool generator", async () => {
+test("executes blocking command hook output through the permission generator", async () => {
   await configureHookSession();
   acceptInteractiveWorkspaceTrust();
   const appState = { sessionHooks: new Map<string, unknown>() };
   registerHookCallbacks({
-    PreToolUse: [
+    PermissionRequest: [
       {
         matcher: "Bash",
         hooks: [
@@ -651,12 +631,13 @@ test("executes blocking command hook output through the pre-tool generator", asy
   } as never);
 
   const results = await collectAsyncGenerator(
-    executePreToolHooks(
+    executePermissionRequestHooks(
       "Bash",
       "tool-command-block",
       { command: "ls" },
       toolUseContext(appState),
       "default",
+      [],
       undefined,
       hookCommandTimeoutMs,
     ),
@@ -708,25 +689,6 @@ test("executes outside-REPL wrapper hooks with structured outputs", async () => 
         ],
       },
     ],
-    FileChanged: [
-      {
-        matcher: "file.txt",
-        hooks: [
-          {
-            type: "command",
-            command: stdoutCommand(
-              JSON.stringify({
-                systemMessage: "file system message",
-                hookSpecificOutput: {
-                  hookEventName: "FileChanged",
-                  watchPaths: ["/tmp/agenc-file-watch"],
-                },
-              }),
-            ),
-          },
-        ],
-      },
-    ],
     InstructionsLoaded: [
       {
         matcher: "session_start",
@@ -753,20 +715,6 @@ test("executes outside-REPL wrapper hooks with structured outputs", async () => 
             },
           },
         ],
-      },
-    ],
-    PreCompact: [
-      {
-        matcher: "manual",
-        hooks: [
-          { type: "command", command: stdoutCommand("new instructions") },
-        ],
-      },
-    ],
-    PostCompact: [
-      {
-        matcher: "manual",
-        hooks: [{ type: "command", command: stdoutCommand("compact noted") }],
       },
     ],
     SessionEnd: [
@@ -847,13 +795,6 @@ test("executes outside-REPL wrapper hooks with structured outputs", async () => 
     watchPaths: ["/tmp/agenc-cwd-watch"],
     systemMessages: ["cwd system message"],
   });
-  await expect(
-    executeFileChangedHooks("/tmp/file.txt", "change", hookCommandTimeoutMs),
-  ).resolves.toMatchObject({
-    watchPaths: ["/tmp/agenc-file-watch"],
-    systemMessages: ["file system message"],
-  });
-
   await executeInstructionsLoadedHooks(
     "/tmp/AGENC.md",
     "Project",
@@ -868,25 +809,6 @@ test("executes outside-REPL wrapper hooks with structured outputs", async () => 
   );
   expect(instructionsCalls).toBe(1);
   expect(notificationCalls).toBe(1);
-
-  await expect(
-    executePreCompactHooks(
-      { trigger: "manual", customInstructions: "old" },
-      undefined,
-      hookCommandTimeoutMs,
-    ),
-  ).resolves.toMatchObject({
-    newCustomInstructions: "new instructions",
-  });
-  await expect(
-    executePostCompactHooks(
-      { trigger: "manual", compactSummary: "summary" },
-      undefined,
-      hookCommandTimeoutMs,
-    ),
-  ).resolves.toMatchObject({
-    userDisplayMessage: expect.stringContaining("compact noted"),
-  });
 
   await executeSessionEndHooks("quit" as never, {
     timeoutMs: hookCommandTimeoutMs,
@@ -989,7 +911,7 @@ test("executes session-scoped function hooks through stop hooks", async () => {
   ).toBe(true);
 });
 
-test("executes callback hooks across public generator event wrappers", async () => {
+test("executes registered callback hooks across active event wrappers", async () => {
   await configureHookSession();
   acceptInteractiveWorkspaceTrust();
   const appState = { sessionHooks: new Map<string, unknown>() };
@@ -1176,69 +1098,6 @@ test("executes callback hooks across public generator event wrappers", async () 
     ],
   } as never);
 
-  const post = await collectAsyncGenerator(
-    executePostToolHooks(
-      "Bash",
-      "tool-post",
-      { command: "pwd" },
-      { stdout: "/tmp" },
-      ctx,
-      "default",
-      undefined,
-      hookCommandTimeoutMs,
-    ),
-  );
-  expect(
-    post.some((result) => result.additionalContexts?.includes("post context")),
-  ).toBe(true);
-  expect(
-    post.some(
-      (result) =>
-        JSON.stringify(result.updatedMCPToolOutput) ===
-        JSON.stringify({ patched: true }),
-    ),
-  ).toBe(true);
-
-  const failure = await collectAsyncGenerator(
-    executePostToolUseFailureHooks(
-      "Bash",
-      "tool-failure",
-      { command: "false" },
-      "failed",
-      ctx,
-      false,
-      "default",
-      undefined,
-      hookCommandTimeoutMs,
-    ),
-  );
-  expect(
-    failure.some(
-      (result) =>
-        result.preventContinuation === true &&
-        result.stopReason === "stop after failure",
-    ),
-  ).toBe(true);
-  expect(
-    failure.some((result) =>
-      result.additionalContexts?.includes("failure context"),
-    ),
-  ).toBe(true);
-
-  const denied = await collectAsyncGenerator(
-    executePermissionDeniedHooks(
-      "Bash",
-      "tool-denied",
-      { command: "false" },
-      "denied",
-      ctx,
-      "default",
-      undefined,
-      hookCommandTimeoutMs,
-    ),
-  );
-  expect(denied.some((result) => result.retry === true)).toBe(true);
-
   const permission = await collectAsyncGenerator(
     executePermissionRequestHooks(
       "Bash",
@@ -1261,48 +1120,6 @@ test("executes callback hooks across public generator event wrappers", async () 
   expect(
     permission.some(
       (result) => result.permissionRequestResult?.behavior === "allow",
-    ),
-  ).toBe(true);
-
-  const prompt = await collectAsyncGenerator(
-    executeUserPromptSubmitHooks("hello", "default", ctx),
-  );
-  expect(
-    prompt.some((result) =>
-      result.additionalContexts?.includes("prompt context"),
-    ),
-  ).toBe(true);
-
-  const sessionStart = await collectAsyncGenerator(
-    executeSessionStartHooks(
-      "resume",
-      sessionId,
-      "planner",
-      "test-model",
-      undefined,
-      hookCommandTimeoutMs,
-    ),
-  );
-  expect(
-    sessionStart.some((result) =>
-      result.additionalContexts?.includes("session context"),
-    ),
-  ).toBe(true);
-  expect(
-    sessionStart.some((result) => result.initialUserMessage === "start here"),
-  ).toBe(true);
-  expect(
-    sessionStart.some((result) =>
-      result.watchPaths?.includes("/tmp/watch-session"),
-    ),
-  ).toBe(true);
-
-  const setup = await collectAsyncGenerator(
-    executeSetupHooks("init", undefined, hookCommandTimeoutMs),
-  );
-  expect(
-    setup.some((result) =>
-      result.additionalContexts?.includes("setup context"),
     ),
   ).toBe(true);
 
@@ -1508,13 +1325,6 @@ test("returns empty results for public no-hook execution paths", async () => {
     executeConfigChangeHooks("policy_settings", "/tmp/managed-config.toml", 1),
   ).resolves.toEqual([]);
   await expect(executeCwdChangedHooks("/old", "/new", 1)).resolves.toEqual({
-    results: [],
-    watchPaths: [],
-    systemMessages: [],
-  });
-  await expect(
-    executeFileChangedHooks("/tmp/file.txt", "change", 1),
-  ).resolves.toEqual({
     results: [],
     watchPaths: [],
     systemMessages: [],

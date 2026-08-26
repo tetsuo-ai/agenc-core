@@ -569,6 +569,7 @@ describe("requestApproval — permissionDecisionHooks wiring", () => {
       shellPath: process.env.SHELL ?? "/bin/sh",
       sandboxExecutionBroker: explicitDangerBroker,
       admissionRequired: false,
+      isWorkspaceTrusted: () => true,
     });
     const target = {
       preToolUseHooks: [],
@@ -580,7 +581,7 @@ describe("requestApproval — permissionDecisionHooks wiring", () => {
       stopFailureHooks: [],
     };
     runtime.attachTarget(target);
-    runtime.load({
+    runtime.loadForTesting({
       PermissionRequest: [
         {
           matcher: "Edit",
