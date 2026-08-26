@@ -857,6 +857,75 @@ describe("buildAnthropicMessagesRequest", () => {
   });
 });
 
+describe("buildAnthropicMessagesRequest — manual thinking families", () => {
+  const baseInput = {
+    messages: [{ role: "user" as const, content: "hello" }],
+    tools: [],
+  };
+
+  test("Sonnet and Haiku 4.5 use a manual budget without output_config.effort", () => {
+    for (const model of [
+      "claude-sonnet-4.5",
+      "us.anthropic.agenc-haiku-4-5-v1:0",
+    ]) {
+      const request = buildAnthropicMessagesRequest({
+        ...baseInput,
+        model,
+        maxTokens: 8192,
+        options: { reasoningEffort: "medium" },
+      });
+      expect(request.thinking).toEqual({
+        type: "enabled",
+        budget_tokens: 2048,
+      });
+      expect(request.output_config).toBeUndefined();
+    }
+  });
+
+  test("manual thinking keeps its token budget below max_tokens", () => {
+    const request = buildAnthropicMessagesRequest({
+      ...baseInput,
+      model: "claude-sonnet-4-5-20250929",
+      maxTokens: 3072,
+      options: { reasoningEffort: "high" },
+    });
+    expect(request.thinking).toEqual({
+      type: "enabled",
+      budget_tokens: 3071,
+    });
+  });
+
+  test("Opus 4.5 carries effort alongside its manual thinking budget", () => {
+    const request = buildAnthropicMessagesRequest({
+      ...baseInput,
+      model: "claude-opus-4-5-20251101",
+      maxTokens: 8192,
+      options: { reasoningEffort: "high" },
+    });
+    expect(request.thinking).toEqual({
+      type: "enabled",
+      budget_tokens: 4096,
+    });
+    expect(request.output_config).toEqual({ effort: "high" });
+  });
+
+  test("4.6+, hosted 4.8, and 5 models use effort without manual thinking", () => {
+    for (const model of [
+      "claude-sonnet-4.6",
+      "us.anthropic.agenc-opus-4-8-v1:0",
+      "claude-sonnet-5",
+    ]) {
+      const request = buildAnthropicMessagesRequest({
+        ...baseInput,
+        model,
+        options: { reasoningEffort: "minimal" },
+      });
+      expect(request.thinking).toBeUndefined();
+      expect(request.output_config).toEqual({ effort: "low" });
+    }
+  });
+});
+
 /**
  * Task 28: Claude Fable 5 request-surface family-awareness. The
  * Fable/Mythos 5 family has a DIFFERENT Messages API surface than the
@@ -874,7 +943,7 @@ describe("buildAnthropicMessagesRequest — fable/mythos 5 family", () => {
   };
 
   test("an effort carries the decision, so neither family also sends a thinking config", () => {
-    // Current models refuse `thinking.type.enabled` outright — "Use
+    // These adaptive models refuse `thinking.type.enabled` outright — "Use
     // thinking.type.adaptive and output_config.effort to control thinking
     // behaviour" — so where effort is set, the thinking block is left off.
     const fable = buildAnthropicMessagesRequest({
@@ -894,7 +963,7 @@ describe("buildAnthropicMessagesRequest — fable/mythos 5 family", () => {
     expect(opus.output_config).toEqual({ effort: "high" });
   });
 
-  test("no request carries a thinking config, with or without an effort", () => {
+  test("adaptive families omit a thinking config, with or without an effort", () => {
     // Omitting the parameter runs adaptive thinking anyway, so there is
     // nothing left for a thinking block to say.
     for (const model of ["claude-opus-4-8", "claude-fable-5"]) {

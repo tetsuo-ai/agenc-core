@@ -80,6 +80,28 @@ function inlineJpeg(bytes: number): string {
   return `data:image/jpeg;base64,${"A".repeat(Math.ceil((bytes * 4) / 3))}`;
 }
 
+function inlinePdf(base64Chars: number): LLMContentPart {
+  return {
+    type: "document",
+    source: {
+      type: "base64",
+      media_type: "application/pdf",
+      data: "A".repeat(base64Chars),
+    },
+  };
+}
+
+function providerInlineImage(base64Chars: number): LLMContentPart {
+  return {
+    type: "image",
+    source: {
+      type: "base64",
+      media_type: "image/png",
+      data: "A".repeat(base64Chars),
+    },
+  } as unknown as LLMContentPart;
+}
+
 describe("inline images are charged an allowance, not their bytes", () => {
   test("three attached photographs do not outweigh the conversation", () => {
     // The shape that took a real session down: an empty workspace, three
@@ -142,6 +164,38 @@ describe("inline images are charged an allowance, not their bytes", () => {
       accountingRequest("word ".repeat(20_000)),
     );
     expect(long.inputTokens).toBeGreaterThan(short.inputTokens + 10_000);
+  });
+
+  test("two million base64-looking text characters are still measured", () => {
+    const short = estimateTokenAccountingRequest(accountingRequest("x"));
+    const long = estimateTokenAccountingRequest(
+      accountingRequest("x".repeat(2_000_000)),
+    );
+
+    expect(long.inputTokens).toBeGreaterThan(short.inputTokens + 1_000_000);
+  });
+
+  test("inline documents retain their size in the estimate", () => {
+    const small = estimateTokenAccountingRequest(
+      accountingRequest([inlinePdf(512)]),
+    );
+    const large = estimateTokenAccountingRequest(
+      accountingRequest([inlinePdf(2_000_000)]),
+    );
+
+    expect(large.inputTokens).toBeGreaterThan(small.inputTokens + 1_000_000);
+  });
+
+  test("provider-style base64 images receive the bounded image allowance", () => {
+    const small = estimateTokenAccountingRequest(
+      accountingRequest([providerInlineImage(512)]),
+    );
+    const large = estimateTokenAccountingRequest(
+      accountingRequest([providerInlineImage(2_000_000)]),
+    );
+
+    expect(large.inputTokens).toBe(small.inputTokens);
+    expect(large.inputTokens).toBeLessThan(10_000);
   });
 });
 
