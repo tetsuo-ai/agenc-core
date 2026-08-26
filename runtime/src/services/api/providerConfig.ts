@@ -479,16 +479,13 @@ export function resolveProviderRequest(options?: {
   model?: string
   environment?: ProviderEnvironment
   baseUrl?: string
-  fallbackModel?: string
   reasoningEffortOverride?: ReasoningEffort
   apiFormat?: OpenAiCompatibleApiFormat | string
 }): ResolvedProviderRequest {
-  const hasExplicitEnvironment = options?.environment !== undefined
   const environment = options?.environment ?? getSelectedProviderEnvironment()
   const selectedProvider =
     options?.provider?.trim().toLowerCase() ||
-    environment.AGENC_PROVIDER?.trim().toLowerCase() ||
-    (hasExplicitEnvironment ? 'openai' : getSelectedProviderName())
+    getSelectedProviderName()
   const isGithubMode = selectedProvider === 'github'
   const isMistralMode = selectedProvider === 'mistral'
   if (selectedProvider === 'gemini') {
@@ -498,10 +495,7 @@ export function resolveProviderRequest(options?: {
   }
   const requestedModel =
     options?.model?.trim() ||
-    environment.AGENC_MODEL?.trim() ||
-    options?.fallbackModel?.trim() ||
-    (hasExplicitEnvironment ? '' : getSelectedProviderModel().trim()) ||
-    (isGithubMode ? 'github:copilot' : 'gpt-4o')
+    getSelectedProviderModel().trim()
   const descriptor = parseModelDescriptor(requestedModel)
   const explicitBaseUrl = asEnvUrl(options?.baseUrl)
 
@@ -538,18 +532,8 @@ export function resolveProviderRequest(options?: {
 
   const rawBaseUrl = explicitBaseUrl ?? envBaseUrl
 
-  const shellModel =
-    environment.AGENC_MODEL?.trim() || requestedModel
-  const envIsProviderCodeShortcut = isOpenAiProviderCodeShortcutAlias(shellModel)
-  const envResolvedProviderCodeModel = envIsProviderCodeShortcut
-    ? parseModelDescriptor(shellModel).baseModel
-    : null
-  const requestedMatchesEnvProviderCodeShortcut =
-    Boolean(options?.model) &&
-    Boolean(envResolvedProviderCodeModel) &&
-    descriptor.baseModel === envResolvedProviderCodeModel
   const isProviderCodeAliasModel =
-    isOpenAiProviderCodeShortcutAlias(requestedModel) || requestedMatchesEnvProviderCodeShortcut
+    isOpenAiProviderCodeShortcutAlias(requestedModel)
   const hasUserSetBaseUrl = rawBaseUrl && rawBaseUrl !== DEFAULT_OPENAI_BASE_URL
   const finalBaseUrl =
     !isGithubMode && isProviderCodeAliasModel && !hasUserSetBaseUrl

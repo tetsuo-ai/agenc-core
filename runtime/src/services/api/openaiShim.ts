@@ -8,20 +8,21 @@
  * Supports: OpenAi, Azure OpenAi, Ollama, LM Studio, OpenRouter,
  * Together, Groq, Fireworks, DeepSeek, Mistral, and any provider-compatible API.
  *
- * Environment variables (provider selection is canonical `AGENC_PROVIDER`):
+ * Provider and model selection come from the bound runtime session. The
+ * captured environment below supplies transport and authentication inputs;
+ * it is not a second selection authority.
+ *
+ * Environment variables:
  *   OPENAI_API_KEY=sk-...             — API key (optional for local models)
  *   OPENAI_AUTH_HEADER=api-key        — optional custom auth header name
  *   OPENAI_AUTH_HEADER_VALUE=...      — optional custom auth header value
  *   OPENAI_AUTH_SCHEME=bearer|raw     — auth scheme for Authorization/custom header handling
  *   OPENAI_API_FORMAT=chat_completions|responses — request format for compatible APIs
  *   OPENAI_BASE_URL=http://...        — base URL (default: https://api.openai.com/v1)
- *   AGENC_MODEL=gpt-4o               — canonical model selection
  *   PROVIDER_CODE_API_KEY or native-vault OAuth — ProviderCode auth for providerCodeplan/providerCodespark
  *
  * GitHub Copilot API (api.githubcopilot.com), provider-compatible:
- *   AGENC_PROVIDER=github            — enable GitHub inference
  *   GITHUB_TOKEN or GH_TOKEN         — Copilot API token (mapped to Bearer auth)
- *   AGENC_MODEL                      — use github:copilot or openai/gpt-4.1 style IDs
  */
 import { APIError } from '@anthropic-ai/sdk'
 import {

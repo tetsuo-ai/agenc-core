@@ -42,10 +42,7 @@ async function importFreshProviderConfigModule() {
 function providerEnvironment(
   overrides: Readonly<Record<string, string | undefined>> = {},
 ): Readonly<Record<string, string | undefined>> {
-  return Object.freeze({
-    AGENC_PROVIDER: 'openai',
-    ...overrides,
-  })
+  return Object.freeze({ ...overrides })
 }
 
 describe('ProviderCode provider config', () => {
@@ -136,11 +133,13 @@ describe('ProviderCode provider config', () => {
     expect(resolved.resolvedModel).toBe('gpt-4o')
   })
 
-  test('resolves providerCodeplan from canonical AGENC_MODEL to ProviderCode endpoint', async () => {
+  test('resolves an explicit providerCodeplan model to the ProviderCode endpoint', async () => {
     const { resolveProviderRequest } = await importFreshProviderConfigModule()
 
     const resolved = resolveProviderRequest({
-      environment: providerEnvironment({ AGENC_MODEL: 'providerCodeplan' }),
+      provider: 'openai',
+      model: 'providerCodeplan',
+      environment: providerEnvironment(),
     })
     expect(resolved.transport).toBe('providerCode_responses')
     expect(resolved.baseUrl).toBe('https://chatgpt.com/backend-api/codex')
@@ -151,8 +150,9 @@ describe('ProviderCode provider config', () => {
     const { resolveProviderRequest } = await importFreshProviderConfigModule()
 
     const resolved = resolveProviderRequest({
+      provider: 'openai',
+      model: 'providerCodeplan',
       environment: providerEnvironment({
-        AGENC_MODEL: 'providerCodeplan',
         OPENAI_BASE_URL: 'http://localhost:11434/v1',
       }),
     })

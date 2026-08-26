@@ -8,11 +8,7 @@ function providerSelection(
   return {
     provider,
     model,
-    environment: Object.freeze({
-      AGENC_PROVIDER: provider,
-      AGENC_MODEL: model,
-      ...overrides,
-    }),
+    environment: Object.freeze({ ...overrides }),
   }
 }
 

@@ -7,6 +7,7 @@ import {
   resolveProviderRequest,
   shouldAttemptLocalToollessRetry,
 } from '../../../src/services/api/providerConfig.ts'
+import { runWithStartupProviderSelection } from '../../../src/utils/model/providers.ts'
 
 function providerSelection(
   model: string,
@@ -129,7 +130,11 @@ test('uses the captured provider environment after ambient selection mutates', (
     process.env.AGENC_MODEL = 'ambient-model'
     process.env.OPENAI_BASE_URL = 'https://ambient.example/v1'
 
-    expect(resolveProviderRequest({ environment: captured })).toMatchObject({
+    expect(resolveProviderRequest({
+      provider: 'openai-compatible',
+      model: 'captured-model',
+      environment: captured,
+    })).toMatchObject({
       requestedModel: 'captured-model',
       resolvedModel: 'captured-model',
       baseUrl: 'http://127.0.0.1:8080/v1',
@@ -142,6 +147,37 @@ test('uses the captured provider environment after ambient selection mutates', (
     if (originalBaseUrl === undefined) delete process.env.OPENAI_BASE_URL
     else process.env.OPENAI_BASE_URL = originalBaseUrl
   }
+})
+
+test('uses the bound provider and model instead of stale selector fields in its environment', () => {
+  const environment = Object.freeze({
+    AGENC_PROVIDER: 'github',
+    AGENC_MODEL: 'github:copilot',
+  })
+
+  const resolved = runWithStartupProviderSelection(
+    {
+      provider: 'openai',
+      model: 'gpt-4.1',
+      environment,
+    },
+    () => resolveProviderRequest(),
+  )
+
+  expect(resolved).toMatchObject({
+    requestedModel: 'gpt-4.1',
+    resolvedModel: 'gpt-4.1',
+    baseUrl: 'https://api.openai.com/v1',
+  })
+})
+
+test('does not accept an environment snapshot as provider and model authority', () => {
+  expect(() => resolveProviderRequest({
+    environment: Object.freeze({
+      AGENC_PROVIDER: 'openai',
+      AGENC_MODEL: 'gpt-4.1',
+    }),
+  })).toThrow('No provider authority is bound')
 })
 
 test('derives local retry base URLs with /v1 and loopback fallback candidates', () => {

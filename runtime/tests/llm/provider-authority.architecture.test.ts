@@ -435,6 +435,13 @@ describe("provider authority architecture", () => {
         /process\.env\.(?:OPENAI|OPENAI_COMPATIBLE|GITHUB|GEMINI|MISTRAL|NVIDIA|MINIMAX|AWS_BEDROCK|ANTHROPIC).*MODEL/u,
       );
     }
+    const providerConfigSource = readFileSync(
+      `${SRC}/services/api/providerConfig.ts`,
+      "utf8",
+    );
+    expect(providerConfigSource).not.toMatch(
+      /environment\.AGENC_(?:PROVIDER|MODEL)/u,
+    );
     expect(existsSync(`${SRC}/utils/status.tsx`)).toBe(false);
     expect(
       readFileSync(`${SRC}/tui/startup/StatusNotices.tsx`, "utf8"),

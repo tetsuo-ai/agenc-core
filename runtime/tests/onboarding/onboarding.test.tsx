@@ -223,6 +223,25 @@ describe("first-run onboarding wizard", () => {
     expect(result.state.completedStepIds).toContain("terminal-setup");
   });
 
+  test("uses layered config rather than stale environment selectors for its initial provider", () => {
+    const config = {
+      ...defaultConfig(),
+      model_provider: "openai" as const,
+      model: "gpt-4.1",
+    };
+
+    const state = createInitialFirstRunOnboardingState({
+      config,
+      env: {
+        AGENC_PROVIDER: "github",
+        AGENC_MODEL: "github:copilot",
+      },
+    });
+
+    expect(state.selectedProvider).toBe("openai");
+    expect(state.selectedModel).toBe("gpt-4.1");
+  });
+
   test("makes Enter advance every default step except credential persistence", async () => {
     const context = {
       config: defaultConfig(),

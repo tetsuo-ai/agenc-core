@@ -9,7 +9,6 @@ import React, {
 
 import {
   readProviderConfig,
-  resolveProviderSelection,
   resolveProviderSettings,
 } from "../config/resolve-provider.js";
 import type { AgenCConfig } from "../config/schema.js";
@@ -488,14 +487,9 @@ function providerDefaultModel(
 function initialProvider(
   context: Pick<
     FirstRunOnboardingContext,
-    "config" | "env" | "remoteAuthSessionContext"
+    "config" | "remoteAuthSessionContext"
   >,
 ): BuiltInProviderSlug {
-  const envOrShortcut = resolveProviderSelection({
-    config: { ...context.config, model_provider: undefined },
-    env: context.env,
-  });
-  if (envOrShortcut !== undefined) return envOrShortcut;
   const configured = resolveBuiltInProviderSlug(context.config.model_provider);
   if (
     resolveAuthManagedKeysEnabled(context.config) &&
