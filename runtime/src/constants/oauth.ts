@@ -1,4 +1,4 @@
-import { isEnvTruthy } from 'src/utils/envBoolean.js'
+import { isEnvTruthy } from '../utils/envBoolean.js'
 
 type OauthEnvironment = Readonly<Record<string, string | undefined>>
 

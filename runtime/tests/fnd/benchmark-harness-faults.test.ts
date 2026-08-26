@@ -933,40 +933,46 @@ describe("FND benchmark harness fault contracts", () => {
     expect(existsSync(temporaryRoot!)).toBe(false);
   });
 
-  test("holds an authenticated completed worker until contained teardown", async () => {
-    await withOwnedTemporaryRoot(async (ownedRoot) => {
-      const completionNonce = "a".repeat(64);
-      const result = await runBoundedChild({
-        args: [
-          CASE_WORKER_PATH,
-          "--case",
-          "patch_delete_parser_historical_comparison",
-          "--point",
-          "0",
-          "--temporary-root",
-          ownedRoot,
-          "--completion-nonce",
-          completionNonce,
-        ],
-        command: process.execPath,
-        cwd: RUNTIME_ROOT,
-        env: createBenchmarkWorkerEnvironment(
-          process.platform === "win32"
-            ? { SystemRoot: process.env.SystemRoot ?? "C:\\Windows" }
-            : {},
-          process.platform,
-          ownedRoot,
-        ),
-        expectedCompletionRecord: `${BENCHMARK_WORKER_COMPLETION_PREFIX}${completionNonce}`,
-        maxOutputBytes: 1_048_576,
-        timeoutMs: 10_000,
+  test.each([
+    "patch_delete_parser_historical_comparison",
+    "csv_scheduler_progress_scan",
+  ] as const)(
+    "holds an authenticated completed %s worker until contained teardown",
+    async (benchmarkCase) => {
+      await withOwnedTemporaryRoot(async (ownedRoot) => {
+        const completionNonce = "a".repeat(64);
+        const result = await runBoundedChild({
+          args: [
+            CASE_WORKER_PATH,
+            "--case",
+            benchmarkCase,
+            "--point",
+            "0",
+            "--temporary-root",
+            ownedRoot,
+            "--completion-nonce",
+            completionNonce,
+          ],
+          command: process.execPath,
+          cwd: RUNTIME_ROOT,
+          env: createBenchmarkWorkerEnvironment(
+            process.platform === "win32"
+              ? { SystemRoot: process.env.SystemRoot ?? "C:\\Windows" }
+              : {},
+            process.platform,
+            ownedRoot,
+          ),
+          expectedCompletionRecord: `${BENCHMARK_WORKER_COMPLETION_PREFIX}${completionNonce}`,
+          maxOutputBytes: 1_048_576,
+          timeoutMs: 10_000,
+        });
+        expect(result.timedOut).toBe(false);
+        expect(result.exitCode).toBe(0);
+        expect(result.signal).toBeNull();
+        expect(JSON.parse(result.stdout)).toMatchObject({ status: "completed" });
       });
-      expect(result.timedOut).toBe(false);
-      expect(result.exitCode).toBe(0);
-      expect(result.signal).toBeNull();
-      expect(JSON.parse(result.stdout)).toMatchObject({ status: "completed" });
-    });
-  });
+    },
+  );
 
   test("contains an ignored-stdio descendant after normal target exit", async () => {
     let descendantPid: number | undefined;
