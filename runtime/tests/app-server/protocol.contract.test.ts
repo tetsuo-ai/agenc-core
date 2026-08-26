@@ -38,6 +38,7 @@ interface ProtocolSchema {
 const expectedMethods = [
   "initialize",
   "request.cancel",
+  "audio.transcribe",
   "agent.create",
   "agent.list",
   "agent.attach",
@@ -60,6 +61,7 @@ const expectedMethods = [
   "session.clear",
   "session.snapshot",
   "session.transcript",
+  "session.transcript.v2",
   "session.cancelTurn",
   "session.resolveToolCall",
   "session.mcp.addServer",
@@ -84,6 +86,7 @@ const expectedMethods = [
   "health.ready",
   "health.stats",
   "daemon.reload",
+  "daemon.shutdown",
   "auth.login",
   "auth.whoami",
   "auth.logout",
@@ -330,6 +333,19 @@ describe("AgenC daemon protocol surface", () => {
         params: {
           requestId: "search_1",
           reason: "superseded",
+        },
+      },
+      {
+        jsonrpc: JSON_RPC_VERSION,
+        id: "audio-transcribe",
+        method: "audio.transcribe",
+        params: {
+          preferredProvider: "local",
+          audio: {
+            data: "AAAA",
+            mimeType: "audio/webm",
+            fileName: "voice.webm",
+          },
         },
       },
       {
@@ -833,6 +849,40 @@ describe("AgenC daemon protocol surface", () => {
         id: "empty-command-program",
         method: "commandExec.start",
         params: { command: [""] },
+      }),
+    ).toBe(false);
+
+    for (const fileName of [".", "..", "voice/recording.webm", "voice\0.webm"]) {
+      expect(
+        validate({
+          jsonrpc: JSON_RPC_VERSION,
+          id: `invalid-audio-filename-${fileName.length}`,
+          method: "audio.transcribe",
+          params: {
+            audio: {
+              data: "AAAA",
+              mimeType: "audio/webm",
+              fileName,
+            },
+          },
+        }),
+        `schema accepted unsafe audio fileName ${JSON.stringify(fileName)}`,
+      ).toBe(false);
+    }
+
+    expect(
+      validate({
+        jsonrpc: JSON_RPC_VERSION,
+        id: "invalid-audio-provider",
+        method: "audio.transcribe",
+        params: {
+          preferredProvider: "grok",
+          audio: {
+            data: "AAAA",
+            mimeType: "audio/webm",
+            fileName: "voice.webm",
+          },
+        },
       }),
     ).toBe(false);
 

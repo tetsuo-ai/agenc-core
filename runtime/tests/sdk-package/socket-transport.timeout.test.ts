@@ -30,8 +30,11 @@ describe.skipIf(process.platform === "win32")(
       }
     });
 
-    it("keeps full-turn message RPCs alive for hours while control RPCs retain their timeout", async () => {
-      root = await mkdtemp(join(tmpdir(), "agenc-sdk-socket-"));
+    it("keeps bounded long-running RPCs alive while control RPCs retain their timeout", async () => {
+      // Darwin caps AF_UNIX paths at 104 bytes; the hermetic test HOME can be
+      // much longer than that before this test's own suffix is appended.
+      const socketTempRoot = process.platform === "darwin" ? "/tmp" : tmpdir();
+      root = await mkdtemp(join(socketTempRoot, "agenc-sdk-socket-"));
       const socketPath = join(root, "daemon.sock");
       server = createServer((socket) => {
         serverSocket = socket;
@@ -60,9 +63,27 @@ describe.skipIf(process.platform === "win32")(
       void fullTurn.finally(() => {
         settled = true;
       });
+      let transcriptionSettled = false;
+      const transcription = transport.request({
+        jsonrpc: "2.0",
+        id: "long-transcription",
+        method: "audio.transcribe",
+        params: {
+          preferredProvider: "local",
+          audio: {
+            data: "AAAA",
+            mimeType: "audio/webm",
+            fileName: "voice.webm",
+          },
+        },
+      });
+      void transcription.finally(() => {
+        transcriptionSettled = true;
+      });
 
       await vi.advanceTimersByTimeAsync(6 * 60 * 60 * 1000);
       expect(settled).toBe(false);
+      expect(transcriptionSettled).toBe(false);
 
       vi.useRealTimers();
       serverSocket!.write(
@@ -77,6 +98,20 @@ describe.skipIf(process.platform === "win32")(
       );
       await expect(fullTurn).resolves.toMatchObject({
         result: { messageId: "message_1" },
+      });
+      serverSocket!.write(
+        `${JSON.stringify({
+          jsonrpc: "2.0",
+          id: "long-transcription",
+          result: {
+            text: "spoken words",
+            model: "ggml-small.bin",
+            provider: "local",
+          },
+        })}\n`,
+      );
+      await expect(transcription).resolves.toMatchObject({
+        result: { text: "spoken words", provider: "local" },
       });
 
       vi.useFakeTimers();

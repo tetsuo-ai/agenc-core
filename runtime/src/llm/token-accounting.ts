@@ -1374,24 +1374,40 @@ function normalizeEndpointPath(pathname: string): string {
 /**
  * A copy with every inline image payload replaced by a short marker, for
  * measurement only. Walks the projected request rather than the messages so
- * it catches an image wherever a provider projection puts it: a data URL
- * under `image_url.url`, or raw base64 under `source.data`.
+ * it catches the two supported image shapes: a data URL under
+ * `{type:"image_url", image_url:{url}}`, or raw base64 under
+ * `{type:"image", source:{type:"base64", data}}`.
  *
  * The marker keeps the shape so the surrounding framing is still counted,
  * and a truncated prefix keeps two different images from collapsing to the
  * same measured value.
  */
 function withoutInlineMedia(value: unknown): unknown {
-  if (typeof value === "string") {
-    return isInlineDataUrl(value) || isBareImageBase64(value)
-      ? `${value.slice(0, INLINE_MEDIA_MARKER_CHARS)}…`
-      : value;
-  }
   if (Array.isArray(value)) return value.map(withoutInlineMedia);
   if (isPlainRecord(value)) {
     const out: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value)) {
       out[key] = withoutInlineMedia(entry);
+    }
+    if (value.type === "image_url" && isPlainRecord(value.image_url)) {
+      const url = value.image_url.url;
+      if (typeof url === "string" && isInlineDataUrl(url)) {
+        out.image_url = {
+          ...(isPlainRecord(out.image_url) ? out.image_url : {}),
+          url: inlineMediaMarker(url),
+        };
+      }
+    }
+    if (
+      value.type === "image" &&
+      isPlainRecord(value.source) &&
+      value.source.type === "base64" &&
+      typeof value.source.data === "string"
+    ) {
+      out.source = {
+        ...(isPlainRecord(out.source) ? out.source : {}),
+        data: inlineMediaMarker(value.source.data),
+      };
     }
     return out;
   }
@@ -1401,18 +1417,8 @@ function withoutInlineMedia(value: unknown): unknown {
 /** Enough to stay distinct between images, far too little to weigh much. */
 const INLINE_MEDIA_MARKER_CHARS = 64;
 
-/**
- * Base64 with no data-URL header, which is how the Anthropic and Gemini
- * projections carry an image. Length is the tell: no ordinary field in a
- * request runs to thousands of unbroken base64 characters.
- */
-const BARE_BASE64_MIN_CHARS = 512;
-
-function isBareImageBase64(value: string): boolean {
-  return (
-    value.length >= BARE_BASE64_MIN_CHARS &&
-    /^[A-Za-z0-9+/]+={0,2}$/u.test(value)
-  );
+function inlineMediaMarker(value: string): string {
+  return `${value.slice(0, INLINE_MEDIA_MARKER_CHARS)}…`;
 }
 
 function isInlineDataUrl(value: string): boolean {

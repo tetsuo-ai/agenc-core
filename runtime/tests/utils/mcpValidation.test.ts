@@ -59,7 +59,9 @@ describe("MCP accounting and truncation", () => {
   });
 
   test("accounts inline images but fails closed for unbounded image sources", async () => {
-    process.env.MAX_MCP_OUTPUT_TOKENS = "2000";
+    // Inline images carry a conservative 1,600-token vision allowance plus
+    // request framing and the estimator's safety margin.
+    process.env.MAX_MCP_OUTPUT_TOKENS = "3000";
     const inline = [
       {
         type: "image",
@@ -77,6 +79,7 @@ describe("MCP accounting and truncation", () => {
       },
     ] as unknown as MCPToolResult;
 
+    expect(getContentSizeEstimate(inline)).toBeLessThanOrEqual(3_000);
     await expect(mcpContentNeedsTruncation(inline)).resolves.toBe(false);
     await expect(mcpContentNeedsTruncation(remote)).resolves.toBe(true);
     await expect(truncateMcpContentIfNeeded(remote)).resolves.toEqual([

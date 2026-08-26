@@ -42,6 +42,7 @@
 import {
   audioMediaTypeFor,
   transcribeAudio,
+  transcribeWithLocalAudio,
   TranscriptionUnavailableError,
 } from "../../llm/transcribe-audio.js";
 
@@ -332,6 +333,8 @@ export interface FileReadToolConfig {
   readonly maxNotebookBytes?: number;
   /** Deterministic test seam immediately after the final path check. */
   readonly __testAfterFinalPathCheck?: () => void | Promise<void>;
+  /** Provider-aware audio transcription seam (tests never need the network). */
+  readonly audioTranscriber?: typeof transcribeAudio;
 }
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1361,26 +1364,69 @@ interface AudioReadOpts {
 async function readAudioFile(
   resolvedPath: { readonly canonical: string },
   opts: AudioReadOpts,
+  audioTranscriber: typeof transcribeAudio,
+  boundRead?: WorkspaceBoundFileReadCapability,
+  signal?: AbortSignal,
 ): Promise<ToolResult> {
   const mediaType = audioMediaTypeFor(opts.ext) ?? "audio/webm";
   let bytes: Buffer;
   try {
-    bytes = await readFile(resolvedPath.canonical);
+    if (boundRead !== undefined) {
+      try {
+        bytes = (await boundRead.readFile(opts.maxAudioBytes)).content;
+      } catch (error) {
+        if (error instanceof WorkspaceBoundReadFileTooLargeError) {
+          return errorResult(
+            `Recording is ${formatBytes(error.size)}, over the ${formatBytes(opts.maxAudioBytes)} limit for a single read.`,
+          );
+        }
+        throw error;
+      }
+    } else {
+      const handle = await open(resolvedPath.canonical, "r");
+      try {
+        const fileStats = await handle.stat();
+        if (!fileStats.isFile()) {
+          return errorResult("Path is not a regular file");
+        }
+        if (fileStats.size > opts.maxAudioBytes) {
+          return errorResult(
+            `Recording is ${formatBytes(fileStats.size)}, over the ${formatBytes(opts.maxAudioBytes)} limit for a single read.`,
+          );
+        }
+        const bounded = Buffer.alloc(fileStats.size + 1);
+        let totalRead = 0;
+        while (totalRead < bounded.length) {
+          const { bytesRead } = await handle.read(
+            bounded,
+            totalRead,
+            bounded.length - totalRead,
+            totalRead,
+          );
+          if (bytesRead === 0) break;
+          totalRead += bytesRead;
+        }
+        if (totalRead > opts.maxAudioBytes) {
+          return errorResult(
+            `Recording is over the ${formatBytes(opts.maxAudioBytes)} limit for a single read.`,
+          );
+        }
+        bytes = bounded.subarray(0, totalRead);
+      } finally {
+        await handle.close();
+      }
+    }
   } catch (error) {
     return errorResult(
       `Could not read ${opts.displayPath}: ${error instanceof Error ? error.message : String(error)}`,
     );
   }
-  if (bytes.byteLength > opts.maxAudioBytes) {
-    return errorResult(
-      `Recording is ${formatBytes(bytes.byteLength)}, over the ${formatBytes(opts.maxAudioBytes)} limit for a single read.`,
-    );
-  }
   try {
-    const { text, model } = await transcribeAudio({
+    const { text, model, provider } = await audioTranscriber({
       bytes,
       filename: basename(resolvedPath.canonical),
       mimeType: mediaType,
+      ...(signal !== undefined ? { signal } : {}),
     });
     return {
       content: `Transcript of ${opts.displayPath} (${formatBytes(bytes.byteLength)}, ${mediaType}):\n\n${text}`,
@@ -1388,6 +1434,7 @@ async function readAudioFile(
         filePath: opts.displayPath,
         mediaType,
         transcribedBy: model,
+        transcriptionProvider: provider,
       },
     };
   } catch (error) {
@@ -1635,7 +1682,7 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
       // Pre-flight: any other binary extension is rejected *before* we
       // even resolve the path, so the model gets an actionable error
       // identical to AgenC's `errorCode: 4` branch.
-      if (!isImage && !isPdf && hasBinaryExtension(filePath)) {
+      if (!isImage && !isAudio && !isPdf && hasBinaryExtension(filePath)) {
         return errorResult(
           `This tool cannot read binary files. The file appears to be a binary ${ext} file. Use a different tool for binary file analysis.`,
         );
@@ -1646,6 +1693,9 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
       const resolved = resolveResult.ok;
 
       const sessionId = resolveSessionId(rawArgs);
+      const injectedSignal = rawArgs.__abortSignal;
+      const abortSignal =
+        injectedSignal instanceof AbortSignal ? injectedSignal : undefined;
       let boundRead: WorkspaceBoundFileReadCapability | undefined;
 
       try {
@@ -1656,18 +1706,35 @@ export function createFileReadTool(config: FileReadToolConfig): Tool {
         const protectedByEditor =
           trustedEditorInteraction ||
           workspaceHasProtectedEditorPaths(resolved.canonical);
-        const needsDiskCapability = isImage || isPdf || editorRead === null;
+        const needsDiskCapability =
+          isImage || isAudio || isPdf || editorRead === null;
         if (protectedByEditor && needsDiskCapability) {
           boundRead = await bindWorkspaceFileReadCapability(resolved.canonical);
         }
         await config.__testAfterFinalPathCheck?.();
 
         if (isAudio) {
-          return await readAudioFile(resolved, {
-            displayPath: filePath,
-            ext,
-            maxAudioBytes: maxImageBytes,
-          });
+          return await readAudioFile(
+            resolved,
+            {
+              displayPath: filePath,
+              ext,
+              maxAudioBytes: maxImageBytes,
+            },
+            config.audioTranscriber ??
+              (async (params) =>
+                await transcribeWithLocalAudio({
+                  bytes: params.bytes,
+                  filename: params.filename,
+                  mimeType: params.mimeType,
+                  env: params.env ?? process.env,
+                  ...(params.signal !== undefined
+                    ? { signal: params.signal }
+                    : {}),
+                })),
+            boundRead,
+            abortSignal,
+          );
         }
         if (isImage) {
           return await readImageFile(
