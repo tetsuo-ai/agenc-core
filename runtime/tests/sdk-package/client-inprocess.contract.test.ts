@@ -133,6 +133,12 @@ async function createFakeDaemon(
           agentId,
           attachmentId: attachment.attachmentId,
           sessionIds: [sessionId],
+          runtimeOptions: {
+            simpleMode: false,
+            stdinDataMode: false,
+            remoteMode: false,
+            allowUntrustedHooks: false,
+          },
         };
       },
       stopAgent: async () => ({ agentId: "agent_1", stopped: true }),
@@ -315,7 +321,7 @@ describe("agenc-sdk client over the in-process transport", () => {
     const initialized = await daemon.client.initialize();
     expect(initialized).toMatchObject({
       type: "initialized",
-      protocol: { version: "1.3.0" },
+      protocol: { version: "1.4.0" },
     });
 
     const session = await daemon.client.createSession({
@@ -326,6 +332,13 @@ describe("agenc-sdk client over the in-process transport", () => {
     await expect(
       daemon.multiplexer.attachedClientIds("session_1"),
     ).resolves.toEqual(["agenc-sdk-test-client"]);
+    const reattached = await daemon.client.attachAgent("agent_1");
+    expect(reattached.attach.runtimeOptions).toEqual({
+      simpleMode: false,
+      stdinDataMode: false,
+      remoteMode: false,
+      allowUntrustedHooks: false,
+    });
 
     const run = session.prompt("hi there");
     const events: AgencPromptEvent[] = [];

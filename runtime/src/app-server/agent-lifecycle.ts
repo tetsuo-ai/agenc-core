@@ -1429,6 +1429,17 @@ export class AgenCDaemonAgentManager {
         `AgenC daemon agent has no active session: ${params.agentId}`,
       );
     }
+    let runtimeOptions: AgentRuntimeOptions;
+    try {
+      runtimeOptions = validateAgentRuntimeOptions(
+        session.metadata?.runtimeOptions,
+      );
+    } catch {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        `daemon session ${session.sessionId} has no valid runtime-options authority`,
+      );
+    }
 
     const attachment = await this.#sessionManager.attachSession({
       sessionId: session.sessionId,
@@ -1454,6 +1465,7 @@ export class AgenCDaemonAgentManager {
       agentId: target.agentId,
       attachmentId: attachment.attachmentId,
       sessionIds: orderedSessionIds,
+      runtimeOptions,
       runtimeSessionId: target.agentId,
       sessions: attachedSessions,
     };

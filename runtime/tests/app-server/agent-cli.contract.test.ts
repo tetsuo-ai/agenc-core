@@ -27,10 +27,11 @@ import { AgenCDaemonJsonRpcDispatcher } from "./daemon-dispatcher.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { AgenCUnixSocketServer } from "./transport/unix-socket.js";
 import { AGENC_STDIO_DEFAULT_MAX_LINE_BYTES } from "./transport/stdio.js";
-import type {
-  AgentCreateParams,
-  AgentLogsParams,
-  AgentStopParams,
+import {
+  AGENC_DAEMON_PROTOCOL_VERSION,
+  type AgentCreateParams,
+  type AgentLogsParams,
+  type AgentStopParams,
 } from "./protocol/index.js";
 import type {
   AgenCBackgroundAgentMessageParams,
@@ -41,6 +42,7 @@ import type {
 import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 
 const workspaces = createTempWorkspaceFixture("agenc-agent-cli-workspace-");
+const TEST_AGENT_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
 
 afterEach(async () => {
   await workspaces.cleanup();
@@ -497,6 +499,7 @@ describe("agenc agent start CLI", () => {
                 agentId: params.agentId,
                 attachmentId: "attachment_1",
                 sessionIds: ["session_1"],
+                runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
               };
             },
             stopAgent: async () => {
@@ -520,6 +523,7 @@ describe("agenc agent start CLI", () => {
         agentId: "agent_2",
         attachmentId: "attachment_2",
         sessionIds: [],
+        runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       }),
     ).toBe(
       ["agent_id\tsession_id\tattachment_id", "agent_2\t-\tattachment_2"].join(
@@ -532,6 +536,7 @@ describe("agenc agent start CLI", () => {
           agentId: "agent_3",
           attachmentId: "attachment_3",
           sessionIds: ["session_remote"],
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           sessions: [
             {
               sessionId: "session_remote",
@@ -551,6 +556,7 @@ describe("agenc agent start CLI", () => {
           agentId: "agent_3",
           attachmentId: "attachment_3",
           sessionIds: ["session_remote"],
+          runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
           sessions: [
             {
               sessionId: "session_remote",
@@ -1128,7 +1134,8 @@ autostart = false
             id: message.id,
             result: {
               type: "initialized",
-              protocolVersion: "1.1.0",
+              protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+              protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
               capabilities: {},
             },
           });
@@ -1143,6 +1150,7 @@ autostart = false
               agentId: "agent_replay",
               attachmentId: "attachment_replay",
               sessionIds: ["session_replay"],
+              runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
               sessions: [
                 {
                   sessionId: "session_replay",
@@ -2134,6 +2142,7 @@ describe("resolveAgenCAgentAttachRoleWorkspace", () => {
       agentId: "agent_1",
       attachmentId: "attachment_1",
       sessionIds: ["session_1"],
+      runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       sessions: [
         {
           sessionId: "session_1",

@@ -34,6 +34,7 @@ import {
 import { randomUUID } from "node:crypto";
 import { isAbsolute, resolve } from "node:path";
 import { cwd as processCwd } from "node:process";
+import { isDeepStrictEqual } from "node:util";
 import { VERSION } from "../index.js";
 import { applyBestEffortPreMainProcessHardening } from "../sandbox/hardening/index.js";
 import {
@@ -68,6 +69,8 @@ import type { TurnContext } from "../session/turn-context.js";
 import {
   assertNoRetiredAgentRuntimeEnvironment,
   resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+  validateAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
 import { runTurn } from "../session/run-turn.js";
@@ -4720,9 +4723,6 @@ export async function attachAgentTuiEntry(
   const env = args.env ?? process.env;
   const startupCliFlags =
     args.startupCliFlags ?? readStartupCliFlags(process.argv);
-  const runtimeOptions =
-    args.runtimeOptions ?? resolveAgentRuntimeOptions(env);
-  setIsRemoteMode(runtimeOptions.remoteMode);
   let daemonClient: Awaited<
     ReturnType<typeof createConnectedAgenCJsonLineDaemonTuiClient>
   > | null = null;
@@ -4752,145 +4752,167 @@ export async function attachAgentTuiEntry(
       agentId: args.agentId,
       clientId: args.clientId,
     });
-    const sessionId = attachment.sessionIds[0];
-    if (sessionId === undefined) {
-      throw new Error(`daemon agent has no attached session: ${args.agentId}`);
-    }
-    const runtimeSessionId =
-      attachment.runtimeSessionId ?? attachment.agentId ?? sessionId;
-    const bootstrapCwd = resolveAgenCAgentAttachCwd(attachment, targetCwd);
-    const roleWorkspace = resolveAgenCAgentAttachRoleWorkspace(
-      attachment,
-      targetCwd,
+    const runtimeOptions = validateAgentRuntimeOptions(
+      attachment.runtimeOptions,
     );
+    const expectedRuntimeOptions =
+      args.runtimeOptions === undefined
+        ? undefined
+        : validateAgentRuntimeOptions(args.runtimeOptions);
     if (
-      roleWorkspace.cwd !== targetCwd &&
-      !(await requireProjectTrustForTui({
-        env,
-        argv: process.argv,
-        startupCliFlags,
-        cwd: roleWorkspace.cwd,
-        useEnvWorkspace: false,
-      }))
+      expectedRuntimeOptions !== undefined &&
+      !isDeepStrictEqual(expectedRuntimeOptions, runtimeOptions)
     ) {
-      return 1;
+      throw new Error(
+        `daemon agent runtime options disagree with the attaching client: ${args.agentId}`,
+      );
     }
-    const bootstrapEnv = envForAttachBootstrap(env, bootstrapCwd);
-    const startupLayers = startupConfigLayerOptions({
-      cli: startupCliFlags,
-      env: bootstrapEnv,
-      cwd: bootstrapCwd,
-    });
-    const attachedMetadata =
-      attachment.sessions?.find(
-        (attachedSession) => attachedSession.sessionId === sessionId,
-      )?.metadata ?? attachment.sessions?.[0]?.metadata;
-    const metadataString = (key: string): string | undefined => {
-      const value = attachedMetadata?.[key];
-      return typeof value === "string" && value.trim().length > 0
-        ? value.trim()
-        : undefined;
-    };
-    const retainedConfigPath = metadataString("configPath");
-    if (retainedConfigPath !== undefined && !isAbsolute(retainedConfigPath)) {
-      throw new Error("daemon session metadata configPath must be absolute");
-    }
-    const attachProvider =
-      startupCliFlags.provider ??
-      metadataString("provider") ??
-      metadataString("modelProvider");
-    const attachModel = startupCliFlags.model ?? metadataString("model");
-    const attachProfile = startupCliFlags.profile ?? metadataString("profile");
-    const attachConfigPath =
-      startupLayers.flagConfigPath ?? retainedConfigPath;
-    const retainedPermissionMode = metadataString("permissionMode");
-    const retainedUserPermissionMode =
-      retainedPermissionMode !== undefined &&
-      (USER_ADDRESSABLE_PERMISSION_MODES as readonly string[]).includes(
-        retainedPermissionMode,
-      )
-        ? (retainedPermissionMode as AgentCreateParams["permissionMode"])
-        : undefined;
-    const attachPermissionMode =
-      startupPermissionMode(startupCliFlags) ?? retainedUserPermissionMode;
-    const {
-      workspaceRoot,
-      baseSession,
-      model,
-      close: closeTuiContext = async () => undefined,
-    } = await daemonCliDeps().createTuiContext({
-      env: bootstrapEnv,
-      runtimeOptions,
-      cwd: bootstrapCwd,
-      roleWorkspace,
-      conversationId: runtimeSessionId,
-      ...(attachProvider !== undefined ? { provider: attachProvider } : {}),
-      ...(attachModel !== undefined ? { model: attachModel } : {}),
-      ...(attachProfile !== undefined ? { profile: attachProfile } : {}),
-      ...(attachConfigPath !== undefined
-        ? { configPath: attachConfigPath }
-        : {}),
-      ...(attachPermissionMode !== undefined
-        ? { permissionMode: attachPermissionMode }
-        : {}),
-    });
-    const configStore = baseSession.services.configStore;
-    const createDaemonTuiSession = await loadCreateDaemonTuiSession();
-    const daemonSession = await createDaemonTuiSession({
-      baseSession,
-      client: daemonClient,
-      sessionId,
-      conversationId: runtimeSessionId,
-      clientId: args.clientId,
-    });
-    const preparedDaemonSession = wrapDaemonTuiSessionWithPromptPreparation(
-      daemonSession as {
-        submit?: (
-          message: string,
-          opts?: { readonly displayUserMessage?: string | null },
-        ) => Promise<void>;
-      },
-      {
-        agencHome: configStore.agencHome,
-        cwd: workspaceRoot,
+    return await runWithAgentRuntimeOptions(runtimeOptions, async () => {
+      setIsRemoteMode(runtimeOptions.remoteMode);
+      const sessionId = attachment.sessionIds[0];
+      if (sessionId === undefined) {
+        throw new Error(
+          `daemon agent has no attached session: ${args.agentId}`,
+        );
+      }
+      const runtimeSessionId =
+        attachment.runtimeSessionId ?? attachment.agentId ?? sessionId;
+      const bootstrapCwd = resolveAgenCAgentAttachCwd(attachment, targetCwd);
+      const roleWorkspace = resolveAgenCAgentAttachRoleWorkspace(
+        attachment,
+        targetCwd,
+      );
+      if (
+        roleWorkspace.cwd !== targetCwd &&
+        !(await requireProjectTrustForTui({
+          env,
+          argv: process.argv,
+          startupCliFlags,
+          cwd: roleWorkspace.cwd,
+          useEnvWorkspace: false,
+        }))
+      ) {
+        return 1;
+      }
+      const bootstrapEnv = envForAttachBootstrap(env, bootstrapCwd);
+      const startupLayers = startupConfigLayerOptions({
+        cli: startupCliFlags,
         env: bootstrapEnv,
-        stderr: process.stderr,
-      },
-    );
-    const boot = await loadBootTUI();
-    const startupImages = args.startupImages ?? [];
-    const initialUserMessages =
-      startupImages.length > 0
-        ? startupImageMessagesFromInputs(
-            startupImages,
-            workspaceRoot,
-            bootstrapEnv.HOME,
-          )
-        : [];
-    try {
-      const handle = await boot({
-        session: preparedDaemonSession,
-        model,
-        stdinMode: runtimeOptions.stdinDataMode === true ? "data" : "readable",
-        ...(args.initialComposerText !== undefined &&
-        args.initialComposerText.length > 0
-          ? { initialComposerText: args.initialComposerText }
-          : {}),
-        ...(initialUserMessages.length > 0 ? { initialUserMessages } : {}),
+        cwd: bootstrapCwd,
       });
-      activeInkUnmount = handle.unmount;
-      await handle.waitUntilExit();
-    } finally {
-      activeInkUnmount = null;
-      await closeTuiContext();
-    }
-    // Return a plain exit code here. A pending /resume picker selection is
-    // honored by the outer entrypoints (bootTUIEntry / resumeTUIEntry) once
-    // this function's finally chain has closed the daemon client and
-    // detached the prior session — see exitOrResumeAfterTui at those call
-    // sites. Doing the relaunch here would race the daemonClient.close()
-    // below and re-resume before teardown completes.
-    return 0;
+      const attachedMetadata =
+        attachment.sessions?.find(
+          (attachedSession) => attachedSession.sessionId === sessionId,
+        )?.metadata ?? attachment.sessions?.[0]?.metadata;
+      const metadataString = (key: string): string | undefined => {
+        const value = attachedMetadata?.[key];
+        return typeof value === "string" && value.trim().length > 0
+          ? value.trim()
+          : undefined;
+      };
+      const retainedConfigPath = metadataString("configPath");
+      if (retainedConfigPath !== undefined && !isAbsolute(retainedConfigPath)) {
+        throw new Error("daemon session metadata configPath must be absolute");
+      }
+      const attachProvider =
+        startupCliFlags.provider ??
+        metadataString("provider") ??
+        metadataString("modelProvider");
+      const attachModel = startupCliFlags.model ?? metadataString("model");
+      const attachProfile =
+        startupCliFlags.profile ?? metadataString("profile");
+      const attachConfigPath =
+        startupLayers.flagConfigPath ?? retainedConfigPath;
+      const retainedPermissionMode = metadataString("permissionMode");
+      const retainedUserPermissionMode =
+        retainedPermissionMode !== undefined &&
+        (USER_ADDRESSABLE_PERMISSION_MODES as readonly string[]).includes(
+          retainedPermissionMode,
+        )
+          ? (retainedPermissionMode as AgentCreateParams["permissionMode"])
+          : undefined;
+      const attachPermissionMode =
+        startupPermissionMode(startupCliFlags) ?? retainedUserPermissionMode;
+      const {
+        workspaceRoot,
+        baseSession,
+        model,
+        close: closeTuiContext = async () => undefined,
+      } = await daemonCliDeps().createTuiContext({
+        env: bootstrapEnv,
+        runtimeOptions,
+        cwd: bootstrapCwd,
+        roleWorkspace,
+        conversationId: runtimeSessionId,
+        ...(attachProvider !== undefined ? { provider: attachProvider } : {}),
+        ...(attachModel !== undefined ? { model: attachModel } : {}),
+        ...(attachProfile !== undefined ? { profile: attachProfile } : {}),
+        ...(attachConfigPath !== undefined
+          ? { configPath: attachConfigPath }
+          : {}),
+        ...(attachPermissionMode !== undefined
+          ? { permissionMode: attachPermissionMode }
+          : {}),
+      });
+      const configStore = baseSession.services.configStore;
+      const createDaemonTuiSession = await loadCreateDaemonTuiSession();
+      const daemonSession = await createDaemonTuiSession({
+        baseSession,
+        client: daemonClient,
+        sessionId,
+        conversationId: runtimeSessionId,
+        clientId: args.clientId,
+      });
+      const preparedDaemonSession = wrapDaemonTuiSessionWithPromptPreparation(
+        daemonSession as {
+          submit?: (
+            message: string,
+            opts?: { readonly displayUserMessage?: string | null },
+          ) => Promise<void>;
+        },
+        {
+          agencHome: configStore.agencHome,
+          cwd: workspaceRoot,
+          env: bootstrapEnv,
+          stderr: process.stderr,
+        },
+      );
+      const boot = await loadBootTUI();
+      const startupImages = args.startupImages ?? [];
+      const initialUserMessages =
+        startupImages.length > 0
+          ? startupImageMessagesFromInputs(
+              startupImages,
+              workspaceRoot,
+              bootstrapEnv.HOME,
+            )
+          : [];
+      try {
+        const handle = await boot({
+          session: preparedDaemonSession,
+          model,
+          stdinMode:
+            runtimeOptions.stdinDataMode === true ? "data" : "readable",
+          ...(args.initialComposerText !== undefined &&
+          args.initialComposerText.length > 0
+            ? { initialComposerText: args.initialComposerText }
+            : {}),
+          ...(initialUserMessages.length > 0 ? { initialUserMessages } : {}),
+        });
+        activeInkUnmount = handle.unmount;
+        await handle.waitUntilExit();
+      } finally {
+        activeInkUnmount = null;
+        await closeTuiContext();
+      }
+      // Return a plain exit code here. A pending /resume picker selection is
+      // honored by the outer entrypoints (bootTUIEntry / resumeTUIEntry) once
+      // this function's finally chain has closed the daemon client and
+      // detached the prior session — see exitOrResumeAfterTui at those call
+      // sites. Doing the relaunch here would race the daemonClient.close()
+      // below and re-resume before teardown completes.
+      return 0;
+    });
   } catch (error) {
     if (
       error instanceof SessionLockedError ||

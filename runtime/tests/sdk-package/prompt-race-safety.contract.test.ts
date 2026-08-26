@@ -48,8 +48,9 @@ class PromptTransport implements AgencTransport {
     readonly response: Deferred<AgencDaemonResponse<"message.send">>;
   }> = [];
   client?: AgencClient;
-  initializeVersion = "1.3.0";
+  initializeVersion = "1.4.0";
   initializeFailures = 0;
+  attachRuntimeOptions: unknown;
   duplicateIncomplete = false;
 
   async request<Method extends AgencDaemonMethod>(
@@ -80,7 +81,8 @@ class PromptTransport implements AgencTransport {
           "daemon.methods": {
             "session.transcript.v2":
               this.initializeVersion === "1.2.0" ||
-              this.initializeVersion === "1.3.0",
+              this.initializeVersion === "1.3.0" ||
+              this.initializeVersion === "1.4.0",
           },
         },
       });
@@ -89,6 +91,23 @@ class PromptTransport implements AgencTransport {
       return success(request, {
         attachmentId: "attachment_1",
         sessionId: String((request.params as JsonObject).sessionId),
+      });
+    }
+    if (request.method === "agent.attach") {
+      return success(request, {
+        agentId: String((request.params as JsonObject).agentId),
+        attachmentId: "attachment_agent_1",
+        sessionIds: ["session_1"],
+        ...(this.attachRuntimeOptions === undefined
+          ? {}
+          : { runtimeOptions: this.attachRuntimeOptions }),
+      });
+    }
+    if (request.method === "session.create") {
+      return success(request, {
+        sessionId: "session_1",
+        createdAt: "2026-08-17T00:00:00.000Z",
+        status: "idle",
       });
     }
     if (request.method === "message.send") {
@@ -250,7 +269,7 @@ function resolveSend(
 }
 
 describe("agenc-sdk prompt race safety", () => {
-  it.each(["1.0.0", "1.1.0", "1.2.0"])(
+  it.each(["1.0.0", "1.1.0", "1.2.0", "1.3.0"])(
     "downgrades capability discovery to an older %s daemon",
     async (version) => {
       const transport = new PromptTransport();
@@ -263,7 +282,7 @@ describe("agenc-sdk prompt race safety", () => {
       );
       expect(initializes).toHaveLength(2);
       expect(initializes.map((request) => request.params)).toEqual([
-        expect.objectContaining({ protocol: { version: "1.3.0" } }),
+        expect.objectContaining({ protocol: { version: "1.4.0" } }),
         expect.objectContaining({ protocol: { version } }),
       ]);
       expect(client.negotiatedProtocolVersion).toBe(version);
@@ -271,6 +290,69 @@ describe("agenc-sdk prompt race safety", () => {
       expect(client.serverCapabilities).toBeDefined();
     },
   );
+
+  it("rejects agent attachment below protocol 1.4 before dispatch", async () => {
+    const transport = new PromptTransport();
+    transport.initializeVersion = "1.3.0";
+    transport.initializeFailures = 1;
+    const client = await initializedClient(transport);
+
+    await expect(client.attachAgent("agent_1")).rejects.toMatchObject({
+      name: "AgencCapabilityUnavailableError",
+      capability: "agent.attach runtime authority",
+      negotiatedProtocolVersion: "1.3.0",
+    });
+    expect(
+      transport.requests.filter((request) => request.method === "agent.attach"),
+    ).toEqual([]);
+  });
+
+  it.each([
+    undefined,
+    {
+      simpleMode: false,
+      stdinDataMode: false,
+      remoteMode: false,
+      allowUntrustedHooks: false,
+      posixShellPath: 42,
+    },
+  ])(
+    "rejects malformed protocol 1.4 agent attachment authority %#",
+    async (runtimeOptions) => {
+      const transport = new PromptTransport();
+      transport.attachRuntimeOptions = runtimeOptions;
+      const client = await initializedClient(transport);
+
+      await expect(client.attachAgent("agent_1")).rejects.toMatchObject({
+        name: "AgencMalformedResponseError",
+      });
+      expect(
+        transport.requests.filter(
+          (request) => request.method === "agent.attach",
+        ),
+      ).toHaveLength(1);
+    },
+  );
+
+  it("uses session.create below protocol 1.4 without orphaning an agent", async () => {
+    const transport = new PromptTransport();
+    transport.initializeVersion = "1.3.0";
+    transport.initializeFailures = 1;
+    const client = await initializedClient(transport);
+
+    await expect(
+      client.createSession({ cwd: "/tmp/agenc-sdk-old-protocol" }),
+    ).resolves.toMatchObject({ sessionId: "session_1" });
+    expect(
+      transport.requests.filter(
+        (request) =>
+          request.method === "agent.create" || request.method === "agent.attach",
+      ),
+    ).toEqual([]);
+    expect(
+      transport.requests.map((request) => request.method),
+    ).toContain("session.create");
+  });
 
   it("recognizes an older daemon that accepts a higher-minor initialize", async () => {
     const transport = new PromptTransport();

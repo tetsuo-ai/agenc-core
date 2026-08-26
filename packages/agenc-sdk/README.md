@@ -35,8 +35,11 @@ stable `clientMessageId` for correlation/idempotent retry. Protocol 1.2 adds
 opt-in `ifBusy: "reject"`, turn-scoped cancellation, identity-bearing
 `transcriptV2()`, distinct delta/committed assistant events, and
 `history_reset`. The SDK capability-falls back when initialization discovers a
-1.0/1.1 daemon; legacy queue behavior remains unchanged. Strict admission and
-scoped prompt cancellation fail closed when those guarantees are unavailable.
+1.0–1.3 daemon. Protocol 1.4 makes owning runtime authority part of
+`agent.attach`; the SDK refuses that request before dispatch on an older daemon
+and uses `session.create` directly when creating a session. Strict admission
+and scoped prompt cancellation fail closed when those guarantees are
+unavailable.
 
 ```js
 import { connect, promptViaSubprocess } from "@tetsuo-ai/agenc-sdk";

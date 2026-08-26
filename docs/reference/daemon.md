@@ -122,7 +122,7 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 ## Protocol
 
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
-- Protocol version constant: **`1.3.0`**
+- Protocol version constant: **`1.4.0`**
   (`AGENC_DAEMON_PROTOCOL_VERSION` in `runtime/src/app-server/protocol/index.ts`).
 - Clients send `initialize` with the protocol version. Negotiation compares the
   numeric major and minor versions: the server accepts the same major when the
@@ -130,11 +130,15 @@ const client = await connect(); // socket + cookie under AGENC_HOME
   does not affect compatibility. Malformed versions, different majors, and a
   client minor newer than the server are rejected with
   `PROTOCOL_VERSION_UNSUPPORTED`.
-- Consequently, a 1.3 daemon accepts 1.0, 1.1, and 1.2 clients, while a client
-  that requires 1.3 is rejected by a still-running 1.0/1.1/1.2 daemon. The
+- Consequently, a 1.4 daemon accepts 1.0 through 1.3 clients, while a client
+  that requires 1.4 is rejected by a still-running 1.0 through 1.3 daemon. The
   embedding SDK retries initialization at the reported older server version and
   uses advertised capabilities for additive fallbacks; Core/TUI callers may
-  still fail closed. Protocols 1.0–1.2 advertise `session.mcp.status: false`,
+  still fail closed. Protocol 1.4 makes the owning runtime authority required
+  in `agent.attach`; Core/TUI callers reject an older daemon during initialize,
+  while the SDK rejects attachment before dispatch on an older negotiated
+  protocol.
+  Protocols 1.0–1.2 advertise `session.mcp.status: false`,
   reject that method, and never receive `event.mcp_status_changed`. Update if
   necessary, then run `agenc daemon restart` so the daemon uses the installed
   protocol version.

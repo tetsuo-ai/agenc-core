@@ -71,6 +71,7 @@ const SAFE_SDK_RUNTIME_OPTIONS = Object.freeze({
   remoteMode: false,
   allowUntrustedHooks: false,
 });
+const AGENT_ATTACH_RUNTIME_AUTHORITY_PROTOCOL_MINOR = 4;
 
 /**
  * Minimal transport contract. The runtime's
@@ -873,6 +874,18 @@ export class AgencClient {
     params?: AgencParamsByMethod[Method],
   ): Promise<AgencResultByMethod[Method]> {
     if (this.#closed) throw new Error("AgenC SDK client is closed");
+    if (
+      method === "agent.attach" &&
+      this.#negotiatedClientProtocolVersion !== undefined &&
+      !supportsAgentAttachRuntimeAuthority(
+        this.#negotiatedClientProtocolVersion,
+      )
+    ) {
+      throw new AgencCapabilityUnavailableError(
+        "agent.attach runtime authority",
+        this.#negotiatedClientProtocolVersion,
+      );
+    }
     const id = this.#createRequestId();
     const request: AgencDaemonRequest<Method> =
       params === undefined
@@ -938,7 +951,11 @@ export class AgencClient {
         ? String((params as { cwd: string }).cwd)
         : undefined,
     );
-    if (existingAgentId.length === 0) {
+    const negotiatedVersion = this.#negotiatedClientProtocolVersion;
+    const canAttachWithRuntimeAuthority =
+      negotiatedVersion === undefined ||
+      supportsAgentAttachRuntimeAuthority(negotiatedVersion);
+    if (existingAgentId.length === 0 && canAttachWithRuntimeAuthority) {
       const agent = await this.spawnAgent({
         objective:
           typeof (params as { objective?: unknown }).objective === "string" &&
@@ -1548,12 +1565,16 @@ function effectiveNegotiatedVersion(
   requestedVersion: string,
   serverVersion: string,
 ): string {
-  const requested = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(requestedVersion);
-  const server = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(serverVersion);
-  if (requested === null || server === null || requested[1] !== server[1]) {
+  const requested = parseDaemonProtocolVersion(requestedVersion);
+  const server = parseDaemonProtocolVersion(serverVersion);
+  if (
+    requested === undefined ||
+    server === undefined ||
+    requested.major !== server.major
+  ) {
     return requestedVersion;
   }
-  return Number.parseInt(requested[2]!, 10) <= Number.parseInt(server[2]!, 10)
+  return requested.minor <= server.minor
     ? requestedVersion
     : serverVersion;
 }
@@ -1567,12 +1588,39 @@ function compatibleServerVersionFromInitializeError(
   if (error.data.code !== "PROTOCOL_VERSION_UNSUPPORTED") return undefined;
   const serverVersion = error.data.serverVersion;
   if (typeof serverVersion !== "string") return undefined;
-  const match = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(serverVersion);
-  if (match === null) return undefined;
-  const major = Number.parseInt(match[1]!, 10);
-  const minor = Number.parseInt(match[2]!, 10);
-  if (major !== 1 || minor < 0 || minor >= 3) return undefined;
+  const server = parseDaemonProtocolVersion(serverVersion);
+  const current = parseDaemonProtocolVersion(AGENC_SDK_DAEMON_PROTOCOL_VERSION);
+  if (
+    server === undefined ||
+    current === undefined ||
+    server.major !== current.major ||
+    server.minor >= current.minor
+  ) {
+    return undefined;
+  }
   return serverVersion;
+}
+
+function supportsAgentAttachRuntimeAuthority(version: string): boolean {
+  const parsed = parseDaemonProtocolVersion(version);
+  const current = parseDaemonProtocolVersion(AGENC_SDK_DAEMON_PROTOCOL_VERSION);
+  return (
+    parsed !== undefined &&
+    current !== undefined &&
+    parsed.major === current.major &&
+    parsed.minor >= AGENT_ATTACH_RUNTIME_AUTHORITY_PROTOCOL_MINOR
+  );
+}
+
+function parseDaemonProtocolVersion(
+  version: string,
+): { readonly major: number; readonly minor: number } | undefined {
+  const match = /^(\d+)\.(\d+)(?:\.\d+)?$/.exec(version);
+  if (match === null) return undefined;
+  return {
+    major: Number.parseInt(match[1]!, 10),
+    minor: Number.parseInt(match[2]!, 10),
+  };
 }
 
 function parseResponse<Method extends AgencDaemonMethod>(
@@ -1611,11 +1659,70 @@ function parseResponse<Method extends AgencDaemonMethod>(
       response,
     );
   }
-  return (
+  const result = (
     response as AgencDaemonResponse<Method> & {
       result: AgencResultByMethod[Method];
     }
   ).result;
+  if (method === "agent.attach") {
+    assertValidAgentAttachRuntimeAuthority(result, response);
+  }
+  return result;
+}
+
+function assertValidAgentAttachRuntimeAuthority(
+  result: unknown,
+  response: unknown,
+): void {
+  if (!isJsonObject(result) || !isJsonObject(result.runtimeOptions)) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach response must include runtimeOptions",
+      response,
+    );
+  }
+  const runtimeOptions = result.runtimeOptions;
+  for (const key of [
+    "simpleMode",
+    "stdinDataMode",
+    "remoteMode",
+    "allowUntrustedHooks",
+  ] as const) {
+    if (typeof runtimeOptions[key] !== "boolean") {
+      throw new AgencMalformedResponseError(
+        `AgenC agent.attach runtimeOptions.${key} must be boolean`,
+        response,
+      );
+    }
+  }
+  for (const key of [
+    "remoteMemoryRoot",
+    "coworkMemoryPathOverride",
+    "coworkMemoryExtraGuidelines",
+    "posixShellPath",
+    "sessionTempRoot",
+    "pluginStorageRoot",
+  ] as const) {
+    const value = runtimeOptions[key];
+    if (value !== undefined && typeof value !== "string") {
+      throw new AgencMalformedResponseError(
+        `AgenC agent.attach runtimeOptions.${key} must be a string`,
+        response,
+      );
+    }
+  }
+  const commandWrapperArgv = runtimeOptions.commandWrapperArgv;
+  if (
+    commandWrapperArgv !== undefined &&
+    (!Array.isArray(commandWrapperArgv) ||
+      !commandWrapperArgv.every(
+        (entry) => typeof entry === "string" && entry.length > 0,
+      ))
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach runtimeOptions.commandWrapperArgv must be an array of non-empty strings",
+      response,
+    );
+  }
 }
 
 /** Absolute workspace path for daemon create RPCs (DAE-02 client boundary). */

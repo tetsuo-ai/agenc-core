@@ -751,7 +751,7 @@ describe("AgenC background agent lifecycle", () => {
     }
   });
 
-  it("attaches to persisted agents when source agent id differs from thread id", async () => {
+  it("fails closed attaching a persisted agent without runtime authority", async () => {
     const { cwd, home, restoreEnv } = createThreadStoreTestDirs();
     const rollout = openRollout(cwd, "thread-distinct-agent-attach");
     const threadStore = new FileThreadStore({ cwd, agencHome: home });
@@ -792,18 +792,9 @@ describe("AgenC background agent lifecycle", () => {
           agentId: "agent-distinct-attach",
           clientId: "tui_1",
         }),
-      ).resolves.toMatchObject({
-        agentId: "agent-distinct-attach",
-        attachmentId: "attachment-persisted-agent",
-        runtimeSessionId: "agent-distinct-attach",
-        sessionIds: ["thread-distinct-agent-attach"],
-        sessions: [
-          {
-            sessionId: "thread-distinct-agent-attach",
-            agentId: "agent-distinct-attach",
-            status: "waiting",
-          },
-        ],
+      ).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+        message: expect.stringContaining("runtime-options authority"),
       });
     } finally {
       threadStore.close();
@@ -1886,6 +1877,7 @@ describe("AgenC background agent lifecycle", () => {
       status: "waiting",
       createdAt: "2026-05-01T12:00:00.000Z",
       initialPrompt: "inspect recovery",
+      metadata: { runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS },
     });
     const interruptAgentTurn = vi.fn(async () => true);
     const agents = new AgenCDaemonAgentManager({
@@ -2420,6 +2412,7 @@ describe("AgenC background agent lifecycle", () => {
       agentId: "agent_1",
       attachmentId: "attachment_1",
       sessionIds: ["session_1"],
+      runtimeOptions: TEST_AGENT_RUNTIME_OPTIONS,
       runtimeSessionId: "agent_1",
       sessions: [
         {
@@ -2443,6 +2436,38 @@ describe("AgenC background agent lifecycle", () => {
     await expect(sessions.getSession("session_1")).resolves.toMatchObject({
       activeAttachmentIds: ["attachment_1"],
     });
+  });
+
+  it("agent.attach fails closed without valid session runtime authority", async () => {
+    const sessions = new AgenCDaemonSessionManager();
+    await sessions.restoreSession({
+      sessionId: "session_missing_runtime_options",
+      agentId: "agent_missing_runtime_options",
+      status: "waiting",
+      createdAt: "2026-05-01T12:00:00.000Z",
+      initialPrompt: "inspect authority",
+      metadata: { runtimeOptions: { simpleMode: true } },
+    });
+    const agents = new AgenCDaemonAgentManager({ sessionManager: sessions });
+    await agents.restoreAgent({
+      agentId: "agent_missing_runtime_options",
+      objective: "inspect authority",
+      startedAt: "2026-05-01T12:00:00.000Z",
+      lastActiveAt: "2026-05-01T12:05:00.000Z",
+      sessionIds: ["session_missing_runtime_options"],
+      runtimeAvailable: true,
+    });
+
+    await expect(
+      agents.attachAgent({ agentId: "agent_missing_runtime_options" }),
+    ).rejects.toMatchObject({
+      code: "INVALID_ARGUMENT",
+      message: expect.stringContaining("runtime-options authority"),
+    });
+    const session = await sessions.getSession(
+      "session_missing_runtime_options",
+    );
+    expect(session).not.toHaveProperty("activeAttachmentIds");
   });
 
   it("agent.create explicitly reopens a retained canonical session", async () => {
@@ -5420,7 +5445,7 @@ describe("AgenC background agent lifecycle", () => {
         id: "future-protocol",
         method: "initialize",
         params: {
-          protocol: { version: "1.4.0" },
+          protocol: { version: "1.5.0" },
           clientName: "contract-test",
         },
       }),
@@ -5432,8 +5457,8 @@ describe("AgenC background agent lifecycle", () => {
         message: "Unsupported protocol version",
         data: {
           code: "PROTOCOL_VERSION_UNSUPPORTED",
-          clientVersion: "1.4.0",
-          serverVersion: "1.3.0",
+          clientVersion: "1.5.0",
+          serverVersion: "1.4.0",
         },
       },
     });
@@ -5498,16 +5523,16 @@ describe("AgenC background agent lifecycle", () => {
       id: 1,
       result: {
         type: "initialized",
-        protocolVersion: "1.3.0",
-        protocol: { version: "1.3.0" },
+        protocolVersion: "1.4.0",
+        protocol: { version: "1.4.0" },
         capabilities: {},
       },
     });
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.3.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.4.0");
     expect(connection.initializeState).toMatchObject({
-      protocol: { version: "1.3.0" },
+      protocol: { version: "1.4.0" },
       clientProtocol: { version: "1.0.0" },
-      serverProtocol: { version: "1.3.0" },
+      serverProtocol: { version: "1.4.0" },
       clientCapabilities: { experimentalApi: true },
     });
     expect(

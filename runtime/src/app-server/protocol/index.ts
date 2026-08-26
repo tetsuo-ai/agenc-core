@@ -12,9 +12,11 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * Current daemon protocol version.
  * 1.2 adds identity-bearing transcript.v2 and turn-scoped cancellation.
  * 1.3 adds the passive MCP status projection and its live-only invalidation.
- * Clients that need either additive surface must not negotiate an older daemon.
+ * 1.4 makes the owning agent runtime authority part of agent.attach.
+ * Clients that need any of these additive surfaces must not negotiate an older
+ * daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.3.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.4.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -2331,6 +2333,8 @@ export interface AgentAttachResult extends JsonObject {
   readonly agentId: string;
   readonly attachmentId: string;
   readonly sessionIds: readonly string[];
+  /** Immutable operator authority owned by the attached daemon session. */
+  readonly runtimeOptions: AgentRuntimeOptionsParams;
   readonly runtimeSessionId?: string;
   readonly sessions?: readonly SessionSummary[];
 }

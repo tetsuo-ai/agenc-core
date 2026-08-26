@@ -91,7 +91,7 @@ Key `AgencClient` methods:
   `reattachRun(options)` / `runEvidence(params)` / `cancelRun(id, reason?)`
 - `listCsvJobReviews` / `showCsvJobReview` / `resolveCsvJobReview`
 - `request(method, params)` → raw typed JSON-RPC for any of the **53** daemon methods
-- `initialize` (handshake; SDK retries 1.0/1.1), `close()`
+- `initialize` (handshake; SDK retries 1.0–1.3), `close()`
 - `negotiatedProtocolVersion` / `serverProtocolVersion` / `serverCapabilities`
 - `onNotification(cb)` / `onSessionNotification(sessionId, cb)` → raw events
 - Path helpers: `resolveAgencHome`, `resolveDaemonSocketPath`, `resolveDaemonCookiePath`
@@ -136,7 +136,7 @@ The SDK distinguishes `text` deltas from `message_committed`, reconciles the
 final result with committed text, and exposes `history_reset` for clear,
 compaction, rewind, and rollback. A duplicate without durable terminal proof
 fails with `AgencDuplicateSubmissionIncompleteError`. Initialization retries a
-1.0/1.1 daemon at its reported version and retains negotiated version and
+1.0–1.3 daemon at its reported version and retains negotiated version and
 capability information for safe feature fallback.
 
 ### Handshake and autostart
@@ -328,11 +328,14 @@ evidence shape (`toolCallId`, `disposition`, `evidenceRef`, and
 `evidenceSha256`), and partial mixtures are rejected. An earlier-shape request
 leaves durable effects unchanged in `remaining`.
 
-Protocol version constant: **`1.3.0`**
+Protocol version constant: **`1.4.0`**
 (`AGENC_SDK_DAEMON_PROTOCOL_VERSION`). Handshake rules and
 `PROTOCOL_VERSION_UNSUPPORTED` live in [daemon.md](reference/daemon.md).
-The SDK retries initialization at an older 1.0/1.1/1.2 daemon and uses
-advertised capabilities for additive fallbacks.
+The SDK retries initialization at an older 1.0–1.3 daemon and uses
+advertised capabilities for additive fallbacks. Protocol 1.4 makes the owning
+runtime authority required in `agent.attach`; the SDK rejects attachment before
+dispatch on an older negotiated protocol and uses `session.create` directly
+instead of spawning an agent it cannot safely attach to.
 
 Server→client notifications (`AGENC_SDK_DAEMON_NOTIFICATION_METHODS`, 18 names):
 

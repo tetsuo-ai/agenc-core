@@ -23,7 +23,7 @@ import type {
 /** JSON-RPC 2.0 envelope version sent on every request. */
 export const AGENC_SDK_JSON_RPC_VERSION = "2.0" as const;
 /** Protocol the SDK advertises on `initialize`. Handshake rules are in docs/sdk.md. */
-export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.3.0" as const;
+export const AGENC_SDK_DAEMON_PROTOCOL_VERSION = "1.4.0" as const;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | readonly JsonValue[] | JsonObject;
@@ -654,6 +654,8 @@ export interface AgentAttachResult extends JsonObject {
   readonly agentId: string;
   readonly attachmentId: string;
   readonly sessionIds: readonly string[];
+  /** Immutable operator authority owned by the attached daemon session. */
+  readonly runtimeOptions: AgentRuntimeOptionsParams;
   readonly runtimeSessionId?: string;
   readonly sessions?: readonly SessionSummary[];
 }

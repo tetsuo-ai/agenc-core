@@ -27,6 +27,7 @@ import {
   __setDaemonCliDepsForTest,
   __setActiveInkUnmountForTest,
   bootTUIEntry,
+  attachAgentTuiEntry,
   detectStartupShortCircuit,
   formatUnavailableCliCwdMessage,
   formatCliHelpText,
@@ -69,6 +70,11 @@ import {
 } from "../permissions/trust/project-trust.js";
 import { getProjectDir } from "../session/session-store.js";
 import { classifyCLI } from "./route.js";
+import { isBareMode } from "../utils/envUtils.js";
+import {
+  resolveAgentRuntimeOptions,
+  type AgentRuntimeOptions,
+} from "../session/runtime-options.js";
 
 function stubSession() {
   return {
@@ -196,6 +202,7 @@ function installDaemonCliDepsForTest(
     readonly liveAgent?: boolean;
     readonly liveAgentMetadata?: Readonly<Record<string, unknown>>;
     readonly liveAgentPath?: string;
+    readonly runtimeOptions?: AgentRuntimeOptions;
     readonly resumePromptAgentError?: Error;
     readonly requestErrors?: Partial<Record<string, Error | readonly Error[]>>;
     readonly mcpManager?: unknown;
@@ -225,6 +232,8 @@ function installDaemonCliDepsForTest(
   const runtimeSessionId = options.runtimeSessionId ?? sessionId;
   const cwd = options.cwd ?? process.cwd();
   const roleWorkspaceCwd = options.roleWorkspaceCwd ?? cwd;
+  let ownerRuntimeOptions =
+    options.runtimeOptions ?? resolveAgentRuntimeOptions({});
   const requests: Array<{ method: string; params: unknown }> = [];
   const requestErrorQueues = new Map<string, Error[]>(
     Object.entries(options.requestErrors ?? {}).map(([method, error]) => [
@@ -297,6 +306,7 @@ function installDaemonCliDepsForTest(
           agentId,
           attachmentId: "attachment_test",
           sessionIds: [sessionId],
+          runtimeOptions: ownerRuntimeOptions,
           runtimeSessionId,
           sessions: [
             {
@@ -396,7 +406,11 @@ function installDaemonCliDepsForTest(
     async (params: {
       prompt: string;
       initialContent?: string | readonly unknown[];
+      runtimeOptions?: AgentRuntimeOptions;
     }) => {
+      if (params.runtimeOptions !== undefined) {
+        ownerRuntimeOptions = params.runtimeOptions;
+      }
       return {
         ...agent,
         objective: params.prompt.trim(),
@@ -408,9 +422,13 @@ function installDaemonCliDepsForTest(
     async (params: {
       rolloutPath: string;
       sourceProof: { readonly dev: string; readonly ino: string };
+      runtimeOptions?: AgentRuntimeOptions;
     }) => {
       if (options.resumePromptAgentError !== undefined) {
         throw options.resumePromptAgentError;
+      }
+      if (params.runtimeOptions !== undefined) {
+        ownerRuntimeOptions = params.runtimeOptions;
       }
       return {
         ...agent,
@@ -446,6 +464,7 @@ function installDaemonCliDepsForTest(
       cwd: string;
       roleWorkspace?: { readonly id: string; readonly cwd: string };
       conversationId: string;
+      runtimeOptions: AgentRuntimeOptions;
     }) => {
       const abortController = new AbortController();
       const configStore = new ConfigStore({
@@ -2971,6 +2990,71 @@ describe("main() smoke", () => {
         params: expect.objectContaining({ agentId: conversationId }),
       });
       expect(waitUntilExit).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it("attach binds local TUI work to the daemon session runtime options", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-bare-attach-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-bare-attach-cwd-"));
+    const prevEnv = { ...process.env };
+    const runtimeOptions = resolveAgentRuntimeOptions({}, { simpleMode: true });
+    const daemon = installDaemonCliDepsForTest({
+      agentId: "agent_bare_attach",
+      sessionId: "session_bare_attach",
+      cwd: tmpCwd,
+      runtimeOptions,
+    });
+    const observedBareMode: boolean[] = [];
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async () => {
+        observedBareMode.push(isBareMode());
+        return {
+          unmount: vi.fn(),
+          waitUntilExit: async () => {
+            observedBareMode.push(isBareMode());
+          },
+        };
+      }),
+    }));
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      await expect(
+        attachAgentTuiEntry({
+          agentId: "agent_bare_attach",
+          clientId: "client_bare_attach",
+          env: {
+            AGENC_HOME: tmpHome,
+            AGENC_WORKSPACE: tmpCwd,
+            HOME: tmpHome,
+          },
+        }),
+      ).resolves.toBe(0);
+      expect(daemon.createTuiContext).toHaveBeenCalledWith(
+        expect.objectContaining({ runtimeOptions }),
+      );
+      expect(observedBareMode).toEqual([true, true]);
+      await expect(
+        attachAgentTuiEntry({
+          agentId: "agent_bare_attach",
+          clientId: "client_conflicting_attach",
+          env: {
+            AGENC_HOME: tmpHome,
+            AGENC_WORKSPACE: tmpCwd,
+            HOME: tmpHome,
+          },
+          runtimeOptions: resolveAgentRuntimeOptions({}),
+        }),
+      ).rejects.toThrow("runtime options disagree");
+      expect(daemon.createTuiContext).toHaveBeenCalledOnce();
     } finally {
       vi.doUnmock("../tui/main.js");
       for (const key of Object.keys(process.env)) {

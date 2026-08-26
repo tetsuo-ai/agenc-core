@@ -29,6 +29,7 @@ import { StateRunDurabilityRepository } from "../state/run-durability.js";
 import { ROLLOUT_SCHEMA_VERSION } from "../session/event-log.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { createAgenCJsonLineDaemonRequestClient } from "./agent-cli.js";
+import { AGENC_DAEMON_PROTOCOL_VERSION } from "./protocol/index.js";
 import { AgenCDaemonSessionManager } from "./session-lifecycle.js";
 import { ensureAgenCDaemonAutostart } from "./daemon-autostart.js";
 import {
@@ -166,6 +167,7 @@ function createRecoveredSession(
   };
   return {
     conversationId: threadId,
+    sessionConfiguration: { cwd: process.cwd() },
     rolloutStore,
     eventLog,
     emit: (event: {
@@ -3229,8 +3231,8 @@ workspace = ${JSON.stringify(process.cwd())}
           id: "initialize-shutdown",
           method: "initialize",
           params: {
-            protocolVersion: "1.3.0",
-            protocol: { version: "1.3.0" },
+            protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+            protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
             clientName: "agenc-shutdown-contract",
             authCookie,
             capabilities: {},
@@ -3316,8 +3318,8 @@ workspace = ${JSON.stringify(process.cwd())}
             id,
             method: "initialize",
             params: {
-              protocolVersion: "1.3.0",
-              protocol: { version: "1.3.0" },
+              protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+              protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
               clientName: id,
               authCookie,
               capabilities: {},
@@ -3859,8 +3861,8 @@ backend = "local"
       id: "initialize",
       result: {
         type: "initialized",
-        protocolVersion: "1.3.0",
-        protocol: { version: "1.3.0" },
+        protocolVersion: AGENC_DAEMON_PROTOCOL_VERSION,
+        protocol: { version: AGENC_DAEMON_PROTOCOL_VERSION },
       },
     });
 
@@ -4524,12 +4526,14 @@ snapshot_max_bytes = 64
     ).resolves.toMatchObject({
       agentId: "run-restart",
       sessionIds: ["session-restart"],
+      runtimeOptions: TEST_RUNTIME_OPTIONS,
       sessions: [
         {
           sessionId: "session-restart",
           agentId: "run-restart",
           status: "waiting",
           metadata: {
+            runtimeOptions: TEST_RUNTIME_OPTIONS,
             recovery: {
               snapshot: {
                 recoveredToolCalls: [
@@ -4555,7 +4559,11 @@ snapshot_max_bytes = 64
       messageId: expect.any(String),
       streamId: expect.any(String),
     });
-    expect(sendInput).toHaveBeenCalledWith("run-restart", "continue");
+    expect(sendInput).toHaveBeenCalledWith(
+      "run-restart",
+      "continue",
+      expect.objectContaining({ displayUserMessage: "continue" }),
+    );
 
     signalProcess.emit("SIGTERM");
     await expect(running).resolves.toBe(0);
@@ -4964,6 +4972,9 @@ snapshot_max_bytes = 64
       expect(sendInput).toHaveBeenCalledWith(
         runId,
         "continue after daemon restart",
+        expect.objectContaining({
+          displayUserMessage: "continue after daemon restart",
+        }),
       );
 
       secondSignal.emit("SIGTERM");

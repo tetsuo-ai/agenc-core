@@ -4616,6 +4616,7 @@ function recoveryMetadataForRun(
   runtimeAvailable: boolean,
 ): JsonObject {
   const canonicalSource = run.resumeSource;
+  const runtimeOptions = runtimeOptionsForRecoveredRun(run);
   return {
     ...(canonicalSource !== undefined
       ? {
@@ -4625,6 +4626,7 @@ function recoveryMetadataForRun(
           canonicalRolloutIno: canonicalSource.rolloutIdentity.ino,
         }
       : {}),
+    ...(runtimeOptions !== null ? { runtimeOptions } : {}),
     recovery: {
       recoveredAt: report.recoveredAt,
       projectDir: run.projectDir,
