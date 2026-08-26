@@ -2394,6 +2394,13 @@ function makeLifecycleTarget(): HookInstallTarget & {
     sessionStartHooks,
     addSessionStartHook: (hook) => {
       sessionStartHooks.push(hook);
+      let active = true;
+      return () => {
+        if (!active) return;
+        active = false;
+        const index = sessionStartHooks.indexOf(hook);
+        if (index >= 0) sessionStartHooks.splice(index, 1);
+      };
     },
   };
 }

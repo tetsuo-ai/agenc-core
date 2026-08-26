@@ -352,12 +352,12 @@ export function createHooksService(): Hooks & {
   readonly permissionDecisionHooks: PermissionDecisionHook[];
   readonly userPromptSubmitHooks: UserPromptSubmitHook[];
   readonly lifecycleHooks: LifecycleHookRegistry;
-  addPreCompactHook(hook: PreCompactHook): void;
-  addPostCompactHook(hook: PostCompactHook): void;
-  addSessionStartHook(hook: SessionStartHook): void;
-  addSubagentStopHook(hook: SubagentStopHook): void;
-  addSessionEndHook(hook: SessionEndHook): void;
-  addNotificationHook(hook: NotificationHook): void;
+  addPreCompactHook(hook: PreCompactHook): () => void;
+  addPostCompactHook(hook: PostCompactHook): () => void;
+  addSessionStartHook(hook: SessionStartHook): () => void;
+  addSubagentStopHook(hook: SubagentStopHook): () => void;
+  addSessionEndHook(hook: SessionEndHook): () => void;
+  addNotificationHook(hook: NotificationHook): () => void;
   clearConfiguredLifecycleHooks(): void;
   processSessionStart(
     ...args: Parameters<typeof dispatchSessionStart>
@@ -385,24 +385,12 @@ export function createHooksService(): Hooks & {
     permissionDecisionHooks,
     userPromptSubmitHooks,
     lifecycleHooks,
-    addPreCompactHook: (hook) => {
-      lifecycleHooks.addPreCompact(hook);
-    },
-    addPostCompactHook: (hook) => {
-      lifecycleHooks.addPostCompact(hook);
-    },
-    addSessionStartHook: (hook) => {
-      lifecycleHooks.addSessionStart(hook);
-    },
-    addSubagentStopHook: (hook) => {
-      lifecycleHooks.addSubagentStop(hook);
-    },
-    addSessionEndHook: (hook) => {
-      lifecycleHooks.addSessionEnd(hook);
-    },
-    addNotificationHook: (hook) => {
-      lifecycleHooks.addNotification(hook);
-    },
+    addPreCompactHook: (hook) => lifecycleHooks.addPreCompact(hook),
+    addPostCompactHook: (hook) => lifecycleHooks.addPostCompact(hook),
+    addSessionStartHook: (hook) => lifecycleHooks.addSessionStart(hook),
+    addSubagentStopHook: (hook) => lifecycleHooks.addSubagentStop(hook),
+    addSessionEndHook: (hook) => lifecycleHooks.addSessionEnd(hook),
+    addNotificationHook: (hook) => lifecycleHooks.addNotification(hook),
     clearConfiguredLifecycleHooks: () => {
       lifecycleHooks.clear();
     },

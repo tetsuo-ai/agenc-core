@@ -82,37 +82,37 @@ export interface HookInstallTarget {
       input: PreCompactHookInput,
       signal?: AbortSignal,
     ) => Promise<HookResult>,
-  ) => void;
+  ) => () => void;
   readonly addPostCompactHook?: (
     hook: (
       input: PostCompactHookInput,
       signal?: AbortSignal,
     ) => Promise<HookResult>,
-  ) => void;
+  ) => () => void;
   readonly addSessionStartHook?: (
     hook: (
       input: SessionStartHookInput,
       signal?: AbortSignal,
     ) => Promise<HookResult>,
-  ) => void;
+  ) => () => void;
   readonly addSubagentStopHook?: (
     hook: (
       input: SubagentStopHookInput,
       signal?: AbortSignal,
     ) => Promise<HookResult>,
-  ) => void;
+  ) => () => void;
   readonly addSessionEndHook?: (
     hook: (
       input: SessionEndHookInput,
       signal?: AbortSignal,
     ) => Promise<HookResult>,
-  ) => void;
+  ) => () => void;
   readonly addNotificationHook?: (
     hook: (
       input: NotificationHookInput,
       signal?: AbortSignal,
     ) => Promise<HookResult>,
-  ) => void;
+  ) => () => void;
   readonly clearConfiguredLifecycleHooks?: () => void;
 }
 
@@ -136,6 +136,68 @@ export interface ConfiguredHooksRuntimeOptions {
   readonly isWorkspaceTrusted?: () => boolean;
 }
 
+interface ManagedHookInstallation {
+  readonly target: HookInstallTarget;
+  readonly preToolUseHooks: PreToolUseHook[];
+  readonly postToolUseHooks: PostToolUseHook[];
+  readonly failureToolUseHooks: PostToolUseFailureHook[];
+  readonly permissionDecisionHooks: PermissionDecisionHook[];
+  readonly userPromptSubmitHooks: UserPromptSubmitHook[];
+  readonly stopHooks: StopHookHandler[];
+  readonly stopFailureHooks: StopHookHandler[];
+  readonly lifecycleDisposers: Array<() => void>;
+  readonly insertionIndexes: ManagedHookInsertionIndexes;
+}
+
+interface ManagedHookInsertionIndexes {
+  readonly preToolUseHooks: number;
+  readonly postToolUseHooks: number;
+  readonly failureToolUseHooks: number;
+  readonly permissionDecisionHooks: number;
+  readonly userPromptSubmitHooks: number;
+  readonly stopHooks: number;
+  readonly stopFailureHooks: number;
+}
+
+function removeInstalledHooks<T>(target: T[], installed: readonly T[]): void {
+  if (installed.length === 0) return;
+  const managed = new Set(installed);
+  let writeIndex = 0;
+  for (const hook of target) {
+    if (managed.has(hook)) continue;
+    target[writeIndex] = hook;
+    writeIndex += 1;
+  }
+  target.length = writeIndex;
+}
+
+function managedInsertionIndex<T>(
+  target: readonly T[],
+  installed: readonly T[],
+  fallback: number,
+): number {
+  const indexes = installed
+    .map((hook) => target.indexOf(hook))
+    .filter((index) => index >= 0);
+  return indexes.length > 0
+    ? Math.min(...indexes)
+    : Math.min(fallback, target.length);
+}
+
+function insertManagedHook<T>(
+  target: T[],
+  installed: T[],
+  insertionIndex: number,
+  hook: T,
+): void {
+  target.splice(
+    Math.min(insertionIndex + installed.length, target.length),
+    0,
+    hook,
+  );
+  installed.push(hook);
+}
+
 export class ConfiguredHooksRuntime {
   private readonly engine: HookEngine;
   private validationIssues: HookValidationIssue[] = [];
@@ -143,6 +205,7 @@ export class ConfiguredHooksRuntime {
   private readonly isWorkspaceTrusted: () => boolean;
   private configAuthority: ConfiguredHookAuthoritySnapshot | undefined;
   private pluginHooks: HooksMap | undefined;
+  private managedInstallation: ManagedHookInstallation | undefined;
 
   constructor(private readonly opts: ConfiguredHooksRuntimeOptions) {
     this.engine = new HookEngine({
@@ -171,6 +234,7 @@ export class ConfiguredHooksRuntime {
   }
 
   attachTarget(target: HookInstallTarget): void {
+    if (this.target !== target) this.uninstallManagedHooks();
     this.target = target;
     this.rebuildTarget();
   }
@@ -259,83 +323,247 @@ export class ConfiguredHooksRuntime {
   }
 
   private rebuildTarget(): void {
+    const priorInsertionIndexes = this.uninstallManagedHooks();
     const target = this.target;
     if (!target) return;
+    const insertionIndexes: ManagedHookInsertionIndexes =
+      priorInsertionIndexes ?? {
+        preToolUseHooks: target.preToolUseHooks.length,
+        postToolUseHooks: target.postToolUseHooks.length,
+        failureToolUseHooks: target.failureToolUseHooks.length,
+        permissionDecisionHooks: target.permissionDecisionHooks.length,
+        userPromptSubmitHooks: target.userPromptSubmitHooks.length,
+        stopHooks: target.stopHooks.length,
+        stopFailureHooks: target.stopFailureHooks.length,
+      };
+    const installation: ManagedHookInstallation = {
+      target,
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+      lifecycleDisposers: [],
+      insertionIndexes,
+    };
+    this.managedInstallation = installation;
     let hasPermissionRequestHook = false;
-    target.preToolUseHooks.length = 0;
-    target.postToolUseHooks.length = 0;
-    target.failureToolUseHooks.length = 0;
-    target.permissionDecisionHooks.length = 0;
-    target.userPromptSubmitHooks.length = 0;
-    target.stopHooks.length = 0;
-    target.stopFailureHooks.length = 0;
-    target.clearConfiguredLifecycleHooks?.();
 
     for (const hook of this.listHooks()) {
       if (!hook.enabled) continue;
       switch (hook.event) {
-        case "PreToolUse":
-          target.preToolUseHooks.push(this.createPreToolUseHook(hook));
+        case "PreToolUse": {
+          const installed = this.createPreToolUseHook(hook);
+          insertManagedHook(
+            target.preToolUseHooks,
+            installation.preToolUseHooks,
+            insertionIndexes.preToolUseHooks,
+            installed,
+          );
           break;
-        case "PostToolUse":
-          target.postToolUseHooks.push(this.createPostToolUseHook(hook));
+        }
+        case "PostToolUse": {
+          const installed = this.createPostToolUseHook(hook);
+          insertManagedHook(
+            target.postToolUseHooks,
+            installation.postToolUseHooks,
+            insertionIndexes.postToolUseHooks,
+            installed,
+          );
           break;
-        case "PostToolUseFailure":
-          target.failureToolUseHooks.push(this.createFailureHook(hook));
+        }
+        case "PostToolUseFailure": {
+          const installed = this.createFailureHook(hook);
+          insertManagedHook(
+            target.failureToolUseHooks,
+            installation.failureToolUseHooks,
+            insertionIndexes.failureToolUseHooks,
+            installed,
+          );
           break;
+        }
         case "PermissionRequest":
           hasPermissionRequestHook = true;
           break;
-        case "UserPromptSubmit":
-          target.userPromptSubmitHooks.push(
-            this.createUserPromptSubmitHook(hook),
+        case "UserPromptSubmit": {
+          const installed = this.createUserPromptSubmitHook(hook);
+          insertManagedHook(
+            target.userPromptSubmitHooks,
+            installation.userPromptSubmitHooks,
+            insertionIndexes.userPromptSubmitHooks,
+            installed,
           );
           break;
-        case "Stop":
-          target.stopHooks.push(this.createStopHook(hook));
+        }
+        case "Stop": {
+          const installed = this.createStopHook(hook);
+          insertManagedHook(
+            target.stopHooks,
+            installation.stopHooks,
+            insertionIndexes.stopHooks,
+            installed,
+          );
           break;
-        case "StopFailure":
-          target.stopFailureHooks.push(this.createStopFailureHook(hook));
+        }
+        case "StopFailure": {
+          const installed = this.createStopFailureHook(hook);
+          insertManagedHook(
+            target.stopFailureHooks,
+            installation.stopFailureHooks,
+            insertionIndexes.stopFailureHooks,
+            installed,
+          );
           break;
+        }
         case "PreCompact":
-          target.addPreCompactHook?.(this.createLifecycleHook(hook));
+          this.trackLifecycleRegistration(
+            installation,
+            target.addPreCompactHook?.(this.createLifecycleHook(hook)),
+          );
           break;
         case "PostCompact":
-          target.addPostCompactHook?.(this.createLifecycleHook(hook));
+          this.trackLifecycleRegistration(
+            installation,
+            target.addPostCompactHook?.(this.createLifecycleHook(hook)),
+          );
           break;
         case "SessionStart":
-          target.addSessionStartHook?.(this.createLifecycleHook(hook));
+          this.trackLifecycleRegistration(
+            installation,
+            target.addSessionStartHook?.(this.createLifecycleHook(hook)),
+          );
           break;
         case "SubagentStop":
-          target.addSubagentStopHook?.(
-            this.createGenericLifecycleHook(hook, (input) =>
-              input.hook_event_name === "SubagentStop"
-                ? (input.agent_type ?? input.task_name)
-                : "",
+          this.trackLifecycleRegistration(
+            installation,
+            target.addSubagentStopHook?.(
+              this.createGenericLifecycleHook(hook, (input) =>
+                input.hook_event_name === "SubagentStop"
+                  ? (input.agent_type ?? input.task_name)
+                  : "",
+              ),
             ),
           );
           break;
         case "SessionEnd":
-          target.addSessionEndHook?.(
-            this.createGenericLifecycleHook(hook, (input) =>
-              input.hook_event_name === "SessionEnd" ? input.reason : "",
+          this.trackLifecycleRegistration(
+            installation,
+            target.addSessionEndHook?.(
+              this.createGenericLifecycleHook(hook, (input) =>
+                input.hook_event_name === "SessionEnd" ? input.reason : "",
+              ),
             ),
           );
           break;
         case "Notification":
-          target.addNotificationHook?.(
-            this.createGenericLifecycleHook(hook, (input) =>
-              input.hook_event_name === "Notification"
-                ? input.notification_type
-                : "",
+          this.trackLifecycleRegistration(
+            installation,
+            target.addNotificationHook?.(
+              this.createGenericLifecycleHook(hook, (input) =>
+                input.hook_event_name === "Notification"
+                  ? input.notification_type
+                  : "",
+              ),
             ),
           );
           break;
       }
     }
     if (hasPermissionRequestHook) {
-      target.permissionDecisionHooks.push(this.createPermissionHook());
+      const installed = this.createPermissionHook();
+      insertManagedHook(
+        target.permissionDecisionHooks,
+        installation.permissionDecisionHooks,
+        insertionIndexes.permissionDecisionHooks,
+        installed,
+      );
     }
+  }
+
+  private trackLifecycleRegistration(
+    installation: ManagedHookInstallation,
+    disposer: void | (() => void),
+  ): void {
+    if (typeof disposer === "function") {
+      installation.lifecycleDisposers.push(disposer);
+    }
+  }
+
+  private uninstallManagedHooks(): ManagedHookInsertionIndexes | undefined {
+    const installation = this.managedInstallation;
+    if (installation === undefined) return undefined;
+    this.managedInstallation = undefined;
+    const insertionIndexes: ManagedHookInsertionIndexes = {
+      preToolUseHooks: managedInsertionIndex(
+        installation.target.preToolUseHooks,
+        installation.preToolUseHooks,
+        installation.insertionIndexes.preToolUseHooks,
+      ),
+      postToolUseHooks: managedInsertionIndex(
+        installation.target.postToolUseHooks,
+        installation.postToolUseHooks,
+        installation.insertionIndexes.postToolUseHooks,
+      ),
+      failureToolUseHooks: managedInsertionIndex(
+        installation.target.failureToolUseHooks,
+        installation.failureToolUseHooks,
+        installation.insertionIndexes.failureToolUseHooks,
+      ),
+      permissionDecisionHooks: managedInsertionIndex(
+        installation.target.permissionDecisionHooks,
+        installation.permissionDecisionHooks,
+        installation.insertionIndexes.permissionDecisionHooks,
+      ),
+      userPromptSubmitHooks: managedInsertionIndex(
+        installation.target.userPromptSubmitHooks,
+        installation.userPromptSubmitHooks,
+        installation.insertionIndexes.userPromptSubmitHooks,
+      ),
+      stopHooks: managedInsertionIndex(
+        installation.target.stopHooks,
+        installation.stopHooks,
+        installation.insertionIndexes.stopHooks,
+      ),
+      stopFailureHooks: managedInsertionIndex(
+        installation.target.stopFailureHooks,
+        installation.stopFailureHooks,
+        installation.insertionIndexes.stopFailureHooks,
+      ),
+    };
+    removeInstalledHooks(
+      installation.target.preToolUseHooks,
+      installation.preToolUseHooks,
+    );
+    removeInstalledHooks(
+      installation.target.postToolUseHooks,
+      installation.postToolUseHooks,
+    );
+    removeInstalledHooks(
+      installation.target.failureToolUseHooks,
+      installation.failureToolUseHooks,
+    );
+    removeInstalledHooks(
+      installation.target.permissionDecisionHooks,
+      installation.permissionDecisionHooks,
+    );
+    removeInstalledHooks(
+      installation.target.userPromptSubmitHooks,
+      installation.userPromptSubmitHooks,
+    );
+    removeInstalledHooks(
+      installation.target.stopHooks,
+      installation.stopHooks,
+    );
+    removeInstalledHooks(
+      installation.target.stopFailureHooks,
+      installation.stopFailureHooks,
+    );
+    for (const dispose of installation.lifecycleDisposers.splice(0).reverse()) {
+      dispose();
+    }
+    return insertionIndexes;
   }
 
   private createPreToolUseHook(hook: IndividualHookConfig): PreToolUseHook {

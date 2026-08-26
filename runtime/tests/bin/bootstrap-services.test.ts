@@ -26,6 +26,7 @@ import type { PostToolUseHook } from "../tools/hooks.js";
 import {
   bindExecutionAdmissionJournal,
   buildBootstrapSessionServices,
+  createHooksService,
   loadBootstrapHooks,
   loadBootstrapLspServersInBackground,
   loadBootstrapLspServers,
@@ -165,6 +166,203 @@ describe("loadBootstrapHooks", () => {
       autoFixPostToolHook: autoFixHook,
     });
     expect(target.postToolUseHooks).toEqual([autoFixHook]);
+  });
+
+  test("preserves the built-in post hook while config and plugin hooks are replaced", () => {
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: process.env,
+      agencHome: "/tmp/agenc-bootstrap-hook-authority-test",
+      shellPath: process.env.SHELL ?? "/bin/sh",
+      sandboxExecutionBroker: explicitDangerBroker,
+    });
+    const target: HookInstallTarget = {
+      preToolUseHooks: [],
+      postToolUseHooks: [],
+      failureToolUseHooks: [],
+      permissionDecisionHooks: [],
+      userPromptSubmitHooks: [],
+      stopHooks: [],
+      stopFailureHooks: [],
+    };
+    const autoFixHook: PostToolUseHook = () => ({ kind: "continue" });
+    const initialConfigCommand = "node -e 'process.exit(10)'";
+    const replacementConfigCommand = "node -e 'process.exit(11)'";
+    const initialPluginCommand = "node -e 'process.exit(12)'";
+    const replacementPluginCommand = "node -e 'process.exit(13)'";
+
+    runtime.attachTarget(target);
+    loadBootstrapHooks({
+      hooksRuntime: runtime,
+      hooksService: target,
+      authoritySnapshot: {
+        config: {
+          ...defaultConfig(),
+          hooks: {
+            PostToolUse: [
+              {
+                hooks: [
+                  {
+                    type: "command" as const,
+                    command: initialConfigCommand,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        layers: [],
+      },
+      autoFixPostToolHook: autoFixHook,
+    });
+    runtime.setPluginHooks({
+      PostToolUse: [
+        {
+          hooks: [
+            { type: "command" as const, command: initialPluginCommand },
+          ],
+        },
+      ],
+    });
+
+    loadBootstrapHooks({
+      hooksRuntime: runtime,
+      hooksService: target,
+      authoritySnapshot: {
+        config: {
+          ...defaultConfig(),
+          hooks: {
+            PostToolUse: [
+              {
+                hooks: [
+                  {
+                    type: "command" as const,
+                    command: replacementConfigCommand,
+                  },
+                ],
+              },
+            ],
+          },
+        },
+        layers: [],
+      },
+      autoFixPostToolHook: autoFixHook,
+    });
+    runtime.setPluginHooks({
+      PostToolUse: [
+        {
+          hooks: [
+            { type: "command" as const, command: replacementPluginCommand },
+          ],
+        },
+      ],
+    });
+
+    expect(runtime.listHooks().map((hook) => hook.command.command).sort()).toEqual(
+      [replacementConfigCommand, replacementPluginCommand].sort(),
+    );
+    expect(target.postToolUseHooks).toHaveLength(3);
+    expect(
+      target.postToolUseHooks.filter((hook) => hook === autoFixHook),
+    ).toHaveLength(1);
+    expect(target.postToolUseHooks.at(-1)).toBe(autoFixHook);
+  });
+
+  test("preserves programmatic lifecycle hooks while managed hooks are replaced", async () => {
+    const hooksService = createHooksService();
+    const runtime = new ConfiguredHooksRuntime({
+      cwd: process.cwd(),
+      env: {},
+      agencHome: "/tmp/agenc-bootstrap-lifecycle-authority-test",
+      shellPath: "/bin/sh",
+      admissionRequired: false,
+      sandboxExecutionBroker: explicitDangerBroker,
+      isWorkspaceTrusted: () => true,
+    });
+    const fired: string[] = [];
+    const initialConfigCommand = "printf 'configured-initial'";
+    const replacementConfigCommand = "printf 'configured-current'";
+    const initialPluginCommand = "printf 'plugin-initial'";
+    const replacementPluginCommand = "printf 'plugin-current'";
+
+    hooksService.addPreCompactHook(() => {
+      fired.push("programmatic");
+      return {
+        succeeded: true,
+        output: "programmatic",
+        command: "programmatic",
+      };
+    });
+    runtime.attachTarget(hooksService);
+    runtime.loadConfigAuthority({
+      config: {
+        ...defaultConfig(),
+        hooks: {
+          PreCompact: [
+            {
+              hooks: [
+                {
+                  type: "command" as const,
+                  command: initialConfigCommand,
+                },
+              ],
+            },
+          ],
+        },
+      },
+      layers: [],
+    });
+    runtime.setPluginHooks({
+      PreCompact: [
+        {
+          hooks: [
+            { type: "command" as const, command: initialPluginCommand },
+          ],
+        },
+      ],
+    });
+    runtime.loadConfigAuthority({
+      config: {
+        ...defaultConfig(),
+        hooks: {
+          PreCompact: [
+            {
+              hooks: [
+                {
+                  type: "command" as const,
+                  command: replacementConfigCommand,
+                },
+              ],
+            },
+          ],
+        },
+      },
+      layers: [],
+    });
+    runtime.setPluginHooks({
+      PreCompact: [
+        {
+          hooks: [
+            { type: "command" as const, command: replacementPluginCommand },
+          ],
+        },
+      ],
+    });
+
+    const result = (await hooksService.executePreCompact({
+      trigger: "manual",
+      customInstructions: null,
+    })) as { readonly newCustomInstructions?: string };
+
+    expect(fired).toEqual(["programmatic"]);
+    expect(result.newCustomInstructions?.split("\n\n")).toEqual([
+      "programmatic",
+      "configured-current",
+      "plugin-current",
+    ]);
+    expect(runtime.listHooks().map((hook) => hook.command.command).sort()).toEqual(
+      [replacementConfigCommand, replacementPluginCommand].sort(),
+    );
   });
 });
 
