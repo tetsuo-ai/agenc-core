@@ -1103,11 +1103,10 @@ export const AgentTool = buildTool({
             : {}),
         };
 
-        // Workload propagation: handlePromptSubmit wraps the entire turn in
-        // runWithWorkload (AsyncLocalStorage). ALS context is captured at
-        // invocation time — when this `void` fires — and survives every await
-        // inside. No capture/restore needed; the detached closure sees the
-        // parent turn's workload automatically, isolated from its finally.
+        // Workload propagation uses AsyncLocalStorage. The context is captured
+        // at invocation time — when this `void` fires — and survives every
+        // await inside. No capture/restore is needed; the detached closure sees
+        // the parent turn's workload without sharing mutable process state.
         const asyncLifecycle = runWithAgentContext(asyncAgentContext, () =>
           wrapWithCwd(() =>
             runAsyncAgentLifecycle({

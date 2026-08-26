@@ -229,7 +229,7 @@ import {
   isDollarSkillCommand,
   loadDollarSkillCommandForTurn,
   parseDollarSkillCommand,
-} from "../input/processPromptInput.js";
+} from "../input/dollar-skill-command.js";
 import type { Command } from "../../commands.js";
 import type {
   QueuedCommand,

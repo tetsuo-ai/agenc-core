@@ -569,8 +569,8 @@ export function popAllEditable(
   const images: PastedContent[] = [];
   let nextImageId = Date.now(); // Use timestamp as base for unique IDs
   for (const cmd of editable) {
-    // handlePromptSubmit queues images in pastedContents (value is a string).
-    // Preserve the original PastedContent id so imageStore lookups still work.
+    // Composer queue entries keep images in pastedContents while value remains
+    // a string. Preserve the original id so imageStore lookups still work.
     if (cmd.pastedContents) {
       for (const content of Object.values(cmd.pastedContents)) {
         if (content.type === "image") {

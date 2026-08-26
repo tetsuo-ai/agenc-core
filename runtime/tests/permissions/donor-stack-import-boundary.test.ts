@@ -59,7 +59,6 @@ const BASELINE: readonly string[] = [
   "tools/WebFetchTool/WebFetchTool.ts",
   "tools/WebSearchTool/WebSearchTool.ts",
   "tui/hooks/useSwarmPermissionPoller.ts",
-  "tui/input/processPromptInput.ts",
   "tui/pathDisplay.ts",
   "tui/permission-types.ts",
   "tui/state/AppStateStore.ts",

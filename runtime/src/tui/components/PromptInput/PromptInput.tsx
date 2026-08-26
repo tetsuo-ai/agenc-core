@@ -141,7 +141,6 @@ import {
   isFastModeEnabledForContext,
   isFastModeSupportedByModelForContext,
 } from "../../../utils/fastMode.js";
-import type { PromptInputHelpers } from "../../../utils/handlePromptSubmit.js";
 import type { VimRoutingState } from "../../input/processTextPrompt.js";
 import { extractDraggedFilePaths } from "../../../utils/dragDropPaths.js";
 import {
@@ -515,6 +514,12 @@ function usePromptSuggestion({
     logOutcomeAtSubmission,
   };
 }
+
+type PromptInputHelpers = {
+  setCursorOffset: (offset: number) => void;
+  clearBuffer: () => void;
+  resetHistory: () => void;
+};
 
 type Props = {
   debug: boolean;
