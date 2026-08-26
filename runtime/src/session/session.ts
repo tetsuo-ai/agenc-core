@@ -202,9 +202,15 @@ import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import type { AgentStatus as RuntimeAgentStatus } from "../agents/status.js";
 import type { AgentRuntimeOptions } from "./runtime-options.js";
 import type {
+  PostCompactHookInput,
+  PreCompactHookInput,
   SessionStartHookInput,
   SessionStartSource as HookSessionStartSource,
 } from "../llm/hooks/types.js";
+import type {
+  PostCompactDispatchResult,
+  PreCompactDispatchResult,
+} from "../llm/hooks/dispatcher.js";
 import type { LifecycleHookRegistry } from "../llm/hooks/registry.js";
 import type { HookResultMessage } from "../types/message.js";
 import type {
@@ -1218,8 +1224,14 @@ export interface Hooks {
     input: SessionStartHookInput,
     opts?: { readonly signal?: AbortSignal },
   ): Promise<HookResultMessage[]>;
-  executePreCompact(...args: unknown[]): Promise<unknown>;
-  executePostCompact(...args: unknown[]): Promise<unknown>;
+  executePreCompact(
+    input: PreCompactHookInput,
+    signal?: AbortSignal,
+  ): Promise<PreCompactDispatchResult>;
+  executePostCompact(
+    input: PostCompactHookInput,
+    signal?: AbortSignal,
+  ): Promise<PostCompactDispatchResult>;
   executeStop(...args: unknown[]): Promise<unknown>;
   executeStopFailure(...args: unknown[]): Promise<unknown>;
 }
@@ -4320,6 +4332,7 @@ export class Session {
     };
     return {
       abortController,
+      cwd: this.sessionConfiguration.cwd,
       provider: this.services.provider,
       admissionSession: this,
       ...(this.rolloutStore !== null

@@ -1393,6 +1393,7 @@ export async function runInProcessTeammate(
             admissionSession: teammateRolloutOwner.admissionSession,
             compactionTransaction: teammateRolloutStore,
             compactionMode: 'automatic',
+            cwd: teammateRolloutStore.store.cwd,
             options: {
               mainLoopModel: model ?? toolUseContext.options.mainLoopModel,
               contextWindowTokens: parentSession.modelInfo.contextWindow,

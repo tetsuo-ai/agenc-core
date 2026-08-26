@@ -705,7 +705,6 @@ type AgenCCompactionResult = {
   readonly summaryMessages?: readonly AgenCRuntimeMessage[];
   readonly messagesToKeep?: readonly AgenCRuntimeMessage[];
   readonly attachments?: readonly AgenCRuntimeMessage[];
-  readonly hookResults?: readonly AgenCRuntimeMessage[];
   readonly userDisplayMessage?: string;
   readonly preCompactTokenCount?: number;
   readonly postCompactTokenCount?: number;
@@ -1412,7 +1411,6 @@ function toCompactServiceResult(result: AgenCCompactionResult): CompactionResult
     boundaryMarker: result.boundaryMarker,
     summaryMessages: result.summaryMessages ?? [],
     attachments: result.attachments ?? [],
-    hookResults: result.hookResults ?? [],
     ...(result.messagesToKeep !== undefined
       ? { messagesToKeep: result.messagesToKeep }
       : {}),

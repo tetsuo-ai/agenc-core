@@ -16,7 +16,7 @@ import {
   registerSessionEndHook,
   resetLifecycleHookRegistry,
 } from "./registry.js";
-import type { SessionEndHookInput } from "./types.js";
+import type { PreCompactHookInput, SessionEndHookInput } from "./types.js";
 import { createHooksService } from "../../bin/bootstrap-services.js";
 import {
   clearCurrentRuntimeSession,
@@ -34,6 +34,17 @@ function sessionEndInput(sessionId: string): SessionEndHookInput {
     hook_event_name: "SessionEnd",
     reason: "exit",
     session_id: sessionId,
+  };
+}
+
+function preCompactInput(sessionId: string): PreCompactHookInput {
+  return {
+    hook_event_name: "PreCompact",
+    session_id: sessionId,
+    transcript_path: `/tmp/${sessionId}.jsonl`,
+    cwd: "/tmp/agenc-test-workspace",
+    trigger: "manual",
+    custom_instructions: null,
   };
 }
 
@@ -132,14 +143,14 @@ describe("per-session lifecycle hook isolation", () => {
       output: "instructions from A",
     }));
 
-    const resultA = (await serviceA.executePreCompact({
-      trigger: "manual",
-    })) as { newCustomInstructions?: string };
+    const resultA = (await serviceA.executePreCompact(
+      preCompactInput("conv-a"),
+    )) as { newCustomInstructions?: string };
     expect(resultA.newCustomInstructions).toBe("instructions from A");
 
-    const resultB = (await serviceB.executePreCompact({
-      trigger: "manual",
-    })) as { newCustomInstructions?: string };
+    const resultB = (await serviceB.executePreCompact(
+      preCompactInput("conv-b"),
+    )) as { newCustomInstructions?: string };
     expect(resultB.newCustomInstructions).toBeUndefined();
   });
 

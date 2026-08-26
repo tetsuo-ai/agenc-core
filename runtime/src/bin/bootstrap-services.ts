@@ -395,33 +395,10 @@ export function createHooksService(): Hooks & {
       lifecycleHooks.clear();
     },
     startupWarnings: () => [],
-    executePreCompact: async (...args: unknown[]) => {
-      const first = recordOrEmpty(args[0]);
-      return dispatchPreCompact(
-        {
-          hook_event_name: "PreCompact",
-          trigger: compactTrigger(first.trigger),
-          custom_instructions:
-            stringOrNull(first.customInstructions) ??
-            stringOrNull(first.custom_instructions),
-        },
-        { signal: abortSignalOrUndefined(args[1]), registry: lifecycleHooks },
-      );
-    },
-    executePostCompact: async (...args: unknown[]) => {
-      const first = recordOrEmpty(args[0]);
-      return dispatchPostCompact(
-        {
-          hook_event_name: "PostCompact",
-          trigger: compactTrigger(first.trigger),
-          compact_summary:
-            stringOrNull(first.compactSummary) ??
-            stringOrNull(first.compact_summary) ??
-            "",
-        },
-        { signal: abortSignalOrUndefined(args[1]), registry: lifecycleHooks },
-      );
-    },
+    executePreCompact: async (input, signal) =>
+      dispatchPreCompact(input, { signal, registry: lifecycleHooks }),
+    executePostCompact: async (input, signal) =>
+      dispatchPostCompact(input, { signal, registry: lifecycleHooks }),
     executeStop: async (...args: unknown[]) => {
       if (args.length >= 3 && isRecord(args[2])) {
         return evaluateStopHooks(
@@ -903,20 +880,8 @@ export function buildBootstrapSessionServices(
   };
 }
 
-function compactTrigger(value: unknown): "manual" | "auto" {
-  return value === "auto" ? "auto" : "manual";
-}
-
-function stringOrNull(value: unknown): string | null {
-  return typeof value === "string" ? value : null;
-}
-
 function abortSignalOrUndefined(value: unknown): AbortSignal | undefined {
   return value instanceof AbortSignal ? value : undefined;
-}
-
-function recordOrEmpty(value: unknown): Record<string, unknown> {
-  return isRecord(value) ? value : {};
 }
 
 function requestBootstrapNetworkApproval(

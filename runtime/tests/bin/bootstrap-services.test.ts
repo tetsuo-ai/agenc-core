@@ -350,8 +350,12 @@ describe("loadBootstrapHooks", () => {
     });
 
     const result = (await hooksService.executePreCompact({
+      hook_event_name: "PreCompact",
+      session_id: "configured-hook-refresh-test",
+      transcript_path: "/tmp/agenc-bootstrap-lifecycle-authority-test/transcript.jsonl",
+      cwd: process.cwd(),
       trigger: "manual",
-      customInstructions: null,
+      custom_instructions: null,
     })) as { readonly newCustomInstructions?: string };
 
     expect(fired).toEqual(["programmatic"]);

@@ -1788,8 +1788,12 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(services.codeModeService.enabled()).toBe(false);
       await expect(
         services.hooks.executePreCompact({
+          hook_event_name: "PreCompact",
+          session_id: "conv-services",
+          transcript_path: boot.rolloutStore.rolloutPath,
+          cwd: workspace,
           trigger: "manual",
-          customInstructions: null,
+          custom_instructions: null,
         }),
       ).resolves.toEqual({});
     } finally {

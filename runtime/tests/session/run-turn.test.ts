@@ -3816,7 +3816,6 @@ describe("runTurn — A1 dead-guard fix (model-downshift inline compact)", () =>
         compactionResult: {
           summaryMessages: [{ role: "assistant", content: "summary" }],
           attachments: [],
-          hookResults: [],
         },
       })),
     );

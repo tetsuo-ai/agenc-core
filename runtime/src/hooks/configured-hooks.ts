@@ -1310,12 +1310,20 @@ function defaultHookInput(
     case "PreCompact":
       return {
         hook_event_name: event,
+        session_id: "",
+        transcript_path: "",
+        cwd,
+        permission_mode: "default",
         trigger: "manual",
         custom_instructions: null,
       };
     case "PostCompact":
       return {
         hook_event_name: event,
+        session_id: "",
+        transcript_path: "",
+        cwd,
+        permission_mode: "default",
         trigger: "manual",
         compact_summary: "",
       };
