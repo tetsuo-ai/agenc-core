@@ -132,11 +132,18 @@ describe("hook authority regressions", () => {
 
   test("registered callback hooks cannot read canonical config hooks", () => {
     const callbackRuntime = source("utils/hooks.ts");
+    const hookHelpers = source("utils/hooks/hooksSettings.ts");
 
     expect(callbackRuntime).not.toMatch(
       /hooksConfigSnapshot|getHooksConfigFromSnapshot/u,
     );
     expect(callbackRuntime).not.toMatch(/(?:config|settings)\.hooks\b/u);
+    expect(hookHelpers).not.toMatch(
+      /\b(?:getAllHooks|getHooksForEvent|HookSource|IndividualHookConfig|hookSourceDescriptionDisplayString|hookSourceHeaderDisplayString|hookSourceInlineDisplayString|sortMatchersByPriority)\b/u,
+    );
+    expect(hookHelpers).not.toMatch(
+      /settings\/settings|getSettingsForSource|getSettingsFilePathForSource|getSessionHooks|getSessionId/u,
+    );
 
     const productionRawLoaders = productionSources(SOURCE_ROOT)
       .filter((path) => /\.loadForTesting\s*\(/u.test(readFileSync(path, "utf8")))
