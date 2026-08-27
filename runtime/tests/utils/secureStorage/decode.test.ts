@@ -9,13 +9,16 @@ describe('native secure storage decoder', () => {
     ['"secret"', /non-null JSON object/u],
     ['42', /non-null JSON object/u],
     ['{"primaryApiKey":"one","primaryApiKey":"two"}', /duplicate object keys/u],
-  ])('rejects corrupt shared-vault payload %s', (payload, message) => {
-    expect(() => decodeSecureStorageData(payload, 'test vault')).toThrow(message)
+  ])('rejects corrupt shared-storage payload %s', (payload, message) => {
+    expect(() => decodeSecureStorageData(payload, 'test secure storage')).toThrow(message)
   })
 
   test('accepts a plain credential object', () => {
     expect(
-      decodeSecureStorageData('{"primaryApiKey":"secret"}', 'test vault'),
+      decodeSecureStorageData(
+        '{"primaryApiKey":"secret"}',
+        'test secure storage',
+      ),
     ).toEqual({ primaryApiKey: 'secret' })
   })
 
@@ -41,7 +44,7 @@ describe('native secure storage decoder', () => {
             },
           },
         }),
-        'test vault',
+        'test secure storage',
       ),
     ).toEqual({
       primaryApiKey: 'unrelated-secret',

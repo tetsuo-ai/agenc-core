@@ -2,7 +2,7 @@
  * Onboarding acts (onboarding-plan-2026-07 O-2/O-3/O-5/O-6): identity
  * scaffold + naming ritual gate, channel wizard with live-validated tokens
  * and the pairing walkthrough, guardrails-before-autonomy ordering, posture
- * recap, and the native gateway credential vault — all through scripted IO
+ * recap, and native gateway credential storage — all through scripted IO
  * seams.
  */
 
@@ -124,7 +124,7 @@ describe("identity act (O-2)", () => {
   });
 });
 
-describe("gateway credential vault", () => {
+describe("gateway credential storage", () => {
   test("round-trips entries and merges UNDER the explicit environment", () => {
     const homeContext = HOME_CONTEXT();
     updateGatewayCredentialEnvironment(homeContext, {
@@ -199,7 +199,7 @@ describe("channel act (O-3)", () => {
       readGatewayCredentialEnvironment(HOME_CONTEXT())
         .AGENC_TELEGRAM_BOT_TOKEN,
     ).toBe("good-token");
-    // The vault credential rode into the smoke run.
+    // The stored credential reached the smoke run.
     const startEnv = (startGatewayFn.mock.calls[0][0] as { env: Record<string, string> })
       .env;
     expect(startEnv.AGENC_TELEGRAM_BOT_TOKEN).toBe("good-token");
@@ -210,7 +210,7 @@ describe("channel act (O-3)", () => {
     );
   });
 
-  test("stores channel credentials in the captured local-OAuth vault", async () => {
+  test("stores channel credentials in the captured local-OAuth storage identity", async () => {
     const environment = Object.freeze({
       AGENC_HOME: home,
       HOME: tmpdir(),
@@ -341,7 +341,7 @@ describe("autonomy act (O-5): guardrails before autonomy", () => {
     expect(output.join("\n")).toContain("without limit");
   });
 
-  test("mints hooks credentials in the captured custom-OAuth vault", async () => {
+  test("mints hooks credentials in the captured custom-OAuth storage identity", async () => {
     writeFileSync(
       join(home, "config.toml"),
       [
@@ -441,7 +441,7 @@ describe("recap (O-6) + status funnel", () => {
     ["local", { USER_TYPE: "ant", USE_LOCAL_OAUTH: "1" }],
     ["custom", { AGENC_CUSTOM_OAUTH_URL: "https://agenc.tech" }],
   ] as const)(
-    "summarizes channels from the captured %s OAuth vault",
+    "summarizes channels from the captured %s OAuth storage identity",
     async (_label, oauthEnvironment) => {
       const environment = Object.freeze({
         AGENC_HOME: home,

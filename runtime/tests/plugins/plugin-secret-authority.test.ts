@@ -148,7 +148,7 @@ describe('plugin secret authority', () => {
     ].join('\n'))
     secureStorageRecords.set(store.homeContext.path, {
       pluginSecrets: {
-        [PLUGIN_ID]: { token: 'vault-secret' },
+        [PLUGIN_ID]: { token: 'stored-secret' },
       },
     })
 
@@ -171,8 +171,8 @@ describe('plugin secret authority', () => {
     secureStorageRecords.set(store.homeContext.path, {
       pluginSecrets: {
         [PLUGIN_ID]: {
-          color: 'stale-vault-color',
-          token: 'vault-secret',
+          color: 'stale-storage-color',
+          token: 'stored-secret',
           stale_secret: 'not-live',
         },
       },
@@ -180,11 +180,11 @@ describe('plugin secret authority', () => {
 
     expect(loadPluginOptions(PLUGIN_ID, OPTION_SCHEMA)).toEqual({
       color: 'blue',
-      token: 'vault-secret',
+      token: 'stored-secret',
     })
   })
 
-  test('binds vault reads and cache entries to the owning HomeContext', async () => {
+  test('binds secure-storage reads and cache entries to the owning HomeContext', async () => {
     const config = [
       'config_version = 2',
       `[pluginConfigs."${PLUGIN_ID}".options]`,
@@ -212,7 +212,7 @@ describe('plugin secret authority', () => {
     ).toEqual({ color: 'blue', token: 'second-home-secret' })
   })
 
-  test('moves a top-level secret into the vault and scrubs plaintext without an archive', async () => {
+  test('moves a top-level secret into native secure storage and scrubs plaintext without an archive', async () => {
     const store = await activateConfig([
       'config_version = 2',
       `[pluginConfigs."${PLUGIN_ID}".options]`,
@@ -223,26 +223,26 @@ describe('plugin secret authority', () => {
 
     await savePluginOptions(
       PLUGIN_ID,
-      { color: 'green', token: 'new-vault-secret' },
+      { color: 'green', token: 'new-stored-secret' },
       OPTION_SCHEMA,
     )
 
     expect(
       secureStorageRecords.get(store.homeContext.path)?.pluginSecrets?.[PLUGIN_ID],
-    ).toEqual({ token: 'new-vault-secret' })
+    ).toEqual({ token: 'new-stored-secret' })
     expect(loadPluginOptions(PLUGIN_ID, OPTION_SCHEMA)).toEqual({
       color: 'green',
-      token: 'new-vault-secret',
+      token: 'new-stored-secret',
     })
     const diskText = filesBelow(store.homeContext.path)
       .filter(path => statSync(path).isFile())
       .map(path => readFileSync(path, 'utf8'))
       .join('\n')
     expect(diskText).not.toContain('old-plaintext-secret')
-    expect(diskText).not.toContain('new-vault-secret')
+    expect(diskText).not.toContain('new-stored-secret')
   })
 
-  test('rolls back its vault bucket when the following TOML scrub cannot commit', async () => {
+  test('rolls back its secure-storage namespace when the following TOML scrub cannot commit', async () => {
     const store = await activateConfig([
       'config_version = 2',
       `[pluginConfigs."${PLUGIN_ID}".options]`,
@@ -252,7 +252,7 @@ describe('plugin secret authority', () => {
     secureStorageRecords.set(store.homeContext.path, {
       primaryApiKey: 'unrelated-native-secret',
       pluginSecrets: {
-        [PLUGIN_ID]: { token: 'previous-vault-secret' },
+        [PLUGIN_ID]: { token: 'previous-stored-secret' },
         'other@local': { token: 'other-plugin-secret' },
       },
     })
@@ -263,7 +263,7 @@ describe('plugin secret authority', () => {
     await expect(
       savePluginOptions(
         PLUGIN_ID,
-        { color: 'green', token: 'replacement-vault-secret' },
+        { color: 'green', token: 'replacement-stored-secret' },
         OPTION_SCHEMA,
       ),
     ).rejects.toThrow()
@@ -271,7 +271,7 @@ describe('plugin secret authority', () => {
     expect(secureStorageRecords.get(store.homeContext.path)).toEqual({
       primaryApiKey: 'unrelated-native-secret',
       pluginSecrets: {
-        [PLUGIN_ID]: { token: 'previous-vault-secret' },
+        [PLUGIN_ID]: { token: 'previous-stored-secret' },
         'other@local': { token: 'other-plugin-secret' },
       },
     })

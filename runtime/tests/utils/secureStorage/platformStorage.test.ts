@@ -233,7 +233,7 @@ describe("Secure Storage Platform Implementations", () => {
       );
     });
 
-    test("binds the OS account and OAuth vault namespace in HomeContext", () => {
+    test("binds the OS account and OAuth secure-storage namespace in HomeContext", () => {
       const home = resolveHomeContext(
         {
           AGENC_HOME: "/tmp/bound-native-secure-storage",

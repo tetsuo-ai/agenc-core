@@ -394,7 +394,7 @@ describe("plugin registration", () => {
         pluginSecrets: {
           ...existing.pluginSecrets,
           "sample/local": {
-            channel_secret: "channel-vault-token",
+            channel_secret: "channel-stored-token",
           },
         },
       });
@@ -418,14 +418,14 @@ describe("plugin registration", () => {
       });
       expect(servers["plugin:sample:local"]?.env?.TOKEN).toBe("stored-token");
       expect(servers["plugin:sample:local"]?.env?.CHANNEL_SECRET).toBe(
-        "channel-vault-token",
+        "channel-stored-token",
       );
       expect(JSON.stringify(servers)).not.toContain("plaintext-bundled-token");
       expect(JSON.stringify(servers)).not.toContain("plaintext-channel-token");
     });
   });
 
-  test("rejects a sensitive plugin value from config.toml even when the vault is configured", async () => {
+  test("rejects plaintext plugin secrets even when native secure storage is configured", async () => {
     await withTempPlugin(async ({ pluginRoot, options, configStore }) => {
       await writeFileAt(
         join(options.agencHome, "config.toml"),

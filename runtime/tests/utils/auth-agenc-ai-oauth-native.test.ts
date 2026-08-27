@@ -20,10 +20,10 @@ const HOME_B = resolveHomeContext(
   { platformHome: '/tmp' },
 )
 
-let vaults = new Map<string, SecureStorageData>()
+let storageByIdentity = new Map<string, SecureStorageData>()
 let asyncReads = new Map<string, number>()
 
-function vaultKey(home: HomeContext): string {
+function secureStorageKey(home: HomeContext): string {
   return `${home.identityKey}\0${home.oauthFileSuffix}\0${home.secureStorageAccount}`
 }
 
@@ -32,14 +32,15 @@ async function loadAuthModule() {
   vi.doMock(SECURE_STORAGE_MODULE, () => ({
     getSecureStorage: (home: HomeContext) => ({
       name: `test-native-secure-storage:${home.path}`,
-      read: () => structuredClone(vaults.get(vaultKey(home)) ?? {}),
+      read: () =>
+        structuredClone(storageByIdentity.get(secureStorageKey(home)) ?? {}),
       readAsync: async () => {
-        const key = vaultKey(home)
+        const key = secureStorageKey(home)
         asyncReads.set(key, (asyncReads.get(key) ?? 0) + 1)
-        return structuredClone(vaults.get(key) ?? {})
+        return structuredClone(storageByIdentity.get(key) ?? {})
       },
       update: (next: SecureStorageData) => {
-        vaults.set(vaultKey(home), structuredClone(next))
+        storageByIdentity.set(secureStorageKey(home), structuredClone(next))
         return { success: true }
       },
       delete: () => true,
@@ -53,9 +54,9 @@ beforeEach(() => {
   delete process.env.AGENC_OAUTH_TOKEN
   delete process.env.AGENC_OAUTH_TOKEN_FILE_DESCRIPTOR
   process.argv = originalArgv.filter(arg => arg !== '--bare')
-  vaults = new Map([
+  storageByIdentity = new Map([
     [
-      vaultKey(HOME_A),
+      secureStorageKey(HOME_A),
       {
         agencAiOauth: {
           accessToken: 'access-a',
@@ -66,7 +67,7 @@ beforeEach(() => {
       },
     ],
     [
-      vaultKey(HOME_B),
+      secureStorageKey(HOME_B),
       {
         agencAiOauth: {
           accessToken: 'access-b',
@@ -146,8 +147,8 @@ describe('AgenC AI OAuth native authority', () => {
       'access-b',
     )
 
-    vaults.set(vaultKey(HOME_A), {
-      ...vaults.get(vaultKey(HOME_A)),
+    storageByIdentity.set(secureStorageKey(HOME_A), {
+      ...storageByIdentity.get(secureStorageKey(HOME_A)),
       agencAiOauth: {
         accessToken: 'access-a-new',
         refreshToken: 'refresh-a-new',
@@ -174,7 +175,7 @@ describe('AgenC AI OAuth native authority', () => {
     )
   })
 
-  test('same-path prod, local, and custom OAuth vaults isolate memoized and 401 reads', async () => {
+  test('same-path OAuth secure-storage identities isolate memoized and 401 reads', async () => {
     const prodHome = resolveHomeContext({ AGENC_HOME: HOME_A.path })
     const localHome = resolveHomeContext({
       AGENC_HOME: HOME_A.path,
@@ -190,8 +191,8 @@ describe('AgenC AI OAuth native authority', () => {
       [localHome, 'local'],
       [customHome, 'custom'],
     ] as const
-    for (const [vaultHome, label] of homes) {
-      vaults.set(vaultKey(vaultHome), {
+    for (const [credentialHome, label] of homes) {
+      storageByIdentity.set(secureStorageKey(credentialHome), {
         agencAiOauth: {
           accessToken: `access-${label}`,
           refreshToken: `refresh-${label}`,
@@ -203,16 +204,16 @@ describe('AgenC AI OAuth native authority', () => {
     const { getAgenCAIOAuthTokens, handleOAuth401Error } =
       await loadAuthModule()
     expect(
-      homes.map(([vaultHome]) =>
-        getAgenCAIOAuthTokens(vaultHome, EMPTY_ENVIRONMENT)?.accessToken
+      homes.map(([credentialHome]) =>
+        getAgenCAIOAuthTokens(credentialHome, EMPTY_ENVIRONMENT)?.accessToken
       ),
     ).toEqual(['access-prod', 'access-local', 'access-custom'])
 
     await expect(
       Promise.all(
-        homes.map(([vaultHome]) =>
+        homes.map(([credentialHome]) =>
           handleOAuth401Error(
-            vaultHome,
+            credentialHome,
             'same-rejected-token',
             EMPTY_ENVIRONMENT,
           )
@@ -220,20 +221,22 @@ describe('AgenC AI OAuth native authority', () => {
       ),
     ).resolves.toEqual([true, true, true])
     expect(
-      homes.map(([vaultHome]) => asyncReads.get(vaultKey(vaultHome))),
+      homes.map(([credentialHome]) =>
+        asyncReads.get(secureStorageKey(credentialHome)),
+      ),
     ).toEqual([1, 1, 1])
   })
 
   test('401 single-flight keys include home and cannot cross-adopt credentials', async () => {
     const { handleOAuth401Error } = await loadAuthModule()
-    vaults.set(vaultKey(HOME_A), {
+    storageByIdentity.set(secureStorageKey(HOME_A), {
       agencAiOauth: {
         accessToken: 'new-a',
         refreshToken: 'refresh-a',
         expiresAt: Date.now() + 60_000,
       },
     })
-    vaults.set(vaultKey(HOME_B), {
+    storageByIdentity.set(secureStorageKey(HOME_B), {
       agencAiOauth: {
         accessToken: 'new-b',
         refreshToken: 'refresh-b',
@@ -255,7 +258,7 @@ describe('AgenC AI OAuth native authority', () => {
         ),
       ]),
     ).resolves.toEqual([true, true])
-    expect(asyncReads.get(vaultKey(HOME_A))).toBe(1)
-    expect(asyncReads.get(vaultKey(HOME_B))).toBe(1)
+    expect(asyncReads.get(secureStorageKey(HOME_A))).toBe(1)
+    expect(asyncReads.get(secureStorageKey(HOME_B))).toBe(1)
   })
 })

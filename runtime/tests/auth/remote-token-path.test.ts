@@ -185,8 +185,8 @@ describe("remote descriptor credential storage", () => {
     await rm(homeBPath, { recursive: true, force: true });
   });
 
-  it("isolates descriptor caches across same-path prod, local, and custom OAuth vaults", async () => {
-    const homePath = await mkdtemp(join(tmpdir(), "agenc-fd-oauth-vaults-"));
+  it("isolates descriptor caches across same-path OAuth storage identities", async () => {
+    const homePath = await mkdtemp(join(tmpdir(), "agenc-fd-oauth-stores-"));
     const prodHome = resolveSecureStorageHome({ HOME: homePath }, homePath);
     const localHome = resolveSecureStorageHome(
       { HOME: homePath, USER_TYPE: "ant", USE_LOCAL_OAUTH: "1" },
@@ -249,7 +249,7 @@ function installInMemoryNativeStorage(): void {
     return {
       ...original,
       getSecureStorage: (home: Parameters<typeof secureStorageIdentityKey>[0]) => ({
-        name: "in-memory-native-test-vault",
+        name: "in-memory-native-test-storage",
         read: () => structuredClone(records.get(secureStorageIdentityKey(home)) ?? null),
         readAsync: async () =>
           structuredClone(records.get(secureStorageIdentityKey(home)) ?? null),

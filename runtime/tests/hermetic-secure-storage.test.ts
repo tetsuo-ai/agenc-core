@@ -5,7 +5,7 @@ import { isMacOsKeychainLocked } from '../src/utils/secureStorage/macOsKeychainS
 import { resolveSecureStorageHome } from '../src/utils/secureStorage/home.js'
 
 describe('hermetic secure-storage wiring', () => {
-  it('never selects a native host vault in the default suite', async () => {
+  it('never selects native host secure storage in the default suite', async () => {
     expect(getSecureStorage(resolveSecureStorageHome(process.env)).name).toBe(
       'hermetic-native-secure-storage',
     )

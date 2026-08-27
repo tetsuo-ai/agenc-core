@@ -372,7 +372,7 @@ describe("SessionProviderService", () => {
     });
   });
 
-  test("lazily consumes vault-only BYOK on the first Ollama to Gemini switch", async () => {
+  test("lazily consumes secure-storage-only BYOK on the first Ollama to Gemini switch", async () => {
     const readSavedApiKey = vi.fn(async (provider: string) =>
       provider === "gemini" ? "saved-gemini-key" : undefined,
     );
@@ -407,13 +407,13 @@ describe("SessionProviderService", () => {
     expect(prepared.binding.factoryOptions.apiKey).toBeUndefined();
   });
 
-  test("captures the switch revision before an asynchronous vault read", async () => {
-    let releaseVaultRead: (() => void) | undefined;
-    const vaultReadBlocked = new Promise<void>((resolve) => {
-      releaseVaultRead = resolve;
+  test("captures the switch revision before an asynchronous secure-storage read", async () => {
+    let releaseSecureStorageRead: (() => void) | undefined;
+    const secureStorageReadBlocked = new Promise<void>((resolve) => {
+      releaseSecureStorageRead = resolve;
     });
     const readSavedApiKey = vi.fn(async () => {
-      await vaultReadBlocked;
+      await secureStorageReadBlocked;
       return "saved-gemini-key";
     });
     const service = new SessionProviderService({
@@ -431,7 +431,7 @@ describe("SessionProviderService", () => {
       {},
     );
     service.commit(replacement);
-    releaseVaultRead?.();
+    releaseSecureStorageRead?.();
 
     const staleGemini = await pendingGemini;
     expect(() => service.commit(staleGemini)).toThrow(

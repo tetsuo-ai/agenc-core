@@ -4,7 +4,7 @@ import { resolveHomeContext, type HomeContext } from '../../src/config/home.js'
 import type { SecureStorageData } from '../../src/utils/secureStorage/index.js'
 
 const nativeModulePath = '../../src/utils/secureStorage/native.js'
-const vaults = new Map<string, SecureStorageData>()
+const secureStorageByIdentity = new Map<string, SecureStorageData>()
 
 function home(path: string): HomeContext {
   return resolveHomeContext(
@@ -24,16 +24,18 @@ async function loadRepository() {
   vi.doMock(nativeModulePath, () => ({
     NativeSecureStorageError: class NativeSecureStorageError extends Error {},
     readNativeSecureStorage: (bound: HomeContext) =>
-      structuredClone(vaults.get(bound.identityKey) ?? {}),
+      structuredClone(secureStorageByIdentity.get(bound.identityKey) ?? {}),
     readNativeSecureStorageAsync: async (bound: HomeContext) =>
-      structuredClone(vaults.get(bound.identityKey) ?? {}),
+      structuredClone(secureStorageByIdentity.get(bound.identityKey) ?? {}),
     updateNativeSecureStorage: (
       bound: HomeContext,
       updater: (current: Readonly<SecureStorageData>) => SecureStorageData,
     ) => {
-      const previous = structuredClone(vaults.get(bound.identityKey) ?? {})
+      const previous = structuredClone(
+        secureStorageByIdentity.get(bound.identityKey) ?? {},
+      )
       const written = structuredClone(updater(previous))
-      vaults.set(bound.identityKey, written)
+      secureStorageByIdentity.set(bound.identityKey, written)
       return { previous, written }
     },
   }))
@@ -43,7 +45,7 @@ async function loadRepository() {
 describe('OpenAI OAuth credential authority', () => {
   const originalFetch = globalThis.fetch
 
-  beforeEach(() => vaults.clear())
+  beforeEach(() => secureStorageByIdentity.clear())
 
   afterEach(() => {
     globalThis.fetch = originalFetch
@@ -52,13 +54,15 @@ describe('OpenAI OAuth credential authority', () => {
     vi.resetModules()
   })
 
-  test('isolates vault identities and preserves unrelated namespaces', async () => {
+  test('isolates secure-storage identities and preserves unrelated namespaces', async () => {
     const first = home('/tmp/agenc-openai-home-a')
     const second = home('/tmp/agenc-openai-home-b')
-    vaults.set(first.identityKey, {
+    secureStorageByIdentity.set(first.identityKey, {
       pluginSecrets: { demo: { token: 'keep-me' } },
     })
-    vaults.set(second.identityKey, { trustedDeviceToken: 'keep-too' })
+    secureStorageByIdentity.set(second.identityKey, {
+      trustedDeviceToken: 'keep-too',
+    })
     const repository = await loadRepository()
 
     expect(repository.saveOpenAiOauthCredentials(first, {
@@ -72,14 +76,18 @@ describe('OpenAI OAuth credential authority', () => {
       'access-a',
     )
     expect(repository.readOpenAiOauthApiKey(second)).toBe('platform-b')
-    expect(vaults.get(first.identityKey)?.pluginSecrets).toEqual({
+    expect(
+      secureStorageByIdentity.get(first.identityKey)?.pluginSecrets,
+    ).toEqual({
       demo: { token: 'keep-me' },
     })
 
     expect(repository.clearOpenAiOauthCredentials(first).success).toBe(true)
     expect(repository.readOpenAiOauthCredentials(first)).toBeUndefined()
     expect(repository.readOpenAiOauthApiKey(second)).toBe('platform-b')
-    expect(vaults.get(second.identityKey)?.trustedDeviceToken).toBe('keep-too')
+    expect(
+      secureStorageByIdentity.get(second.identityKey)?.trustedDeviceToken,
+    ).toBe('keep-too')
   })
 
   test('single-flights refresh and preserves a newer concurrent login', async () => {

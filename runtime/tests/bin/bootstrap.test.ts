@@ -1727,7 +1727,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  it("uses options.apiKey without probing the saved BYOK vault", async () => {
+  it("uses options.apiKey without probing native BYOK secure storage", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
 
@@ -1750,7 +1750,9 @@ describe("bootstrapLocalRuntimeSession", () => {
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
     const readByokSpy = vi
       .spyOn(LocalAuthBackend.prototype, "readByokKey")
-      .mockRejectedValue(new Error("options.apiKey must prevent vault reads"));
+      .mockRejectedValue(
+        new Error("options.apiKey must prevent secure-storage reads"),
+      );
 
     let shutdown: (() => Promise<void>) | null = null;
     try {
@@ -2082,7 +2084,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     const readByokSpy = vi
       .spyOn(LocalAuthBackend.prototype, "readByokKey")
       .mockRejectedValue(
-        new Error("local no-auth providers must not probe the BYOK vault"),
+        new Error("local no-auth providers must not probe BYOK secure storage"),
       );
 
     let shutdown: (() => Promise<void>) | null = null;
@@ -2116,7 +2118,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  it("lazily reads vault-only Gemini BYOK on the first Ollama to Gemini switch", async () => {
+  it("lazily reads secure-storage-only Gemini BYOK on the first Ollama to Gemini switch", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
     const fetchImpl = offlineFetchFixture();
@@ -2192,7 +2194,7 @@ describe("bootstrapLocalRuntimeSession", () => {
   });
 
   // branding-scan: allow real provider identifier in test title
-  it("uses an explicit OpenAI-compatible key without probing the saved BYOK vault", async () => {
+  it("uses an explicit OpenAI-compatible key without probing native BYOK secure storage", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
     const restoreEnv = clearProcessEnv([
@@ -2220,7 +2222,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     const readByokSpy = vi
       .spyOn(LocalAuthBackend.prototype, "readByokKey")
       .mockRejectedValue(
-        new Error("explicit provider credentials must prevent vault reads"),
+        new Error("explicit provider credentials must prevent secure-storage reads"),
       );
 
     let shutdown: (() => Promise<void>) | null = null;
@@ -2685,7 +2687,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  it("ignores duck-typed injected BYOK readers and uses the canonical local vault", async () => {
+  it("ignores duck-typed BYOK readers and uses canonical local secure storage", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
     await new LocalAuthBackend({ agencHome: home }).saveByokKey({
@@ -2822,7 +2824,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     const readByokSpy = vi
       .spyOn(LocalAuthBackend.prototype, "readByokKey")
       .mockRejectedValue(
-        new Error("hosted AgenC must not probe the local BYOK vault"),
+        new Error("hosted AgenC must not probe local BYOK secure storage"),
       );
 
     let shutdown: (() => Promise<void>) | null = null;

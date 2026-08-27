@@ -14,11 +14,11 @@ const originalHome = process.env.AGENC_HOME
 let home = ''
 let secondHome = ''
 let runtimeState: Record<string, unknown>
-let vault: SecureStorageData
-let vaults: Map<string, SecureStorageData>
+let storedData: SecureStorageData
+let storageByHome: Map<string, SecureStorageData>
 let stateWrites = 0
-let vaultWrites = 0
-let failVaultWrite = false
+let secureStorageWrites = 0
+let failSecureStorageWrite = false
 let storageCalls = 0
 
 async function loadAuthModule() {
@@ -39,16 +39,17 @@ async function loadAuthModule() {
       const storageHome = boundHome.path
       return {
         name: 'test-native-secure-storage',
-        read: () => structuredClone(vaults.get(storageHome) ?? {}),
-        readAsync: async () => structuredClone(vaults.get(storageHome) ?? {}),
+        read: () => structuredClone(storageByHome.get(storageHome) ?? {}),
+        readAsync: async () =>
+          structuredClone(storageByHome.get(storageHome) ?? {}),
         update: (next: SecureStorageData) => {
-          vaultWrites++
-          if (failVaultWrite) {
+          secureStorageWrites++
+          if (failSecureStorageWrite) {
             return { success: false, warning: 'native secure storage unavailable' }
           }
           const stored = structuredClone(next)
-          vaults.set(storageHome, stored)
-          if (storageHome === home) vault = stored
+          storageByHome.set(storageHome, stored)
+          if (storageHome === home) storedData = stored
           return { success: true }
         },
         delete: () => true,
@@ -65,11 +66,11 @@ beforeEach(() => {
   runtimeState = {
     customApiKeyResponses: { approved: [], rejected: [] },
   }
-  vault = { agenc: { accessToken: 'unrelated-token' } }
-  vaults = new Map([[home, vault]])
+  storedData = { agenc: { accessToken: 'unrelated-token' } }
+  storageByHome = new Map([[home, storedData]])
   stateWrites = 0
-  vaultWrites = 0
-  failVaultWrite = false
+  secureStorageWrites = 0
+  failSecureStorageWrite = false
   storageCalls = 0
 })
 
@@ -89,9 +90,9 @@ describe('primary API-key native storage', () => {
 
     await saveApiKey('sk_test-key')
 
-    expect(vault.primaryApiKey).toBe('sk_test-key')
-    expect(vault.agenc?.accessToken).toBe('unrelated-token')
-    expect(vault.apiKeyApprovals).toEqual({
+    expect(storedData.primaryApiKey).toBe('sk_test-key')
+    expect(storedData.agenc?.accessToken).toBe('unrelated-token')
+    expect(storedData.apiKeyApprovals).toEqual({
       approved: [expect.stringMatching(/^sha256:[0-9a-f]{64}$/u)],
       rejected: [],
     })
@@ -103,7 +104,7 @@ describe('primary API-key native storage', () => {
   })
 
   test('fails closed before touching state when the native secure storage rejects the write', async () => {
-    failVaultWrite = true
+    failSecureStorageWrite = true
     const { saveApiKey } = await loadAuthModule()
 
     await expect(saveApiKey('sk_test-key')).rejects.toThrow(
@@ -121,11 +122,11 @@ describe('primary API-key native storage', () => {
     const { isCustomApiKeyApproved } = await loadAuthModule()
 
     expect(isCustomApiKeyApproved('sk_test-key')).toBe(false)
-    expect(vaultWrites).toBe(0)
+    expect(secureStorageWrites).toBe(0)
   })
 
   test('reads and removes the primary key without a plaintext fallback', async () => {
-    vault.primaryApiKey = 'stored-key'
+    storedData.primaryApiKey = 'stored-key'
     const {
       getPrimaryApiKeyFromSecureStorage,
       removeApiKey,
@@ -138,8 +139,8 @@ describe('primary API-key native storage', () => {
     })
     await removeApiKey()
 
-    expect(vault).not.toHaveProperty('primaryApiKey')
-    expect(vault.agenc?.accessToken).toBe('unrelated-token')
+    expect(storedData).not.toHaveProperty('primaryApiKey')
+    expect(storedData.agenc?.accessToken).toBe('unrelated-token')
     expect(stateWrites).toBe(0)
     expect(storageCalls).toBeGreaterThan(0)
   })
@@ -147,14 +148,14 @@ describe('primary API-key native storage', () => {
   test('binds primary-key reads to the explicit home without a process-global cache', async () => {
     const homeA = resolveHomeContext({ AGENC_HOME: home })
     const homeB = resolveHomeContext({ AGENC_HOME: secondHome })
-    vaults.set(homeA.path, { primaryApiKey: 'home-a-key' })
-    vaults.set(homeB.path, { primaryApiKey: 'home-b-key' })
+    storageByHome.set(homeA.path, { primaryApiKey: 'home-a-key' })
+    storageByHome.set(homeB.path, { primaryApiKey: 'home-b-key' })
     const { getPrimaryApiKeyFromSecureStorage } = await loadAuthModule()
 
     expect(getPrimaryApiKeyFromSecureStorage(homeA)?.key).toBe('home-a-key')
     expect(getPrimaryApiKeyFromSecureStorage(homeB)?.key).toBe('home-b-key')
 
-    vaults.set(homeA.path, { primaryApiKey: 'home-a-newer-key' })
+    storageByHome.set(homeA.path, { primaryApiKey: 'home-a-newer-key' })
     expect(getPrimaryApiKeyFromSecureStorage(homeA)?.key).toBe('home-a-newer-key')
     expect(getPrimaryApiKeyFromSecureStorage(homeB)?.key).toBe('home-b-key')
   })

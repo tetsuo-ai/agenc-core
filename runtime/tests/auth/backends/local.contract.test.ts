@@ -77,7 +77,7 @@ describe("LocalAuthBackend", () => {
     expect((await stat(authFile)).mode & 0o777).toBe(0o600);
   });
 
-  it("captures the custom-OAuth vault identity before caller env mutation", async () => {
+  it("captures the custom-OAuth secure-storage identity before caller env mutation", async () => {
     const agencHome = await makeTempHome();
     homes.push(agencHome);
     const environment: Record<string, string> = {

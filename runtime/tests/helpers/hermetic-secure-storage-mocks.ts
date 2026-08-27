@@ -55,8 +55,8 @@ vi.mock('../../src/utils/secureStorage/index.js', () => {
   const migrationStorageFor = (home: Home, identity: Identity) => {
     // Keychain and Secret Service records are scoped by the per-user service
     // identity, not by AGENC_HOME. Keep that sharing visible in tests so a
-    // relocated home cannot accidentally treat the old unscoped vault as its
-    // private record. DPAPI is an actual home-relative file.
+    // relocated home cannot accidentally treat the old unscoped native record
+    // as its private record. DPAPI is an actual home-relative file.
     const key = process.platform === 'win32'
       ? `${identity.homePath}\0${identity.serviceName}\0${identity.accountName}`
       : `native-service:${identity.serviceName}\0${identity.accountName}`

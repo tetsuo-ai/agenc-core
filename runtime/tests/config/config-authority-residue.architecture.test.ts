@@ -5,13 +5,20 @@ import { describe, expect, test } from "vitest";
 
 const REPOSITORY_ROOT = resolve(import.meta.dirname, "../../..");
 const SOURCE_ROOT = resolve(REPOSITORY_ROOT, "runtime/src");
+const RUNTIME_TEST_ROOT = resolve(REPOSITORY_ROOT, "runtime/tests");
+const GENERATED_DIRECTORY_NAMES = new Set([
+  ".git",
+  "coverage",
+  "dist",
+  "node_modules",
+]);
 
 function filesBelow(path: string, suffix: RegExp): string[] {
   if (!existsSync(path)) return [];
   if (statSync(path).isFile()) return suffix.test(path) ? [path] : [];
-  return readdirSync(path).flatMap((entry) =>
-    filesBelow(resolve(path, entry), suffix),
-  );
+  return readdirSync(path)
+    .filter((entry) => !GENERATED_DIRECTORY_NAMES.has(entry))
+    .flatMap((entry) => filesBelow(resolve(path, entry), suffix));
 }
 
 const documentationFiles = [
@@ -28,8 +35,34 @@ const operatorReferenceBoundary = new Set([
   "docs/reference/providers.md",
 ]);
 
-// Keep the architecture test itself outside the provider-selector fixture
-// allowlist maintained by provider-authority.architecture.test.ts.
+const retainedSecureStorageTerminologyFiles = new Set([
+  "bin/config-cli-v2-migration.test.ts",
+  "config/plaintext-credential-migration.test.ts",
+  "config/retired-auth-migration.test.ts",
+  "utils/secureStorage/migrationIdentity.test.ts",
+]);
+
+const retainedSecureStorageTerminologyPatterns = new Map<string, RegExp>([
+  ["bin/security-cli.test.ts", /\bvault files\b|wallet\.vault\.json/iu],
+  [
+    "config/config-authority-residue.architecture.test.ts",
+    /\\bvault files\\b|wallet\\\.vault\\\.json|PasswordVault|PASSWORDVAULT|AGENC_WALLET_VAULT_PASSPHRASE|vault passphrase\|vault-passphrase|readCacheByVault\|refreshStateByVault\|vaultIdentity\|vaultValues|\/vault\/iu\.test\(line\)/u,
+  ],
+  [
+    "config/home-state-authority.architecture.test.ts",
+    /PasswordVault|PASSWORDVAULT/u,
+  ],
+  ["fixtures/hermetic-env-contract.json", /AGENC_WALLET_VAULT_PASSPHRASE/u],
+  ["helpers/hermetic-env.mjs", /AGENC_WALLET_VAULT_PASSPHRASE/u],
+  ["hermetic-test-discovery.test.ts", /AGENC_WALLET_VAULT_PASSPHRASE/u],
+  [
+    "secrets/sanitizer-wallet-c1.test.ts",
+    /vault passphrase|vault-passphrase|AGENC_WALLET_VAULT_PASSPHRASE/iu,
+  ],
+  ["utils/secureStorage/platformStorage.test.ts", /PasswordVault/u],
+]);
+
+// Split the spellings so this guard does not match its own source.
 const retiredProviderSelector = new RegExp(
   "\\b(?:AGENC_" +
     "USE_(?:GEMINI|OPENAI|MISTRAL|GITHUB|MINIMAX|BEDROCK|VERTEX|FOUNDRY)|NVIDIA_" +
@@ -46,10 +79,6 @@ const retiredDocumentationTerms = new Map<string, RegExp>([
   ["retired --settings flag", /(?:^|\s)--settings(?:\s|$|[=`])/mu],
   ["retired apiKeyHelper config", /\bapiKeyHelper\b/u],
   ["retired home alias", /\bAGENC_CONFIG_DIR\b/u],
-  [
-    "retired provider selector",
-    retiredProviderSelector,
-  ],
   [
     "retired provider-profile state",
     /\b(?:providerProfiles|activeProviderProfileId)\b/u,
@@ -82,6 +111,45 @@ const retiredDocumentationTerms = new Map<string, RegExp>([
 ]);
 
 describe("configuration authority residue", () => {
+  test("bundled-skill extraction has one session-temp authority adapter", () => {
+    const adapter =
+      /getBundledSkillExtractionRoot\(\s*resolveSessionTempRoot\(\)\s*\)/u;
+    const owners = filesBelow(SOURCE_ROOT, /\.(?:ts|tsx)$/u)
+      .filter((path) => adapter.test(readFileSync(path, "utf8")))
+      .map((path) => relative(SOURCE_ROOT, path));
+
+    expect(owners).toEqual(["skills/bundled-root-authority.ts"]);
+  });
+
+  test("retired provider selector names cannot re-enter code, tests, or documentation", () => {
+    const executableSurface =
+      /\.(?:cjs|js|json|mjs|ps1|sh|toml|ts|tsx|yaml|yml)$/u;
+    const files = [
+      ...filesBelow(
+        resolve(REPOSITORY_ROOT, "runtime"),
+        executableSurface,
+      ),
+      ...filesBelow(resolve(REPOSITORY_ROOT, "runtime/bin"), /./u),
+      ...filesBelow(resolve(REPOSITORY_ROOT, "packages"), executableSurface),
+      ...filesBelow(resolve(REPOSITORY_ROOT, "packaging"), executableSurface),
+      ...filesBelow(resolve(REPOSITORY_ROOT, "scripts"), executableSurface),
+      ...filesBelow(resolve(REPOSITORY_ROOT, ".github"), executableSurface),
+      ...filesBelow(resolve(REPOSITORY_ROOT, ".githooks"), /./u),
+      ...filesBelow(resolve(REPOSITORY_ROOT, "parity"), executableSurface),
+      resolve(REPOSITORY_ROOT, "package-lock.json"),
+      resolve(REPOSITORY_ROOT, "package.json"),
+      resolve(REPOSITORY_ROOT, "release-toolchain.json"),
+      ...documentationFiles,
+    ];
+    const violations = files
+      .filter((path) =>
+        retiredProviderSelector.test(readFileSync(path, "utf8")),
+      )
+      .map((path) => relative(REPOSITORY_ROOT, path));
+
+    expect(violations).toEqual([]);
+  });
+
   test("protocol runtime has no null-adapter implementation", () => {
     const protocolRoot = resolve(SOURCE_ROOT, "protocol");
     const source = filesBelow(protocolRoot, /\.ts$/u)
@@ -125,7 +193,7 @@ describe("configuration authority residue", () => {
     expect(theme).not.toContain("export const THEME_SETTINGS");
   });
 
-  test("native secure-storage code does not restore vault terminology", () => {
+  test("native secure-storage code does not restore retired terminology", () => {
     const source = [
       "utils/openAiOauthCredentials.ts",
       "utils/githubModelsCredentials.ts",
@@ -138,6 +206,25 @@ describe("configuration authority residue", () => {
     expect(source).not.toMatch(
       /\b(?:readCacheByVault|refreshStateByVault|vaultIdentity|vaultValues)\b/u,
     );
+  });
+
+  test("retired secure-storage terminology remains inside explicit contracts", () => {
+    const violations = filesBelow(
+      RUNTIME_TEST_ROOT,
+      /\.(?:cjs|js|json|mjs|ts|tsx)$/u,
+    ).flatMap((path) => {
+      const name = relative(RUNTIME_TEST_ROOT, path);
+      if (retainedSecureStorageTerminologyFiles.has(name)) return [];
+      const retainedPattern = retainedSecureStorageTerminologyPatterns.get(name);
+      return readFileSync(path, "utf8")
+        .split("\n")
+        .flatMap((line, index) => {
+          if (!/vault/iu.test(line) || retainedPattern?.test(line)) return [];
+          return [`${name}:${index + 1}`];
+        });
+    });
+
+    expect(violations).toEqual([]);
   });
 
   test("documentation outside the migration reference does not advertise retired authority", () => {

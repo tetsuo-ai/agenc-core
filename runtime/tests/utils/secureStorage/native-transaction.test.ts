@@ -37,7 +37,7 @@ describe('native secure storage transactions', () => {
     return resolveHomeContext({ AGENC_HOME: path }, { platformHome: '/unused' })
   }
 
-  test('preserves unrelated namespaces in a shared-vault read-modify-write', async () => {
+  test('preserves unrelated namespaces in a shared-storage read-modify-write', async () => {
     const boundHome = await home()
     const original: SecureStorageData = {
       primaryApiKey: 'old-primary',
@@ -52,7 +52,7 @@ describe('native secure storage transactions', () => {
     }
     let stored = structuredClone(original)
     const storage: SecureStorage = {
-      name: 'seeded-vault',
+      name: 'seeded-secure-storage',
       // Simulate a stale ordinary macOS cache that predates an unrelated
       // writer. Locked RMW must use readFresh and preserve the MCP namespace.
       read: () => ({ primaryApiKey: 'stale-primary' }),
@@ -76,11 +76,11 @@ describe('native secure storage transactions', () => {
     expect(stored.mcpOAuth).toEqual(original.mcpOAuth)
   })
 
-  test('never writes when the vault read fails', async () => {
+  test('never writes when the secure-storage read fails', async () => {
     const boundHome = await home()
     const update = vi.fn(() => ({ success: true }))
     getSecureStorageMock.mockReturnValue({
-      name: 'unreadable-vault',
+      name: 'unreadable-secure-storage',
       read: () => {
         throw new Error('decrypt failed')
       },
@@ -105,12 +105,12 @@ describe('native secure storage transactions', () => {
     const boundHome = await home()
     const update = vi.fn(() => ({ success: true }))
     getSecureStorageMock.mockReturnValue({
-      name: 'unreadable-vault',
+      name: 'unreadable-secure-storage',
       read: () => {
-        throw new Error('vault unavailable')
+        throw new Error('native secure storage unavailable')
       },
       readAsync: async () => {
-        throw new Error('vault unavailable')
+        throw new Error('native secure storage unavailable')
       },
       update,
       delete: () => true,

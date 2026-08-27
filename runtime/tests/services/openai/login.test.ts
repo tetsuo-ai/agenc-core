@@ -125,7 +125,7 @@ describe('OpenAI login completion authority', () => {
 
   test('reports a native-storage failure without creating another store', async () => {
     mocks.exchange.mockResolvedValue('platform-key')
-    mocks.save.mockReturnValue({ success: false, warning: 'vault unavailable' })
+    mocks.save.mockReturnValue({ success: false, warning: 'secure storage unavailable' })
 
     await expect(completeOpenAiLogin({
       home,

@@ -32,13 +32,13 @@ afterEach(() => {
 });
 
 describe("gateway native credential authority", () => {
-  test("isolates two homes and preserves unrelated vault namespaces", () => {
+  test("isolates two homes and preserves unrelated secure-storage namespaces", () => {
     const first = home();
     const second = home();
     updateNativeSecureStorage(
       first,
       (current) => ({ ...current, primaryApiKey: "provider-secret" }),
-      "test vault unavailable",
+      "test secure storage unavailable",
     );
 
     updateGatewayCredentialEnvironment(first, {
@@ -57,7 +57,7 @@ describe("gateway native credential authority", () => {
     expect(readNativeSecureStorage(first).primaryApiKey).toBe("provider-secret");
   });
 
-  test("gives explicit environment values precedence without mutating the vault", () => {
+  test("gives explicit environment values precedence without mutating native storage", () => {
     const context = home();
     updateGatewayCredentialEnvironment(context, {
       AGENC_DISCORD_BOT_TOKEN: "stored-token",

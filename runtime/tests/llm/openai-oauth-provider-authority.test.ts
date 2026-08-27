@@ -121,7 +121,7 @@ test('OAuth binding rejects a custom OpenAI endpoint', async () => {
   }, {})).toThrow(/bound to the first-party OpenAI endpoint/)
 })
 
-test('factory and adapter contain no credential-vault reads', () => {
+test('factory and adapter contain no native secure-storage reads', () => {
   for (const path of [
     new URL('../../src/llm/provider.ts', import.meta.url),
     new URL('../../src/llm/providers/openai/adapter.ts', import.meta.url),

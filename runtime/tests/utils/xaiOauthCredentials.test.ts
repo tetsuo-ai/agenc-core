@@ -11,7 +11,7 @@ const originalArgv = [...process.argv]
 let storageByHome = new Map<string, MockStorageData>()
 let home: HomeContext
 
-function vaultKey(storageHome: HomeContext): string {
+function secureStorageKey(storageHome: HomeContext): string {
   return `${storageHome.identityKey}\0${storageHome.oauthFileSuffix}\0${storageHome.secureStorageAccount}`
 }
 
@@ -23,14 +23,15 @@ async function importFreshModule() {
   vi.doMock(secureStorageModulePath, () => ({
     getSecureStorage: (storageHome: HomeContext) => ({
       name: 'mock-secure-storage',
-      read: () => storageByHome.get(vaultKey(storageHome)) ?? {},
-      readAsync: async () => storageByHome.get(vaultKey(storageHome)) ?? {},
+      read: () => storageByHome.get(secureStorageKey(storageHome)) ?? {},
+      readAsync: async () =>
+        storageByHome.get(secureStorageKey(storageHome)) ?? {},
       update: (next: MockStorageData) => {
-        storageByHome.set(vaultKey(storageHome), next)
+        storageByHome.set(secureStorageKey(storageHome), next)
         return { success: true }
       },
       delete: () => {
-        storageByHome.delete(vaultKey(storageHome))
+        storageByHome.delete(secureStorageKey(storageHome))
         return true
       },
     }),
@@ -279,7 +280,7 @@ test('cache and single-flight state are isolated by explicit home', async () => 
   expect(refreshMock).toHaveBeenCalledTimes(2)
 })
 
-test('same-path prod, local, and custom OAuth vaults isolate caches and refresh flights', async () => {
+test('same-path OAuth secure-storage identities isolate caches and refresh flights', async () => {
   const prodHome = resolveHomeContext({ AGENC_HOME: home.path })
   const localHome = resolveHomeContext({
     AGENC_HOME: home.path,
@@ -296,12 +297,12 @@ test('same-path prod, local, and custom OAuth vaults isolate caches and refresh 
     saveXaiOauthCredentials,
   } = await importFreshModule()
 
-  for (const [vaultHome, label] of [
+  for (const [credentialHome, label] of [
     [prodHome, 'prod'],
     [localHome, 'local'],
     [customHome, 'custom'],
   ] as const) {
-    saveXaiOauthCredentials(vaultHome, storedBlob({
+    saveXaiOauthCredentials(credentialHome, storedBlob({
       accessToken: `access-${label}`,
       refreshToken: `refresh-${label}`,
     }))
@@ -338,7 +339,7 @@ test('successful stale refresh cannot overwrite a newer login', async () => {
   } = await importFreshModule()
   saveXaiOauthCredentials(home, storedBlob())
   refreshMock.mockImplementation(async () => {
-    storageByHome.set(vaultKey(home), {
+    storageByHome.set(secureStorageKey(home), {
       remoteAuth: { bearerToken: 'preserve-me' },
       xaiOauth: storedBlob({
         accessToken: 'access-new-login',
@@ -354,7 +355,7 @@ test('successful stale refresh cannot overwrite a newer login', async () => {
   const result = await forceRefreshXaiOauthCredentials(home)
   expect(result?.accessToken).toBe('access-new-login')
   expect(readXaiOauthCredentials(home)?.refreshToken).toBe('refresh-new-login')
-  expect(storageByHome.get(vaultKey(home))?.remoteAuth).toEqual({
+  expect(storageByHome.get(secureStorageKey(home))?.remoteAuth).toEqual({
     bearerToken: 'preserve-me',
   })
 })
@@ -386,7 +387,7 @@ test('refresh adopts a sibling rotation instead of exchanging a stale token', as
   )
   const pending = forceRefreshXaiOauthCredentials(home)
   await new Promise(resolve => setTimeout(resolve, 50))
-  storageByHome.set(vaultKey(home), {
+  storageByHome.set(secureStorageKey(home), {
     xaiOauth: storedBlob({
       accessToken: 'access-sibling',
       refreshToken: 'refresh-sibling',
@@ -419,7 +420,7 @@ test('terminal invalid_grant must not clobber a sibling rotation with quarantine
   // destroy the sibling's good credentials (the observed live failure:
   // grok session flaps to "Not logged in" mid-turn).
   refreshMock.mockImplementation(async () => {
-    storageByHome.set(vaultKey(home), {
+    storageByHome.set(secureStorageKey(home), {
       xaiOauth: storedBlob({
         accessToken: 'access-sibling',
         refreshToken: 'refresh-sibling',
