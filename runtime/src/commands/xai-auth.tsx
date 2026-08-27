@@ -24,6 +24,10 @@ import {
 } from "../utils/xaiOauthCredentials.js";
 import { resolveApiKey } from "../config/env.js";
 import { openUrlInBrowser } from "./auth.js";
+import {
+  providerEnvironmentFromCommandContext,
+  requireCommandConfigStore,
+} from "./config-context.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { applyProviderSwitch } from "./provider.js";
 import {
@@ -32,18 +36,6 @@ import {
   type SlashCommandContext,
   type SlashCommandResult,
 } from "./types.js";
-import type { HomeContext } from "../config/home.js";
-
-function commandCredentialHome(ctx: SlashCommandContext): HomeContext {
-  const home = ctx.session.services?.configStore?.homeContext ??
-    ctx.configStore?.homeContext;
-  if (home === undefined) {
-    throw new Error(
-      "xAI auth requires the session's canonical ConfigStore home authority",
-    );
-  }
-  return home;
-}
 
 export const grokLoginCommand: SlashCommand = {
   name: "grok-login",
@@ -62,7 +54,7 @@ export const grokLogoutCommand: SlashCommand = {
   supportsNonInteractive: true,
   execute: async (ctx) =>
     safeExecute(async () => {
-      const home = commandCredentialHome(ctx);
+      const home = requireCommandConfigStore(ctx).homeContext;
       const existing = readXaiOauthCredentials(home);
       if (existing === undefined) {
         return { kind: "text", text: "No xAI sign-in stored." };
@@ -91,7 +83,8 @@ async function executeGrokLogin(
   ctx: SlashCommandContext,
 ): Promise<SlashCommandResult> {
   return safeExecute(async () => {
-    const home = commandCredentialHome(ctx);
+    const home = requireCommandConfigStore(ctx).homeContext;
+    const environment = providerEnvironmentFromCommandContext(ctx);
     const arg = ctx.argsRaw.trim().toLowerCase();
     if (arg !== "" && arg !== "device") {
       return {
@@ -131,7 +124,7 @@ async function executeGrokLogin(
       "This sign-in takes precedence over any XAI_API_KEY / GROK_API_KEY " +
         "in the environment (subscription Grok Build access).",
     );
-    const envKey = resolveApiKey(process.env);
+    const envKey = resolveApiKey(environment);
     if (envKey !== undefined) {
       lines.push(
         "Note: an API key is also set in the environment but is ignored " +
