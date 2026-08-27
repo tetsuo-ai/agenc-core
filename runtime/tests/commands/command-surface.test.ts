@@ -112,10 +112,20 @@ function promptCommand(overrides: Partial<Command> = {}): Command {
 }
 
 function fakeContext(cwd: string): SlashCommandContext {
+  const agencHome = `${cwd}/.agenc`;
   return {
     session: {
       conversationId: "session-1",
       services: {
+        configStore: new ConfigStore({
+          home: agencHome,
+          cwd,
+          projectRoot: cwd,
+          projectTrusted: false,
+          env: {},
+          base: { model_provider: "ollama", model: "llama3.3" },
+        }),
+        providerEnvironment: Object.freeze({}),
         skillsManager: {
           resolveSkill: vi.fn(async (name: string) =>
             name === "project-skill"
@@ -132,7 +142,7 @@ function fakeContext(cwd: string): SlashCommandContext {
     argsRaw: "",
     cwd,
     home: cwd,
-    agencHome: `${cwd}/.agenc`,
+    agencHome,
   };
 }
 

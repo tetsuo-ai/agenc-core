@@ -24,7 +24,7 @@ import {
   getOrCreateHermeticTestHome,
   sanitizeHermeticEnv,
 } from './tests/helpers/hermetic-env.mjs'
-import { beforeEach } from 'vitest'
+import { beforeAll, beforeEach } from 'vitest'
 // Register host-bound infrastructure mocks before importing ConfigStore or
 // any other runtime module that can transitively load those boundaries.
 import './tests/helpers/hermetic-managed-policy-mocks.js'
@@ -47,6 +47,20 @@ const hermeticHome = getOrCreateHermeticTestHome()
 sanitizeHermeticEnv(process.env, hermeticHome)
 process.env.AGENC_TEST_HERMETIC_HOME = hermeticHome
 
+let ConfigStore: typeof import('./src/config/store.js').ConfigStore
+let enterStartupProviderSelectionForTestingOnly:
+  typeof import('./src/utils/model/providers.js').enterStartupProviderSelectionForTestingOnly
+
+beforeAll(async () => {
+  const [configStoreModule, providerSelectionModule] = await Promise.all([
+    import('./src/config/store.js'),
+    import('./src/utils/model/providers.js'),
+  ])
+  ConfigStore = configStoreModule.ConfigStore
+  enterStartupProviderSelectionForTestingOnly =
+    providerSelectionModule.enterStartupProviderSelectionForTestingOnly
+})
+
 // Production workspace-mutation state is partitioned by the ConfigStore
 // authority. Low-level unit tests intentionally exercise the facade without a
 // bootstrapped store, so bind their explicit hermetic home through a test-only
@@ -63,7 +77,7 @@ installWorkspaceMutationHomeResolverForTestingOnly(() => {
 // an explicit canonical startup authority so production code can remain
 // fail-closed instead of falling back to mutable process.env selection.
 // Provider-selection tests install narrower scopes around their assertions.
-beforeEach(async () => {
+beforeEach(() => {
   // Individual tests may deliberately delete or replace process.env. Restore
   // the hermetic ingress before constructing the next test's authority.
   sanitizeHermeticEnv(process.env, hermeticHome)
@@ -76,11 +90,6 @@ beforeEach(async () => {
   // Keep ConfigStore out of setup-module evaluation. Importing it before a
   // test file loads would cache transitive OS/process boundaries before that
   // file's vi.mock declarations can install their test doubles.
-  const [{ ConfigStore }, { enterStartupProviderSelectionForTestingOnly }] =
-    await Promise.all([
-      import('./src/config/store.js'),
-      import('./src/utils/model/providers.js'),
-    ])
   enterCanonicalSettingsAuthority(
     new ConfigStore({
       home,
