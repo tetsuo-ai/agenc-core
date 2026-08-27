@@ -520,7 +520,7 @@ describe("provider authority architecture", () => {
   });
 
   test("the test-only ambient provider binding cannot enter production code", () => {
-    const hook = /enterStartupProviderSelectionForTestingOnly/;
+    const hook = /enterStartupProviderSelectionForTestingOnly/u;
     const productionOffenders = sourceFiles(SRC)
       .filter((path) => /\.(?:ts|tsx)$/.test(path))
       .filter((path) => !path.endsWith("/utils/model/providers.ts"))
@@ -537,7 +537,39 @@ describe("provider authority architecture", () => {
 
     expect(productionOffenders).toEqual([]);
     expect(testOffenders).toEqual([]);
-    expect(readFileSync(`${RUNTIME}/vitest.setup.ts`, "utf8")).toMatch(hook);
+    const vitestSetup = readFileSync(`${RUNTIME}/vitest.setup.ts`, "utf8");
+    expect(vitestSetup).toMatch(hook);
+
+    const rawContextBindings = [
+      /runWithStartupProviderSelectionSnapshot/u,
+      /readStartupProviderSelectionSnapshot/u,
+      /enterStartupProviderSelectionSnapshotForTests/u,
+    ];
+    for (const rawBinding of rawContextBindings) {
+      const rawProductionOffenders = sourceFiles(SRC)
+        .filter((path) => /\.(?:ts|tsx)$/.test(path))
+        .filter(
+          (path) =>
+            !path.endsWith("/utils/model/provider-selection-context.ts") &&
+            !path.endsWith("/utils/model/providers.ts"),
+        )
+        .filter((path) => rawBinding.test(readFileSync(path, "utf8")))
+        .map((path) => relative(SRC, path));
+      const rawTestOffenders = sourceFiles(TESTS)
+        .filter((path) => /\.(?:ts|tsx)$/.test(path))
+        .filter(
+          (path) =>
+            !path.endsWith("/llm/provider-authority.architecture.test.ts"),
+        )
+        .filter((path) => rawBinding.test(readFileSync(path, "utf8")))
+        .map((path) => relative(TESTS, path));
+
+      expect(rawProductionOffenders, rawBinding.source).toEqual([]);
+      expect(rawTestOffenders, rawBinding.source).toEqual([]);
+    }
+    expect(vitestSetup).toMatch(
+      /enterStartupProviderSelectionSnapshotForTests/u,
+    );
   });
 
   test("secure provider credentials are never hydrated into process env", () => {
