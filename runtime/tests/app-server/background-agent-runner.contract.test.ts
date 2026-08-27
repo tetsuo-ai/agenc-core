@@ -28,6 +28,11 @@ import {
 import { collectDaemonClientEnvOverrides } from "./agent-cli.js";
 import type { AgentStatus } from "../agents/status.js";
 import type { AuthBackend } from "../auth/backend.js";
+import type {
+  AdmissionAcquireInput,
+  ExecutionAdmissionClient,
+} from "../budget/admission-client.js";
+import type { AdmissionLease } from "../budget/admission-types.js";
 import type { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
 import {
   createEmptyToolPermissionContext,
@@ -49,7 +54,22 @@ import {
   sessionExecutionAuthorityFromAgenCConfig,
   type SessionExecutionAuthority,
 } from "../session/configuration.js";
-import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
+import {
+  readSandboxExecutionBroker,
+  readSandboxExecutionSurface,
+  SandboxExecutionBroker,
+} from "../sandbox/execution-broker.js";
+import { peekScopedRuntimeSession } from "../session/current-session.js";
+import type { TurnContext } from "../session/turn-context.js";
+import type { Tool, ToolResult } from "../tools/types.js";
+import { readToolRuntimeContext } from "../tools/runtimes/context.js";
+import type { ToolRegistry } from "../tool-registry.js";
+import {
+  getCanonicalSettingsAuthority,
+  runWithCanonicalSettingsAuthority,
+  type CanonicalSettingsAuthority,
+} from "../utils/settings/canonicalAuthority.js";
+import { workspaceMutationCoordinators } from "../workspace/mutation-coordinator.js";
 import {
   COORDINATED_CONFIG_STORE_PUBLICATION,
   type CoordinatedConfigStorePublishOptions,
@@ -949,7 +969,655 @@ function makeTopLevelRunner(opts: {
   };
 }
 
+function configureSessionShellHarness(
+  harness: ReturnType<typeof makeTopLevelRunner>,
+  options: {
+    readonly defaultShell?: "bash" | "powershell";
+    readonly settingsHome?: string;
+    readonly execute?: (
+      args: Record<string, unknown>,
+      toolName: "system.bash" | "PowerShell",
+    ) => Promise<ToolResult>;
+  } = {},
+) {
+  const leaseFallback = new AbortController();
+  const acquire = vi.fn(
+    async (
+      input: AdmissionAcquireInput,
+      signal?: AbortSignal,
+    ): Promise<AdmissionLease> => ({
+      decision: "allow",
+      reservation: {
+        reservationId: `shell-reservation:${input.stepId}`,
+        step: { runId: harness.session.conversationId, stepId: input.stepId },
+        reservedCostUsd: input.maxCostUsd ?? 0,
+        reservedTokens: input.maxInputTokens + input.maxOutputTokens,
+        reservedAt: "2026-08-27T00:00:00.000Z",
+      },
+      request: {
+        step: { runId: harness.session.conversationId, stepId: input.stepId },
+        kind: input.kind,
+        estimate: {
+          maxInputTokens: input.maxInputTokens,
+          maxOutputTokens: input.maxOutputTokens,
+          maxCostUsd: input.maxCostUsd,
+        },
+        workspaceId: harness.session.conversationId,
+        sessionId: input.sessionId ?? harness.session.conversationId,
+        parentScopeId: input.parentScopeId,
+        autonomous: false,
+      },
+      signal: signal ?? leaseFallback.signal,
+    }),
+  );
+  const markDispatched = vi.fn();
+  const reconcile = vi.fn(() => ({
+    applied: true as const,
+    outcome: "reconciled" as const,
+  }));
+  const admission = {
+    scope: {
+      runId: harness.session.conversationId,
+      workspaceId: harness.session.conversationId,
+      sessionId: harness.session.conversationId,
+      budgetIdentity: harness.session.conversationId,
+      autonomous: false,
+    },
+    acquire,
+    markDispatched,
+    reconcile,
+    holdUnknown: vi.fn(),
+    cancelRun: vi.fn(),
+    void: vi.fn(),
+    acknowledgeCompletion: vi.fn(),
+    recordFallback: vi.fn(),
+    forSession: vi.fn(() => admission),
+    subscribe: vi.fn(() => () => {}),
+  } as unknown as ExecutionAdmissionClient;
+
+  const preHook = vi.fn(({ args }: { readonly args: Record<string, unknown> }) => ({
+    kind: "continue" as const,
+    args: { ...args, observedByPreHook: true },
+  }));
+  const postHook = vi.fn(() => ({ kind: "continue" as const }));
+  const checkPermissions = vi.fn((input: unknown) => ({
+    behavior: "allow" as const,
+    updatedInput: input as Record<string, unknown>,
+  }));
+  const executeShell =
+    options.execute ??
+    (async (): Promise<ToolResult> => ({
+      content: "shell output",
+      metadata: {
+        stdout: "shell stdout",
+        stderr: "",
+        exitCode: 0,
+        timedOut: false,
+      },
+    }));
+  const shellTool = (name: "system.bash" | "PowerShell"): Tool => ({
+    name,
+    description: `test ${name}`,
+    inputSchema: {
+      type: "object",
+      properties: { command: { type: "string" } },
+      required: ["command"],
+    },
+    metadata: { source: "builtin", mutating: true },
+    recoveryCategory: "side-effecting",
+    admissionEstimate: () => ({
+      maxInputTokens: 0,
+      maxOutputTokens: 0,
+      maxCostUsd: 0,
+    }),
+    checkPermissions,
+    execute: vi.fn((args: Record<string, unknown>) =>
+      executeShell(args, name),
+    ),
+  });
+  const bashTool = shellTool("system.bash");
+  const powerShellTool = shellTool("PowerShell");
+  const registry: ToolRegistry = {
+    tools: [bashTool, powerShellTool],
+    toLLMTools: () => [],
+    dispatch: vi.fn(async () => ({ content: "registry dispatch unused" })),
+  };
+
+  const settings = { defaultShell: options.defaultShell ?? "bash" };
+  const settingsHome =
+    options.settingsHome ??
+    join(tmpdir(), `${harness.session.conversationId}-settings-home`);
+  Object.assign(harness.configStore, {
+    current: () => settings,
+    authoritySnapshot: () => ({ config: settings, layers: [] }),
+    homeContext: {
+      path: settingsHome,
+      identityKey: settingsHome,
+      secureStorageAccount: "test-account",
+      oauthFileSuffix: "test",
+      source: "agenc-home",
+      isDefault: false,
+      configTomlPath: join(settingsHome, "config.toml"),
+      statePath: join(settingsHome, "state.json"),
+      authPath: join(settingsHome, "auth.json"),
+      trustedProjectsPath: join(settingsHome, "trusted-projects.json"),
+    },
+    reload: async () => settings,
+    subscribe: () => () => {},
+  });
+  const subscribeToModeChange = vi.fn(() => () => {});
+  Object.assign(harness.permissionModeRegistry, { subscribeToModeChange });
+  Object.assign(harness.rolloutStore, {
+    assertToolAdmissionAllowed: vi.fn(),
+    assertToolEffectAttemptAllowed: vi.fn(() => 1),
+    recordEffectEvent: vi.fn(),
+  });
+
+  const session = harness.session as unknown as {
+    readonly conversationId: string;
+    readonly services: Record<string, unknown> & {
+      hooks?: Readonly<Record<string, unknown>>;
+    };
+    readonly eventLog: Record<string, unknown>;
+    readonly emit: (event: unknown, options?: unknown) => unknown;
+    newDefaultTurnWithSubId?: (subId: string) => TurnContext;
+  };
+  const hooks = session.services.hooks ?? {};
+  Object.assign(session.services, {
+    registry,
+    executionAdmission: admission,
+    admissionRequired: true,
+    permissionModeRegistry: harness.permissionModeRegistry,
+    hooks: {
+      ...hooks,
+      preToolUseHooks: [preHook],
+      postToolUseHooks: [postHook],
+    },
+  });
+  Object.assign(session.eventLog, {
+    emit: (event: unknown) => session.emit(event),
+  });
+  const newDefaultTurnWithSubId = vi.fn(
+    (subId: string) =>
+      ({
+        subId,
+        cwd: harness.sessionState.sessionConfiguration.cwd,
+        approvalPolicy: { value: "never" },
+        sandboxPolicy: { value: "danger_full_access" },
+        config: {},
+      }) as unknown as TurnContext,
+  );
+  session.newDefaultTurnWithSubId = newDefaultTurnWithSubId;
+
+  return {
+    acquire,
+    admission,
+    bashExecute: bashTool.execute as ReturnType<typeof vi.fn>,
+    checkPermissions,
+    markDispatched,
+    newDefaultTurnWithSubId,
+    postHook,
+    powerShellExecute: powerShellTool.execute as ReturnType<typeof vi.fn>,
+    preHook,
+    reconcile,
+    registry,
+    subscribeToModeChange,
+  };
+}
+
 describe("AgenC delegate background-agent runner", () => {
+  it("[managed-thread] runs a deferred session shell through the canonical live router authorities", async () => {
+    const harness = makeTopLevelRunner({
+      conversationId: "session-direct-shell-authorities",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    let dispatchSawDurableInput = false;
+    const shell = configureSessionShellHarness(harness, {
+      defaultShell: "powershell",
+      execute: async (args, toolName) => {
+        const calls = vi.mocked(harness.session.emit).mock.calls as unknown as
+          Array<readonly [unknown, unknown?]>;
+        const input = calls.find(([event]) => {
+          const payload = (event as {
+            readonly msg?: {
+              readonly type?: unknown;
+              readonly payload?: { readonly message?: unknown };
+            };
+          }).msg;
+          return (
+            payload?.type === "user_message" &&
+            typeof payload.payload?.message === "string" &&
+            payload.payload.message.startsWith("<bash-input>")
+          );
+        });
+        dispatchSawDurableInput = input?.[1] !== undefined;
+        expect(input?.[1]).toEqual({ durable: true });
+        expect(toolName).toBe("PowerShell");
+        expect(args).toMatchObject({
+          command: "printf shell-route",
+          observedByPreHook: true,
+        });
+        expect(readSandboxExecutionBroker(args)).toBe(
+          harness.sandboxExecutionBroker,
+        );
+        expect(readSandboxExecutionSurface(args)).toBe("tool");
+        expect(readToolRuntimeContext(args)).toMatchObject({
+          source: "direct",
+          toolName: "PowerShell",
+          requestedSandboxMode: "danger_full_access",
+          sandboxMode: "danger_full_access",
+        });
+        expect(getCanonicalSettingsAuthority()).toBe(harness.configStore);
+        expect(peekScopedRuntimeSession()).toBe(harness.session);
+        return {
+          content: "shell content",
+          metadata: {
+            stdout: "shell stdout",
+            stderr: "shell stderr",
+            exitCode: 0,
+            timedOut: false,
+          },
+        };
+      },
+    });
+
+    await harness.runner.startAgent({
+      objective: "deferred direct shell",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
+    const execution = harness.runner.executeAgentShell(
+      "session-direct-shell-authorities",
+      {
+        sessionId: "session-direct-shell-authorities",
+        commandId: "shell-authorities-1",
+        command: "printf shell-route",
+      },
+    );
+    const result = await execution.then((resolved) => {
+      const calls = vi.mocked(harness.session.emit).mock.calls as unknown as
+        Array<readonly [unknown, unknown?]>;
+      const durableMessages = calls
+        .map(([event, options], index) => ({
+          index,
+          options,
+          msg: (event as {
+            readonly msg?: {
+              readonly type?: unknown;
+              readonly payload?: { readonly message?: unknown };
+            };
+          }).msg,
+        }))
+        .filter(({ msg }) => msg?.type === "user_message");
+      const input = durableMessages.find(({ msg }) =>
+        String(msg?.payload?.message).startsWith("<bash-input>"),
+      );
+      const output = durableMessages.find(({ msg }) =>
+        String(msg?.payload?.message).startsWith("<bash-stdout>"),
+      );
+      expect(input?.options).toEqual({ durable: true });
+      expect(output?.options).toEqual({ durable: true });
+      expect(output?.index).toBeGreaterThan(input?.index ?? Number.MAX_VALUE);
+      return resolved;
+    });
+
+    expect(result).toEqual({
+      commandId: "shell-authorities-1",
+      content: "shell content",
+      stdout: "shell stdout",
+      stderr: "shell stderr",
+      exitCode: 0,
+      timedOut: false,
+      truncated: false,
+      isError: false,
+    });
+    expect(dispatchSawDurableInput).toBe(true);
+    expect(shell.powerShellExecute).toHaveBeenCalledOnce();
+    expect(shell.bashExecute).not.toHaveBeenCalled();
+    expect(shell.newDefaultTurnWithSubId).toHaveBeenCalledWith(
+      expect.stringMatching(/^shell-/u),
+    );
+    expect(shell.acquire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: "tool_exec",
+        sessionId: "session-direct-shell-authorities",
+      }),
+      expect.any(AbortSignal),
+    );
+    expect(shell.markDispatched).toHaveBeenCalledWith(
+      expect.stringContaining("shell-reservation:"),
+      expect.objectContaining({ boundary: "tool_effect" }),
+    );
+    expect(shell.reconcile).toHaveBeenCalledOnce();
+    expect(shell.checkPermissions).toHaveBeenCalled();
+    expect(shell.preHook).toHaveBeenCalledOnce();
+    expect(shell.postHook).toHaveBeenCalledOnce();
+    expect(shell.subscribeToModeChange).toHaveBeenCalledOnce();
+    expect(harness.stub.thread.submit).not.toHaveBeenCalled();
+    expect(harness.control.sendInput).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] denies direct shell while Editor owns the workspace", async () => {
+    const workspaceRoot = mkdtempSync(
+      join(tmpdir(), "agenc-direct-shell-editor-owned-workspace-"),
+    );
+    const settingsHome = mkdtempSync(
+      join(tmpdir(), "agenc-direct-shell-editor-owned-home-"),
+    );
+    try {
+      const harness = makeTopLevelRunner({
+        conversationId: "session-direct-shell-editor-owned",
+        threadInitialStatus: { status: "pending_init" } as AgentStatus,
+        workspaceRoot,
+      });
+      const shell = configureSessionShellHarness(harness, { settingsHome });
+      const settingsAuthority =
+        harness.configStore as unknown as CanonicalSettingsAuthority;
+      await harness.runner.startAgent({
+        objective: "deferred direct shell",
+        deferInitialTurn: true,
+        unattendedAllow: [],
+        unattendedDeny: [],
+      });
+      harness.forcePermissionContextForTesting(
+        createEmptyToolPermissionContext({
+          mode: "bypassPermissions",
+          isBypassPermissionsModeAvailable: true,
+        }),
+      );
+      const lease = runWithCanonicalSettingsAuthority(
+        settingsAuthority,
+        () =>
+          workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
+            workspaceRoot,
+            editorInstanceId: "editor-before-direct-shell",
+          }),
+      );
+
+      const result = await harness.runner.executeAgentShell(
+        "session-direct-shell-editor-owned",
+        {
+          sessionId: "session-direct-shell-editor-owned",
+          commandId: "shell-editor-owned-1",
+          command: "printf blocked-by-editor",
+        },
+      );
+
+      expect(result).toMatchObject({
+        commandId: "shell-editor-owned-1",
+        isError: true,
+        stdout: "",
+        exitCode: null,
+      });
+      expect(`${result.content}\n${result.stderr}`).toMatch(
+        /Tool 'system\.bash' is blocked while this workspace has protected Editor authority/u,
+      );
+      expect(shell.bashExecute).not.toHaveBeenCalled();
+      expect(shell.acquire).not.toHaveBeenCalled();
+
+      await runWithCanonicalSettingsAuthority(settingsAuthority, () =>
+        workspaceMutationCoordinators.getOrCreate(workspaceRoot).release({
+          workspaceRoot,
+          editorInstanceId: lease.editorInstanceId,
+          leaseToken: lease.leaseToken,
+          epoch: lease.epoch,
+        }),
+      );
+    } finally {
+      workspaceMutationCoordinators.clearForTests();
+      rmSync(workspaceRoot, { recursive: true, force: true });
+      rmSync(settingsHome, { recursive: true, force: true });
+    }
+  });
+
+  it("[managed-thread] keeps Editor acquisition fenced until direct shell cleanup", async () => {
+    const workspaceRoot = mkdtempSync(
+      join(tmpdir(), "agenc-direct-shell-inflight-workspace-"),
+    );
+    const settingsHome = mkdtempSync(
+      join(tmpdir(), "agenc-direct-shell-inflight-home-"),
+    );
+    const resultGate = Promise.withResolvers<ToolResult>();
+    let execution: Promise<unknown> | undefined;
+    try {
+      const harness = makeTopLevelRunner({
+        conversationId: "session-direct-shell-inflight",
+        threadInitialStatus: { status: "pending_init" } as AgentStatus,
+        workspaceRoot,
+      });
+      const shell = configureSessionShellHarness(harness, {
+        settingsHome,
+        execute: async () => resultGate.promise,
+      });
+      const settingsAuthority =
+        harness.configStore as unknown as CanonicalSettingsAuthority;
+      const acquireEditor = (editorInstanceId: string) =>
+        runWithCanonicalSettingsAuthority(settingsAuthority, () =>
+          workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
+            workspaceRoot,
+            editorInstanceId,
+          }),
+        );
+      await harness.runner.startAgent({
+        objective: "deferred direct shell",
+        deferInitialTurn: true,
+        unattendedAllow: [],
+        unattendedDeny: [],
+      });
+      harness.forcePermissionContextForTesting(
+        createEmptyToolPermissionContext({
+          mode: "bypassPermissions",
+          isBypassPermissionsModeAvailable: true,
+        }),
+      );
+
+      execution = harness.runner.executeAgentShell(
+        "session-direct-shell-inflight",
+        {
+          sessionId: "session-direct-shell-inflight",
+          commandId: "shell-inflight-1",
+          command: "printf held-open",
+        },
+      );
+      await vi.waitFor(() => expect(shell.bashExecute).toHaveBeenCalledOnce());
+      expect(() => acquireEditor("editor-during-direct-shell")).toThrow(
+        /waiting for active tool 'system\.bash'/u,
+      );
+
+      resultGate.resolve({
+        content: "shell completed",
+        metadata: {
+          stdout: "shell completed",
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+        },
+      });
+      await expect(execution).resolves.toMatchObject({
+        commandId: "shell-inflight-1",
+        isError: false,
+        stdout: "shell completed",
+      });
+
+      const lease = acquireEditor("editor-after-direct-shell");
+      expect(lease).toMatchObject({
+        workspaceRoot,
+        editorInstanceId: "editor-after-direct-shell",
+      });
+      await runWithCanonicalSettingsAuthority(settingsAuthority, () =>
+        workspaceMutationCoordinators.getOrCreate(workspaceRoot).release({
+          workspaceRoot,
+          editorInstanceId: lease.editorInstanceId,
+          leaseToken: lease.leaseToken,
+          epoch: lease.epoch,
+        }),
+      );
+    } finally {
+      resultGate.resolve({ content: "test cleanup" });
+      await execution?.catch(() => {});
+      workspaceMutationCoordinators.clearForTests();
+      rmSync(workspaceRoot, { recursive: true, force: true });
+      rmSync(settingsHome, { recursive: true, force: true });
+    }
+  });
+
+  it("[managed-thread] deduplicates identical shell command ids and rejects conflicting reuse", async () => {
+    const resultGate = Promise.withResolvers<ToolResult>();
+    const harness = makeTopLevelRunner({
+      conversationId: "session-direct-shell-deduplication",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    const shell = configureSessionShellHarness(harness, {
+      execute: async () => resultGate.promise,
+    });
+    await harness.runner.startAgent({
+      objective: "deferred direct shell",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
+    const params = {
+      sessionId: "session-direct-shell-deduplication",
+      commandId: "shell-deduplication-1",
+      command: "printf once",
+    } as const;
+
+    const first = harness.runner.executeAgentShell(
+      "session-direct-shell-deduplication",
+      params,
+    );
+    await vi.waitFor(() => expect(shell.bashExecute).toHaveBeenCalledOnce());
+    const duplicate = harness.runner.executeAgentShell(
+      "session-direct-shell-deduplication",
+      params,
+    );
+    await expect(
+      harness.runner.executeAgentShell(
+        "session-direct-shell-deduplication",
+        { ...params, command: "printf conflicting" },
+      ),
+    ).rejects.toThrow(/already used for different content/u);
+    expect(shell.bashExecute).toHaveBeenCalledOnce();
+
+    resultGate.resolve({
+      content: "once",
+      metadata: { stdout: "once", stderr: "", exitCode: 0 },
+    });
+    const [firstResult, duplicateResult] = await Promise.all([first, duplicate]);
+    expect(duplicateResult).toEqual(firstResult);
+    expect(shell.bashExecute).toHaveBeenCalledOnce();
+  });
+
+  it("[managed-thread] rejects direct shell while the session owns an active model turn", async () => {
+    const harness = makeTopLevelRunner({
+      conversationId: "session-direct-shell-active-turn",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+      scopedTurnCancellation: true,
+    });
+    const shell = configureSessionShellHarness(harness);
+    await harness.runner.startAgent({
+      objective: "deferred direct shell",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    harness.setActiveTurn("active-model-turn");
+
+    await expect(
+      harness.runner.executeAgentShell("session-direct-shell-active-turn", {
+        sessionId: "session-direct-shell-active-turn",
+        commandId: "shell-active-turn-1",
+        command: "printf blocked",
+      }),
+    ).rejects.toThrow(/active or queued model turn/u);
+    expect(shell.acquire).not.toHaveBeenCalled();
+    expect(shell.bashExecute).not.toHaveBeenCalled();
+    expect(harness.control.sendInput).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] forwards direct-shell aborts into the admitted tool dispatch", async () => {
+    const reachedTool = Promise.withResolvers<AbortSignal>();
+    const harness = makeTopLevelRunner({
+      conversationId: "session-direct-shell-abort",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    const shell = configureSessionShellHarness(harness, {
+      execute: async (args) => {
+        const signal = (args as { readonly __abortSignal?: AbortSignal })
+          .__abortSignal;
+        if (signal === undefined) {
+          throw new Error("direct shell dispatch omitted its abort signal");
+        }
+        reachedTool.resolve(signal);
+        if (!signal.aborted) {
+          await new Promise<void>((resolve) => {
+            signal.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
+        return {
+          content: "cancelled before the shell changed state",
+          isError: true,
+          effectDisposition: {
+            disposition: "confirmed_no_effect",
+            evidenceKind: "provider_receipt",
+            evidenceRef: "test:direct-shell-abort",
+            evidenceSha256: "a".repeat(64),
+          },
+        };
+      },
+    });
+    await harness.runner.startAgent({
+      objective: "deferred direct shell",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
+    const controller = new AbortController();
+    const execution = harness.runner.executeAgentShell(
+      "session-direct-shell-abort",
+      {
+        sessionId: "session-direct-shell-abort",
+        commandId: "shell-abort-1",
+        command: "printf abort",
+      },
+      controller.signal,
+    );
+    const dispatchSignal = await reachedTool.promise;
+    const reason = new Error("operator aborted direct shell");
+    controller.abort(reason);
+
+    await expect(execution).resolves.toMatchObject({
+      commandId: "shell-abort-1",
+      isError: true,
+      content: expect.stringContaining("operator aborted direct shell"),
+    });
+    expect(dispatchSignal.aborted).toBe(true);
+    expect(dispatchSignal.reason).toBe(reason);
+    expect(shell.bashExecute).toHaveBeenCalledOnce();
+    expect(shell.markDispatched).toHaveBeenCalledOnce();
+    expect(harness.stub.thread.submit).not.toHaveBeenCalled();
+    expect(harness.control.sendInput).not.toHaveBeenCalled();
+  });
+
   it("fails closed when a skeletal session lacks canonical runtime-settings journal support", async () => {
     const { runner, shutdown } = makeTopLevelRunner({
       conversationId: "session-without-runtime-settings-journal",

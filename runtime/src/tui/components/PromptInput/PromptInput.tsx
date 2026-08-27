@@ -1947,13 +1947,9 @@ function PromptInput({
         return;
       }
 
-      // Bash mode (round-2 MD-NEW4): without this branch the `!` composer
-      // banner was a lie — the input was forwarded to the model as plain
-      // text. Run the shell command locally via processBashCommand and
-      // surface stdout/stderr in the transcript via user_message events.
-      // Bash output is synthetic local data; we never call onSubmitProp,
-      // and the old monolithic input processor is bypassed because its prompt-side imports
-      // drag in subsystems we don't need here.
+      // Bash mode never sends the command to the model. The App callback uses
+      // the daemon-owned session shell bridge and writes durable transcript
+      // events. Standalone callers retain the admitted in-process fallback.
       if (mode === "bash") {
         const trimmedBash = inputParam.trim();
         if (trimmedBash === "") {

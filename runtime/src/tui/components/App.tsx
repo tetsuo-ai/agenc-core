@@ -2712,6 +2712,16 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // prompt remains busy/cancellable while message.stream is still running.
   const [activeModelSubmissionCount, setActiveModelSubmissionCount] =
     useState(0);
+  const activeShellAbortControllerRef = useRef<AbortController | null>(null);
+  const [shellAbortController, setShellAbortController] =
+    useState<AbortController | null>(null);
+  useEffect(
+    () => () => {
+      activeShellAbortControllerRef.current?.abort("tui_unmounted");
+      activeShellAbortControllerRef.current = null;
+    },
+    [],
+  );
   const [pastedContents, setPastedContents] = useState<Record<number, any>>({});
   const [vimMode, setVimMode] = useState<VimMode>("INSERT");
   const workspaceComposerDraftsRef = useRef<
@@ -4749,7 +4759,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     hasActiveSessionTurn ||
     hasActiveModelSubmission;
   const effectiveInputBusy =
-    isLoading || hasActiveLocalAgents || completionPipelineActive;
+    isLoading ||
+    shellAbortController !== null ||
+    hasActiveLocalAgents ||
+    completionPipelineActive;
   const effectiveInputBusyRef = useRef(effectiveInputBusy);
   effectiveInputBusyRef.current = effectiveInputBusy;
   // The message.stream RPC can outlive the turn itself (an error-terminated
@@ -5018,12 +5031,22 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           "Queued Bash ownership no longer matches the active workspace; the command was not executed.",
         );
       }
+      if (activeShellAbortControllerRef.current !== null) {
+        throw new Error("A shell command is already running in this session.");
+      }
       const bashAbortController = new AbortController();
-      const ctx = getToolUseContext(
+      const toolUseContext = getToolUseContext(
         transcriptMessagesRef.current as unknown[],
         [],
         bashAbortController,
-      ) as PromptInputContext & {
+      );
+      const ctx = {
+        ...toolUseContext,
+        // A direct shell command has its own cancellation lifetime. A genuine
+        // in-process Session may also expose a turn-wide controller, but ESC
+        // must stop this command without aborting or reusing the model turn.
+        abortController: bashAbortController,
+      } as PromptInputContext & {
         session?: {
           emit?: (event: unknown) => void;
           nextInternalSubId?: () => string;
@@ -5048,8 +5071,26 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
           },
         });
       };
-
-      emitTranscriptText(`<bash-input>${escapeXml(trimmedBash)}</bash-input>`);
+      const { confirmSuspectedShellPaste } =
+        await import("../input/shell-paste-confirmation.js");
+      if (!(await confirmSuspectedShellPaste(trimmedBash, setToolJSX))) {
+        emitTranscriptText(
+          `<bash-input>${escapeXml(trimmedBash)}</bash-input>`,
+        );
+        emitTranscriptText(
+          "<bash-stderr>Bash submission aborted: input looked like a paste and was not confirmed.</bash-stderr>",
+        );
+        return;
+      }
+      const executeShellCommand = props.session.executeShellCommand;
+      const hasLocalExecutionAdmission =
+        (
+          props.session.services as typeof props.session.services & {
+            readonly executionAdmission?: unknown;
+          }
+        ).executionAdmission !== undefined;
+      const usesDaemonShellBridge = typeof executeShellCommand === "function";
+      const commandId = randomUUID();
       const shellEditorInstanceId = `tui-shell-${randomUUID()}`;
       let shellLease: Awaited<
         ReturnType<NonNullable<typeof props.session.acquireWorkspaceEditor>>
@@ -5060,8 +5101,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       const acquireWorkspaceEditor = props.session.acquireWorkspaceEditor;
       const heartbeatWorkspaceEditor = props.session.heartbeatWorkspaceEditor;
       const releaseWorkspaceEditor = props.session.releaseWorkspaceEditor;
+      activeShellAbortControllerRef.current = bashAbortController;
+      setShellAbortController(bashAbortController);
       try {
-        if (workbenchEnabled) {
+        if (workbenchEnabled && !usesDaemonShellBridge) {
           if (
             acquireWorkspaceEditor === undefined ||
             heartbeatWorkspaceEditor === undefined ||
@@ -5123,10 +5166,26 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             });
           });
         }
-        const { processBashCommand } =
-          await import("../input/processBashCommand.js");
-        const executeBash = () =>
-          runWithCwdOverride(workspaceRoot, () =>
+        const executeBash = async (): Promise<void> => {
+          if (usesDaemonShellBridge) {
+            await executeShellCommand.call(props.session, {
+              command: trimmedBash,
+              commandId,
+              signal: bashAbortController.signal,
+            });
+            return;
+          }
+          if (!hasLocalExecutionAdmission) {
+            throw new Error(
+              "Shell execution is unavailable because this session has neither a daemon shell bridge nor a local execution admission client.",
+            );
+          }
+          emitTranscriptText(
+            `<bash-input>${escapeXml(trimmedBash)}</bash-input>`,
+          );
+          const { processBashCommand } =
+            await import("../input/processBashCommand.js");
+          const result = await runWithCwdOverride(workspaceRoot, () =>
             processBashCommand(
               trimmedBash,
               [],
@@ -5135,24 +5194,26 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               ctx.setToolJSX ?? (() => {}),
             ),
           );
-        const result =
+          for (const message of result.messages) {
+            const text = extractUserMessageText(message);
+            if (text === null) continue;
+            if (
+              !text.startsWith("<bash-stdout") &&
+              !text.startsWith("<bash-stderr")
+            ) {
+              continue;
+            }
+            emitTranscriptText(text);
+          }
+        };
+        const execution =
           workspaceLifetime === null
-            ? await executeBash()
-            : await runWithWorkspaceOperationLifetime(
+            ? executeBash()
+            : runWithWorkspaceOperationLifetime(
                 workspaceLifetime,
                 executeBash,
               );
-        for (const message_0 of result.messages) {
-          const text_1 = extractUserMessageText(message_0);
-          if (text_1 === null) continue;
-          if (
-            !text_1.startsWith("<bash-stdout") &&
-            !text_1.startsWith("<bash-stderr")
-          ) {
-            continue;
-          }
-          emitTranscriptText(text_1);
-        }
+        await execution;
       } catch (err_1) {
         const message_1 =
           err_1 instanceof Error ? err_1.message : String(err_1);
@@ -5173,6 +5234,10 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
               epoch: shellLease.epoch,
             }).catch(() => {});
           }
+        }
+        if (activeShellAbortControllerRef.current === bashAbortController) {
+          activeShellAbortControllerRef.current = null;
+          setShellAbortController(null);
         }
       }
     },
@@ -6255,6 +6320,14 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     if (turnAbortController !== null && !turnAbortController.signal.aborted) {
       turnAbortController.abort("interrupted");
     }
+    const activeShellAbortController = activeShellAbortControllerRef.current;
+    if (
+      activeShellAbortController !== null &&
+      !activeShellAbortController.signal.aborted
+    ) {
+      activeShellAbortController.abort("interrupted");
+    }
+    if (!isLoading) return;
     requestTuiSessionTurnCancel(props.session);
     // Close the turn LOCALLY, right now: the daemon may have no live turn to
     // cancel (the 403 error path already finished it without emitting any
@@ -6279,7 +6352,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     pendingSubmissionSinceRef.current = null;
     setPendingSubmission(false);
     setActiveModelSubmissionCount(0);
-  }, [turnAbortController, props.session]);
+  }, [isLoading, turnAbortController, props.session]);
   const handleAgentsKilled = useCallback(
     (agents: readonly KilledAgentSummary[]) => {
       const text = formatAgentsKilledNotification(agents);
@@ -7218,17 +7291,21 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         onAgentsKilled={handleAgentsKilled}
         isMessageSelectorVisible={isMessageSelectorVisible}
         screen={screen as never}
-        {...(turnAbortController !== null
+        {...(shellAbortController !== null
           ? {
-              abortSignal: turnAbortController.signal,
+              abortSignal: shellAbortController.signal,
             }
-          : {})}
+          : turnAbortController !== null
+            ? {
+                abortSignal: turnAbortController.signal,
+              }
+            : {})}
         isSearchingHistory={isSearchingHistory}
         isHelpOpen={helpOpen}
         inputMode={mode as never}
         inputValue={input}
         streamMode={cancelStreamMode as never}
-        canCancelActiveTurn={isLoading}
+        canCancelActiveTurn={isLoading || shellAbortController !== null}
         queueOwner={commandQueueOwner}
       />
       {workbenchEnabled ? (

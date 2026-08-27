@@ -118,6 +118,7 @@ import type {
   SessionRollbackCompactionResult,
   SessionExtendCompactionRollbackRetentionResult,
   SessionRewindConversationToMessageResult,
+  SessionShellExecuteResult,
 } from "../app-server/protocol/index.js";
 import { JSON_RPC_VERSION } from "../app-server/protocol/index.js";
 import { APPROVED, DENIED } from "../permissions/review-decision.js";
@@ -207,6 +208,7 @@ function createClient(): AgenCDaemonTuiClient & {
       | SessionRollbackCompactionResult
       | SessionExtendCompactionRollbackRetentionResult
       | SessionRewindConversationToMessageResult
+      | SessionShellExecuteResult
     > {
       requests.push({
         method,
@@ -254,6 +256,18 @@ function createClient(): AgenCDaemonTuiClient & {
           sessionId: "session_1",
           ok: true,
           eventAlreadyEmitted: true,
+        };
+      }
+      if (method === "session.shell.execute") {
+        return {
+          commandId: String(params?.commandId),
+          content: "shell output",
+          stdout: "shell output",
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+          truncated: false,
+          isError: false,
         };
       }
       if (
@@ -1523,6 +1537,168 @@ describe("AgenC TUI daemon session adapter", () => {
     unsubscribe();
   });
 
+  it("clears direct shell tool activity when the shell response settles", async () => {
+    const client = createClient();
+    const originalRequest = client.request.bind(client) as (
+      method: AgenCDaemonMethod | AgenCDaemonInternalMethod,
+      params?: JsonObject,
+      options?: { readonly signal?: AbortSignal },
+    ) => Promise<unknown>;
+    let shellRequested = false;
+    let resolveShellResponse!: (result: SessionShellExecuteResult) => void;
+    const shellResponse = new Promise<SessionShellExecuteResult>((resolve) => {
+      resolveShellResponse = resolve;
+    });
+    client.request = ((
+      method: AgenCDaemonMethod | AgenCDaemonInternalMethod,
+      params?: JsonObject,
+      options?: { readonly signal?: AbortSignal },
+    ) => {
+      if (method === "session.shell.execute") {
+        shellRequested = true;
+        return shellResponse;
+      }
+      return originalRequest(method, params, options);
+    }) as typeof client.request;
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const unsubscribe = session.subscribeToEvents(() => undefined);
+    if (session.executeShellCommand === undefined) {
+      throw new Error("expected daemon shell execution bridge");
+    }
+
+    const shell = session.executeShellCommand({
+      command: "printf shell-output",
+      commandId: "shell-command-lifecycle",
+    });
+    expect(shellRequested).toBe(true);
+    client.emit("session_1", {
+      method: "event.session_event",
+      params: {
+        eventId: "shell-tool-started",
+        event: {
+          id: "shell-tool-started",
+          type: "tool_call_started",
+          payload: {
+            callId: "shell-command-lifecycle",
+            toolName: "system.bash",
+            args: '{"command":"printf shell-output"}',
+          },
+        },
+      },
+    });
+    expect(session.activeTurn?.unsafePeek()).toEqual({
+      turnId: "daemon-turn",
+    });
+
+    resolveShellResponse({
+      commandId: "shell-command-lifecycle",
+      content: "shell output",
+      stdout: "shell output",
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      truncated: false,
+      isError: false,
+    });
+    await expect(shell).resolves.toMatchObject({
+      commandId: "shell-command-lifecycle",
+    });
+    expect(session.activeTurn?.unsafePeek()).toBeNull();
+    unsubscribe();
+  });
+
+  it("keeps a model turn active when turn_started arrives before the shell response", async () => {
+    const client = createClient();
+    const originalRequest = client.request.bind(client) as (
+      method: AgenCDaemonMethod | AgenCDaemonInternalMethod,
+      params?: JsonObject,
+      options?: { readonly signal?: AbortSignal },
+    ) => Promise<unknown>;
+    let resolveShellResponse!: (result: SessionShellExecuteResult) => void;
+    const shellResponse = new Promise<SessionShellExecuteResult>((resolve) => {
+      resolveShellResponse = resolve;
+    });
+    client.request = ((
+      method: AgenCDaemonMethod | AgenCDaemonInternalMethod,
+      params?: JsonObject,
+      options?: { readonly signal?: AbortSignal },
+    ) =>
+      method === "session.shell.execute"
+        ? shellResponse
+        : originalRequest(method, params, options)) as typeof client.request;
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const unsubscribe = session.subscribeToEvents(() => undefined);
+    if (session.executeShellCommand === undefined) {
+      throw new Error("expected daemon shell execution bridge");
+    }
+
+    const shell = session.executeShellCommand({
+      command: "printf shell-output",
+      commandId: "shell-command-race",
+    });
+    client.emit("session_1", {
+      method: "event.session_event",
+      params: {
+        eventId: "shell-tool-progress",
+        event: {
+          id: "shell-tool-progress",
+          type: "tool_progress",
+          payload: {
+            callId: "shell-command-race",
+            toolName: "system.bash",
+            output: "running",
+          },
+        },
+      },
+    });
+    expect(session.activeTurn?.unsafePeek()).toEqual({
+      turnId: "daemon-turn",
+    });
+
+    client.emit("session_1", {
+      method: "event.session_event",
+      params: {
+        eventId: "model-turn-started",
+        event: {
+          id: "model-turn-started",
+          type: "turn_started",
+          payload: { turnId: "model-turn-2" },
+        },
+      },
+    });
+    expect(session.activeTurn?.unsafePeek()).toEqual({
+      turnId: "model-turn-2",
+    });
+
+    resolveShellResponse({
+      commandId: "shell-command-race",
+      content: "shell output",
+      stdout: "shell output",
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      truncated: false,
+      isError: false,
+    });
+    await expect(shell).resolves.toMatchObject({
+      commandId: "shell-command-race",
+    });
+    expect(session.activeTurn?.unsafePeek()).toEqual({
+      turnId: "model-turn-2",
+    });
+    unsubscribe();
+  });
+
   it("does not revive a terminal daemon turn when a late tool completion arrives", async () => {
     const client = createClient();
     const session = createDaemonTuiSession({
@@ -2753,6 +2929,43 @@ describe("AgenC TUI daemon session adapter", () => {
         },
       },
     ]);
+  });
+
+  it("forwards shell execution through the attached session with cancellation", async () => {
+    const client = createClient();
+    const session = createDaemonTuiSession({
+      baseSession: createBaseSession(),
+      client,
+      sessionId: "session_1",
+      clientId: "tui_1",
+    });
+    const controller = new AbortController();
+
+    await expect(
+      session.executeShellCommand?.({
+        command: "printf shell-output",
+        commandId: "shell-command-1",
+        signal: controller.signal,
+      }),
+    ).resolves.toEqual({
+      commandId: "shell-command-1",
+      content: "shell output",
+      stdout: "shell output",
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      truncated: false,
+      isError: false,
+    });
+    expect(client.requests.at(-1)).toEqual({
+      method: "session.shell.execute",
+      params: {
+        sessionId: "session_1",
+        commandId: "shell-command-1",
+        command: "printf shell-output",
+      },
+      signal: controller.signal,
+    });
   });
 
   it("forwards getDaemonHooksStatus to the daemon session.hooks.status RPC", async () => {

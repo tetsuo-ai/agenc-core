@@ -93,6 +93,7 @@ const providerProbe = {
   setAppState: null as
     ((next: SetStateAction<Record<string, unknown>>) => void) | null,
   globalKeybindingProps: [] as Array<Record<string, unknown>>,
+  cancelRequestProps: [] as Array<Record<string, unknown>>,
   exitFlowProps: [] as Array<Record<string, unknown>>,
   costThresholdDialogProps: [] as Array<Record<string, unknown>>,
   messageProps: [] as Array<Record<string, unknown>>,
@@ -121,6 +122,8 @@ const providerProbe = {
           shouldQuery: false,
         }))
       : async () => ({ messages: [], shouldQuery: false }),
+  confirmSuspectedShellPaste:
+    typeof vi.fn === "function" ? vi.fn(async () => true) : async () => true,
   onChangeAppState: typeof vi.fn === "function" ? vi.fn() : () => {},
   inkExit: typeof vi.fn === "function" ? vi.fn() : () => {},
   fileHistoryRewind: typeof vi.fn === "function" ? vi.fn() : () => {},
@@ -339,6 +342,10 @@ vi.mock("../input/processBashCommand.js", () => ({
   processBashCommand: providerProbe.processBashCommand,
 }));
 
+vi.mock("../input/shell-paste-confirmation.js", () => ({
+  confirmSuspectedShellPaste: providerProbe.confirmSuspectedShellPaste,
+}));
+
 vi.mock("../state/AppState.js", async () => {
   const React = await import("react");
   const defaultPermissionContext = {
@@ -489,6 +496,16 @@ vi.mock("../hooks/useGlobalKeybindings.js", async () => {
   return {
     GlobalKeybindingHandlers: (props: Record<string, unknown>) => {
       providerProbe.globalKeybindingProps.push(props);
+      return React.createElement(React.Fragment, null);
+    },
+  };
+});
+
+vi.mock("../hooks/useCancelRequest.js", async () => {
+  const React = await import("react");
+  return {
+    CancelRequestHandler: (props: Record<string, unknown>) => {
+      providerProbe.cancelRequestProps.push(props);
       return React.createElement(React.Fragment, null);
     },
   };
@@ -657,6 +674,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       onSubmissionBlocked,
       onOpenModelMenu,
       onboardingInput,
+      onBashSubmit,
     }: {
       input: string;
       onSubmit: (
@@ -688,6 +706,10 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
       onSubmissionBlocked?: (reason: string) => void;
       onOpenModelMenu?: () => Promise<void> | void;
       onboardingInput?: unknown;
+      onBashSubmit?: (
+        command: string,
+        admittedCwd?: string,
+      ) => Promise<void>;
     }) => {
       const guardedOnSubmit: typeof onSubmit = async (...args) => {
         if (
@@ -724,6 +746,7 @@ vi.mock("./PromptInput/PromptInput.js", async () => {
         onSubmissionBlocked,
         onOpenModelMenu,
         onboardingInput,
+        onBashSubmit,
       });
       return React.createElement("ink-text", null, `prompt:${input}`);
     },
@@ -812,6 +835,7 @@ function createTestStreams(): {
 function resetShellSurfaceProbe(): void {
   apiKeyVerificationProbe.contexts.length = 0;
   providerProbe.costSummaryGetters.length = 0;
+  providerProbe.cancelRequestProps.length = 0;
   providerProbe.exitFlowProps.length = 0;
   providerProbe.costThresholdDialogProps.length = 0;
   providerProbe.messageSelectorProps.length = 0;
@@ -829,6 +853,8 @@ function resetShellSurfaceProbe(): void {
   providerProbe.inkExit.mockClear?.();
   providerProbe.fileHistoryRewind.mockReset?.();
   providerProbe.processBashCommand.mockClear?.();
+  providerProbe.confirmSuspectedShellPaste.mockReset?.();
+  providerProbe.confirmSuspectedShellPaste.mockResolvedValue?.(true);
   providerProbe.historyEntries.length = 0;
   ledgerStatusProbe.refresh.mockClear();
   dismissLedgerVerification();
@@ -971,6 +997,8 @@ function createSession(
     readonly enqueueIdleInputBatch?: AgenCBridgeSession["enqueueIdleInputBatch"];
     readonly authBackend?: AgenCBridgeSession["services"]["authBackend"];
     readonly configStore?: import("../../config/store.js").ConfigStore;
+    readonly executeShellCommand?: AgenCBridgeSession["executeShellCommand"];
+    readonly localExecutionCapable?: boolean;
   } = {},
 ): AgenCBridgeSession {
   const modeSubscribers: Array<
@@ -1022,7 +1050,13 @@ function createSession(
       ...(opts.authBackend !== undefined
         ? { authBackend: opts.authBackend }
         : {}),
+      ...(opts.localExecutionCapable === true
+        ? { executionAdmission: {} as never }
+        : {}),
     },
+    ...(opts.executeShellCommand !== undefined
+      ? { executeShellCommand: opts.executeShellCommand }
+      : {}),
     ...(opts.setDaemonPermissionMode !== undefined
       ? { setDaemonPermissionMode: opts.setDaemonPermissionMode }
       : {}),
@@ -7207,6 +7241,271 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     }
   });
 
+  test("delegates a Workbench shell command without borrowing Editor authority", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const executeShellCommand = vi.fn(async ({
+      commandId,
+    }: {
+      readonly commandId: string;
+    }) => ({
+      commandId,
+      content: "direct ok",
+      stdout: "direct ok",
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      truncated: false,
+      isError: false,
+    }));
+    const emit = vi.fn();
+    const session = createSession({ executeShellCommand, emit });
+    resetShellSurfaceProbe();
+    fullscreenProbe.fullscreen = true;
+    process.env.AGENC_TUI_WORKBENCH = "1";
+
+    try {
+      await withRenderedApp(
+        <AgenCTuiApp session={session} isInteractive={false} />,
+        async () => {
+          const onBashSubmit = providerProbe.promptProps.at(-1)
+            ?.onBashSubmit as
+            | ((command: string, admittedCwd?: string) => Promise<void>)
+            | undefined;
+          expect(onBashSubmit).toBeDefined();
+
+          await onBashSubmit!("printf direct-shell");
+
+          expect(executeShellCommand).toHaveBeenCalledOnce();
+          expect(executeShellCommand).toHaveBeenCalledWith({
+            command: "printf direct-shell",
+            commandId: expect.any(String),
+            signal: expect.any(AbortSignal),
+          });
+          expect(providerProbe.processBashCommand).not.toHaveBeenCalled();
+          expect(emit).not.toHaveBeenCalled();
+        },
+      );
+    } finally {
+      fullscreenProbe.fullscreen = false;
+      delete process.env.AGENC_TUI_WORKBENCH;
+    }
+  });
+
+  test("keeps the temporary Editor lease around a Workbench local shell command", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const workspaceRoot = "/tmp/agenc-workbench-local-shell";
+    const leaseToken = "00000000-0000-4000-8000-000000000321";
+    const epoch = 7;
+    const acquireWorkspaceEditor = vi.fn(
+      async (
+        params: Parameters<
+          NonNullable<AgenCBridgeSession["acquireWorkspaceEditor"]>
+        >[0],
+      ) => ({
+        workspaceRoot: params.workspaceRoot,
+        editorInstanceId: params.editorInstanceId,
+        leaseToken,
+        epoch,
+        sequence: 1,
+        expiresAt: Date.now() + 15_000,
+      }),
+    );
+    const heartbeatWorkspaceEditor = vi.fn(
+      async (
+        params: Parameters<
+          NonNullable<AgenCBridgeSession["heartbeatWorkspaceEditor"]>
+        >[0],
+      ) => ({
+        workspaceRoot: params.workspaceRoot,
+        editorInstanceId: params.editorInstanceId,
+        leaseToken: params.leaseToken,
+        epoch: params.epoch,
+        sequence: 2,
+        expiresAt: Date.now() + 15_000,
+      }),
+    );
+    const releaseWorkspaceEditor = vi.fn(async () => ({
+      released: true as const,
+      stalePaths: [],
+    }));
+    const session = {
+      ...createSession({
+        executionCwd: workspaceRoot,
+        localExecutionCapable: true,
+      }),
+      acquireWorkspaceEditor,
+      heartbeatWorkspaceEditor,
+      releaseWorkspaceEditor,
+    } satisfies AgenCBridgeSession;
+    const shellResult = Promise.withResolvers<{
+      messages: [];
+      shouldQuery: false;
+    }>();
+    resetShellSurfaceProbe();
+    providerProbe.processBashCommand.mockImplementationOnce(
+      async () => shellResult.promise,
+    );
+    fullscreenProbe.fullscreen = true;
+    process.env.AGENC_TUI_WORKBENCH = "1";
+
+    try {
+      await withRenderedApp(
+        <AgenCTuiApp session={session} isInteractive={false} />,
+        async () => {
+          const onBashSubmit = providerProbe.promptProps.at(-1)
+            ?.onBashSubmit as
+            | ((command: string, admittedCwd?: string) => Promise<void>)
+            | undefined;
+          expect(onBashSubmit).toBeDefined();
+
+          vi.useFakeTimers();
+          let shell: Promise<void> | undefined;
+          try {
+            shell = onBashSubmit!("printf local-shell");
+            await vi.waitFor(() => {
+              expect(acquireWorkspaceEditor).toHaveBeenCalledOnce();
+              expect(providerProbe.processBashCommand).toHaveBeenCalledOnce();
+            });
+            const acquired = acquireWorkspaceEditor.mock.calls[0]![0];
+            expect(acquired).toEqual({
+              workspaceRoot,
+              editorInstanceId: expect.stringMatching(/^tui-shell-/u),
+              requireUnprotectedWorkspace: true,
+            });
+            expect(releaseWorkspaceEditor).not.toHaveBeenCalled();
+
+            await vi.advanceTimersByTimeAsync(3_000);
+            await vi.waitFor(() => {
+              expect(heartbeatWorkspaceEditor).toHaveBeenCalledWith({
+                workspaceRoot,
+                editorInstanceId: acquired.editorInstanceId,
+                leaseToken,
+                epoch,
+              });
+            });
+            expect(releaseWorkspaceEditor).not.toHaveBeenCalled();
+
+            shellResult.resolve({ messages: [], shouldQuery: false });
+            await shell;
+            expect(releaseWorkspaceEditor).toHaveBeenCalledOnce();
+            expect(releaseWorkspaceEditor).toHaveBeenCalledWith({
+              workspaceRoot,
+              editorInstanceId: acquired.editorInstanceId,
+              leaseToken,
+              epoch,
+            });
+          } finally {
+            shellResult.resolve({ messages: [], shouldQuery: false });
+            await shell?.catch(() => {});
+            vi.useRealTimers();
+          }
+        },
+      );
+    } finally {
+      fullscreenProbe.fullscreen = false;
+      delete process.env.AGENC_TUI_WORKBENCH;
+    }
+  });
+
+  test("keeps suspected-paste confirmation in front of the daemon shell bridge", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const executeShellCommand = vi.fn();
+    const emit = vi.fn();
+    let nextId = 0;
+    const session = {
+      ...createSession({ executeShellCommand, emit }),
+      nextInternalSubId: () => `paste-shell-${++nextId}`,
+    };
+    resetShellSurfaceProbe();
+    providerProbe.confirmSuspectedShellPaste.mockResolvedValueOnce(false);
+
+    await withRenderedApp(
+      <AgenCTuiApp session={session} isInteractive={false} />,
+      async () => {
+        const onBashSubmit = providerProbe.promptProps.at(-1)
+          ?.onBashSubmit as
+          | ((command: string, admittedCwd?: string) => Promise<void>)
+          | undefined;
+        await onBashSubmit!("rm -rf /tmp/not-run");
+
+        expect(providerProbe.confirmSuspectedShellPaste).toHaveBeenCalledWith(
+          "rm -rf /tmp/not-run",
+          expect.any(Function),
+        );
+        expect(executeShellCommand).not.toHaveBeenCalled();
+        expect(
+          emit.mock.calls.map(([event]) => event.msg.payload.message),
+        ).toEqual([
+          "<bash-input>rm -rf /tmp/not-run</bash-input>",
+          "<bash-stderr>Bash submission aborted: input looked like a paste and was not confirmed.</bash-stderr>",
+        ]);
+      },
+    );
+  });
+
+  test("aborts an active bridged shell command on Escape without cancelling a model turn", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    let observedSignal: AbortSignal | undefined;
+    const executeShellCommand = vi.fn(
+      async ({ commandId, signal }: {
+        readonly commandId: string;
+        readonly signal?: AbortSignal;
+      }) => {
+        observedSignal = signal;
+        await new Promise<void>((resolve) => {
+          if (signal?.aborted === true) {
+            resolve();
+            return;
+          }
+          signal?.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return {
+          commandId,
+          content: "",
+          stdout: "",
+          stderr: "interrupted",
+          exitCode: null,
+          timedOut: false,
+          truncated: false,
+          isError: true,
+        };
+      },
+    );
+    const cancelActiveTurn = vi.fn(async () => undefined);
+    const session = {
+      ...createSession({ executeShellCommand }),
+      cancelActiveTurn,
+    };
+    resetShellSurfaceProbe();
+
+    await withRenderedApp(
+      <AgenCTuiApp session={session} isInteractive={false} />,
+      async () => {
+        const onBashSubmit = providerProbe.promptProps.at(-1)
+          ?.onBashSubmit as
+          | ((command: string, admittedCwd?: string) => Promise<void>)
+          | undefined;
+        expect(onBashSubmit).toBeDefined();
+        const shell = onBashSubmit!("sleep 30");
+
+        await vi.waitFor(() => {
+          expect(
+            providerProbe.cancelRequestProps.at(-1)?.canCancelActiveTurn,
+          ).toBe(true);
+        });
+        const onCancel = providerProbe.cancelRequestProps.at(-1)?.onCancel as
+          | (() => void)
+          | undefined;
+        expect(onCancel).toBeDefined();
+        onCancel!();
+        await shell;
+
+        expect(observedSignal?.aborted).toBe(true);
+        expect(cancelActiveTurn).not.toHaveBeenCalled();
+      },
+    );
+  });
+
   test("drains queued bash commands without forwarding them to the model", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const {
@@ -7222,7 +7521,10 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     const admittedWorkspaceRoot = "/tmp/agenc-queued-bash-owner";
     let observedExecutionCwd: string | undefined;
     const session = {
-      ...createSession({ executionCwd: admittedWorkspaceRoot }),
+      ...createSession({
+        executionCwd: admittedWorkspaceRoot,
+        localExecutionCapable: true,
+      }),
       submit,
       emit,
       nextInternalSubId: () => `bash-id-${++id}`,
@@ -7321,7 +7623,7 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     const submit = vi.fn(async () => {});
     const emit = vi.fn();
     const session = {
-      ...createSession(),
+      ...createSession({ localExecutionCapable: true }),
       submit,
       emit,
       nextInternalSubId: vi

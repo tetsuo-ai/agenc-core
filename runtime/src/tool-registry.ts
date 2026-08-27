@@ -964,20 +964,32 @@ export function buildToolRegistry(
     EditorInteractionToolName,
     Tool
   >();
+  // Direct shell RPCs select one daemon-owned builtin by name. Reserve both
+  // names even when the canonical tool is disabled or unavailable so an
+  // extension cannot become the physical execution target by collision.
+  const reservedDirectShellToolNames = new Set(["system.bash", "PowerShell"]);
+  const trustedDirectShellTools = new Map<string, Tool>();
   for (const tool of defaultBuiltinTools) {
     if (isEditorInteractionToolName(tool.name)) {
       trustedEditorInteractionTools.set(tool.name, tool);
     }
+    if (reservedDirectShellToolNames.has(tool.name)) {
+      trustedDirectShellTools.set(tool.name, tool);
+    }
   }
 
-  const preserveTrustedEditorInteractionTools = (
+  const preserveTrustedRuntimeOwnedTools = (
     tools: readonly Tool[],
   ): Tool[] =>
-    tools.filter(
-      (tool) =>
-        !isEditorInteractionToolName(tool.name) ||
-        trustedEditorInteractionTools.get(tool.name) === tool,
-    );
+    tools.filter((tool) => {
+      if (isEditorInteractionToolName(tool.name)) {
+        return trustedEditorInteractionTools.get(tool.name) === tool;
+      }
+      if (reservedDirectShellToolNames.has(tool.name)) {
+        return trustedDirectShellTools.get(tool.name) === tool;
+      }
+      return true;
+    });
 
   const extraTools: Tool[] = configuredTools(
     (options.extraTools ?? []).map((tool) => tagTool(tool)),
@@ -1041,8 +1053,8 @@ export function buildToolRegistry(
 
   function buildRouter(): ToolRouter {
     const baseSpecs =
-      preserveTrustedEditorInteractionTools(staticTools).map(specForTool);
-    const mcpTools = preserveTrustedEditorInteractionTools(currentMcpTools());
+      preserveTrustedRuntimeOwnedTools(staticTools).map(specForTool);
+    const mcpTools = preserveTrustedRuntimeOwnedTools(currentMcpTools());
     const directMcpTools = mcpTools.filter(
       (tool) => tool.metadata?.deferred !== true,
     );
@@ -1053,10 +1065,10 @@ export function buildToolRegistry(
       baseSpecs,
       mcpTools: toolMap(directMcpTools),
       deferredMcpTools: toolMap(deferredMcpTools),
-      discoverableTools: preserveTrustedEditorInteractionTools(
+      discoverableTools: preserveTrustedRuntimeOwnedTools(
         currentDiscoverableTools(),
       ),
-      dynamicTools: preserveTrustedEditorInteractionTools([
+      dynamicTools: preserveTrustedRuntimeOwnedTools([
         ...currentDynamicTools(),
         ...currentDeferredTools(),
       ]),

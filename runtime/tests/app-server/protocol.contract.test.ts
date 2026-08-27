@@ -142,6 +142,7 @@ const expectedInternalMethods = [
   "session.rewindConversationToMessage",
   "session.previewFileRewind",
   "session.rewindFilesToMessage",
+  "session.shell.execute",
   "session.setModel",
   "session.setPermissionMode",
   "session.permissions.mutateRule",
@@ -190,8 +191,8 @@ function compileDefinitionValidator(
 }
 
 describe("AgenC daemon protocol surface", () => {
-  it("defines the 1.6 live attach-settings contract", () => {
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.8.0");
+  it("defines the current live attach-settings contract", () => {
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.9.0");
 
     const status: AgenCDaemonInternalResultByMethod["session.hooks.status"] = {
       sessionId: "session-bare",
@@ -311,6 +312,16 @@ describe("AgenC daemon protocol surface", () => {
           ask: [],
         },
       };
+    const shell: AgenCDaemonInternalResultByMethod["session.shell.execute"] = {
+      commandId: "command_contract",
+      content: "ok\n",
+      stdout: "ok\n",
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      truncated: false,
+      isError: false,
+    };
 
     expect(partial.ok).toBe(true);
     expect(rewind.message).toBe("missing");
@@ -318,6 +329,7 @@ describe("AgenC daemon protocol surface", () => {
     expect(permissionRuleMutation.sessionRules.allow).toEqual([
       "system.bash(ls)",
     ]);
+    expect(shell).toMatchObject({ commandId: "command_contract", exitCode: 0 });
   });
 
   it("publishes a schema with the same method list and package target", () => {

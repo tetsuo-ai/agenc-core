@@ -87,6 +87,9 @@ import {
   AGENC_DAEMON_METHODS,
   AGENC_DAEMON_PROTOCOL_VERSION,
   AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY,
+  MAX_SESSION_SHELL_COMMAND_UTF8_BYTES,
+  MAX_SESSION_SHELL_IDENTIFIER_UTF8_BYTES,
+  MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES,
   isAgenCDaemonKnownMethod,
   JSON_RPC_VERSION,
   type AgentAttachParams,
@@ -171,6 +174,8 @@ import {
   type SessionExtendCompactionRollbackRetentionParams,
   type SessionRewindConversationToMessageParams,
   type SessionFileRewindParams,
+  type SessionShellExecuteParams,
+  type SessionShellExecuteResult,
   type SessionSetModelParams,
   type SessionSetPermissionModeParams,
   type SessionPermissionRuleMutationParams,
@@ -251,6 +256,7 @@ const MINIMUM_PROTOCOL_MINOR_BY_METHOD: Readonly<
   "session.transcript.v2": 2,
   "session.mcp.status": 3,
   "session.permissions.mutateRule": 7,
+  "session.shell.execute": 9,
 });
 
 const CSV_JOB_REVIEW_MAX_PAGE_SIZE = 100;
@@ -413,6 +419,7 @@ function buildServerCapabilities(
       agentManager,
       "rewindFilesToMessage",
     ),
+    "session.shell.execute": hasMethod(agentManager, "executeSessionShell"),
     "session.setModel": hasMethod(agentManager, "setSessionModel"),
     "session.setPermissionMode": hasMethod(
       agentManager,
@@ -500,6 +507,7 @@ export interface AgenCDaemonDispatcherOptions {
     | "rewindConversationToMessage"
     | "previewFileRewind"
     | "rewindFilesToMessage"
+    | "executeSessionShell"
     | "setSessionModel"
     | "setSessionPermissionMode"
     | "mutateSessionPermissionRule"
@@ -603,6 +611,7 @@ export class AgenCDaemonJsonRpcDispatcher {
     | "rewindConversationToMessage"
     | "previewFileRewind"
     | "rewindFilesToMessage"
+    | "executeSessionShell"
     | "setSessionModel"
     | "setSessionPermissionMode"
     | "mutateSessionPermissionRule"
@@ -1332,6 +1341,17 @@ export class AgenCDaemonJsonRpcDispatcher {
             ),
           ),
         );
+      case "session.shell.execute": {
+        const validated = validateSessionShellExecuteParams(params);
+        const result = await this.#agentManager.executeSessionShell(
+          validated,
+          signal,
+        );
+        return internalSuccessResponse(
+          id,
+          validateSessionShellExecuteResult(result, validated.commandId),
+        );
+      }
       case "session.setModel":
         return successResponse(
           id,
@@ -2176,6 +2196,7 @@ function methodSupportsRequestCancellation(
     method === "csvJob.review.resolve" ||
     method === "session.partialCompactFromMessage" ||
     method === "session.rewindConversationToMessage" ||
+    method === "session.shell.execute" ||
     method === "workspace.editor.predict" ||
     method === "message.stream" ||
     method === "message.send"
@@ -3285,6 +3306,110 @@ function validateSessionFileRewindParams(
     );
   }
   return validated as SessionFileRewindParams;
+}
+
+function validateSessionShellExecuteParams(
+  params: JsonObject,
+): SessionShellExecuteParams {
+  const methodName = "session.shell.execute";
+  const validated = validateObjectShape(params, {
+    methodName,
+    stringFields: ["sessionId", "commandId", "command"],
+  });
+  validateRequiredString(validated, methodName, "sessionId");
+  validateRequiredString(validated, methodName, "commandId");
+  validateRequiredString(validated, methodName, "command");
+  validateMaximumUtf8Bytes(
+    validated.sessionId,
+    methodName,
+    "sessionId",
+    MAX_SESSION_SHELL_IDENTIFIER_UTF8_BYTES,
+  );
+  validateMaximumUtf8Bytes(
+    validated.commandId,
+    methodName,
+    "commandId",
+    MAX_SESSION_SHELL_IDENTIFIER_UTF8_BYTES,
+  );
+  validateMaximumUtf8Bytes(
+    validated.command,
+    methodName,
+    "command",
+    MAX_SESSION_SHELL_COMMAND_UTF8_BYTES,
+  );
+  return validated as SessionShellExecuteParams;
+}
+
+function validateSessionShellExecuteResult(
+  value: unknown,
+  expectedCommandId: string,
+): SessionShellExecuteResult {
+  if (!isPlainJsonObject(value)) {
+    throw new Error("session.shell.execute returned a non-object result");
+  }
+
+  const allowedKeys = new Set([
+    "commandId",
+    "content",
+    "stdout",
+    "stderr",
+    "exitCode",
+    "timedOut",
+    "truncated",
+    "isError",
+  ]);
+  for (const key of Object.keys(value)) {
+    if (!allowedKeys.has(key)) {
+      throw new Error(
+        `session.shell.execute returned unexpected field '${key}'`,
+      );
+    }
+  }
+
+  if (value.commandId !== expectedCommandId) {
+    throw new Error("session.shell.execute returned a mismatched commandId");
+  }
+  for (const field of ["content", "stdout", "stderr"] as const) {
+    const text = value[field];
+    if (typeof text !== "string") {
+      throw new Error(
+        `session.shell.execute returned non-string field '${field}'`,
+      );
+    }
+    if (
+      Buffer.byteLength(text, "utf8") > MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES
+    ) {
+      throw new Error(
+        `session.shell.execute returned field '${field}' larger than ${MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES} UTF-8 bytes`,
+      );
+    }
+  }
+  if (
+    value.exitCode !== null &&
+    (typeof value.exitCode !== "number" ||
+      !Number.isSafeInteger(value.exitCode))
+  ) {
+    throw new Error(
+      "session.shell.execute returned exitCode that is not an integer or null",
+    );
+  }
+  for (const field of ["timedOut", "truncated", "isError"] as const) {
+    if (typeof value[field] !== "boolean") {
+      throw new Error(
+        `session.shell.execute returned non-boolean field '${field}'`,
+      );
+    }
+  }
+  return {
+    commandId: expectedCommandId,
+    content: value.content as string,
+    stdout: value.stdout as string,
+    stderr: value.stderr as string,
+    exitCode: value.exitCode as number | null,
+    timedOut: value.timedOut as boolean,
+    truncated: value.truncated as boolean,
+    isError: value.isError as boolean,
+  };
 }
 
 function validateSessionSetModelParams(

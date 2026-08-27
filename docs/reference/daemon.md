@@ -122,7 +122,7 @@ const client = await connect(); // socket + cookie under AGENC_HOME
 ## Protocol
 
 - Envelope: **JSON-RPC 2.0** over newline-delimited messages.
-- Protocol version constant: **`1.8.0`**
+- Protocol version constant: **`1.9.0`**
   (`AGENC_DAEMON_PROTOCOL_VERSION` in `runtime/src/app-server/protocol/index.ts`).
 - Clients send `initialize` with the protocol version. Negotiation compares the
   numeric major and minor versions: the server accepts the same major when the
@@ -146,6 +146,8 @@ const client = await connect(); // socket + cookie under AGENC_HOME
   successful `session.setModel` and `session.applyConfig` responses identify
   the exact canonical settings event and provider/model pair. Core/TUI clients
   wait for that event before they report success.
+  Protocol 1.9 adds the internal `session.shell.execute` method for admitted
+  shell commands on the live daemon-owned session.
   Protocols 1.0 through 1.2 advertise `session.mcp.status: false`,
   reject that method, and never receive `event.mcp_status_changed`. Update if
   necessary, then run `agenc daemon restart` so the daemon uses the installed
@@ -192,7 +194,7 @@ reimplementing the workbench. Source:
 | Proposals / changes | `workspace.editor.proposal.get`, `status`, `apply`, `discard`, `changes.list` |
 | Code prediction | `workspace.editor.predict`, `cancelPrediction`, `predictionFeedback` |
 | Compaction / rewind | `session.partialCompactFromMessage`, `rollbackCompaction`, `extendCompactionRollbackRetention`, `rewindConversationToMessage`, `previewFileRewind`, `rewindFilesToMessage` |
-| Session controls | `session.setModel`, `setPermissionMode`, `applyConfig`, `session.permissions.mutateRule` |
+| Session controls | `session.setModel`, `setPermissionMode`, `applyConfig`, `session.permissions.mutateRule`, `session.shell.execute` |
 | Hooks / MCP | `session.hooks.status`, `session.hooks.setDisabled`, `session.mcp.reconnectServer`, `session.mcp.enableServer`, `session.mcp.disableServer` |
 
 Workbench BUFFER and Neovim behavior: [`../embedded-neovim-buffer.md`](../embedded-neovim-buffer.md).
@@ -206,6 +208,15 @@ in the owning authority returned by `agent.attach`. It also adds the provider,
 model, and runtime-settings event ID to successful model and config mutation
 responses. Core waits for that exact event before updating the TUI or accepting
 the next runtime-dependent action.
+
+Protocol 1.9 adds `session.shell.execute` for the Core TUI. It accepts only
+`sessionId`, `commandId`, and `command`. Callers cannot choose a working
+directory, shell, environment, tool, or permission bypass. Session and command
+IDs are limited to 1,024 UTF-8 bytes, and the command is limited to 65,536
+UTF-8 bytes. The result contains `commandId`, `content`, `stdout`, `stderr`,
+`exitCode`, `timedOut`, `truncated`, and `isError`. Each text result field is
+limited to 100,000 UTF-8 bytes. The method supports `request.cancel` and is not
+part of the public SDK method set.
 
 ### Race-safe turns and transcript sync (protocol 1.2+)
 

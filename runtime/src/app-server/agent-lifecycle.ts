@@ -112,6 +112,8 @@ import type {
   SessionFileRewindParams,
   SessionPreviewFileRewindResult,
   SessionRewindFilesToMessageResult,
+  SessionShellExecuteParams,
+  SessionShellExecuteResult,
   SessionSetModelParams,
   SessionSetModelResult,
   SessionSetPermissionModeParams,
@@ -2620,6 +2622,29 @@ export class AgenCDaemonAgentManager {
     return { requestId: params.requestId, decision: "cancelled" };
   }
 
+  async executeSessionShell(
+    params: SessionShellExecuteParams,
+    signal?: AbortSignal,
+  ): Promise<SessionShellExecuteResult> {
+    if (this.#sessionManager === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "INVALID_ARGUMENT",
+        "session.shell.execute requires a daemon session manager",
+      );
+    }
+    if (this.#runner?.executeAgentShell === undefined) {
+      throw new AgenCDaemonAgentLifecycleError(
+        "BACKGROUND_RUNNER_UNAVAILABLE",
+        "session.shell.execute requires a live daemon runtime",
+      );
+    }
+    const agentId = await this.#resolveActiveAgentIdForSession(
+      params.sessionId,
+      { allowExecuteShell: true },
+    );
+    return this.#runner.executeAgentShell(agentId, params, signal);
+  }
+
   async respondToElicitation(
     params: ElicitationRespondParams,
   ): Promise<ElicitationRespondResult> {
@@ -3628,6 +3653,7 @@ export class AgenCDaemonAgentManager {
       readonly allowSetHooksDisabled?: boolean;
       readonly allowApplyConfig?: boolean;
       readonly allowCodePrediction?: boolean;
+      readonly allowExecuteShell?: boolean;
     } = {},
   ): Promise<string> {
     if (this.#sessionManager === undefined) {
@@ -3699,6 +3725,9 @@ export class AgenCDaemonAgentManager {
     const hasCodePredictionRunner =
       options.allowCodePrediction === true &&
       this.#runner?.resolveCodePredictionSource !== undefined;
+    const hasExecuteShellRunner =
+      options.allowExecuteShell === true &&
+      this.#runner?.executeAgentShell !== undefined;
     if (
       !hasToolDecisionRunner &&
       !hasCancelRunner &&
@@ -3720,7 +3749,8 @@ export class AgenCDaemonAgentManager {
       !hasHooksStatusRunner &&
       !hasSetHooksDisabledRunner &&
       !hasApplyConfigRunner &&
-      !hasCodePredictionRunner
+      !hasCodePredictionRunner &&
+      !hasExecuteShellRunner
     ) {
       throw new AgenCDaemonAgentLifecycleError(
         "BACKGROUND_RUNNER_UNAVAILABLE",

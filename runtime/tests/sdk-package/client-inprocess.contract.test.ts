@@ -347,7 +347,7 @@ describe("agenc-sdk client over the in-process transport", () => {
     const initialized = await daemon.client.initialize();
     expect(initialized).toMatchObject({
       type: "initialized",
-      protocol: { version: "1.8.0" },
+      protocol: { version: "1.9.0" },
     });
 
     const session = await daemon.client.createSession({

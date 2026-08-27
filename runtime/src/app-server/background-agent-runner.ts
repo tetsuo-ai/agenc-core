@@ -52,12 +52,13 @@ import {
 } from "../permissions/evaluator.js";
 import type { ApprovalCtx, ApprovalResolver } from "../tools/orchestrator.js";
 import { routerFromRegistry } from "../tools/router.js";
+import { buildLiveToolDispatchOptions } from "../phases/execute-tools.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
 import {
   classifyUntrustedToolResult,
   frameUntrustedToolResultContent,
 } from "../tools/untrusted-tool-result-framing.js";
-import type { ToolRegistry } from "../tool-registry.js";
+import type { ToolDispatchResult, ToolRegistry } from "../tool-registry.js";
 import { getPlan, getPlanFilePath } from "../utils/plans.js";
 import { stableStringify } from "../utils/stableStringify.js";
 import { logForDebugging } from "../utils/debug.js";
@@ -69,6 +70,9 @@ import {
   type ModelUsage,
 } from "../session/cost.js";
 import { runWithCurrentRuntimeSession } from "../session/current-session.js";
+import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import { resolveDefaultShell } from "../utils/shell/resolveDefaultShell.js";
+import { escapeXml } from "../utils/xml.js";
 import {
   canCycleToAuto,
   createDisabledAutoModeContext,
@@ -175,6 +179,8 @@ import type {
   SessionHookRunDiagnosticShape,
   SessionPermissionRuleMutationParams,
   SessionPermissionRuleMutationResult,
+  SessionShellExecuteParams,
+  SessionShellExecuteResult,
 } from "./protocol/index.js";
 import type { AgenCRealtimeThreadBinding } from "./realtime.js";
 import type { AgenCRealtimeCallClient } from "./realtime-transport.js";
@@ -183,7 +189,10 @@ import type {
   RealtimeTransportRequest,
 } from "../conversation/realtime/conversation.js";
 import type { RealtimeStartupContextSessionLike } from "../conversation/realtime/context.js";
-import { JSON_RPC_VERSION } from "./protocol/index.js";
+import {
+  JSON_RPC_VERSION,
+  MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES,
+} from "./protocol/index.js";
 import {
   createAgenCDaemonRuntimeAuthBackend,
   type AgenCDaemonRuntimeAuthBackend,
@@ -642,6 +651,11 @@ export interface AgenCBackgroundAgentRunner {
     agentId: string,
     params: AgenCBackgroundAgentMessageParams,
   ): Promise<AgenCBackgroundAgentMessageResult>;
+  executeAgentShell?(
+    agentId: string,
+    params: SessionShellExecuteParams,
+    signal?: AbortSignal,
+  ): Promise<SessionShellExecuteResult>;
   /** Resolve the live route without exposing the primary provider to callers. */
   resolveCodePredictionSource?(
     agentId: string,
@@ -852,6 +866,8 @@ interface ActiveBackgroundAgent {
   cleanupComplete: Promise<void>;
   pendingMessageSubmissionCount: number;
   readonly messageSubmissionsById: Map<string, ActiveMessageSubmission>;
+  pendingShellExecutionCount: number;
+  readonly shellExecutionsById: Map<string, ActiveShellExecution>;
   /**
    * True when no initial turn was submitted at spawn (deferInitialTurn
    * spawns and restored agents). Their thread sits in pending_init until
@@ -883,6 +899,12 @@ interface ActiveMessageSubmission {
   activeAssistantMessageId?: string;
   terminal?: AgenCBackgroundAgentMessageTerminal;
   readonly promise: Promise<AgenCBackgroundAgentMessageResult>;
+  settled: boolean;
+}
+
+interface ActiveShellExecution {
+  readonly commandFingerprint: string;
+  readonly promise: Promise<SessionShellExecuteResult>;
   settled: boolean;
 }
 
@@ -1303,6 +1325,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         cleanupComplete: Promise.resolve(),
         pendingMessageSubmissionCount: 0,
         messageSubmissionsById: new Map(),
+        pendingShellExecutionCount: 0,
+        shellExecutionsById: new Map(),
         dispatchChain: Promise.resolve(),
       };
       authorityOwner = active;
@@ -1775,6 +1799,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           cleanupComplete: Promise.resolve(),
           pendingMessageSubmissionCount: 0,
           messageSubmissionsById: new Map(),
+          pendingShellExecutionCount: 0,
+          shellExecutionsById: new Map(),
           dispatchChain: Promise.resolve(),
         };
         authorityOwner = active;
@@ -2229,9 +2255,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       active.pendingTerminal !== undefined ||
       active.cancellationRequest !== undefined ||
       active.pendingMessageSubmissionCount !== 0 ||
+      active.pendingShellExecutionCount !== 0 ||
       active.messageSubmission !== undefined ||
       [...active.messageSubmissionsById.values()].some(
         (submission) => !submission.settled,
+      ) ||
+      [...active.shellExecutionsById.values()].some(
+        (execution) => !execution.settled,
       ) ||
       hasRuntimeActiveTurn(active.bootstrap.session) ||
       hasOpenAgentDescendants(active.control, active.thread.threadId) ||
@@ -2431,6 +2461,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     if (
       params.ifBusy === "reject" &&
       (active.pendingMessageSubmissionCount > 0 ||
+        active.pendingShellExecutionCount > 0 ||
         hasRuntimeActiveTurn(active.bootstrap.session) ||
         threadStatus === "running" ||
         // pending_init is busy only while a spawn-submitted initial turn
@@ -2496,6 +2527,200 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       pruneMessageSubmissionCache(active.messageSubmissionsById);
     });
     return promise;
+  }
+
+  async executeAgentShell(
+    agentId: string,
+    params: SessionShellExecuteParams,
+    signal?: AbortSignal,
+  ): Promise<SessionShellExecuteResult> {
+    const active = this.#active.get(agentId);
+    if (active === undefined || !isRunnableActiveAgent(active)) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    const boundSessionId = active.sessionBinding?.sessionId;
+    if (boundSessionId !== undefined && params.sessionId !== boundSessionId) {
+      throw new Error(
+        `Shell session mismatch: ${params.sessionId} is not owned by ${agentId}`,
+      );
+    }
+    throwIfShellRequestAborted(signal);
+
+    const commandFingerprint = messageContentFingerprint(params.command);
+    const duplicate = active.shellExecutionsById.get(params.commandId);
+    if (duplicate !== undefined) {
+      if (duplicate.commandFingerprint !== commandFingerprint) {
+        throw new Error(
+          `Shell command id ${params.commandId} was already used for different content`,
+        );
+      }
+      return duplicate.promise;
+    }
+
+    const persisted = findPersistedMessageSubmission(
+      active.bootstrap.rolloutStore.readAll(),
+      shellSubmissionMessageId(params.commandId),
+    );
+    if (persisted !== undefined) {
+      if (persisted.contentFingerprint !== commandFingerprint) {
+        throw new Error(
+          `Shell command id ${params.commandId} has conflicting durable content`,
+        );
+      }
+      throw new Error(
+        `Shell command ${params.commandId} already has durable execution evidence. Its response outcome is unknown, so AgenC will not run it again.`,
+      );
+    }
+
+    const threadStatus = active.thread.status().status;
+    if (
+      active.pendingMessageSubmissionCount > 0 ||
+      active.messageSubmission !== undefined ||
+      hasRuntimeActiveTurn(active.bootstrap.session) ||
+      threadStatus === "running" ||
+      (threadStatus === "pending_init" && !active.initialTurnDeferred)
+    ) {
+      throw new Error(
+        `Cannot run a direct shell command while session ${params.sessionId} has an active or queued model turn`,
+      );
+    }
+
+    active.pendingShellExecutionCount += 1;
+    const execution = active.messageSubmissionQueue.then(() =>
+      this.#executeAgentShellCommand(active, agentId, params, signal),
+    );
+    const entry: ActiveShellExecution = {
+      commandFingerprint,
+      promise: execution,
+      settled: false,
+    };
+    active.shellExecutionsById.set(params.commandId, entry);
+    active.messageSubmissionQueue = execution.then(
+      () => {},
+      () => {},
+    );
+    const settle = (): void => {
+      entry.settled = true;
+      active.pendingShellExecutionCount = Math.max(
+        0,
+        active.pendingShellExecutionCount - 1,
+      );
+      pruneShellExecutionCache(active.shellExecutionsById);
+    };
+    void execution.then(settle, settle);
+    return execution;
+  }
+
+  async #executeAgentShellCommand(
+    active: ActiveBackgroundAgent,
+    agentId: string,
+    params: SessionShellExecuteParams,
+    signal?: AbortSignal,
+  ): Promise<SessionShellExecuteResult> {
+    if (!isRunnableActiveAgent(active) || this.#active.get(agentId) !== active) {
+      throw new Error(`AgenC daemon agent not running: ${agentId}`);
+    }
+    throwIfShellRequestAborted(signal);
+
+    const session = active.bootstrap.session;
+    const executionSignal =
+      signal === undefined
+        ? session.abortController.signal
+        : AbortSignal.any([signal, session.abortController.signal]);
+    throwIfShellRequestAborted(executionSignal);
+    const acceptedAt = this.#now();
+    const eventKey = shellEventKey(params.commandId);
+    session.emit(
+      {
+        eventId: `shell-submission:${eventKey}`,
+        id: `shell-submission:${eventKey}`,
+        msg: {
+          type: "message_submission",
+          payload: {
+            contentFingerprint: messageContentFingerprint(params.command),
+            messageId: shellSubmissionMessageId(params.commandId),
+            streamId: "session.shell.execute",
+            acceptedAt,
+          },
+        },
+      },
+      { durable: true },
+    );
+    session.emit(
+      {
+        eventId: `shell-input:${eventKey}`,
+        id: `shell-input:${eventKey}`,
+        msg: {
+          type: "user_message",
+          payload: {
+            message: `<bash-input>${escapeXml(params.command)}</bash-input>`,
+            displayText: `<bash-input>${escapeXml(params.command)}</bash-input>`,
+            queuedCommandUuid: params.commandId,
+          },
+        },
+      },
+      { durable: true },
+    );
+    await active.dispatchChain;
+
+    const dispatchResult = await runWithCurrentRuntimeSession(session, () =>
+      runWithCanonicalSettingsAuthority(active.bootstrap.configStore, async () => {
+        throwIfShellRequestAborted(executionSignal);
+        const turn = session.newDefaultTurnWithSubId(`shell-${eventKey}`);
+        const workspaceRoot = runtimeWorkspaceRoot(active.bootstrap);
+        if (
+          turn.cwd !== workspaceRoot ||
+          active.bootstrap.workspaceRoot !== workspaceRoot
+        ) {
+          throw new Error(
+            `Shell cwd authority mismatch for session ${params.sessionId}`,
+          );
+        }
+        const toolName =
+          resolveDefaultShell() === "powershell" ? "PowerShell" : "system.bash";
+        if (
+          !session.services.registry.tools.some((tool) => tool.name === toolName)
+        ) {
+          throw new Error(
+            `Configured shell ${toolName} is not available in session ${params.sessionId}`,
+          );
+        }
+        const router = routerFromRegistry(session.services.registry);
+        return router.dispatchModelToolCall(
+          {
+            id: params.commandId,
+            name: toolName,
+            arguments: JSON.stringify({ command: params.command }),
+          },
+          {
+            ...buildLiveToolDispatchOptions(turn, session, executionSignal),
+            source: "direct",
+          },
+        );
+      }),
+    );
+    const result = normalizeSessionShellResult(params.commandId, dispatchResult);
+    const transcriptOutput =
+      `<bash-stdout>${escapeXml(result.stdout)}</bash-stdout>` +
+      `<bash-stderr>${escapeXml(result.stderr)}</bash-stderr>`;
+    session.emit(
+      {
+        eventId: `shell-output:${eventKey}`,
+        id: `shell-output:${eventKey}`,
+        msg: {
+          type: "user_message",
+          payload: {
+            message: transcriptOutput,
+            displayText: transcriptOutput,
+            queuedCommandUuid: params.commandId,
+          },
+        },
+      },
+      { durable: true },
+    );
+    await active.dispatchChain;
+    active.lastActiveAt = this.#now();
+    return result;
   }
 
   async #executeAgentMessageSubmission(
@@ -5144,6 +5369,117 @@ function messageContentFingerprint(content: unknown): string {
   return createHash("sha256")
     .update(stableStringify(content) ?? "undefined", "utf8")
     .digest("hex");
+}
+
+const MAX_RETAINED_SHELL_EXECUTIONS = 256;
+const SHELL_RESULT_TRUNCATION_MARKER = "\n[truncated]";
+
+function shellSubmissionMessageId(commandId: string): string {
+  return `shell:${commandId}`;
+}
+
+function shellEventKey(commandId: string): string {
+  return createHash("sha256").update(commandId, "utf8").digest("hex").slice(0, 32);
+}
+
+function throwIfShellRequestAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted !== true) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  throw new Error(
+    typeof signal.reason === "string" && signal.reason.length > 0
+      ? signal.reason
+      : "Shell command cancelled",
+  );
+}
+
+function pruneShellExecutionCache(
+  cache: Map<string, ActiveShellExecution>,
+): void {
+  if (cache.size <= MAX_RETAINED_SHELL_EXECUTIONS) return;
+  for (const [commandId, execution] of cache) {
+    if (!execution.settled) continue;
+    cache.delete(commandId);
+    if (cache.size <= MAX_RETAINED_SHELL_EXECUTIONS) return;
+  }
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+function boundShellResultText(value: string): {
+  readonly value: string;
+  readonly truncated: boolean;
+} {
+  const encoded = Buffer.from(value, "utf8");
+  if (encoded.byteLength <= MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES) {
+    return { value, truncated: false };
+  }
+  const marker = Buffer.from(SHELL_RESULT_TRUNCATION_MARKER, "utf8");
+  let end = Math.max(
+    0,
+    MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES - marker.byteLength,
+  );
+  while (end > 0 && (encoded[end] & 0xc0) === 0x80) end -= 1;
+  return {
+    value: `${encoded.subarray(0, end).toString("utf8")}${SHELL_RESULT_TRUNCATION_MARKER}`,
+    truncated: true,
+  };
+}
+
+function normalizeSessionShellResult(
+  commandId: string,
+  dispatch: ToolDispatchResult,
+): SessionShellExecuteResult {
+  const metadata = recordValue(dispatch.metadata);
+  const codeMode = recordValue(dispatch.codeModeResult);
+  const metadataStdout =
+    typeof metadata.stdout === "string" ? metadata.stdout : undefined;
+  const codeModeOutput =
+    typeof codeMode.output === "string" ? codeMode.output : undefined;
+  const rawStdout =
+    metadataStdout ??
+    codeModeOutput ??
+    (dispatch.isError === true ? "" : dispatch.content);
+  const rawStderr =
+    typeof metadata.stderr === "string"
+      ? metadata.stderr
+      : dispatch.isError === true && rawStdout.length === 0
+        ? dispatch.content
+        : "";
+  const metadataExitCode = metadata.exitCode;
+  const codeModeExitCode = codeMode.exit_code;
+  const exitCode =
+    typeof metadataExitCode === "number" && Number.isSafeInteger(metadataExitCode)
+      ? metadataExitCode
+      : typeof codeModeExitCode === "number" && Number.isSafeInteger(codeModeExitCode)
+        ? codeModeExitCode
+        : null;
+  const timedOut =
+    metadata.timedOut === true || codeMode.timed_out === true;
+  const content = boundShellResultText(dispatch.content);
+  const stdout = boundShellResultText(rawStdout);
+  const stderr = boundShellResultText(rawStderr);
+  const truncated =
+    metadata.truncated === true ||
+    content.truncated ||
+    stdout.truncated ||
+    stderr.truncated;
+  return {
+    commandId,
+    content: content.value,
+    stdout: stdout.value,
+    stderr: stderr.value,
+    exitCode,
+    timedOut,
+    truncated,
+    isError:
+      dispatch.isError === true ||
+      timedOut ||
+      (exitCode !== null && exitCode !== 0),
+  };
 }
 
 interface PersistedMessageSubmission {

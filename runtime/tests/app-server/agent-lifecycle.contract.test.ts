@@ -1253,6 +1253,72 @@ describe("AgenC background agent lifecycle", () => {
     ]);
   });
 
+  it("routes session.shell.execute to the owning runner with the request AbortSignal", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      now: () => "2026-08-27T00:00:00.000Z",
+    });
+    await sessions.restoreSession({
+      sessionId: "session-shell-restored",
+      agentId: "agent-shell-restored",
+      status: "waiting",
+      createdAt: "2026-08-27T00:00:00.000Z",
+      initialPrompt: "deferred shell session",
+    });
+    const executeAgentShell = vi.fn(async () => ({
+      commandId: "shell-manager-1",
+      content: "manager routed output",
+      stdout: "manager routed output",
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      truncated: false,
+      isError: false,
+    }));
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner: {
+        startAgent: async () => ({
+          agentId: "unused",
+          startedAt: "2026-08-27T00:00:00.000Z",
+          status: "running",
+        }),
+        executeAgentShell,
+      },
+    });
+    await agents.restoreAgent({
+      agentId: "agent-shell-restored",
+      objective: "deferred shell session",
+      startedAt: "2026-08-27T00:00:00.000Z",
+      lastActiveAt: "2026-08-27T00:00:00.000Z",
+      sessionIds: ["session-shell-restored"],
+      runtimeAvailable: true,
+    });
+    const params = {
+      sessionId: "session-shell-restored",
+      commandId: "shell-manager-1",
+      command: "printf manager-route",
+    } as const;
+    const controller = new AbortController();
+
+    await expect(
+      agents.executeSessionShell(params, controller.signal),
+    ).resolves.toEqual({
+      commandId: "shell-manager-1",
+      content: "manager routed output",
+      stdout: "manager routed output",
+      stderr: "",
+      exitCode: 0,
+      timedOut: false,
+      truncated: false,
+      isError: false,
+    });
+    expect(executeAgentShell).toHaveBeenCalledWith(
+      "agent-shell-restored",
+      params,
+      controller.signal,
+    );
+  });
+
   it("routes session.clear to the runner that owns the daemon session", async () => {
     const sessions = new AgenCDaemonSessionManager({
       now: () => "2026-05-01T12:07:01.000Z",
@@ -5812,7 +5878,7 @@ describe("AgenC background agent lifecycle", () => {
         id: "future-protocol",
         method: "initialize",
         params: {
-          protocol: { version: "1.9.0" },
+          protocol: { version: "1.10.0" },
           clientName: "contract-test",
         },
       }),
@@ -5824,8 +5890,8 @@ describe("AgenC background agent lifecycle", () => {
         message: "Unsupported protocol version",
         data: {
           code: "PROTOCOL_VERSION_UNSUPPORTED",
-          clientVersion: "1.9.0",
-          serverVersion: "1.8.0",
+          clientVersion: "1.10.0",
+          serverVersion: "1.9.0",
         },
       },
     });
@@ -5890,16 +5956,16 @@ describe("AgenC background agent lifecycle", () => {
       id: 1,
       result: {
         type: "initialized",
-        protocolVersion: "1.8.0",
-        protocol: { version: "1.8.0" },
+        protocolVersion: "1.9.0",
+        protocol: { version: "1.9.0" },
         capabilities: {},
       },
     });
-    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.8.0");
+    expect(AGENC_DAEMON_PROTOCOL_VERSION).toBe("1.9.0");
     expect(connection.initializeState).toMatchObject({
-      protocol: { version: "1.8.0" },
+      protocol: { version: "1.9.0" },
       clientProtocol: { version: "1.0.0" },
-      serverProtocol: { version: "1.8.0" },
+      serverProtocol: { version: "1.9.0" },
       clientCapabilities: { experimentalApi: true },
     });
     expect(

@@ -62,6 +62,7 @@ import type {
   WorkspaceEditorTopologyReserveResult,
   SessionRollbackCompactionResult,
   SessionExtendCompactionRollbackRetentionResult,
+  SessionShellExecuteResult,
 } from "../app-server/protocol/index.js";
 
 export interface AgenCCompactProgressControls {
@@ -79,6 +80,12 @@ export interface PermissionModeRegistryLike {
       previous: ToolPermissionContext["mode"],
     ) => void,
   ): () => void;
+}
+
+export interface AgenCShellExecuteParams {
+  readonly command: string;
+  readonly commandId: string;
+  readonly signal?: AbortSignal;
 }
 
 export interface AgenCBridgeSession extends AgenCCompactProgressControls {
@@ -99,6 +106,8 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     /** Immutable provider environment for daemon-only bridge sessions. */
     readonly providerEnvironment?: SessionServices["providerEnvironment"];
     readonly sandboxExecutionBroker?: SessionServices["sandboxExecutionBroker"];
+    /** Admission authority present only on genuine in-process Sessions. */
+    readonly executionAdmission?: SessionServices["executionAdmission"];
     readonly configStore?: ConfigStore;
     readonly authManager?: SessionServices["authManager"];
     readonly authBackend?: SessionServices["authBackend"];
@@ -239,6 +248,9 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
     readonly displayText?: string;
   }>;
   readonly realtime?: AgenCRealtimeTuiControls;
+  executeShellCommand?(
+    params: AgenCShellExecuteParams,
+  ): Promise<SessionShellExecuteResult>;
   submit?(
     message: string,
     opts?: {

@@ -47,6 +47,8 @@ import type {
   SessionApplyConfigParams,
   SessionApplyConfigResult,
   SessionSnapshotResult,
+  SessionShellExecuteParams,
+  SessionShellExecuteResult,
   SessionResolveToolCallResult,
   WorkspaceEditorAcquireParams,
   WorkspaceEditorCancelPredictionParams,
@@ -135,7 +137,10 @@ import type {
   RealtimeAudioPlayer,
   StartRealtimeAudioCapture,
 } from "./realtime/audio.js";
-import type { AgenCCompactProgressControls } from "./session-types.js";
+import type {
+  AgenCCompactProgressControls,
+  AgenCShellExecuteParams,
+} from "./session-types.js";
 import { mcpServerNameValidationIssue } from "../mcp-client/server-name.js";
 import { isRecord } from "../utils/record.js";
 import { logForDebugging } from "../utils/debug.js";
@@ -375,6 +380,9 @@ export interface AgenCTuiBridgeSession extends AgenCCompactProgressControls {
     params: WorkspaceEditorPredictionFeedbackSessionParams,
   ): Promise<WorkspaceEditorPredictionFeedbackResult>;
   readonly realtime?: AgenCRealtimeTuiControls;
+  executeShellCommand?(
+    params: AgenCShellExecuteParams,
+  ): Promise<SessionShellExecuteResult>;
   readonly activeTurn?: {
     unsafePeek(): { readonly turnId: string } | null;
   } | null;
@@ -478,6 +486,11 @@ export type AgenCDaemonBackedTuiSession<
 };
 
 export interface AgenCDaemonTuiClient {
+  request(
+    method: "session.shell.execute",
+    params?: JsonObject,
+    options?: { readonly signal?: AbortSignal },
+  ): Promise<SessionShellExecuteResult>;
   request(
     method: "session.partialCompactFromMessage",
     params?: JsonObject,
@@ -782,6 +795,10 @@ export function createDaemonTuiSession<
   const receivedEvents: unknown[] = [];
   const REPLAY_BACKLOG_LIMIT = 500;
   let activeTurnSnapshot: { readonly turnId: string } | null = null;
+  let daemonTurnStartGeneration = 0;
+  let inFlightShellExecutionCount = 0;
+  let shellBatchStartedWithActiveTurn = false;
+  let shellBatchTurnStartGeneration = 0;
   // Terminal transcript events are authoritative for a turn. Tool cleanup can
   // arrive afterward; those late events must never manufacture a new
   // "daemon-turn" and relatch the TUI spinner.
@@ -831,6 +848,7 @@ export function createDaemonTuiSession<
       return;
     }
     if (eventType === "turn_start" || eventType === "turn_started") {
+      daemonTurnStartGeneration += 1;
       terminalDaemonTurnObserved = false;
       markDaemonActivityActive(event);
       return;
@@ -1321,6 +1339,43 @@ export function createDaemonTuiSession<
       }),
     getDaemonSessionSnapshot: async () =>
       client.request("session.snapshot", { sessionId }),
+    executeShellCommand: async ({ command, commandId, signal }) => {
+      if (inFlightShellExecutionCount === 0) {
+        shellBatchStartedWithActiveTurn =
+          activeTurnSnapshot !== null ||
+          baseSession.activeTurn?.unsafePeek?.() != null;
+        shellBatchTurnStartGeneration = daemonTurnStartGeneration;
+      }
+      inFlightShellExecutionCount += 1;
+      try {
+        return await client.request(
+          "session.shell.execute",
+          {
+            sessionId,
+            commandId,
+            command,
+          } satisfies SessionShellExecuteParams,
+          signal === undefined ? undefined : { signal },
+        );
+      } finally {
+        inFlightShellExecutionCount = Math.max(
+          0,
+          inFlightShellExecutionCount - 1,
+        );
+        if (
+          inFlightShellExecutionCount === 0 &&
+          !shellBatchStartedWithActiveTurn &&
+          daemonTurnStartGeneration === shellBatchTurnStartGeneration
+        ) {
+          // Direct shell tool events share the ordinary daemon activity
+          // stream but do not own a model turn and therefore have no
+          // turn_complete event. The RPC response is their terminal boundary.
+          // Mark it terminal so late tool cleanup cannot relatch the TUI.
+          activeTurnSnapshot = null;
+          terminalDaemonTurnObserved = true;
+        }
+      }
+    },
     cancelActiveTurn: async (reason?: string) => {
       // Best-effort: a closed/disconnected daemon socket throws. The
       // user pressed ESC — they want the turn to stop, but a thrown

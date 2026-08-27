@@ -93,7 +93,7 @@ Key `AgencClient` methods:
   `reattachRun(options)` / `runEvidence(params)` / `cancelRun(id, reason?)`
 - `listCsvJobReviews` / `showCsvJobReview` / `resolveCsvJobReview`
 - `request(method, params)` → raw typed JSON-RPC for any of the **53** daemon methods
-- `initialize` (handshake; SDK retries 1.0 through 1.7), `close()`
+- `initialize` (handshake; SDK retries 1.0 through 1.8), `close()`
 - `negotiatedProtocolVersion` / `serverProtocolVersion` / `serverCapabilities`
 - `onNotification(cb)` / `onSessionNotification(sessionId, cb)` → raw events
 - Path helpers: `resolveAgencHome`, `resolveDaemonSocketPath`, `resolveDaemonCookiePath`
@@ -157,7 +157,7 @@ The SDK distinguishes `text` deltas from `message_committed`, reconciles the
 final result with committed text, and exposes `history_reset` for clear,
 compaction, rewind, and rollback. A duplicate without durable terminal proof
 fails with `AgencDuplicateSubmissionIncompleteError`. Initialization retries
-against daemons running protocol 1.0 through 1.7 at the reported version and
+against daemons running protocol 1.0 through 1.8 at the reported version and
 retains negotiated version and capability information for safe feature
 fallback.
 
@@ -366,10 +366,10 @@ evidence shape (`toolCallId`, `disposition`, `evidenceRef`, and
 `evidenceSha256`), and partial mixtures are rejected. An earlier-shape request
 leaves durable effects unchanged in `remaining`.
 
-Protocol version constant: **`1.8.0`**
+Protocol version constant: **`1.9.0`**
 (`AGENC_SDK_DAEMON_PROTOCOL_VERSION`). Handshake rules and
 `PROTOCOL_VERSION_UNSUPPORTED` live in [daemon.md](reference/daemon.md).
-The SDK retries initialization at a daemon running protocol 1.0 through 1.7 and
+The SDK retries initialization at a daemon running protocol 1.0 through 1.8 and
 uses advertised capabilities for additive fallbacks. Protocol 1.6 made the
 owning runtime options and live run-settings snapshot required in `agent.attach`.
 Protocol 1.7 adds required inactive auto availability and exact-workspace bypass
@@ -379,6 +379,8 @@ does not fall back to `session.create`, because that request cannot bind the
 exact plugin storage root. Protocol 1.8 requires that root in the owning runtime
 options and binds Core model and config mutation responses to the
 runtime-settings event that follows them.
+Protocol 1.9 adds the internal `session.shell.execute` method for Core. The
+method is not in the SDK request union.
 
 Server→client notifications (`AGENC_SDK_DAEMON_NOTIFICATION_METHODS`, 18 names):
 

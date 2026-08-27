@@ -2492,6 +2492,7 @@ type DeferredWorkspaceEditorSessionSurface = Pick<
 >;
 
 type TuiSessionShape = DeferredWorkspaceEditorSessionSurface & {
+  executeShellCommand?: AgenCTuiBridgeSession["executeShellCommand"];
   readonly services?: {
     readonly mcpManager?: NonNullable<Session["services"]["mcpManager"]>;
     readonly [key: string]: unknown;
@@ -3598,6 +3599,22 @@ async function createDeferredDaemonPromptTuiSession(params: {
         "workspace.editor.changes.list",
         editorParams,
       ),
+    // Direct composer shell commands are session-scoped side effects. A cold
+    // TUI provisions one turn-deferred live session, then forwards exactly
+    // once. The command does not consume the first model-turn slot, and an
+    // ambiguous transport failure is never replayed against a new session.
+    executeShellCommand: async (shellParams) => {
+      shellParams.signal?.throwIfAborted();
+      const live =
+        liveSession ?? (await ensureLiveSession("", undefined, true));
+      const execute = live?.executeShellCommand;
+      if (live === null || typeof execute !== "function") {
+        throw new Error(
+          "Shell execution is not supported by this daemon session.",
+        );
+      }
+      return execute.call(live, shellParams);
+    },
     // Prediction routing is conversation-scoped because it borrows the live
     // session's provider/model. The first cold prediction provisions a
     // deferred, turn-free daemon session; no model turn, hook, MCP process,

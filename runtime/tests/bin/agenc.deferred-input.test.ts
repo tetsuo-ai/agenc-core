@@ -47,6 +47,7 @@ import type {
   WorkspaceEditorTopologyReleaseResult,
   WorkspaceEditorTopologyReserveParams,
   WorkspaceEditorTopologyReserveResult,
+  SessionShellExecuteResult,
 } from "../app-server/protocol/index.js";
 
 interface DeferredInputSession {
@@ -118,6 +119,11 @@ interface DeferredInputSession {
   reportEditorPredictionFeedback(
     params: WorkspaceEditorPredictionFeedbackSessionParams,
   ): Promise<WorkspaceEditorPredictionFeedbackResult>;
+  executeShellCommand(params: {
+    readonly command: string;
+    readonly commandId: string;
+    readonly signal?: AbortSignal;
+  }): Promise<SessionShellExecuteResult>;
   mcpSurfaceSnapshot(): McpSurfaceSnapshot;
   refreshMcpSurface(): Promise<McpSurfaceSnapshot>;
   subscribeToMcpSurface(
@@ -250,6 +256,7 @@ function daemonHarness(
     readonly rejectFirstAttach?: boolean;
     readonly rejectMessageStream?: boolean;
     readonly rejectFirstEditorPrediction?: boolean;
+    readonly rejectShellExecute?: boolean;
     readonly withMcpSurface?: boolean;
   } = {},
 ) {
@@ -318,6 +325,23 @@ function daemonHarness(
           );
         }
         return {};
+      }
+      if (method === "session.shell.execute") {
+        if (options.rejectShellExecute === true) {
+          throw Object.assign(new Error("shell outcome is ambiguous"), {
+            code: "AGENT_NOT_FOUND",
+          });
+        }
+        return {
+          commandId: String(params?.commandId),
+          content: "deferred shell output",
+          stdout: "deferred shell output",
+          stderr: "",
+          exitCode: 0,
+          timedOut: false,
+          truncated: false,
+          isError: false,
+        };
       }
       if (method === "workspace.editor.predict") {
         predictionAttempts += 1;
@@ -1143,6 +1167,93 @@ describe("deferred daemon input ownership", () => {
     expect(harness.requests).not.toContainEqual({
       method: "agent.stop",
       params: expect.anything(),
+    });
+  });
+
+  it("runs a cold shell command once without consuming the first Agent turn", async () => {
+    const harness = daemonHarness();
+    const session = await createDeferredInputSession({
+      baseSession: harness.baseSession,
+      deps: harness.deps,
+    });
+
+    await expect(
+      session.executeShellCommand({
+        command: "printf deferred-shell",
+        commandId: "deferred-shell-1",
+      }),
+    ).resolves.toMatchObject({
+      commandId: "deferred-shell-1",
+      stdout: "deferred shell output",
+      exitCode: 0,
+      isError: false,
+    });
+
+    expect(harness.startPromptAgent).toHaveBeenCalledOnce();
+    expect(harness.startPromptAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: "AgenC Editor workspace",
+        deferInitialTurn: true,
+      }),
+    );
+    expect(harness.startPromptAgent.mock.calls[0]?.[0]).not.toHaveProperty(
+      "initialContent",
+    );
+    expect(
+      harness.requests.filter(
+        ({ method }) => method === "session.shell.execute",
+      ),
+    ).toEqual([
+      {
+        method: "session.shell.execute",
+        params: {
+          sessionId: "session-1",
+          commandId: "deferred-shell-1",
+          command: "printf deferred-shell",
+        },
+      },
+    ]);
+
+    await session.submit("first Agent turn after shell");
+    expect(harness.startPromptAgent).toHaveBeenCalledOnce();
+    expect(harness.requests).toContainEqual({
+      method: "message.stream",
+      params: expect.objectContaining({
+        sessionId: "session-1",
+        content: "first Agent turn after shell",
+      }),
+    });
+  });
+
+  it("never replays an ambiguous deferred shell request", async () => {
+    const harness = daemonHarness({ rejectShellExecute: true });
+    const session = await createDeferredInputSession({
+      baseSession: harness.baseSession,
+      deps: harness.deps,
+    });
+
+    await expect(
+      session.executeShellCommand({
+        command: "touch side-effect",
+        commandId: "ambiguous-shell-1",
+      }),
+    ).rejects.toThrow("shell outcome is ambiguous");
+
+    expect(harness.startPromptAgent).toHaveBeenCalledOnce();
+    expect(
+      harness.requests.filter(
+        ({ method }) => method === "session.shell.execute",
+      ),
+    ).toHaveLength(1);
+
+    await session.submit("first Agent turn after ambiguous shell");
+    expect(harness.startPromptAgent).toHaveBeenCalledOnce();
+    expect(harness.requests).toContainEqual({
+      method: "message.stream",
+      params: expect.objectContaining({
+        sessionId: "session-1",
+        content: "first Agent turn after ambiguous shell",
+      }),
     });
   });
 

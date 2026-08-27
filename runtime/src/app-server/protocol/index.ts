@@ -23,10 +23,12 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.8 requires the exact plugin storage root in owning agent runtime authority
  * and binds successful model and config mutation responses to the exact
  * canonical runtime-settings event that clients must apply.
+ * 1.9 adds admitted shell execution on the daemon-owned live session for
+ * internal clients.
  * Clients that need any of these additive surfaces must not negotiate an older
  * daemon.
  */
-export const AGENC_DAEMON_PROTOCOL_VERSION = "1.8.0" as const;
+export const AGENC_DAEMON_PROTOCOL_VERSION = "1.9.0" as const;
 export const AGENC_DAEMON_PROTOCOL_SCHEMA_ID =
   "urn:agenc:app-server:protocol" as const;
 export const AGENC_DAEMON_PROTOCOL_PACKAGE_NAME =
@@ -42,6 +44,11 @@ export const AGENC_DAEMON_METHOD_CAPABILITIES_KEY = "daemon.methods" as const;
 /** Explicit opt-in for unsolicited, cross-session mobile agent-status notifications. */
 export const AGENC_PORTAL_MOBILE_STATUS_PUSH_CAPABILITY =
   "portal.mobile.status.push.v1" as const;
+
+/** Wire limits for the internal admitted session-shell request and result. */
+export const MAX_SESSION_SHELL_IDENTIFIER_UTF8_BYTES = 1_024;
+export const MAX_SESSION_SHELL_COMMAND_UTF8_BYTES = 65_536;
+export const MAX_SESSION_SHELL_RESULT_TEXT_UTF8_BYTES = 100_000;
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonArray = readonly JsonValue[];
@@ -136,6 +143,7 @@ export const AGENC_DAEMON_INTERNAL_METHODS = [
   "session.rewindConversationToMessage",
   "session.previewFileRewind",
   "session.rewindFilesToMessage",
+  "session.shell.execute",
   "session.setModel",
   "session.setPermissionMode",
   "session.permissions.mutateRule",
@@ -834,6 +842,14 @@ export const AGENC_DAEMON_INTERNAL_METHOD_SPECS = defineInternalMethodSpecs({
     description:
       "TUI-internal request to restore edited files on disk to their state before a selected prompt.",
   },
+  "session.shell.execute": {
+    method: "session.shell.execute",
+    direction: "client-to-server",
+    params: "required",
+    result: "object",
+    description:
+      "TUI-internal request to run one admitted shell command on the daemon-owned session.",
+  },
   "session.setModel": {
     method: "session.setModel",
     direction: "client-to-server",
@@ -1465,6 +1481,12 @@ export interface SessionRewindConversationToMessageParams extends JsonObject {
 export interface SessionFileRewindParams extends JsonObject {
   readonly sessionId: string;
   readonly messageOrdinal: number;
+}
+
+export interface SessionShellExecuteParams extends JsonObject {
+  readonly sessionId: string;
+  readonly commandId: string;
+  readonly command: string;
 }
 
 export interface SessionSetModelParams extends JsonObject {
@@ -3348,6 +3370,17 @@ export interface SessionRewindFilesToMessageResult extends JsonObject {
   readonly displayText?: string;
 }
 
+export interface SessionShellExecuteResult extends JsonObject {
+  readonly commandId: string;
+  readonly content: string;
+  readonly stdout: string;
+  readonly stderr: string;
+  readonly exitCode: number | null;
+  readonly timedOut: boolean;
+  readonly truncated: boolean;
+  readonly isError: boolean;
+}
+
 export interface SessionSetModelResult
   extends JsonObject,
     ProviderModelSelectionOutcome {
@@ -3684,6 +3717,7 @@ export interface AgenCDaemonInternalResultByMethod {
   readonly "session.rewindConversationToMessage": SessionRewindConversationToMessageResult;
   readonly "session.previewFileRewind": SessionPreviewFileRewindResult;
   readonly "session.rewindFilesToMessage": SessionRewindFilesToMessageResult;
+  readonly "session.shell.execute": SessionShellExecuteResult;
   readonly "session.setModel": SessionSetModelResult;
   readonly "session.setPermissionMode": SessionSetPermissionModeResult;
   readonly "session.permissions.mutateRule": SessionPermissionRuleMutationResult;
