@@ -402,9 +402,12 @@ async function loadLocalSkillCommands(
     const manager =
       skillsManager ?? localSkillServices(cwd, pluginStorageRoot).skillsManager;
     const outcome = await manager.skillsForConfig(config, null);
-    return (outcome.availableSkills ?? []).map(skill =>
-      projectLocalSkill(skill as LocalSkillMetadata, manager),
-    );
+    return (outcome.availableSkills ?? [])
+      .map(skill => skill as LocalSkillMetadata)
+      // Plugin commands come from loadPluginSkills below, where the manifest
+      // identity is available and the command receives its required namespace.
+      .filter(skill => skill.loadedFrom !== "plugin")
+      .map(skill => projectLocalSkill(skill, manager));
   } catch {
     return [];
   }

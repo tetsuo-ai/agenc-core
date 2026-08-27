@@ -525,6 +525,47 @@ describe("AgenC command surface compatibility", () => {
     }
   });
 
+  it("projects an installed plugin skill once under its namespaced authority", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-command-plugin-skill-"));
+    const workspaceRoot = join(root, "workspace");
+    const pluginStorageRoot = join(root, "plugins");
+    const pluginRoot = join(pluginStorageRoot, "sample");
+    await mkdir(workspaceRoot, { recursive: true });
+    const skillsServices = createLocalSkillsServices({
+      agencHome: join(root, "home"),
+      pluginStorageRoot,
+      workspaceRoot,
+      env: {},
+    });
+    try {
+      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+        name: "sample",
+        version: "1.0.0",
+      });
+      await writeFileAt(
+        join(pluginRoot, "skills", "audit", "SKILL.md"),
+        "---\ndescription: Audit the workspace\n---\nAudit the workspace.\n",
+      );
+
+      const commands = await getCommands(
+        workspaceRoot,
+        {
+          pluginStorageRoot,
+          skillsManager: skillsServices.skillsManager,
+        },
+        { plugins: { enabled: true } },
+      );
+      const names = commands.map((command) => command.name);
+
+      expect(names.filter((name) => name === "sample:audit")).toHaveLength(1);
+      expect(names).not.toContain("audit");
+    } finally {
+      clearCommandMemoizationCaches();
+      await skillsServices.skillsWatcher.stop();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("treats array-shaped plugin config as malformed for plugin command loading", async () => {
     const root = await mkdtemp(join(tmpdir(), "agenc-command-config-"));
     const previousHome = process.env.AGENC_HOME;

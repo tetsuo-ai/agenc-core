@@ -35,6 +35,9 @@ import {
   skillChangeDetector,
   type SkillChangeDetector,
 } from "./change-detector.js";
+import {
+  parseSkillFrontmatterFields as parseCanonicalSkillFrontmatterFields,
+} from "./loadSkillsDir.js";
 import { isRepositoryControlledSkillSource } from "./repository-skill-boundary.js";
 
 export type LocalSkillScope =
@@ -494,17 +497,6 @@ function coerceString(value: unknown): string | undefined {
   return undefined;
 }
 
-function parseBoolean(value: unknown, defaultValue = false): boolean {
-  if (value === undefined || value === null) return defaultValue;
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number") return value !== 0;
-  if (typeof value !== "string") return defaultValue;
-  const normalized = value.trim().toLowerCase();
-  if (["true", "1", "yes", "y", "on"].includes(normalized)) return true;
-  if (["false", "0", "no", "n", "off"].includes(normalized)) return false;
-  return defaultValue;
-}
-
 function splitList(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value
@@ -520,14 +512,6 @@ function splitList(value: unknown): string[] {
     .filter((part) => part.length > 0);
 }
 
-function parseAllowedTools(value: unknown): string[] {
-  return splitList(value);
-}
-
-function parseArgumentNames(value: unknown): string[] {
-  return splitList(value).filter((name) => name.length > 0 && !/^\d+$/u.test(name));
-}
-
 function parseSkillPaths(value: unknown): string[] | undefined {
   const patterns = splitList(value)
     .map((pattern) => (pattern.endsWith("/**") ? pattern.slice(0, -3) : pattern))
@@ -538,81 +522,8 @@ function parseSkillPaths(value: unknown): string[] | undefined {
   return patterns;
 }
 
-function parseExecutionContext(value: unknown): SkillExecutionContext | undefined {
-  return value === "fork" ? "fork" : undefined;
-}
-
-function parseEffort(value: unknown): string | undefined {
-  const raw = coerceString(value);
-  if (!raw) return undefined;
-  return raw;
-}
-
-function parseShell(value: unknown): "bash" | "powershell" | undefined {
-  const raw = coerceString(value)?.toLowerCase();
-  if (raw === "bash" || raw === "powershell") return raw;
-  return undefined;
-}
-
-function descriptionFromMarkdown(raw: string): string | undefined {
-  for (const line of raw.split(/\r?\n/u)) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) continue;
-    if (trimmed.startsWith("#")) continue;
-    if (trimmed.startsWith("<!--")) continue;
-    return trimmed.slice(0, 240);
-  }
-  return undefined;
-}
-
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-}
-
-function parseSkillFrontmatterFields(
-  frontmatter: Record<string, unknown>,
-  markdownContent: string,
-  resolvedName: string,
-  descriptionFallbackLabel: "Skill" | "Custom command" = "Skill",
-): Omit<
-  LocalSkillMetadata,
-  "name" | "path" | "root" | "scope" | "source" | "loadedFrom" | "contentLength"
-> {
-  const descriptionRaw = coerceString(frontmatter.description);
-  const description =
-    descriptionRaw ??
-    descriptionFromMarkdown(markdownContent) ??
-    `${descriptionFallbackLabel}: ${resolvedName}`;
-  const userInvocable =
-    frontmatter["user-invocable"] === undefined
-      ? true
-      : parseBoolean(frontmatter["user-invocable"], true);
-  const modelRaw = coerceString(frontmatter.model);
-  const model = modelRaw === "inherit" ? undefined : modelRaw;
-  const paths = parseSkillPaths(frontmatter.paths);
-  const argNames = parseArgumentNames(frontmatter.arguments);
-  return {
-    displayName: coerceString(frontmatter.name),
-    description,
-    hasUserSpecifiedDescription: descriptionRaw !== undefined,
-    allowedTools: parseAllowedTools(frontmatter["allowed-tools"]),
-    argumentHint: coerceString(frontmatter["argument-hint"]),
-    ...(argNames.length > 0 ? { argNames } : {}),
-    whenToUse: coerceString(frontmatter.when_to_use),
-    version: coerceString(frontmatter.version),
-    ...(model ? { model } : {}),
-    disableModelInvocation: parseBoolean(
-      frontmatter["disable-model-invocation"],
-      false,
-    ),
-    userInvocable,
-    hooks: frontmatter.hooks,
-    context: parseExecutionContext(frontmatter.context),
-    agent: coerceString(frontmatter.agent),
-    effort: parseEffort(frontmatter.effort),
-    shell: parseShell(frontmatter.shell),
-    ...(paths ? { paths } : {}),
-  };
 }
 
 async function loadSkillFile(
@@ -630,12 +541,29 @@ async function loadSkillFile(
   const { frontmatter, markdown } = splitFrontmatter(raw);
   const skillName = skillNameForSkillFile(filePath, root.path);
   if (skillName.length === 0) return null;
-  const parsed = parseSkillFrontmatterFields(
+  const canonicalFields = parseCanonicalSkillFrontmatterFields(
     frontmatter,
     markdown,
     skillName,
     "Skill",
   );
+  const {
+    argumentNames,
+    executionContext,
+    effort,
+    ...sharedFields
+  } = canonicalFields;
+  const paths = parseSkillPaths(frontmatter.paths);
+  const parsed = {
+    ...sharedFields,
+    ...(argumentNames.length > 0 ? { argNames: argumentNames } : {}),
+    ...(executionContext !== undefined ? { context: executionContext } : {}),
+    ...(effort !== undefined ? { effort: String(effort) } : {}),
+    ...(paths ? { paths } : {}),
+  } satisfies Omit<
+    LocalSkillMetadata,
+    "name" | "path" | "root" | "scope" | "source" | "loadedFrom" | "contentLength"
+  >;
   const repositoryControlled = isRepositoryControlledSkillSource(root.source);
   const safeParsed = (() => {
     if (!repositoryControlled) return parsed;

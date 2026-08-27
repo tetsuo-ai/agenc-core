@@ -38,6 +38,40 @@ export type LoadedFrom =
   | 'bundled'
   | 'mcp'
 
+function parseSkillModelFrontmatter(
+  value: unknown,
+  skillName: string,
+): ReturnType<typeof parseUserSpecifiedModel> | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') {
+    logForDebugging(
+      `Skill ${skillName} has invalid model frontmatter; expected a string`,
+      { level: 'warn' },
+    )
+    return undefined
+  }
+  const normalized = value.trim()
+  if (normalized.length === 0 || normalized.toLowerCase() === 'inherit') {
+    return undefined
+  }
+  return parseUserSpecifiedModel(normalized)
+}
+
+function parseSkillShellFrontmatter(
+  value: unknown,
+  skillName: string,
+): FrontmatterShell | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string') {
+    logForDebugging(
+      `Skill ${skillName} has invalid shell frontmatter; expected a string`,
+      { level: 'warn' },
+    )
+    return undefined
+  }
+  return parseShellFrontmatter(value, skillName)
+}
+
 /**
  * Estimates token count for a skill based on frontmatter only
  * (name, description, whenToUse) since full content is only loaded on invocation.
@@ -113,12 +147,7 @@ export function parseSkillFrontmatterFields(
       ? true
       : parseBooleanFrontmatter(frontmatter['user-invocable'])
 
-  const model =
-    frontmatter.model === 'inherit'
-      ? undefined
-      : frontmatter.model
-        ? parseUserSpecifiedModel(frontmatter.model as string)
-        : undefined
+  const model = parseSkillModelFrontmatter(frontmatter.model, resolvedName)
 
   const effortRaw = frontmatter['effort']
   const effort =
@@ -155,7 +184,7 @@ export function parseSkillFrontmatterFields(
     executionContext: frontmatter.context === 'fork' ? 'fork' : undefined,
     agent: frontmatter.agent as string | undefined,
     effort,
-    shell: parseShellFrontmatter(frontmatter.shell, resolvedName),
+    shell: parseSkillShellFrontmatter(frontmatter.shell, resolvedName),
   }
 }
 

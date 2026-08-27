@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { FileWatcher } from "../file-watcher/index.js";
 import { createSkillChangeDetector } from "./change-detector.js";
+import { parseSkillFrontmatterFields } from "./loadSkillsDir.js";
 import {
   clearInvokedSkills,
   createLocalSkillsServices,
@@ -270,7 +271,7 @@ name: Repository Docs
 description: Use repository docs
 allowed-tools: Read, Grep
 argument-hint: "<topic>"
-arguments: topic, focus
+arguments: topic focus
 when_to_use: when docs are needed
 version: "1.2.3"
 model: inherit
@@ -311,6 +312,58 @@ Read $topic and $focus.
     for (const field of ["context", "agent", "effort", "shell"] as const) {
       expect(hidden).not.toHaveProperty(field);
     }
+  });
+
+  it("uses the canonical parser for invalid model, effort, shell, and hook metadata", async () => {
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    writeSkill(
+      join(agencHome, "skills"),
+      "invalid-authority",
+      `---
+description: Invalid authority metadata
+model: 42
+effort: impossible
+shell:
+  - bash
+hooks: invalid
+---
+Body
+`,
+    );
+
+    const canonical = parseSkillFrontmatterFields(
+      {
+        description: "Invalid authority metadata",
+        model: 42 as never,
+        effort: "impossible",
+        shell: ["bash"] as never,
+        hooks: "invalid" as never,
+      },
+      "Body\n",
+      "invalid-authority",
+    );
+    expect(canonical).toMatchObject({
+      model: undefined,
+      effort: undefined,
+      shell: undefined,
+      hooks: undefined,
+    });
+
+    const snapshot = await loadLocalSkillsSnapshot({
+      agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
+      workspaceRoot,
+      env: {},
+    });
+    const skill = snapshot.skills.find(
+      (candidate) => candidate.name === "invalid-authority",
+    );
+    expect(skill).toBeDefined();
+    expect(skill?.model).toBe(canonical.model);
+    expect(skill?.effort).toBe(canonical.effort);
+    expect(skill?.shell).toBe(canonical.shell);
+    expect(skill?.hooks).toBe(canonical.hooks);
   });
 
   it("activates conditional path skills when matching paths are provided", async () => {
