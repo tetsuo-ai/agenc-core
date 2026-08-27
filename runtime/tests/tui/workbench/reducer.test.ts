@@ -918,7 +918,10 @@ describe("workbenchReducer", () => {
       activeSurfaceMode: "task-detail",
       selectedAgentTaskId: "agent-1",
     });
-    expect(transcript.activeSurfaceMode).toBe("transcript");
+    expect(transcript).toMatchObject({
+      activeSurfaceMode: "transcript",
+      focusedPane: "composer",
+    });
   });
 
   it("clears stale diff ids when openDiff receives an explicit null", () => {

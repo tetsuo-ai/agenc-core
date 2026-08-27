@@ -316,7 +316,10 @@ function reduceWorkbenchState(
     case "closeSurface":
       return state.activeWorkspaceView === "editor"
         ? switchWorkspaceView(state, "agent")
-        : openSurface(state, "transcript");
+        : {
+            ...openSurface(state, "transcript"),
+            focusedPane: "composer",
+          };
     case "moveFileToRail":
       return {
         ...openSurface(state, "transcript"),
