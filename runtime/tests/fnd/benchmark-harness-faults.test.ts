@@ -46,6 +46,11 @@ import {
 } from "../../benchmarks/fnd/isolation.mjs";
 import { PRODUCTION_MODULE_RECORD_PREFIX } from "../../benchmarks/fnd/module-closure.mjs";
 import {
+  JSONC_PARSER_ESM_ENTRY,
+  JSONC_PARSER_NODE_ADAPTER_URL,
+  resolveBenchmarkModuleCompatibility,
+} from "../../benchmarks/fnd/module-compatibility.mjs";
+import {
   assertBindingsStable,
   bindProductionModuleClosures,
   captureBenchmarkProvenance,
@@ -83,6 +88,45 @@ const FIXTURE_PRODUCTION_SOURCE = [
 ].join("\n");
 
 describe("FND benchmark harness fault contracts", () => {
+  test("redirects only the exact jsonc-parser ESM entry", () => {
+    const nextResult = { shortCircuit: true, url: "file:///next.mjs" };
+    const context = Object.freeze({ parentURL: import.meta.url });
+    const delegatedSpecifiers: string[] = [];
+    const nextResolve = (specifier: string) => {
+      delegatedSpecifiers.push(specifier);
+      return nextResult;
+    };
+
+    expect(
+      resolveBenchmarkModuleCompatibility(
+        JSONC_PARSER_ESM_ENTRY,
+        context,
+        nextResolve,
+      ),
+    ).toEqual({
+      shortCircuit: true,
+      url: JSONC_PARSER_NODE_ADAPTER_URL,
+    });
+    expect(delegatedSpecifiers).toEqual([]);
+
+    for (const specifier of [
+      "jsonc-parser",
+      "jsonc-parser/lib/esm/main",
+      "jsonc-parser/lib/esm/main.js?query",
+      "jsonc-parser/lib/esm/impl/parser.js",
+    ]) {
+      expect(
+        resolveBenchmarkModuleCompatibility(specifier, context, nextResolve),
+      ).toBe(nextResult);
+    }
+    expect(delegatedSpecifiers).toEqual([
+      "jsonc-parser",
+      "jsonc-parser/lib/esm/main",
+      "jsonc-parser/lib/esm/main.js?query",
+      "jsonc-parser/lib/esm/impl/parser.js",
+    ]);
+  });
+
   test("retains both ends of one canonical bounded diagnostic", () => {
     const formatted = formatBoundedDiagnostic(
       Buffer.from(`  HEAD-${"m".repeat(3_000)}-TAIL  `),

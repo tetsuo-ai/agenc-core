@@ -17,6 +17,7 @@ import {
 } from "./environment.mjs";
 import { buildFixture } from "./fixtures.mjs";
 import { assertOwnedTemporaryRoot } from "./isolation.mjs";
+import { registerBenchmarkModuleCompatibility } from "./module-compatibility.mjs";
 import { registerProductionModuleTracker } from "./module-closure.mjs";
 
 const START_PREFIX = "AGENC_FND_BENCH_START ";
@@ -40,6 +41,7 @@ try {
     process.platform,
     requested.temporaryRoot,
   );
+  registerBenchmarkModuleCompatibility();
   productionModuleTracker = registerProductionModuleTracker({
     productionRoot,
     repositoryRoot,
