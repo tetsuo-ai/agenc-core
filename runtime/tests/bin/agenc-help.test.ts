@@ -233,4 +233,37 @@ describe("agenc CLI help", () => {
       stderrSpy.mockRestore();
     }
   });
+
+  it.each(["--help", "--version"] as const)(
+    "rejects AGENC_CONFIG_DIR before %s short-circuits",
+    async (flag) => {
+      const prevArgv = [...process.argv];
+      const previousValue = process.env.AGENC_CONFIG_DIR;
+      const stdoutSpy = vi
+        .spyOn(process.stdout, "write")
+        .mockImplementation(() => true);
+      const stderrSpy = vi
+        .spyOn(process.stderr, "write")
+        .mockImplementation(() => true);
+
+      process.argv = ["/usr/bin/node", "/opt/agenc/bin/agenc.js", flag];
+      process.env.AGENC_CONFIG_DIR = "/retired/agenc-home";
+
+      try {
+        expect(await main()).toBe(2);
+        expect(stdoutSpy).not.toHaveBeenCalled();
+        expect(
+          stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
+        ).toContain(
+          "AGENC_CONFIG_DIR is no longer a runtime configuration authority",
+        );
+      } finally {
+        process.argv = prevArgv;
+        if (previousValue === undefined) delete process.env.AGENC_CONFIG_DIR;
+        else process.env.AGENC_CONFIG_DIR = previousValue;
+        stdoutSpy.mockRestore();
+        stderrSpy.mockRestore();
+      }
+    },
+  );
 });
