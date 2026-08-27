@@ -120,6 +120,8 @@ import type { PostToolUseHook } from "../tools/hooks.js";
 import type { Tool } from "../tools/types.js";
 import { createEditorProposalTool } from "../tools/system/editor-proposal.js";
 import { BudgetTracker } from "../conversation/token-budget.js";
+import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
+import { ExecutionAdmissionKernel } from "../budget/execution-admission-kernel.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import {
@@ -445,6 +447,8 @@ function mkSession(opts: {
   readonly skillsManager?: SessionServices["skillsManager"];
   readonly querySource?: string;
   readonly postToolUseHooks?: ReadonlyArray<PostToolUseHook>;
+  readonly executionAdmission?: ExecutionAdmissionClient;
+  readonly admissionRequired?: boolean;
 }): {
   session: Session;
   events: Event[];
@@ -507,7 +511,7 @@ function mkSession(opts: {
     totalTokenUsage: 0,
   };
   const services: SessionServices = {
-    admissionRequired: false,
+    admissionRequired: opts.admissionRequired ?? false,
     sandboxExecutionBroker: explicitDangerBroker,
     mcpConnectionManager: {
       setApprovalPolicy: () => {},
@@ -520,6 +524,9 @@ function mkSession(opts: {
     },
     provider: opts.provider,
     registry: opts.registry,
+    ...(opts.executionAdmission !== undefined
+      ? { executionAdmission: opts.executionAdmission }
+      : {}),
     ...(opts.querySource !== undefined
       ? { querySource: opts.querySource }
       : {}),
@@ -4888,6 +4895,102 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
         },
       }),
     );
+  });
+
+  test("LP-07 gives every admitted reconnect a distinct durable step id", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-retry-admission-home-"));
+    const cwd = mkdtempSync(join(tmpdir(), "agenc-retry-admission-cwd-"));
+    mkdirSync(join(cwd, ".git"));
+    const kernel = new ExecutionAdmissionKernel({
+      agencHome,
+      ownerId: "run-turn-retry-test",
+      ownerPid: process.pid,
+      limits: {
+        global: 2,
+        workspace: 2,
+        session: 2,
+        parent: 2,
+        provider: 2,
+      },
+    });
+
+    try {
+      const executionAdmission = kernel.bindClient({
+        cwd,
+        scope: {
+          runId: "run-retry-admission",
+          sessionId: "conv-test",
+          autonomous: false,
+        },
+      });
+      const acquire = vi.spyOn(executionAdmission, "acquire");
+      let attempts = 0;
+      const provider: LLMProvider = {
+        ...mkProvider({}),
+        getExecutionProfile: async () => ({
+          provider: "stub-provider",
+          model: "test-model",
+          usageReporting: "authoritative",
+          supportsMaxOutputTokens: true,
+          maxOutputTokens: 64,
+          contextWindowTokens: TEST_CONTEXT_WINDOW_TOKENS,
+        }),
+        chatStream: async (): Promise<LLMResponse> => {
+          attempts += 1;
+          if (attempts === 1) {
+            throw new LLMServerError(
+              "stub-provider",
+              503,
+              "Our servers are currently overloaded",
+            );
+          }
+          return {
+            content: "recovered after overload",
+            toolCalls: [],
+            usage: {
+              promptTokens: 3,
+              completionTokens: 3,
+              totalTokens: 6,
+              availability: "reported",
+              provenance: "provider",
+            },
+            model: "test-model",
+            finishReason: "stop",
+          };
+        },
+      };
+      const { session, events } = mkSession({
+        provider,
+        registry: mkRegistry(),
+        executionAdmission,
+        admissionRequired: true,
+      });
+
+      await drain(session.runTurn("hello", { ctx: mkCtx() }));
+
+      expect(attempts).toBe(2);
+      const stepIds = acquire.mock.calls.map(([input]) => input.stepId);
+      expect(stepIds).toHaveLength(2);
+      expect(new Set(stepIds).size).toBe(2);
+      expect(stepIds[0]).toMatch(/^model:turn-abc:/);
+      expect(stepIds[1]).toMatch(/^model:turn-abc:/);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          msg: {
+            type: "turn_complete",
+            payload: expect.objectContaining({
+              lastAgentMessage: "recovered after overload",
+            }),
+          },
+        }),
+      );
+    } finally {
+      kernel.close();
+      rmSync(agencHome, { recursive: true, force: true });
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   test("reconnects reuse one prompt snapshot across every transport attempt", async () => {

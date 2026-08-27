@@ -3460,6 +3460,10 @@ async function runSamplingRequest(
         return false;
       }
       cleanupInterruptedStreamAttempt(state, session, err);
+      // Every admitted wire call needs a fresh identity. The reconnect loop
+      // stays inside this sampling pass, so the outer phase-loop increment
+      // cannot advance the identity before the next transport attempt.
+      state.samplingRound += 1;
       emitError(session, session.nextInternalSubId(), {
         cause: "stream_disconnected",
         message: `Reconnecting after stream interruption (attempt ${attempt}): ${streamRetryErrorMessage(err)}`,

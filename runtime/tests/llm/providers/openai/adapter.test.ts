@@ -269,6 +269,47 @@ describe("OpenAIProvider", () => {
     },
   );
 
+  test.each([
+    {
+      api: "responses",
+      useResponsesApi: true,
+      frame:
+        'event: response.failed\ndata: {"type":"response.failed","response":{"error":{"type":"overloaded_error","message":"Our servers are currently overloaded. Please try again later."}}}\n\n',
+    },
+    {
+      api: "chat completions",
+      useResponsesApi: false,
+      frame:
+        'data: {"error":{"type":"overloaded_error","message":"Our servers are currently overloaded. Please try again later."}}\n\n',
+    },
+  ])(
+    "maps statusless $api overload stream failures to retryable server errors",
+    async ({ useResponsesApi, frame }) => {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        sseResponse([frame]),
+      );
+      const provider = new OpenAIProvider({
+        apiKey: "sk-test",
+        model: "gpt-5",
+        useResponsesApi,
+        fetchImpl,
+      });
+
+      await expect(
+        provider.chatStream(
+          [{ role: "user", content: "hello" }],
+          () => {},
+          { singleWireAttempt: true },
+        ),
+      ).rejects.toMatchObject({
+        name: "LLMServerError",
+        providerName: "openai",
+        statusCode: 503,
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    },
+  );
+
   test("propagates fallback trigger from chat requests", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify({ error: { message: "overloaded" } }), {

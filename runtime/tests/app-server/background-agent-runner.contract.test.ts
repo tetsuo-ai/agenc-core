@@ -4022,6 +4022,80 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
+  it("[managed-thread] keeps a canonical-completed failed turn idle and accepts a follow-up", async () => {
+    const { runner, session, control } = makeTopLevelRunner({
+      conversationId: "session-failed-turn-status",
+    });
+    const emitted: unknown[] = [];
+
+    await runner.startAgent({
+      objective: "hi",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-failed-turn-status", {
+      sessionId: "session_1",
+      emit: async (event) => {
+        emitted.push(event);
+      },
+    });
+    emitted.length = 0;
+
+    // runTurn durably closes the turn before the legacy phase projection is
+    // delivered. The later phase error must not overwrite the canonical idle
+    // state and make the keep-alive session reject its next prompt.
+    session.emit({
+      eventId: "turn-failed",
+      id: "turn-failed",
+      msg: {
+        type: "turn_complete",
+        payload: {
+          turnId: "turn-failed",
+          lastAgentMessage: "",
+          completedAt: Date.now(),
+          durationMs: 1,
+        },
+      },
+    });
+    session.emitPhaseEvent({
+      type: "turn_complete",
+      content: "",
+      usage: { promptTokens: 1, completionTokens: 0, totalTokens: 1 },
+      stopReason: "error",
+      error: new Error("Our servers are currently overloaded"),
+    });
+
+    await vi.waitFor(async () => {
+      await expect(
+        runner.getAgentSnapshot("session-failed-turn-status"),
+      ).resolves.toMatchObject({ status: "idle" });
+    });
+    expect(emitted).not.toContainEqual(
+      expect.objectContaining({
+        method: "event.agent_status",
+        params: expect.objectContaining({ status: "error" }),
+      }),
+    );
+
+    await expect(
+      runner.submitAgentMessage("session-failed-turn-status", {
+        sessionId: "session_1",
+        content: "retry the same request",
+        originalContent: "retry the same request",
+        messageId: "message-after-failed-turn",
+        streamId: "stream-after-failed-turn",
+        acceptedAt: "2026-05-09T00:00:01.000Z",
+      }),
+    ).resolves.toMatchObject({
+      disposition: "started",
+      terminal: { code: 0 },
+    });
+    expect(control.sendInput).toHaveBeenCalledWith(
+      "session-failed-turn-status",
+      "retry the same request",
+    );
+  });
+
   it("[managed-thread] closes active tool rows when a turn is interrupted", async () => {
     const { runner, session } = makeTopLevelRunner({
       conversationId: "session-interrupted-tool",

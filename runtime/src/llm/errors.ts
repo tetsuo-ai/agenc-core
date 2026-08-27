@@ -400,7 +400,7 @@ function parseRetryAfterMs(headers: unknown): number | undefined {
 }
 
 const TRANSIENT_PROVIDER_SERVER_MESSAGE_RE =
-  /\b(?:service\s+temporarily\s+unavailable|temporarily\s+unavailable|server\s+temporarily\s+unavailable|upstream\s+connect\s+error|bad\s+gateway|gateway\s+timeout|server\s+overloaded|temporarily\s+overloaded|temporarily\s+down|backend\s+unavailable)\b/i;
+  /\b(?:service\s+temporarily\s+unavailable|temporarily\s+unavailable|server\s+temporarily\s+unavailable|upstream\s+connect\s+error|bad\s+gateway|gateway\s+timeout|servers?\s+(?:(?:is|are)\s+)?(?:currently\s+)?overloaded|temporarily\s+overloaded|overloaded_error|server_error|temporarily\s+down|backend\s+unavailable)\b/i;
 
 // NOTE: no bare `413` alternative here — it matched any incidental "413"
 // substring (a request/trace id) and misrouted transient 5xx into the

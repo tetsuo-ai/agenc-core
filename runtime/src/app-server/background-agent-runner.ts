@@ -4151,7 +4151,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     ) {
       active.activeToolCallIds.clear();
     }
-    this.#applyProgressStatus(active, progress);
+    // Once the canonical EventLog bridge is installed, its turn_complete /
+    // run_terminal events are the lifecycle authority. A phase-level error
+    // describes one failed turn; allowing it to overwrite the canonical
+    // turn_complete idle state incorrectly kills an otherwise reusable
+    // keep-alive agent.
+    if (progress.kind !== "run_error") {
+      this.#applyProgressStatus(active, progress);
+    }
   }
 
   async #recordRecoveredProgressEvent(

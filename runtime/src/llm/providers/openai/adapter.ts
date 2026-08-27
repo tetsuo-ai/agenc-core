@@ -346,6 +346,26 @@ function inferErrorStatus(
   return undefined;
 }
 
+function inferErrorType(errorBody: unknown): string | undefined {
+  if (!errorBody || typeof errorBody !== "object") return undefined;
+  const record = errorBody as Record<string, unknown>;
+  const nested =
+    record.error && typeof record.error === "object"
+      ? (record.error as Record<string, unknown>)
+      : undefined;
+  for (const candidate of [
+    record.type,
+    record.code,
+    nested?.type,
+    nested?.code,
+  ]) {
+    if (typeof candidate === "string" && candidate.trim().length > 0) {
+      return candidate.trim().toLowerCase();
+    }
+  }
+  return undefined;
+}
+
 function mapOpenAIHttpFailureToError(args: {
   readonly providerName: string;
   readonly message: string;
@@ -411,6 +431,7 @@ function mapOpenAIStreamError(args: {
   readonly fallbackMessage: string;
 }): Error {
   const status = inferErrorStatus(args.errorBody);
+  const errorType = inferErrorType(args.errorBody);
   const message =
     typeof (args.errorBody as { message?: unknown })?.message === "string"
       ? String((args.errorBody as { message: string }).message)
@@ -438,7 +459,10 @@ function mapOpenAIStreamError(args: {
       body: args.errorBody,
     });
   }
-  return new LLMProviderError(args.providerName, message);
+  if (errorType === "overloaded_error" || errorType === "server_error") {
+    return new LLMServerError(args.providerName, 503, message);
+  }
+  return mapLLMError(args.providerName, new Error(message), 0);
 }
 
 function openAIStreamFallbackCandidate(

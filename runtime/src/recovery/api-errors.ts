@@ -374,6 +374,10 @@ const TRANSIENT_PROVIDER_MESSAGE_PARTS = [
   "connection reset",
   "socket connection was closed unexpectedly",
   "socket closed",
+  "overloaded_error",
+  "server_error",
+  "server is currently overloaded",
+  "servers are currently overloaded",
 ];
 
 function isExplicitNonTransientProviderError(err: unknown): boolean {
