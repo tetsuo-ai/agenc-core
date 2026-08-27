@@ -59,7 +59,12 @@ import {
   readSandboxExecutionSurface,
   SandboxExecutionBroker,
 } from "../sandbox/execution-broker.js";
-import { peekScopedRuntimeSession } from "../session/current-session.js";
+import {
+  clearCurrentRuntimeSession,
+  peekScopedRuntimeSession,
+  setCurrentRuntimeSession,
+} from "../session/current-session.js";
+import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import type { Tool, ToolResult } from "../tools/types.js";
 import { readToolRuntimeContext } from "../tools/runtimes/context.js";
@@ -1759,6 +1764,199 @@ describe("AgenC delegate background-agent runner", () => {
     expect(shell.markDispatched).toHaveBeenCalledOnce();
     expect(harness.stub.thread.submit).not.toHaveBeenCalled();
     expect(harness.control.sendInput).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] keeps direct-shell errors session-scoped and accepts an immediate follow-up command", async () => {
+    const agentId = "session-direct-shell-error-scope";
+    const harness = makeTopLevelRunner({
+      conversationId: agentId,
+      threadInitialStatus: {
+        status: "idle",
+        turnId: "turn-direct-shell-idle",
+        endedAtMs: 1,
+      } as AgentStatus,
+    });
+    let executionCount = 0;
+    const shell = configureSessionShellHarness(harness, {
+      execute: async () => {
+        executionCount += 1;
+        if (executionCount === 1) {
+          harness.session.emit({
+            id: "shell-error-scope-1",
+            msg: {
+              type: "error",
+              payload: {
+                cause: "aborted",
+                message: "operator cancelled direct shell",
+              },
+            },
+          });
+          return {
+            content: "operator cancelled direct shell",
+            isError: true,
+            effectDisposition: {
+              disposition: "confirmed_no_effect",
+              evidenceKind: "provider_receipt",
+              evidenceRef: "test:direct-shell-error-scope",
+              evidenceSha256: "b".repeat(64),
+            },
+          };
+        }
+        return {
+          content: "second command succeeded",
+          metadata: {
+            stdout: "second command succeeded",
+            stderr: "",
+            exitCode: 0,
+            timedOut: false,
+          },
+        };
+      },
+    });
+    const emitted: JsonObject[] = [];
+
+    await harness.runner.startAgent({
+      objective: "deferred direct shell",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await harness.runner.attachAgentSessionEvents(agentId, {
+      sessionId: agentId,
+      emit: async (notification) => {
+        emitted.push(notification);
+      },
+    });
+    emitted.length = 0;
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
+
+    const first = harness.runner.executeAgentShell(agentId, {
+      sessionId: agentId,
+      commandId: "shell-error-scope-1",
+      command: "sleep 10",
+    });
+
+    await expect(first).resolves.toMatchObject({
+      commandId: "shell-error-scope-1",
+      isError: true,
+      content: expect.stringContaining("operator cancelled direct shell"),
+    });
+    await vi.waitFor(() => {
+      expect(emitted).toContainEqual(
+        expect.objectContaining({
+          method: "event.session_event",
+          params: expect.objectContaining({
+            agentId,
+            event: expect.objectContaining({
+              id: "shell-error-scope-1",
+              type: "error",
+              payload: expect.objectContaining({
+                message: "operator cancelled direct shell",
+              }),
+            }),
+          }),
+        }),
+      );
+    });
+    expect(
+      emitted.filter(
+        (notification) => notification.method === "event.agent_status",
+      ),
+    ).toEqual([]);
+    await expect(harness.runner.getAgentSnapshot(agentId)).resolves.toMatchObject(
+      { status: "idle" },
+    );
+
+    const second = await harness.runner.executeAgentShell(agentId, {
+      sessionId: agentId,
+      commandId: "shell-error-scope-2",
+      command: "printf second-command",
+    });
+    expect(second.content).toBe("second command succeeded");
+    expect(second).toMatchObject({
+      commandId: "shell-error-scope-2",
+      isError: false,
+      stdout: "second command succeeded",
+    });
+    expect(shell.bashExecute).toHaveBeenCalledTimes(2);
+    await expect(harness.runner.getAgentSnapshot(agentId)).resolves.toMatchObject(
+      { status: "idle" },
+    );
+  });
+
+  it("[managed-thread] scopes model input across an ambiguous fallback-session boundary", async () => {
+    const target = makeTopLevelRunner({
+      conversationId: "session-model-scope-target",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    const other = makeTopLevelRunner({
+      conversationId: "session-model-scope-other",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    const targetSession = target.session as unknown as Session;
+    const otherSession = other.session as unknown as Session;
+    const enteredSendInput = Promise.withResolvers<void>();
+    const releaseSendInput = Promise.withResolvers<void>();
+    const scopedSessions: Array<Session | null> = [];
+    target.control.sendInput.mockImplementation(async () => {
+      scopedSessions.push(peekScopedRuntimeSession());
+      enteredSendInput.resolve();
+      await releaseSendInput.promise;
+      scopedSessions.push(peekScopedRuntimeSession());
+      await Promise.resolve();
+      scopedSessions.push(peekScopedRuntimeSession());
+    });
+
+    clearCurrentRuntimeSession();
+    try {
+      await target.runner.startAgent({
+        objective: "deferred target session",
+        deferInitialTurn: true,
+        unattendedAllow: [],
+        unattendedDeny: [],
+      });
+      await other.runner.startAgent({
+        objective: "deferred other session",
+        deferInitialTurn: true,
+        unattendedAllow: [],
+        unattendedDeny: [],
+      });
+      setCurrentRuntimeSession(targetSession);
+      setCurrentRuntimeSession(otherSession);
+
+      const submission = target.runner.submitAgentMessage(
+        "session-model-scope-target",
+        {
+          sessionId: "session-model-scope-target",
+          content: "continue in the target session",
+          originalContent: "continue in the target session",
+          messageId: "message-model-scope-target",
+          streamId: "stream-model-scope-target",
+          acceptedAt: "2026-08-27T00:00:00.000Z",
+        },
+      );
+      await enteredSendInput.promise;
+      expect(peekScopedRuntimeSession()).toBeNull();
+      releaseSendInput.resolve();
+
+      await expect(submission).resolves.toMatchObject({
+        disposition: "started",
+        terminal: { code: 0 },
+      });
+      expect(scopedSessions).toEqual([
+        targetSession,
+        targetSession,
+        targetSession,
+      ]);
+    } finally {
+      releaseSendInput.resolve();
+      clearCurrentRuntimeSession();
+    }
   });
 
   it("fails closed when a skeletal session lacks canonical runtime-settings journal support", async () => {

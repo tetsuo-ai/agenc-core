@@ -1110,7 +1110,7 @@ describe("PromptInput render surface", () => {
     }
   });
 
-  test("routes bulk ! input through direct shell after its cursor advances", async () => {
+  test("routes bulk ! input through direct shell before its mode rerender", async () => {
     const onInputChange = vi.fn();
     const onModeChange = vi.fn();
     const onSubmit = vi.fn(async () => {});
@@ -1136,22 +1136,85 @@ describe("PromptInput render surface", () => {
       expect(onModeChange).toHaveBeenCalledWith("bash");
       expect(onInputChange).toHaveBeenCalledWith("sleep 30");
 
-      harness.baseProps = undefined;
-      rendered.root.render(
-        <PromptInput
-          {...({
-            ...rendered.props,
-            input: "sleep 30",
-            mode: "bash",
-          } as never)}
-        />,
-      );
-      const bashProps = await waitForPromptInputProps();
-      await (bashProps.onSubmit as (value: string) => Promise<void>)(
+      await (promptProps.onSubmit as (value: string) => Promise<void>)(
         "sleep 30",
       );
 
       expect(onBashSubmit).toHaveBeenCalledOnce();
+      expect(onBashSubmit).toHaveBeenCalledWith("sleep 30");
+      expect(onSubmit).not.toHaveBeenCalled();
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("routes pasted ! input through direct shell before its mode rerender", async () => {
+    const onInputChange = vi.fn();
+    const onModeChange = vi.fn();
+    const onSubmit = vi.fn(async () => {});
+    const onBashSubmit = vi.fn(async () => {});
+    const rendered = await renderPromptInput({
+      input: "",
+      mode: "prompt",
+      onBashSubmit,
+      onInputChange,
+      onModeChange,
+      onSubmit,
+    });
+
+    try {
+      const promptProps = await waitForPromptInputProps();
+
+      (promptProps.onPaste as (value: string) => void)("!touch marker");
+
+      expect(onModeChange).toHaveBeenCalledWith("bash");
+      expect(onInputChange).toHaveBeenCalledWith("touch marker");
+
+      await (promptProps.onSubmit as (value: string) => Promise<void>)(
+        "touch marker",
+      );
+
+      expect(onBashSubmit).toHaveBeenCalledOnce();
+      expect(onBashSubmit).toHaveBeenCalledWith("touch marker");
+      expect(onSubmit).not.toHaveBeenCalled();
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
+  test("does not let a stale prompt speculation capture same-tick ! input", async () => {
+    harness.appState.promptSuggestion = {
+      acceptedAt: 0,
+      generationRequestId: null,
+      promptId: "stale-shell-suggestion",
+      shownAt: 100,
+      text: "sleep 30",
+    };
+    harness.appState.speculation = {
+      status: "active",
+      taskId: "stale-shell-speculation",
+    };
+    const onInputChange = vi.fn();
+    const onModeChange = vi.fn();
+    const onSubmit = vi.fn(async () => {});
+    const onBashSubmit = vi.fn(async () => {});
+    const rendered = await renderPromptInput({
+      input: "",
+      mode: "prompt",
+      onBashSubmit,
+      onInputChange,
+      onModeChange,
+      onSubmit,
+    });
+
+    try {
+      const promptProps = await waitForPromptInputProps();
+
+      (promptProps.onChange as (value: string) => void)("!sleep 30");
+      await (promptProps.onSubmit as (value: string) => Promise<void>)(
+        "sleep 30",
+      );
+
       expect(onBashSubmit).toHaveBeenCalledWith("sleep 30");
       expect(onSubmit).not.toHaveBeenCalled();
     } finally {

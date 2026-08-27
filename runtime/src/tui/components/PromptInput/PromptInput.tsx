@@ -679,6 +679,18 @@ function PromptInput({
     show: false,
   });
   const [cursorOffset, setCursorOffset] = useState<number>(input.length);
+  // Input-mode changes originate in TextInput and can be submitted before
+  // React commits the parent-owned mode prop. Keep that same-tick authority
+  // synchronous so a freshly entered ! command cannot reach the model path.
+  const currentModeRef = useRef(mode);
+  currentModeRef.current = mode;
+  const setCurrentMode = useCallback(
+    (nextMode: PromptInputMode) => {
+      currentModeRef.current = nextMode;
+      onModeChange(nextMode);
+    },
+    [onModeChange],
+  );
   // Ref mirrors cursorOffset for synchronous command handlers that can run
   // before React commits a cursor state update from TextInput.
   const cursorOffsetRef = useRef(cursorOffset);
@@ -864,7 +876,7 @@ function PromptInput({
       trackAndSetInput,
       setCurrentCursorOffset,
       cursorOffset,
-      onModeChange,
+      setCurrentMode,
       mode,
       isSearchingHistory,
       setIsSearchingHistory,
@@ -1501,7 +1513,7 @@ function PromptInput({
             })
           : null;
       if (modeEntry) {
-        onModeChange(modeEntry.mode);
+        setCurrentMode(modeEntry.mode);
         const cleaned = modeEntry.strippedValue.replaceAll("\t", "    ");
         pushToBuffer(currentInput, currentCursorOffset, currentPastedContents);
         trackAndSetInput(cleaned);
@@ -1528,7 +1540,7 @@ function PromptInput({
     },
     [
       trackAndSetInput,
-      onModeChange,
+      setCurrentMode,
       pushToBuffer,
       dismissStashHint,
       setAppState,
@@ -1551,7 +1563,7 @@ function PromptInput({
       onChange(value, {
         interpretShortcuts: false,
       });
-      onModeChange(historyMode);
+      setCurrentMode(historyMode);
       setPastedContentsAndRef(pastedContents);
     },
     input,
@@ -1650,6 +1662,7 @@ function PromptInput({
   const onSubmit = useCallback(
     async (inputParam: string, isSubmittingSlashCommand = false) => {
       inputParam = inputParam.trimEnd();
+      const submissionMode = currentModeRef.current;
 
       // Don't submit if a footer indicator is being opened. Read fresh from
       // store — footer:openSelected calls selectFooterItem(null) then onSubmit
@@ -1724,6 +1737,7 @@ function PromptInput({
       const inputMatchesSuggestion =
         inputParam.trim() === "" || inputParam === suggestionText;
       if (
+        submissionMode === "prompt" &&
         onboardingInput === undefined &&
         inputMatchesSuggestion &&
         suggestionText &&
@@ -1771,6 +1785,7 @@ function PromptInput({
 
       // Handle @name direct message
       if (
+        submissionMode === "prompt" &&
         state.workbench?.activeWorkspaceView !== "editor" &&
         isAgentSwarmsEnabled()
       ) {
@@ -1868,6 +1883,7 @@ function PromptInput({
           (s) => s.description === "directory",
         );
       if (
+        submissionMode === "prompt" &&
         suggestionsState.suggestions.length > 0 &&
         !isSubmittingSlashCommand &&
         !hasDirectorySuggestions
@@ -1879,7 +1895,11 @@ function PromptInput({
       }
 
       // Log suggestion outcome if one exists
-      if (promptSuggestionState.text && promptSuggestionState.shownAt > 0) {
+      if (
+        submissionMode === "prompt" &&
+        promptSuggestionState.text &&
+        promptSuggestionState.shownAt > 0
+      ) {
         logOutcomeAtSubmission(inputParam);
       }
 
@@ -1902,6 +1922,7 @@ function PromptInput({
       // Route input to viewed agent (in-process teammate or named local_agent).
       const activeAgent = getActiveAgentForInput(store.getState());
       if (
+        submissionMode === "prompt" &&
         state.workbench?.activeWorkspaceView !== "editor" &&
         activeAgent.type !== "leader" &&
         onAgentSubmit
@@ -1932,14 +1953,14 @@ function PromptInput({
       if (
         applyBusyInputSubmissionPolicy({
           isLoading,
-          mode,
+          mode: submissionMode,
           input: inputParam,
           addNotification,
           setInput: trackAndSetInput,
           setCursorOffset: setCurrentCursorOffset,
           clearBuffer,
           resetHistory,
-          onModeChange,
+          onModeChange: setCurrentMode,
           queueOwner,
           queueExecutionCwd,
         })
@@ -1950,7 +1971,7 @@ function PromptInput({
       // Bash mode never sends the command to the model. The App callback uses
       // the daemon-owned session shell bridge and writes durable transcript
       // events. Standalone callers retain the admitted in-process fallback.
-      if (mode === "bash") {
+      if (submissionMode === "bash") {
         const trimmedBash = inputParam.trim();
         if (trimmedBash === "") {
           return;
@@ -1963,7 +1984,7 @@ function PromptInput({
         setCurrentCursorOffset(0);
         clearBuffer();
         resetHistory();
-        onModeChange("prompt");
+        setCurrentMode("prompt");
         let fallbackSubId = 0;
         try {
           if (onBashSubmit !== undefined) {
@@ -2069,7 +2090,7 @@ function PromptInput({
         },
         undefined,
         {
-          mode,
+          mode: submissionMode,
           vimRoutingState: {
             enabled: isVimModeEnabled(),
             mode: vimMode,
@@ -2117,7 +2138,7 @@ function PromptInput({
       getMessages,
       mainLoopModel,
       trackAndSetInput,
-      onModeChange,
+      setCurrentMode,
       isLoading,
       addNotification,
       setCurrentCursorOffset,
@@ -2149,7 +2170,7 @@ function PromptInput({
     suppressSuggestions:
       onboardingInput !== undefined || isSearchingHistory || historyIndex > 0,
     markAccepted,
-    onModeChange,
+    onModeChange: setCurrentMode,
     runtimeState,
     settingsAuthority,
   });
@@ -2200,7 +2221,7 @@ function PromptInput({
     dimensions?: ImageDimensions,
     sourcePath?: string,
   ) {
-    onModeChange("prompt");
+    setCurrentMode("prompt");
     const pasteId = allocatePasteId();
     const newContent: PastedContent = {
       id: pasteId,
@@ -2281,7 +2302,7 @@ function PromptInput({
     if (currentInput.length === 0) {
       const pastedMode = getModeFromInput(text);
       if (pastedMode !== "prompt") {
-        onModeChange(pastedMode);
+        setCurrentMode(pastedMode);
         text = getValueFromInput(text);
       }
     }
@@ -2361,7 +2382,7 @@ function PromptInput({
       return false;
     }
     trackAndSetInput(result.text);
-    onModeChange("prompt"); // Always prompt mode for queued commands
+    setCurrentMode("prompt"); // Always prompt mode for queued commands
     setCurrentCursorOffset(result.cursorOffset);
 
     // Restore images from queued commands to pastedContents
@@ -2377,7 +2398,7 @@ function PromptInput({
       });
     }
     return true;
-  }, [trackAndSetInput, onModeChange, updatePastedContentsAndRef, queueOwner]);
+  }, [trackAndSetInput, setCurrentMode, updatePastedContentsAndRef, queueOwner]);
 
   // Insert the at-mentioned reference (the file and, optionally, a line range) when
   // we receive an at-mentioned notification the IDE.
@@ -3227,7 +3248,7 @@ function PromptInput({
       currentOffset === 0 &&
       (key.escape || key.backspace || key.delete || (key.ctrl && char === "u"))
     ) {
-      onModeChange("prompt");
+      setCurrentMode("prompt");
       setHelpOpen(false);
     }
 
@@ -3538,7 +3559,7 @@ function PromptInput({
         onSelect={(entry) => {
           const entryMode = getModeFromInput(entry.display);
           const value = getValueFromInput(entry.display);
-          onModeChange(entryMode);
+          setCurrentMode(entryMode);
           trackAndSetInput(value);
           setPastedContentsAndRef(entry.pastedContents);
           setCurrentCursorOffset(value.length);

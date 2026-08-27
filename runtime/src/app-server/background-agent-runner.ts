@@ -924,6 +924,8 @@ interface BackgroundAgentDaemonEvent {
   readonly historyEpoch?: string;
   readonly turnId?: string;
   readonly clientMessageId?: string;
+  /** Keep operation-scoped events out of model/run status projection. */
+  readonly statusProjection?: "session_only";
 }
 
 interface AgentTerminalUsage {
@@ -2496,24 +2498,26 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active.messageSubmissionsById.set(params.messageId, submission);
     active.pendingMessageSubmissionCount += 1;
 
-    const execute = active.messageSubmissionQueue.then(async () => {
-      if (!isRunnableActiveAgent(active)) {
-        throw new Error(`AgenC daemon agent not running: ${agentId}`);
-      }
-      active.messageSubmission = submission;
-      try {
-        return await this.#executeAgentMessageSubmission(
-          active,
-          agentId,
-          params,
-          submission,
-        );
-      } finally {
-        if (active.messageSubmission === submission) {
-          active.messageSubmission = undefined;
+    const execute = active.messageSubmissionQueue.then(() =>
+      runWithCurrentRuntimeSession(active.bootstrap.session, async () => {
+        if (!isRunnableActiveAgent(active)) {
+          throw new Error(`AgenC daemon agent not running: ${agentId}`);
         }
-      }
-    });
+        active.messageSubmission = submission;
+        try {
+          return await this.#executeAgentMessageSubmission(
+            active,
+            agentId,
+            params,
+            submission,
+          );
+        } finally {
+          if (active.messageSubmission === submission) {
+            active.messageSubmission = undefined;
+          }
+        }
+      }),
+    );
     active.messageSubmissionQueue = execute.then(
       () => {},
       () => {},
@@ -4490,7 +4494,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     return eventLog.subscribe((event) => {
       const uncorrelated = daemonEventFromUnboundSessionEvent(event);
       if (uncorrelated === null) return;
-      const daemonEvent = correlateDaemonEvent(active, uncorrelated);
+      const daemonEvent = scopeDirectShellDaemonEvent(
+        active,
+        correlateDaemonEvent(active, uncorrelated),
+      );
       active.lastActiveAt = this.#now();
       this.#applyCanonicalEventBookkeeping(active, daemonEvent);
       void this.#emitOrBufferEvent(active, daemonEvent);
@@ -4501,6 +4508,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active: ActiveBackgroundAgent,
     event: BackgroundAgentDaemonEvent,
   ): void {
+    if (event.statusProjection === "session_only") return;
     const payload = event.payload;
     switch (event.type) {
       case "agent_message_delta":
@@ -5396,6 +5404,28 @@ function shellEventKey(commandId: string): string {
   return createHash("sha256").update(commandId, "utf8").digest("hex").slice(0, 32);
 }
 
+function scopeDirectShellDaemonEvent(
+  active: ActiveBackgroundAgent,
+  event: BackgroundAgentDaemonEvent,
+): BackgroundAgentDaemonEvent {
+  const payload = event.payload;
+  const correlationIds = [
+    event.id,
+    payload?.callId,
+    payload?.queuedCommandUuid,
+  ];
+  if (
+    !correlationIds.some(
+      (candidate) =>
+        typeof candidate === "string" &&
+        active.shellExecutionsById.has(candidate),
+    )
+  ) {
+    return event;
+  }
+  return { ...event, statusProjection: "session_only" };
+}
+
 function throwIfShellRequestAborted(signal: AbortSignal | undefined): void {
   if (signal?.aborted !== true) return;
   if (signal.reason instanceof Error) throw signal.reason;
@@ -6094,6 +6124,7 @@ export function notificationFromDaemonEvent(
       event.type === "turn_complete" ||
       event.type === "turn_aborted" ||
       event.type === "error") &&
+    event.statusProjection !== "session_only" &&
     isJsonObject(payload)
   ) {
     return {
