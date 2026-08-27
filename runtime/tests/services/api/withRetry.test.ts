@@ -49,8 +49,19 @@ async function importFreshWithRetryModule(
     | 'foundry' = 'firstParty',
 ) {
   mock.restore()
+  const actualProviders = await import('../../../src/utils/model/providers.ts')
   mock.module('src/utils/model/providers.js', () => ({
+    ...actualProviders,
     getAPIProvider: () => provider,
+    getSelectedProviderEnvironment: () => ({}),
+    getSelectedProviderName: () =>
+      provider === 'firstParty'
+        ? 'anthropic'
+        : provider === 'bedrock'
+          ? 'amazon-bedrock'
+          : provider === 'providerCode'
+            ? 'anthropic'
+            : provider,
     isFirstPartyAnthropicBaseUrl: () => provider === 'firstParty',
     isFirstPartyproviderBaseUrl: () => provider === 'firstParty',
     isGithubNativeAnthropicMode: () => provider === 'github',
