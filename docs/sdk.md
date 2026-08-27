@@ -98,6 +98,11 @@ Key `AgencClient` methods:
 - `onNotification(cb)` / `onSessionNotification(sessionId, cb)` → raw events
 - Path helpers: `resolveAgencHome`, `resolveDaemonSocketPath`, `resolveDaemonCookiePath`
 
+The daemon transport validates its home authority before it reads a cookie or
+opens a socket. `AGENC_HOME` must be absolute and is canonicalized through its
+deepest existing ancestor. `AGENC_CONFIG_DIR` is retired and rejected even
+when `connect()` receives explicit `socketPath` and `cookiePath` overrides.
+
 `createSession()` sends safe runtime options with
 `allowUntrustedHooks: false` and the exact `pluginStorageRoot` passed to that
 call. `AgencClient` does not reread `AGENC_PLUGIN_CACHE_DIR` or derive a root

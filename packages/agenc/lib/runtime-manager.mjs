@@ -56,6 +56,9 @@ import {
   validateRuntimeReleaseManifest,
 } from "./runtime-release-contract.mjs";
 import { acquireLocalSqliteLock } from "./sqlite-lock.mjs";
+import { resolveAgenCHome } from "./home-authority.mjs";
+
+export { resolveAgenCHome } from "./home-authority.mjs";
 
 export {
   MAX_RUNTIME_ARTIFACT_BYTES,
@@ -209,19 +212,6 @@ function assertRegularWindowsExecutable(identity, spelling) {
 
 function sameWindowsExecutableIdentity(left, right) {
   return left.dev === right.dev && left.ino === right.ino;
-}
-
-export function resolveAgenCHome(env = process.env, userHome = homedir()) {
-  const configured = env.AGENC_HOME;
-  const requested = configured && configured.length > 0
-    ? configured
-    : join(userHome, ".agenc");
-  if (!isAbsolute(requested)) {
-    throw new Error(
-      "agenc: AGENC_HOME must be an absolute path so its identity does not change with the working directory",
-    );
-  }
-  return resolve(requested);
 }
 
 function canonicalizeAgenCHome(requested) {
