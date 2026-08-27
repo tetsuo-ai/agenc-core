@@ -243,16 +243,6 @@ function readNonEmpty(
   return value && value.trim().length > 0 ? value.trim() : undefined;
 }
 
-/** Provider slug override from AGENC_PROVIDER, or `undefined`. */
-export function resolveProvider(
-  env: EnvSnapshot = process.env,
-): string | undefined {
-  return normalizeProviderIdentity(
-    readEnv(env).AGENC_PROVIDER,
-    "AGENC_PROVIDER",
-  );
-}
-
 /** Active profile selector from AGENC_PROFILE, or `undefined`. */
 export function resolveProfileName(
   env: EnvSnapshot = process.env,
@@ -276,15 +266,6 @@ export function resolveProviderBaseURL(
   env: EnvSnapshot = process.env,
 ): string | undefined {
   return resolveProviderBaseURLEnvironment(provider, readEnv(env))?.value;
-}
-
-/** Model slug from env, falling back to `defaultModel`. */
-export function resolveModel(
-  defaultModel = "grok-4.6",
-  env: EnvSnapshot = process.env,
-): string {
-  const e = readEnv(env);
-  return e.AGENC_MODEL && e.AGENC_MODEL.length > 0 ? e.AGENC_MODEL : defaultModel;
 }
 
 /** Workspace root override from AGENC_WORKSPACE, or `undefined`. */

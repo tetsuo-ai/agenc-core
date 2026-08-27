@@ -1,6 +1,4 @@
 import {
-  resolveModel as resolveEnvModel,
-  resolveProvider as resolveEnvProvider,
   resolveProviderApiKey as resolveEnvProviderApiKey,
   resolveProviderBaseURL as resolveEnvProviderBaseURL,
   type EnvSnapshot,
@@ -28,12 +26,6 @@ export {
 export { buildProviderModelCatalog } from "./provider-model-authority.js";
 export type { ProviderSlug } from "./provider-model-authority.js";
 
-export function isAgencModelShortcut(
-  model: string | undefined,
-): boolean {
-  return model?.trim().toLowerCase() === "agenc";
-}
-
 export interface ResolvedProviderSettings {
   readonly provider: ProviderSlug;
   readonly apiKey?: string;
@@ -58,32 +50,6 @@ export function readProviderConfig(
   const slug = resolveBuiltInProviderSlug(provider);
   if (!slug) return undefined;
   return config.providers?.[slug];
-}
-
-export function resolveProviderSelection(params: {
-  readonly cliProvider?: string;
-  readonly cliModel?: string;
-  readonly config: AgenCConfig;
-  readonly env?: EnvSnapshot;
-  readonly fallback?: ProviderSlug;
-}): ProviderSlug | undefined {
-  const explicitProvider =
-    resolveBuiltInProviderSlug(params.cliProvider) ??
-    resolveBuiltInProviderSlug(resolveEnvProvider(params.env));
-  if (explicitProvider) return explicitProvider;
-
-  const envModel = resolveEnvModel("", params.env).trim();
-  const resolved =
-    isAgencModelShortcut(params.cliModel) ||
-    isAgencModelShortcut(envModel) ||
-    isAgencModelShortcut(params.config.model)
-      ? "agenc"
-      : undefined;
-  return (
-    resolved ??
-    resolveBuiltInProviderSlug(params.config.model_provider) ??
-    params.fallback
-  );
 }
 
 export function resolveProviderSettings(

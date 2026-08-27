@@ -54,23 +54,17 @@ import {
 import {
   resolveAgencHome,
   resolveApiKey,
-  resolveProvider,
   resolveProfileName,
   resolveProviderApiKey,
   resolveProviderBaseURL,
-  resolveModel,
   resolveWorkspace,
   applyEnvOverrides,
 } from "../../src/config/env.js";
 import {
   buildProviderModelCatalog,
-  resolveProviderSelection,
   resolveProviderSettings,
 } from "../../src/config/resolve-provider.js";
-import {
-  configuredModelForProvider,
-  resolveModelSelection,
-} from "../../src/config/resolve-model.js";
+import { configuredModelForProvider } from "../../src/config/resolve-model.js";
 import { ConfigStore } from "../../src/config/store.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -83,7 +77,6 @@ describe("schema: defaultConfig", () => {
     expect(cfg.configVersion).toBe(CANONICAL_CONFIG_VERSION);
     expect(cfg.model).toBe("grok-4.6");
     expect(cfg.model_provider).toBe("grok");
-    expect(resolveProviderSelection({ config: cfg })).toBe("grok");
     expect(cfg.approval_policy).toBe("on-request");
     expect(cfg.approvals_reviewer).toBe("user");
     expect(cfg.sandbox_mode).toBe("workspace-write");
@@ -617,9 +610,6 @@ describe("provider resolution (T13)", () => {
     });
 
     expect(configuredModelForProvider(config, "grok")).toBe("grok-build-0.1");
-    expect(resolveModelSelection({ config, provider: "grok" })).toBe(
-      "grok-build-0.1",
-    );
   });
 
   test("configuredModelForProvider: provider default_model still wins when no top-level model is selected for it", () => {
@@ -633,20 +623,6 @@ describe("provider resolution (T13)", () => {
 
     expect(configuredModelForProvider(config, "grok")).toBe("grok-4.3");
     expect(configuredModelForProvider(config, "openai")).toBe("gpt-5");
-  });
-
-  test('model = "agenc" selects the hosted AgenC provider', () => {
-    const config = mergeConfigs(defaultConfig(), { model: "agenc" });
-
-    expect(resolveProviderSelection({ config })).toBe("agenc");
-    expect(resolveProviderSelection({ config, cliProvider: "openai" })).toBe(
-      "openai",
-    );
-    expect(
-      resolveProviderSelection({ config, env: { AGENC_PROVIDER: "grok" } }),
-    ).toBe("grok");
-    expect(resolveModelSelection({ config })).toBe("agenc");
-    expect(resolveModelSelection({ config, provider: "agenc" })).toBe("agenc");
   });
 
   test("buildProviderModelCatalog includes configured provider defaults", () => {
@@ -1578,25 +1554,9 @@ describe("env: resolvers", () => {
     expect(resolveApiKey({})).toBeUndefined();
   });
 
-  test("resolveProvider / resolveProfileName / resolveModel / resolveWorkspace", () => {
-    expect(() => resolveProvider({ AGENC_PROVIDER: "xai" })).toThrow(
-      'use "grok" instead',
-    );
-    expect(() => resolveProvider({ AGENC_PROVIDER: "custom" })).toThrow(
-      'use "openai-compatible" instead',
-    );
-    expect(() =>
-      resolveProvider({ AGENC_PROVIDER: "openai_compatible" })
-    ).toThrow('use "openai-compatible" instead');
-    // branding-scan: allow provider normalization fixture
-    expect(resolveProvider({ AGENC_PROVIDER: "  OpenAI  " })).toBe("openai");
-    expect(resolveProvider({})).toBeUndefined();
+  test("resolveProfileName / resolveWorkspace", () => {
     expect(resolveProfileName({ AGENC_PROFILE: "fast" })).toBe("fast");
     expect(resolveProfileName({})).toBeUndefined();
-    expect(resolveModel("grok-4.3", { AGENC_MODEL: "grok-3" })).toBe(
-      "grok-3",
-    );
-    expect(resolveModel("grok-4.3", {})).toBe("grok-4.3");
     expect(resolveWorkspace({ AGENC_WORKSPACE: "/work" })).toBe("/work");
     expect(resolveWorkspace({})).toBeUndefined();
   });
