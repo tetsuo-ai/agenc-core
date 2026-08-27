@@ -112,7 +112,6 @@ const INLINE_PATTERN = /(?<=^|\s)!`([^`]+)`/gm
  * @param shell - Shell to route commands through. Defaults to bash.
  *   This is *never* read from settings.defaultShell — it comes from .md
  *   frontmatter (author's choice) or is undefined for built-in commands.
- *   See docs/design/ps-shell-selection.md §5.3.
  */
 export async function executeShellCommandsInPrompt(
   text: string,

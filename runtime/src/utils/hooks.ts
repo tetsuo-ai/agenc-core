@@ -714,7 +714,7 @@ function processHookJSONOutput({
  * Shell resolution: hook.shell → 'bash'. PowerShell hooks spawn pwsh
  * with -NoProfile -NonInteractive -Command and skip bash-specific prep
  * (POSIX path conversion, .sh auto-prepend, AGENC_SHELL_PREFIX).
- * See docs/design/ps-shell-selection.md §5.1.
+ * Bash hooks use the session's captured shell executable and wrapper.
  */
 async function execCommandHook(
   hook: HookCommand & { type: "command" },
@@ -752,11 +752,12 @@ async function execCommandHook(
   const isWindows = getPlatform() === "windows";
 
   // --
-  // Per-hook shell selection (phase 1 of docs/design/ps-shell-selection.md).
-  // Resolution order: hook.shell → DEFAULT_HOOK_SHELL. The defaultShell
-  // fallback (settings.defaultShell) is phase 2 — not wired yet.
+  // Per-hook shell selection is authored with the hook. Omitted values use
+  // Bash by contract; the interactive defaultShell setting does not rewrite
+  // hook definitions. The Bash executable and wrapper still come from the
+  // session's captured command authority.
   //
-  // The bash path is the historical default and stays unchanged. The
+  // Bash is the explicit default. The
   // PowerShell path deliberately skips the Windows-specific bash
   // accommodations (cygpath conversion, .sh auto-prepend, POSIX-quoted
   // SHELL_PREFIX).
