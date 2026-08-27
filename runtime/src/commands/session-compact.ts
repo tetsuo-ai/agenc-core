@@ -41,10 +41,11 @@ import {
 import { asRecord } from "../utils/record.js";
 import { DEFAULT_MAX_RESULT_SIZE_CHARS } from "../constants/toolLimits.js";
 import {
-  getAutoCompactThreshold,
-  getEffectiveContextWindowSize,
-  isAutoCompactEnabled,
+  getAutoCompactThresholdForEnvironment,
+  getEffectiveContextWindowSizeForEnvironment,
+  isAutoCompactEnabledForEnvironment,
 } from "../services/compact/autoCompact.js";
+import type { ProviderEnvironment } from "../llm/provider-options.js";
 import { estimateMessagesTokens } from "../services/compact/_deps/runtime.js";
 import {
   assembleSystemPrompt,
@@ -59,6 +60,7 @@ import {
 import { getOutputStyleConfig } from "../constants/outputStyles.js";
 import { openCompactStatusModal } from "./compact-menu.js";
 import { openAsyncLocalJsxCommand } from "./local-jsx-command.js";
+import { providerEnvironmentFromCommandContext } from "./config-context.js";
 
 /**
  * Both /compact and /context allocate a fresh TurnContext via the
@@ -206,6 +208,7 @@ export const contextCommand: SlashCommand = {
         session: ctx.session,
         ctx: allocated.turnContext,
         args: ctx.argsRaw,
+        providerEnvironment: providerEnvironmentFromCommandContext(ctx),
       });
       if (await openContextUsageModal(ctx, result.text)) {
         return { kind: "skip" };
@@ -243,6 +246,7 @@ async function buildFallbackContextUsageText(
   const estimated = computeContextUsageBreakdown({
     messages,
     tools,
+    providerEnvironment: providerEnvironmentFromCommandContext(ctx),
     ...(model !== undefined ? { model } : {}),
     ...(contextWindowTokens !== undefined ? { contextWindowTokens } : {}),
     ...(sessionTokenUsage !== undefined ? { sessionTokenUsage } : {}),
@@ -820,6 +824,7 @@ async function runContextUsage(params: {
   readonly session: Session;
   readonly ctx: TurnContext;
   readonly args?: string;
+  readonly providerEnvironment: ProviderEnvironment;
 }): Promise<AgenCContextUsageResult> {
   // The session's history (snapshotHistoryMessages) starts AFTER
   // the synthetic system message; durableHistoryStartIndex in
@@ -888,6 +893,7 @@ async function runContextUsage(params: {
   const commandContext = {
     ...toolUseContext,
     messages,
+    providerEnvironment: params.providerEnvironment,
     tools,
     options: {
       ...toolUseContext.options,
@@ -1126,6 +1132,8 @@ interface ContextUsageInputs {
    * entirely and reported numbers far below what the model sees.
    */
   readonly tools: readonly LLMTool[];
+  /** Immutable provider environment captured by the session at ingress. */
+  readonly providerEnvironment: ProviderEnvironment;
   /** Provider hint forwarded to the family-aware estimator. */
   readonly providerHint?: { readonly provider?: string; readonly model?: string };
   /**
@@ -1203,12 +1211,18 @@ export function computeContextUsageBreakdown(
   const lookup = inputs.contextWindowTokens !== undefined && inputs.contextWindowTokens > 0
     ? { options: { contextWindowTokens: inputs.contextWindowTokens, mainLoopModel: inputs.model } }
     : (inputs.model ?? "");
-  const hardLimit = getEffectiveContextWindowSize(
+  const hardLimit = getEffectiveContextWindowSizeForEnvironment(
     typeof lookup === "string" ? lookup : (lookup as never),
+    inputs.providerEnvironment,
   );
-  const autoCompactEnabled = isAutoCompactEnabled();
+  const autoCompactEnabled = isAutoCompactEnabledForEnvironment(
+    inputs.providerEnvironment,
+  );
   const compactionThreshold = autoCompactEnabled
-    ? getAutoCompactThreshold(typeof lookup === "string" ? lookup : (lookup as never))
+    ? getAutoCompactThresholdForEnvironment(
+      typeof lookup === "string" ? lookup : (lookup as never),
+      inputs.providerEnvironment,
+    )
     : hardLimit;
   const accountingContext = {
     provider: {
@@ -1328,6 +1342,7 @@ async function contextUsageCall(
       readonly tools?: readonly LLMTool[];
     };
     readonly provider?: { readonly name?: string };
+    readonly providerEnvironment: ProviderEnvironment;
     readonly tools?: readonly LLMTool[];
     readonly sessionTokenUsage?: {
       readonly promptTokens: number;
@@ -1339,6 +1354,7 @@ async function contextUsageCall(
   const breakdown = computeContextUsageBreakdown({
     messages: context.messages ?? [],
     tools: context.tools ?? context.options?.tools ?? [],
+    providerEnvironment: context.providerEnvironment,
     ...(context.options?.mainLoopModel !== undefined
       ? { model: context.options.mainLoopModel }
       : {}),
