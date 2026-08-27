@@ -249,11 +249,23 @@ describe("session home authority architecture", () => {
     const expectedHomeKeys = [
       ["utils/sessionStorage.ts", "${getAgenCHomeDir()}\\u0000${projectDir}"],
       ["utils/plans.ts", "${getAgenCHomeDir()}\\u0000${getCwd()}"],
-      ["memory/paths.ts", "${getAgenCHomeDir()}\\u0000${getSessionRemoteMemoryRoot()"],
     ] as const;
 
     for (const [name, key] of expectedHomeKeys) {
       expect(source(name), name).toContain(key);
+    }
+
+    const memoryPaths = source("memory/paths.ts");
+    expect(memoryPaths).toContain("CanonicalAuthorityCache")
+    expect(memoryPaths).toContain("getCanonicalSettingsAuthority()")
+    for (const keyInput of [
+      "getAgenCHomeDir()",
+      "getSessionRemoteMemoryRoot()",
+      "getAutoMemPathOverride()",
+      "getAutoMemPathSetting()",
+      "getProjectRoot()",
+    ]) {
+      expect(memoryPaths).toContain(keyInput)
     }
   });
 
@@ -305,11 +317,17 @@ describe("session home authority architecture", () => {
   });
 
   test("keeps slash auth on captured config, provider, and home authority", () => {
-    const auth = source("commands/auth.tsx");
+    const authSources = [
+      source("commands/auth.tsx"),
+      source("commands/openai-auth.tsx"),
+      source("commands/xai-auth.tsx"),
+    ];
 
-    expect(auth).not.toContain("process.env")
-    expect(auth).toContain("requireCommandConfigStore(ctx)")
-    expect(auth).toContain("providerEnvironmentFromCommandContext(ctx)")
-    expect(auth).toContain("configStore.homeContext.path")
+    for (const auth of authSources) {
+      expect(auth).not.toContain("process.env")
+      expect(auth).toContain("requireCommandConfigStore(ctx)")
+      expect(auth).toContain("providerEnvironmentFromCommandContext(ctx)")
+    }
+    expect(authSources[0]).toContain("configStore.homeContext.path")
   });
 });
