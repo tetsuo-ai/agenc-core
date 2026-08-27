@@ -1684,6 +1684,9 @@ function runSupervisedProcessCommand(
       } else {
         stopReason ??= reason;
       }
+      // Stop-reason precedence may still change while shutdown is in flight,
+      // but the process tree must receive only one graceful-termination signal.
+      if (forceTimer !== undefined) return;
       // Unblock a pending stdin write before waiting on process-tree cleanup.
       // This is idempotent for the common no-input path, whose stdin was
       // already ended immediately after spawn.
@@ -1694,7 +1697,6 @@ function runSupervisedProcessCommand(
         PROCESS_TREE_POLL_INTERVAL_MS,
       );
       treeExitTimer.unref?.();
-      if (forceTimer !== undefined) return;
       forceTimer = setTimeout(() => {
         if (!isProcessTreeAlive(child)) {
           maybeFinish();

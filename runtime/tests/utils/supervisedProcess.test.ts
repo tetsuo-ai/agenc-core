@@ -715,11 +715,12 @@ describe("runSupervisedProcess", () => {
         ),
         {
           maxOutputBytes: 1_024,
-          terminateGraceMs: 50,
+          terminateGraceMs: 100,
           settleBackstopMs: 500,
           onStderr(_chunk, control) {
             callbackCount += 1;
             control.stop();
+            setTimeout(() => control.stop(), 20);
           },
         },
       );
