@@ -256,6 +256,14 @@ describe("provider credential authority", () => {
       mode,
       source: "environment",
     });
+    if (plan.kind === "api-key") {
+      expect(resolved.credential).toMatchObject({
+        provenance: {
+          kind: "environment",
+          fields: [{ role: "apiKey", envVar: plan.source }],
+        },
+      });
+    }
     expect(resolved.factoryOptions.apiKey).toBeUndefined();
     expect(resolved.factoryOptions.extra).toMatchObject({
       gemini: { credentialPlan: plan },
@@ -320,6 +328,39 @@ describe("provider credential authority", () => {
     });
   });
 
+  test("distinguishes well-known Gemini ADC from environment credentials", async () => {
+    const { providerOptions } = await loadCredentialModules();
+
+    const resolved = providerOptions.resolveProviderCredentialAuthority(
+      "gemini",
+      {
+        model: "gemini-2.5-pro",
+        extra: {
+          gemini: {
+            credentialPlan: {
+              kind: "adc",
+              credentialPath: join(testRoot, "well-known-adc.json"),
+              source: "well-known-adc",
+            },
+            endpointPlan: {
+              kind: "developer",
+              nativeBaseURL:
+                "https://generativelanguage.googleapis.com/v1beta",
+            },
+          },
+        },
+      },
+      {},
+    );
+
+    expect(resolved.credential).toMatchObject({
+      status: "ready",
+      mode: "gemini-adc",
+      source: "application-default",
+      label: "Google application default credentials",
+    });
+  });
+
   test("distinguishes complete and partial Bedrock SigV4 credentials", async () => {
     const { providerOptions } = await loadCredentialModules();
 
@@ -355,6 +396,10 @@ describe("provider credential authority", () => {
       mode: "none",
       missingLabel:
         "AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY",
+      provenance: {
+        kind: "environment",
+        fields: [{ role: "accessKeyId", envVar: "AWS_ACCESS_KEY_ID" }],
+      },
     });
   });
 

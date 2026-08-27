@@ -10,6 +10,7 @@ import {
   type HomeContext,
 } from "../../src/config/home.js";
 import type { ConfigStore } from "../../src/config/store.js";
+import type { ProviderFactoryOptions } from "../../src/llm/provider.js";
 import type { Session } from "../../src/session/session.js";
 import type { SecureStorageData } from "../../src/utils/secureStorage/index.js";
 import type { SlashCommandContext } from "../../src/commands/types.js";
@@ -78,6 +79,9 @@ function stubSession(options: {
   readonly model?: string;
   readonly configStore: CommandConfigStore;
   readonly environment?: EnvSnapshot;
+  readonly committedFactoryOptions?: Readonly<
+    Record<string, ProviderFactoryOptions>
+  >;
 }): Session {
   return {
     state: {
@@ -91,6 +95,14 @@ function stubSession(options: {
     services: {
       configStore: options.configStore,
       providerEnvironment: options.environment ?? Object.freeze({}),
+      ...(options.committedFactoryOptions === undefined
+        ? {}
+        : {
+            providerService: {
+              committedFactoryOptions: (provider: string) =>
+                options.committedFactoryOptions?.[provider],
+            },
+          }),
     },
   } as unknown as Session;
 }
@@ -339,6 +351,52 @@ describe("provider command access", () => {
     expectRedactedSnapshot(token, [accessToken]);
   });
 
+  test("does not label well-known Gemini ADC as environment input", async () => {
+    const home = await createHome("gemini-well-known-adc-home");
+    const { access } = await loadModules();
+    const overlay = access.createProviderCommandAccessOverlay(
+      commandContext(
+        stubSession({
+          configStore: commandConfigStore(home),
+          committedFactoryOptions: {
+            gemini: {
+              extra: {
+                gemini: {
+                  credentialPlan: {
+                    kind: "adc",
+                    credentialPath: join(testRoot, "well-known-adc.json"),
+                    source: "well-known-adc",
+                  },
+                  endpointPlan: {
+                    kind: "developer",
+                    nativeBaseURL:
+                      "https://generativelanguage.googleapis.com/v1beta",
+                  },
+                },
+              },
+            },
+          },
+        }),
+      ),
+    );
+
+    expect(
+      overlay.inspect({ provider: "gemini", model: "gemini-2.5-pro" }),
+    ).toMatchObject({
+      effect: "switch",
+      route: "direct",
+      directCredential: {
+        status: "ready",
+        mode: "gemini-adc",
+        source: "application-default",
+      },
+      auth: {
+        state: "ready",
+        source: "Google application default credentials",
+      },
+    });
+  });
+
   test("blocks partial Bedrock credentials and accepts a complete SigV4 pair", async () => {
     const home = await createHome("bedrock-home");
     const { access } = await loadModules();
@@ -400,6 +458,76 @@ describe("provider command access", () => {
     });
     expect(complete.rejection).toBeUndefined();
     expectRedactedSnapshot(complete, [accessKey, secretKey]);
+  });
+
+  test("defers absent credentials but blocks incomplete credentials when managed keys are disabled", async () => {
+    const home = await createHome("missing-direct-home");
+    const { access } = await loadModules();
+    const absentOverlay = access.createProviderCommandAccessOverlay(
+      commandContext(
+        stubSession({
+          configStore: commandConfigStore(home),
+          environment: Object.freeze({}),
+        }),
+      ),
+    );
+    expect(
+      absentOverlay.inspect({
+        provider: "anthropic",
+        model: "claude-opus-4-7",
+      }),
+    ).toMatchObject({
+      effect: "switch",
+      route: "deferred",
+      directCredential: {
+        status: "missing",
+        reason: "absent",
+        missingLabel: "ANTHROPIC_API_KEY",
+      },
+    });
+
+    const selections = [
+      {
+        provider: "amazon-bedrock" as const,
+        model: "amazon.nova-pro-v1:0",
+        environment: Object.freeze({ AWS_ACCESS_KEY_ID: "partial-access" }),
+        missingLabel:
+          "AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY",
+      },
+      {
+        provider: "gemini" as const,
+        model: "gemini-2.5-pro",
+        environment: Object.freeze({
+          GEMINI_AUTH_MODE: "access-token",
+          GEMINI_PROJECT_ID: "project-id",
+          GEMINI_VERTEX_LOCATION: "us-central1",
+        }),
+        missingLabel: "GEMINI_ACCESS_TOKEN",
+      },
+    ];
+
+    for (const selection of selections) {
+      const overlay = access.createProviderCommandAccessOverlay(
+        commandContext(
+          stubSession({
+            configStore: commandConfigStore(home),
+            environment: selection.environment,
+          }),
+        ),
+      );
+      expect(overlay.inspect(selection)).toMatchObject({
+        effect: "blocked",
+        route: "unavailable",
+        directCredential: {
+          status: "missing",
+          missingLabel: selection.missingLabel,
+        },
+        rejection: {
+          code: "credential-required",
+          missingLabel: selection.missingLabel,
+        },
+      });
+    }
   });
 
   test("keeps local providers selectable without credentials", async () => {

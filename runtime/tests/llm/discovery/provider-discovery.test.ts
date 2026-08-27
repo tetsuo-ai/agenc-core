@@ -13,6 +13,10 @@ import {
   saveXaiOauthCredentials,
 } from "../../utils/xaiOauthCredentials.js";
 import {
+  clearOpenAiOauthCredentials,
+  saveOpenAiOauthCredentials,
+} from "../../utils/openAiOauthCredentials.js";
+import {
   collectProviderAvailability,
   formatProviderAvailabilityReport,
 } from "./provider-discovery.js";
@@ -401,6 +405,132 @@ describe("provider discovery", () => {
       });
     } finally {
       rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("reports a saved BYOK key for a non-Gemini provider", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-provider-saved-byok-"));
+    const env = { AGENC_HOME: agencHome };
+    try {
+      await new LocalAuthBackend({ agencHome, env }).saveByokKey({
+        provider: "anthropic",
+        apiKey: "saved-anthropic-key",
+      });
+      const report = await collectProviderAvailability({
+        authBackend: authBackend("local", "free"),
+        checkLocal: false,
+        config: defaultConfig(),
+        env,
+      });
+
+      expect(byProvider(report.entries).get("anthropic")).toMatchObject({
+        usable: true,
+        credentialStatus: "present",
+        detail: "BYOK credential found via saved BYOK",
+      });
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("reports Grok Composer as keyless through the canonical authority", async () => {
+    const baseConfig = defaultConfig();
+    const report = await collectProviderAvailability({
+      authBackend: authBackend("local", "free"),
+      checkLocal: false,
+      config: {
+        ...baseConfig,
+        providers: {
+          ...baseConfig.providers,
+          grok: {
+            ...baseConfig.providers?.grok,
+            default_model: "grok-composer-2.5-fast",
+          },
+        },
+      },
+      env: {},
+    });
+
+    expect(byProvider(report.entries).get("grok")).toMatchObject({
+      model: "grok-composer-2.5-fast",
+      usable: true,
+      credentialStatus: "not-required",
+      detail: "available",
+    });
+  });
+
+  it("reports OpenAI sign-in from the discovery HomeContext", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-provider-openai-sign-in-"));
+    const env = {
+      AGENC_HOME: join(root, "state"),
+      HOME: join(root, "unrelated-home"),
+    };
+    const home = resolveHomeContext(env, { platformHome: root });
+    try {
+      expect(
+        saveOpenAiOauthCredentials(home, {
+          accessToken: "openai-subscription-token",
+          accountId: "openai-account",
+        }).success,
+      ).toBe(true);
+
+      const report = await collectProviderAvailability({
+        authBackend: authBackend("local", "free"),
+        checkLocal: false,
+        config: defaultConfig(),
+        env,
+      });
+
+      expect(byProvider(report.entries).get("openai")).toMatchObject({
+        usable: true,
+        credentialStatus: "present",
+        detail: "OpenAI sign-in credential found",
+      });
+    } finally {
+      clearOpenAiOauthCredentials(home);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("checks a configured OpenAI endpoint against stored sign-in credentials", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-provider-openai-endpoint-"));
+    const env = { AGENC_HOME: join(root, "state") };
+    const home = resolveHomeContext(env, { platformHome: root });
+    const baseConfig = defaultConfig();
+    const config = {
+      ...baseConfig,
+      providers: {
+        ...baseConfig.providers,
+        openai: {
+          ...baseConfig.providers?.openai,
+          base_url: "https://gateway.example/v1",
+        },
+      },
+    };
+    try {
+      expect(
+        saveOpenAiOauthCredentials(home, {
+          apiKey: "stored-openai-platform-key",
+        }).success,
+      ).toBe(true);
+
+      const report = await collectProviderAvailability({
+        authBackend: authBackend("local", "free"),
+        checkLocal: false,
+        config,
+        env,
+      });
+
+      expect(byProvider(report.entries).get("openai")).toMatchObject({
+        usable: false,
+        credentialStatus: "unavailable",
+        detail: expect.stringContaining(
+          "bound to the first-party OpenAI endpoint",
+        ),
+      });
+    } finally {
+      clearOpenAiOauthCredentials(home);
+      rmSync(root, { recursive: true, force: true });
     }
   });
 

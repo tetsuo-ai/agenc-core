@@ -67,7 +67,8 @@ export type ProviderCredentialSource =
   | "explicit"
   | "environment"
   | "saved-byok"
-  | "native-sign-in";
+  | "native-sign-in"
+  | "application-default";
 
 export type ProviderCredentialState =
   | {
@@ -85,8 +86,10 @@ export type ProviderCredentialState =
   | {
       readonly status: "missing";
       readonly mode: "none";
+      readonly reason: "absent" | "partial" | "mode-required";
       readonly label: string;
       readonly missingLabel: string;
+      readonly provenance?: ProviderCredentialProvenance;
     };
 
 export interface ResolvedProviderCredentialAuthority {
@@ -162,12 +165,16 @@ function readyCredential(
 function missingCredential(
   label: string,
   missingLabel = label,
+  provenance?: ProviderCredentialProvenance,
+  reason: "absent" | "partial" | "mode-required" = "absent",
 ): ProviderCredentialState {
   return Object.freeze({
     status: "missing",
     mode: "none",
+    reason,
     label,
     missingLabel,
+    ...(provenance === undefined ? {} : { provenance }),
   });
 }
 
@@ -191,7 +198,12 @@ function projectGeminiCredentialState(
       return readyCredential("api-key", "explicit", "explicit Gemini API key");
     }
     const provenance = environment === undefined
-      ? undefined
+      ? Object.freeze({
+          kind: "environment" as const,
+          fields: Object.freeze([
+            Object.freeze({ role: "apiKey" as const, envVar: plan.source }),
+          ]),
+        })
       : providerCredentialEnvironmentProvenance(environment);
     return readyCredential(
       "api-key",
@@ -210,7 +222,9 @@ function projectGeminiCredentialState(
   if (plan.kind === "adc") {
     return readyCredential(
       "gemini-adc",
-      "environment",
+      plan.source === "well-known-adc"
+        ? "application-default"
+        : "environment",
       plan.source === "well-known-adc"
         ? "Google application default credentials"
         : plan.source,
@@ -225,7 +239,12 @@ function projectGeminiCredentialState(
       : plan.expected === "api-key"
         ? "GEMINI_API_KEY or GOOGLE_API_KEY or saved BYOK"
         : "Gemini API key, access token, ADC credentials, or saved BYOK";
-  return missingCredential(`${missingLabel} missing`, missingLabel);
+  return missingCredential(
+    `${missingLabel} missing`,
+    missingLabel,
+    undefined,
+    plan.expected === "any" ? "absent" : "mode-required",
+  );
 }
 
 function projectProviderCredentialState(params: {
@@ -331,6 +350,14 @@ function projectProviderCredentialState(params: {
     return missingCredential(
       `${missingLabel} missing`,
       missingLabel,
+      params.credentialEnvironment === undefined
+        ? undefined
+        : providerCredentialEnvironmentProvenance(
+            params.credentialEnvironment,
+          ),
+      params.credentialEnvironment?.sources.length
+        ? "partial"
+        : "absent",
     );
   }
   if (info.credentials.kind === "none") {

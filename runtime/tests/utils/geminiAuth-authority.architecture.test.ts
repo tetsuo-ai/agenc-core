@@ -94,9 +94,11 @@ describe('Gemini credential authority', () => {
     expect(compatSource).toContain('createProvider(')
     expect(endpointSource).not.toContain('openAiCompatibleBaseURL')
     expect(endpointSource).not.toContain('GEMINI_DEVELOPER_OPENAI')
-    for (const canonicalConsumer of [menuSource, discoverySource, verificationSource]) {
-      expect(canonicalConsumer).toContain('resolveProviderFactoryOptions')
-    }
+    expect(menuSource).toContain('createProviderCommandAccessOverlay')
+    expect(menuSource).not.toContain('resolveProviderFactoryOptions')
+    expect(discoverySource).toContain('resolveProviderCredentialAuthority')
+    expect(discoverySource).not.toContain('resolveProviderFactoryOptions')
+    expect(verificationSource).toContain('resolveProviderFactoryOptions')
   })
 
   test('has no second provider transport override channel', () => {

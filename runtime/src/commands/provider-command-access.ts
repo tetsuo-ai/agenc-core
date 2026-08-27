@@ -16,6 +16,8 @@ import {
   resolveBuiltInProviderInfo,
   resolveBuiltInProviderRegionalEndpoint,
 } from "../llm/registry/provider-info.js";
+import { geminiEndpointFor } from "../llm/providers/gemini/endpoint-plan.js";
+import { readGeminiRuntimeOptions } from "../llm/providers/gemini/runtime-options.js";
 import { asRecord } from "../utils/record.js";
 import { readBuiltInSessionSelection } from "../session/provider-model-selection.js";
 import {
@@ -122,13 +124,18 @@ function directAuthProjection(credential: ProviderCredentialState): {
   readonly source: string;
 } {
   if (credential.status === "ready") {
+    const environmentSource = credential.provenance?.kind === "environment"
+      ? `env ${credential.provenance.fields.map(field => field.envVar).join(" + ")}`
+      : `env ${credential.label}`;
     const source = credential.source === "environment"
-      ? `env ${credential.label}`
+      ? environmentSource
       : credential.source === "saved-byok"
         ? "native secure storage"
         : credential.source === "native-sign-in"
           ? "native sign-in"
-          : "current session";
+          : credential.source === "application-default"
+            ? credential.label
+            : "current session";
     return { state: "ready", label: credential.label, source };
   }
   if (
@@ -156,11 +163,14 @@ function endpointFor(
   factoryOptions: ProviderFactoryOptions,
   fallbackBaseURL: string,
 ): { readonly baseURL: string; readonly local: boolean } {
+  const geminiRuntime = readGeminiRuntimeOptions(factoryOptions.extra);
   const region = typeof factoryOptions.extra?.region === "string"
     ? factoryOptions.extra.region.trim()
     : undefined;
   const regional = resolveBuiltInProviderRegionalEndpoint(provider, region);
-  const baseURL = factoryOptions.baseURL ?? regional?.baseURL ?? fallbackBaseURL;
+  const baseURL = geminiRuntime === undefined
+    ? factoryOptions.baseURL ?? regional?.baseURL ?? fallbackBaseURL
+    : geminiEndpointFor(geminiRuntime.endpointPlan);
   return Object.freeze({ baseURL, local: isLocalEndpoint(baseURL) });
 }
 
@@ -309,10 +319,11 @@ export function createProviderCommandAccessOverlay(
           ? { code: "upgrade-required" }
           : { code: "provider-managed-auth-required" };
       }
-    } else if (!managedKeysEnabled) {
-      // With managed keys disabled, credential admission remains deferred to
-      // the session provider transaction. This preserves explicit SDK and CLI
-      // credentials that are not represented in the command environment.
+    } else if (
+      !managedKeysEnabled &&
+      directCredential.status === "missing" &&
+      directCredential.reason === "absent"
+    ) {
       route = "deferred";
     } else if (
       managedKeysEnabled &&
@@ -425,6 +436,10 @@ export function formatProviderCommandRejection(
       ? access.directCredential.missingLabel
       : "provider credentials");
   if (rejection.code === "upgrade-required") {
+    const info = resolveBuiltInProviderInfo(access.selection.provider);
+    if (info?.requiresManagedAuth === true) {
+      return `${prefix}: upgrade the signed-in AgenC account.`;
+    }
     return (
       `${prefix}: upgrade the signed-in AgenC account for this hosted model, ` +
       `or set ${missingLabel} for BYOK.`

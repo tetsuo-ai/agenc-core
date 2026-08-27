@@ -4,10 +4,7 @@ import {
   buildProviderModelCatalog,
   type ProviderSlug,
 } from "../config/provider-model-authority.js";
-import {
-  resolveProviderSlug,
-  resolveProviderSettings,
-} from "../config/resolve-provider.js";
+import { resolveProviderSlug } from "../config/resolve-provider.js";
 import {
   configuredModelForProvider,
   defaultModelForProvider,
@@ -21,20 +18,11 @@ import type { AgenCConfig } from "../config/schema.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
-import {
-  providerEnvironmentFromCommandContext,
-  readCommandConfig,
-  remoteAuthContextFromCommandContext,
-} from "./config-context.js";
+import { readCommandConfig } from "./config-context.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import { readBuiltInSessionSelection } from "../session/provider-model-selection.js";
-import {
-  hasHostedManagedAccess,
-  hostedManagedSubscriptionTier,
-  providerHasLiveSubscriptionRoute,
-  visibleSubscriptionManagedModelsForTier,
-} from "./subscription-managed-models.js";
+import { createProviderCommandAccessOverlay } from "./provider-command-access.js";
 import type { SlashCommandContext } from "./types.js";
 
 type ModelRowStatus =
@@ -292,58 +280,69 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
   const configuredModel =
     config !== undefined ? configuredModelForProvider(config, provider) : undefined;
   const catalog = buildProviderModelCatalog(config);
-  const managedKeysEnabled = config?.auth?.managedKeys?.enabled === true;
-  const environment = providerEnvironmentFromCommandContext(ctx);
-  const authContext = remoteAuthContextFromCommandContext(ctx);
-  const managedSubscriptionAvailable = hasHostedManagedAccess(
-    config,
-    authContext,
-  );
-  const managedSubscriptionTier = hostedManagedSubscriptionTier(authContext);
-  const providerApiKey = (catalogProvider: ProviderSlug): string | undefined =>
-    config !== undefined
-      ? resolveProviderSettings(catalogProvider, config, environment)?.apiKey
-      : undefined;
-  const providerHasByok = (catalogProvider: ProviderSlug): boolean => {
-    const apiKey = providerApiKey(catalogProvider);
-    return apiKey !== undefined && apiKey.trim().length > 0;
-  };
-  const shouldShowProvider = (catalogProvider: ProviderSlug): boolean => {
-    if (catalogProvider === provider) return true;
-    if (!managedKeysEnabled) return true;
-    if (providerHasByok(catalogProvider)) return true;
-    return (
-      managedSubscriptionAvailable &&
-      providerHasLiveSubscriptionRoute(catalogProvider)
+  const accessOverlay = createProviderCommandAccessOverlay(ctx);
+  const accessFor = (catalogProvider: ProviderSlug, model: string) =>
+    accessOverlay.inspect({ provider: catalogProvider, model });
+  const isVisibleSelection = (
+    catalogProvider: ProviderSlug,
+    model: string,
+  ): boolean => {
+    const access = accessFor(catalogProvider, model);
+    if (access.effect === "unchanged") return true;
+    if (access.effect === "blocked" || access.route === "unavailable") {
+      return false;
+    }
+    if (access.route !== "subscription") return true;
+    const localModel = providerLocalModelIdFromCatalog(catalogProvider, model);
+    return access.managed.visibleModels.some(
+      managedModel =>
+        providerLocalModelIdFromCatalog(catalogProvider, managedModel) ===
+        localModel,
     );
   };
-  const modelsForProvider = (catalogProvider: ProviderSlug): readonly string[] => {
-    if (
-      managedSubscriptionAvailable &&
-      providerHasLiveSubscriptionRoute(catalogProvider) &&
-      !providerHasByok(catalogProvider)
-    ) {
-      return visibleSubscriptionManagedModelsForTier(
-        catalogProvider,
-        managedSubscriptionTier,
-      );
-    }
-    return catalog[catalogProvider] ?? [];
-  };
   const rows = providerOrder(catalog, provider)
-    .filter(shouldShowProvider)
     .flatMap(catalogProvider => {
-      const managedRoute =
-        managedSubscriptionAvailable &&
-        providerHasLiveSubscriptionRoute(catalogProvider) &&
-        !providerHasByok(catalogProvider);
-      return providerRows({
+      const seedModel =
+        catalogProvider === provider
+          ? currentModel
+          : defaultModelForProvider(catalogProvider);
+      const managedModels = accessFor(
+        catalogProvider,
+        seedModel,
+      ).managed.visibleModels;
+      const visibleModels = [
+        ...(catalog[catalogProvider] ?? []),
+        ...managedModels,
+      ].filter((model, index, candidates) =>
+        candidates.indexOf(model) === index &&
+        isVisibleSelection(catalogProvider, model),
+      );
+      const projectedRows = providerRows({
         provider: catalogProvider,
         currentProvider: provider,
         currentModel,
         ...(config !== undefined ? { config } : {}),
-        catalogModels: modelsForProvider(catalogProvider),
-        managedRoute,
+        catalogModels: visibleModels,
+      });
+      if (
+        projectedRows.length === 1 &&
+        projectedRows[0]?.status === "unavailable"
+      ) {
+        return visibleModels.length > 0 || catalogProvider === provider
+          ? projectedRows
+          : [];
+      }
+      return projectedRows.flatMap(row => {
+        if (!isVisibleSelection(row.provider, row.model)) return [];
+        const access = accessFor(row.provider, row.model);
+        const managedRoute =
+          access.route === "subscription" ||
+          access.route === "provider-managed";
+        return [{
+          ...row,
+          selectable: access.effect !== "blocked",
+          detail: rowDetailForRoute(row.status, row.provider, managedRoute),
+        }];
       });
     });
   const currentActiveIndex = rows.findIndex(row => row.status === "current");
@@ -366,7 +365,7 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
     currentModel,
     ...(configuredModel !== undefined ? { configuredModel } : {}),
     defaultModel,
-    managedKeysEnabled,
+    managedKeysEnabled: accessOverlay.managedKeysEnabled,
     rows,
     activeIndex,
     providerCounts,

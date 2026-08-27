@@ -689,7 +689,7 @@ describe("providerCommand", () => {
       auth:
         "AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY missing",
       credentialSource:
-        "set env AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY",
+        'Provider switch to "amazon-bedrock" blocked: set AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY.',
     },
     {
       name: "secret-only Bedrock alias",
@@ -698,10 +698,10 @@ describe("providerCommand", () => {
       },
       auth: "AWS_BEDROCK_ACCESS_KEY_ID or AWS_ACCESS_KEY_ID missing",
       credentialSource:
-        "set env AWS_BEDROCK_ACCESS_KEY_ID or AWS_ACCESS_KEY_ID",
+        'Provider switch to "amazon-bedrock" blocked: set AWS_BEDROCK_ACCESS_KEY_ID or AWS_ACCESS_KEY_ID.',
     },
   ])(
-    "keeps the Bedrock provider menu unavailable for $name",
+    "projects partial Bedrock credential state for $name",
     ({ environment, auth, credentialSource }) => {
       expect(bedrockProviderMenuRow(environment)).toMatchObject({
         runtimeState: "unauthenticated",
@@ -723,7 +723,7 @@ describe("providerCommand", () => {
     ).toMatchObject({
       runtimeState: "available",
       authState: "ready",
-      auth: "AWS SigV4",
+      auth: "AWS SigV4 environment",
       baseURL: "https://bedrock-runtime.ca-central-1.amazonaws.com",
       credentialSource:
         "env AWS_BEDROCK_ACCESS_KEY_ID + AWS_BEDROCK_SECRET_ACCESS_KEY + AWS_BEDROCK_SESSION_TOKEN + AWS_BEDROCK_REGION",
@@ -743,14 +743,16 @@ describe("providerCommand", () => {
     });
   });
 
-  it("shows stored Grok OAuth ahead of stale environment keys", () => {
+  it("projects stored Grok OAuth as a redacted native sign-in", () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-provider-oauth-"));
     const environment: EnvSnapshot = Object.freeze({
-      AGENC_HOME: agencHome,
       XAI_API_KEY: "stale-xai-key",
       GROK_API_KEY: "stale-grok-key",
     });
-    const home = resolveHomeContext(environment, { platformHome: tmpdir() });
+    const home = resolveHomeContext(
+      { AGENC_HOME: agencHome },
+      { platformHome: tmpdir() },
+    );
     try {
       expect(
         saveXaiOauthCredentials(home, {
@@ -772,9 +774,10 @@ describe("providerCommand", () => {
       ).toMatchObject({
         authState: "ready",
         auth: "xAI OAuth",
-        credentialSource:
-          "signed in as operator@example.com via /grok-login",
+        credentialSource: "native sign-in",
       });
+      expect(JSON.stringify(snapshot)).not.toContain("current-oauth-token");
+      expect(JSON.stringify(snapshot)).not.toContain("operator@example.com");
     } finally {
       rmSync(agencHome, { recursive: true, force: true });
     }
@@ -864,7 +867,7 @@ describe("providerCommand", () => {
       }))).toMatchObject({
         runtimeState: "available",
         authState: "ready",
-        auth: "Google ADC",
+        auth: "GOOGLE_APPLICATION_CREDENTIALS",
         credentialSource: "env GOOGLE_APPLICATION_CREDENTIALS",
         baseURL:
           "https://aiplatform.googleapis.com/v1/projects/authority-project/locations/global/publishers/google",
@@ -879,6 +882,8 @@ describe("providerCommand", () => {
         runtimeState: "unauthenticated",
         authState: "missing",
         auth: "GEMINI_ACCESS_TOKEN missing",
+        credentialSource:
+          'Provider switch to "gemini" blocked: set GEMINI_ACCESS_TOKEN.',
       });
       expect(row(Object.freeze({
         AGENC_HOME: home.path,
@@ -917,9 +922,10 @@ describe("providerCommand", () => {
 
       expect(snapshot.rows.find((row) => row.provider === "gemini")).toMatchObject({
         authState: "ready",
-        auth: "saved BYOK",
-        credentialSource: "native secure storage saved Gemini BYOK",
+        auth: "saved Gemini BYOK",
+        credentialSource: "native secure storage",
       });
+      expect(JSON.stringify(snapshot)).not.toContain("saved-gemini-key");
     } finally {
       rmSync(agencHome, { recursive: true, force: true });
     }
@@ -953,12 +959,12 @@ describe("providerCommand", () => {
       credentialSource: "env AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY",
     },
   ])(
-    "marks Bedrock ready with $name and reports exact provenance",
+    "projects canonical Bedrock authority with $name",
     ({ environment, credentialSource }) => {
       expect(bedrockProviderMenuRow(environment)).toMatchObject({
         runtimeState: "available",
         authState: "ready",
-        auth: "AWS SigV4",
+        auth: "AWS SigV4 environment",
         credentialSource,
       });
     },
@@ -1010,8 +1016,8 @@ describe("providerCommand", () => {
       expect(openrouter?.models).not.toContain("openrouter/free");
       expect(openrouter?.models).toContain("openai/gpt-oss-20b:free");
       expect(openrouter?.models.length).toBeGreaterThan(20);
-      expect(openrouter?.credentialSource).toContain(
-        "subscription-managed key",
+      expect(openrouter?.credentialSource).toBe(
+        "authenticated AgenC account",
       );
     });
   });
@@ -1133,6 +1139,46 @@ describe("providerCommand", () => {
     expect(openai?.credentialSource).not.toContain("subscription-managed key");
   });
 
+  it("shows the required AgenC sign-in action instead of optional provider auth", () => {
+    const snapshot = readProviderMenuSnapshot(
+      mkctx(
+        stubSession({
+          provider: "grok",
+          model: "grok-4.3",
+          configStore: commandConfigStore(TEST_HOME),
+        }),
+      ),
+    );
+    const agenc = snapshot.rows.find((row) => row.provider === "agenc");
+
+    expect(agenc).toMatchObject({
+      runtimeState: "unauthenticated",
+      authState: "missing",
+      auth: "AgenC sign-in required",
+      credentialSource:
+        'Provider switch to "agenc" blocked: sign in with AgenC using /login.',
+    });
+  });
+
+  it("labels daemon-admitted credential checks as unverified", () => {
+    const snapshot = readProviderMenuSnapshot(
+      mkctx(
+        stubSession({
+          provider: "grok",
+          model: "grok-4.3",
+          configStore: commandConfigStore(TEST_HOME),
+        }),
+      ),
+    );
+    const openai = snapshot.rows.find((row) => row.provider === "openai");
+
+    expect(openai).toMatchObject({
+      runtimeState: "unverified",
+      authState: "missing",
+      detail: "credential checked on switch",
+    });
+  });
+
   it("marks local providers as local-only under managed subscription mode", () => {
     const configStore = commandConfigStore(TEST_HOME, {
       auth: { managedKeys: { enabled: true } },
@@ -1152,10 +1198,10 @@ describe("providerCommand", () => {
     expect(lmstudio).toMatchObject({
       runtimeState: "local",
       authState: "optional",
-      auth: "local only",
+      auth: "LMSTUDIO_API_KEY optional",
       detail: "local endpoint",
     });
-    expect(lmstudio?.credentialSource).toContain("subscription is not used");
+    expect(lmstudio?.credentialSource).toBe("no provider key required");
   });
 
   it("does not block direct switches to local providers under managed subscription mode", async () => {

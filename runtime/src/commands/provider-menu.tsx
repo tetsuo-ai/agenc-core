@@ -5,55 +5,22 @@ import {
   mergeProviderModelLayer,
   type ProviderSlug,
 } from "../config/provider-model-authority.js";
-import {
-  resolveProviderSlug,
-  readProviderConfig,
-  resolveProviderSettings,
-} from "../config/resolve-provider.js";
+import { readProviderConfig, resolveProviderSlug } from "../config/resolve-provider.js";
 import { configuredModelForProvider } from "../config/resolve-model.js";
-import {
-  defaultConfig,
-  type AgenCConfig,
-  type ProviderConfig,
-} from "../config/schema.js";
-import type { EnvSnapshot } from "../config/env.js";
-import { readLocalByokCredential } from "../auth/native-credentials.js";
-import {
-  missingProviderCredentialEnvironmentLabel,
-  resolveProviderBaseURLEnvironment,
-  resolveProviderCredentialEnvironment,
-} from "../llm/registry/provider-ingress.js";
-import {
-  listBuiltInProviderInfo,
-  providerApiKeyEnvironmentLabel,
-  resolveBuiltInProviderRegionalEndpoint,
-} from "../llm/registry/provider-info.js";
-import { readXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
-import { resolveGrokProviderCredential } from "../llm/xai-capability-config.js";
-import type { GeminiCredentialPlan } from "../utils/geminiAuth.js";
-import { resolveProviderFactoryOptions } from "../llm/provider-options.js";
-import { readGeminiRuntimeOptions } from "../llm/providers/gemini/runtime-options.js";
-import { geminiEndpointFor } from "../llm/providers/gemini/endpoint-plan.js";
-import type { HomeContext } from "../config/home.js";
+import { defaultConfig, type AgenCConfig } from "../config/schema.js";
+import { listBuiltInProviderInfo } from "../llm/registry/provider-info.js";
 import { Box, useInput } from "../tui/ink.js";
 import ThemedText from "../tui/components/design-system/ThemedText.js";
 import { MenuModal } from "../tui/components/v2/primitives.js";
+import { readCommandConfig } from "./config-context.js";
 import {
-  providerEnvironmentFromCommandContext,
-  readCommandConfig,
-  remoteAuthContextFromCommandContext,
-  requireCommandConfigStore,
-} from "./config-context.js";
+  createProviderCommandAccessOverlay,
+  formatProviderCommandRejection,
+  type ProviderCommandAccess,
+} from "./provider-command-access.js";
 import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import { readBuiltInSessionSelection } from "../session/provider-model-selection.js";
-import {
-  hasHostedManagedAccess,
-  hostedManagedSubscriptionTier,
-  providerHasLiveSubscriptionRoute,
-  resolveSubscriptionManagedModelRequest,
-  visibleSubscriptionManagedModelsForTier,
-} from "./subscription-managed-models.js";
 import type { SlashCommandContext } from "./types.js";
 
 type ProviderRowStatus = "current" | "configured" | "default";
@@ -62,6 +29,7 @@ type ProviderRuntimeState =
   | "active"
   | "available"
   | "local"
+  | "unverified"
   | "unauthenticated"
   | "unavailable"
   | "error";
@@ -154,44 +122,6 @@ function rowDetail(status: ProviderRowStatus): string {
   }
 }
 
-function providerBaseURL(
-  provider: ProviderSlug,
-  infoBaseURL: string,
-  config: ProviderConfig | undefined,
-  environment: EnvSnapshot,
-): string {
-  const credentialEnvironment = provider === "amazon-bedrock"
-    ? resolveProviderCredentialEnvironment(provider, environment)
-    : undefined;
-  const region = credentialEnvironment?.kind === "aws-sigv4"
-    ? credentialEnvironment.region?.value
-    : undefined;
-  const regionalEndpoint = resolveBuiltInProviderRegionalEndpoint(
-    provider,
-    region,
-  );
-  return (
-    resolveProviderBaseURLEnvironment(provider, environment)?.value ??
-    (config?.base_url?.trim() ||
-      regionalEndpoint?.baseURL ||
-      infoBaseURL)
-  );
-}
-
-function isLocalProviderEndpoint(baseURL: string): boolean {
-  try {
-    const url = new URL(baseURL);
-    return (
-      url.hostname === "localhost" ||
-      url.hostname === "127.0.0.1" ||
-      url.hostname === "::1" ||
-      url.hostname.endsWith(".local")
-    );
-  } catch {
-    return false;
-  }
-}
-
 function baseURLError(baseURL: string): string | undefined {
   try {
     new URL(baseURL);
@@ -201,203 +131,41 @@ function baseURLError(baseURL: string): string | undefined {
   }
 }
 
-function authState(params: {
-  readonly home: HomeContext;
-  readonly environment: EnvSnapshot;
-  readonly provider: ProviderSlug;
-  readonly requiresManagedAuth: boolean;
-  readonly baseURL: string;
-  readonly config?: AgenCConfig;
-  readonly managedSubscriptionAvailable: boolean;
-  readonly geminiCredentialPlan?: GeminiCredentialPlan;
-}): {
+function providerMenuAuth(access: ProviderCommandAccess): {
   readonly state: ProviderAuthState;
   readonly label: string;
   readonly source: string;
 } {
-  const managedKeysEnabled = params.config?.auth?.managedKeys?.enabled === true;
-  if (params.requiresManagedAuth) {
-    return {
-      state: "managed",
-      label: managedKeysEnabled ? "managed on" : "managed",
-      source: "managed key vending",
-    };
+  const rejection = formatProviderCommandRejection(access, "provider");
+  if (rejection !== undefined) {
+    const label = access.rejection?.code === "provider-managed-auth-required"
+      ? "AgenC sign-in required"
+      : access.rejection?.code === "login-required"
+        ? "login or BYOK required"
+        : access.rejection?.code === "upgrade-required"
+          ? "upgrade required"
+          : access.rejection?.code === "model-not-managed"
+            ? "hosted model unavailable"
+            : access.rejection?.code === "configuration"
+              ? "configuration error"
+              : access.auth.label;
+    return { state: "missing", label, source: rejection };
   }
-
-  // xAI OAuth (/grok-login) IS a credential for grok — without this check the
-  // row only looked at XAI_API_KEY and showed "credential required" to users
-  // who are fully signed in, making their OAuth account invisible in the
-  // picker (and pushing them onto other providers such as OpenRouter).
-  if (params.provider === "grok") {
-    const credential = resolveGrokProviderCredential(
-      params.home,
-      undefined,
-      params.environment,
-    );
-    const oauth = readXaiOauthCredentials(params.home);
-    if (
-      credential.isOAuth &&
-      oauth !== undefined &&
-      oauth.quarantinedAt === undefined
-    ) {
-      return {
-        state: "ready",
-        label: "xAI OAuth",
-        source: `signed in as ${oauth.accountLabel ?? "xAI account"} via /grok-login`,
-      };
-    }
-  }
-
-  if (params.provider === "gemini") {
-    return params.geminiCredentialPlan === undefined
-      ? {
-          state: "missing",
-          label: "Gemini configuration",
-          source: "canonical Gemini configuration could not be resolved",
-        }
-      : geminiAuthState(params.geminiCredentialPlan);
-  }
-
-  const credentialEnvironment = resolveProviderCredentialEnvironment(
-    params.provider,
-    params.environment,
-  );
-  if (credentialEnvironment?.kind === "aws-sigv4") {
-    if (credentialEnvironment.missingRequired.length > 0) {
-      const missingLabel =
-        missingProviderCredentialEnvironmentLabel(
-          params.provider,
-          params.environment,
-        ) ?? "required AWS SigV4 credentials";
-      return {
-        state: "missing",
-        label: `${missingLabel} missing`,
-        source: `set env ${missingLabel}`,
-      };
-    }
-    const exactSources = credentialEnvironment.sources.map(
-      (source) => source.envVar,
-    );
-    return {
-      state: "ready",
-      label: "AWS SigV4",
-      source: `env ${exactSources.join(" + ")}`,
-    };
-  }
-  const envMatch = credentialEnvironment?.kind === "api-key"
-    ? credentialEnvironment.apiKey
-    : undefined;
-  const envLabel = providerApiKeyEnvironmentLabel(params.provider);
-  if (envLabel === undefined) {
-    return {
-      state: "optional",
-      label: "local",
-      source: "no key required",
-    };
-  }
-
-  if (envMatch !== undefined) {
-    return {
-      state: "ready",
-      label: envMatch.envVar,
-      source: `env ${envMatch.envVar}`,
-    };
-  }
-
-  const localEndpoint = isLocalProviderEndpoint(params.baseURL);
-  if (localEndpoint) {
-    return {
-      state: "optional",
-      label: managedKeysEnabled ? "local only" : `${envLabel} optional`,
-      source: managedKeysEnabled
-        ? `local endpoint; subscription is not used`
-        : `env ${envLabel} optional for local endpoint`,
-    };
-  }
-
-  if (
-    managedKeysEnabled &&
-    providerHasLiveSubscriptionRoute(params.provider) &&
-    params.managedSubscriptionAvailable
-  ) {
-    return {
-      state: "managed",
-      label: "subscription",
-      source: `AgenC subscription-managed key; ${envLabel} optional`,
-    };
-  }
-
-  if (managedKeysEnabled && providerHasLiveSubscriptionRoute(params.provider)) {
-    return {
-      state: "missing",
-      label: `${envLabel} or Pro login`,
-      source: `run /login or set env ${envLabel}`,
-    };
-  }
-
   return {
-    state: "missing",
-    label: `${envLabel} missing`,
-    source: `set env ${envLabel}`,
-  };
-}
-
-function geminiAuthState(plan: GeminiCredentialPlan): {
-  readonly state: ProviderAuthState;
-  readonly label: string;
-  readonly source: string;
-} {
-  if (plan.kind === "api-key") {
-    const label = plan.source === "saved-byok" ? "saved BYOK" : plan.source;
-    return {
-      state: "ready",
-      label,
-      source: plan.source === "saved-byok"
-        ? "native secure storage saved Gemini BYOK"
-        : `env ${plan.source}`,
-    };
-  }
-  if (plan.kind === "access-token") {
-    return {
-      state: "ready",
-      label: plan.source,
-      source: `env ${plan.source}`,
-    };
-  }
-  if (plan.kind === "adc") {
-    return {
-      state: "ready",
-      label: "Google ADC",
-      source: plan.source === "GOOGLE_APPLICATION_CREDENTIALS"
-        ? `env ${plan.source}`
-        : `well-known ADC file ${plan.credentialPath}`,
-    };
-  }
-  const missing = plan.expected === "access-token"
-    ? "GEMINI_ACCESS_TOKEN"
-    : plan.expected === "adc"
-      ? plan.configuredPath === undefined
-        ? "Google ADC credentials"
-        : `ADC file ${plan.configuredPath}`
-      : plan.expected === "api-key"
-        ? "GEMINI_API_KEY or GOOGLE_API_KEY or saved BYOK"
-        : "Gemini API key, access token, or ADC credentials";
-  return {
-    state: "missing",
-    label: `${missing} missing`,
-    source: `set ${missing}`,
+    state: access.auth.state === "error" ? "missing" : access.auth.state,
+    label: access.auth.label,
+    source: access.auth.source,
   };
 }
 
 function runtimeState(params: {
   readonly status: ProviderRowStatus;
-  readonly authState: ProviderAuthState;
+  readonly access: ProviderCommandAccess;
   readonly models: readonly string[];
   readonly baseURL: string;
-  readonly configurationError?: string;
 }): { readonly state: ProviderRuntimeState; readonly error?: string } {
-  if (params.configurationError !== undefined) {
-    return { state: "error", error: params.configurationError };
+  if (params.access.configurationError !== undefined) {
+    return { state: "error", error: params.access.configurationError };
   }
   const baseError = baseURLError(params.baseURL);
   if (baseError !== undefined) {
@@ -406,16 +174,19 @@ function runtimeState(params: {
   if (params.models.length === 0) {
     return { state: "unavailable", error: "no models available" };
   }
-  if (params.authState === "missing") {
+  if (
+    params.access.effect === "blocked" ||
+    params.access.route === "unavailable"
+  ) {
     return { state: "unauthenticated" };
   }
   if (params.status === "current") {
     return { state: "active" };
   }
-  if (
-    params.authState === "optional" &&
-    isLocalProviderEndpoint(params.baseURL)
-  ) {
+  if (params.access.route === "deferred") {
+    return { state: "unverified" };
+  }
+  if (params.access.route === "local") {
     return { state: "local" };
   }
   return { state: "available" };
@@ -434,6 +205,8 @@ function runtimeDetail(params: {
       return "local endpoint";
     case "available":
       return rowDetail(params.status);
+    case "unverified":
+      return "credential checked on switch";
     case "unauthenticated":
       return "credential required";
     case "unavailable":
@@ -451,6 +224,8 @@ function statusColor(state: ProviderRuntimeState): ProviderColor {
       return "inactive";
     case "available":
       return "agenc";
+    case "unverified":
+      return "warning";
     case "unauthenticated":
       return "warning";
     case "unavailable":
@@ -468,6 +243,8 @@ function statusGlyph(state: ProviderRuntimeState): string {
       return "○";
     case "available":
       return "●";
+    case "unverified":
+      return "?";
     case "unauthenticated":
       return "!";
     case "unavailable":
@@ -498,12 +275,14 @@ function providerRuntimeRank(state: ProviderRuntimeState): number {
       return 1;
     case "local":
       return 2;
-    case "unauthenticated":
+    case "unverified":
       return 3;
-    case "unavailable":
+    case "unauthenticated":
       return 4;
-    case "error":
+    case "unavailable":
       return 5;
+    case "error":
+      return 6;
   }
 }
 
@@ -523,10 +302,8 @@ function sortProviderRows(
 }
 
 export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenuSnapshot {
-  const home = requireCommandConfigStore(ctx).homeContext;
-  const environment = providerEnvironmentFromCommandContext(ctx);
-  const authContext = remoteAuthContextFromCommandContext(ctx);
   const config = readCommandConfig(ctx);
+  const accessOverlay = createProviderCommandAccessOverlay(ctx);
   const sessionSelection = readBuiltInSessionSelection(ctx.session, {
     includePending: true,
     ...(config !== undefined ? { fallbackConfig: config } : {}),
@@ -540,32 +317,29 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
   const currentProvider = sessionSelection.provider;
   const currentModel = sessionSelection.model;
   const modelCatalog = buildProviderModelCatalog(config);
-  const managedSubscriptionAvailable = hasHostedManagedAccess(
-    config,
-    authContext,
-  );
-  const managedSubscriptionTier = hostedManagedSubscriptionTier(authContext);
 
   const unsortedRows = listBuiltInProviderInfo().map((info): ProviderMenuRow => {
     const provider = info.id;
     const providerConfig = config ? readProviderConfig(config, provider) : undefined;
     const status = rowStatus({ config, provider, currentProvider });
-    const configuredBaseURL = providerBaseURL(
+    const configuredModel = providerModel({
+      config,
       provider,
-      info.baseURL,
-      providerConfig,
-      environment,
-    );
-    const providerApiKey =
-      config === undefined
-        ? undefined
-        : resolveProviderSettings(provider, config, environment)?.apiKey;
-    const managedModelRequest = resolveSubscriptionManagedModelRequest({
-      provider,
-      managedAccess: managedSubscriptionAvailable,
-      ...(providerApiKey === undefined ? {} : { providerApiKey }),
-      tier: managedSubscriptionTier,
+      currentProvider,
+      currentModel,
     });
+    const configuredAccess = accessOverlay.inspect({
+      provider,
+      model: configuredModel,
+    });
+    const managedProjectionActive =
+      configuredAccess.directCredential?.status === "missing" &&
+      configuredAccess.managed.enabled &&
+      configuredAccess.managed.signedIn &&
+      configuredAccess.managed.defaultModel !== undefined;
+    const managedModelRequest = managedProjectionActive
+      ? configuredAccess.managed.defaultModel
+      : undefined;
     const model = providerModel({
       config,
       provider,
@@ -575,61 +349,20 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
         ? {}
         : { requestedModel: managedModelRequest }),
     });
-    let baseURL = configuredBaseURL;
-    let geminiCredentialPlan: GeminiCredentialPlan | undefined;
-    let configurationError: string | undefined;
-    if (provider === "gemini") {
-      try {
-        const explicitBaseURL =
-          resolveProviderBaseURLEnvironment(provider, environment)?.value ??
-          providerConfig?.base_url?.trim();
-        const resolved = resolveProviderFactoryOptions(
-          "gemini",
-          {
-            model,
-            ...(explicitBaseURL ? { baseURL: explicitBaseURL } : {}),
-          },
-          environment,
-          {
-            savedApiKey: readLocalByokCredential(home, "gemini")?.apiKey,
-          },
-        );
-        const runtime = readGeminiRuntimeOptions(resolved.extra);
-        if (runtime === undefined) {
-          throw new Error("Gemini runtime authority was not resolved");
-        }
-        baseURL = geminiEndpointFor(runtime.endpointPlan);
-        geminiCredentialPlan = runtime.credentialPlan;
-      } catch (error) {
-        configurationError = error instanceof Error
-          ? error.message
-          : String(error);
-      }
-    }
-    const auth = authState({
-      home,
-      environment,
-      provider,
-      requiresManagedAuth: info.requiresManagedAuth,
-      baseURL,
-      ...(config ? { config } : {}),
-      managedSubscriptionAvailable,
-      ...(geminiCredentialPlan !== undefined
-        ? { geminiCredentialPlan }
-        : {}),
-    });
+    const access = model === configuredModel
+      ? configuredAccess
+      : accessOverlay.inspect({ provider, model });
+    const baseURL = access.endpoint?.baseURL ?? info.baseURL;
+    const auth = providerMenuAuth(access);
     const rawModels = modelCatalog[provider] ?? [];
-    const managedModels =
-      managedModelRequest !== undefined && providerHasLiveSubscriptionRoute(provider)
-        ? visibleSubscriptionManagedModelsForTier(provider, managedSubscriptionTier)
-        : undefined;
-    const models = managedModels !== undefined ? managedModels : rawModels;
+    const models = managedProjectionActive
+      ? access.managed.visibleModels
+      : rawModels;
     const state = runtimeState({
       status,
-      authState: auth.state,
+      access,
       models,
       baseURL,
-      ...(configurationError !== undefined ? { configurationError } : {}),
     });
     return {
       provider,

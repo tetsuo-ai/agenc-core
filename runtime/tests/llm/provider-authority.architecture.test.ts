@@ -95,6 +95,18 @@ describe("provider authority architecture", () => {
       `${SRC}/llm/discovery/provider-discovery.ts`,
       "utf8",
     );
+    for (const path of [
+      "commands/model-menu.tsx",
+      "commands/provider-menu.tsx",
+    ]) {
+      const menu = readFileSync(`${SRC}/${path}`, "utf8");
+      expect(menu, path).toMatch(/createProviderCommandAccessOverlay/u);
+      expect(menu, path).not.toMatch(/resolveProviderSettings/u);
+      expect(menu, path).not.toMatch(/resolveProviderCredentialEnvironment/u);
+      expect(menu, path).not.toMatch(/resolveGrokProviderCredential/u);
+      expect(menu, path).not.toMatch(/readXaiOauthCredentials/u);
+      expect(menu, path).not.toMatch(/resolveGeminiCredentialPlan/u);
+    }
     const credentialIngress = readFileSync(
       `${SRC}/llm/registry/provider-ingress.ts`,
       "utf8",
@@ -112,7 +124,12 @@ describe("provider authority architecture", () => {
       /providerCredentialEnvironmentReferences/u,
     );
     expect(discovery).toMatch(/type ProviderCredentialProvenance/u);
-    expect(discovery).toMatch(/providerCredentialEnvironmentProvenance/u);
+    expect(discovery).toMatch(/resolveProviderCredentialAuthority/u);
+    expect(discovery).not.toMatch(/resolveProviderCredentialEnvironment/u);
+    expect(discovery).not.toMatch(/resolveProviderSettings/u);
+    expect(discovery).not.toMatch(/resolveProviderFactoryOptions/u);
+    expect(discovery).not.toMatch(/resolveGrokProviderCredential/u);
+    expect(discovery).not.toMatch(/readGeminiRuntimeOptions/u);
     expect(discovery).not.toMatch(/ProviderAvailabilityCredentialSource/u);
     expect(discovery).not.toMatch(/\bProviderKeyStatus\b|\bkeyStatus\b/u);
     expect(discovery).not.toMatch(/\bcredentialSource\b/u);
@@ -153,7 +170,6 @@ describe("provider authority architecture", () => {
     for (const path of [
       "llm/provider.ts",
       "llm/providers/bedrock/index.ts",
-      "commands/provider-menu.tsx",
       "utils/model/bedrock.ts",
     ]) {
       const source = readFileSync(`${SRC}/${path}`, "utf8");
@@ -163,6 +179,14 @@ describe("provider authority architecture", () => {
       expect(source).not.toMatch(/bedrock-runtime\./u);
       expect(source).not.toMatch(/us-east-1/u);
     }
+
+    const providerMenu = readFileSync(
+      `${SRC}/commands/provider-menu.tsx`,
+      "utf8",
+    );
+    expect(providerMenu).toMatch(/createProviderCommandAccessOverlay/u);
+    expect(providerMenu).not.toMatch(/resolveBuiltInProviderRegionalEndpoint/u);
+    expect(providerMenu).not.toMatch(/bedrock-runtime\.|us-east-1/u);
 
     const production = sourceFiles(SRC).filter(
       (path) => path.endsWith(".ts") || path.endsWith(".tsx"),

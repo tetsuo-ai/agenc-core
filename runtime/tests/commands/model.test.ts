@@ -1002,6 +1002,83 @@ describe("modelCommand", () => {
     expect(modelMenuFallback(snapshot)).toContain("Managed keys: on");
   });
 
+  it("keeps the current, local, and no-key composer routes visible with managed keys on", () => {
+    const configStore = commandConfigStore(TEST_HOME, {
+      auth: { managedKeys: { enabled: true } },
+    });
+    const snapshot = readModelMenuSnapshot(
+      mkctx(
+        stubSession({
+          provider: "openai",
+          model: "gpt-5",
+          configStore,
+          environment: Object.freeze({}),
+        }),
+      ),
+    );
+
+    expect(snapshot.rows[snapshot.activeIndex]).toMatchObject({
+      provider: "openai",
+      model: "gpt-5",
+      status: "current",
+      selectable: true,
+    });
+    expect(snapshot.rows).toContainEqual(expect.objectContaining({
+      provider: "ollama",
+      model: "llama3.3",
+      selectable: true,
+    }));
+    expect(snapshot.rows).toContainEqual(expect.objectContaining({
+      provider: "grok",
+      model: "grok-composer-2.5-fast",
+      selectable: true,
+    }));
+    expect(snapshot.rows).not.toContainEqual(expect.objectContaining({
+      provider: "grok",
+      model: "grok-4.6",
+    }));
+  });
+
+  it("uses native xAI sign-in as direct authority for the full Grok catalog", () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-model-menu-xai-oauth-"));
+    const home = resolveHomeContext(
+      { AGENC_HOME: agencHome },
+      { platformHome: tmpdir() },
+    );
+    try {
+      expect(
+        saveXaiOauthCredentials(home, {
+          accessToken: "model-menu-oauth-token",
+          expiresAt: Date.now() + 60_000,
+        }).success,
+      ).toBe(true);
+      const snapshot = readModelMenuSnapshot(
+        mkctx(
+          stubSession({
+            provider: "openai",
+            model: "gpt-5",
+            configStore: commandConfigStore(home, {
+              auth: { managedKeys: { enabled: true } },
+            }),
+            environment: Object.freeze({}),
+          }),
+        ),
+      );
+      const grokModels = snapshot.rows
+        .filter(row => row.provider === "grok" && row.selectable)
+        .map(row => row.model);
+
+      expect(grokModels).toEqual(expect.arrayContaining([
+        "grok-4.6",
+        "grok-4.5",
+        "grok-composer-2.5-fast",
+      ]));
+      expect(JSON.stringify(snapshot)).not.toContain("model-menu-oauth-token");
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("model menu limits subscription-managed OpenRouter to live models", async () => {
     await withProAuthSession(({ configStore, environment }) => {
       const snapshot = readModelMenuSnapshot(
@@ -1046,9 +1123,16 @@ describe("modelCommand", () => {
       expect(openrouterModels).not.toContain("openrouter/free");
       expect(openrouterModels).toContain("openai/gpt-oss-20b:free");
       expect(openrouterModels.length).toBeGreaterThan(20);
-      expect(snapshot.rows.every((row) => row.provider === "openrouter")).toBe(
-        true,
-      );
+      expect(snapshot.rows).toContainEqual(expect.objectContaining({
+        provider: "ollama",
+        model: "llama3.3",
+        selectable: true,
+      }));
+      expect(snapshot.rows).toContainEqual(expect.objectContaining({
+        provider: "grok",
+        model: "grok-composer-2.5-fast",
+        selectable: true,
+      }));
     });
   });
 
