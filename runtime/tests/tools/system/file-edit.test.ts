@@ -15,11 +15,12 @@
  *   - plain-text errors (no JSON wrap)
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   mkdir,
   mkdtemp,
   readFile,
+  realpath,
   rm,
   stat,
   utimes,
@@ -29,6 +30,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+
+import { runAdmittedToolCall } from "../../../src/budget/admitted-tool-call.js";
+import { EventLog, type Event } from "../../../src/session/event-log.js";
+import type { Session } from "../../../src/session/session.js";
+import type { ToolResult } from "../../../src/tools/types.js";
 
 vi.mock("../../services/lsp/fileNotifications.js", () => ({
   notifyLspFileChanged: vi.fn(),
@@ -59,6 +65,32 @@ import {
 import { workspaceMutationCoordinators } from "../../workspace/mutation-coordinator.js";
 
 const SESSION_ID = "edit-tool-test-session";
+
+function expectConfirmedNoEffect(result: ToolResult): void {
+  expect(result.isError).toBe(true);
+  expect(result.effectDisposition).toMatchObject({
+    disposition: "confirmed_no_effect",
+    evidenceKind: "boundary_not_crossed",
+  });
+  expect(result.effectDisposition?.evidenceSha256).toMatch(/^[0-9a-f]{64}$/u);
+}
+
+function admittedEditHarness(): {
+  readonly effectEvents: Event[];
+  readonly session: Session;
+} {
+  const effectEvents: Event[] = [];
+  const eventLog = new EventLog();
+  eventLog.subscribe((event) => effectEvents.push(event));
+  const session = {
+    conversationId: `file-edit-effect-${randomUUID()}`,
+    eventLog,
+    rolloutStore: { assertToolAdmissionAllowed: vi.fn() },
+    emit: (event: Event) => eventLog.emit(event),
+    services: { admissionRequired: false },
+  } as unknown as Session;
+  return { effectEvents, session };
+}
 
 describe("Edit tool", () => {
   let root = "";
@@ -166,6 +198,154 @@ describe("Edit tool", () => {
     expect(refreshed?.rawContent).toBe("goodbye world\n");
     expect(refreshed?.content).toBe("goodbye world\n");
     expect(refreshed?.viewKind).toBe("full");
+  });
+
+  test("missing old_string settles determinately and does not poison the next Edit", async () => {
+    const file = join(root, "missing-old-string.txt");
+    const original = "alpha beta\n";
+    await writeFile(file, original, "utf8");
+    const canonicalFile = await realpath(file);
+    const fileStats = await stat(canonicalFile);
+    recordSessionRead(SESSION_ID, canonicalFile, {
+      content: original,
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileEditTool({ allowedPaths: [root] });
+    const state = admittedEditHarness();
+    const missingArgs = {
+      file_path: file,
+      old_string: "not present",
+      new_string: "replacement",
+      [SESSION_ID_ARG]: SESSION_ID,
+    };
+    const missing = await runAdmittedToolCall({
+      session: state.session,
+      turnId: "turn-edit",
+      callId: "call-missing-old-string",
+      tool,
+      args: missingArgs,
+      invoke: async ({ crossEffectBoundary }) => {
+        crossEffectBoundary();
+        return tool.execute(missingArgs);
+      },
+    });
+
+    expectConfirmedNoEffect(missing);
+    expect(String(missing.content)).toContain("String to replace not found");
+    await expect(readFile(file, "utf8")).resolves.toBe(original);
+    expect(
+      state.effectEvents.filter(
+        (event) => event.msg.type === "effect_unknown_outcome",
+      ),
+    ).toHaveLength(0);
+    expect(state.effectEvents.at(-1)?.msg).toMatchObject({
+      type: "effect_result",
+      payload: {
+        outcome: "failed",
+        effectBoundary: "crossed",
+        noEffectEvidence: { evidenceKind: "boundary_not_crossed" },
+      },
+    });
+
+    const followupArgs = {
+      file_path: file,
+      old_string: "alpha",
+      new_string: "omega",
+      [SESSION_ID_ARG]: SESSION_ID,
+    };
+    const followup = await runAdmittedToolCall({
+      session: state.session,
+      turnId: "turn-edit",
+      callId: "call-followup-edit",
+      tool,
+      args: followupArgs,
+      invoke: async ({ crossEffectBoundary }) => {
+        crossEffectBoundary();
+        return tool.execute(followupArgs);
+      },
+    });
+    expect(followup.isError).toBeUndefined();
+    await expect(readFile(file, "utf8")).resolves.toBe("omega beta\n");
+    expect(state.effectEvents.map((event) => event.msg.type)).toEqual([
+      "effect_intent",
+      "effect_result",
+      "effect_intent",
+      "effect_result",
+    ]);
+  });
+
+  test("failed in-memory MultiEdit validation does not poison a later mutation", async () => {
+    const file = join(root, "multi-missing-old-string.txt");
+    const original = "alpha beta\n";
+    await writeFile(file, original, "utf8");
+    const canonicalFile = await realpath(file);
+    const fileStats = await stat(canonicalFile);
+    recordSessionRead(SESSION_ID, canonicalFile, {
+      content: original,
+      timestamp: fileStats.mtimeMs,
+      viewKind: "full",
+    });
+
+    const tool = createFileMultiEditTool({ allowedPaths: [root] });
+    const state = admittedEditHarness();
+    const invalidArgs = {
+      file_path: file,
+      edits: [
+        { old_string: "alpha", new_string: "omega" },
+        { old_string: "not present", new_string: "replacement" },
+      ],
+      [SESSION_ID_ARG]: SESSION_ID,
+    };
+    const invalid = await runAdmittedToolCall({
+      session: state.session,
+      turnId: "turn-multi-edit",
+      callId: "call-invalid-multi-edit",
+      tool,
+      args: invalidArgs,
+      invoke: async ({ crossEffectBoundary }) => {
+        crossEffectBoundary();
+        return tool.execute(invalidArgs);
+      },
+    });
+
+    expectConfirmedNoEffect(invalid);
+    expect(String(invalid.content)).toContain("file was NOT written");
+    await expect(readFile(file, "utf8")).resolves.toBe(original);
+    expect(
+      state.effectEvents.filter(
+        (event) => event.msg.type === "effect_unknown_outcome",
+      ),
+    ).toHaveLength(0);
+
+    const followupArgs = {
+      file_path: file,
+      edits: [
+        { old_string: "alpha", new_string: "omega" },
+        { old_string: "beta", new_string: "delta" },
+      ],
+      [SESSION_ID_ARG]: SESSION_ID,
+    };
+    const followup = await runAdmittedToolCall({
+      session: state.session,
+      turnId: "turn-multi-edit",
+      callId: "call-followup-multi-edit",
+      tool,
+      args: followupArgs,
+      invoke: async ({ crossEffectBoundary }) => {
+        crossEffectBoundary();
+        return tool.execute(followupArgs);
+      },
+    });
+    expect(followup.isError).toBeUndefined();
+    await expect(readFile(file, "utf8")).resolves.toBe("omega delta\n");
+    expect(state.effectEvents.map((event) => event.msg.type)).toEqual([
+      "effect_intent",
+      "effect_result",
+      "effect_intent",
+      "effect_result",
+    ]);
   });
 
   test("edits the active session plan file outside the workspace root", async () => {
@@ -411,6 +591,9 @@ describe("Edit tool", () => {
 
       for (const result of [editResult, multiEditResult]) {
         expect(result.isError).toBe(true);
+        // The disk mutation completed before the audit failure, so this is
+        // intentionally NOT classified as confirmed-no-effect.
+        expect(result.effectDisposition).toBeUndefined();
         expect(String(result.content)).toContain("Disk mutation completed for");
         expect(String(result.content)).toContain("outcome is marked unknown");
         expect(String(result.content)).not.toContain("Failed to create file");

@@ -95,6 +95,23 @@ function preMutationErrorResult(
   };
 }
 
+/** Attach authoritative no-effect evidence to a pre-write admission refusal. */
+function asPreMutationRefusal(
+  result: ToolResult,
+  toolName: typeof FILE_EDIT_TOOL_NAME | typeof FILE_MULTI_EDIT_TOOL_NAME,
+): ToolResult {
+  const message = String(result.content ?? "");
+  return {
+    ...result,
+    effectDisposition: createToolEffectDispositionEvidence({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+      evidenceRef: `tool:${toolName}:admission-rejected`,
+      evidenceMaterial: message,
+    }),
+  };
+}
+
 /**
  * Test-only opt-out of the read-before-write session guard. Production
  * callers must NEVER set this — the canonical tool surface
@@ -495,7 +512,14 @@ async function coordinateFileWrite(
     ...(toolCallId !== undefined ? { toolCallId } : {}),
   });
   const rejection = workspaceMutationAdmissionToolResult(admission);
-  if (rejection !== null) return rejection;
+  if (rejection !== null) {
+    return asPreMutationRefusal(
+      rejection,
+      input.source === "file_multi_edit"
+        ? FILE_MULTI_EDIT_TOOL_NAME
+        : FILE_EDIT_TOOL_NAME,
+    );
+  }
   await executeWorkspaceFileMutation({
     admission,
     path: input.absolutePath,
@@ -864,13 +888,16 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as EditArgs;
       const validated = validateInputs(args);
-      if ("error" in validated) return errorResult(validated.error);
+      if ("error" in validated) {
+        return preMutationErrorResult(validated.error, FILE_EDIT_TOOL_NAME);
+      }
       const { file_path, old_string, new_string, replace_all } = validated;
 
       // Verbatim from AgenC FileEditTool.ts:148-156.
       if (old_string === new_string) {
-        return errorResult(
+        return preMutationErrorResult(
           "No changes to make: old_string and new_string are exactly the same.",
+          FILE_EDIT_TOOL_NAME,
         );
       }
 
@@ -882,7 +909,10 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         config.allowedPaths[0] ??
         process.cwd();
       if (isAgentNamespacePath(file_path)) {
-        return errorResult(agentNamespacePathHint(file_path, cwd));
+        return preMutationErrorResult(
+          agentNamespacePathHint(file_path, cwd),
+          FILE_EDIT_TOOL_NAME,
+        );
       }
       const candidatePath = isAbsolute(file_path)
         ? file_path
@@ -909,8 +939,9 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       // the model at a "notebook-specific tool" still saves it from
       // corrupting the JSON envelope of an ipynb with raw text edits.
       if (absoluteFilePath.endsWith(".ipynb")) {
-        return errorResult(
+        return preMutationErrorResult(
           "File is a Jupyter Notebook. Use a notebook-specific tool to edit Jupyter notebooks.",
+          FILE_EDIT_TOOL_NAME,
         );
       }
 
@@ -922,13 +953,17 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         snapshot = await readFileSnapshot(absoluteFilePath);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return errorResult(`Failed to read file: ${message}`);
+        return preMutationErrorResult(
+          `Failed to read file: ${message}`,
+          FILE_EDIT_TOOL_NAME,
+        );
       }
 
       // OOM guard.
       if (snapshot.exists && snapshot.size > MAX_EDIT_FILE_SIZE) {
-        return errorResult(
+        return preMutationErrorResult(
           `File is too large to edit (${snapshot.size} bytes). Maximum editable file size is ${MAX_EDIT_FILE_SIZE} bytes.`,
+          FILE_EDIT_TOOL_NAME,
         );
       }
 
@@ -973,8 +1008,9 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       // suggestion — that path needed cwd-aware fuzzy file lookup
       // helpers we don't have wired into this tool yet.
       if (!snapshot.exists) {
-        return errorResult(
+        return preMutationErrorResult(
           `File does not exist: ${file_path}. To create a new file, pass an empty old_string.`,
+          FILE_EDIT_TOOL_NAME,
         );
       }
 
@@ -1028,7 +1064,10 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
             recordedSnapshot?.viewKind === "full" &&
             recordedContent === snapshot.content;
           if (!isFullContentMatch) {
-            return errorResult(FILE_UNEXPECTEDLY_MODIFIED_ERROR);
+            return preMutationErrorResult(
+              FILE_UNEXPECTEDLY_MODIFIED_ERROR,
+              FILE_EDIT_TOOL_NAME,
+            );
           }
         }
       }
@@ -1038,7 +1077,10 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
       // exempt.
       if (old_string === "") {
         if (snapshot.content.trim() !== "") {
-          return errorResult("Cannot create new file - file already exists.");
+          return preMutationErrorResult(
+            "Cannot create new file - file already exists.",
+            FILE_EDIT_TOOL_NAME,
+          );
         }
         try {
           const rejected = await coordinateFileWrite(
@@ -1082,7 +1124,9 @@ export function createFileEditTool(config: FileEditToolConfig): Tool {
         new_string,
         replace_all,
       );
-      if ("error" in applied) return errorResult(applied.error);
+      if ("error" in applied) {
+        return preMutationErrorResult(applied.error, FILE_EDIT_TOOL_NAME);
+      }
       const { updated, replacements: matches } = applied;
 
       try {
@@ -1210,18 +1254,27 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
     async execute(rawArgs: Record<string, unknown>): Promise<ToolResult> {
       const args = rawArgs as MultiEditArgs;
       const validated = validateMultiEditInputs(args);
-      if ("error" in validated) return errorResult(validated.error);
+      if ("error" in validated) {
+        return preMutationErrorResult(
+          validated.error,
+          FILE_MULTI_EDIT_TOOL_NAME,
+        );
+      }
       const { file_path, edits } = validated;
 
       const firstEdit = edits[0];
       if (firstEdit === undefined) {
-        return errorResult("edits must be a non-empty array");
+        return preMutationErrorResult(
+          "edits must be a non-empty array",
+          FILE_MULTI_EDIT_TOOL_NAME,
+        );
       }
 
       for (const [i, edit] of edits.entries()) {
         if (edit.old_string === edit.new_string) {
-          return errorResult(
+          return preMutationErrorResult(
             `No changes to make: edits[${i}].old_string and edits[${i}].new_string are exactly the same.`,
+            FILE_MULTI_EDIT_TOOL_NAME,
           );
         }
       }
@@ -1231,7 +1284,10 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         config.allowedPaths[0] ??
         process.cwd();
       if (isAgentNamespacePath(file_path)) {
-        return errorResult(agentNamespacePathHint(file_path, cwd));
+        return preMutationErrorResult(
+          agentNamespacePathHint(file_path, cwd),
+          FILE_MULTI_EDIT_TOOL_NAME,
+        );
       }
       const candidatePath = isAbsolute(file_path)
         ? file_path
@@ -1250,8 +1306,9 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       const absoluteFilePath = safe.resolved;
 
       if (absoluteFilePath.endsWith(".ipynb")) {
-        return errorResult(
+        return preMutationErrorResult(
           "File is a Jupyter Notebook. Use a notebook-specific tool to edit Jupyter notebooks.",
+          FILE_MULTI_EDIT_TOOL_NAME,
         );
       }
 
@@ -1260,12 +1317,16 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
         snapshot = await readFileSnapshot(absoluteFilePath);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        return errorResult(`Failed to read file: ${message}`);
+        return preMutationErrorResult(
+          `Failed to read file: ${message}`,
+          FILE_MULTI_EDIT_TOOL_NAME,
+        );
       }
 
       if (snapshot.exists && snapshot.size > MAX_EDIT_FILE_SIZE) {
-        return errorResult(
+        return preMutationErrorResult(
           `File is too large to edit (${snapshot.size} bytes). Maximum editable file size is ${MAX_EDIT_FILE_SIZE} bytes.`,
+          FILE_MULTI_EDIT_TOOL_NAME,
         );
       }
 
@@ -1309,8 +1370,9 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       }
 
       if (!snapshot.exists) {
-        return errorResult(
+        return preMutationErrorResult(
           `File does not exist: ${file_path}. To create a new file, pass a single edit with an empty old_string.`,
+          FILE_MULTI_EDIT_TOOL_NAME,
         );
       }
 
@@ -1319,8 +1381,9 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
       );
       if (emptyOldStringIndex >= 0) {
         if (edits.length > 1) {
-          return errorResult(
+          return preMutationErrorResult(
             `edits[${emptyOldStringIndex}].old_string cannot be empty in a multi-edit batch.`,
+            FILE_MULTI_EDIT_TOOL_NAME,
           );
         }
       }
@@ -1361,14 +1424,20 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
             recordedSnapshot?.viewKind === "full" &&
             recordedContent === snapshot.content;
           if (!isFullContentMatch) {
-            return errorResult(FILE_UNEXPECTEDLY_MODIFIED_ERROR);
+            return preMutationErrorResult(
+              FILE_UNEXPECTEDLY_MODIFIED_ERROR,
+              FILE_MULTI_EDIT_TOOL_NAME,
+            );
           }
         }
       }
 
       if (emptyOldStringIndex >= 0) {
         if (snapshot.content.trim() !== "") {
-          return errorResult("Cannot create new file - file already exists.");
+          return preMutationErrorResult(
+            "Cannot create new file - file already exists.",
+            FILE_MULTI_EDIT_TOOL_NAME,
+          );
         }
         try {
           const rejected = await coordinateFileWrite(
@@ -1443,7 +1512,10 @@ export function createFileMultiEditTool(config: FileEditToolConfig): Tool {
             String(failedIndex),
             "corrected.",
           );
-          return errorResult(parts.join(" "));
+          return preMutationErrorResult(
+            parts.join(" "),
+            FILE_MULTI_EDIT_TOOL_NAME,
+          );
         }
         updated = applied.updated;
         replacements += applied.replacements;
