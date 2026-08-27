@@ -7506,6 +7506,133 @@ describeWithVitestMocks("AgenCTuiApp render smoke", () => {
     );
   });
 
+  test("does not cancel a model turn for direct-shell daemon tool activity", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const { createDaemonTuiSessionFixture } =
+      await import("../../helpers/daemon-tui-session.js");
+    const sessionEventListeners = new Set<
+      (event: Record<string, unknown>) => void
+    >();
+    const requests: Array<{
+      readonly method: string;
+      readonly params?: Record<string, unknown>;
+      readonly signal?: AbortSignal;
+    }> = [];
+    let observedShellSignal: AbortSignal | undefined;
+    const request = vi.fn(
+      async (
+        method: string,
+        params?: Record<string, unknown>,
+        options?: { readonly signal?: AbortSignal },
+      ): Promise<Record<string, unknown>> => {
+        requests.push({
+          method,
+          ...(params !== undefined ? { params } : {}),
+          ...(options?.signal !== undefined ? { signal: options.signal } : {}),
+        });
+        if (method !== "session.shell.execute") return {};
+        observedShellSignal = options?.signal;
+        return await new Promise<Record<string, unknown>>((resolve) => {
+          const finish = (): void => {
+            resolve({
+              commandId: String(params?.commandId),
+              content: "",
+              stdout: "",
+              stderr: "interrupted",
+              exitCode: null,
+              timedOut: false,
+              truncated: false,
+              isError: true,
+            });
+          };
+          if (options?.signal?.aborted === true) {
+            finish();
+            return;
+          }
+          options?.signal?.addEventListener("abort", finish, { once: true });
+        });
+      },
+    );
+    const client = {
+      request,
+      subscribeToSessionEvents: (
+        _sessionId: string,
+        listener: (event: Record<string, unknown>) => void,
+      ) => {
+        sessionEventListeners.add(listener);
+        return () => sessionEventListeners.delete(listener);
+      },
+      subscribeToNotifications: () => () => {},
+      getConnectionState: () => null,
+      subscribeToConnectionState: () => () => {},
+    };
+    const session = createDaemonTuiSessionFixture({
+      baseSession: createSession(),
+      client: client as never,
+      sessionId: "direct-shell-app-session",
+      clientId: "direct-shell-app-client",
+    });
+    resetShellSurfaceProbe();
+
+    await withRenderedApp(
+      <AgenCTuiApp session={session} isInteractive={false} />,
+      async () => {
+        const onBashSubmit = providerProbe.promptProps.at(-1)
+          ?.onBashSubmit as
+          | ((command: string, admittedCwd?: string) => Promise<void>)
+          | undefined;
+        expect(onBashSubmit).toBeDefined();
+        const shell = onBashSubmit!("sleep 30");
+
+        await vi.waitFor(() => {
+          expect(
+            requests.some(({ method }) => method === "session.shell.execute"),
+          ).toBe(true);
+        });
+        const shellRequest = requests.find(
+          ({ method }) => method === "session.shell.execute",
+        );
+        const commandId = String(shellRequest?.params?.commandId);
+        for (const listener of sessionEventListeners) {
+          listener({
+            method: "event.session_event",
+            params: {
+              sessionId: "direct-shell-app-session",
+              eventId: "direct-shell-tool-started",
+              event: {
+                id: "direct-shell-tool-started",
+                type: "tool_call_started",
+                payload: {
+                  callId: commandId,
+                  toolName: "system.bash",
+                  args: '{"command":"sleep 30"}',
+                },
+              },
+            },
+          });
+        }
+
+        await vi.waitFor(() => {
+          expect(session.activeTurn?.unsafePeek()).toBeNull();
+          expect(
+            providerProbe.cancelRequestProps.at(-1)?.canCancelActiveTurn,
+          ).toBe(true);
+        });
+        const onCancel = providerProbe.cancelRequestProps.at(-1)?.onCancel as
+          | (() => void)
+          | undefined;
+        expect(onCancel).toBeDefined();
+        onCancel!();
+        await shell;
+
+        expect(observedShellSignal?.aborted).toBe(true);
+        expect(
+          requests.some(({ method }) => method === "session.cancelTurn"),
+        ).toBe(false);
+      },
+    );
+  });
+
   test("drains queued bash commands without forwarding them to the model", async () => {
     const { AgenCTuiApp } = await import("./App.js");
     const {

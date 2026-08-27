@@ -797,6 +797,7 @@ export function createDaemonTuiSession<
   let activeTurnSnapshot: { readonly turnId: string } | null = null;
   let daemonTurnStartGeneration = 0;
   let inFlightShellExecutionCount = 0;
+  const inFlightShellCommandIds = new Set<string>();
   let shellBatchStartedWithActiveTurn = false;
   let shellBatchTurnStartGeneration = 0;
   // Terminal transcript events are authoritative for a turn. Tool cleanup can
@@ -857,6 +858,17 @@ export function createDaemonTuiSession<
       typeof eventType === "string" &&
       ACTIVE_DAEMON_TRANSCRIPT_EVENTS.has(eventType)
     ) {
+      const payload = (event as { readonly payload?: unknown }).payload;
+      const callId =
+        isJsonObject(payload) && typeof payload.callId === "string"
+          ? payload.callId
+          : null;
+      if (callId !== null && inFlightShellCommandIds.has(callId)) {
+        // Direct shell calls emit ordinary tool transcript events, but they
+        // do not own a model turn. Preserve any real turn snapshot without
+        // manufacturing one from the shell's tool lifecycle.
+        return;
+      }
       markDaemonActivityActive(event);
       return;
     }
@@ -1347,6 +1359,7 @@ export function createDaemonTuiSession<
         shellBatchTurnStartGeneration = daemonTurnStartGeneration;
       }
       inFlightShellExecutionCount += 1;
+      inFlightShellCommandIds.add(commandId);
       try {
         return await client.request(
           "session.shell.execute",
@@ -1358,6 +1371,7 @@ export function createDaemonTuiSession<
           signal === undefined ? undefined : { signal },
         );
       } finally {
+        inFlightShellCommandIds.delete(commandId);
         inFlightShellExecutionCount = Math.max(
           0,
           inFlightShellExecutionCount - 1,

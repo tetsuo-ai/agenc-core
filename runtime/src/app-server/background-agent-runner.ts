@@ -2572,13 +2572,19 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       );
     }
 
-    const threadStatus = active.thread.status().status;
-    if (
+    const hasThreadTurnInFlight = (): boolean => {
+      const threadStatus = active.thread.status().status;
+      return (
+        threadStatus === "running" ||
+        (threadStatus === "pending_init" && !active.initialTurnDeferred)
+      );
+    };
+    const hasTrackedMessageSubmission =
       active.pendingMessageSubmissionCount > 0 ||
-      active.messageSubmission !== undefined ||
+      active.messageSubmission !== undefined;
+    if (
       hasRuntimeActiveTurn(active.bootstrap.session) ||
-      threadStatus === "running" ||
-      (threadStatus === "pending_init" && !active.initialTurnDeferred)
+      (!hasTrackedMessageSubmission && hasThreadTurnInFlight())
     ) {
       throw new Error(
         `Cannot run a direct shell command while session ${params.sessionId} has an active or queued model turn`,
@@ -2586,9 +2592,17 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     }
 
     active.pendingShellExecutionCount += 1;
-    const execution = active.messageSubmissionQueue.then(() =>
-      this.#executeAgentShellCommand(active, agentId, params, signal),
-    );
+    const execution = active.messageSubmissionQueue.then(() => {
+      if (
+        hasRuntimeActiveTurn(active.bootstrap.session) ||
+        hasThreadTurnInFlight()
+      ) {
+        throw new Error(
+          `Cannot run a direct shell command while session ${params.sessionId} has an active or queued model turn`,
+        );
+      }
+      return this.#executeAgentShellCommand(active, agentId, params, signal);
+    });
     const entry: ActiveShellExecution = {
       commandFingerprint,
       promise: execution,

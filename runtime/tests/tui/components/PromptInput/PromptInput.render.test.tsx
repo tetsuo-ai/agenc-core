@@ -1110,6 +1110,55 @@ describe("PromptInput render surface", () => {
     }
   });
 
+  test("routes bulk ! input through direct shell after its cursor advances", async () => {
+    const onInputChange = vi.fn();
+    const onModeChange = vi.fn();
+    const onSubmit = vi.fn(async () => {});
+    const onBashSubmit = vi.fn(async () => {});
+    const rendered = await renderPromptInput({
+      input: "",
+      mode: "prompt",
+      onBashSubmit,
+      onInputChange,
+      onModeChange,
+      onSubmit,
+    });
+
+    try {
+      const promptProps = await waitForPromptInputProps();
+      const bulkInput = "!sleep 30";
+
+      (promptProps.onChangeCursorOffset as (offset: number) => void)(
+        bulkInput.length,
+      );
+      (promptProps.onChange as (value: string) => void)(bulkInput);
+
+      expect(onModeChange).toHaveBeenCalledWith("bash");
+      expect(onInputChange).toHaveBeenCalledWith("sleep 30");
+
+      harness.baseProps = undefined;
+      rendered.root.render(
+        <PromptInput
+          {...({
+            ...rendered.props,
+            input: "sleep 30",
+            mode: "bash",
+          } as never)}
+        />,
+      );
+      const bashProps = await waitForPromptInputProps();
+      await (bashProps.onSubmit as (value: string) => Promise<void>)(
+        "sleep 30",
+      );
+
+      expect(onBashSubmit).toHaveBeenCalledOnce();
+      expect(onBashSubmit).toHaveBeenCalledWith("sleep 30");
+      expect(onSubmit).not.toHaveBeenCalled();
+    } finally {
+      await rendered.dispose();
+    }
+  });
+
   test("handles stash, newline, and external editor chat actions", async () => {
     const onInputChange = vi.fn();
     const setPastedContents = vi.fn();

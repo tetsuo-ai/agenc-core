@@ -1537,7 +1537,7 @@ describe("AgenC TUI daemon session adapter", () => {
     unsubscribe();
   });
 
-  it("clears direct shell tool activity when the shell response settles", async () => {
+  it("does not classify direct shell tool activity as a model turn", async () => {
     const client = createClient();
     const originalRequest = client.request.bind(client) as (
       method: AgenCDaemonMethod | AgenCDaemonInternalMethod,
@@ -1591,9 +1591,7 @@ describe("AgenC TUI daemon session adapter", () => {
         },
       },
     });
-    expect(session.activeTurn?.unsafePeek()).toEqual({
-      turnId: "daemon-turn",
-    });
+    expect(session.activeTurn?.unsafePeek()).toBeNull();
 
     resolveShellResponse({
       commandId: "shell-command-lifecycle",
@@ -1661,9 +1659,7 @@ describe("AgenC TUI daemon session adapter", () => {
         },
       },
     });
-    expect(session.activeTurn?.unsafePeek()).toEqual({
-      turnId: "daemon-turn",
-    });
+    expect(session.activeTurn?.unsafePeek()).toBeNull();
 
     client.emit("session_1", {
       method: "event.session_event",

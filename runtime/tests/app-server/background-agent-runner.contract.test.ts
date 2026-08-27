@@ -1548,6 +1548,149 @@ describe("AgenC delegate background-agent runner", () => {
     expect(harness.control.sendInput).not.toHaveBeenCalled();
   });
 
+  it("[managed-thread] rejects direct shell while the managed thread reports an untracked active turn", async () => {
+    const harness = makeTopLevelRunner({
+      conversationId: "session-direct-shell-thread-running",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    const shell = configureSessionShellHarness(harness);
+    await harness.runner.startAgent({
+      objective: "deferred direct shell",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    harness.stub.pushStatus({
+      status: "running",
+      turnId: "untracked-model-turn",
+      startedAtMs: 1,
+    });
+
+    await expect(
+      harness.runner.executeAgentShell(
+        "session-direct-shell-thread-running",
+        {
+          sessionId: "session-direct-shell-thread-running",
+          commandId: "shell-thread-running-1",
+          command: "printf blocked",
+        },
+      ),
+    ).rejects.toThrow(/active or queued model turn/u);
+    expect(shell.acquire).not.toHaveBeenCalled();
+    expect(shell.bashExecute).not.toHaveBeenCalled();
+    expect(harness.control.sendInput).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] queues direct shell until a cancelled message submission finishes cleanup", async () => {
+    const messageStarted = Promise.withResolvers<void>();
+    const releaseMessageCleanup = Promise.withResolvers<void>();
+    const harness = makeTopLevelRunner({
+      conversationId: "session-direct-shell-after-cancel",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+      scopedTurnCancellation: true,
+    });
+    const shell = configureSessionShellHarness(harness);
+    harness.control.sendInput.mockImplementationOnce(async () => {
+      harness.setActiveTurn("turn-direct-shell-cancelled");
+      harness.stub.pushStatus({
+        status: "running",
+        turnId: "turn-direct-shell-cancelled",
+        startedAtMs: 1,
+      });
+      harness.session.emit({
+        id: "turn-direct-shell-cancelled",
+        msg: {
+          type: "turn_started",
+          payload: { turnId: "turn-direct-shell-cancelled" },
+        },
+      });
+      messageStarted.resolve();
+      await releaseMessageCleanup.promise;
+      harness.stub.pushStatus({
+        status: "interrupted",
+        turnId: "turn-direct-shell-cancelled",
+        endedAtMs: 2,
+        reason: "user_cancel",
+      } as AgentStatus);
+    });
+
+    await harness.runner.startAgent({
+      objective: "deferred direct shell after cancellation",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
+    const message = harness.runner.submitAgentMessage(
+      "session-direct-shell-after-cancel",
+      {
+        sessionId: "session-direct-shell-after-cancel",
+        content: "cancel this turn",
+        originalContent: "cancel this turn",
+        messageId: "message-direct-shell-cancelled",
+        streamId: "stream-direct-shell-cancelled",
+        acceptedAt: "2026-08-27T00:00:00.000Z",
+      },
+    );
+    await messageStarted.promise;
+
+    await expect(
+      harness.runner.interruptAgentTurnIfMatches(
+        "session-direct-shell-after-cancel",
+        "user_cancel",
+        "turn-direct-shell-cancelled",
+      ),
+    ).resolves.toEqual({
+      cancelled: true,
+      activeTurnId: "turn-direct-shell-cancelled",
+    });
+    harness.session.emitPhaseEvent({
+      type: "turn_complete",
+      content: "",
+      usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      stopReason: "cancelled",
+    });
+    harness.session.emit({
+      id: "turn-direct-shell-aborted",
+      msg: {
+        type: "turn_aborted",
+        payload: {
+          turnId: "turn-direct-shell-cancelled",
+          reason: "user_cancel",
+        },
+      },
+    });
+    expect(harness.stub.thread.status()).toMatchObject({ status: "running" });
+
+    const execution = harness.runner.executeAgentShell(
+      "session-direct-shell-after-cancel",
+      {
+        sessionId: "session-direct-shell-after-cancel",
+        commandId: "shell-after-cancel-1",
+        command: "printf after-cancel",
+      },
+    );
+    void execution.catch(() => {});
+    expect(shell.bashExecute).not.toHaveBeenCalled();
+
+    releaseMessageCleanup.resolve();
+    await expect(message).resolves.toMatchObject({
+      disposition: "started",
+      terminal: { code: 130 },
+    });
+    await expect(execution).resolves.toMatchObject({
+      commandId: "shell-after-cancel-1",
+      isError: false,
+      stdout: "shell stdout",
+    });
+    expect(shell.bashExecute).toHaveBeenCalledOnce();
+  });
+
   it("[managed-thread] forwards direct-shell aborts into the admitted tool dispatch", async () => {
     const reachedTool = Promise.withResolvers<AbortSignal>();
     const harness = makeTopLevelRunner({
