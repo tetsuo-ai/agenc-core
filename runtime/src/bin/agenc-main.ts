@@ -2935,6 +2935,19 @@ async function createDeferredDaemonPromptTuiSession(params: {
       return Reflect.get(target, property, receiver);
     },
   });
+  const base = params.baseSession as Record<string, unknown>;
+  const daemonSessionBase = { ...base };
+  delete daemonSessionBase.listMcpClients;
+  delete daemonSessionBase.listMcpTools;
+  const baseServices = isRecord(base.services) ? base.services : {};
+  const deferredServices = {
+    ...baseServices,
+    mcpManager: deferredMcpManager,
+  };
+  const liveBridgeBaseSession = {
+    ...base,
+    services: deferredServices,
+  };
 
   const queuedBlocksBytes = (
     blocks: readonly MessageContentBlock[],
@@ -3278,13 +3291,13 @@ async function createDeferredDaemonPromptTuiSession(params: {
           throw new Error("Deferred TUI session is already closed.");
         }
         await applyDaemonTuiRuntimeSettingsAuthority(
-          params.baseSession as unknown as AgenCDaemonOnlyTuiSession,
+          liveBridgeBaseSession as unknown as AgenCDaemonOnlyTuiSession,
           params.cwd,
           attachment.runtimeSettings,
         );
         liveSession = wrapDaemonTuiSessionWithPromptPreparation(
           (await createDaemonTuiSession({
-            baseSession: params.baseSession,
+            baseSession: liveBridgeBaseSession,
             client: startupClient,
             sessionId,
             conversationId:
@@ -3456,11 +3469,6 @@ async function createDeferredDaemonPromptTuiSession(params: {
     }
   };
 
-  const base = params.baseSession as Record<string, unknown>;
-  const daemonSessionBase = { ...base };
-  delete daemonSessionBase.listMcpClients;
-  delete daemonSessionBase.listMcpTools;
-  const baseServices = isRecord(base.services) ? base.services : {};
   const originalEmit =
     typeof base.emit === "function"
       ? (base.emit as (event: unknown) => void).bind(base)
@@ -3496,10 +3504,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
     // The deferred TUI never owns an MCP runtime. This stable facade forwards
     // to the daemon-backed session after attach and exposes only empty passive
     // state before then; it intentionally replaces any bootstrap manager.
-    services: {
-      ...baseServices,
-      mcpManager: deferredMcpManager,
-    },
+    services: deferredServices,
     mcpSurfaceSnapshot: currentMcpSurfaceSnapshot,
     refreshMcpSurface: refreshCurrentMcpSurface,
     subscribeToMcpSurface: (cb) => {

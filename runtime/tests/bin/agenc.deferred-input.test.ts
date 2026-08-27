@@ -54,6 +54,7 @@ interface DeferredInputSession {
   readonly services: {
     readonly mcpManager: McpManager;
   };
+  subscribeToEvents(cb: (event: unknown) => void): () => void;
   submit(message: string, opts?: SessionSubmitOptions): Promise<void>;
   enqueueIdleInput(input: unknown, ownership?: IdleInputOwnership): number;
   enqueueIdleInputBatch(
@@ -258,6 +259,7 @@ function daemonHarness(
     readonly rejectFirstEditorPrediction?: boolean;
     readonly rejectShellExecute?: boolean;
     readonly withMcpSurface?: boolean;
+    readonly initialSessionEvent?: unknown;
   } = {},
 ) {
   let attachAttempts = 0;
@@ -438,7 +440,14 @@ function daemonHarness(
       }
       return {};
     }),
-    subscribeToSessionEvents: vi.fn(() => () => undefined),
+    subscribeToSessionEvents: vi.fn(
+      (_sessionId: string, cb: (event: never) => void) => {
+        if (options.initialSessionEvent !== undefined) {
+          cb(options.initialSessionEvent as never);
+        }
+        return () => undefined;
+      },
+    ),
     subscribeToConnectionState: vi.fn(() => () => undefined),
     getConnectionState: vi.fn(() => ({ status: "connected" as const })),
     close: vi.fn(async () => undefined),
@@ -467,6 +476,68 @@ function daemonHarness(
 }
 
 describe("deferred daemon input ownership", () => {
+  it.each([
+    {
+      decision: { kind: "approved" },
+      method: "tool.approve",
+      outcome: { scope: "once" },
+    },
+    {
+      decision: { kind: "denied" },
+      method: "tool.deny",
+      outcome: { reason: "denied" },
+    },
+  ] as const)(
+    "bridges an immediate permission request through $method",
+    async ({ decision, method, outcome }) => {
+      const harness = daemonHarness({
+        initialSessionEvent: {
+          jsonrpc: "2.0",
+          method: "event.permission_request",
+          params: {
+            sessionId: "session-1",
+            eventId: "call-1",
+            requestId: "call-1",
+            toolName: "Bash",
+            turnId: "turn-1",
+            permissions: ["tool.use"],
+            input: { command: "pwd" },
+          },
+        },
+      });
+      const session = await createDeferredInputSession({
+        baseSession: harness.baseSession,
+        deps: harness.deps,
+      });
+      const resolver = {
+        request: vi.fn(async () => decision),
+      };
+      (
+        session.services as unknown as {
+          approvalResolver?: typeof resolver;
+        }
+      ).approvalResolver = resolver;
+
+      await session.submit("check permissions");
+
+      await vi.waitFor(() => {
+        expect(resolver.request).toHaveBeenCalledTimes(1);
+        expect(harness.requests).toContainEqual({
+          method,
+          params: {
+            sessionId: "session-1",
+            requestId: "call-1",
+            ...outcome,
+          },
+        });
+      });
+      const unsubscribe = session.subscribeToEvents(() => undefined);
+      await Promise.resolve();
+      expect(resolver.request).toHaveBeenCalledTimes(1);
+      unsubscribe();
+    },
+  );
+
   it("replaces bootstrap MCP authority with an inert pre-attach facade", async () => {
     const harness = daemonHarness();
     const inheritedAdd = vi.fn(async (config: { readonly name: string }) => ({
