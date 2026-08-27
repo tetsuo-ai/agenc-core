@@ -20,15 +20,16 @@ import { load as loadYaml } from "js-yaml";
 import type { AgenCConfig } from "../config/schema.js";
 import { FileWatcher } from "../file-watcher/index.js";
 import { discoverPluginSkillRootsWithProvenance } from "../plugins/loader.js";
+import { resolveSessionTempRoot } from "../session/runtime-options.js";
 import type { SessionServices } from "../session/session.js";
 import type { SkillLoadOutcome } from "../session/turn-context.js";
 import { substituteArguments } from "../tui/slash/argument-substitution.js";
 import { isRecord } from "../utils/record.js";
 import { getAgenCHomeDir } from "../utils/envUtils.js";
-import { getBundledSkillsRoot } from "../utils/permissions/filesystem.js";
 import {
   extractBundledSkillFiles,
   getBundledSkillDirectory,
+  getBundledSkillExtractionRoot,
 } from "./bundled-extraction-registry.js";
 import {
   createSkillChangeDetector,
@@ -625,8 +626,15 @@ async function dedupeSkillsByRealPath(
   return out;
 }
 
+function currentBundledSkillExtractionRoot(): string {
+  return getBundledSkillExtractionRoot(resolveSessionTempRoot());
+}
+
 function bundledSkillRoot(name: string): string {
-  return getBundledSkillDirectory(getBundledSkillsRoot(), name);
+  return getBundledSkillDirectory(
+    currentBundledSkillExtractionRoot(),
+    name,
+  );
 }
 
 function bundledSkillMetadata(definition: BundledSkillDefinition): LocalSkillMetadata {
@@ -663,7 +671,7 @@ async function renderBundledSkill(
       candidate.name === skill.name || candidate.aliases?.includes(skill.name),
   );
   if (!definition) return null;
-  const extractionRoot = getBundledSkillsRoot();
+  const extractionRoot = currentBundledSkillExtractionRoot();
   const root = getBundledSkillDirectory(extractionRoot, definition.name);
   const extractedRoot =
     definition.files === undefined
