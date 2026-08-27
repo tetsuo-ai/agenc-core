@@ -5,13 +5,15 @@ import stripAnsi from 'strip-ansi'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 
 const harness = vi.hoisted(() => ({
-  appState: { fileHistory: { entries: [] } },
+  appState: {
+    fileHistory: { entries: [] },
+    settings: { fileCheckpointingEnabled: true },
+  },
   diffStats: {
     deletions: 2,
     filesChanged: ['/tmp/foo.ts', '/tmp/bar.ts'],
     insertions: 5,
   },
-  fileHistoryEnabled: true,
   fileHistoryGetDiffStats: vi.fn(),
   keybindings: {} as Record<string, () => unknown>,
   logError: vi.fn(),
@@ -31,7 +33,7 @@ const harness = vi.hoisted(() => ({
       filesChanged: ['/tmp/foo.ts', '/tmp/bar.ts'],
       insertions: 5,
     }
-    harness.fileHistoryEnabled = true
+    harness.appState.settings.fileCheckpointingEnabled = true
     harness.fileHistoryGetDiffStats.mockReset()
     harness.fileHistoryGetDiffStats.mockResolvedValue(harness.diffStats)
     harness.keybindings = {}
@@ -47,7 +49,9 @@ vi.mock('../state/AppState.js', () => ({
 
 vi.mock('../../utils/fileHistory.js', () => ({
   fileHistoryCanRestore: () => true,
-  fileHistoryEnabled: () => harness.fileHistoryEnabled,
+  fileHistoryEnabled: () => {
+    throw new Error('MessageSelector must read file history settings from AppState')
+  },
   fileHistoryGetDiffStats: harness.fileHistoryGetDiffStats,
 }))
 
@@ -196,7 +200,7 @@ describe('MessageSelector render paths', () => {
   })
 
   test('renders the empty state and closes through the confirmation escape binding', async () => {
-    harness.fileHistoryEnabled = false
+    harness.appState.settings.fileCheckpointingEnabled = false
     const onClose = vi.fn()
     const rendered = await renderSelector({ messages: [], onClose })
 
@@ -210,7 +214,7 @@ describe('MessageSelector render paths', () => {
   })
 
   test('selects an earlier message and directly restores conversation when file history is disabled', async () => {
-    harness.fileHistoryEnabled = false
+    harness.appState.settings.fileCheckpointingEnabled = false
     const first = userMessage('user-1', 'restore from this prompt')
     const messages = [first, assistantMessage('assistant-1', 'reply')]
     const onPreRestore = vi.fn()

@@ -4,9 +4,10 @@ import figures from 'figures';
 import * as React from 'react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAppState } from '../state/AppState.js';
-import { type DiffStats, type FileHistoryState, fileHistoryCanRestore, fileHistoryEnabled, fileHistoryGetDiffStats } from '../../utils/fileHistory.js';
+import { type DiffStats, type FileHistoryState, fileHistoryCanRestore, fileHistoryGetDiffStats } from '../../utils/fileHistory.js';
 import { logError } from '../../utils/log.js';
 import { useExitOnCtrlCDWithKeybindings } from 'src/tui/hooks/useExitOnCtrlCDWithKeybindings.js';
+import { useSettings } from '../hooks/useSettings.js';
 import { Box, Text } from '../ink.js';
 import { useKeybinding, useKeybindings } from '../keybindings/useKeybinding.js';
 import type { Message, PartialCompactDirection, UserMessage } from '../../types/message';
@@ -110,8 +111,9 @@ export function MessageSelector({
   preselectedMessage
 }: Props): React.ReactNode {
   const fileHistory = useAppState(s => s.fileHistory);
+  const settings = useSettings();
   const [error, setError] = useState<string | undefined>(undefined);
-  const isFileHistoryEnabled = fileHistoryEnabled();
+  const isFileHistoryEnabled = settings.fileCheckpointingEnabled !== false;
   const fileRestoreAvailable = onPreviewRewind !== undefined || isFileHistoryEnabled;
   const resolveRestoreDiffStats = useCallback(async (message: UserMessage): Promise<DiffStats> => {
     if (onPreviewRewind !== undefined) {
