@@ -435,9 +435,14 @@ describe("provider authority architecture", () => {
       `${SRC}/utils/model/providers.ts`,
       "utf8",
     );
-    expect(providerSource).toMatch(
-      /AsyncLocalStorage<ProviderRuntimeSelection>/u,
+    const selectionContextSource = readFileSync(
+      `${SRC}/utils/model/provider-selection-context.ts`,
+      "utf8",
     );
+    expect(selectionContextSource).toMatch(
+      /AsyncLocalStorage<StartupProviderSelectionSnapshot>/u,
+    );
+    expect(selectionContextSource).not.toMatch(/process\.env/u);
     expect(providerSource).toMatch(/providerService\.environment\(\)/u);
     expect(providerSource).toMatch(/getCurrentRuntimeSession\(\)/u);
     expect(providerSource).not.toMatch(/peekAmbientRuntimeSession/u);

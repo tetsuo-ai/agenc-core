@@ -1,5 +1,3 @@
-import { AsyncLocalStorage } from 'node:async_hooks'
-
 import {
   REGISTERED_MODEL_CATALOG,
   resolveRegisteredModelCatalogEntry,
@@ -10,6 +8,11 @@ import {
   snapshotProviderEnvironment,
   type ProviderEnvironment,
 } from '../../llm/provider-options.js'
+import {
+  enterStartupProviderSelectionSnapshotForTests,
+  readStartupProviderSelectionSnapshot,
+  runWithStartupProviderSelectionSnapshot,
+} from './provider-selection-context.js'
 
 export type APIProvider =
   | 'firstParty'
@@ -28,9 +31,6 @@ export interface ProviderRuntimeSelection {
   readonly environment: ProviderEnvironment
 }
 
-const scopedStartupSelection =
-  new AsyncLocalStorage<ProviderRuntimeSelection>()
-
 function selectedProviderIdentity(provider: string): string {
   const selected = normalizeProviderIdentity(provider, 'provider API projection')
   if (selected === undefined) {
@@ -48,7 +48,10 @@ export function runWithStartupProviderSelection<T>(
   selection: ProviderRuntimeSelection,
   operation: () => T,
 ): T {
-  return scopedStartupSelection.run(freezeSelection(selection), operation)
+  return runWithStartupProviderSelectionSnapshot(
+    freezeSelection(selection),
+    operation,
+  )
 }
 
 /**
@@ -60,7 +63,7 @@ export function runWithStartupProviderSelection<T>(
 export function enterStartupProviderSelectionForTestingOnly(
   selection: ProviderRuntimeSelection,
 ): void {
-  scopedStartupSelection.enterWith(freezeSelection(selection))
+  enterStartupProviderSelectionSnapshotForTests(freezeSelection(selection))
 }
 
 function freezeSelection(
@@ -97,7 +100,7 @@ function sessionSelection(): ProviderRuntimeSelection | undefined {
 export function getSelectedProviderSelection(): ProviderRuntimeSelection {
   const session = sessionSelection()
   if (session !== undefined) return session
-  const startupSelection = scopedStartupSelection.getStore()
+  const startupSelection = readStartupProviderSelectionSnapshot()
   if (startupSelection !== undefined) return startupSelection
   throw new Error(
     'No provider authority is bound; run inside canonical startup/session scope',

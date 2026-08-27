@@ -24,11 +24,15 @@ import {
   getOrCreateHermeticTestHome,
   sanitizeHermeticEnv,
 } from './tests/helpers/hermetic-env.mjs'
-import { beforeAll, beforeEach } from 'vitest'
+import { beforeEach } from 'vitest'
 // Register host-bound infrastructure mocks before importing ConfigStore or
 // any other runtime module that can transitively load those boundaries.
 import './tests/helpers/hermetic-managed-policy-mocks.js'
 import './tests/helpers/hermetic-secure-storage-mocks.js'
+import { ConfigStore } from './src/config/store.js'
+import {
+  enterStartupProviderSelectionSnapshotForTests as enterStartupProviderSelectionForTestingOnly,
+} from './src/utils/model/provider-selection-context.js'
 import { enterCanonicalSettingsAuthority } from './src/utils/settings/canonicalAuthority.js'
 import { installWorkspaceMutationHomeResolverForTestingOnly } from './src/workspace/mutation-coordinator.js'
 import { installNetworkTripwire } from './tests/helpers/network-tripwire.mjs'
@@ -46,20 +50,6 @@ installNetworkTripwire()
 const hermeticHome = getOrCreateHermeticTestHome()
 sanitizeHermeticEnv(process.env, hermeticHome)
 process.env.AGENC_TEST_HERMETIC_HOME = hermeticHome
-
-let ConfigStore: typeof import('./src/config/store.js').ConfigStore
-let enterStartupProviderSelectionForTestingOnly:
-  typeof import('./src/utils/model/providers.js').enterStartupProviderSelectionForTestingOnly
-
-beforeAll(async () => {
-  const [configStoreModule, providerSelectionModule] = await Promise.all([
-    import('./src/config/store.js'),
-    import('./src/utils/model/providers.js'),
-  ])
-  ConfigStore = configStoreModule.ConfigStore
-  enterStartupProviderSelectionForTestingOnly =
-    providerSelectionModule.enterStartupProviderSelectionForTestingOnly
-})
 
 // Production workspace-mutation state is partitioned by the ConfigStore
 // authority. Low-level unit tests intentionally exercise the facade without a
@@ -87,9 +77,6 @@ beforeEach(() => {
   if (home === undefined || home.length === 0) {
     throw new Error('AGENC_HOME is required by the canonical settings test harness')
   }
-  // Keep ConfigStore out of setup-module evaluation. Importing it before a
-  // test file loads would cache transitive OS/process boundaries before that
-  // file's vi.mock declarations can install their test doubles.
   enterCanonicalSettingsAuthority(
     new ConfigStore({
       home,
