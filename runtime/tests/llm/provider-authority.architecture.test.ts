@@ -176,7 +176,7 @@ describe("provider authority architecture", () => {
     );
     expect(providerCommandAccess).toMatch(/resolveProviderRuntimeRequest/u);
     expect(providerCommandAccess).not.toMatch(/committedFactoryOptions/u);
-    expect(onboarding).toMatch(/resolveProviderCredentialAuthority/u);
+    expect(onboarding).toMatch(/resolveProviderRuntimeAuthority/u);
     expect(onboarding).not.toMatch(
       /resolveGrokProviderCredential|settings\?\.apiKey/u,
     );

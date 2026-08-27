@@ -16,6 +16,25 @@ import { saveXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
 import { MAX_ONBOARDING_INPUT_LENGTH } from "./inputPaste.js";
 import { hashPastedText, retrievePastedText } from "./pasteStore.js";
 
+const nativeByokReadOverride = vi.hoisted(() => ({
+  current: null as null | ((home: unknown, provider: string) => unknown),
+}));
+
+vi.mock("../auth/native-credentials.js", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("../auth/native-credentials.js")
+  >();
+  return {
+    ...actual,
+    readLocalByokCredential: (
+      ...args: Parameters<typeof actual.readLocalByokCredential>
+    ) =>
+      nativeByokReadOverride.current === null
+        ? actual.readLocalByokCredential(...args)
+        : nativeByokReadOverride.current(...args),
+  };
+});
+
 vi.mock("../tui/ink.js", async () => {
   const React = await import("react");
   return {
@@ -839,6 +858,32 @@ describe("first-run onboarding wizard", () => {
       ok: true,
       status: "local-unchecked",
     });
+  });
+
+  test("does not read saved API keys for local providers", async () => {
+    const readSavedApiKey = vi.fn(() => {
+      throw new Error("local providers must not read the native vault");
+    });
+    nativeByokReadOverride.current = readSavedApiKey;
+    try {
+      await expect(
+        checkOnboardingProviderConnection(
+          {
+            config: defaultConfig(),
+            env: {},
+            checkLocalProviders: false,
+          },
+          "openai-compatible",
+          "local-model",
+        ),
+      ).resolves.toMatchObject({
+        ok: true,
+        status: "local-unchecked",
+      });
+      expect(readSavedApiKey).not.toHaveBeenCalled();
+    } finally {
+      nativeByokReadOverride.current = null;
+    }
   });
 
   test("uses the managed-auth readiness path for the AgenC provider", async () => {

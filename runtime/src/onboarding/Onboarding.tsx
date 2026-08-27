@@ -47,7 +47,7 @@ import {
 import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
 import { readLocalByokCredential } from "../auth/native-credentials.js";
-import { resolveProviderCredentialAuthority } from "../llm/provider-options.js";
+import { resolveProviderRuntimeAuthority } from "../llm/provider-options.js";
 import {
   geminiEndpointFor,
 } from "../llm/providers/gemini/endpoint-plan.js";
@@ -1105,10 +1105,9 @@ export async function checkOnboardingProviderConnection(
     context.config,
     environment,
   );
-  const savedByok = readLocalByokCredential(ingress.home, provider)?.apiKey;
-  let authority: ReturnType<typeof resolveProviderCredentialAuthority>;
+  let authority: Awaited<ReturnType<typeof resolveProviderRuntimeAuthority>>;
   try {
-    authority = resolveProviderCredentialAuthority(
+    authority = await resolveProviderRuntimeAuthority(
       provider,
       {
         model,
@@ -1119,7 +1118,8 @@ export async function checkOnboardingProviderConnection(
       },
       environment,
       {
-        ...(savedByok !== undefined ? { savedApiKey: savedByok } : {}),
+        readSavedApiKey: async (candidateProvider) =>
+          readLocalByokCredential(ingress.home, candidateProvider)?.apiKey,
       },
     );
   } catch (error) {
@@ -2097,6 +2097,16 @@ export function useFirstRunOnboardingController(
           }
           setActive(false);
         }
+        return true;
+      } catch (error) {
+        const failedState = {
+          ...stateRef.current,
+          authPrompt: null,
+          error: error instanceof Error ? error.message : String(error),
+          isCheckingConnection: false,
+        };
+        stateRef.current = failedState;
+        setState(failedState);
         return true;
       } finally {
         submitInFlight.current = false;
