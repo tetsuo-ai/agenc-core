@@ -2193,11 +2193,34 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       }
       return;
     }
-    active.sessionBinding = binding;
-    const replay = active.bufferedEvents.splice(0);
-    for (const event of replay) {
-      await this.#emitDaemonEvent(active, event);
-    }
+    // Serialize attachment with canonical delivery. startAgent and
+    // restoreAgent both establish runtime settings before installing the
+    // Session.EventLog bridge, so that exact event cannot have entered the
+    // ordinary pre-attach buffer. Recover it from the canonical rollout and
+    // merge it into the queued tail by sequence. Repeating this for a
+    // replacement lifecycle binding gives that route the current selection
+    // without synthesizing a new identity or sequence. Physical client
+    // reconnects reconstruct older canonical state through run.replay.
+    let attachError: unknown;
+    let raised = false;
+    const tail = active.dispatchChain.then(async () => {
+      const runtimeSettingsEvent = runtimeSettingsDaemonEventForAttach(active);
+      const replay = active.bufferedEvents.splice(0);
+      const orderedReplay =
+        runtimeSettingsEvent === null
+          ? replay
+          : insertCanonicalEventBySequence(replay, runtimeSettingsEvent);
+      active.sessionBinding = binding;
+      for (const event of orderedReplay) {
+        await this.#emitDaemonEvent(active, event);
+      }
+    });
+    active.dispatchChain = tail.catch((error: unknown) => {
+      attachError = error;
+      raised = true;
+    });
+    await active.dispatchChain;
+    if (raised) throw attachError;
   }
 
   async submitAgentMessage(
@@ -4511,6 +4534,66 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       ),
     );
   }
+}
+
+function runtimeSettingsDaemonEventForAttach(
+  active: ActiveBackgroundAgent,
+): BackgroundAgentDaemonEvent | null {
+  const expectedEventId = active.runtimeSettingsEventId;
+  if (
+    expectedEventId === undefined ||
+    !supportsCanonicalRuntimeSettings(active)
+  ) {
+    return null;
+  }
+  const runId = active.thread.threadId;
+  const matches = active.bootstrap.rolloutStore.readAll().flatMap((item) => {
+    if (item.type !== "event_msg") return [];
+    const event = item.payload;
+    return event.msg.type === "run_runtime_settings_changed" &&
+      canonicalEventId(event) === expectedEventId &&
+      event.msg.payload.runId === runId
+      ? [event]
+      : [];
+  });
+  if (matches.length !== 1) {
+    throw new Error(
+      `run ${runId} runtime settings ${expectedEventId} must have exactly one canonical record`,
+    );
+  }
+  const daemonEvent = daemonEventFromUnboundSessionEvent(matches[0]!);
+  if (
+    daemonEvent === null ||
+    daemonEvent.type !== "run_runtime_settings_changed" ||
+    positiveSequence(daemonEvent.sequence) === undefined
+  ) {
+    throw new Error(
+      `run ${runId} runtime settings ${expectedEventId} lacks canonical coordinates`,
+    );
+  }
+  return correlateDaemonEvent(active, daemonEvent);
+}
+
+function insertCanonicalEventBySequence(
+  events: BackgroundAgentDaemonEvent[],
+  canonicalEvent: BackgroundAgentDaemonEvent,
+): BackgroundAgentDaemonEvent[] {
+  const eventId = canonicalEvent.eventId ?? canonicalEvent.id;
+  const sequence = positiveSequence(canonicalEvent.sequence);
+  if (sequence === undefined) {
+    throw new Error(`canonical attach event ${eventId} lacks a sequence`);
+  }
+  const replay = events.filter(
+    (event) => (event.eventId ?? event.id) !== eventId,
+  );
+  let insertionIndex = 0;
+  while (insertionIndex < replay.length) {
+    const nextSequence = positiveSequence(replay[insertionIndex]?.sequence);
+    if (nextSequence !== undefined && nextSequence > sequence) break;
+    insertionIndex += 1;
+  }
+  replay.splice(insertionIndex, 0, canonicalEvent);
+  return replay;
 }
 
 function sessionUserMessageEventFromDaemonEvent(

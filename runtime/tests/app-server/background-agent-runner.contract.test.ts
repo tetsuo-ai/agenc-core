@@ -1141,6 +1141,183 @@ describe("AgenC delegate background-agent runner", () => {
     },
   );
 
+  it("delivers pre-bridge runtime settings before buffered input and to a replacement binding", async () => {
+    const runId = "session-runtime-settings-live-attach";
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      canonicalRuntimeSettings: true,
+    });
+    await harness.runner.startAgent({
+      objective: "show the initial runtime state",
+    });
+
+    const initialSettings = harness.rolloutItems.find(
+      (item) =>
+        (item as { payload?: { msg?: { type?: unknown } } }).payload?.msg
+          ?.type === "run_runtime_settings_changed",
+    ) as
+      | {
+          payload: {
+            eventId: string;
+            seq: number;
+            msg: { payload: { permissionMode: string } };
+          };
+        }
+      | undefined;
+    expect(initialSettings).toBeDefined();
+
+    const firstAttachment: unknown[] = [];
+    await harness.runner.attachAgentSessionEvents(runId, {
+      sessionId: "client-session-1",
+      emit: (event) => {
+        firstAttachment.push(event);
+      },
+    });
+    const firstCanonicalEvents = firstAttachment.flatMap((notification) => {
+      const params = (notification as {
+        method?: unknown;
+        params?: {
+          eventId?: unknown;
+          sequence?: unknown;
+          event?: { type?: unknown; payload?: unknown };
+        };
+      }).params;
+      return params?.event?.type === "run_runtime_settings_changed" ||
+        params?.event?.type === "user_message"
+        ? [params]
+        : [];
+    });
+    expect(firstCanonicalEvents.map((event) => event.event?.type)).toEqual([
+      "run_runtime_settings_changed",
+      "user_message",
+    ]);
+    expect(firstCanonicalEvents[0]).toMatchObject({
+      eventId: initialSettings?.payload.eventId,
+      sequence: initialSettings?.payload.seq,
+      event: {
+        type: "run_runtime_settings_changed",
+        payload: { permissionMode: "default" },
+      },
+    });
+
+    // This is a lifecycle-binding replacement, not a physical client's
+    // session.attach reconnect. A socket reconnect reconstructs canonical
+    // history through run.replay.
+    const replacementBinding: unknown[] = [];
+    await harness.runner.attachAgentSessionEvents(runId, {
+      sessionId: "client-session-2",
+      emit: (event) => {
+        replacementBinding.push(event);
+      },
+    });
+    expect(replacementBinding).toContainEqual(
+      expect.objectContaining({
+        method: "event.session_event",
+        params: expect.objectContaining({
+          eventId: initialSettings?.payload.eventId,
+          sequence: initialSettings?.payload.seq,
+          event: expect.objectContaining({
+            type: "run_runtime_settings_changed",
+            payload: expect.objectContaining({ permissionMode: "default" }),
+          }),
+        }),
+      }),
+    );
+  });
+
+  it("attaches the latest restored runtime settings with canonical coordinates", async () => {
+    const runId = "session-runtime-settings-restored-attach";
+    const baseline: RunRuntimeSettingsSnapshot = {
+      permissionMode: "default",
+      prePlanMode: null,
+      autoModeActive: false,
+      bypassPermissionsWorkspace: null,
+      model: "base-model",
+      provider: "base-provider",
+      profile: null,
+      reasoningEffort: null,
+      modelVerbosity: null,
+      serviceTier: null,
+      hooksDisabled: false,
+    };
+    const rolloutItems: unknown[] = [
+      {
+        type: "event_msg",
+        payload: {
+          id: "runtime-settings-before-restore",
+          eventId: "runtime-settings-before-restore",
+          seq: 1,
+          msg: {
+            type: "run_runtime_settings_changed",
+            payload: {
+              runId,
+              epoch: 1,
+              previousSettingsEventId: null,
+              rollbackOfSettingsEventId: null,
+              reason: "initial",
+              changedAt: "2026-05-09T00:00:00.000Z",
+              ...baseline,
+            },
+          },
+        },
+      },
+    ];
+    const harness = makeTopLevelRunner({
+      conversationId: runId,
+      rolloutItems,
+      canonicalRuntimeSettings: true,
+    });
+    await expect(
+      harness.runner.restoreAgent({
+        agentId: runId,
+        objective: "restore the current plan state",
+        explicitColdResume: true,
+        runtimeSettings: baseline,
+        permissionMode: "plan",
+      }),
+    ).resolves.toBe(true);
+
+    const restoredSettings = rolloutItems.filter(
+      (item) =>
+        (item as { payload?: { msg?: { type?: unknown } } }).payload?.msg
+          ?.type === "run_runtime_settings_changed",
+    )[1] as {
+      payload: {
+        eventId: string;
+        seq: number;
+      };
+    };
+    const emitted: unknown[] = [];
+    await harness.runner.attachAgentSessionEvents(runId, {
+      sessionId: "restored-client-session",
+      emit: (event) => {
+        emitted.push(event);
+      },
+    });
+    const settingsNotifications = emitted.filter(
+      (notification) =>
+        (notification as {
+          params?: { event?: { type?: unknown } };
+        }).params?.event?.type === "run_runtime_settings_changed",
+    );
+    expect(settingsNotifications).toEqual([
+      expect.objectContaining({
+        method: "event.session_event",
+        params: expect.objectContaining({
+          eventId: restoredSettings.payload.eventId,
+          sequence: restoredSettings.payload.seq,
+          event: expect.objectContaining({
+            type: "run_runtime_settings_changed",
+            payload: expect.objectContaining({
+              permissionMode: "plan",
+              prePlanMode: "default",
+            }),
+          }),
+        }),
+      }),
+    ]);
+  });
+
   it("uses PhaseEvents only for bookkeeping when the canonical bridge is installed", async () => {
     const { runner, session } = makeTopLevelRunner({
       conversationId: "session-canonical-core",
