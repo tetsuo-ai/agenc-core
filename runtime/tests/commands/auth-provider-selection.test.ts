@@ -3,7 +3,11 @@ import { describe, expect, test, vi } from "vitest";
 import { resolveHomeContext } from "../../src/config/home.js";
 
 const authMocks = vi.hoisted(() => ({
-  applyProviderSwitch: vi.fn(),
+  applyProviderSwitch: vi.fn(async () => ({
+    applied: true,
+    model: "x-ai/grok-4.5",
+    summary: "switched",
+  })),
   createAuthBackend: vi.fn(),
 }));
 
@@ -77,17 +81,15 @@ describe("auth command provider selection", () => {
     expect(result).toMatchObject({ kind: "text" });
     if (result.kind === "text") {
       expect(result.text).not.toContain("route selected");
+      expect(result.text).toContain("Your current provider was kept");
     }
     expect(authMocks.applyProviderSwitch).not.toHaveBeenCalled();
   });
 
-  test("keeps OpenRouter BYOK instead of forcing a managed model after login", async () => {
+  test("keeps the current provider instead of selecting a hosted default after login", async () => {
     authMocks.createAuthBackend.mockReturnValue(backend());
     authMocks.applyProviderSwitch.mockClear();
-    const environment = Object.freeze({
-      AGENC_HOME: "/tmp/agenc-auth-byok",
-      OPENROUTER_API_KEY: "openrouter-test-key",
-    });
+    const environment = Object.freeze({ AGENC_HOME: "/tmp/agenc-auth-neutral" });
     const configStore = {
       current: () => ({
         model_provider: "grok",
@@ -116,7 +118,9 @@ describe("auth command provider selection", () => {
 
     expect(result).toMatchObject({ kind: "text" });
     if (result.kind === "text") {
-      expect(result.text).toContain("OpenRouter BYOK was kept");
+      expect(result.text).toContain("Your current provider (grok) was kept");
+      expect(result.text).toContain("run /provider openrouter to switch");
+      expect(result.text).not.toContain("route selected");
     }
     expect(authMocks.applyProviderSwitch).not.toHaveBeenCalled();
   });

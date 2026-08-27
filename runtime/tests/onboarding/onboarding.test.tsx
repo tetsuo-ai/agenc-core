@@ -953,7 +953,7 @@ describe("first-run onboarding wizard", () => {
     );
   });
 
-  test("starts Pro signed-in users on hosted OpenRouter instead of direct Grok", async () => {
+  test("keeps the configured startup provider for signed-in Pro users", async () => {
     await withRemoteAuthSession(
       "agenc-onboarding-pro-default-",
       "pro",
@@ -965,14 +965,14 @@ describe("first-run onboarding wizard", () => {
         };
         const state = createInitialFirstRunOnboardingState(context);
 
-        expect(state.selectedProvider).toBe("openrouter");
-        expect(state.selectedModel).toBe("x-ai/grok-4.5");
+        expect(state.selectedProvider).toBe("grok");
+        expect(state.selectedModel).toBe("grok-4.6");
         expect(
           detailLinesForStep(
             { ...state, currentStepId: "provider" },
             context,
           )[0],
-        ).toBe("1. openrouter (current)");
+        ).toBe("1. grok (current)");
         expect(
           detailLinesForStep(
             { ...state, currentStepId: "model-access" },
@@ -1043,7 +1043,11 @@ describe("first-run onboarding wizard", () => {
       "free",
       async ({ env, remoteAuthSessionContext }) => {
         const context = {
-          config: defaultConfig(),
+          config: {
+            ...defaultConfig(),
+            model_provider: "openrouter",
+            model: "cohere/north-mini-code:free",
+          },
           env,
           remoteAuthSessionContext,
         };

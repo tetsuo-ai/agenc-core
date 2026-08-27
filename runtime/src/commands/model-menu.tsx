@@ -30,7 +30,6 @@ import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import { readBuiltInSessionSelection } from "../session/provider-model-selection.js";
 import {
-  SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
   hasHostedManagedAccess,
   hostedManagedSubscriptionTier,
   providerHasLiveSubscriptionRoute,
@@ -174,17 +173,12 @@ function statusGlyph(status: ModelRowStatus): string {
 function providerOrder(
   catalog: Readonly<Record<string, readonly string[]>>,
   currentProvider: ProviderSlug,
-  preferredProvider?: ProviderSlug,
 ): readonly ProviderSlug[] {
   const ids = Object.keys(catalog)
     .map(provider => resolveProviderSlug(provider))
     .filter((provider): provider is ProviderSlug => provider !== undefined);
   const unique = [...new Set(ids)];
   return unique.sort((left, right) => {
-    if (preferredProvider !== undefined) {
-      if (left === preferredProvider) return -1;
-      if (right === preferredProvider) return 1;
-    }
     if (left === currentProvider) return -1;
     if (right === currentProvider) return 1;
     return left.localeCompare(right);
@@ -336,10 +330,7 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
     }
     return catalog[catalogProvider] ?? [];
   };
-  const preferredProvider = managedSubscriptionAvailable
-    ? SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER
-    : undefined;
-  const rows = providerOrder(catalog, provider, preferredProvider)
+  const rows = providerOrder(catalog, provider)
     .filter(shouldShowProvider)
     .flatMap(catalogProvider => {
       const managedRoute =
@@ -355,23 +346,11 @@ export function readModelMenuSnapshot(ctx: SlashCommandContext): ModelMenuSnapsh
         managedRoute,
       });
     });
-  const preferredActiveIndex =
-    managedSubscriptionAvailable
-      ? rows.findIndex(
-          row =>
-            row.provider === SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER &&
-            row.selectable,
-        )
-      : -1;
   const currentActiveIndex = rows.findIndex(row => row.status === "current");
   const firstSelectableIndex = rows.findIndex(row => row.selectable);
   const activeIndex = Math.max(
     0,
-    preferredActiveIndex >= 0
-      ? preferredActiveIndex
-      : currentActiveIndex >= 0
-        ? currentActiveIndex
-        : firstSelectableIndex,
+    currentActiveIndex >= 0 ? currentActiveIndex : firstSelectableIndex,
   );
   // Count the rows actually offered per provider (hidden models are filtered
   // out in providerRows) so the displayed count matches the selectable list.

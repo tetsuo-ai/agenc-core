@@ -48,7 +48,6 @@ import { openLocalJsxCommand } from "./local-jsx-command.js";
 import { nextMenuIndex, previousMenuIndex } from "./menu-navigation.js";
 import { readBuiltInSessionSelection } from "../session/provider-model-selection.js";
 import {
-  SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
   hasHostedManagedAccess,
   hostedManagedSubscriptionTier,
   providerHasLiveSubscriptionRoute,
@@ -511,13 +510,8 @@ function providerRuntimeRank(state: ProviderRuntimeState): number {
 function sortProviderRows(
   rows: readonly ProviderMenuRow[],
   currentProvider: ProviderSlug,
-  hostedSubscriptionReady: boolean,
 ): readonly ProviderMenuRow[] {
   return [...rows].sort((left, right) => {
-    if (hostedSubscriptionReady) {
-      if (left.provider === SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER) return -1;
-      if (right.provider === SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER) return 1;
-    }
     if (left.provider === currentProvider) return -1;
     if (right.provider === currentProvider) return 1;
     const rankDelta =
@@ -661,22 +655,9 @@ export function readProviderMenuSnapshot(ctx: SlashCommandContext): ProviderMenu
     };
   });
 
-  const rows = sortProviderRows(
-    unsortedRows,
-    currentProvider,
-    managedSubscriptionAvailable,
-  );
-  const preferredActiveIndex =
-    managedSubscriptionAvailable
-      ? rows.findIndex(
-          row => row.provider === SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER,
-        )
-      : -1;
+  const rows = sortProviderRows(unsortedRows, currentProvider);
   const currentActiveIndex = rows.findIndex(row => row.provider === currentProvider);
-  const activeIndex = Math.max(
-    0,
-    preferredActiveIndex >= 0 ? preferredActiveIndex : currentActiveIndex,
-  );
+  const activeIndex = Math.max(0, currentActiveIndex);
   return {
     currentProvider,
     currentModel,

@@ -488,22 +488,9 @@ function providerDefaultModel(
 }
 
 function initialProvider(
-  context: Pick<
-    FirstRunOnboardingContext,
-    "config" | "remoteAuthSessionContext"
-  >,
+  context: Pick<FirstRunOnboardingContext, "config">,
 ): BuiltInProviderSlug {
-  const configured = resolveBuiltInProviderSlug(context.config.model_provider);
-  if (
-    resolveAuthManagedKeysEnabled(context.config) &&
-    context.remoteAuthSessionContext !== undefined &&
-    hasRemoteAuthSessionSync(context.remoteAuthSessionContext)
-  ) {
-    return configured === undefined || configured === "grok"
-      ? SUBSCRIPTION_MANAGED_DEFAULT_PROVIDER
-      : configured;
-  }
-  return configured ?? "grok";
+  return resolveBuiltInProviderSlug(context.config.model_provider) ?? "grok";
 }
 
 export function createInitialFirstRunOnboardingState(
@@ -568,28 +555,10 @@ export async function detectRunningLocalProviders(
   return results.filter((p): p is BuiltInProviderSlug => p !== null);
 }
 
-function providerChoices(
-  context?: Pick<
-    FirstRunOnboardingContext,
-    "config" | "env" | "remoteAuthSessionContext"
-  >,
-): readonly BuiltInProviderSlug[] {
-  const hostedReady =
-    context !== undefined &&
-    resolveAuthManagedKeysEnabled(context.config) &&
-    context.remoteAuthSessionContext !== undefined &&
-    hasRemoteAuthSessionSync(context.remoteAuthSessionContext);
+function providerChoices(): readonly BuiltInProviderSlug[] {
   return Object.freeze(
     [...listBuiltInProviderInfo()]
-      .sort((left, right) => {
-        if (hostedReady) {
-          const managedAccessOrder =
-            Number(!left.onboarding.supportsManagedKeyAccess) -
-            Number(!right.onboarding.supportsManagedKeyAccess);
-          if (managedAccessOrder !== 0) return managedAccessOrder;
-        }
-        return left.onboarding.order - right.onboarding.order;
-      })
+      .sort((left, right) => left.onboarding.order - right.onboarding.order)
       .map((provider) => provider.id),
   );
 }
@@ -641,11 +610,10 @@ function parseTheme(raw: string, current: ThemeSetting): ThemeSetting | null {
 function parseProvider(
   raw: string,
   current: BuiltInProviderSlug,
-  context: Pick<FirstRunOnboardingContext, "config" | "env">,
 ): BuiltInProviderSlug | null {
   const input = raw.trim().toLowerCase();
   if (input === "" || input === "next") return current;
-  const choices = providerChoices(context);
+  const choices = providerChoices();
   const index = Number(input);
   if (Number.isInteger(index) && index >= 1 && index <= choices.length) {
     return choices[index - 1] ?? current;
@@ -1565,7 +1533,7 @@ export async function submitFirstRunOnboardingInput(
       };
     }
     case "provider": {
-      const provider = parseProvider(raw, state.selectedProvider, context);
+      const provider = parseProvider(raw, state.selectedProvider);
       if (provider === null) {
         return {
           state: { ...state, error: "Choose a provider number or slug." },
@@ -2360,7 +2328,7 @@ export function detailLinesForStep(
     case "provider": {
       const detected = new Set(state.detectedLocalProviders);
       return [
-        ...providerChoices(context).map((provider, index) =>
+        ...providerChoices().map((provider, index) =>
           `${index + 1}. ${provider}${provider === state.selectedProvider ? " (current)" : ""}${detected.has(provider) ? " — detected, running locally, no key needed" : ""}`
         ),
         ...(detected.size > 0

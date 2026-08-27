@@ -966,7 +966,7 @@ describe("modelCommand", () => {
     });
   });
 
-  it("opens paid managed sessions on hosted OpenRouter models first", async () => {
+  it("opens paid managed sessions on the current provider and model", async () => {
     await withProAuthSession(({ configStore, environment }) => {
       const snapshot = readModelMenuSnapshot(
         mkctx(
@@ -981,15 +981,16 @@ describe("modelCommand", () => {
       );
 
       expect(snapshot.rows[0]).toMatchObject({
-        provider: "openrouter",
-        model: "x-ai/grok-4.5",
-        detail: "default hosted subscription model",
+        provider: "grok",
+        model: "grok-4.3",
+        status: "current",
       });
       expect(snapshot.rows[snapshot.activeIndex]).toMatchObject({
-        provider: "openrouter",
-        model: "x-ai/grok-4.5",
+        provider: "grok",
+        model: "grok-4.3",
+        status: "current",
       });
-      expect(snapshot.rows.some((row) => row.provider === "grok")).toBe(true);
+      expect(snapshot.rows.some((row) => row.provider === "openrouter")).toBe(true);
     });
   });
 
