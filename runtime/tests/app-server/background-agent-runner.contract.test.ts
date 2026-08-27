@@ -1586,7 +1586,7 @@ describe("AgenC delegate background-agent runner", () => {
     expect(harness.control.sendInput).not.toHaveBeenCalled();
   });
 
-  it("[managed-thread] rejects direct shell while the managed thread reports an untracked active turn", async () => {
+  it("[managed-thread] admits direct shell when canonical runtime state is idle despite a stale thread status", async () => {
     const harness = makeTopLevelRunner({
       conversationId: "session-direct-shell-thread-running",
       threadInitialStatus: { status: "pending_init" } as AgentStatus,
@@ -1603,16 +1603,26 @@ describe("AgenC delegate background-agent runner", () => {
       turnId: "untracked-model-turn",
       startedAtMs: 1,
     });
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
 
     await expect(
       harness.runner.executeAgentShell("session-direct-shell-thread-running", {
         sessionId: "session-direct-shell-thread-running",
         commandId: "shell-thread-running-1",
-        command: "printf blocked",
+        command: "printf admitted",
       }),
-    ).rejects.toThrow(/active or queued model turn/u);
-    expect(shell.acquire).not.toHaveBeenCalled();
-    expect(shell.bashExecute).not.toHaveBeenCalled();
+    ).resolves.toMatchObject({
+      commandId: "shell-thread-running-1",
+      isError: false,
+      stdout: "shell stdout",
+    });
+    expect(shell.acquire).toHaveBeenCalledOnce();
+    expect(shell.bashExecute).toHaveBeenCalledOnce();
     expect(harness.control.sendInput).not.toHaveBeenCalled();
   });
 
@@ -2266,6 +2276,11 @@ describe("AgenC delegate background-agent runner", () => {
       expect(initialSettings?.payload.msg.payload).toMatchObject(baseline);
       expect(harness.permissionModeRegistry.current().mode).toBe("unattended");
 
+      await vi.waitFor(() =>
+        expect(harness.stub.thread.submit).toHaveBeenCalledOnce(),
+      );
+      await harness.stub.thread.submit.mock.results[0]?.value;
+      await Promise.resolve();
       harness.stub.pushStatus({
         status: "idle",
         turnId: "turn-before-cold-resume",
@@ -3872,20 +3887,16 @@ describe("AgenC delegate background-agent runner", () => {
 
   it("suspends a daemon-shutdown idle run without poisoning it terminal", async () => {
     let clock = "2026-05-09T00:00:00.000Z";
-    const { runner, stub, rolloutItems, rolloutStore } = makeTopLevelRunner({
+    const { runner, rolloutItems, rolloutStore } = makeTopLevelRunner({
       conversationId: "session-daemon-suspend-idle",
       now: () => clock,
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
     });
     await runner.startAgent({
       objective: "stay resumable",
       initialContent: [],
       unattendedAllow: [],
       unattendedDeny: [],
-    });
-    stub.pushStatus({
-      status: "idle",
-      turnId: "turn-finished",
-      endedAtMs: 1,
     });
     rolloutStore.assertRunSuspendable.mockImplementation(() => {
       clock = "2026-05-09T00:05:00.000Z";
@@ -7904,14 +7915,23 @@ describe("AgenC delegate background-agent runner", () => {
   });
 
   it("[managed-thread] rejects opt-in admission during the initial turn without changing legacy FIFO", async () => {
-    const { runner, control } = makeTopLevelRunner({
+    const initialSubmissionStarted = Promise.withResolvers<void>();
+    const releaseInitialSubmission = Promise.withResolvers<void>();
+    const { runner, control, stub } = makeTopLevelRunner({
       conversationId: "session-strict-busy",
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    stub.thread.submit.mockImplementationOnce(async () => {
+      initialSubmissionStarted.resolve();
+      await releaseInitialSubmission.promise;
+      return "session-strict-busy";
     });
     await runner.startAgent({
       objective: "initial turn is running",
       unattendedAllow: [],
       unattendedDeny: [],
     });
+    await initialSubmissionStarted.promise;
 
     await expect(
       runner.submitAgentMessage("session-strict-busy", {
@@ -7925,16 +7945,19 @@ describe("AgenC delegate background-agent runner", () => {
       }),
     ).rejects.toMatchObject({ code: "TURN_IN_PROGRESS" });
 
-    await expect(
-      runner.submitAgentMessage("session-strict-busy", {
-        sessionId: "session_1",
-        content: "legacy queued turn",
-        originalContent: "legacy queued turn",
-        messageId: "legacy-message",
-        streamId: "legacy-message",
-        acceptedAt: "2026-08-17T00:00:01.000Z",
-      }),
-    ).resolves.toMatchObject({ disposition: "started" });
+    const legacySubmission = runner.submitAgentMessage("session-strict-busy", {
+      sessionId: "session_1",
+      content: "legacy queued turn",
+      originalContent: "legacy queued turn",
+      messageId: "legacy-message",
+      streamId: "legacy-message",
+      acceptedAt: "2026-08-17T00:00:01.000Z",
+    });
+    expect(control.sendInput).not.toHaveBeenCalled();
+    releaseInitialSubmission.resolve();
+    await expect(legacySubmission).resolves.toMatchObject({
+      disposition: "started",
+    });
     expect(control.sendInput).toHaveBeenCalledWith(
       "session-strict-busy",
       "legacy queued turn",
@@ -7974,28 +7997,48 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
-  it("[managed-thread] still rejects opt-in admission while a spawn-submitted initial turn is in pending_init", async () => {
-    const { runner } = makeTopLevelRunner({
+  it("[managed-thread] serializes direct shell behind a spawn-submitted initial turn without consulting thread status", async () => {
+    const initialSubmissionStarted = Promise.withResolvers<void>();
+    const releaseInitialSubmission = Promise.withResolvers<void>();
+    const harness = makeTopLevelRunner({
       conversationId: "session-initial-pending-init",
       threadInitialStatus: { status: "pending_init" } as AgentStatus,
     });
-    await runner.startAgent({
+    const shell = configureSessionShellHarness(harness);
+    harness.stub.thread.submit.mockImplementationOnce(async () => {
+      initialSubmissionStarted.resolve();
+      await releaseInitialSubmission.promise;
+      return "session-initial-pending-init";
+    });
+    await harness.runner.startAgent({
       objective: "initial turn is starting",
       unattendedAllow: [],
       unattendedDeny: [],
     });
-
-    await expect(
-      runner.submitAgentMessage("session-initial-pending-init", {
-        sessionId: "session_1",
-        content: "raced the initial turn",
-        originalContent: "raced the initial turn",
-        messageId: "raced-message",
-        streamId: "raced-message",
-        acceptedAt: "2026-08-20T00:00:00.000Z",
-        ifBusy: "reject",
+    await initialSubmissionStarted.promise;
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
       }),
-    ).rejects.toMatchObject({ code: "TURN_IN_PROGRESS" });
+    );
+
+    const execution = harness.runner.executeAgentShell(
+      "session-initial-pending-init",
+      {
+        sessionId: "session-initial-pending-init",
+        commandId: "shell-after-initial-1",
+        command: "printf serialized",
+      },
+    );
+    expect(shell.bashExecute).not.toHaveBeenCalled();
+    releaseInitialSubmission.resolve();
+    await expect(execution).resolves.toMatchObject({
+      commandId: "shell-after-initial-1",
+      isError: false,
+      stdout: "shell stdout",
+    });
+    expect(shell.bashExecute).toHaveBeenCalledOnce();
   });
 
   it("[managed-thread] reports a persisted crash-tail retry as incomplete", async () => {

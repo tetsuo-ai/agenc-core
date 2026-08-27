@@ -51,24 +51,26 @@ export default async function (session) {
 
   let openedPredictionFromExplorer = false;
   if (/No file selected/u.test(frameText(session))) {
-    session.send("\x18");
-    await sleep(80);
-    session.send("h");
-    await sleep(100);
+    session.send("\x1bh");
+    await waitForFrameText(
+      session,
+      /prediction\.ts/u,
+      "prediction fixture in Explorer",
+      10_000,
+    );
     session.send("\x1b[B");
     session.send("\r");
-    openedPredictionFromExplorer = true;
+    await waitForScreen(session, /embedded\s*Neovim|NORMAL\s*:w/iu, {
+      timeout: 20_000,
+      label: "Editor after prediction Explorer selection",
+    });
+    openedPredictionFromExplorer = await waitForFramePresence(
+      session,
+      /hermetic prediction fixture/u,
+      5_000,
+    );
   }
-  await waitForFrameText(
-    session,
-    /embedded Neovim[^\n]*normal,\s*ready/iu,
-    "Editor prediction provider ready",
-    20_000,
-  );
-  if (
-    !openedPredictionFromExplorer ||
-    !/hermetic prediction fixture/u.test(frameText(session))
-  ) {
+  if (!openedPredictionFromExplorer) {
     session.send(":");
     await sleep(80);
     await session.type("e prediction.ts", { perCharMs: 12 });
@@ -83,6 +85,12 @@ export default async function (session) {
     /hermetic prediction fixture/u,
     "prediction fixture opened in Neovim",
     15_000,
+  );
+  await waitForFrameText(
+    session,
+    /embedded Neovim[^\n]*normal,\s*ready/iu,
+    "Editor prediction provider ready",
+    20_000,
   );
 
   const agencHome = session.runtimeEnv?.AGENC_HOME;

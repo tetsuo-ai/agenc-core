@@ -872,7 +872,6 @@ interface ActiveBackgroundAgent {
    * session: the message that would initialize the thread is the message
    * being refused.
    */
-  readonly initialTurnDeferred: boolean;
   /**
    * Per-agent emission serialization chain. `#emitOrBufferEvent` awaits
    * an async-locked broadcast, so two fire-and-forget emits from a
@@ -1304,7 +1303,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         thread: managedThread,
         status: "running",
         startedAt,
-        initialTurnDeferred: params.deferInitialTurn === true,
         runEpoch: currentRunEpochFromRollout(bootstrap, managedThread.threadId),
         canonicalEventBridgeInstalled: false,
         durableTerminalFinalizerInstalled: false,
@@ -1445,15 +1443,29 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               }
             : {}),
         };
-        void managedThread
-          .submit({
-            type: "user_input",
-            input: preparedFirstInput,
-            submitOptions: firstSubmitOptions,
-          })
-          .catch(() => {
-            /* first-turn submission errors surface via session events */
-          });
+        active.pendingMessageSubmissionCount += 1;
+        const initialSubmission = active.messageSubmissionQueue.then(() =>
+          runWithCurrentRuntimeSession(active.bootstrap.session, () =>
+            managedThread.submit({
+              type: "user_input",
+              input: preparedFirstInput,
+              submitOptions: firstSubmitOptions,
+            }),
+          ),
+        );
+        const trackedInitialSubmission = initialSubmission.finally(() => {
+          active.pendingMessageSubmissionCount = Math.max(
+            0,
+            active.pendingMessageSubmissionCount - 1,
+          );
+        });
+        active.messageSubmissionQueue = trackedInitialSubmission.then(
+          () => {},
+          () => {},
+        );
+        void trackedInitialSubmission.catch(() => {
+          /* first-turn submission errors surface via session events */
+        });
       }
 
       const rolloutIdentity =
@@ -1759,10 +1771,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           thread: managedThread,
           status: "running",
           startedAt,
-          // A restored agent has no initial submission in flight either:
-          // its thread re-initializes on the first post-restore message,
-          // so pending_init must stay sendable after a daemon restart.
-          initialTurnDeferred: true,
           ...(params.restoreAttemptId !== undefined
             ? { restoreAttemptId: params.restoreAttemptId }
             : {}),
@@ -2168,7 +2176,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     active.lastActiveAt = this.#now();
     await this.#drainDispatchChain(active);
 
-    if (!this.#canSuspendIdleAgent(agentId, active, true)) {
+    if (!this.#canSuspendIdleAgent(agentId, active)) {
       await this.stopAgent(agentId, "daemon_shutdown_not_idle");
       return {
         disposition: "cancelled",
@@ -2248,7 +2256,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   #canSuspendIdleAgent(
     agentId: string,
     active: ActiveBackgroundAgent,
-    requireIdleThread: boolean,
   ): boolean {
     if (
       active.ingressClosed !== true ||
@@ -2271,9 +2278,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       active.activeToolCallIds.size !== 0 ||
       this.#pendingToolDecisions.has(agentId)
     ) {
-      return false;
-    }
-    if (requireIdleThread && active.thread.status().status !== "idle") {
       return false;
     }
     try {
@@ -2460,18 +2464,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       };
     }
 
-    const threadStatus = active.thread.status().status;
     if (
       params.ifBusy === "reject" &&
       (active.pendingMessageSubmissionCount > 0 ||
         active.pendingShellExecutionCount > 0 ||
-        hasRuntimeActiveTurn(active.bootstrap.session) ||
-        threadStatus === "running" ||
-        // pending_init is busy only while a spawn-submitted initial turn
-        // is still starting. Deferred spawns and restored agents stay
-        // pending_init until their first accepted message initializes the
-        // thread; rejecting that message would deadlock the session.
-        (threadStatus === "pending_init" && !active.initialTurnDeferred))
+        hasRuntimeActiveTurn(active.bootstrap.session))
     ) {
       throw new AgenCBackgroundAgentMessageError(
         "TURN_IN_PROGRESS",
@@ -2577,20 +2574,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       );
     }
 
-    const hasThreadTurnInFlight = (): boolean => {
-      const threadStatus = active.thread.status().status;
-      return (
-        threadStatus === "running" ||
-        (threadStatus === "pending_init" && !active.initialTurnDeferred)
-      );
-    };
-    const hasTrackedMessageSubmission =
-      active.pendingMessageSubmissionCount > 0 ||
-      active.messageSubmission !== undefined;
-    if (
-      hasRuntimeActiveTurn(active.bootstrap.session) ||
-      (!hasTrackedMessageSubmission && hasThreadTurnInFlight())
-    ) {
+    if (hasRuntimeActiveTurn(active.bootstrap.session)) {
       throw new Error(
         `Cannot run a direct shell command while session ${params.sessionId} has an active or queued model turn`,
       );
@@ -2598,10 +2582,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
 
     active.pendingShellExecutionCount += 1;
     const execution = active.messageSubmissionQueue.then(() => {
-      if (
-        hasRuntimeActiveTurn(active.bootstrap.session) ||
-        hasThreadTurnInFlight()
-      ) {
+      if (hasRuntimeActiveTurn(active.bootstrap.session)) {
         throw new Error(
           `Cannot run a direct shell command while session ${params.sessionId} has an active or queued model turn`,
         );
@@ -4515,7 +4496,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           return;
         }
         if (active.pendingSuspension !== undefined) {
-          if (this.#canSuspendIdleAgent(agentId, active, false)) {
+          if (this.#canSuspendIdleAgent(agentId, active)) {
             try {
               commitDurableRunSuspension(active, agentId);
               return;
@@ -5253,10 +5234,13 @@ function runtimeActiveTurnId(
 }
 
 function isClearInFlight(active: ActiveBackgroundAgent): boolean {
-  if (hasRuntimeActiveTurn(active.bootstrap.session)) return true;
-  if (active.activeToolCallIds.size > 0) return true;
-  const status = active.thread.status();
-  return status.status === "running" || status.status === "pending_init";
+  return (
+    active.pendingMessageSubmissionCount > 0 ||
+    active.pendingShellExecutionCount > 0 ||
+    active.messageSubmission !== undefined ||
+    hasRuntimeActiveTurn(active.bootstrap.session) ||
+    active.activeToolCallIds.size > 0
+  );
 }
 
 function correlateDaemonEvent(
