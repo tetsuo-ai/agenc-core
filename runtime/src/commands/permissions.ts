@@ -76,6 +76,10 @@ import {
   openPermissionsMenu,
   type PermissionsMenuController,
 } from "./permissions-menu.js";
+import {
+  configStoreFromCommandContext,
+  requireCommandConfigStore,
+} from "./config-context.js";
 
 // ---------------------------------------------------------------------------
 // Helpers: locate the permission registry on session.services.
@@ -138,11 +142,14 @@ function daemonPermissionRuleMutationFn(
   return typeof fn === "function" ? fn.bind(ctx.session) : null;
 }
 
-function diskEnvForCtx(ctx: SlashCommandContext): DiskEnv {
+function diskEnvForCtx(
+  ctx: SlashCommandContext,
+  configStore: NonNullable<SlashCommandContext["configStore"]>,
+): DiskEnv {
   return {
     home: ctx.home,
     cwd: ctx.cwd,
-    configStore: ctx.configStore,
+    configStore,
   };
 }
 
@@ -388,6 +395,12 @@ async function addRuleFromCommand(
   if (!parsed.ok) return { kind: "error", message: parsed.error };
   const { behavior, ruleValue, persistTo } = parsed.value;
   const display = serializeRuleValue(ruleValue);
+  const writesPersistedRule =
+    persistTo !== undefined &&
+    !(behavior === "allow" && persistTo !== "userSettings");
+  const persistenceEnv = writesPersistedRule
+    ? diskEnvForCtx(ctx, requireCommandConfigStore(ctx))
+    : undefined;
 
   // The daemon registry is the live enforcement authority. A daemon-backed
   // TUI mutates it first and mirrors only its complete canonical result.
@@ -422,7 +435,7 @@ async function addRuleFromCommand(
         destination: persistTo,
         behavior,
         rules: [ruleValue],
-        env: diskEnvForCtx(ctx),
+        env: persistenceEnv!,
       });
       persistNote = wrote
         ? ` (persisted to ${persistTo})`
@@ -445,6 +458,9 @@ async function removeRuleFromCommand(
   if (!parsed.ok) return { kind: "error", message: parsed.error };
   const { behavior, ruleValue, persistTo } = parsed.value;
   const display = serializeRuleValue(ruleValue);
+  const persistenceEnv = persistTo
+    ? diskEnvForCtx(ctx, requireCommandConfigStore(ctx))
+    : undefined;
 
   const daemonMutate = daemonPermissionRuleMutationFn(ctx);
   if (daemonMutate !== null) {
@@ -476,7 +492,7 @@ async function removeRuleFromCommand(
     const removed = await deletePermissionRule({
       destination: persistTo,
       rule,
-      env: diskEnvForCtx(ctx),
+      env: persistenceEnv!,
     });
     persistNote = removed
       ? ` (deleted from ${persistTo})`
@@ -640,6 +656,7 @@ async function handleAcceptBypassSubcommand(
   registry: PermissionModeRegistry,
   ctx: SlashCommandContext,
 ): Promise<SlashCommandResult> {
+  const configStore = configStoreFromCommandContext(ctx);
   let workspacePath;
   try {
     workspacePath = canonicalizeBypassPermissionsCwd(ctx.cwd);
@@ -650,22 +667,44 @@ async function handleAcceptBypassSubcommand(
     };
   }
   const daemonBacked = daemonPermissionModeFn(ctx) !== null;
-  const bindConsentToLatestContext = (): Promise<boolean> =>
+  const bindConsentToLatestContext = (
+    persistenceStore: NonNullable<SlashCommandContext["configStore"]> | null,
+  ): Promise<boolean> =>
     registry.transact((latest) => {
       const alreadyInSession = (
         latest.bypassPermissionsAcceptedIn ?? []
       ).includes(workspacePath);
+      const authorized = authorizeBypassPermissionsConsent(
+        latest,
+        workspacePath,
+      );
+      if (persistenceStore !== null) {
+        try {
+          recordBypassPermissionsConsent(
+            persistenceStore.stateRepository,
+            workspacePath,
+          );
+        } catch (error) {
+          throw new Error(
+            `Cannot persist bypassPermissions consent: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            { cause: error },
+          );
+        }
+      }
       return {
-        next: alreadyInSession
-          ? null
-          : authorizeBypassPermissionsConsent(latest, workspacePath),
+        next:
+          alreadyInSession && latest.isBypassPermissionsModeAvailable
+            ? null
+            : authorized,
         result: () => alreadyInSession,
       };
     });
 
-  if (ctx.configStore !== undefined) {
+  if (configStore !== null) {
     const snapshot = await loadPermissionRulesSnapshot({
-      configStore: ctx.configStore,
+      configStore,
       cwd: ctx.cwd,
     });
     if (snapshot.bypassPermissionsModeDisabled) {
@@ -677,27 +716,14 @@ async function handleAcceptBypassSubcommand(
   }
 
   if (daemonBacked) {
-    if (ctx.configStore === undefined) {
+    if (configStore === null) {
       return {
         kind: "error",
         message:
           "Cannot accept bypassPermissions for a daemon session without runtime-state persistence",
       };
     }
-    try {
-      recordBypassPermissionsConsent(
-        ctx.configStore.stateRepository,
-        workspacePath,
-      );
-    } catch (error) {
-      return {
-        kind: "error",
-        message: `Cannot persist bypassPermissions consent: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      };
-    }
-    const alreadyInSession = await bindConsentToLatestContext();
+    const alreadyInSession = await bindConsentToLatestContext(configStore);
     return {
       kind: "text",
       text: `bypassPermissions ${
@@ -708,18 +734,18 @@ async function handleAcceptBypassSubcommand(
     };
   }
 
-  const alreadyInSession = await bindConsentToLatestContext();
+  const alreadyInSession = await bindConsentToLatestContext(null);
 
   // Runtime-state update. Best-effort: if persistence fails, we still
   // report success for the session-level update so the operator can
   // proceed with the bypass activation in this session.
   let persistNote = "";
-  if (ctx.configStore === undefined) {
+  if (configStore === null) {
     persistNote = " (persist skipped — runtime-state authority unavailable)";
   } else {
     try {
       recordBypassPermissionsConsent(
-        ctx.configStore.stateRepository,
+        configStore.stateRepository,
         workspacePath,
       );
       persistNote = " (persisted to runtime state)";

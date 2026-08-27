@@ -476,6 +476,47 @@ describe("permissionsCommand — add", () => {
     expect(registry.current().alwaysDenyRules.session).toEqual(["Write"]);
     expect(registry.current().alwaysAskRules.session).toEqual(["FileRead"]);
   });
+
+  it("rejects conflicting ConfigStores before mutating a persisted rule", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-perms-store-conflict-"));
+    try {
+      const sessionHome = join(tmp, "session-home");
+      const contextHome = join(tmp, "context-home");
+      const sessionStore = await configStoreFor(sessionHome);
+      const contextStore = await configStoreFor(contextHome);
+      const registry = new PermissionModeRegistry(
+        createEmptyToolPermissionContext(),
+      );
+      const ownedInitial = registry.current();
+      const session = {
+        services: {
+          permissionModeRegistry: registry,
+          configStore: sessionStore,
+        },
+        emit: vi.fn(),
+        nextInternalSubId: () => "sub-conflict",
+      } as unknown as Session;
+
+      await expect(
+        permissionsCommand.execute(
+          stubCtx({
+            registry,
+            session,
+            configStore: contextStore,
+            argsRaw: "add allow FileRead --persist user",
+          }),
+        ),
+      ).resolves.toMatchObject({
+        kind: "error",
+        message: "Slash command received conflicting ConfigStore authorities",
+      });
+      expect(registry.current()).toBe(ownedInitial);
+      expect(existsSync(join(sessionHome, "config.toml"))).toBe(false);
+      expect(existsSync(join(contextHome, "config.toml"))).toBe(false);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("permissionsCommand — remove", () => {
@@ -979,6 +1020,147 @@ describe("permissionsCommand — bypassPermissions consent gate", () => {
         message: expect.stringContaining("state fsync failed"),
       });
       expect(registry.current().bypassPermissionsAcceptedIn).toBeUndefined();
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("does not persist daemon consent while authority publication is pending", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-bypass-pending-"));
+    const workspace = join(tmp, "workspace");
+    mkdirSync(workspace);
+    const configStore = new ConfigStore({
+      home: tmp,
+      env: { AGENC_HOME: tmp, HOME: tmp },
+      cwd: workspace,
+    });
+    try {
+      const registry = new PermissionModeRegistry(
+        createEmptyToolPermissionContext(),
+      );
+      const pending = registry.beginExternalAuthorityPublication();
+      const session = {
+        services: { permissionModeRegistry: registry, configStore },
+        setDaemonPermissionMode: vi.fn(),
+      } as unknown as Session;
+
+      const result = await permissionsCommand.execute(
+        stubCtx({
+          registry,
+          session,
+          configStore,
+          argsRaw: "accept-bypass",
+          cwd: workspace,
+        }),
+      );
+
+      expect(result).toMatchObject({
+        kind: "error",
+        message: expect.stringContaining("permission authority is unavailable"),
+      });
+      expect(
+        loadBypassPermissionsConsent(configStore.stateRepository, workspace),
+      ).toEqual([]);
+      await pending.publish((current) => ({
+        next: null,
+        result: () => current,
+      }));
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("does not persist daemon consent rejected by the latest policy", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-bypass-policy-"));
+    const workspace = join(tmp, "workspace");
+    mkdirSync(workspace);
+    const configStore = new ConfigStore({
+      home: tmp,
+      env: { AGENC_HOME: tmp, HOME: tmp },
+      cwd: workspace,
+    });
+    try {
+      const registry = new PermissionModeRegistry({
+        ...createEmptyToolPermissionContext(),
+        bypassPermissionsModeDisabledByPolicy: true,
+      });
+      const session = {
+        services: { permissionModeRegistry: registry, configStore },
+        setDaemonPermissionMode: vi.fn(),
+      } as unknown as Session;
+
+      const result = await permissionsCommand.execute(
+        stubCtx({
+          registry,
+          session,
+          configStore,
+          argsRaw: "accept-bypass",
+          cwd: workspace,
+        }),
+      );
+
+      expect(result).toMatchObject({
+        kind: "error",
+        message: expect.stringContaining(
+          "managed policy disables it",
+        ),
+      });
+      expect(
+        loadBypassPermissionsConsent(configStore.stateRepository, workspace),
+      ).toEqual([]);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects conflicting ConfigStores before consent mutation", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-bypass-store-conflict-"));
+    const workspace = join(tmp, "workspace");
+    mkdirSync(workspace);
+    try {
+      const sessionStore = new ConfigStore({
+        home: join(tmp, "session-home"),
+        cwd: workspace,
+        env: {},
+      });
+      const contextStore = new ConfigStore({
+        home: join(tmp, "context-home"),
+        cwd: workspace,
+        env: {},
+      });
+      const registry = new PermissionModeRegistry(
+        createEmptyToolPermissionContext(),
+      );
+      const ownedInitial = registry.current();
+      const session = {
+        services: {
+          permissionModeRegistry: registry,
+          configStore: sessionStore,
+        },
+        setDaemonPermissionMode: vi.fn(),
+      } as unknown as Session;
+
+      await expect(
+        permissionsCommand.execute(
+          stubCtx({
+            registry,
+            session,
+            configStore: contextStore,
+            argsRaw: "accept-bypass",
+            cwd: workspace,
+          }),
+        ),
+      ).resolves.toMatchObject({
+        kind: "error",
+        message: "Slash command received conflicting ConfigStore authorities",
+      });
+      expect(registry.current()).toBe(ownedInitial);
+      expect(
+        loadBypassPermissionsConsent(sessionStore.stateRepository, workspace),
+      ).toEqual([]);
+      expect(
+        loadBypassPermissionsConsent(contextStore.stateRepository, workspace),
+      ).toEqual([]);
     } finally {
       rmSync(tmp, { recursive: true, force: true });
     }
