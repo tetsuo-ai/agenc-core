@@ -190,7 +190,7 @@ describe("attachments orchestrator — live producer registry", () => {
         String(message?.content).match(/<\/workspace_data>/g),
       ).toHaveLength(1);
     } finally {
-      clearSessionReadState(sessionId);
+      clearSessionReadState(sessionId, tmpdir());
       rmSync(cwd, { recursive: true, force: true });
     }
   });
@@ -599,7 +599,7 @@ describe("attachments orchestrator — live producer registry", () => {
       );
     } finally {
       _resetAttachmentTrackingStateForTest(sessionKey);
-      clearSessionReadState(sessionId);
+      clearSessionReadState(sessionId, tmpdir());
       rmSync(root, { recursive: true, force: true });
     }
   });

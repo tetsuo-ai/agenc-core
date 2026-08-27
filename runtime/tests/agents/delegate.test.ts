@@ -107,6 +107,7 @@ function makeRealDelegateHarness(label: string) {
     cwd,
     sessionId: parentConversationId,
     agencVersion: "0.6.0",
+    sessionTempRoot: tmpdir(),
     autoStartScheduler: false,
   });
   rolloutStore.open({

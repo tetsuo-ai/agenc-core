@@ -30,7 +30,10 @@ import {
   type SandboxExecutionBrokerLike,
 } from "../../sandbox/execution-broker.js";
 import { errorMessage } from "../../utils/errors.js";
-import { subprocessEnv } from "../../utils/subprocessEnv.js";
+import {
+  subprocessEnv,
+  withChildTempAuthority,
+} from "../../utils/subprocessEnv.js";
 import { terminateProcessTreeAndWait } from "../../utils/supervisedProcess.js";
 
 export interface LSPClient {
@@ -67,16 +70,20 @@ const CONNECTION_CLOSE_EXIT_GRACE_MS = 20;
 
 function mergedEnv(
   baseEnv: NodeJS.ProcessEnv | undefined,
+  sessionTempRoot: string,
   extra?: Readonly<Record<string, string>>,
 ): Record<string, string> {
   const merged: NodeJS.ProcessEnv = {
     ...subprocessEnv(baseEnv),
     ...(extra ?? {}),
   };
-  return Object.fromEntries(
-    Object.entries(merged).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
+  return withChildTempAuthority(
+    Object.fromEntries(
+      Object.entries(merged).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
     ),
+    sessionTempRoot,
   );
 }
 
@@ -312,7 +319,11 @@ export function createLSPClient(
             program: command,
             args,
             cwd: resolve(runOptions?.cwd ?? sandboxExecutionBroker.cwd),
-            env: mergedEnv(options.baseEnv, runOptions?.env),
+            env: mergedEnv(
+              options.baseEnv,
+              sandboxExecutionBroker.sessionTempRoot,
+              runOptions?.env,
+            ),
           },
           { lifecycleParticipant: "lsp" },
         );
@@ -321,7 +332,10 @@ export function createLSPClient(
           (spawnCommand) =>
             spawn(spawnCommand.program, [...spawnCommand.args], {
               stdio: ["pipe", "pipe", "pipe"],
-              env: spawnCommand.env,
+              env: withChildTempAuthority(
+                spawnCommand.env,
+                sandboxExecutionBroker.sessionTempRoot,
+              ),
               cwd: spawnCommand.cwd,
               windowsHide: true,
               detached: process.platform !== "win32",

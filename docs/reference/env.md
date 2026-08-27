@@ -283,7 +283,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_F*
 
-`AGENC_FILESYSTEM_HISTORY_ROOT`, `AGENC_FILE_READ_MAX_OUTPUT_TOKENS`.
+`AGENC_FILE_READ_MAX_OUTPUT_TOKENS`.
 
 ### AGENC_G*
 

@@ -23,7 +23,15 @@ import {
   readFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
-import { basename, dirname, join, relative, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  normalize,
+  relative,
+  resolve,
+} from "node:path";
 import {
   AtomicArtifactOperationUnsupportedError,
   type AtomicArtifactObservation,
@@ -160,6 +168,8 @@ import {
 } from "./canonical-rollout-scanner.js";
 
 export interface RolloutStoreOpts extends SessionStoreOpts {
+  /** Session-owned temporary root captured at request ingress. */
+  readonly sessionTempRoot: string;
   /** Flush interval in ms. Default 100. */
   readonly flushIntervalMs?: number;
   /** Whether to auto-start the background flush scheduler. Default true. */
@@ -731,6 +741,7 @@ function* responseItemsForToolPairValidation(
 
 export class RolloutStore {
   readonly store: SessionStore;
+  readonly sessionTempRoot: string;
   private readonly scheduler: SessionStoreFlushScheduler;
   private readonly startScheduler: boolean;
   private readonly resumed: boolean;
@@ -762,6 +773,10 @@ export class RolloutStore {
   private openedEpoch: number | undefined;
 
   constructor(opts: RolloutStoreOpts) {
+    if (!isAbsolute(opts.sessionTempRoot)) {
+      throw new TypeError("RolloutStore sessionTempRoot must be absolute");
+    }
+    this.sessionTempRoot = normalize(opts.sessionTempRoot);
     this.store = new SessionStore(opts);
     this.existingRolloutAtConstruction = existsSync(this.store.rolloutPath);
     this.scheduler = new SessionStoreFlushScheduler(
@@ -1000,6 +1015,7 @@ export class RolloutStore {
     this.store.upgradeCanonicalSchemaHeader(ROLLOUT_SCHEMA_VERSION);
     this.store.syncCanonicalTail();
     const scan = scanCanonicalRollout(this.rolloutPath, {
+      sessionTempRoot: this.sessionTempRoot,
       expectedRunId: this.sessionId,
       expectedEpoch: this.runEpoch,
       maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
@@ -1219,6 +1235,7 @@ export class RolloutStore {
       source.source_binding,
     );
     const scan = scanCanonicalRollout(this.rolloutPath, {
+      sessionTempRoot: this.sessionTempRoot,
       expectedRunId: source.session_id,
       expectedEpoch: this.runEpoch,
       maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
@@ -1513,6 +1530,7 @@ export class RolloutStore {
   private assertCompactionCommitFresh(intent: CompactionIntentV1): void {
     this.store.syncCanonicalTail();
     const scan = scanCanonicalRollout(this.rolloutPath, {
+      sessionTempRoot: this.sessionTempRoot,
       expectedRunId: intent.source.session_id,
       expectedEpoch: this.runEpoch,
       maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
@@ -1701,6 +1719,7 @@ export class RolloutStore {
     }
     this.store.syncCanonicalTail();
     const scan = scanCanonicalRollout(this.rolloutPath, {
+      sessionTempRoot: this.sessionTempRoot,
       expectedRunId: pin.sessionId,
       expectedEpoch: this.runEpoch,
       maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
@@ -2098,6 +2117,7 @@ export class RolloutStore {
     }
     this.store.syncCanonicalTail();
     const scan = scanCanonicalRollout(this.rolloutPath, {
+      sessionTempRoot: this.sessionTempRoot,
       expectedRunId: pin.sessionId,
       expectedEpoch: this.runEpoch,
       maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
@@ -2291,6 +2311,7 @@ export class RolloutStore {
     }
     this.store.syncCanonicalTail();
     const scan = scanCanonicalRollout(this.rolloutPath, {
+      sessionTempRoot: this.sessionTempRoot,
       expectedRunId: pin.sessionId,
       expectedEpoch: this.runEpoch,
       maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
@@ -2426,6 +2447,7 @@ export class RolloutStore {
     try {
       this.store.syncCanonicalTail();
       const scan = scanCanonicalRollout(this.rolloutPath, {
+        sessionTempRoot: this.sessionTempRoot,
         expectedRunId: pin.sessionId,
         expectedEpoch: this.runEpoch,
         maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,
@@ -2448,6 +2470,7 @@ export class RolloutStore {
       this.sessionId,
     );
     const scan = scanCanonicalRollout(this.rolloutPath, {
+      sessionTempRoot: this.sessionTempRoot,
       expectedRunId: this.sessionId,
       ...(this.reopenTerminalRun ? {} : { expectedEpoch: this.runEpoch }),
       maximumScanMilliseconds: MAX_COMPACTION_RECONCILIATION_MS_PER_START,

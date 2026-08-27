@@ -49,6 +49,7 @@ export interface UnifiedExecRuntimeSandbox {
   readonly permissionProfile: PermissionProfile;
   readonly additionalPermissions?: AdditionalPermissionProfile;
   readonly sandboxPolicyCwd: string;
+  readonly sessionTempRoot: string;
   readonly preference?: SandboxablePreference;
   readonly enforceManagedNetwork?: boolean;
   readonly network?: NetworkProxyConfig;
@@ -65,6 +66,8 @@ export interface UnifiedExecManagerOptions {
   readonly cwd?: string;
   readonly env?: Record<string, string>;
   readonly baseEnv?: Readonly<Record<string, string | undefined>>;
+  /** Immutable temp-root authority captured when this manager is created. */
+  readonly sessionTempRoot?: string;
   readonly shellPath?: string;
   readonly commandWrapperArgv?: readonly string[];
   /** Optional cap applied only when a request explicitly supplies timeoutMs. */

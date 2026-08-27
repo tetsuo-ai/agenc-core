@@ -61,6 +61,33 @@ afterEach(() => {
 });
 
 describe("SandboxExecutionBroker", () => {
+  it("captures separate session temp roots and preserves them across forks", () => {
+    const workspaceA = tempRoot("agenc-sandbox-broker-temp-a-");
+    const workspaceB = tempRoot("agenc-sandbox-broker-temp-b-");
+    const sessionTempA = join(workspaceA, "session-temp");
+    const sessionTempB = join(workspaceB, "session-temp");
+    const brokerA = new SandboxExecutionBroker({
+      mode: "workspace_write",
+      cwd: workspaceA,
+      sessionTempRoot: sessionTempA,
+      probe: () => readyStatus("workspace_write"),
+    });
+    const brokerB = new SandboxExecutionBroker({
+      mode: "workspace_write",
+      cwd: workspaceB,
+      sessionTempRoot: sessionTempB,
+      probe: () => readyStatus("workspace_write"),
+    });
+
+    expect(brokerA.sessionTempRoot).toBe(sessionTempA);
+    expect(brokerB.sessionTempRoot).toBe(sessionTempB);
+    const fork = brokerA.forkForCwd(join(workspaceA, "child"));
+    expect(fork.sessionTempRoot).toBe(sessionTempA);
+    expect(fork.runtimeSandbox("child_agent")?.sessionTempRoot).toBe(
+      sessionTempA,
+    );
+  });
+
   it("turns Ubuntu's AppArmor bubblewrap denial into the exact profile fix", () => {
     const diagnostic =
       "bwrap: loopback: Failed RTM_NEWADDR: Operation not permitted";

@@ -138,6 +138,10 @@ import {
 } from "./mcp-startup.js";
 import type { PendingWorktreeState } from "./pending-worktree.js";
 import {
+  retainBundledSkillExtractionRoot,
+  type BundledSkillExtractionLease,
+} from "../skills/bundled-extraction-registry.js";
+import {
   assertAgentRoleWorkspaceMatches,
   createAgentRoleWorkspace,
   normalizeAgentRoleWorkspace,
@@ -2658,6 +2662,9 @@ export class Session {
   private mcpDisposeState: "idle" | "pending" | "fulfilled" | "rejected" =
     "idle";
   private lifecycleState: "open" | "shutting_down" | "closed" = "open";
+  private readonly bundledSkillExtractionLease:
+    | BundledSkillExtractionLease
+    | null;
 
   /** Serialize submit calls so the session keeps a single active turn. */
   private submitQueue: Promise<void> = Promise.resolve();
@@ -2828,6 +2835,11 @@ export class Session {
         getAttachmentTrackingState(this).needsAutoModeExitAttachment = true;
       }
     });
+    const sessionTempRoot = opts.services.runtimeOptions?.sessionTempRoot;
+    this.bundledSkillExtractionLease =
+      sessionTempRoot === undefined
+        ? null
+        : retainBundledSkillExtractionRoot(sessionTempRoot);
   }
 
   // ───────────────────────────────────────────────────────────
@@ -5821,6 +5833,25 @@ export class Session {
       } catch {
         /* best-effort cache release; no session state may survive shutdown */
       }
+    }
+    try {
+      const { clearSessionReadCache, clearSessionReadState } =
+        await import("../tools/system/filesystem.js");
+      const sessionTempRoot = this.services.runtimeOptions?.sessionTempRoot;
+      if (sessionTempRoot !== undefined) {
+        clearSessionReadState(this.conversationId, sessionTempRoot);
+      } else {
+        // Test doubles may omit runtime options.
+        // Never guess a process-global temp root during session teardown.
+        clearSessionReadCache(this.conversationId);
+      }
+    } catch {
+      /* best-effort cache release; shutdown must retain its durable result */
+    }
+    try {
+      await this.bundledSkillExtractionLease?.release();
+    } catch {
+      /* best-effort extraction cleanup; shutdown must retain its durable result */
     }
     this.agentStatus.next({ status: "shutdown", endedAtMs: monotonicMs() });
     this.agentStatus.complete();

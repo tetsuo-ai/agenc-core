@@ -112,6 +112,11 @@ describe("exec_command tool", () => {
       approvalResolved: true,
       rawArgs: "{}",
       invocation: {
+        session: {
+          services: {
+            runtimeOptions: { sessionTempRoot: root },
+          },
+        },
         payload: { kind: "function", arguments: "{}" },
         turn: {
           subId: "turn-network-proxy",
@@ -135,6 +140,7 @@ describe("exec_command tool", () => {
 
     expect(runtimeSandbox?.networkPolicyDecider).toBe(policyDecider);
     expect(runtimeSandbox?.blockedRequestObserver).toBe(blockedRequestObserver);
+    expect(runtimeSandbox?.sessionTempRoot).toBe(root);
   });
 
   test("blocks shell redirection writes into workspace files", async () => {

@@ -327,7 +327,7 @@ describe("UserPromptSubmit prompt ingress", () => {
       getSessionReadSnapshot(session.conversationId, noteCanonicalPath)
         ?.rawContent,
     ).toBe("file mention body\n");
-    clearSessionReadState(session.conversationId);
+    clearSessionReadState(session.conversationId, tmpdir());
   });
 
   it("truncates oversized live submit hook context before the turn", async () => {

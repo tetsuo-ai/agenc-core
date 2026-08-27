@@ -374,8 +374,8 @@ describe("MagicDocs", () => {
       "stale body",
     );
 
-    clearSessionReadState(parentId);
-    clearSessionReadState(childId);
+    clearSessionReadState(parentId, tmpdir());
+    clearSessionReadState(childId, tmpdir());
   });
 
   it("skips updates when the last assistant turn still has tool calls", async () => {

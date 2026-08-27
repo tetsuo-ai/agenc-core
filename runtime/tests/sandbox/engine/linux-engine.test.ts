@@ -16,6 +16,9 @@ import {
 import {
   procVersionIndicatesWsl1,
 } from "./bwrap.js";
+import { resolveAgentRuntimeOptions } from "../../../src/session/runtime-options.js";
+
+const TEST_SESSION_TEMP_ROOT = "/tmp/agenc-linux-engine-session-root";
 
 describe("Linux sandbox engine", () => {
   it("serializes permission profiles for the Linux launcher handoff", () => {
@@ -32,6 +35,7 @@ describe("Linux sandbox engine", () => {
       profile,
       "/repo",
       true,
+      "/session-temp",
       false,
     );
 
@@ -44,6 +48,8 @@ describe("Linux sandbox engine", () => {
       JSON.stringify(profile),
     ]);
     expect(args).toContain("--allow-network-for-proxy");
+    expect(args).toContain("--session-temp-root");
+    expect(args).toContain("/session-temp");
     expect(args.slice(args.indexOf("--"))).toEqual(["--", "/bin/echo", "ok"]);
   });
 
@@ -104,6 +110,7 @@ describe("Linux sandbox engine", () => {
         sandbox: "windows_restricted_token",
         enforceManagedNetwork: false,
         sandboxPolicyCwd: "C:\\repo",
+        sessionTempRoot: "C:\\Temp",
         windowsSandboxLevel: "low",
         windowsSandboxPrivateDesktop: false,
         platform: "win32",
@@ -146,6 +153,7 @@ describe("Linux sandbox engine", () => {
       enforceManagedNetwork: true,
       network: { env: { HTTP_PROXY: "http://127.0.0.1:8080" } },
       sandboxPolicyCwd: "/repo",
+      sessionTempRoot: "/session-temp",
       agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
       windowsSandboxLevel: "disabled",
       windowsSandboxPrivateDesktop: false,
@@ -203,6 +211,7 @@ describe("Linux sandbox engine", () => {
       sandbox: "linux_seccomp",
       enforceManagedNetwork: false,
       sandboxPolicyCwd: "/repo",
+      sessionTempRoot: "/session-temp",
       agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
       windowsSandboxLevel: "disabled",
       windowsSandboxPrivateDesktop: false,
@@ -252,6 +261,7 @@ describe("Linux sandbox engine", () => {
         sandbox: "linux_seccomp",
         enforceManagedNetwork: false,
         sandboxPolicyCwd: "/repo",
+        sessionTempRoot: "/session-temp",
         agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
         windowsSandboxLevel: "disabled",
         windowsSandboxPrivateDesktop: false,
@@ -279,6 +289,7 @@ describe("Linux sandbox engine", () => {
       sandbox: "linux_seccomp",
       enforceManagedNetwork: false,
       sandboxPolicyCwd: "/repo",
+      sessionTempRoot: "/session-temp",
       agencLinuxSandboxExe: "/opt/agenc-linux-sandbox",
       windowsSandboxLevel: "disabled",
       windowsSandboxPrivateDesktop: false,
@@ -297,7 +308,7 @@ describe("Linux sandbox engine", () => {
     expect(procVersionIndicatesWsl1("Linux version 5.15.0 WSL1")).toBe(true);
   });
 
-  it("does not mark a relative TMPDIR as writable in fallback compatibility projection", () => {
+  it("uses canonical AGENC_TMPDIR authority for compatibility projection and ignores TMPDIR", () => {
     const previous = process.env["TMPDIR"];
     const permissions: PermissionProfile = {
       fileSystem: restrictedFileSystemPolicy([
@@ -305,30 +316,38 @@ describe("Linux sandbox engine", () => {
       ]),
       network: "disabled",
     };
+    const canonical = resolveAgentRuntimeOptions({
+      AGENC_TMPDIR: "/tmp/agenc-compat-session",
+      TMPDIR: "/tmp/generic-must-not-win",
+    }).sessionTempRoot;
+    if (canonical === undefined) {
+      throw new Error("expected canonical session temp root");
+    }
     const runtimePolicy = restrictedFileSystemPolicy([
       { path: { kind: "special", value: { kind: "project_roots" } }, access: "write" },
-      { path: { kind: "special", value: { kind: "tmpdir" } }, access: "write" },
+      { path: { kind: "path", path: canonical }, access: "write" },
     ]);
     try {
-      process.env["TMPDIR"] = "relative-tmp";
+      process.env["TMPDIR"] = "/tmp/generic-must-not-win";
       expect(
         compatibilitySandboxPolicyForPermissionProfile(
           permissions,
           runtimePolicy,
           "disabled",
           "/repo",
-        ),
-      ).toMatchObject({ exclude_tmpdir_env_var: true });
-
-      process.env["TMPDIR"] = "/tmp/agenc-compat";
-      expect(
-        compatibilitySandboxPolicyForPermissionProfile(
-          permissions,
-          runtimePolicy,
-          "disabled",
-          "/repo",
+          canonical,
         ),
       ).toMatchObject({ exclude_tmpdir_env_var: false });
+
+      expect(
+        compatibilitySandboxPolicyForPermissionProfile(
+          permissions,
+          runtimePolicy,
+          "disabled",
+          "/repo",
+          "/tmp/agenc-other-session",
+        ),
+      ).toMatchObject({ exclude_tmpdir_env_var: true });
     } finally {
       if (previous === undefined) {
         delete process.env["TMPDIR"];
@@ -366,6 +385,7 @@ describe("Linux sandbox engine", () => {
       profile,
       tmpdir,
       false,
+      tmpdir,
       false,
     );
     const child = spawn(helper, args, {
@@ -392,6 +412,7 @@ describe("Linux sandbox engine", () => {
         unrestrictedFileSystemPolicy(),
         "enabled",
         "/repo",
+        TEST_SESSION_TEMP_ROOT,
       ),
     ).toEqual({ kind: "danger_full_access" });
     expect(
@@ -405,6 +426,7 @@ describe("Linux sandbox engine", () => {
         restrictedFileSystemPolicy([]),
         "disabled",
         "/repo",
+        TEST_SESSION_TEMP_ROOT,
       ),
     ).toMatchObject({ kind: "read_only" });
     expect(
@@ -418,6 +440,7 @@ describe("Linux sandbox engine", () => {
         restrictedFileSystemPolicy([]),
         "restricted",
         "/repo",
+        TEST_SESSION_TEMP_ROOT,
       ),
     ).toMatchObject({ kind: "workspace_write" });
     const narrowedFileSystem = restrictedFileSystemPolicy([
@@ -432,6 +455,7 @@ describe("Linux sandbox engine", () => {
       narrowedFileSystem,
       "disabled",
       "/repo",
+      TEST_SESSION_TEMP_ROOT,
     );
     expect(narrowed).toMatchObject({ kind: "workspace_write" });
     if (narrowed.kind !== "workspace_write") {

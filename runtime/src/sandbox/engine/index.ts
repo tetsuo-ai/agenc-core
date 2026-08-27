@@ -12,7 +12,6 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { resolveSessionTempRoot } from "../../session/runtime-options.js";
 
 export const AGENC_LINUX_SANDBOX_ARG0 = "agenc-linux-sandbox";
 export const PROTECTED_METADATA_PATH_NAMES = [".git", ".agenc", ".agents"] as const;
@@ -123,6 +122,7 @@ export interface SandboxTransformRequest {
   readonly networkPolicyDecider?: NetworkPolicyDecider;
   readonly blockedRequestObserver?: BlockedRequestObserver;
   readonly sandboxPolicyCwd: string;
+  readonly sessionTempRoot: string;
   readonly agencLinuxSandboxExe?: string;
   readonly windowsSandboxLevel: WindowsSandboxLevel;
   readonly windowsSandboxPrivateDesktop: boolean;
@@ -273,6 +273,7 @@ export function pathStartsWith(candidate: string, root: string): boolean {
 export function resolvePermissionPath(
   target: FileSystemPath,
   cwd: string,
+  sessionTempRoot: string,
 ): string | null {
   switch (target.kind) {
     case "path":
@@ -280,13 +281,14 @@ export function resolvePermissionPath(
     case "glob":
       return null;
     case "special":
-      return resolveSpecialPath(target.value, cwd);
+      return resolveSpecialPath(target.value, cwd, sessionTempRoot);
   }
 }
 
 export function resolveSpecialPath(
   target: FileSystemSpecialPath,
   cwd: string,
+  sessionTempRoot: string,
 ): string | null {
   switch (target.kind) {
     case "root":
@@ -296,7 +298,7 @@ export function resolveSpecialPath(
         ? resolveProjectRootSubpath(target.subpath, cwd)
         : normalizePathForPolicy(cwd);
     case "tmpdir": {
-      return normalizePathForPolicy(resolveSessionTempRoot());
+      return normalizePathForPolicy(sessionTempRoot);
     }
     case "slash_tmp": {
       try {
@@ -316,13 +318,16 @@ export function resolveSpecialPath(
 export function getWritableRootsWithCwd(
   policy: FileSystemSandboxPolicy,
   cwd: string,
+  sessionTempRoot: string,
 ): WritableRoot[] {
   if (policy.kind !== "restricted") return [];
   if (hasFullDiskWriteAccess(policy)) return [];
-  const resolvedEntries = resolvedEntriesWithCwd(policy, cwd);
+  const resolvedEntries = resolvedEntriesWithCwd(policy, cwd, sessionTempRoot);
   const writableEntries = resolvedEntries
     .filter((entry) => canWriteAccess(entry.access))
-    .filter((entry) => canWritePathWithCwd(policy, entry.path, cwd))
+    .filter((entry) =>
+      canWritePathWithCwd(policy, entry.path, cwd, sessionTempRoot)
+    )
     .map((entry) => entry.path);
   const writableRoots = dedupPaths(writableEntries, true);
 
@@ -333,7 +338,9 @@ export function getWritableRootsWithCwd(
     );
     const explicitCarveouts = resolvedEntries
       .filter((entry) => !canWriteAccess(entry.access))
-      .filter((entry) => !canWritePathWithCwd(policy, entry.path, cwd))
+      .filter((entry) =>
+        !canWritePathWithCwd(policy, entry.path, cwd, sessionTempRoot)
+      )
       .map((entry) =>
         readOnlyCarveoutForWritableRoot(
           entry.path,
@@ -358,6 +365,7 @@ export function getWritableRootsWithCwd(
         policy,
         root,
         cwd,
+        sessionTempRoot,
         rawWritableRoots,
       ),
     };
@@ -367,13 +375,16 @@ export function getWritableRootsWithCwd(
 export function getReadableRootsWithCwd(
   policy: FileSystemSandboxPolicy,
   cwd: string,
+  sessionTempRoot: string,
 ): string[] {
   if (hasFullDiskReadAccess(policy)) return [];
   if (policy.kind === "external_sandbox") return [];
   return dedupPaths(
-    resolvedEntriesWithCwd(policy, cwd)
+    resolvedEntriesWithCwd(policy, cwd, sessionTempRoot)
       .filter((entry) => canReadAccess(entry.access))
-      .filter((entry) => canReadPathWithCwd(policy, entry.path, cwd))
+      .filter((entry) =>
+        canReadPathWithCwd(policy, entry.path, cwd, sessionTempRoot)
+      )
       .map((entry) => entry.path),
     true,
   );
@@ -382,13 +393,16 @@ export function getReadableRootsWithCwd(
 export function getUnreadableRootsWithCwd(
   policy: FileSystemSandboxPolicy,
   cwd: string,
+  sessionTempRoot: string,
 ): string[] {
   if (policy.kind !== "restricted") return [];
   const filesystemRoot = path.parse(normalizePathForPolicy(cwd)).root;
   return dedupPaths(
-    resolvedEntriesWithCwd(policy, cwd)
+    resolvedEntriesWithCwd(policy, cwd, sessionTempRoot)
       .filter((entry) => entry.access === "none")
-      .filter((entry) => !canReadPathWithCwd(policy, entry.path, cwd))
+      .filter((entry) =>
+        !canReadPathWithCwd(policy, entry.path, cwd, sessionTempRoot)
+      )
       .filter((entry) => entry.path !== filesystemRoot)
       .map((entry) => entry.path),
     true,
@@ -414,11 +428,12 @@ export function resolveAccessWithCwd(
   policy: FileSystemSandboxPolicy,
   target: string,
   cwd: string,
+  sessionTempRoot: string,
 ): FileSystemAccessMode {
   if (policy.kind === "unrestricted") return "write";
   if (policy.kind === "external_sandbox") return "write";
   const normalized = resolvePathAgainstBase(target, cwd);
-  return resolvedEntriesWithCwd(policy, cwd)
+  return resolvedEntriesWithCwd(policy, cwd, sessionTempRoot)
     .filter((entry) => pathStartsWith(normalized, entry.path))
     .sort((left, right) => resolvedEntryPrecedence(right) - resolvedEntryPrecedence(left))[0]
     ?.access ?? "none";
@@ -428,18 +443,26 @@ export function canReadPathWithCwd(
   policy: FileSystemSandboxPolicy,
   target: string,
   cwd: string,
+  sessionTempRoot: string,
 ): boolean {
-  return canReadAccess(resolveAccessWithCwd(policy, target, cwd));
+  return canReadAccess(
+    resolveAccessWithCwd(policy, target, cwd, sessionTempRoot),
+  );
 }
 
 export function canWritePathWithCwd(
   policy: FileSystemSandboxPolicy,
   target: string,
   cwd: string,
+  sessionTempRoot: string,
 ): boolean {
-  if (!canWriteAccess(resolveAccessWithCwd(policy, target, cwd))) return false;
+  if (
+    !canWriteAccess(
+      resolveAccessWithCwd(policy, target, cwd, sessionTempRoot),
+    )
+  ) return false;
   if (hasFullDiskWriteAccess(policy)) return true;
-  return !isMetadataWriteDenied(policy, target, cwd);
+  return !isMetadataWriteDenied(policy, target, cwd, sessionTempRoot);
 }
 
 export function hasFullDiskWriteAccess(policy: FileSystemSandboxPolicy): boolean {
@@ -499,12 +522,13 @@ interface ResolvedFileSystemEntry {
 function resolvedEntriesWithCwd(
   policy: FileSystemSandboxPolicy,
   cwd: string,
+  sessionTempRoot: string,
 ): ResolvedFileSystemEntry[] {
   if (policy.kind !== "restricted") return [];
   return policy.entries
     .filter((entry) => entry.path.kind !== "glob")
     .map((entry) => ({
-      path: resolvePermissionPath(entry.path, cwd),
+      path: resolvePermissionPath(entry.path, cwd, sessionTempRoot),
       access: entry.access,
     }))
     .filter(
@@ -624,16 +648,23 @@ function isMetadataWriteDenied(
   policy: FileSystemSandboxPolicy,
   target: string,
   cwd: string,
+  sessionTempRoot: string,
 ): boolean {
   if (policy.kind !== "restricted") return false;
   const normalizedTarget = resolvePathAgainstBase(target, cwd);
-  const protectedPath = metadataChildOfWritableRoot(policy, normalizedTarget, cwd);
+  const protectedPath = metadataChildOfWritableRoot(
+    policy,
+    normalizedTarget,
+    cwd,
+    sessionTempRoot,
+  );
   if (protectedPath === null) return false;
   return !hasExplicitWriteEntryForMetadataPath(
     policy,
     protectedPath,
     normalizedTarget,
     cwd,
+    sessionTempRoot,
   );
 }
 
@@ -641,8 +672,9 @@ function metadataChildOfWritableRoot(
   policy: FileSystemSandboxPolicy,
   target: string,
   cwd: string,
+  sessionTempRoot: string,
 ): string | null {
-  for (const entry of resolvedEntriesWithCwd(policy, cwd)) {
+  for (const entry of resolvedEntriesWithCwd(policy, cwd, sessionTempRoot)) {
     if (!canWriteAccess(entry.access)) continue;
     const relative = path.relative(entry.path, target);
     if (relative.length === 0 || relative.startsWith("..") || path.isAbsolute(relative)) {
@@ -666,8 +698,9 @@ function hasExplicitWriteEntryForMetadataPath(
   protectedMetadataPath: string,
   target: string,
   cwd: string,
+  sessionTempRoot: string,
 ): boolean {
-  return resolvedEntriesWithCwd(policy, cwd).some(
+  return resolvedEntriesWithCwd(policy, cwd, sessionTempRoot).some(
     (entry) =>
       canWriteAccess(entry.access) &&
       pathStartsWith(target, entry.path) &&
@@ -679,6 +712,7 @@ function protectedMetadataNamesForWritableRoot(
   policy: FileSystemSandboxPolicy,
   root: string,
   cwd: string,
+  sessionTempRoot: string,
   rawWritableRoots: readonly string[] = [],
 ): string[] {
   return PROTECTED_METADATA_PATH_NAMES.filter(
@@ -688,7 +722,13 @@ function protectedMetadataNamesForWritableRoot(
         ...rawWritableRoots.map((rawRoot) => path.join(rawRoot, name)),
       ];
       return metadataPaths.every(
-        (metadataPath) => !canWritePathWithCwd(policy, metadataPath, cwd),
+        (metadataPath) =>
+          !canWritePathWithCwd(
+            policy,
+            metadataPath,
+            cwd,
+            sessionTempRoot,
+          ),
       );
     },
   );

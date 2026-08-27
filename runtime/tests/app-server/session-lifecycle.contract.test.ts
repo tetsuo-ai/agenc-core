@@ -608,6 +608,7 @@ function openRollout(cwd: string, sessionId: string): RolloutStore {
     cwd,
     sessionId,
     agencVersion: "0.2.0",
+    sessionTempRoot: tmpdir(),
   });
   rollout.open({
     sessionId,

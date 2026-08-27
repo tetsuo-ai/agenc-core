@@ -1,7 +1,8 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import Database from "better-sqlite3";
 
 import { COMPACTION_SOURCE_DIGEST_DOMAIN } from "../../src/services/compact/transaction-types.js";
 import { scanCanonicalRollout } from "../../src/session/canonical-rollout-scanner.js";
@@ -42,6 +43,7 @@ describe("canonical rollout compaction scanner", () => {
     }
 
     const scan = scanCanonicalRollout(rolloutPath, {
+      sessionTempRoot: join(temporaryHome, "scan-temp"),
       expectedRunId: "zero-c2-large",
       expectedEpoch: 1,
       maximumScanMilliseconds: 30_000,
@@ -68,6 +70,7 @@ describe("canonical rollout compaction scanner", () => {
     }
     let tick = 0;
     expect(() => scanCanonicalRollout(rolloutPath, {
+      sessionTempRoot: join(temporaryHome, "scan-temp"),
       expectedRunId: "scan-deadline",
       expectedEpoch: 1,
       maximumScanMilliseconds: 5,
@@ -95,6 +98,7 @@ describe("canonical rollout compaction scanner", () => {
     }
 
     const scan = scanCanonicalRollout(rolloutPath, {
+      sessionTempRoot: join(temporaryHome, "scan-temp"),
       expectedRunId: "large-active-history",
       expectedEpoch: 1,
       maximumScanMilliseconds: 30_000,
@@ -106,6 +110,95 @@ describe("canonical rollout compaction scanner", () => {
     expect(scan.sourceRecords.size).toBe(5_000);
     expect(scan.activeHistory?.messages.at(-1)?.content).toContain("active-4999");
   });
+
+  it("isolates scan registries under each captured session temp root", async () => {
+    const store = createStore("session-temp-authority");
+    const rolloutPath = store.rolloutPath;
+    try {
+      store.appendRollout({
+        type: "response_item",
+        payload: { role: "user", content: "temp authority" },
+      });
+      store.flushDurable();
+    } finally {
+      store.close();
+    }
+
+    const rootA = join(temporaryHome, "scan-temp-a");
+    const rootB = join(temporaryHome, "scan-temp-b");
+    mkdirSync(rootA, { recursive: true });
+    mkdirSync(rootB, { recursive: true });
+
+    const scanAt = async (sessionTempRoot: string): Promise<Set<string>> => {
+      const observedEntries = new Set<string>();
+      await Promise.resolve();
+      scanCanonicalRollout(rolloutPath, {
+        sessionTempRoot,
+        expectedRunId: "session-temp-authority",
+        expectedEpoch: 1,
+        maximumScanMilliseconds: 30_000,
+        nowMilliseconds: () => {
+          for (const entry of readdirSync(sessionTempRoot)) {
+            observedEntries.add(entry);
+          }
+          return Date.now();
+        },
+        compactionSourceDigestDomain: COMPACTION_SOURCE_DIGEST_DOMAIN,
+      });
+      return observedEntries;
+    };
+
+    const [entriesA, entriesB] = await Promise.all([
+      scanAt(rootA),
+      scanAt(rootB),
+    ]);
+
+    for (const entries of [entriesA, entriesB]) {
+      expect([...entries]).toEqual(
+        expect.arrayContaining([
+          expect.stringMatching(/^agenc-recovery-identities-/u),
+          expect.stringMatching(/^agenc-c2-payloads-/u),
+        ]),
+      );
+    }
+    expect(readdirSync(rootA)).toEqual([]);
+    expect(readdirSync(rootB)).toEqual([]);
+  });
+
+  it("removes a partial payload registry when SQLite initialization fails", () => {
+    const store = createStore("payload-init-failure");
+    const rolloutPath = store.rolloutPath;
+    store.close();
+    const sessionTempRoot = join(temporaryHome, "payload-init-temp");
+    mkdirSync(sessionTempRoot, { recursive: true });
+    const originalPragma = Database.prototype.pragma;
+    const pragmaSpy = vi
+      .spyOn(Database.prototype, "pragma")
+      .mockImplementation(function (
+        this: Database.Database,
+        source: string,
+        options?: Database.PragmaOptions,
+      ) {
+        if (this.name.endsWith("payloads.sqlite")) {
+          throw new Error("injected payload registry initialization failure");
+        }
+        return originalPragma.call(this, source, options);
+      });
+    try {
+      expect(() =>
+        scanCanonicalRollout(rolloutPath, {
+          sessionTempRoot,
+          expectedRunId: "payload-init-failure",
+          expectedEpoch: 1,
+          maximumScanMilliseconds: 30_000,
+          compactionSourceDigestDomain: COMPACTION_SOURCE_DIGEST_DOMAIN,
+        }),
+      ).toThrow("injected payload registry initialization failure");
+    } finally {
+      pragmaSpy.mockRestore();
+    }
+    expect(readdirSync(sessionTempRoot)).toEqual([]);
+  });
 });
 
 function createStore(sessionId: string): RolloutStore {
@@ -113,6 +206,7 @@ function createStore(sessionId: string): RolloutStore {
     cwd: temporaryWorkspace,
     sessionId,
     agencVersion: "0.13.0",
+    sessionTempRoot: join(temporaryHome, "rollout-temp"),
     autoStartScheduler: false,
   });
   store.open({

@@ -4,6 +4,7 @@ import {
   isSecretEnvKey,
   scrubEnvForChildProcess,
 } from "../../src/unified-exec/scrub-env.js";
+import { withChildTempAuthority } from "../../src/utils/subprocessEnv.js";
 
 describe("scrubEnvForChildProcess (SEC-01)", () => {
   it("classifies provider keys as secrets", () => {
@@ -54,5 +55,36 @@ describe("scrubEnvForChildProcess (SEC-01)", () => {
       if (prev === undefined) delete process.env.XAI_API_KEY;
       else process.env.XAI_API_KEY = prev;
     }
+  });
+
+  it("replaces every temp-directory alias with one captured child authority", () => {
+    const env = withChildTempAuthority(
+      {
+        AGENC_TMPDIR: "/ambient/agenc",
+        TMPDIR: "/ambient/posix",
+        TEMP: "C:\\ambient\\temp",
+        TMP: "C:\\ambient\\tmp",
+        Temp: "mixed-case-must-not-survive",
+        tmpdir: "lowercase-must-not-survive",
+        PATH: "/usr/bin",
+      },
+      "/captured/session-temp",
+    );
+
+    expect(env).toMatchObject({
+      AGENC_TMPDIR: "/captured/session-temp",
+      TMPDIR: "/captured/session-temp",
+      TEMP: "/captured/session-temp",
+      TMP: "/captured/session-temp",
+      PATH: "/usr/bin",
+    });
+    expect(env).not.toHaveProperty("Temp");
+    expect(env).not.toHaveProperty("tmpdir");
+  });
+
+  it("rejects a relative child temp authority", () => {
+    expect(() => withChildTempAuthority({}, "relative/temp")).toThrow(
+      "child process temp root must be a non-empty absolute path",
+    );
   });
 });

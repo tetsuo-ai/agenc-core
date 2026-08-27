@@ -1146,6 +1146,7 @@ describe("runAgent", () => {
       cwd: workspace,
       sessionId: session.conversationId,
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
     });
     parentRollout.open({
       sessionId: session.conversationId,
@@ -1230,6 +1231,7 @@ describe("runAgent", () => {
       cwd: workspace,
       sessionId: session.conversationId,
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
     });
     parentRollout.open({
       sessionId: session.conversationId,
@@ -2930,6 +2932,7 @@ describe("runAgent", () => {
       cwd: childCwd,
       sessionId: childSession.conversationId,
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
     });
     childRolloutStore.open({
       sessionId: childSession.conversationId,
@@ -3923,6 +3926,7 @@ describe("runAgent", () => {
       cwd,
       sessionId: session.conversationId,
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
     });
     parentRolloutStore.open({
       sessionId: session.conversationId,
@@ -4065,6 +4069,7 @@ describe("runAgent", () => {
       cwd,
       sessionId: session.conversationId,
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
     });
     parentRolloutStore.open({
       sessionId: session.conversationId,
@@ -4155,6 +4160,7 @@ describe("runAgent", () => {
       cwd,
       sessionId: session.conversationId,
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
     });
     parentRolloutStore.open({
       sessionId: session.conversationId,
@@ -4291,6 +4297,7 @@ describe("runAgent", () => {
       cwd,
       sessionId: session.conversationId,
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
     });
     parentRolloutStore.open({
       sessionId: session.conversationId,
@@ -4479,6 +4486,7 @@ describe("runAgent", () => {
         cwd,
         sessionId: session.conversationId,
         agencVersion: "0.2.0",
+        sessionTempRoot: tmpdir(),
       });
       parentRolloutStore.open({
         sessionId: session.conversationId,
@@ -4555,6 +4563,7 @@ describe("runAgent", () => {
       cwd,
       sessionId: session.conversationId,
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
     });
     parentRolloutStore.open({
       sessionId: session.conversationId,

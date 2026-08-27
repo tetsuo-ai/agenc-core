@@ -1,10 +1,13 @@
 import type { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import axios from 'axios'
 import { execa } from 'execa'
+import { createWriteStream } from 'node:fs'
+import { chmod, mkdtemp, rm } from 'node:fs/promises'
+import { homedir } from 'node:os'
+import { pipeline } from 'node:stream/promises'
 import capitalize from 'lodash-es/capitalize.js'
 import memoize from 'lodash-es/memoize.js'
 import { createConnection } from 'net'
-import * as os from 'os'
 import { basename, join, sep as pathSeparator, resolve } from 'path'
 import { getIsScrollDraining, getOriginalCwd } from '../bootstrap/state.js'
 import { callIdeRpc } from '../services/mcp/client.js'
@@ -44,6 +47,7 @@ import {
 import { sleep } from './sleep.js'
 import { jsonParse } from './slowOperations.js'
 import { getExecutionAuthoritySettings } from './settings/settings.js'
+import { resolveSessionTempRoot } from '../session/runtime-options.js'
 
 function isProcessRunning(pid: number): boolean {
   try {
@@ -1390,7 +1394,7 @@ async function installFromArtifactory(command: string): Promise<string> {
   }
   const npmrcAuthPrefix = `//${artifactoryBaseUrl.replace(/^https?:\/\//, '')}/api/npm/npm-all/:_authToken=`
   // Read auth token from ~/.npmrc
-  const npmrcPath = join(os.homedir(), '.npmrc')
+  const npmrcPath = join(homedir(), '.npmrc')
   let authToken: string | null = null
   const fs = getFsImplementation()
 
@@ -1425,19 +1429,23 @@ async function installFromArtifactory(command: string): Promise<string> {
       },
     })
 
-    const version = versionResponse.data.trim()
+    const version = String(versionResponse.data).trim()
     if (!version) {
       throw new Error('No version found in artifactory response')
+    }
+    if (!/^[0-9A-Za-z][0-9A-Za-z._+-]{0,127}$/u.test(version)) {
+      throw new Error('Invalid extension version in artifactory response')
     }
 
     // Download the .vsix file from artifactory
     const vsixUrl = `${artifactoryBaseUrl}/armorcode-agenc-code-internal/agenc-vscode-releases/${version}/agenc-code.vsix`
-    const tempVsixPath = join(
-      os.tmpdir(),
-      `agenc-code-${version}-${Date.now()}.vsix`,
+    const stagingRoot = await mkdtemp(
+      join(resolveSessionTempRoot(), 'agenc-code-vsix-'),
     )
 
     try {
+      await chmod(stagingRoot, 0o700)
+      const tempVsixPath = join(stagingRoot, 'agenc-code.vsix')
       const vsixResponse = await axios.get(vsixUrl, {
         headers: {
           Authorization: `Bearer ${authToken}`,
@@ -1445,13 +1453,12 @@ async function installFromArtifactory(command: string): Promise<string> {
         responseType: 'stream',
       })
 
-      // Write the downloaded file to disk
-      const writeStream = getFsImplementation().createWriteStream(tempVsixPath)
-      await new Promise<void>((resolve, reject) => {
-        vsixResponse.data.pipe(writeStream)
-        writeStream.on('finish', resolve)
-        writeStream.on('error', reject)
-      })
+      // Write executable extension content only inside the private staging
+      // directory and refuse to replace a pre-existing path.
+      await pipeline(
+        vsixResponse.data,
+        createWriteStream(tempVsixPath, { flags: 'wx', mode: 0o600 }),
+      )
 
       // Install the .vsix file
       // Add delay to prevent code command crashes
@@ -1471,12 +1478,7 @@ async function installFromArtifactory(command: string): Promise<string> {
 
       return version
     } finally {
-      // Clean up the short-lived file
-      try {
-        await fs.unlink(tempVsixPath)
-      } catch {
-        // Ignore cleanup errors
-      }
+      await rm(stagingRoot, { recursive: true, force: true }).catch(() => {})
     }
   } catch (error) {
     if (axios.isAxiosError(error)) {

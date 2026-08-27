@@ -305,6 +305,7 @@ describe('in-process teammate canonical rollout ownership', () => {
         sessionId: teammateStore.sessionId,
         agencVersion: '0.13.0',
         agencHome: configStore.homeContext.path,
+        sessionTempRoot: harness.store.sessionTempRoot,
         resume: true,
         autoStartScheduler: false,
       })

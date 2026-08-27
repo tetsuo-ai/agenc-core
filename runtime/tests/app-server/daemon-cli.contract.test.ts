@@ -28,6 +28,7 @@ import { openStateDatabases } from "../state/sqlite-driver.js";
 import { StateRunDurabilityRepository } from "../state/run-durability.js";
 import { ROLLOUT_SCHEMA_VERSION } from "../session/event-log.js";
 import { RolloutStore } from "../session/rollout-store.js";
+import type { AgentRuntimeOptions } from "../session/runtime-options.js";
 import type { PendingProviderSwitch } from "../session/session.js";
 import { createAgenCJsonLineDaemonRequestClient } from "./agent-cli.js";
 import { AGENC_DAEMON_PROTOCOL_VERSION } from "./protocol/index.js";
@@ -113,11 +114,12 @@ function createRecoveredSession(
   threadId: string,
   permissionModeRegistry: PermissionModeRegistry,
   options: {
+    readonly runtimeOptions: AgentRuntimeOptions;
     readonly rolloutStore?: RolloutStore;
     readonly threadStatus?: "running" | "idle";
     readonly enableDurableClose?: boolean;
     readonly cwd?: string;
-  } = {},
+  },
 ) {
   const workspaceRoot = options.cwd ?? process.cwd();
   const configHome = join(
@@ -151,6 +153,7 @@ function createRecoveredSession(
   };
   const sandboxExecutionBroker = new SandboxExecutionBroker({
     cwd: workspaceRoot,
+    sessionTempRoot: options.runtimeOptions.sessionTempRoot,
     ...sandboxExecutionBrokerAuthorityFromSessionAuthority(
       configuredExecutionAuthority,
       workspaceRoot,
@@ -304,6 +307,7 @@ function createRecoveredSession(
     services: {
       admissionRequired: false,
       configStore,
+      runtimeOptions: options.runtimeOptions,
       sandboxExecutionBroker,
       conversationThreadManager: {
         hasThread: (id: string) => id === threadId,
@@ -380,6 +384,7 @@ function openRecoveredRolloutStore(
     cwd: options.cwd,
     sessionId: options.conversationId,
     agencVersion: "0.17.0",
+    sessionTempRoot: options.runtimeOptions.sessionTempRoot,
     agencHome,
     resume: true,
     resumeRolloutPath: options.resumeRolloutPath,
@@ -4549,6 +4554,7 @@ snapshot_max_bytes = 64
           conversationId,
           new PermissionModeRegistry(createEmptyToolPermissionContext()),
           {
+            runtimeOptions: options.runtimeOptions,
             rolloutStore,
             enableDurableClose: true,
             ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
@@ -4988,6 +4994,7 @@ snapshot_max_bytes = 64
             options.conversationId,
             permissionModeRegistry,
             {
+              runtimeOptions: options.runtimeOptions,
               rolloutStore,
               threadStatus: "idle",
               enableDurableClose: true,
@@ -5180,6 +5187,7 @@ snapshot_max_bytes = 64
             conversationId,
             permissionModeRegistry,
             {
+              runtimeOptions: options.runtimeOptions,
               rolloutStore,
               enableDurableClose: true,
               ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
@@ -5315,6 +5323,7 @@ snapshot_max_bytes = 64
             conversationId,
             permissionModeRegistry,
             {
+              runtimeOptions: options.runtimeOptions,
               rolloutStore,
               enableDurableClose: true,
               ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
@@ -5440,6 +5449,7 @@ snapshot_max_bytes = 64
             conversationId,
             permissionModeRegistry,
             {
+              runtimeOptions: options.runtimeOptions,
               rolloutStore,
               enableDurableClose: true,
               ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
@@ -5550,6 +5560,7 @@ snapshot_max_bytes = 64
             conversationId,
             new PermissionModeRegistry(createEmptyToolPermissionContext()),
             {
+              runtimeOptions: options.runtimeOptions,
               rolloutStore,
               enableDurableClose: true,
               ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),
@@ -5762,6 +5773,7 @@ snapshot_max_bytes = 64
             conversationId,
             permissionModeRegistry,
             {
+              runtimeOptions: options.runtimeOptions,
               rolloutStore,
               enableDurableClose: true,
               ...(options.cwd !== undefined ? { cwd: options.cwd } : {}),

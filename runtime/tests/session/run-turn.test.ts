@@ -174,7 +174,7 @@ function createTestConfigStore(base?: AgenCConfig): ConfigStore {
 afterEach(() => {
   sessionMemoryPostSamplingMockState.calls.length = 0;
   sessionMemoryPostSamplingMockState.error = null;
-  clearSessionReadState("conv-test");
+  clearSessionReadState("conv-test", tmpdir());
   resetCommandQueueForTesting();
   for (const home of generatedConfigHomes) {
     rmSync(home, { recursive: true, force: true });

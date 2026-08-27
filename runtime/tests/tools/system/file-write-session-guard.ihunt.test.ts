@@ -34,7 +34,7 @@ describe("Write tool — session-guard hardening (no session id)", () => {
   });
 
   afterEach(async () => {
-    clearSessionReadState(sessionId);
+    clearSessionReadState(sessionId, tmpdir());
     if (root) await rm(root, { recursive: true, force: true });
     root = "";
   });

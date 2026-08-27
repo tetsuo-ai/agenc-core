@@ -49,7 +49,6 @@ import {
   type SandboxPolicy as CompatibilitySandboxPolicy,
 } from "../../permissions/sandbox.js";
 import { sanitizeSandboxLauncherEnvironment } from "../launcher-environment.js";
-import { resolveSessionTempRoot } from "../../session/runtime-options.js";
 
 export class SandboxManager {
   selectInitial(options: {
@@ -114,6 +113,7 @@ export class SandboxManager {
             fileSystemSandboxPolicy: fileSystem,
             networkSandboxPolicy: network,
             sandboxPolicyCwd: request.sandboxPolicyCwd,
+            sessionTempRoot: request.sessionTempRoot,
             enforceManagedNetwork: request.enforceManagedNetwork,
             network: request.network,
             extraAllowUnixSockets: [],
@@ -173,6 +173,7 @@ export class SandboxManager {
             fileSystem,
             nodeExecutable,
             request.sandboxPolicyCwd,
+            request.sessionTempRoot,
           )
         ) {
           throw new SandboxTransformError(
@@ -185,6 +186,7 @@ export class SandboxManager {
             fileSystem,
             request.agencLinuxSandboxExe,
             request.sandboxPolicyCwd,
+            request.sessionTempRoot,
           )
         ) {
           throw new SandboxTransformError(
@@ -201,6 +203,7 @@ export class SandboxManager {
             linuxPermissionProfile,
             request.sandboxPolicyCwd,
             allowProxyNetwork,
+            request.sessionTempRoot,
             inheritedReadOnlyCwd,
           ),
         ];
@@ -239,14 +242,25 @@ export function compatibilitySandboxPolicyForPermissionProfile(
   fileSystemPolicy: FileSystemSandboxPolicy,
   networkPolicy: NetworkSandboxPolicy,
   cwd: string,
+  sessionTempRoot: string,
 ): CompatibilitySandboxPolicy {
-  return permissionProfileToCompatibilitySandboxPolicy(permissions, cwd) ??
-    compatibilityWorkspaceWritePolicy(fileSystemPolicy, networkPolicy, cwd);
+  return permissionProfileToCompatibilitySandboxPolicy(
+    permissions,
+    cwd,
+    sessionTempRoot,
+  ) ??
+    compatibilityWorkspaceWritePolicy(
+      fileSystemPolicy,
+      networkPolicy,
+      cwd,
+      sessionTempRoot,
+    );
 }
 
 function permissionProfileToCompatibilitySandboxPolicy(
   permissions: PermissionProfile,
   cwd: string,
+  sessionTempRoot: string,
 ): CompatibilitySandboxPolicy | null {
   const { fileSystem, network } = permissionProfileToRuntimePermissions(permissions);
   const networkAccess = networkPolicyEnabled(network)
@@ -274,7 +288,11 @@ function permissionProfileToCompatibilitySandboxPolicy(
   const hasNarrowingEntries = fileSystem.entries.some((entry) => entry.access !== "write");
   if (hasWriteEntries && hasNarrowingEntries) return null;
 
-  const writableProjection = projectRestrictedWrites(fileSystem.entries, cwd);
+  const writableProjection = projectRestrictedWrites(
+    fileSystem.entries,
+    cwd,
+    sessionTempRoot,
+  );
   if (writableProjection === null) return null;
   if (writableProjection.workspaceRootWritable) {
     return newWorkspaceWritePolicy({
@@ -302,6 +320,7 @@ function permissionProfileToCompatibilitySandboxPolicy(
 function projectRestrictedWrites(
   entries: readonly FileSystemSandboxEntry[],
   cwd: string,
+  sessionTempRoot: string,
 ): {
   readonly workspaceRootWritable: boolean;
   readonly writableRoots: readonly string[];
@@ -338,7 +357,7 @@ function projectRestrictedWrites(
           continue;
       }
     }
-    const resolved = resolvePermissionPath(entry.path, cwd);
+    const resolved = resolvePermissionPath(entry.path, cwd, sessionTempRoot);
     if (resolved === null) continue;
     if (path.resolve(resolved) === normalizedCwd) {
       workspaceRootWritable = true;
@@ -359,14 +378,20 @@ function compatibilityWorkspaceWritePolicy(
   fileSystemPolicy: FileSystemSandboxPolicy,
   networkPolicy: NetworkSandboxPolicy,
   cwd: string,
+  sessionTempRoot: string,
 ): CompatibilitySandboxPolicy {
-  const writableRoots = getWritableRootsWithCwd(fileSystemPolicy, cwd);
-  const tmpdir = resolveSessionTempRoot();
+  const writableRoots = getWritableRootsWithCwd(
+    fileSystemPolicy,
+    cwd,
+    sessionTempRoot,
+  );
+  const tmpdir = sessionTempRoot;
   const tmpdirWritable =
     path.isAbsolute(tmpdir) &&
-    canWritePathWithCwd(fileSystemPolicy, tmpdir, cwd);
+    canWritePathWithCwd(fileSystemPolicy, tmpdir, cwd, sessionTempRoot);
   const slashTmpWritable =
-    path.sep === "/" && canWritePathWithCwd(fileSystemPolicy, "/tmp", cwd);
+    path.sep === "/" &&
+    canWritePathWithCwd(fileSystemPolicy, "/tmp", cwd, sessionTempRoot);
 
   return newWorkspaceWritePolicy({
     writable_roots: writableRoots.map((root) => ({

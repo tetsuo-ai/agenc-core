@@ -38,7 +38,10 @@ import {
   asSessionId,
   type SessionId,
 } from '../types/ids.js'
-import type { AttributionSnapshotMessage } from '../types/logs.js'
+import type {
+  AttributionSnapshotMessage,
+  SpeculationAcceptMessage,
+} from '../types/logs.js'
 import {
   type ContentReplacementEntry,
   type ContextCollapseCommitEntry,
@@ -1697,6 +1700,13 @@ export function adoptResumedSessionFile(): void {
   const project = getProject()
   project.sessionFile = getTranscriptPath()
   project.reAppendSessionMetadata(true)
+}
+
+/** Queue speculation telemetry in the canonical current-session transcript. */
+export async function recordSpeculationAccept(
+  entry: SpeculationAcceptMessage,
+): Promise<void> {
+  await getProject().appendEntry(entry)
 }
 
 /**

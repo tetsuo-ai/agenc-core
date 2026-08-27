@@ -74,7 +74,7 @@ describe("Edit tool", () => {
     if (root) await rm(root, { recursive: true, force: true });
     root = "";
     workspaceMutationCoordinators.clearForTests();
-    clearSessionReadState(SESSION_ID);
+    clearSessionReadState(SESSION_ID, tmpdir());
     clearAllPlanSlugs();
   });
 

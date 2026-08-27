@@ -13,6 +13,7 @@ import type { Session } from "../../src/session/session.js";
 import {
   resolveAgentRuntimeOptions,
   resolveSessionTempRoot,
+  runWithAgentRuntimeOptions,
 } from "../../src/session/runtime-options.js";
 import { getAgenCHomeDir } from "../../src/utils/envUtils.js";
 import { resolveSecureStorageHome } from "../../src/utils/secureStorage/home.js";
@@ -135,6 +136,39 @@ describe("session-bound home authority", () => {
 
     expect(rootA).toBe(join("/tmp", "agenc-session-temp-a"));
     expect(rootB).toBe(join("/tmp", "agenc-session-temp-b"));
+  });
+
+  test("uses an explicit startup scope before an ambiguous session fallback", async () => {
+    setCurrentRuntimeSession(sessionAt(join("/tmp", "agenc-fallback-a")));
+    setCurrentRuntimeSession(sessionAt(join("/tmp", "agenc-fallback-b")));
+    const scopedRoot = join("/tmp", "agenc-scoped-startup-temp");
+    const options = resolveAgentRuntimeOptions(
+      {},
+      { sessionTempRoot: scopedRoot },
+    );
+
+    await expect(
+      runWithAgentRuntimeOptions(options, async () => {
+        await Promise.resolve();
+        return resolveSessionTempRoot();
+      }),
+    ).resolves.toBe(scopedRoot);
+  });
+
+  test("keeps a turn-bound session ahead of an outer startup scope", () => {
+    const startupRoot = join("/tmp", "agenc-outer-startup-temp");
+    const sessionRoot = join("/tmp", "agenc-inner-session-temp");
+    const session = sessionAt(join("/tmp", "agenc-session-home"), sessionRoot);
+    const options = resolveAgentRuntimeOptions(
+      {},
+      { sessionTempRoot: startupRoot },
+    );
+
+    expect(
+      runWithAgentRuntimeOptions(options, () =>
+        runWithCurrentRuntimeSession(session, resolveSessionTempRoot),
+      ),
+    ).toBe(sessionRoot);
   });
 
   test("isolates remote attribution metadata across concurrent daemon sessions", async () => {

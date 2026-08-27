@@ -165,12 +165,18 @@ class FakeStdioTransport {
   readonly stderr = new EventEmitter()
   readonly command: string
   readonly args: string[]
+  readonly env: Record<string, string>
   closed = false
   pid?: number
 
-  constructor(options: { command: string; args?: string[] }) {
+  constructor(options: {
+    command: string
+    args?: string[]
+    env?: Record<string, string>
+  }) {
 	    this.command = options.command
 	    this.args = options.args ?? []
+	    this.env = options.env ?? {}
 	    if (options.command === 'pid-server') {
 	      this.pid = 4242
 	    }
@@ -499,6 +505,7 @@ test('connectToServer quotes stdio argv for the session command wrapper', async 
       stdinDataMode: false,
       remoteMode: false,
       allowUntrustedHooks: false,
+      sessionTempRoot: '/tmp/agenc-mcp-wrapper-temp',
       commandWrapperArgv: ['bash', '-lc'],
     },
   })
@@ -520,6 +527,76 @@ test('connectToServer quotes stdio argv for the session command wrapper', async 
   if (result.type === 'connected') {
     await result.cleanup()
   }
+})
+
+test('connectToServer isolates stdio temp authority in env and cache identity', async () => {
+  vi.resetModules()
+  vi.doMock('@modelcontextprotocol/sdk/client/index.js', () => ({
+    Client: FakeClient,
+  }))
+  vi.doMock('@modelcontextprotocol/sdk/client/stdio.js', () => ({
+    StdioClientTransport: FakeStdioTransport,
+  }))
+
+  const { connectToServer } = await import('./client.js')
+  ;(globalThis as typeof globalThis & { MACRO?: { VERSION: string } }).MACRO ??=
+    { VERSION: 'test' }
+  const config = {
+    type: 'stdio',
+    command: 'demo-server',
+    args: [],
+    env: {
+      AGENC_TMPDIR: '/declared/agenc',
+      TMPDIR: '/declared/posix',
+      TEMP: 'C:\\declared\\temp',
+      TMP: 'C:\\declared\\tmp',
+    },
+    scope: 'local',
+  } as const
+  const environment = Object.freeze({
+    PATH: '/usr/bin',
+    AGENC_TMPDIR: '/ambient/agenc',
+    TMPDIR: '/ambient/posix',
+    TEMP: 'C:\\ambient\\temp',
+    TMP: 'C:\\ambient\\tmp',
+  })
+  const runtimeOptions = (sessionTempRoot: string) => ({
+    simpleMode: false,
+    stdinDataMode: false,
+    remoteMode: false,
+    allowUntrustedHooks: false,
+    sessionTempRoot,
+  })
+
+  const first = await connectToServer('temp-isolated', config, undefined, {
+    environment,
+    runtimeOptions: runtimeOptions('/tmp/agenc-mcp-session-a'),
+  })
+  const second = await connectToServer('temp-isolated', config, undefined, {
+    environment,
+    runtimeOptions: runtimeOptions('/tmp/agenc-mcp-session-b'),
+  })
+
+  assert.equal(first.type, 'connected')
+  assert.equal(second.type, 'connected')
+  assert.equal(fakeStdioTransports.length, 2)
+  assert.deepEqual(fakeStdioTransports[0]?.env, {
+    PATH: '/usr/bin',
+    AGENC_TMPDIR: '/tmp/agenc-mcp-session-a',
+    TMPDIR: '/tmp/agenc-mcp-session-a',
+    TEMP: '/tmp/agenc-mcp-session-a',
+    TMP: '/tmp/agenc-mcp-session-a',
+  })
+  assert.deepEqual(fakeStdioTransports[1]?.env, {
+    PATH: '/usr/bin',
+    AGENC_TMPDIR: '/tmp/agenc-mcp-session-b',
+    TMPDIR: '/tmp/agenc-mcp-session-b',
+    TEMP: '/tmp/agenc-mcp-session-b',
+    TMP: '/tmp/agenc-mcp-session-b',
+  })
+
+  if (first.type === 'connected') await first.cleanup()
+  if (second.type === 'connected') await second.cleanup()
 })
 
 test('connectToServer logs successful stdio startup stderr before cleanup', async () => {

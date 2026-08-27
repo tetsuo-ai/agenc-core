@@ -27,7 +27,6 @@ import { TaskOutput } from "./task/TaskOutput.js";
 export type { ExecResult } from "./ShellCommand.js";
 
 import { onCwdChangedForHooks } from "./hooks/cwdChangedHooks.js";
-import { getAgenCTempDirName } from "./permissions/filesystem.js";
 import { getPlatform } from "./platform.js";
 import { SandboxManager } from "./sandbox/sandbox-runtime.js";
 import { invalidateSessionEnvCache } from "./sessionEnvironment.js";
@@ -62,6 +61,7 @@ import {
   requireCurrentRuntimeSession,
 } from "../session/current-session.js";
 import {
+  getSessionTempNamespaceName,
   resolveSessionTempRoot,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
@@ -246,7 +246,7 @@ export async function exec(
 
   // Sandbox temp directory - use per-user directory name to prevent multi-user permission conflicts
   const tempRoot = resolveSessionTempRoot();
-  const sandboxTmpDir = posixJoin(tempRoot, getAgenCTempDirName());
+  const sandboxTmpDir = posixJoin(tempRoot, getSessionTempNamespaceName());
 
   const preparedCommand = await provider.prepareExecCommand(command, {
     id,

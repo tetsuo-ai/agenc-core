@@ -50,6 +50,7 @@ export interface PreferredBubblewrapLauncherOptions {
 export interface SpawnBubblewrapOptions extends SpawnOptions {
   readonly seccompMode?: NetworkSeccompMode | null;
   readonly inheritedCwdFd?: number;
+  readonly sessionTempRoot: string;
 }
 
 export function preferredBubblewrapLauncher(
@@ -151,17 +152,18 @@ function systemBubblewrapHelp(
 export function spawnBubblewrap(
   launcher: BubblewrapLauncher,
   args: readonly string[],
-  options: SpawnBubblewrapOptions = {},
+  options: SpawnBubblewrapOptions,
 ): { readonly child: ChildProcess; readonly cleanup: () => void } {
   const {
     inheritedCwdFd,
     seccompMode,
+    sessionTempRoot,
     ...spawnOptions
   } = options;
   const seccompFile =
     seccompMode === undefined || seccompMode === null
       ? null
-      : openNetworkSeccompProgramFile(seccompMode);
+      : openNetworkSeccompProgramFile(seccompMode, sessionTempRoot);
   const stdio = stdioWithBoundaryFds(
     spawnOptions.stdio,
     seccompFile,

@@ -8,8 +8,7 @@
  */
 
 import { randomUUID } from 'crypto'
-import { tmpdir } from 'os'
-import { join, resolve } from 'path'
+import { resolve } from 'path'
 import { tokenizeCliOptionRegion } from '../../bin/cli-option-region.js'
 import type { LLMProvider } from '../../llm/types.js'
 import { isDangerousCommand } from '../../permissions/bash.js'
@@ -95,6 +94,8 @@ export type SpeculationState =
       isPipelined: boolean
       speculationEnabled?: boolean
       cwd: string
+      /** Exact private overlay created when this speculation started. */
+      overlayPath: string
       contextRef: { current: REPLHookContext }
       pipelinedSuggestion?: {
         text: string
@@ -194,7 +195,6 @@ export type PromptSuggestionRuntimeOptions = {
 const INTERRUPT_MESSAGE_TEXT = '[Request interrupted by user]'
 const INTERRUPT_MESSAGE_FOR_TOOL_USE_TEXT =
   '[Request interrupted by user for tool use]'
-
 export const INTERRUPT_MESSAGE = INTERRUPT_MESSAGE_TEXT
 export const INTERRUPT_MESSAGE_FOR_TOOL_USE =
   INTERRUPT_MESSAGE_FOR_TOOL_USE_TEXT
@@ -391,14 +391,6 @@ export function extractReadFilesFromMessages(
   }
 
   return extracted
-}
-
-export function getPromptSuggestionTempDir(): string {
-  return join(tmpdir(), 'agenc')
-}
-
-export function getTranscriptPath(): string {
-  return join(getPromptSuggestionTempDir(), 'transcript.jsonl')
 }
 
 export function jsonStringify(value: unknown): string {

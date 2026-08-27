@@ -143,6 +143,7 @@ function createRunTurnHarness(
     cwd,
     sessionId: SESSION_ID,
     agencVersion: "0.13.0",
+    sessionTempRoot: tmpdir(),
     autoStartScheduler: false,
   });
   store.open({

@@ -88,6 +88,7 @@ async function runLinuxSandboxOptions(
           cwd: options.commandCwd,
           env: activatedProxy.env,
           seccompMode: "proxy-routed",
+          sessionTempRoot: options.sessionTempRoot,
           preferredLauncher: deps.preferredLauncher,
         });
       }
@@ -126,7 +127,7 @@ async function runLinuxSandboxOptions(
     : runtimePermissions.fileSystem;
   const network = runtimePermissions.network;
   const preparedProxy = options.allowNetworkForProxy
-    ? await prepareHostProxyRoutes(env)
+    ? await prepareHostProxyRoutes(env, options.sessionTempRoot)
     : null;
   const selfCommand = deps.selfCommand ?? defaultSelfCommand();
   const innerCommand = createInnerLauncherCommand(
@@ -161,6 +162,7 @@ async function runLinuxSandboxOptions(
       {
         mountProc: options.mountProc,
         networkMode,
+        sessionTempRoot: options.sessionTempRoot,
         ...(bwrapSeccompMode !== null ? { seccompFd: SECCOMP_STDIN_FD } : {}),
         extraReadOnlyBindRoots,
         extraWritableBindRoots,
@@ -210,6 +212,7 @@ async function runLinuxSandboxOptions(
         commandCwd: options.commandCwd,
         inheritedCwdFd,
         networkMode,
+        sessionTempRoot: options.sessionTempRoot,
       })
     ) {
       bwrapArgs = createBwrapCommandArgs(
@@ -220,6 +223,7 @@ async function runLinuxSandboxOptions(
         {
           mountProc: false,
           networkMode,
+          sessionTempRoot: options.sessionTempRoot,
           ...(bwrapSeccompMode !== null ? { seccompFd: SECCOMP_STDIN_FD } : {}),
           extraReadOnlyBindRoots,
           extraWritableBindRoots,
@@ -242,6 +246,7 @@ async function runLinuxSandboxOptions(
       stdio: "inherit",
       ...(inheritedCwdFd === undefined ? {} : { inheritedCwdFd }),
       ...(bwrapSeccompMode !== null ? { seccompMode: bwrapSeccompMode } : {}),
+      sessionTempRoot: options.sessionTempRoot,
     });
     let protectedCreateViolation = false;
     try {
@@ -282,6 +287,7 @@ async function runUnderLandlockFallback(input: {
   const plan = planLandlockConfinement({
     fileSystem: input.fileSystem,
     sandboxPolicyCwd: input.options.sandboxPolicyCwd,
+    sessionTempRoot: input.options.sessionTempRoot,
     allowNetworkForProxy: input.options.allowNetworkForProxy,
     inheritedCwd: input.options.inheritedCwd,
     extraReadOnlyBindRoots: input.extraReadOnlyBindRoots,
@@ -299,7 +305,10 @@ async function runUnderLandlockFallback(input: {
   const program =
     input.seccompMode === null
       ? null
-      : openNetworkSeccompProgramFile(input.seccompMode);
+      : openNetworkSeccompProgramFile(
+          input.seccompMode,
+          input.options.sessionTempRoot,
+        );
   try {
     const args = [
       ...landlockLaunchArgs({
@@ -350,6 +359,8 @@ function createInnerLauncherCommand(
     options.commandCwd,
     "--permission-profile",
     JSON.stringify(options.permissionProfile),
+    "--session-temp-root",
+    options.sessionTempRoot,
     ...(options.mountProc ? [] : ["--no-proc"]),
     ...(options.allowNetworkForProxy ? ["--allow-network-for-proxy"] : []),
     ...(proxyRouteSpec === null ? [] : ["--proxy-route-spec", proxyRouteSpec]),
@@ -486,6 +497,7 @@ async function runCommandWithInnerSeccomp(
     readonly cwd: string;
     readonly env: NodeJS.ProcessEnv;
     readonly seccompMode: NetworkSeccompMode;
+    readonly sessionTempRoot: string;
     readonly preferredLauncher?: (
       options: PreferredBubblewrapLauncherOptions,
     ) => BubblewrapLauncher | null;
@@ -515,6 +527,7 @@ async function runCommandWithInnerSeccomp(
     env: options.env,
     stdio: "inherit",
     seccompMode: options.seccompMode,
+    sessionTempRoot: options.sessionTempRoot,
   });
   try {
     return await waitForChildWithSignalRelay(spawned.child);
@@ -596,6 +609,7 @@ function preflightProcMountSupport(options: {
   readonly commandCwd: string;
   readonly inheritedCwdFd?: number;
   readonly networkMode: BwrapNetworkMode;
+  readonly sessionTempRoot: string;
 }): boolean {
   const args = createBwrapCommandArgs(
     [resolveTrueCommand()],
@@ -605,6 +619,7 @@ function preflightProcMountSupport(options: {
     {
       mountProc: true,
       networkMode: options.networkMode,
+      sessionTempRoot: options.sessionTempRoot,
       inheritedReadOnlyCwd: options.inheritedCwdFd !== undefined,
     },
   );

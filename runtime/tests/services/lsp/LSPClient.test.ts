@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -285,9 +285,17 @@ describe("createLSPClient", () => {
   test("scrubs inherited secrets while preserving explicit config env", async () => {
     const dir = await mkdtemp(join(tmpdir(), "agenc-lsp-env-"));
     const output = join(dir, "env.json");
+    const sessionTempRoot = join(dir, "session-temp");
+    await mkdir(sessionTempRoot);
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: dir,
+      sessionTempRoot,
+    });
+    registerLspParticipant(broker);
     try {
       const client = createLSPClient("env", {
-        sandboxExecutionBroker: explicitDangerBroker,
+        sandboxExecutionBroker: broker,
         baseEnv: {
           PATH: process.env.PATH,
           HOME: "/home/test",
@@ -297,6 +305,10 @@ describe("createLSPClient", () => {
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: "oidc",
           INPUT_OPENAI_API_KEY: "duplicated",
           INPUT_GEMINI_API_KEY: "duplicated-gemini",
+          AGENC_TMPDIR: "/ambient/agenc",
+          TMPDIR: "/ambient/posix",
+          TEMP: "C:\\ambient\\temp",
+          TMP: "C:\\ambient\\tmp",
         },
       });
 
@@ -304,7 +316,13 @@ describe("createLSPClient", () => {
         "-e",
         `require("node:fs").writeFileSync(${JSON.stringify(output)}, JSON.stringify(process.env));`,
       ], {
-        env: { LSP_EXPLICIT_ENV: "kept" },
+        env: {
+          LSP_EXPLICIT_ENV: "kept",
+          AGENC_TMPDIR: "/declared/agenc",
+          TMPDIR: "/declared/posix",
+          TEMP: "C:\\declared\\temp",
+          TMP: "C:\\declared\\tmp",
+        },
       });
       await new Promise((resolve) => setTimeout(resolve, 50));
 
@@ -320,6 +338,10 @@ describe("createLSPClient", () => {
       expect(env.INPUT_OPENAI_API_KEY).toBeUndefined();
       expect(env.INPUT_GEMINI_API_KEY).toBeUndefined();
       expect(env.ACTIONS_ID_TOKEN_REQUEST_TOKEN).toBeUndefined();
+      expect(env.AGENC_TMPDIR).toBe(sessionTempRoot);
+      expect(env.TMPDIR).toBe(sessionTempRoot);
+      expect(env.TEMP).toBe(sessionTempRoot);
+      expect(env.TMP).toBe(sessionTempRoot);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -415,6 +437,7 @@ describe("createLSPClient", () => {
     const broker = new SandboxExecutionBroker({
       mode: "danger_full_access",
       cwd: dir,
+      sessionTempRoot: join(dir, "session-temp"),
     });
     registerLspParticipant(broker);
     const prepareSpawn = vi.spyOn(broker, "prepareSpawn").mockImplementation(
@@ -423,10 +446,17 @@ describe("createLSPClient", () => {
           program: process.execPath,
           args: [
             "-e",
-            `require("node:fs").writeFileSync(${JSON.stringify(output)}, JSON.stringify({ cwd: process.cwd(), env: process.env.LSP_TRANSFORMED_ENV, argv0: process.argv0 }))`,
+            `require("node:fs").writeFileSync(${JSON.stringify(output)}, JSON.stringify({ cwd: process.cwd(), env: process.env.LSP_TRANSFORMED_ENV, argv0: process.argv0, agencTmp: process.env.AGENC_TMPDIR, tmpdir: process.env.TMPDIR, temp: process.env.TEMP, tmp: process.env.TMP }))`,
           ],
           cwd: dir,
-          env: { ...command.env, LSP_TRANSFORMED_ENV: "present" },
+          env: {
+            ...command.env,
+            LSP_TRANSFORMED_ENV: "present",
+            AGENC_TMPDIR: "/transform/agenc",
+            TMPDIR: "/transform/posix",
+            TEMP: "C:\\transform\\temp",
+            TMP: "C:\\transform\\tmp",
+          },
           argv0: "agenc-lsp-sandboxed",
         };
         return {
@@ -467,6 +497,10 @@ describe("createLSPClient", () => {
         cwd: dir,
         env: "present",
         argv0: "agenc-lsp-sandboxed",
+        agencTmp: join(dir, "session-temp"),
+        tmpdir: join(dir, "session-temp"),
+        temp: join(dir, "session-temp"),
+        tmp: join(dir, "session-temp"),
       });
     } finally {
       prepareSpawn.mockRestore();

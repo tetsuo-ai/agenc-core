@@ -330,7 +330,7 @@ describe("apply-patch read-before-write gate", () => {
   const SESSION_ID = "apply-patch-gate-test-session";
 
   afterEach(() => {
-    clearSessionReadState(SESSION_ID);
+    clearSessionReadState(SESSION_ID, tmpdir());
   });
 
   const updatePatch = (file: string, from: string, to: string): string =>

@@ -4489,248 +4489,250 @@ export async function bootTUIEntry(
   const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
     simpleMode: startupCliFlags.simpleMode === true,
   });
-  setIsRemoteMode(runtimeOptions.remoteMode);
-  const cliCwd = resolveCliCwdForStartup(sessionEnv);
-  if (!cliCwd.ok) {
-    return writeUnavailableCliCwd();
-  }
-  if (
-    args.resumeId === undefined &&
-    !(await requireProjectTrustForTui({
-        env: sessionEnv,
-        argv: process.argv,
-        startupCliFlags,
-        cwd: cliCwd.cwd,
-    }))
-  ) {
-    return 1;
-  }
-  const consumeEarlyInputRaw = await startTuiEarlyInputCapture();
-  let earlyInputConsumed = false;
-  const consumeEarlyInput = (): string => {
-    if (earlyInputConsumed) return "";
-    earlyInputConsumed = true;
-    return consumeEarlyInputRaw();
-  };
-  try {
-    validateAgencHome();
-    const startupAgencHome = resolveAgencHome(sessionEnv);
-    // OOM self-diagnosis: sample heap pressure and auto-capture a snapshot
-    // near the limit; point at a fresh capture from a previous crash.
-    startHeapWatchdog({ agencHome: startupAgencHome });
-    const oomNotice = recentOomSnapshotNotice(startupAgencHome);
-    if (oomNotice !== null) {
-      process.stderr.write(`${oomNotice}\n`);
+  return runWithAgentRuntimeOptions(runtimeOptions, async () => {
+    setIsRemoteMode(runtimeOptions.remoteMode);
+    const cliCwd = resolveCliCwdForStartup(sessionEnv);
+    if (!cliCwd.ok) {
+      return writeUnavailableCliCwd();
     }
-    if (args.resumeId !== undefined) {
-      const resolved = resolveResumeSessionId(
-        cliCwd.cwd,
-        args.resumeId,
-        startupAgencHome,
-      );
-      if (resolved.kind === "ok") {
-        return resumeResolvedTUIEntry(resolved, args.resumeId, {
-          agencHome: startupAgencHome,
+    if (
+      args.resumeId === undefined &&
+      !(await requireProjectTrustForTui({
+          env: sessionEnv,
+          argv: process.argv,
           startupCliFlags,
-          initialComposerText: consumeEarlyInput(),
-          ...(args.startupImages !== undefined
-            ? { startupImages: args.startupImages }
-            : {}),
-        });
-      }
-      if (resolved.kind === "ambiguous") {
-        process.stderr.write(
-          `agenc: ambiguous session id '${resolved.input}' matches: ${resolved.matches.join(", ")}\n`,
-        );
-      } else if (resolved.kind === "search_incomplete") {
-        process.stderr.write(
-          `agenc: session search stopped at its ${resolved.reason.replaceAll("_", " ")} safety limit\n`,
-        );
-      } else {
-        process.stderr.write(`agenc: session not found: ${args.resumeId}\n`);
-      }
+          cwd: cliCwd.cwd,
+        }))
+    ) {
       return 1;
     }
-    const capturedEarlyInput = consumeEarlyInput();
-    const initialPrompt = args.initialPrompt?.trim();
-    const daemonCwd = cliCwd.cwd;
-    const startupLayers = startupConfigLayerOptions({
-      cli: startupCliFlags,
-      cwd: daemonCwd,
-    });
-    const startupImages = args.startupImages ?? [];
-    if (
-      (initialPrompt === undefined || initialPrompt.length === 0) &&
-      startupImages.length === 0
-    ) {
+    const consumeEarlyInputRaw = await startTuiEarlyInputCapture();
+    let earlyInputConsumed = false;
+    const consumeEarlyInput = (): string => {
+      if (earlyInputConsumed) return "";
+      earlyInputConsumed = true;
+      return consumeEarlyInputRaw();
+    };
+    try {
+      validateAgencHome();
+      const startupAgencHome = resolveAgencHome(sessionEnv);
+      // OOM self-diagnosis: sample heap pressure and auto-capture a snapshot
+      // near the limit; point at a fresh capture from a previous crash.
+      startHeapWatchdog({ agencHome: startupAgencHome });
+      const oomNotice = recentOomSnapshotNotice(startupAgencHome);
+      if (oomNotice !== null) {
+        process.stderr.write(`${oomNotice}\n`);
+      }
+      if (args.resumeId !== undefined) {
+        const resolved = resolveResumeSessionId(
+          cliCwd.cwd,
+          args.resumeId,
+          startupAgencHome,
+        );
+        if (resolved.kind === "ok") {
+          return resumeResolvedTUIEntry(resolved, args.resumeId, {
+            agencHome: startupAgencHome,
+            startupCliFlags,
+            initialComposerText: consumeEarlyInput(),
+            ...(args.startupImages !== undefined
+              ? { startupImages: args.startupImages }
+              : {}),
+          });
+        }
+        if (resolved.kind === "ambiguous") {
+          process.stderr.write(
+            `agenc: ambiguous session id '${resolved.input}' matches: ${resolved.matches.join(", ")}\n`,
+          );
+        } else if (resolved.kind === "search_incomplete") {
+          process.stderr.write(
+            `agenc: session search stopped at its ${resolved.reason.replaceAll("_", " ")} safety limit\n`,
+          );
+        } else {
+          process.stderr.write(`agenc: session not found: ${args.resumeId}\n`);
+        }
+        return 1;
+      }
+      const capturedEarlyInput = consumeEarlyInput();
+      const initialPrompt = args.initialPrompt?.trim();
+      const daemonCwd = cliCwd.cwd;
+      const startupLayers = startupConfigLayerOptions({
+        cli: startupCliFlags,
+        cwd: daemonCwd,
+      });
+      const startupImages = args.startupImages ?? [];
+      if (
+        (initialPrompt === undefined || initialPrompt.length === 0) &&
+        startupImages.length === 0
+      ) {
+        const deps = daemonCliDeps();
+        const idlePermissionMode = startupPermissionMode(startupCliFlags);
+        const {
+          workspaceRoot,
+          baseSession,
+          model,
+          close: closeTuiContext = async () => undefined,
+        } = await deps.createTuiContext({
+          env: sessionEnv,
+          runtimeOptions,
+          cwd: daemonCwd,
+          conversationId: `agenc-tui-idle-${process.pid}`,
+          ...(startupCliFlags.provider !== undefined
+            ? { provider: startupCliFlags.provider }
+            : {}),
+          ...(startupCliFlags.model !== undefined
+            ? { model: startupCliFlags.model }
+            : {}),
+          ...(startupCliFlags.profile !== undefined
+            ? { profile: startupCliFlags.profile }
+            : {}),
+          ...(startupLayers.flagConfigPath !== undefined
+            ? { configPath: startupLayers.flagConfigPath }
+            : {}),
+          ...(idlePermissionMode !== undefined
+            ? { permissionMode: idlePermissionMode }
+            : {}),
+        });
+        const configStore = baseSession.services.configStore;
+        const deferred = await createDeferredDaemonPromptTuiSession({
+          baseSession,
+          deps,
+          agencHome: configStore.agencHome,
+          env: sessionEnv,
+          runtimeOptions,
+          cwd: workspaceRoot,
+          clientId: `agenc-tui-${process.pid}`,
+          ...(startupCliFlags.provider !== undefined
+            ? { provider: startupCliFlags.provider }
+            : {}),
+          ...(startupCliFlags.model !== undefined
+            ? { model: startupCliFlags.model }
+            : {}),
+          ...(startupCliFlags.profile !== undefined
+            ? { profile: startupCliFlags.profile }
+            : {}),
+          ...(startupLayers.flagConfigPath !== undefined
+            ? { configPath: startupLayers.flagConfigPath }
+            : {}),
+          // Seed the deferred bootstrap permission mode the same way the daemon
+          // createTuiContext above does: an explicit `--dangerously-bypass-approvals-and-sandbox` forces bypass,
+          // otherwise honor the startup `--permission-mode` flag. Pre-first-turn
+          // `/permissions mode` / `/plan` then overwrite this staged value.
+          ...(idlePermissionMode !== undefined
+            ? { permissionMode: idlePermissionMode }
+            : {}),
+        });
+        const boot = await loadBootTUI();
+        try {
+          const handle = await boot({
+            session: deferred.session,
+            model,
+            stdinMode: runtimeOptions.stdinDataMode === true ? "data" : "readable",
+            ...(capturedEarlyInput.length > 0
+              ? { initialComposerText: capturedEarlyInput }
+              : {}),
+          });
+          activeInkUnmount = handle.unmount;
+          await handle.waitUntilExit();
+        } finally {
+          activeInkUnmount = null;
+          await deferred.close();
+          await closeTuiContext();
+        }
+        // Teardown is complete (prior session detached): honor a pending
+        // /resume picker selection by relaunching into that session.
+        return exitOrResumeAfterTui(0, startupCliFlags);
+      }
+      const objective =
+        initialPrompt !== undefined && initialPrompt.length > 0
+          ? initialPrompt
+          : "Multimodal AgenC startup";
+      const agencHome = resolveAgencHome(sessionEnv);
+      const configStore = new ConfigStore({
+        home: agencHome,
+        env: sessionEnv,
+        cwd: daemonCwd,
+        ...startupLayers,
+        onWarn: (message) => process.stderr.write(`${message}\n`),
+      });
+      const config = await configStore.reload();
+      const profileName = resolvedStartupProfileName(startupCliFlags, sessionEnv);
+      const startup = resolveCanonicalStartupSelection({
+        config,
+        env: sessionEnv,
+        ...(profileName !== undefined ? { profileName } : {}),
+      });
+      const initialContent = startupContentFromInputs(
+        objective,
+        startupImages,
+        daemonCwd,
+        sessionEnv.HOME,
+      );
       const deps = daemonCliDeps();
-      const idlePermissionMode = startupPermissionMode(startupCliFlags);
-      const {
-        workspaceRoot,
-        baseSession,
-        model,
-        close: closeTuiContext = async () => undefined,
-      } = await deps.createTuiContext({
+      // Propagate the canonical dangerous-bypass selection to the daemon so the
+      // spawned agent's session resolves approvalPolicy correctly. Without
+      // this, bypass only affected the local CLI bootstrap and dropped on
+      // the wire — see GAP-PE-GUARDIAN-YOLO-LEAK and the daemon-side
+      // forwarding in background-agent-runner.buildBootstrapArgv.
+      const promptPermissionMode = startupPermissionMode(startupCliFlags);
+      const started = await deps.startPromptAgent({
+        prompt: objective,
         env: sessionEnv,
         runtimeOptions,
         cwd: daemonCwd,
-        conversationId: `agenc-tui-idle-${process.pid}`,
-        ...(startupCliFlags.provider !== undefined
-          ? { provider: startupCliFlags.provider }
-          : {}),
-        ...(startupCliFlags.model !== undefined
-          ? { model: startupCliFlags.model }
-          : {}),
-        ...(startupCliFlags.profile !== undefined
-          ? { profile: startupCliFlags.profile }
+        model: startup.model,
+        provider: startup.provider,
+        ...(startup.profileName !== undefined
+          ? { profile: startup.profileName }
           : {}),
         ...(startupLayers.flagConfigPath !== undefined
           ? { configPath: startupLayers.flagConfigPath }
           : {}),
-        ...(idlePermissionMode !== undefined
-          ? { permissionMode: idlePermissionMode }
+        ...(initialContent !== undefined ? { initialContent } : {}),
+        ...(promptPermissionMode !== undefined
+          ? { permissionMode: promptPermissionMode }
           : {}),
+        metadata: { mode: "tui" },
       });
-      const configStore = baseSession.services.configStore;
-      const deferred = await createDeferredDaemonPromptTuiSession({
-        baseSession,
-        deps,
-        agencHome: configStore.agencHome,
-        env: sessionEnv,
-        runtimeOptions,
-        cwd: workspaceRoot,
-        clientId: `agenc-tui-${process.pid}`,
-        ...(startupCliFlags.provider !== undefined
-          ? { provider: startupCliFlags.provider }
-          : {}),
-        ...(startupCliFlags.model !== undefined
-          ? { model: startupCliFlags.model }
-          : {}),
-        ...(startupCliFlags.profile !== undefined
-          ? { profile: startupCliFlags.profile }
-          : {}),
-        ...(startupLayers.flagConfigPath !== undefined
-          ? { configPath: startupLayers.flagConfigPath }
-          : {}),
-        // Seed the deferred bootstrap permission mode the same way the daemon
-        // createTuiContext above does: an explicit `--dangerously-bypass-approvals-and-sandbox` forces bypass,
-        // otherwise honor the startup `--permission-mode` flag. Pre-first-turn
-        // `/permissions mode` / `/plan` then overwrite this staged value.
-        ...(idlePermissionMode !== undefined
-          ? { permissionMode: idlePermissionMode }
-          : {}),
-      });
-      const boot = await loadBootTUI();
       try {
-        const handle = await boot({
-          session: deferred.session,
-          model,
-          stdinMode: runtimeOptions.stdinDataMode === true ? "data" : "readable",
-          ...(capturedEarlyInput.length > 0
-            ? { initialComposerText: capturedEarlyInput }
-            : {}),
+        const exitCode = await attachAgentTuiEntry({
+          agentId: started.agentId,
+          clientId: `agenc-tui-${process.pid}`,
+          startupCliFlags,
+          runtimeOptions,
+          initialComposerText:
+            args.initialPrompt === undefined ? capturedEarlyInput : "",
         });
-        activeInkUnmount = handle.unmount;
-        await handle.waitUntilExit();
-      } finally {
-        activeInkUnmount = null;
-        await deferred.close();
-        await closeTuiContext();
-      }
-      // Teardown is complete (prior session detached): honor a pending
-      // /resume picker selection by relaunching into that session.
-      return exitOrResumeAfterTui(0, startupCliFlags);
-    }
-    const objective =
-      initialPrompt !== undefined && initialPrompt.length > 0
-        ? initialPrompt
-        : "Multimodal AgenC startup";
-    const agencHome = resolveAgencHome(sessionEnv);
-    const configStore = new ConfigStore({
-      home: agencHome,
-      env: sessionEnv,
-      cwd: daemonCwd,
-      ...startupLayers,
-      onWarn: (message) => process.stderr.write(`${message}\n`),
-    });
-    const config = await configStore.reload();
-    const profileName = resolvedStartupProfileName(startupCliFlags, sessionEnv);
-    const startup = resolveCanonicalStartupSelection({
-      config,
-      env: sessionEnv,
-      ...(profileName !== undefined ? { profileName } : {}),
-    });
-    const initialContent = startupContentFromInputs(
-      objective,
-      startupImages,
-      daemonCwd,
-      sessionEnv.HOME,
-    );
-    const deps = daemonCliDeps();
-    // Propagate the canonical dangerous-bypass selection to the daemon so the
-    // spawned agent's session resolves approvalPolicy correctly. Without
-    // this, bypass only affected the local CLI bootstrap and dropped on
-    // the wire — see GAP-PE-GUARDIAN-YOLO-LEAK and the daemon-side
-    // forwarding in background-agent-runner.buildBootstrapArgv.
-    const promptPermissionMode = startupPermissionMode(startupCliFlags);
-    const started = await deps.startPromptAgent({
-      prompt: objective,
-      env: sessionEnv,
-      runtimeOptions,
-      cwd: daemonCwd,
-      model: startup.model,
-      provider: startup.provider,
-      ...(startup.profileName !== undefined
-        ? { profile: startup.profileName }
-        : {}),
-      ...(startupLayers.flagConfigPath !== undefined
-        ? { configPath: startupLayers.flagConfigPath }
-        : {}),
-      ...(initialContent !== undefined ? { initialContent } : {}),
-      ...(promptPermissionMode !== undefined
-        ? { permissionMode: promptPermissionMode }
-        : {}),
-      metadata: { mode: "tui" },
-    });
-    try {
-      const exitCode = await attachAgentTuiEntry({
-        agentId: started.agentId,
-        clientId: `agenc-tui-${process.pid}`,
-        startupCliFlags,
-        runtimeOptions,
-        initialComposerText:
-          args.initialPrompt === undefined ? capturedEarlyInput : "",
-      });
-      if (exitCode !== 0) {
+        if (exitCode !== 0) {
+          await stopDaemonAgentBestEffort({
+            deps,
+            env: process.env,
+            agentId: started.agentId,
+            reason: "tui_startup_failed",
+          });
+        }
+        // Honor a pending /resume picker selection (prior session detached).
+        return exitOrResumeAfterTui(exitCode, startupCliFlags);
+      } catch (error) {
         await stopDaemonAgentBestEffort({
           deps,
-          env: process.env,
+          env: sessionEnv,
           agentId: started.agentId,
           reason: "tui_startup_failed",
         });
+        throw error;
       }
-      // Honor a pending /resume picker selection (prior session detached).
-      return exitOrResumeAfterTui(exitCode, startupCliFlags);
     } catch (error) {
-      await stopDaemonAgentBestEffort({
-        deps,
-        env: sessionEnv,
-        agentId: started.agentId,
-        reason: "tui_startup_failed",
-      });
+      consumeEarlyInput();
+      if (
+        error instanceof SessionLockedError ||
+        error instanceof SchemaMismatchError
+      ) {
+        process.stderr.write(`agenc: ${error.message}\n`);
+        return 1;
+      }
       throw error;
     }
-  } catch (error) {
-    consumeEarlyInput();
-    if (
-      error instanceof SessionLockedError ||
-      error instanceof SchemaMismatchError
-    ) {
-      process.stderr.write(`agenc: ${error.message}\n`);
-      return 1;
-    }
-    throw error;
-  }
+  });
 }
 
 export interface AttachAgentTuiEntryArgs {

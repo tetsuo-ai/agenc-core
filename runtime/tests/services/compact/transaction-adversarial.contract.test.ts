@@ -711,6 +711,7 @@ async function withTransactionalStore(
     cwd,
     sessionId,
     agencVersion: "0.13.0",
+    sessionTempRoot: tmpdir(),
     autoStartScheduler: false,
   });
   try {

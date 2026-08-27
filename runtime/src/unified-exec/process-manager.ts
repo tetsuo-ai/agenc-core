@@ -42,6 +42,8 @@ import {
   commandShellArgs,
   wrapCommandForShell,
 } from "../utils/shell/commandExecution.js";
+import { withChildTempAuthority } from "../utils/subprocessEnv.js";
+import { resolveSessionTempRoot } from "../session/runtime-options.js";
 
 const DEFAULT_EXEC_YIELD_TIME_MS = 10_000;
 const DEFAULT_WRITE_STDIN_YIELD_TIME_MS = 250;
@@ -227,6 +229,7 @@ function runtimeSandboxesCompatible(
   if (active === undefined) return false;
   return (
     active.sandboxPolicyCwd === requested.sandboxPolicyCwd &&
+    active.sessionTempRoot === requested.sessionTempRoot &&
     canonicalPermissionProfile(active.permissionProfile) ===
       canonicalPermissionProfile(requested.permissionProfile) &&
     (active.agencLinuxSandboxExe ?? "") ===
@@ -424,6 +427,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly cwd: string;
   private readonly env?: Record<string, string>;
   private readonly baseEnv: Readonly<Record<string, string | undefined>>;
+  private readonly sessionTempRoot: string;
   private readonly shellPath: string;
   private readonly commandWrapperArgv: readonly string[];
   private readonly maxProcesses: number;
@@ -444,6 +448,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       ? undefined
       : Object.freeze({ ...options.env });
     this.baseEnv = Object.freeze({ ...(options.baseEnv ?? process.env) });
+    this.sessionTempRoot = options.sessionTempRoot ?? resolveSessionTempRoot();
     this.shellPath = options.shellPath ??
       (process.platform === "win32" ? "cmd.exe" : "/bin/bash");
     this.commandWrapperArgv = Object.freeze([
@@ -1107,12 +1112,14 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     readonly env: Record<string, string>;
     readonly runtimeSandbox?: UnifiedExecRuntimeSandbox;
   }): SpawnCommand {
+    const sessionTempRoot =
+      params.runtimeSandbox?.sessionTempRoot ?? this.sessionTempRoot;
     if (params.runtimeSandbox === undefined) {
       return {
         program: params.program,
         args: params.args,
         cwd: params.cwd,
-        env: params.env,
+        env: withChildTempAuthority(params.env, sessionTempRoot),
         argv0: basename(params.program),
       };
     }
@@ -1170,6 +1177,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
             }
           : {}),
         sandboxPolicyCwd: params.runtimeSandbox.sandboxPolicyCwd,
+        sessionTempRoot: params.runtimeSandbox.sessionTempRoot,
         ...(params.runtimeSandbox.agencLinuxSandboxExe !== undefined
           ? { agencLinuxSandboxExe: params.runtimeSandbox.agencLinuxSandboxExe }
           : {}),
@@ -1189,7 +1197,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         program,
         args,
         cwd: transformed.cwd,
-        env: { ...transformed.env },
+        env: withChildTempAuthority(transformed.env, sessionTempRoot),
         argv0: transformed.arg0 ?? basename(program),
       };
     } catch (error) {

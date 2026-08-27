@@ -128,7 +128,7 @@ describe("FileRead tool", () => {
     }
     if (root) await rm(root, { recursive: true, force: true });
     root = "";
-    clearSessionReadState(sessionId);
+    clearSessionReadState(sessionId, tmpdir());
     clearAllPlanSlugs();
   });
 

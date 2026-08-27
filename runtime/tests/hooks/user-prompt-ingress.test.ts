@@ -72,7 +72,7 @@ describe("canonical user prompt ingress", () => {
           ?.rawContent,
       ).toBe("daemon-owned file body\n");
     } finally {
-      clearSessionReadState(session.conversationId);
+      clearSessionReadState(session.conversationId, tmpdir());
       await rm(cwd, { recursive: true, force: true });
     }
   });
@@ -105,7 +105,7 @@ describe("canonical user prompt ingress", () => {
         "user_prompt_submit_hook_blocked",
       );
     } finally {
-      clearSessionReadState(session.conversationId);
+      clearSessionReadState(session.conversationId, tmpdir());
       await rm(cwd, { recursive: true, force: true });
     }
   });

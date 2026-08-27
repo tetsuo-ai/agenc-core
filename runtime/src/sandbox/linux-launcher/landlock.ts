@@ -1,5 +1,4 @@
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 
 import { SECCOMP_STDIN_FD } from "./config.js";
@@ -82,9 +81,10 @@ export function networkSeccompMode(
 
 export function openNetworkSeccompProgramFile(
   mode: NetworkSeccompMode,
+  sessionTempRoot: string,
   arch: NodeJS.Architecture = process.arch,
 ): SeccompProgramFile {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "agenc-seccomp-"));
+  const dir = fs.mkdtempSync(path.join(sessionTempRoot, "agenc-seccomp-"));
   const filePath = path.join(dir, "network.bpf");
   const fd = fs.openSync(filePath, "w+");
   const program = createNetworkSeccompProgram(mode, arch);

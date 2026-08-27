@@ -30,6 +30,7 @@ import {
   constants as fsConstants,
   lstatSync,
   mkdtempSync,
+  rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -56,6 +57,33 @@ const PROBE_TIMEOUT_MS = 5_000;
 export type LandlockEnforcement = "full" | "partial" | "unusable";
 
 let compiledLandlockRun: string | undefined;
+let compiledLandlockRunBuildRoot: string | undefined;
+let compiledLandlockRunCleanupRegistered = false;
+
+function cleanupCompiledLandlockRun(): void {
+  const buildRoot = compiledLandlockRunBuildRoot;
+  compiledLandlockRunBuildRoot = undefined;
+  if (buildRoot === undefined) return;
+  try {
+    rmSync(buildRoot, { recursive: true, force: true });
+  } catch {
+    // Process-exit cleanup is best effort. Compilation failures are cleaned
+    // synchronously below before the resolver returns.
+  }
+}
+
+function retainCompiledLandlockRun(
+  buildRoot: string,
+  outputPath: string,
+): string {
+  compiledLandlockRunBuildRoot = buildRoot;
+  compiledLandlockRun = outputPath;
+  if (!compiledLandlockRunCleanupRegistered) {
+    compiledLandlockRunCleanupRegistered = true;
+    process.once("exit", cleanupCompiledLandlockRun);
+  }
+  return outputPath;
+}
 
 function isExecutableFile(path: string): boolean {
   try {
@@ -118,8 +146,9 @@ export function resolveLandlockRun(): string | undefined {
   });
   if (compiler === undefined) return undefined;
 
+  let buildRoot: string | undefined;
   try {
-    const buildRoot = mkdtempSync(join(tmpdir(), "agenc-landlock-run-"));
+    buildRoot = mkdtempSync(join(tmpdir(), "agenc-landlock-run-"));
     chmodSync(buildRoot, 0o700);
     const outputPath = join(buildRoot, LANDLOCK_RUN_NAME);
     execFileSync(
@@ -142,9 +171,15 @@ export function resolveLandlockRun(): string | undefined {
         stdio: "pipe",
       },
     );
-    compiledLandlockRun = outputPath;
-    return outputPath;
+    return retainCompiledLandlockRun(buildRoot, outputPath);
   } catch {
+    if (buildRoot !== undefined) {
+      try {
+        rmSync(buildRoot, { recursive: true, force: true });
+      } catch {
+        // The resolver already fails closed when compilation cannot complete.
+      }
+    }
     return undefined;
   }
 }

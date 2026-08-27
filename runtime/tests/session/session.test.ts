@@ -15,7 +15,14 @@
  */
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -77,6 +84,17 @@ import {
   createProvider as createCompactionProvider,
 } from "../helpers/compaction-transaction-harness.js";
 import { CompactionReconstructionRequiredError } from "../services/compact/transaction-types.js";
+import {
+  getSessionTempNamespaceName,
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from "./runtime-options.js";
+import {
+  clearSessionReadState,
+  recordSessionRead,
+} from "../tools/system/filesystem.js";
+import { getBundledSkillsRoot } from "../utils/permissions/filesystem.js";
+import { extractBundledSkillFiles } from "../skills/bundled-extraction-registry.js";
 
 (globalThis as Record<string, unknown>).MACRO ??= {
   VERSION: "test-version",
@@ -2420,6 +2438,67 @@ describe("Session.rollbackCompaction", () => {
 });
 
 describe("Session.shutdown dispatches SessionEnd hooks", () => {
+  it("releases a shared bundled-skill root after the final owning Session shuts down", async () => {
+    const sessionTempRoot = mkdtempSync(
+      join(tmpdir(), "agenc-session-bundled-skills-"),
+    );
+    const runtimeOptions = resolveAgentRuntimeOptions({}, { sessionTempRoot });
+    const first = buildSession({ services: { runtimeOptions } });
+    const second = buildSession({ services: { runtimeOptions } });
+    const bundledRoot = runWithAgentRuntimeOptions(runtimeOptions, () =>
+      getBundledSkillsRoot(),
+    );
+
+    try {
+      await extractBundledSkillFiles(bundledRoot, "session-owned", {
+        "reference.txt": "session-owned",
+      });
+      expect(existsSync(bundledRoot)).toBe(true);
+
+      await first.shutdown();
+      expect(existsSync(bundledRoot)).toBe(true);
+
+      await second.shutdown();
+      expect(existsSync(bundledRoot)).toBe(false);
+    } finally {
+      rmSync(sessionTempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("removes file-read history from its captured session temp root", async () => {
+    const sessionTempRoot = mkdtempSync(
+      join(tmpdir(), "agenc-session-shutdown-history-"),
+    );
+    const runtimeOptions = resolveAgentRuntimeOptions(
+      {},
+      { sessionTempRoot },
+    );
+    const session = buildSession({ services: { runtimeOptions } });
+    const historySessionDirectory = join(
+      sessionTempRoot,
+      getSessionTempNamespaceName(),
+      "filesystem-history",
+      createHash("sha256").update(session.conversationId).digest("hex"),
+    );
+
+    try {
+      runWithAgentRuntimeOptions(runtimeOptions, () => {
+        recordSessionRead(session.conversationId, "/project/private.ts", {
+          content: "session-confidential-content",
+          viewKind: "full",
+        });
+      });
+      expect(existsSync(historySessionDirectory)).toBe(true);
+
+      await session.shutdown();
+
+      expect(existsSync(historySessionDirectory)).toBe(false);
+    } finally {
+      clearSessionReadState(session.conversationId, sessionTempRoot);
+      rmSync(sessionTempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("fires registered SessionEnd hooks with the session id", async () => {
     const { registerSessionEndHook, resetLifecycleHookRegistry } =
       await import("../llm/hooks/registry.js");

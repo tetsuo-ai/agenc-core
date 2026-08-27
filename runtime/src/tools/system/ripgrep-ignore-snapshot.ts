@@ -1,8 +1,8 @@
 import { constants } from "node:fs";
 import { lstat, mkdtemp, open, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+import { resolveSessionTempRoot } from "../../session/runtime-options.js";
 import { safePath } from "./filesystem.js";
 
 export interface RipgrepIgnoreFileSnapshot {
@@ -149,7 +149,9 @@ export async function materializeRipgrepIgnoreFiles(
   if (snapshots.length === 0) {
     return { paths: [], dispose: async () => {} };
   }
-  const directory = await mkdtemp(join(tmpdir(), "agenc-rg-ignore-"));
+  const directory = await mkdtemp(
+    join(resolveSessionTempRoot(), "agenc-rg-ignore-"),
+  );
   try {
     const paths: string[] = [];
     for (const [index, snapshot] of snapshots.entries()) {

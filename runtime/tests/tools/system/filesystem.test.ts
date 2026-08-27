@@ -962,7 +962,7 @@ describe("workspace read path identity", () => {
         expect(hasSessionRead(undefined, canonicalPath)).toBe(true);
       });
     } finally {
-      clearSessionReadState(sessionId);
+      clearSessionReadState(sessionId, tmpdir());
       Object.defineProperty(process, "platform", platformDescriptor);
     }
   });
@@ -972,7 +972,7 @@ describe("snapshotTopRecentReads", () => {
   const sessionId = "session-snapshot-top";
 
   beforeEach(() => {
-    clearSessionReadState(sessionId);
+    clearSessionReadState(sessionId, tmpdir());
   });
 
   it("does not treat processed partial views as valid read gates", () => {

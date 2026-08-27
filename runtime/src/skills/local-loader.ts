@@ -1,19 +1,16 @@
 import {
-  mkdir,
-  open,
   readdir,
   readFile,
   realpath,
   stat,
 } from "node:fs/promises";
-import { homedir, tmpdir } from "node:os";
+import { homedir } from "node:os";
 import {
   basename,
   dirname,
   extname,
   isAbsolute,
   join,
-  normalize,
   relative,
   resolve,
   sep,
@@ -29,6 +26,11 @@ import type { SkillLoadOutcome } from "../session/turn-context.js";
 import { substituteArguments } from "../tui/slash/argument-substitution.js";
 import { isRecord } from "../utils/record.js";
 import { getAgenCHomeDir } from "../utils/envUtils.js";
+import { getBundledSkillsRoot } from "../utils/permissions/filesystem.js";
+import {
+  extractBundledSkillFiles,
+  getBundledSkillDirectory,
+} from "./bundled-extraction-registry.js";
 import {
   createSkillChangeDetector,
   skillChangeDetector,
@@ -173,7 +175,6 @@ interface BundledSkillDefinition {
 const SKILL_FILE_NAME = "SKILL.md";
 const MAX_SKILL_FILES = 500;
 const MAX_SCAN_DEPTH = 12;
-const BUNDLED_ROOT_PREFIX = "agenc-bundled-skill-";
 const INVOKED_MAIN_AGENT_ID = "__main__";
 const SKILL_LISTING_DEFAULT_CHAR_BUDGET = 8_000;
 const SKILL_LISTING_DESC_MAX_CHARS = 250;
@@ -770,44 +771,7 @@ async function dedupeSkillsByRealPath(
 }
 
 function bundledSkillRoot(name: string): string {
-  return join(tmpdir(), `${BUNDLED_ROOT_PREFIX}${name}`);
-}
-
-async function ensureBundledFiles(
-  skillName: string,
-  files: Readonly<Record<string, string>> | undefined,
-): Promise<string> {
-  const root = bundledSkillRoot(skillName);
-  if (!files || Object.keys(files).length === 0) return root;
-  await Promise.all(
-    Object.entries(files).map(async ([relPath, content]) => {
-      const target = resolveBundledFilePath(root, relPath);
-      await mkdir(dirname(target), { recursive: true, mode: 0o700 });
-      try {
-        const fh = await open(target, "wx", 0o600);
-        try {
-          await fh.writeFile(content, "utf8");
-        } finally {
-          await fh.close();
-        }
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      }
-    }),
-  );
-  return root;
-}
-
-function resolveBundledFilePath(baseDir: string, relPath: string): string {
-  const normalized = normalize(relPath);
-  if (
-    isAbsolute(normalized) ||
-    normalized.split(sep).includes("..") ||
-    normalized.split("/").includes("..")
-  ) {
-    throw new Error(`bundled skill file path escapes skill dir: ${relPath}`);
-  }
-  return join(baseDir, normalized);
+  return getBundledSkillDirectory(getBundledSkillsRoot(), name);
 }
 
 function bundledSkillMetadata(definition: BundledSkillDefinition): LocalSkillMetadata {
@@ -844,9 +808,22 @@ async function renderBundledSkill(
       candidate.name === skill.name || candidate.aliases?.includes(skill.name),
   );
   if (!definition) return null;
-  const root = await ensureBundledFiles(definition.name, definition.files);
+  const extractionRoot = getBundledSkillsRoot();
+  const root = getBundledSkillDirectory(extractionRoot, definition.name);
+  const extractedRoot =
+    definition.files === undefined
+      ? root
+      : await extractBundledSkillFiles(
+          extractionRoot,
+          definition.name,
+          definition.files,
+        );
   let content = await definition.getPrompt(args ?? "", root);
-  if (definition.files && Object.keys(definition.files).length > 0) {
+  if (
+    extractedRoot !== null &&
+    definition.files &&
+    Object.keys(definition.files).length > 0
+  ) {
     content = `Base directory for this skill: ${root}\n\n${content}`;
   }
   return { skill: { ...skill, root, path: join(root, SKILL_FILE_NAME) }, content };

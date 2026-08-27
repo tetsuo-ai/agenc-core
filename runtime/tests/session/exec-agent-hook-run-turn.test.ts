@@ -1823,6 +1823,7 @@ async function mountTestParentRollout(parent: Session): Promise<void> {
       cwd: parent.sessionConfiguration.cwd,
       sessionId: parent.conversationId,
       agencVersion: "test",
+      sessionTempRoot: tmpdir(),
     });
     store.open({
       sessionId: parent.conversationId,

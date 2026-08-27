@@ -66,6 +66,7 @@ import { classifyCLI } from "./route.js";
 import { isBareMode } from "../utils/envUtils.js";
 import {
   resolveAgentRuntimeOptions,
+  resolveSessionTempRoot,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
@@ -3389,10 +3390,14 @@ describe("main() smoke", () => {
   it("bootTUIEntry opens an idle daemon-backed TUI without starting a prompt agent", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tui-idle-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tui-idle-cwd-"));
+    const sessionTempRoot = await mkdtemp(
+      join(tmpdir(), "agenc-tui-idle-session-temp-"),
+    );
     const prevEnv = { ...process.env };
 
     process.env.AGENC_HOME = tmpHome;
     process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_TMPDIR = sessionTempRoot;
     process.env.XAI_API_KEY = "stub-key-for-test";
     process.env.AGENC_CLI_ENTRY_DISABLE = "1";
     const daemon = installDaemonCliDepsForTest({
@@ -3401,10 +3406,17 @@ describe("main() smoke", () => {
       cwd: tmpCwd,
     });
 
-    const waitUntilExit = vi.fn().mockResolvedValue(undefined);
+    const observedTempRoots: string[] = [];
+    const waitUntilExit = vi.fn(async () => {
+      await Promise.resolve();
+      observedTempRoots.push(resolveSessionTempRoot());
+    });
     const unmount = vi.fn();
     vi.doMock("../tui/main.js", () => ({
-      bootTUI: vi.fn(async () => ({ unmount, waitUntilExit })),
+      bootTUI: vi.fn(async () => {
+        observedTempRoots.push(resolveSessionTempRoot());
+        return { unmount, waitUntilExit };
+      }),
     }));
 
     try {
@@ -3415,6 +3427,7 @@ describe("main() smoke", () => {
       expect(daemon.createConnectedTuiClient).not.toHaveBeenCalled();
       expect(daemon.requests).toEqual([]);
       expect(waitUntilExit).toHaveBeenCalledTimes(1);
+      expect(observedTempRoots).toEqual([sessionTempRoot, sessionTempRoot]);
     } finally {
       vi.doUnmock("../tui/main.js");
       for (const key of Object.keys(process.env)) {
@@ -3423,6 +3436,7 @@ describe("main() smoke", () => {
       Object.assign(process.env, prevEnv);
       await rm(tmpHome, { recursive: true, force: true });
       await rm(tmpCwd, { recursive: true, force: true });
+      await rm(sessionTempRoot, { recursive: true, force: true });
     }
   });
 

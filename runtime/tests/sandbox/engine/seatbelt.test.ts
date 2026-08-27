@@ -8,6 +8,8 @@ import {
   seatbeltRegexForUnreadableGlob,
 } from "./seatbelt.js";
 
+const TEST_SESSION_TEMP_ROOT = "/tmp/agenc-seatbelt-session-root";
+
 describe("macOS seatbelt policy generation", () => {
   it("builds file, proxy, and unix-socket policy sections", () => {
     const args = createSeatbeltCommandArgs({
@@ -22,6 +24,7 @@ describe("macOS seatbelt policy generation", () => {
       ),
       networkSandboxPolicy: "disabled",
       sandboxPolicyCwd: "/repo",
+      sessionTempRoot: TEST_SESSION_TEMP_ROOT,
       enforceManagedNetwork: true,
       network: {
         env: { HTTPS_PROXY: "localhost:9443" },
@@ -53,6 +56,7 @@ describe("macOS seatbelt policy generation", () => {
       fileSystemSandboxPolicy: restrictedFileSystemPolicy(),
       networkSandboxPolicy: "disabled",
       sandboxPolicyCwd: "/repo",
+      sessionTempRoot: TEST_SESSION_TEMP_ROOT,
       enforceManagedNetwork: true,
       network: {
         env: { HTTPS_PROXY: "http://[::1]:9443" },
@@ -79,11 +83,43 @@ describe("macOS seatbelt policy generation", () => {
       ]),
       networkSandboxPolicy: "disabled",
       sandboxPolicyCwd: "/repo",
+      sessionTempRoot: TEST_SESSION_TEMP_ROOT,
       enforceManagedNetwork: false,
     });
 
     expect(args[1]).not.toContain("^/repo/\\.agenc(/.*)?$");
     expect(args).not.toContain("-DWRITABLE_ROOT_0_EXCLUDED_1=/repo/.agenc");
+  });
+
+  it("binds tmpdir specials to explicit session authority", () => {
+    const previous = process.env["TMPDIR"];
+    process.env["TMPDIR"] = "/tmp/generic-must-not-win";
+    try {
+      const args = createSeatbeltCommandArgs({
+        command: ["true"],
+        fileSystemSandboxPolicy: restrictedFileSystemPolicy([
+          {
+            path: { kind: "special", value: { kind: "tmpdir" } },
+            access: "write",
+          },
+        ]),
+        networkSandboxPolicy: "disabled",
+        sandboxPolicyCwd: "/repo",
+        sessionTempRoot: TEST_SESSION_TEMP_ROOT,
+        enforceManagedNetwork: false,
+      });
+
+      expect(args).toContain(
+        `-DWRITABLE_ROOT_0=${TEST_SESSION_TEMP_ROOT}`,
+      );
+      expect(args).not.toContain("-DWRITABLE_ROOT_0=/tmp/generic-must-not-win");
+    } finally {
+      if (previous === undefined) {
+        delete process.env["TMPDIR"];
+      } else {
+        process.env["TMPDIR"] = previous;
+      }
+    }
   });
 
   it("retains full-network behavior when no managed proxy is configured", () => {
@@ -92,6 +128,7 @@ describe("macOS seatbelt policy generation", () => {
       fileSystemSandboxPolicy: unrestrictedFileSystemPolicy(),
       networkSandboxPolicy: "enabled",
       sandboxPolicyCwd: "/repo",
+      sessionTempRoot: TEST_SESSION_TEMP_ROOT,
       enforceManagedNetwork: false,
     });
 
@@ -110,6 +147,7 @@ describe("macOS seatbelt policy generation", () => {
         fileSystemSandboxPolicy: unrestrictedFileSystemPolicy(),
         networkSandboxPolicy: "enabled",
         sandboxPolicyCwd: "/repo",
+        sessionTempRoot: TEST_SESSION_TEMP_ROOT,
         enforceManagedNetwork: false,
       });
 
@@ -140,6 +178,7 @@ describe("macOS seatbelt GPU allowance (opt-in)", () => {
     fileSystemSandboxPolicy: restrictedFileSystemPolicy(),
     networkSandboxPolicy: "disabled",
     sandboxPolicyCwd: "/repo",
+    sessionTempRoot: TEST_SESSION_TEMP_ROOT,
     enforceManagedNetwork: false,
   } as const;
 

@@ -1,4 +1,15 @@
-import { describe, expect, test } from "vitest";
+import {
+  chmodSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, test } from "vitest";
 
 import {
   AgentRuntimeOptionsError,
@@ -14,13 +25,28 @@ import {
   validateAgentRuntimeOptions,
 } from "../../src/session/runtime-options.js";
 
+const temporaryDirectories: string[] = [];
+
+function makeTemporaryDirectory(): string {
+  const directory = mkdtempSync(join(tmpdir(), "agenc-runtime-options-test-"));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
+
 describe("agent runtime options", () => {
   test("normalizes supported environment values and typed overrides once", () => {
+    const sessionTempRoot = join(makeTemporaryDirectory(), "session-temp");
     const result = resolveAgentRuntimeOptions(
       {
         AGENC_SHELL: "/bin/zsh",
         AGENC_SHELL_PREFIX: 'env "MODE=safe" runner',
-        AGENC_TMPDIR: "/var/tmp/agenc",
+        AGENC_TMPDIR: sessionTempRoot,
         AGENC_PLUGIN_CACHE_DIR: "/var/cache/agenc-plugins",
         AGENC_COWORK_MEMORY_PATH_OVERRIDE: "/mnt/cowork/memory",
         AGENC_COWORK_MEMORY_EXTRA_GUIDELINES: "Keep workspace facts scoped.",
@@ -36,7 +62,7 @@ describe("agent runtime options", () => {
       remoteMode: false,
       posixShellPath: "/bin/zsh",
       commandWrapperArgv: ["env", "MODE=safe", "runner"],
-      sessionTempRoot: "/var/tmp/agenc",
+      sessionTempRoot,
       pluginStorageRoot: "/var/cache/agenc-plugins",
       coworkMemoryPathOverride: "/mnt/cowork/memory",
       coworkMemoryExtraGuidelines: "Keep workspace facts scoped.",
@@ -47,20 +73,37 @@ describe("agent runtime options", () => {
   });
 
   test("captures one immutable shell and wrapper authority", () => {
-    const runtimeOptions = resolveAgentRuntimeOptions({
-      AGENC_SHELL: "/bin/zsh",
-      AGENC_SHELL_PREFIX: 'env "MODE=safe" runner',
-    });
+    const sessionTempRoot = makeTemporaryDirectory();
+    const runtimeOptions = resolveAgentRuntimeOptions(
+      {
+        AGENC_SHELL: "/bin/zsh",
+        AGENC_SHELL_PREFIX: 'env "MODE=safe" runner',
+      },
+      { sessionTempRoot },
+    );
     const authority = resolveCommandExecutionAuthority(
       runtimeOptions,
       "/bin/zsh",
-      { PATH: "/usr/bin", SECRET: undefined },
+      {
+        PATH: "/usr/bin",
+        SECRET: undefined,
+        AGENC_TMPDIR: "/ambient/agenc",
+        TMPDIR: "/ambient/posix",
+        TEMP: "C:\\ambient\\temp",
+        TMP: "C:\\ambient\\tmp",
+      },
     );
 
     expect(authority).toEqual({
       path: "/bin/zsh",
       commandWrapperArgv: ["env", "MODE=safe", "runner"],
-      childEnvironment: { PATH: "/usr/bin", SECRET: undefined },
+      childEnvironment: {
+        PATH: "/usr/bin",
+        AGENC_TMPDIR: sessionTempRoot,
+        TMPDIR: sessionTempRoot,
+        TEMP: sessionTempRoot,
+        TMP: sessionTempRoot,
+      },
     });
     expect(Object.isFrozen(authority)).toBe(true);
     expect(Object.isFrozen(authority.commandWrapperArgv)).toBe(true);
@@ -128,6 +171,7 @@ describe("agent runtime options", () => {
       "without shell operators",
     ],
     [{ AGENC_TMPDIR: "relative" }, "AGENC_TMPDIR must be an absolute path"],
+    [{ AGENC_TMPDIR: "" }, "AGENC_TMPDIR must be a non-empty absolute path"],
     [{ AGENC_SIMPLE: "1" }, "AGENC_SIMPLE was removed; use --bare"],
     [{ AGENC_SIMPLE: "0" }, "AGENC_SIMPLE was removed; use --bare"],
     [{ AGENC_BARE: "0" }, "AGENC_BARE was removed; use --bare"],
@@ -152,18 +196,18 @@ describe("agent runtime options", () => {
   });
 
   test("wire validation is strict and preserves explicit values", () => {
-    expect(
-      validateAgentRuntimeOptions({
-        simpleMode: false,
-        stdinDataMode: false,
-        remoteMode: false,
-        allowUntrustedHooks: true,
-      }),
-    ).toMatchObject({
+    const validated = validateAgentRuntimeOptions({
       simpleMode: false,
       stdinDataMode: false,
       remoteMode: false,
       allowUntrustedHooks: true,
+    });
+    expect(validated).toMatchObject({
+      simpleMode: false,
+      stdinDataMode: false,
+      remoteMode: false,
+      allowUntrustedHooks: true,
+      sessionTempRoot: resolveAgentRuntimeOptions({}).sessionTempRoot,
     });
 
     expect(() =>
@@ -196,14 +240,20 @@ describe("agent runtime options", () => {
     expect(() => validateAgentRuntimeOptions({})).toThrow(
       AgentRuntimeOptionsError,
     );
+    expect(() =>
+      resolveAgentRuntimeOptions({}, { sessionTempRoot: "" }),
+    ).toThrow("runtimeOptions.sessionTempRoot must be a non-empty absolute path");
   });
 
   test("isolates concurrent client temp roots from the daemon environment", async () => {
+    const base = makeTemporaryDirectory();
+    const clientA = join(base, "client-a");
+    const clientB = join(base, "client-b");
     const previous = process.env.TMPDIR;
     process.env.TMPDIR = "/daemon-global-tmp";
     try {
-      const optionsA = resolveAgentRuntimeOptions({ AGENC_TMPDIR: "/client-a" });
-      const optionsB = resolveAgentRuntimeOptions({ AGENC_TMPDIR: "/client-b" });
+      const optionsA = resolveAgentRuntimeOptions({ AGENC_TMPDIR: clientA });
+      const optionsB = resolveAgentRuntimeOptions({ AGENC_TMPDIR: clientB });
       const [rootA, rootB] = await Promise.all([
         runWithAgentRuntimeOptions(optionsA, async () => {
           await Promise.resolve();
@@ -215,13 +265,55 @@ describe("agent runtime options", () => {
         }),
       ]);
 
-      expect(rootA).toBe("/client-a");
-      expect(rootB).toBe("/client-b");
+      expect(rootA).toBe(realpathSync(clientA));
+      expect(rootB).toBe(realpathSync(clientB));
     } finally {
       if (previous === undefined) delete process.env.TMPDIR;
       else process.env.TMPDIR = previous;
     }
   });
+
+  test("establishes a missing temp root once with private permissions", () => {
+    const root = join(makeTemporaryDirectory(), "missing", "session-root");
+
+    const options = resolveAgentRuntimeOptions({ AGENC_TMPDIR: root });
+
+    expect(options.sessionTempRoot).toBe(realpathSync(root));
+    expect(lstatSync(root).isDirectory()).toBe(true);
+    if (process.platform !== "win32") {
+      expect(lstatSync(root).mode & 0o777).toBe(0o700);
+    }
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "canonicalizes a symlinked temp root after validating its target",
+    () => {
+      const base = makeTemporaryDirectory();
+      const target = join(base, "target");
+      const link = join(base, "selected");
+      mkdirSync(target, { mode: 0o700 });
+      symlinkSync(target, link, "dir");
+
+      const options = resolveAgentRuntimeOptions({ AGENC_TMPDIR: link });
+
+      expect(options.sessionTempRoot).toBe(realpathSync(target));
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "rejects a temp root that is not writable",
+    () => {
+      const root = makeTemporaryDirectory();
+      chmodSync(root, 0o500);
+      try {
+        expect(() =>
+          resolveAgentRuntimeOptions({ AGENC_TMPDIR: root }),
+        ).toThrow("AGENC_TMPDIR must resolve to a writable directory");
+      } finally {
+        chmodSync(root, 0o700);
+      }
+    },
+  );
 
   test("does not treat generic temp variables as session authority", () => {
     const baseline = resolveAgentRuntimeOptions({}).sessionTempRoot;

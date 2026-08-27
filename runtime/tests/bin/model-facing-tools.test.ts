@@ -5171,7 +5171,7 @@ describe("model-facing tools", () => {
         updatedRaw,
       );
     } finally {
-      clearSessionReadState(sessionId);
+      clearSessionReadState(sessionId, tmpdir());
       await rm(workspace, { recursive: true, force: true });
     }
   });
@@ -5207,7 +5207,7 @@ describe("model-facing tools", () => {
       expect(result.content).toContain("File has not been read yet");
       await expect(readFile(notebookPath, "utf8")).resolves.toBe(original);
     } finally {
-      clearSessionReadState(sessionId);
+      clearSessionReadState(sessionId, tmpdir());
       await rm(workspace, { recursive: true, force: true });
     }
   });
@@ -5256,7 +5256,7 @@ describe("model-facing tools", () => {
       expect(result.content).toContain("File has not been read yet");
       await expect(readFile(notebookPath, "utf8")).resolves.toBe(original);
     } finally {
-      clearSessionReadState(sessionId);
+      clearSessionReadState(sessionId, tmpdir());
       await rm(workspace, { recursive: true, force: true });
     }
   });
@@ -5308,7 +5308,7 @@ describe("model-facing tools", () => {
         externallyChanged,
       );
     } finally {
-      clearSessionReadState(sessionId);
+      clearSessionReadState(sessionId, tmpdir());
       await rm(workspace, { recursive: true, force: true });
     }
   });

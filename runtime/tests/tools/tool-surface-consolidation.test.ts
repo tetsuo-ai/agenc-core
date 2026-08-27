@@ -36,6 +36,7 @@ import {
   runWithCurrentRuntimeSession,
   setCurrentRuntimeSession,
 } from "../session/current-session.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import type { Session } from "../session/session.js";
 import { SessionProviderService } from "../session/provider-service.js";
 import { createTestConfigStore } from "../fixtures.js";
@@ -72,6 +73,7 @@ beforeEach(() => {
     services: {
       admissionRequired: false,
       configStore: createTestConfigStore({ cwd: tmpdir() }),
+      runtimeOptions: resolveAgentRuntimeOptions({}),
       providerService: new SessionProviderService({
         initialProvider: { name: "stub-provider" } as never,
         initialProviderName: "grok",
@@ -460,8 +462,8 @@ describe("old-stack tool surface consolidation", () => {
 
       await expect(readFile(filePath, "utf8")).resolves.toBe("new");
     } finally {
-      clearSessionReadState(sessionId);
-      clearSessionReadState(unreadSessionId);
+      clearSessionReadState(sessionId, tmpdir());
+      clearSessionReadState(unreadSessionId, tmpdir());
       await rm(workspace, { recursive: true, force: true });
     }
   });
@@ -577,8 +579,8 @@ describe("old-stack tool surface consolidation", () => {
       expect(updated.cells[0].execution_count).toBeNull();
       expect(updated.cells[0].outputs).toEqual([]);
     } finally {
-      clearSessionReadState(sessionId);
-      clearSessionReadState(unreadSessionId);
+      clearSessionReadState(sessionId, tmpdir());
+      clearSessionReadState(unreadSessionId, tmpdir());
       await rm(workspace, { recursive: true, force: true });
     }
   });
@@ -634,7 +636,7 @@ describe("old-stack tool surface consolidation", () => {
       expect(resultText(result.data)).toContain('"cell_type":"markdown"');
       expect(resultText(result.data)).toContain('"language":"python"');
     } finally {
-      clearSessionReadState(sessionId);
+      clearSessionReadState(sessionId, tmpdir());
       await rm(workspace, { recursive: true, force: true });
     }
   });
@@ -682,7 +684,7 @@ describe("old-stack tool surface consolidation", () => {
 
       expect(resultText(result.data)).toContain('"language":"python"');
     } finally {
-      clearSessionReadState(sessionId);
+      clearSessionReadState(sessionId, tmpdir());
       await rm(workspace, { recursive: true, force: true });
     }
   });
@@ -730,7 +732,7 @@ describe("old-stack tool surface consolidation", () => {
 
       expect(resultText(result.data)).toContain('"language":"python"');
     } finally {
-      clearSessionReadState(sessionId);
+      clearSessionReadState(sessionId, tmpdir());
       await rm(workspace, { recursive: true, force: true });
     }
   });
@@ -788,7 +790,7 @@ describe("old-stack tool surface consolidation", () => {
       expect(resultText(result.data)).toContain('"edit_mode":"delete"');
       expect(resultText(result.data)).not.toContain('"new_source"');
     } finally {
-      clearSessionReadState(sessionId);
+      clearSessionReadState(sessionId, tmpdir());
       await rm(workspace, { recursive: true, force: true });
     }
   });
@@ -822,7 +824,7 @@ describe("old-stack tool surface consolidation", () => {
       expect(resultText(grep.data)).toContain("demo.txt");
       expect(resultText(glob.data)).toContain("demo.txt");
     } finally {
-      clearSessionReadState(sessionId);
+      clearSessionReadState(sessionId, tmpdir());
       await rm(workspace, { recursive: true, force: true });
     }
   });

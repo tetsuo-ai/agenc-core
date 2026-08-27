@@ -172,6 +172,119 @@ function killMarker(marker: string): void {
 }
 
 describe("UnifiedExecProcessManager", () => {
+  test("forces pipe children onto the manager's captured temp root", async () => {
+    const sessionTempRoot = await mkdtemp(
+      join(tmpdir(), "agenc-unified-exec-temp-"),
+    );
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sessionTempRoot,
+      baseEnv: {
+        ...process.env,
+        AGENC_TMPDIR: "/ambient/agenc",
+        TMPDIR: "/ambient/posix",
+        TEMP: "C:\\ambient\\temp",
+        TMP: "C:\\ambient\\tmp",
+      },
+      env: {
+        AGENC_TMPDIR: "/override/agenc",
+        TMPDIR: "/override/posix",
+        TEMP: "C:\\override\\temp",
+        TMP: "C:\\override\\tmp",
+      },
+    });
+    const script =
+      "process.stdout.write(JSON.stringify({" +
+      "agenc:process.env.AGENC_TMPDIR," +
+      "posix:process.env.TMPDIR," +
+      "temp:process.env.TEMP," +
+      "tmp:process.env.TMP}))";
+    try {
+      const result = await manager.execCommand({
+        cmd: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(script)}`,
+        yield_time_ms: 5_000,
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        agenc: sessionTempRoot,
+        posix: sessionTempRoot,
+        temp: sessionTempRoot,
+        tmp: sessionTempRoot,
+      });
+    } finally {
+      await manager.closeAll("test_cleanup");
+    }
+  });
+
+  test("forces PTY children onto the manager's captured temp root", async () => {
+    const sessionTempRoot = join(tmpdir(), "agenc-unified-exec-pty-temp");
+    let spawnedEnvironment: Record<string, string> | undefined;
+    const baseSandboxManager = ptyCompatibleSandboxManager();
+    const manager = new UnifiedExecProcessManager({
+      cwd: process.cwd(),
+      sessionTempRoot,
+      baseEnv: {
+        PATH: process.env.PATH,
+        AGENC_TMPDIR: "/ambient/agenc",
+        TMPDIR: "/ambient/posix",
+        TEMP: "C:\\ambient\\temp",
+        TMP: "C:\\ambient\\tmp",
+      },
+      env: {
+        AGENC_TMPDIR: "/override/agenc",
+        TMPDIR: "/override/posix",
+        TEMP: "C:\\override\\temp",
+        TMP: "C:\\override\\tmp",
+      },
+      sandboxManager: {
+        selectInitial: baseSandboxManager.selectInitial,
+        transform: (request) => {
+          const transformed = baseSandboxManager.transform(request);
+          return {
+            ...transformed,
+            env: {
+              ...transformed.env,
+              AGENC_TMPDIR: "/transform/agenc",
+              TMPDIR: "/transform/posix",
+              TEMP: "C:\\transform\\temp",
+              TMP: "C:\\transform\\tmp",
+            },
+          };
+        },
+      },
+    });
+    installFakePty(manager, (_file, _args, options) => {
+      spawnedEnvironment = options.env;
+    });
+    try {
+      const result = await manager.execCommand({
+        cmd: "exit 0",
+        tty: true,
+        yield_time_ms: 250,
+        runtimeSandbox: {
+          permissionProfile: permissionProfileFromRuntimePermissions(
+            unrestrictedFileSystemPolicy(),
+            "enabled",
+          ),
+          sandboxPolicyCwd: process.cwd(),
+          sessionTempRoot,
+          preference: "require",
+        },
+      });
+
+      expect(result.process_id).toEqual(expect.any(Number));
+      expect(spawnedEnvironment).toMatchObject({
+        AGENC_TMPDIR: sessionTempRoot,
+        TMPDIR: sessionTempRoot,
+        TEMP: sessionTempRoot,
+        TMP: sessionTempRoot,
+      });
+    } finally {
+      await manager.closeAll("test_cleanup");
+    }
+  });
+
   test("keeps Editor acquisition fenced until a yielded process exits", async () => {
     if (process.platform === "win32") return;
     const root = await mkdtemp(join(tmpdir(), "agenc-exec-editor-fence-"));
@@ -707,6 +820,7 @@ describe("UnifiedExecProcessManager", () => {
     const runtimeSandbox = {
       permissionProfile,
       sandboxPolicyCwd: process.cwd(),
+      sessionTempRoot: tmpdir(),
       preference: "require" as const,
     };
     const manager = new UnifiedExecProcessManager({
@@ -731,6 +845,19 @@ describe("UnifiedExecProcessManager", () => {
           runtimeSandbox: {
             ...runtimeSandbox,
             preference: "auto",
+          },
+        }),
+      ).rejects.toMatchObject({
+        code: "write_stdin",
+      } satisfies Partial<UnifiedExecError>);
+      await expect(
+        manager.writeStdin({
+          session_id: sessionId,
+          chars: "",
+          yield_time_ms: 250,
+          runtimeSandbox: {
+            ...runtimeSandbox,
+            sessionTempRoot: join(tmpdir(), "different-session"),
           },
         }),
       ).rejects.toMatchObject({

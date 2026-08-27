@@ -5,14 +5,17 @@ const originalEnv = { ...process.env }
 const originalPlatform = process.platform
 const mockedClipboardPath = join(process.cwd(), 'agenc-clipboard.txt')
 
-const generateTempFilePathMock = vi.fn(() => mockedClipboardPath)
+const disposeTempFileMock = vi.fn()
+const createPrivateTempFileMock = vi.fn(() => ({
+  directory: process.cwd(),
+  path: mockedClipboardPath,
+  dispose: disposeTempFileMock,
+}))
 
 const execFileNoThrowMock = vi.fn(
   async () => ({ code: 0, stdout: '', stderr: '' }),
 )
 const logErrorMock = vi.fn()
-const writeFileMock = vi.fn(async () => {})
-const unlinkMock = vi.fn(async () => {})
 
 function installOscMocks(): void {
   vi.doMock('../../../utils/execFileNoThrow.js', () => ({
@@ -24,13 +27,8 @@ function installOscMocks(): void {
     logError: logErrorMock,
   }))
 
-  vi.doMock('node:fs/promises', () => ({
-    unlink: unlinkMock,
-    writeFile: writeFileMock,
-  }))
-
   vi.doMock('../../../utils/tempfile.js', () => ({
-    generateTempFilePath: generateTempFilePathMock,
+    createPrivateTempFile: createPrivateTempFileMock,
   }))
 }
 
@@ -62,10 +60,9 @@ describe('Windows clipboard fallback', () => {
     vi.resetModules()
     installOscMocks()
     execFileNoThrowMock.mockClear()
-    generateTempFilePathMock.mockClear()
+    createPrivateTempFileMock.mockClear()
+    disposeTempFileMock.mockReset()
     logErrorMock.mockClear()
-    writeFileMock.mockClear()
-    unlinkMock.mockClear()
     process.env = { ...originalEnv }
     delete process.env['SSH_CONNECTION']
     delete process.env['TMUX']
@@ -109,11 +106,19 @@ describe('Windows clipboard fallback', () => {
     expect(windowsCall?.[1]).toContain(
       `$text = [System.IO.File]::ReadAllText('${mockedClipboardPath.replace(/'/g, "''")}', [System.Text.Encoding]::UTF8); Set-Clipboard -Value $text`,
     )
+    expect(createPrivateTempFileMock).toHaveBeenCalledWith({
+      prefix: 'agenc-clipboard',
+      extension: '.txt',
+      content: 'Привет мир',
+    })
+    expect(disposeTempFileMock).toHaveBeenCalledTimes(1)
   })
 
   test('logs Windows clipboard temp-file failures', async () => {
     const writeError = new Error('clipboard temp write failed')
-    writeFileMock.mockRejectedValueOnce(writeError)
+    createPrivateTempFileMock.mockImplementationOnce(() => {
+      throw writeError
+    })
     const { setClipboard } = await importFreshOscModule()
 
     await setClipboard('Привет мир')
@@ -124,7 +129,9 @@ describe('Windows clipboard fallback', () => {
 
   test('logs Windows clipboard temp-file cleanup failures', async () => {
     const unlinkError = new Error('clipboard temp cleanup failed')
-    unlinkMock.mockRejectedValueOnce(unlinkError)
+    disposeTempFileMock.mockImplementationOnce(() => {
+      throw unlinkError
+    })
     const { setClipboard } = await importFreshOscModule()
 
     await setClipboard('Привет мир')
@@ -140,8 +147,8 @@ describe('clipboard path behavior remains stable', () => {
     installOscMocks()
     execFileNoThrowMock.mockClear()
     logErrorMock.mockClear()
-    writeFileMock.mockClear()
-    unlinkMock.mockClear()
+    createPrivateTempFileMock.mockClear()
+    disposeTempFileMock.mockReset()
     process.env = { ...originalEnv }
     delete process.env['SSH_CONNECTION']
     delete process.env['TMUX']

@@ -116,9 +116,10 @@ export function permissionProfileForSandboxMode(
 
 /**
  * Tight profile for plugin-declared MCP stdio servers: read-everything plus
- * write confined to the plugin's data dir (and its `tmp/` subdir, which the
- * transport points TMPDIR at) and the host tmpdir. Deliberately NO writable
- * project root: stricter than the workspace profile under bubblewrap, and —
+ * write confined to the plugin's validated data dir (including its `tmp/`
+ * subdir, which the transport selects as the child temp root). Deliberately
+ * NO writable project root: stricter than the workspace profile under
+ * bubblewrap, and —
  * because the writable roots carry no existing `.git`/`.agenc` carve-outs —
  * fully expressible by the Landlock fallback, so plugin MCP servers keep
  * working on hosts where bubblewrap is unusable.
@@ -131,11 +132,6 @@ export function pluginMcpPermissionProfile(metadata: {
       [
         rootEntry("read"),
         { path: { kind: "path", path: metadata.pluginDataDir }, access: "write" },
-        {
-          path: { kind: "path", path: path.join(metadata.pluginDataDir, "tmp") },
-          access: "write",
-        },
-        tmpdirEntry(),
       ],
       { includePlatformDefaults: true },
     ),
@@ -309,12 +305,25 @@ export function enforceRuntimeSandboxAttempt(
   input: RuntimeSandboxEnforcementInput,
 ): void {
   const cwd = runtimeCwd(input.context);
+  const sessionTempRoot = (
+    input.context.invocation.session as {
+      readonly services?: {
+        readonly runtimeOptions?: { readonly sessionTempRoot?: unknown };
+      };
+    }
+  ).services?.runtimeOptions?.sessionTempRoot;
+  if (typeof sessionTempRoot !== "string" || !path.isAbsolute(sessionTempRoot)) {
+    throw new Error(
+      "[sandbox_surface_uncovered] authenticated runtime session has no absolute captured temp-root authority",
+    );
+  }
   const profile = permissionProfileForRuntimeContext(input.context, { cwd });
   const policy = compatibilitySandboxPolicyForPermissionProfile(
     profile,
     profile.fileSystem,
     profile.network,
     cwd,
+    sessionTempRoot,
   );
   if (policy.kind === "danger_full_access" || policy.kind === "external_sandbox") {
     return;
@@ -348,7 +357,13 @@ export function enforceRuntimeSandboxAttempt(
       },
     );
   }
-  enforceRuntimeReadSandboxAttempt(input, policy, cwd, profile.fileSystem);
+  enforceRuntimeReadSandboxAttempt(
+    input,
+    policy,
+    cwd,
+    profile.fileSystem,
+    sessionTempRoot,
+  );
   if (input.tool.name === "write_stdin") {
     if (!platformSandbox.available) {
       throw new SandboxDeniedError(
@@ -393,7 +408,14 @@ export function enforceRuntimeSandboxAttempt(
   }
 
   for (const target of writes.targets) {
-    if (!canWritePathWithCwd(profile.fileSystem, target, cwd)) {
+    if (
+      !canWritePathWithCwd(
+        profile.fileSystem,
+        target,
+        cwd,
+        sessionTempRoot,
+      )
+    ) {
       throw new SandboxDeniedError(
         `sandbox workspace_write blocked write outside workspace: ${target}`,
         {
@@ -428,6 +450,7 @@ function enforceRuntimeReadSandboxAttempt(
   policy: SandboxPolicy,
   cwd: string,
   fileSystemPolicy: EngineFileSystemSandboxPolicy,
+  sessionTempRoot: string,
 ): void {
   if (policy.kind !== "read_only") return;
   const shell = analyzeShellRuntimeAccess(input.tool, input.args, cwd);
@@ -443,7 +466,10 @@ function enforceRuntimeReadSandboxAttempt(
     );
   }
   for (const target of shell.readTargets) {
-    if (isPathUnder(target, cwd) && canReadPathWithCwd(fileSystemPolicy, target, cwd)) {
+    if (
+      isPathUnder(target, cwd) &&
+      canReadPathWithCwd(fileSystemPolicy, target, cwd, sessionTempRoot)
+    ) {
       continue;
     }
     throw new SandboxDeniedError(

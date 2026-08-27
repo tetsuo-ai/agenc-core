@@ -1,6 +1,45 @@
-import { isEnvTruthy } from './envUtils.js'
+import { isEnvTruthy } from './envBoolean.js'
 import { isSecretEnvKey } from './secretEnv.js'
 import { assertNoObsoleteConfigEnvironment } from '../config/env.js'
+import { isAbsolute, normalize } from 'node:path'
+
+const CHILD_TEMP_AUTHORITY_KEYS = new Set([
+  'AGENC_TMPDIR',
+  'TMPDIR',
+  'TEMP',
+  'TMP',
+])
+
+/** True when an environment key can select a child process's temp root. */
+export function isChildTempAuthorityKey(key: string): boolean {
+  return CHILD_TEMP_AUTHORITY_KEYS.has(key.toUpperCase())
+}
+
+/**
+ * Install one captured temp-root authority at the final child-spawn boundary.
+ * Ambient and caller-supplied aliases are removed case-insensitively first so
+ * platform-specific environment handling cannot select a second root.
+ */
+export function withChildTempAuthority(
+  environment: Readonly<Record<string, string | undefined>>,
+  sessionTempRoot: string,
+): Record<string, string> {
+  const trimmedRoot = sessionTempRoot.trim()
+  if (trimmedRoot.length === 0 || !isAbsolute(trimmedRoot)) {
+    throw new Error('child process temp root must be a non-empty absolute path')
+  }
+  const root = normalize(trimmedRoot)
+  const childEnvironment: Record<string, string> = {}
+  for (const [key, value] of Object.entries(environment)) {
+    if (value === undefined || isChildTempAuthorityKey(key)) continue
+    childEnvironment[key] = value
+  }
+  childEnvironment.AGENC_TMPDIR = root
+  childEnvironment.TMPDIR = root
+  childEnvironment.TEMP = root
+  childEnvironment.TMP = root
+  return childEnvironment
+}
 
 /**
  * Env vars stripped from EVERY subprocess environment by default.

@@ -96,6 +96,7 @@ function openRolloutStore(opts: {
     cwd: opts.cwd,
     sessionId: opts.sessionId,
     agencVersion: "0.2.0",
+    sessionTempRoot: tmpdir(),
     ...(opts.resume ? { resume: true } : {}),
   });
   store.open({

@@ -45,7 +45,7 @@ describe("Write tool", () => {
   });
 
   afterEach(async () => {
-    clearSessionReadState(sessionId);
+    clearSessionReadState(sessionId, tmpdir());
     clearAllPlanSlugs();
     if (root) await rm(root, { recursive: true, force: true });
     root = "";

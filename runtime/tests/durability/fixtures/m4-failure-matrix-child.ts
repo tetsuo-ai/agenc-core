@@ -132,6 +132,7 @@ async function openRolloutSession(
     cwd: paths.cwd,
     sessionId: RUN_ID,
     agencVersion: "0.6.2",
+    sessionTempRoot: paths.root,
     autoStartScheduler: false,
     ...(options.resume === true ? { resume: true } : {}),
   });

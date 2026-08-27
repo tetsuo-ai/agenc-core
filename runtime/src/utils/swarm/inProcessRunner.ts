@@ -920,11 +920,19 @@ function createTeammateRolloutOwner(params: {
       'in-process teammate rollout requires canonical ConfigStore home authority',
     )
   }
+  const sessionTempRoot =
+    params.parentSession.services.runtimeOptions.sessionTempRoot
+  if (sessionTempRoot === undefined) {
+    throw new Error(
+      'in-process teammate rollout requires captured session temp authority',
+    )
+  }
   const store = new RolloutStore({
     cwd: params.cwd,
     sessionId,
     agencVersion: VERSION,
     agencHome,
+    sessionTempRoot,
   })
   store.open({
     sessionId,

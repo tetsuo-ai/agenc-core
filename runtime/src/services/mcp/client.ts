@@ -78,7 +78,10 @@ import {
 } from '../../utils/mcpValidation.js'
 import { WebSocketTransport } from '../../utils/mcpWebSocketTransport.js'
 import { memoizeWithLRU } from '../../utils/memoize.js'
-import type { AgentRuntimeOptions } from '../../session/runtime-options.js'
+import {
+  resolveSessionTempRoot,
+  type AgentRuntimeOptions,
+} from '../../session/runtime-options.js'
 import { getWebSocketTLSOptions } from '../../utils/mtls.js'
 import {
   getProxyFetchOptions,
@@ -87,7 +90,10 @@ import {
 } from '../../utils/proxy.js'
 import { recursivelySanitizeUnicode } from '../../utils/sanitization.js'
 import { getSessionIngressAuthToken } from '../../utils/sessionIngressAuth.js'
-import { subprocessEnv } from '../../utils/subprocessEnv.js'
+import {
+  subprocessEnv,
+  withChildTempAuthority,
+} from '../../utils/subprocessEnv.js'
 import {
   isPersistError,
   persistToolResult,
@@ -470,10 +476,14 @@ function getServerCacheKey(
   const commandWrapperKey = options?.runtimeOptions?.commandWrapperArgv === undefined
     ? ''
     : `-command-wrapper-${jsonStringify(options.runtimeOptions.commandWrapperArgv)}`
+  const sessionTempRootKey =
+    serverRef.type === 'stdio' || serverRef.type === undefined
+      ? `-session-temp-${jsonStringify(mcpSessionTempRoot(options))}`
+      : ''
   if (options?.samplingHandlers === undefined) {
-    return `${baseKey}${homeKey}${environmentKey}${commandWrapperKey}`
+    return `${baseKey}${homeKey}${environmentKey}${commandWrapperKey}${sessionTempRootKey}`
   }
-  return `${baseKey}${homeKey}${environmentKey}${commandWrapperKey}-sampling-${options.samplingCacheKey ?? 'anonymous'}`
+  return `${baseKey}${homeKey}${environmentKey}${commandWrapperKey}${sessionTempRootKey}-sampling-${options.samplingCacheKey ?? 'anonymous'}`
 }
 
 interface ConnectToServerOptions {
@@ -482,6 +492,10 @@ interface ConnectToServerOptions {
   readonly runtimeOptions?: AgentRuntimeOptions
   readonly samplingHandlers?: McpSamplingHandlers
   readonly samplingCacheKey?: string
+}
+
+function mcpSessionTempRoot(options: ConnectToServerOptions | undefined): string {
+  return options?.runtimeOptions?.sessionTempRoot ?? resolveSessionTempRoot()
 }
 
 const EMPTY_MCP_ENVIRONMENT: ProviderEnvironment = Object.freeze({})
@@ -959,10 +973,13 @@ export const connectToServer = memoize(
         transport = new StdioClientTransport({
           command: finalCommand,
           args: finalArgs,
-          env: {
-            ...subprocessEnv({ ...environment }),
-            ...serverRef.env,
-          } as Record<string, string>,
+          env: withChildTempAuthority(
+            {
+              ...subprocessEnv({ ...environment }),
+              ...serverRef.env,
+            },
+            mcpSessionTempRoot(options),
+          ),
           stderr: 'pipe', // prevents error output from the MCP server from printing to the UI
         })
       } else {
@@ -1379,7 +1396,7 @@ export const connectToServer = memoize(
         )
 
         // Clear the memoization cache so next operation reconnects
-        const key = getServerCacheKey(name, serverRef)
+        const key = getServerCacheKey(name, serverRef, undefined, options)
 
         // Also clear fetch caches (keyed by server name). Reconnection
         // creates a new connection object; without clearing, the next

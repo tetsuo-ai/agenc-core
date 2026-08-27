@@ -15,7 +15,6 @@
  */
 
 import { mkdir, mkdtemp, open, rm, stat, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import {
   dirname,
   isAbsolute,
@@ -29,6 +28,7 @@ import { performance } from "node:perf_hooks";
 
 import ignore from "ignore";
 
+import { resolveSessionTempRoot } from "../../session/runtime-options.js";
 import { scrubEnvForChildProcess } from "../../unified-exec/scrub-env.js";
 import {
   beginWorkspaceReadToolOperation,
@@ -2440,7 +2440,7 @@ async function pinnedSnapshotPathEligibility(params: {
     return { error: `Grep error: ${formatBoundaryError(error)}` };
   }
   const temporaryRoot = await mkdtemp(
-    join(tmpdir(), "agenc-grep-path-oracle-"),
+    join(resolveSessionTempRoot(), "agenc-grep-path-oracle-"),
   );
   params.onTemporaryRoot?.(temporaryRoot);
   try {
@@ -3193,7 +3193,7 @@ async function collectDescriptorBoundContentFromSpool(params: {
   const ripgrepPath = selectPinnedRipgrepPath();
   if (ripgrepPath === undefined) return pinnedRipgrepUnavailableResult();
   const temporaryRoot = await mkdtemp(
-    join(tmpdir(), "agenc-grep-candidate-spool-"),
+    join(resolveSessionTempRoot(), "agenc-grep-candidate-spool-"),
   );
   const spoolPath = join(temporaryRoot, "candidates.bin");
   const discoveryReadCapability =

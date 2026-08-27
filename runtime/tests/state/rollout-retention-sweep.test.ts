@@ -414,6 +414,7 @@ describe("pruneRolloutSessions", () => {
       cwd,
       sessionId: runId,
       agencVersion: "0.6.2",
+      sessionTempRoot: tmpdir(),
       resume: true,
       autoStartScheduler: false,
     });

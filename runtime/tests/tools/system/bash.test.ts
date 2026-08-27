@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { basename, join, sep } from "node:path";
 
 vi.mock("../../../src/utils/supervisedProcess.js", async () => {
   const actual = await vi.importActual<
@@ -41,6 +41,10 @@ import {
   DANGEROUS_SHELL_PATTERNS,
 } from "./types.js";
 import type { Logger } from "../../utils/logger.js";
+import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from "../../../src/session/runtime-options.js";
 
 // Mock the process-creation calls owned by this suite while preserving the
 // synchronous executable-resolution helpers used by the containment layer.
@@ -77,6 +81,8 @@ const mockStatSync = vi.mocked(statSync);
 const mockRunSupervisedProcess = vi.mocked(runSupervisedProcess);
 
 const SHELL_PROCESS_NAMES = new Set(["bash", "sh", "zsh", "dash"]);
+const SHELL_SCRIPT_PATH_RE =
+  /(?:^|[\\/])agenc-sh-[^\\/]+[\\/]command\.sh$/u;
 
 function supervisedResult(
   fields: Partial<SupervisedProcessResult> = {},
@@ -653,13 +659,13 @@ describe("system.bash tool", () => {
     expect(parsed.exitCode).toBe(0);
     expect(mockExecFile).not.toHaveBeenCalled();
     expect(writeFileSync).toHaveBeenCalledWith(
-      expect.stringMatching(/agenc-sh-[a-f0-9]+\.sh$/),
+      expect.stringMatching(SHELL_SCRIPT_PATH_RE),
       "cd /tmp/project && pwd",
-      { mode: 0o700 },
+      { flag: "wx", mode: 0o700 },
     );
     expect(mockSpawn).toHaveBeenCalledWith(
       "/bin/bash",
-      [expect.stringMatching(/agenc-sh-[a-f0-9]+\.sh$/)],
+      [expect.stringMatching(SHELL_SCRIPT_PATH_RE)],
       expect.any(Object),
     );
   });
@@ -1038,13 +1044,13 @@ describe("system.bash tool", () => {
     // Shell mode: routed through spawn with temp script, not rejected
     expect(result.isError).toBeUndefined();
     expect(writeFileSync).toHaveBeenCalledWith(
-      expect.stringMatching(/agenc-sh-[0-9a-f]+\.sh$/),
+      expect.stringMatching(SHELL_SCRIPT_PATH_RE),
       "ls -la /tmp",
-      { mode: 0o700 },
+      { flag: "wx", mode: 0o700 },
     );
     const [cmd, args] = mockSpawn.mock.calls[0];
     expect(cmd).toBe("/bin/bash");
-    expect(args[0]).toMatch(/agenc-sh-[0-9a-f]+\.sh$/);
+    expect(args[0]).toMatch(SHELL_SCRIPT_PATH_RE);
   });
 
   it("rejects shell-like command strings when shellMode is disabled", async () => {
@@ -1089,7 +1095,7 @@ describe("system.bash tool", () => {
     expect(mockExecFile).not.toHaveBeenCalled();
     expect(mockSpawn).toHaveBeenCalledWith(
       "/bin/bash",
-      [expect.stringMatching(/(?:^|[\\/])agenc-sh-[0-9a-f]+\.sh$/)],
+      [expect.stringMatching(SHELL_SCRIPT_PATH_RE)],
       expect.any(Object),
     );
     expect(parseContent(result).stdout).toContain("/tmp");
@@ -1345,6 +1351,45 @@ describe("system.bash tool", () => {
   // ---- Shell mode execution (uses spawn, not execFile) ----
 
   describe("shell mode", () => {
+    it("isolates private script artifacts across concurrent session temp roots", async () => {
+      const rootA = mkdtempSync(join(tmpdir(), "agenc-bash-session-a-"));
+      const rootB = mkdtempSync(join(tmpdir(), "agenc-bash-session-b-"));
+      mockSpawnSuccess();
+      try {
+        await Promise.all([
+          runWithAgentRuntimeOptions(
+            resolveAgentRuntimeOptions({}, { sessionTempRoot: rootA }),
+            async () => {
+              await Promise.resolve();
+              await createBashTool().execute({ command: "printf a | cat" });
+            },
+          ),
+          runWithAgentRuntimeOptions(
+            resolveAgentRuntimeOptions({}, { sessionTempRoot: rootB }),
+            async () => {
+              await Promise.resolve();
+              await createBashTool().execute({ command: "printf b | cat" });
+            },
+          ),
+        ]);
+
+        const calls = vi.mocked(writeFileSync).mock.calls;
+        const pathA = String(
+          calls.find((call) => call[1] === "printf a | cat")?.[0],
+        );
+        const pathB = String(
+          calls.find((call) => call[1] === "printf b | cat")?.[0],
+        );
+        expect(pathA.startsWith(`${rootA}${sep}`)).toBe(true);
+        expect(pathB.startsWith(`${rootB}${sep}`)).toBe(true);
+        expect(pathA).toMatch(SHELL_SCRIPT_PATH_RE);
+        expect(pathB).toMatch(SHELL_SCRIPT_PATH_RE);
+      } finally {
+        rmSync(rootA, { recursive: true, force: true });
+        rmSync(rootB, { recursive: true, force: true });
+      }
+    });
+
     it("executes pipe commands via spawn with temp script", async () => {
       const tool = createBashTool();
       mockSpawnSuccess("5\n");
@@ -1355,14 +1400,14 @@ describe("system.bash tool", () => {
       expect(result.isError).toBeUndefined();
       // Verify temp script was written with the command
       expect(writeFileSync).toHaveBeenCalledWith(
-        expect.stringMatching(/agenc-sh-[0-9a-f]+\.sh$/),
+        expect.stringMatching(SHELL_SCRIPT_PATH_RE),
         "cat /tmp/data.txt | wc -l",
-        { mode: 0o700 },
+        { flag: "wx", mode: 0o700 },
       );
       const [cmd, args] = mockSpawn.mock.calls[0];
       expect(cmd).toBe("/bin/bash");
       expect(args).toHaveLength(1);
-      expect(args[0]).toMatch(/agenc-sh-[0-9a-f]+\.sh$/);
+      expect(args[0]).toMatch(SHELL_SCRIPT_PATH_RE);
       expect(parseContent(result).exitCode).toBe(0);
     });
 
@@ -1399,13 +1444,13 @@ describe("system.bash tool", () => {
 
       await tool.execute({ command: "echo hello > /tmp/out.txt" });
       expect(writeFileSync).toHaveBeenCalledWith(
-        expect.stringMatching(/agenc-sh-[0-9a-f]+\.sh$/),
+        expect.stringMatching(SHELL_SCRIPT_PATH_RE),
         "echo hello > /tmp/out.txt",
-        { mode: 0o700 },
+        { flag: "wx", mode: 0o700 },
       );
       const [cmd, args] = mockSpawn.mock.calls[0];
       expect(cmd).toBe("/bin/bash");
-      expect(args[0]).toMatch(/agenc-sh-[0-9a-f]+\.sh$/);
+      expect(args[0]).toMatch(SHELL_SCRIPT_PATH_RE);
     });
 
     it("executes backgrounded commands via spawn with temp script", async () => {
@@ -1414,13 +1459,13 @@ describe("system.bash tool", () => {
 
       const result = await tool.execute({ command: "sleep 1 &" });
       expect(writeFileSync).toHaveBeenCalledWith(
-        expect.stringMatching(/agenc-sh-[0-9a-f]+\.sh$/),
+        expect.stringMatching(SHELL_SCRIPT_PATH_RE),
         "sleep 1 &",
-        { mode: 0o700 },
+        { flag: "wx", mode: 0o700 },
       );
       const [cmd, args] = mockSpawn.mock.calls[0];
       expect(cmd).toBe("/bin/bash");
-      expect(args[0]).toMatch(/agenc-sh-[0-9a-f]+\.sh$/);
+      expect(args[0]).toMatch(SHELL_SCRIPT_PATH_RE);
       expect(parseContent(result).exitCode).toBe(0);
     });
 
@@ -1432,13 +1477,13 @@ describe("system.bash tool", () => {
         command: "mkdir -p /tmp/test && cd /tmp/test && echo done",
       });
       expect(writeFileSync).toHaveBeenCalledWith(
-        expect.stringMatching(/agenc-sh-[0-9a-f]+\.sh$/),
+        expect.stringMatching(SHELL_SCRIPT_PATH_RE),
         "mkdir -p /tmp/test && cd /tmp/test && echo done",
-        { mode: 0o700 },
+        { flag: "wx", mode: 0o700 },
       );
       const [cmd, args] = mockSpawn.mock.calls[0];
       expect(cmd).toBe("/bin/bash");
-      expect(args[0]).toMatch(/agenc-sh-[0-9a-f]+\.sh$/);
+      expect(args[0]).toMatch(SHELL_SCRIPT_PATH_RE);
     });
 
     it("handles exit code from shell commands", async () => {

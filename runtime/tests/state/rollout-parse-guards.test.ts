@@ -103,6 +103,7 @@ describe("rollout parse guards — corrupt interior line", () => {
       cwd,
       sessionId: "disk-thread",
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
     });
     rollout.open({
       sessionId: "disk-thread",

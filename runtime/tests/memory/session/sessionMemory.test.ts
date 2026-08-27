@@ -613,7 +613,7 @@ describe("session memory runtime", () => {
     expect(
       getSessionReadSnapshot("child-session-2", memoryPath)?.rawContent,
     ).toContain("# Current State");
-    clearSessionReadState("child-session-2");
+    clearSessionReadState("child-session-2", tmpdir());
   });
 
   it("passes live system and user context to the child updater", async () => {

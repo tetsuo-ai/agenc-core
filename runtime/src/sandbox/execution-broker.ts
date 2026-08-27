@@ -50,6 +50,7 @@ import {
   registerSandboxPreparedSpawn,
   type SandboxPreparedSpawn,
 } from "./execution-prepared-spawn.js";
+import { resolveSessionTempRoot } from "../session/runtime-options.js";
 
 export {
   SandboxExecutionLeaseCleanupError,
@@ -154,6 +155,7 @@ export interface SandboxExecutionBrokerLike {
   readonly mode: SandboxMode;
   readonly required: boolean;
   readonly cwd: string;
+  readonly sessionTempRoot: string;
   /** Zero for a root session; increments for each isolated child authority. */
   readonly forkDepth?: number;
   /** Permanent authority poison set after a lifecycle rollback cannot recover. */
@@ -234,6 +236,7 @@ export interface SandboxExecutionBrokerOptions {
   readonly mode: SandboxMode;
   readonly cwd: string;
   readonly env?: NodeJS.ProcessEnv;
+  readonly sessionTempRoot?: string;
   readonly agencLinuxSandboxExe?: string;
   readonly windowsSandboxLevel?: UnifiedExecRuntimeSandbox["windowsSandboxLevel"];
   readonly windowsSandboxPrivateDesktop?: boolean;
@@ -499,6 +502,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
   readonly #platform: NodeJS.Platform;
   readonly #sandboxManager: SandboxExecutionManager;
   readonly #explicitLinuxHelper: string | undefined;
+  readonly #sessionTempRoot: string;
   #windowsSandboxLevel: NonNullable<
     UnifiedExecRuntimeSandbox["windowsSandboxLevel"]
   >;
@@ -528,6 +532,11 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     this.#platform = options.platform ?? process.platform;
     this.#sandboxManager = options.sandboxManager ?? defaultSandboxManager;
     this.#explicitLinuxHelper = options.agencLinuxSandboxExe;
+    const sessionTempRoot = options.sessionTempRoot ?? resolveSessionTempRoot();
+    if (!path.isAbsolute(sessionTempRoot)) {
+      throw new Error("sandbox session temp root must be an absolute path");
+    }
+    this.#sessionTempRoot = path.normalize(sessionTempRoot);
     this.#windowsSandboxLevel = options.windowsSandboxLevel ?? "disabled";
     this.#windowsSandboxPrivateDesktop =
       options.windowsSandboxPrivateDesktop ?? false;
@@ -553,6 +562,10 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
 
   get cwd(): string {
     return this.#cwd;
+  }
+
+  get sessionTempRoot(): string {
+    return this.#sessionTempRoot;
   }
 
   get mode(): SandboxMode {
@@ -884,6 +897,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
       mode: this.mode,
       cwd: resolvedCwd,
       env: this.#env,
+      sessionTempRoot: this.#sessionTempRoot,
       ...(this.#explicitLinuxHelper !== undefined
         ? { agencLinuxSandboxExe: this.#explicitLinuxHelper }
         : {}),
@@ -956,6 +970,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
           cwd: this.#cwd,
         }),
       sandboxPolicyCwd: this.#cwd,
+      sessionTempRoot: this.#sessionTempRoot,
       preference: "require",
       ...(status.helperPath !== undefined
         ? { agencLinuxSandboxExe: status.helperPath }
@@ -1026,6 +1041,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
             effectiveProfile.fileSystem,
             resolvedProgram,
             this.#cwd,
+            runtimeSandbox?.sessionTempRoot ?? this.#sessionTempRoot,
           )
         ) {
           throw new UnifiedExecError(
@@ -1220,6 +1236,7 @@ export class SandboxExecutionBroker implements SandboxExecutionBrokerLike {
     const plan = this.#planLandlockPolicy({
       fileSystem: effectiveProfile.fileSystem,
       sandboxPolicyCwd: this.#cwd,
+      sessionTempRoot: runtimeSandbox.sessionTempRoot,
       allowNetworkForProxy: false,
       inheritedCwd: false,
     });
@@ -1754,6 +1771,7 @@ export function transformSandboxedCommand(params: SandboxSpawnCommand & {
         ? { blockedRequestObserver: params.runtimeSandbox.blockedRequestObserver }
         : {}),
       sandboxPolicyCwd: params.runtimeSandbox.sandboxPolicyCwd,
+      sessionTempRoot: params.runtimeSandbox.sessionTempRoot,
       ...(params.runtimeSandbox.agencLinuxSandboxExe !== undefined
         ? { agencLinuxSandboxExe: params.runtimeSandbox.agencLinuxSandboxExe }
         : {}),

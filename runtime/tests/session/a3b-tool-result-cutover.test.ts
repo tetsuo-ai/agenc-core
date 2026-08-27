@@ -481,6 +481,7 @@ describe("A3b atomic legacy publication", () => {
       cwd,
       sessionId,
       agencVersion: "0.13.0",
+      sessionTempRoot: tmpdir(),
       resume: true,
       autoStartScheduler: false,
       beforeCheckpointUpgradePublishForTestingOnly: () => {
@@ -580,6 +581,7 @@ describe("A3b atomic legacy publication", () => {
       cwd,
       sessionId,
       agencVersion: "0.13.0",
+      sessionTempRoot: tmpdir(),
       resume: true,
       autoStartScheduler: false,
     });
@@ -661,6 +663,7 @@ function openRollout(params: {
     cwd,
     sessionId: params.sessionId,
     agencVersion: params.meta.agencVersion,
+    sessionTempRoot: tmpdir(),
     autoStartScheduler: false,
     ...(params.resume === true ? { resume: true } : {}),
   });

@@ -16,6 +16,11 @@ let currentRuntimeSession: Session | null = null;
  */
 const trackedFallbackSessions = new Set<Session>();
 
+/** Return only the session bound to the current async execution context. */
+export function peekScopedRuntimeSession(): Session | null {
+  return scopedRuntimeSession.getStore() ?? null;
+}
+
 export function setCurrentRuntimeSession(session: Session | null): void {
   if (session !== null) trackedFallbackSessions.add(session);
   currentRuntimeSession = session;

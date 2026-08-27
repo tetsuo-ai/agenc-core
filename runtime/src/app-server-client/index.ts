@@ -805,6 +805,7 @@ async function createBoundAgenCDaemonOnlyTuiContext(
       // execution policy must follow the attached worktree/session cwd.
       cwd: options.cwd,
       env,
+      sessionTempRoot: runtimeOptions.sessionTempRoot,
       allowGpu: effectiveConfig.sandbox?.allow_gpu === true,
     });
     const activeSandboxExecutionBroker = sandboxExecutionBroker;

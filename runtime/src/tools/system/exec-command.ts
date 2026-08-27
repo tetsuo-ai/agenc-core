@@ -141,6 +141,22 @@ export function runtimeSandboxForExec(
   const sandboxPolicyCwd = resolve(
     stringValue(turn.cwd) ?? fallbackCwd,
   );
+  const sessionTempRoot =
+    context.invocation.session.services.runtimeOptions.sessionTempRoot;
+  if (sessionTempRoot === undefined) {
+    throw new SandboxExecutionError({
+      code: "sandbox_surface_uncovered",
+      surface: executionSurface,
+      status: {
+        kind: "unavailable",
+        mode: context.sandboxMode,
+        platform: process.platform,
+        reason:
+          "authenticated runtime session has no captured temp-root authority",
+        remediation: "Create the session through the canonical runtime ingress.",
+      },
+    });
+  }
   const network = networkPolicy(turn.networkSandboxPolicy);
   const networkInterfaces = networkPolicyInterfaces(turn.network);
   return {
@@ -152,6 +168,7 @@ export function runtimeSandboxForExec(
       ? { additionalPermissions: context.additionalPermissions }
       : {}),
     sandboxPolicyCwd,
+    sessionTempRoot,
     preference: "require",
     ...(booleanValue(turn.config?.sandboxAllowGpu) === true
       ? { allowGpu: true }

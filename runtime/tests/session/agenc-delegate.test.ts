@@ -283,6 +283,7 @@ function mountTestRollout(session: Session): RolloutStore {
     cwd,
     sessionId: session.conversationId,
     agencVersion: "0.2.0",
+    sessionTempRoot: tmpdir(),
     agencHome: requireTestConfigHome(session),
   });
   store.open({

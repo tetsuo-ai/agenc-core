@@ -6,7 +6,7 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { basename, resolve } from "node:path";
+import { basename, isAbsolute, normalize, resolve } from "node:path";
 import type { Writable } from "node:stream";
 import treeKill from "tree-kill";
 
@@ -50,6 +50,7 @@ import {
   isSecretEnvKey,
 } from "../unified-exec/scrub-env.js";
 import { isRecord } from "../utils/record.js";
+import { resolveSessionTempRoot } from "../session/runtime-options.js";
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_OUTPUT_BYTES_CAP = 1024 * 1024;
@@ -120,6 +121,7 @@ export type CommandExecSandboxManager = Pick<
 
 export interface AgenCCommandExecServiceOptions {
   readonly sandboxManager?: CommandExecSandboxManager;
+  readonly sessionTempRoot?: string;
   readonly agencLinuxSandboxExe?: string;
   readonly windowsSandboxLevel?: WindowsSandboxLevel;
   readonly windowsSandboxPrivateDesktop?: boolean;
@@ -201,6 +203,7 @@ export class AgenCCommandExecService implements AgenCCommandExec {
   readonly #sessions = new Map<string, CommandExecSession>();
   readonly #keysByConnection = new Map<string, Set<string>>();
   readonly #sandboxManager: CommandExecSandboxManager;
+  readonly #sessionTempRoot: string;
   readonly #agencLinuxSandboxExe: string | undefined;
   readonly #windowsSandboxLevel: WindowsSandboxLevel;
   readonly #windowsSandboxPrivateDesktop: boolean;
@@ -210,6 +213,11 @@ export class AgenCCommandExecService implements AgenCCommandExec {
 
   constructor(options: AgenCCommandExecServiceOptions = {}) {
     this.#sandboxManager = options.sandboxManager ?? new SandboxManager();
+    const sessionTempRoot = options.sessionTempRoot ?? resolveSessionTempRoot();
+    if (!isAbsolute(sessionTempRoot)) {
+      throw new Error("command exec session temp root must be an absolute path");
+    }
+    this.#sessionTempRoot = normalize(sessionTempRoot);
     this.#agencLinuxSandboxExe = options.agencLinuxSandboxExe;
     this.#windowsSandboxLevel = options.windowsSandboxLevel ?? "disabled";
     this.#windowsSandboxPrivateDesktop =
@@ -547,6 +555,7 @@ export class AgenCCommandExecService implements AgenCCommandExec {
           sandboxRequest.permissionProfile.fileSystem,
           linuxSandboxExe,
           sandboxRequest.sandboxPolicyCwd,
+          this.#sessionTempRoot,
         )
       ) {
         throw new Error(
@@ -560,6 +569,7 @@ export class AgenCCommandExecService implements AgenCCommandExec {
       sandbox,
       enforceManagedNetwork: false,
       sandboxPolicyCwd: sandboxRequest.sandboxPolicyCwd,
+      sessionTempRoot: this.#sessionTempRoot,
       ...(linuxSandboxExe !== undefined
         ? { agencLinuxSandboxExe: linuxSandboxExe }
         : {}),

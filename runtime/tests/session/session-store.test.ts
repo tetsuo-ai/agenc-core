@@ -1324,6 +1324,7 @@ describe("session-store", () => {
       cwd: "/home/test-session-emit",
       sessionId: "sess-emit",
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
       autoStartScheduler: false,
     });
     rolloutStore.open({
@@ -1374,6 +1375,7 @@ describe("session-store", () => {
       cwd: "/home/test-session-derived",
       sessionId: "sess-derived",
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
       autoStartScheduler: false,
     });
     rolloutStore.open({
@@ -1506,6 +1508,7 @@ describe("session-store", () => {
       cwd: "/home/test-session-fsync-failure",
       sessionId: "sess-fsync-failure",
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
       autoStartScheduler: false,
     });
     rolloutStore.open({
@@ -1653,6 +1656,7 @@ describe("session-store", () => {
       cwd: "/home/test-rollout-flush-failure",
       sessionId: "sess-rollout-flush-failure",
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
       autoStartScheduler: false,
     });
     rollout.open({
@@ -1693,6 +1697,7 @@ describe("session-store", () => {
       cwd: "/home/test-explicit-tail-sync",
       sessionId: "sess-explicit-tail-sync",
       agencVersion: "0.2.0",
+      sessionTempRoot: tmpdir(),
       autoStartScheduler: false,
     });
     rollout.open({

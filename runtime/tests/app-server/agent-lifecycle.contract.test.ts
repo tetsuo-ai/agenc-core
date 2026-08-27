@@ -103,6 +103,7 @@ function openRollout(
     cwd,
     sessionId,
     agencVersion: "0.2.0",
+    sessionTempRoot: tmpdir(),
   });
   rollout.open({
     sessionId,

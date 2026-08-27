@@ -1,9 +1,21 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import {
+  accessSync,
+  chmodSync,
+  constants as fsConstants,
+  lstatSync,
+  mkdirSync,
+  realpathSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, normalize } from "node:path";
 import { parse as parseShellWords, type ParseEntry } from "shell-quote";
 import { isSupportedPosixShellPath } from "../utils/shell/posixShellPath.js";
-import { getCurrentRuntimeSession } from "./current-session.js";
+import {
+  getCurrentRuntimeSession,
+  peekScopedRuntimeSession,
+} from "./current-session.js";
+import { withChildTempAuthority } from "../utils/subprocessEnv.js";
 
 /**
  * Session-scoped operator inputs that must never be inherited from the
@@ -19,7 +31,7 @@ export interface AgentRuntimeOptions {
   readonly coworkMemoryExtraGuidelines?: string;
   readonly posixShellPath?: string;
   readonly commandWrapperArgv?: readonly string[];
-  readonly sessionTempRoot?: string;
+  readonly sessionTempRoot: string;
   readonly pluginStorageRoot?: string;
   readonly allowUntrustedHooks: boolean;
 }
@@ -42,7 +54,12 @@ export function resolveCommandExecutionAuthority(
     commandWrapperArgv: Object.freeze([
       ...(options.commandWrapperArgv ?? []),
     ]),
-    childEnvironment: Object.freeze({ ...scrubbedChildEnvironment }),
+    childEnvironment: Object.freeze(
+      withChildTempAuthority(
+        scrubbedChildEnvironment,
+        options.sessionTempRoot,
+      ),
+    ),
   });
 }
 
@@ -70,9 +87,9 @@ export function peekAgentRuntimeOptions(): AgentRuntimeOptions | undefined {
 
 /** Resolve the immutable runtime options owned by the active session/startup. */
 export function getActiveAgentRuntimeOptions(): AgentRuntimeOptions | undefined {
-  const session = getCurrentRuntimeSession();
-  if (session !== null) {
-    const options = session.services?.runtimeOptions;
+  const scopedSession = peekScopedRuntimeSession();
+  if (scopedSession !== null) {
+    const options = scopedSession.services?.runtimeOptions;
     if (options === undefined) {
       throw new Error(
         "Active runtime session has no captured runtime-options authority",
@@ -80,7 +97,18 @@ export function getActiveAgentRuntimeOptions(): AgentRuntimeOptions | undefined 
     }
     return options;
   }
-  return peekAgentRuntimeOptions();
+  const scopedOptions = peekAgentRuntimeOptions();
+  if (scopedOptions !== undefined) return scopedOptions;
+
+  const fallbackSession = getCurrentRuntimeSession();
+  if (fallbackSession === null) return undefined;
+  const options = fallbackSession.services?.runtimeOptions;
+  if (options === undefined) {
+    throw new Error(
+      "Active runtime session has no captured runtime-options authority",
+    );
+  }
+  return options;
 }
 
 export function getSessionRemoteMemoryRoot(): string | undefined {
@@ -113,6 +141,12 @@ export function resolveSessionTempRoot(): string {
   return getActiveAgentRuntimeOptions()?.sessionTempRoot ?? DEFAULT_SESSION_TEMP_ROOT;
 }
 
+/** Stable per-user namespace below a captured temporary-root authority. */
+export function getSessionTempNamespaceName(): string {
+  if (process.platform === "win32") return "agenc";
+  return `agenc-${process.getuid?.() ?? 0}`;
+}
+
 const DEFAULT_SESSION_TEMP_ROOT = normalize(tmpdir());
 
 const TRUE_VALUES = new Set(["1", "true", "yes", "on"]);
@@ -143,6 +177,35 @@ function optionalAbsolutePath(
     throw new AgentRuntimeOptionsError(`${key} must be an absolute path`);
   }
   return normalize(trimmed);
+}
+
+function requiredAbsolutePath(value: string, key: string): string {
+  const resolved = optionalAbsolutePath(value, key);
+  if (resolved === undefined) {
+    throw new AgentRuntimeOptionsError(`${key} must be a non-empty absolute path`);
+  }
+  return resolved;
+}
+
+function establishSessionTempRoot(value: string, key: string): string {
+  const requestedRoot = requiredAbsolutePath(value, key);
+  try {
+    const created = mkdirSync(requestedRoot, { recursive: true, mode: 0o700 });
+    const canonicalRoot = normalize(realpathSync(requestedRoot));
+    const stats = lstatSync(canonicalRoot);
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+      throw new Error("path is not a directory");
+    }
+    if (created !== undefined) chmodSync(canonicalRoot, 0o700);
+    accessSync(canonicalRoot, fsConstants.W_OK | fsConstants.X_OK);
+    return canonicalRoot;
+  } catch (error) {
+    throw new AgentRuntimeOptionsError(
+      `${key} must resolve to a writable directory: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
 }
 
 function optionalPosixShellPath(
@@ -305,13 +368,16 @@ function resolveAgentRuntimeOptionsAtIngress(
         : {}),
     sessionTempRoot:
       overrides.sessionTempRoot !== undefined
-        ? optionalAbsolutePath(
+        ? establishSessionTempRoot(
             overrides.sessionTempRoot,
             "runtimeOptions.sessionTempRoot",
           )
         : env.AGENC_TMPDIR !== undefined
-          ? optionalAbsolutePath(env.AGENC_TMPDIR, "AGENC_TMPDIR")
-          : DEFAULT_SESSION_TEMP_ROOT,
+          ? establishSessionTempRoot(env.AGENC_TMPDIR, "AGENC_TMPDIR")
+          : establishSessionTempRoot(
+              DEFAULT_SESSION_TEMP_ROOT,
+              "platform temporary directory",
+            ),
     ...(overrides.pluginStorageRoot !== undefined
       ? {
           pluginStorageRoot: optionalAbsolutePath(

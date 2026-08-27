@@ -999,6 +999,7 @@ async function bootstrapLocalRuntimeSessionScoped(
   });
   const cli = options.cli;
   const runtimeOptions = options.runtimeOptions;
+  const sessionTempRoot = runtimeOptions.sessionTempRoot;
   const autonomousModeEnabled =
     cli.autonomousMode === true || startup.config.autonomous_mode === true;
   const executionAdmissionAutonomous =
@@ -1180,6 +1181,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     mode: initialSandboxExecutionAuthority.mode,
     cwd: workspaceRoot,
     env,
+    sessionTempRoot,
     ...(initialSandboxExecutionAuthority.permissionProfile !== undefined
       ? {
           permissionProfile:
@@ -1899,6 +1901,7 @@ async function bootstrapLocalRuntimeSessionScoped(
           sessionId: conversationId,
           agencVersion: VERSION,
           agencHome,
+          sessionTempRoot,
           ...(resumeConversation ? { resume: true } : {}),
           ...(options.resumeRolloutPath !== undefined
             ? { resumeRolloutPath: options.resumeRolloutPath }

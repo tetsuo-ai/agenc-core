@@ -8,9 +8,8 @@
  * @module
  */
 
-import { statSync, writeFileSync, unlinkSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
-import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import type { BashToolConfig, BashToolInput } from "./types.js";
@@ -46,6 +45,7 @@ import {
   type SupervisedProcessStopReason,
 } from "../../utils/supervisedProcess.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
+import { resolveSessionTempRoot } from "../../session/runtime-options.js";
 
 const SHELL_WRAPPER_COMMANDS = new Set([
   "bash",
@@ -357,7 +357,7 @@ function runSpawnedCommand(params: {
   readonly metadataCommand: string;
   readonly metadataArgs: readonly string[];
   readonly shellMode: boolean;
-  readonly cleanupPath?: string;
+  readonly cleanupDirectory?: string;
   readonly signal?: AbortSignal;
   readonly onProgress?: ToolExecutionInjectedArgs["__onProgress"];
 }): Promise<ToolResult> {
@@ -472,9 +472,9 @@ function runSpawnedCommand(params: {
         },
       };
     } finally {
-      if (params.cleanupPath !== undefined) {
+      if (params.cleanupDirectory !== undefined) {
         try {
-          unlinkSync(params.cleanupPath);
+          rmSync(params.cleanupDirectory, { recursive: true, force: true });
         } catch (error) {
           params.logger.debug("Bash tool cleanup failed", {
             error: error instanceof Error ? error.message : String(error),
@@ -483,6 +483,23 @@ function runSpawnedCommand(params: {
       }
     }
   })();
+}
+
+function createShellScriptArtifact(command: string): {
+  readonly directory: string;
+  readonly path: string;
+} {
+  const directory = mkdtempSync(
+    join(resolveSessionTempRoot(), "agenc-sh-"),
+  );
+  const path = join(directory, "command.sh");
+  try {
+    writeFileSync(path, command, { flag: "wx", mode: 0o700 });
+    return { directory, path };
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 function buildDenySet(
@@ -1224,10 +1241,9 @@ export function createBashTool(config?: BashToolConfig): Tool {
       // matches and kills the shell itself. Running from a script file keeps
       // the command text out of the process args.
       if (useShellMode) {
-        const scriptId = randomBytes(4).toString("hex");
-        const scriptPath = join(tmpdir(), `agenc-sh-${scriptId}.sh`);
+        let scriptArtifact: ReturnType<typeof createShellScriptArtifact>;
         try {
-          writeFileSync(scriptPath, shellCommand, { mode: 0o700 });
+          scriptArtifact = createShellScriptArtifact(shellCommand);
         } catch (writeErr) {
           return emitEnd(
             errorResult(
@@ -1235,10 +1251,14 @@ export function createBashTool(config?: BashToolConfig): Tool {
             ),
           );
         }
+        const scriptPath = scriptArtifact.path;
         const sandboxed = withSandbox("/bin/bash", [scriptPath]);
         if (!sandboxed.ok) {
           try {
-            unlinkSync(scriptPath);
+            rmSync(scriptArtifact.directory, {
+              recursive: true,
+              force: true,
+            });
           } catch {
             /* best-effort */
           }
@@ -1256,7 +1276,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
             metadataCommand: command,
             metadataArgs: execArgs,
             shellMode: true,
-            cleanupPath: scriptPath,
+            cleanupDirectory: scriptArtifact.directory,
             ...(abortSignal !== undefined ? { signal: abortSignal } : {}),
             ...(onProgress !== undefined ? { onProgress } : {}),
           }),
