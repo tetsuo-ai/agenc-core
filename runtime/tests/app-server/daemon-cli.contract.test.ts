@@ -28,7 +28,10 @@ import { openStateDatabases } from "../state/sqlite-driver.js";
 import { StateRunDurabilityRepository } from "../state/run-durability.js";
 import { ROLLOUT_SCHEMA_VERSION } from "../session/event-log.js";
 import { RolloutStore } from "../session/rollout-store.js";
-import type { AgentRuntimeOptions } from "../session/runtime-options.js";
+import {
+  resolveAgentRuntimeOptions,
+  type AgentRuntimeOptions,
+} from "../session/runtime-options.js";
 import type { PendingProviderSwitch } from "../session/session.js";
 import { createAgenCJsonLineDaemonRequestClient } from "./agent-cli.js";
 import { AGENC_DAEMON_PROTOCOL_VERSION } from "./protocol/index.js";
@@ -103,12 +106,7 @@ import {
 } from "./daemon-runtime-info.js";
 import type { AgenCDaemonInstanceIdentity } from "./daemon-instance-identity.js";
 
-const TEST_RUNTIME_OPTIONS = Object.freeze({
-  simpleMode: false,
-  stdinDataMode: false,
-  remoteMode: false,
-  allowUntrustedHooks: false,
-});
+const TEST_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
 
 function createRecoveredSession(
   threadId: string,

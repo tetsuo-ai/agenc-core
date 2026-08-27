@@ -95,6 +95,7 @@ describe("session temp consumers", () => {
           const snapshot = await loadLocalSkillsSnapshot({
             agencHome: join(root, "home"),
             workspaceRoot: join(root, "workspace"),
+            pluginStorageRoot: join(root, "plugins"),
             env: {},
           });
           const bundled = snapshot.skills.find(

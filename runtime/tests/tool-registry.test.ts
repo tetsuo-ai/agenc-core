@@ -32,6 +32,8 @@ import {
 import { ConfigStore } from "./config/store.js";
 import { defaultConfig } from "./config/schema.js";
 import { getAttachmentTrackingState } from "./session/attachment-state.js";
+import { createAgentRoleWorkspace } from "./agents/role.js";
+import { resolveAgentRuntimeOptions } from "./session/runtime-options.js";
 
 function buildToolRegistry(options: BuildToolRegistryOptions) {
   return buildProductionToolRegistry({
@@ -49,9 +51,12 @@ function createSkillSession(
 ): Session {
   return {
     conversationId: "session-test",
-    config: { cwd: process.cwd() },
+    config: { cwd: "/tmp" },
+    sessionConfiguration: { cwd: "/tmp" },
+    roleWorkspace: createAgentRoleWorkspace("/tmp"),
     services: {
       admissionRequired: false,
+      runtimeOptions: resolveAgentRuntimeOptions({}),
       configStore: {
         current: () => ({}),
       },

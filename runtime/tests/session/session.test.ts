@@ -89,12 +89,15 @@ import {
   resolveAgentRuntimeOptions,
   runWithAgentRuntimeOptions,
 } from "./runtime-options.js";
+import { runWithCurrentRuntimeSession } from "./current-session.js";
 import {
   clearSessionReadState,
   recordSessionRead,
 } from "../tools/system/filesystem.js";
 import { getBundledSkillsRoot } from "../utils/permissions/filesystem.js";
 import { extractBundledSkillFiles } from "../skills/bundled-extraction-registry.js";
+import { ConfigStore } from "../config/store.js";
+import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 
 (globalThis as Record<string, unknown>).MACRO ??= {
   VERSION: "test-version",
@@ -232,6 +235,14 @@ function buildSession(
     mcpManagerOwnership?: SessionOpts["mcpManagerOwnership"];
   } = {},
 ): Session {
+  const config = overrides.config ?? mkConfig();
+  const configStore =
+    overrides.services?.configStore ??
+    new ConfigStore({
+      home: join(tmpdir(), "agenc-session-test-home"),
+      cwd: config.cwd,
+      env: {},
+    });
   const services = {
     admissionRequired: false,
     mcpConnectionManager: {
@@ -246,6 +257,16 @@ function buildSession(
     agentControl: {
       shutdownAgentTree: vi.fn(),
     },
+    configStore,
+    runtimeOptions: resolveAgentRuntimeOptions(
+      {},
+      {
+        pluginStorageRoot: join(
+          tmpdir(),
+          "agenc-session-test-plugins",
+        ),
+      },
+    ),
     permissionModeRegistry: new PermissionModeRegistry(
       ctxWithPermissionMode("default"),
     ),
@@ -270,13 +291,21 @@ function buildSession(
       ? { mcpManagerOwnership: overrides.mcpManagerOwnership }
       : {}),
     jsRepl: { id: "repl-test" },
-    config: overrides.config ?? mkConfig(),
+    config,
     modelInfo: overrides.modelInfo ?? mkModelInfo(),
     ...(overrides.eventQueue === null
       ? {}
       : { eventQueue: overrides.eventQueue ?? new AsyncQueue<Event>() }),
   };
   return new Session(opts);
+}
+
+function consumePendingProviderSwitch(session: Session) {
+  return runWithCurrentRuntimeSession(session, () =>
+    runWithCanonicalSettingsAuthority(session.services.configStore, () =>
+      session.consumePendingProviderSwitch(),
+    ),
+  );
 }
 
 function ctxWithPermissionMode(mode: PermissionMode): ToolPermissionContext {
@@ -750,7 +779,7 @@ describe("Session.consumePendingProviderSwitch", () => {
         profile: "coding",
       });
 
-      await expect(session.consumePendingProviderSwitch()).resolves.toEqual({
+      await expect(consumePendingProviderSwitch(session)).resolves.toEqual({
         applied: false,
         reason:
           "model 'grok-4.3' is not allowed by managed availableModels policy",
@@ -798,7 +827,7 @@ describe("Session.consumePendingProviderSwitch", () => {
       model: "gpt-5-mini",
     });
 
-    await session.consumePendingProviderSwitch();
+    await consumePendingProviderSwitch(session);
 
     expect(resetSpy).toHaveBeenCalled();
     expect(bindSpy).toHaveBeenCalledWith("conv-test");
@@ -818,7 +847,7 @@ describe("Session.consumePendingProviderSwitch", () => {
       model: "grok-4.3",
     });
 
-    const applied = await session.consumePendingProviderSwitch();
+    const applied = await consumePendingProviderSwitch(session);
     const state = session.state.unsafePeek();
 
     expect(applied).toEqual({
@@ -849,22 +878,26 @@ describe("Session.consumePendingProviderSwitch", () => {
   });
 
   it("consumes the exact staged pair when its profile definition changes", async () => {
+    const configStore = new ConfigStore({
+      home: join(tmpdir(), "agenc-session-profile-change-test-home"),
+      cwd: "/tmp",
+      env: {},
+    });
+    vi.spyOn(configStore, "current").mockReturnValue({
+      profiles: {
+        coding: {
+          model_provider: "grok",
+          model: "grok-4",
+        },
+      },
+    });
     const session = buildSession({
       services: {
         provider: createProvider("grok", {
           apiKey: "test-key",
           model: "grok-4",
         }),
-        configStore: {
-          current: () => ({
-            profiles: {
-              coding: {
-                model_provider: "grok",
-                model: "grok-4",
-              },
-            },
-          }),
-        },
+        configStore,
       },
     });
     session.setPendingProviderSwitch({
@@ -873,7 +906,7 @@ describe("Session.consumePendingProviderSwitch", () => {
       profile: "coding",
     });
 
-    await expect(session.consumePendingProviderSwitch()).resolves.toEqual({
+    await expect(consumePendingProviderSwitch(session)).resolves.toEqual({
       applied: true,
       provider: "grok",
       model: "grok-4.3",
@@ -909,7 +942,7 @@ describe("Session.consumePendingProviderSwitch", () => {
         model: "gpt-5",
       });
 
-      const applied = await session.consumePendingProviderSwitch();
+      const applied = await consumePendingProviderSwitch(session);
       const state = session.state.unsafePeek();
       const emitted = session.txEvent.tryRecv();
 
@@ -986,7 +1019,7 @@ describe("Session.consumePendingProviderSwitch", () => {
           model: "gpt-5",
         });
 
-        const applied = await session.consumePendingProviderSwitch();
+        const applied = await consumePendingProviderSwitch(session);
 
         expect(applied).toEqual({
           applied: true,
@@ -1040,7 +1073,7 @@ describe("Session.consumePendingProviderSwitch", () => {
       provider: "ollama",
       model: "llama3.2",
     });
-    await expect(session.consumePendingProviderSwitch()).resolves.toMatchObject({
+    await expect(consumePendingProviderSwitch(session)).resolves.toMatchObject({
       applied: true,
       provider: "ollama",
     });
@@ -1049,7 +1082,7 @@ describe("Session.consumePendingProviderSwitch", () => {
       provider: "gemini",
       model: "gemini-2.5-flash",
     });
-    await expect(session.consumePendingProviderSwitch()).resolves.toEqual({
+    await expect(consumePendingProviderSwitch(session)).resolves.toEqual({
       applied: true,
       provider: "gemini",
       model: "gemini-2.5-flash",
@@ -1135,7 +1168,7 @@ describe("Session.consumePendingProviderSwitch", () => {
           model: "openai/gpt-5-nano",
         });
 
-        const applied = await session.consumePendingProviderSwitch();
+        const applied = await consumePendingProviderSwitch(session);
 
         expect(applied).toEqual({
           applied: true,
@@ -1217,7 +1250,7 @@ describe("Session.consumePendingProviderSwitch", () => {
           model: "openai/gpt-5-nano",
         });
 
-        const applied = await session.consumePendingProviderSwitch();
+        const applied = await consumePendingProviderSwitch(session);
 
         expect(applied).toEqual({
           applied: true,
@@ -1284,7 +1317,7 @@ describe("Session.consumePendingProviderSwitch", () => {
           model: "gpt-4o-mini",
         });
 
-        const applied = await session.consumePendingProviderSwitch();
+        const applied = await consumePendingProviderSwitch(session);
 
         expect(applied).toEqual({
           applied: true,
@@ -1349,7 +1382,7 @@ describe("Session.consumePendingProviderSwitch", () => {
           model: "openai/gpt-5-nano",
         });
 
-        const applied = await session.consumePendingProviderSwitch();
+        const applied = await consumePendingProviderSwitch(session);
 
         expect(applied.applied).toBe(false);
         expect(applied.reason).toMatch(/Managed provider keys require/);
@@ -1395,7 +1428,7 @@ describe("Session.consumePendingProviderSwitch", () => {
       model: "agenc",
     });
 
-    const applied = await session.consumePendingProviderSwitch();
+    const applied = await consumePendingProviderSwitch(session);
 
     expect(applied.applied).toBe(false);
     expect(applied.reason).toMatch(/Hosted AgenC model routing/);
@@ -1425,7 +1458,7 @@ describe("Session.consumePendingProviderSwitch", () => {
           model: "openai/gpt-5",
         });
 
-        const applied = await session.consumePendingProviderSwitch();
+        const applied = await consumePendingProviderSwitch(session);
 
         expect(applied).toEqual({
           applied: true,

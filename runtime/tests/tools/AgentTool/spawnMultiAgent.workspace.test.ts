@@ -9,6 +9,7 @@ import { ConfigStore } from '../../../src/config/store.js'
 import { createProvider } from '../../../src/llm/provider.js'
 import { runWithCurrentRuntimeSession } from '../../../src/session/current-session.js'
 import { SessionProviderService } from '../../../src/session/provider-service.js'
+import { resolveAgentRuntimeOptions } from '../../../src/session/runtime-options.js'
 import type { Session } from '../../../src/session/session.js'
 import {
   __setPluginAgentsLoaderForTesting,
@@ -167,6 +168,9 @@ function sessionFor(
       sandboxExecutionBroker,
       configStore,
       providerService,
+      runtimeOptions: resolveAgentRuntimeOptions({}, {
+        pluginStorageRoot: join(workspace, '.agenc-test-plugins'),
+      }),
     },
   } as unknown as Session
 }

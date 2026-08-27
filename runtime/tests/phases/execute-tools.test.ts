@@ -15,6 +15,7 @@ import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { EventLog } from "../session/event-log.js";
 import { runWithCurrentRuntimeSession } from "../session/current-session.js";
+import { resolveAgentRuntimeOptions } from "../session/runtime-options.js";
 import { resolveHomeContext } from "../config/home.js";
 import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
@@ -57,6 +58,7 @@ import { verifyToolResultIntegrity } from "../session/tool-result-integrity.js";
 
 const UNTRUSTED_TOOL_RESULT_BOUNDARY =
   "===== AGENC UNTRUSTED TOOL RESULT DATA =====";
+const TEST_RUNTIME_OPTIONS = resolveAgentRuntimeOptions({});
 
 function expectFramedWorkspaceResult(content: unknown, raw: string): void {
   expect(content).toEqual(expect.stringContaining("untrusted workspace data"));
@@ -178,6 +180,7 @@ function mkSession(opts: MkSessionOpts): Session {
   }> = [];
   const servicesRecord: Record<string, unknown> = {
     admissionRequired: false,
+    runtimeOptions: TEST_RUNTIME_OPTIONS,
     registry: opts.registry,
     provider: opts.provider ?? { name: "stub-provider" },
     hooks: {

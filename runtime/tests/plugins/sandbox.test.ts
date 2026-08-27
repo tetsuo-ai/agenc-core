@@ -240,6 +240,7 @@ async function withTempPluginRoot(
     readonly pluginRoot: string;
     readonly dataDir: string;
     readonly plugin: {
+      readonly id: string;
       readonly name: string;
       readonly root: string;
       readonly source: string;
@@ -257,6 +258,7 @@ async function withTempPluginRoot(
       pluginRoot,
       dataDir,
       plugin: {
+        id: "sample",
         name: "sample",
         root: pluginRoot,
         source: "sample-source",

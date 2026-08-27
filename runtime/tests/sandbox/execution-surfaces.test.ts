@@ -19,13 +19,15 @@ import {
   runWithCurrentRuntimeSession,
   setCurrentRuntimeSession,
 } from "../../src/session/current-session.js";
+import { resolveAgentRuntimeOptions } from "../../src/session/runtime-options.js";
 import { CanonicalBashTool } from "../../src/tools/canonicalToolSurface.js";
 import { createMonitorTool } from "../../src/tools/system/monitor.js";
 
 const roots: string[] = [];
+const testRuntimeOptions = resolveAgentRuntimeOptions({});
 const legacyTestSession = {
   conversationId: "sandbox-surface-test-session",
-  services: { admissionRequired: false },
+  services: { admissionRequired: false, runtimeOptions: testRuntimeOptions },
 } as never;
 
 function tempRoot(label: string): string {
@@ -194,6 +196,7 @@ describe("fail-closed process surfaces", () => {
         conversationId: "sandbox-active-turn-session",
         services: {
           admissionRequired: false,
+          runtimeOptions: testRuntimeOptions,
           sandboxExecutionBroker: broker,
         },
       } as never,

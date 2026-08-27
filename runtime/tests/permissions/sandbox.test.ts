@@ -1,6 +1,10 @@
 import path from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
 import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from "../../src/session/runtime-options.js";
+import {
   NETWORK_DISABLED,
   NETWORK_ENABLED,
   READ_ONLY_ACCESS_FULL,
@@ -87,7 +91,12 @@ describe("getWritableRootsWithCwd", () => {
     const cwd = isPosix ? "/home/tester/repo" : "C:\\home\\tester\\repo";
     process.env["TMPDIR"] = isPosix ? "/var/tmp" : "C:\\Temp";
     const p = newWorkspaceWritePolicy();
-    const roots = getWritableRootsWithCwd(p, cwd);
+    const runtimeOptions = resolveAgentRuntimeOptions({}, {
+      sessionTempRoot: process.env["TMPDIR"],
+    });
+    const roots = runWithAgentRuntimeOptions(runtimeOptions, () =>
+      getWritableRootsWithCwd(p, cwd),
+    );
     const rootPaths = roots.map((r) => r.root);
     expect(rootPaths).toContain(path.normalize(cwd));
     if (isPosix) {

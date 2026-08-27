@@ -19,11 +19,13 @@ import {
   clearCurrentRuntimeSession,
   setCurrentRuntimeSession,
 } from '../../src/session/current-session.ts'
+import { resolveAgentRuntimeOptions } from '../../src/session/runtime-options.ts'
 
 let tempRoot: string | undefined
+const testRuntimeOptions = resolveAgentRuntimeOptions({})
 const legacyTestSession = {
   conversationId: 'powershell-execution-test-session',
-  services: { admissionRequired: false },
+  services: { admissionRequired: false, runtimeOptions: testRuntimeOptions },
 } as never
 
 function findPowerShellExecutable(): string | null {

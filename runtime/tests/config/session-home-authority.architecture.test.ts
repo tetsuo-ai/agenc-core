@@ -72,8 +72,6 @@ describe("session home authority architecture", () => {
     for (const name of [
       "permissions/sandbox.ts",
       "permissions/rpc/request-permissions.ts",
-      "sandbox/engine/index.ts",
-      "sandbox/engine/manager.ts",
       "utils/Shell.ts",
       "utils/imagePaste.ts",
       "utils/permissions/filesystem.ts",
@@ -84,6 +82,15 @@ describe("session home authority architecture", () => {
       }
       expect(source(name), name).not.toMatch(/process\.env(?:\.|\[)["']?TMPDIR/u)
     }
+
+    const sandboxEngine = source("sandbox/engine/index.ts")
+    expect(sandboxEngine).toContain("readonly sessionTempRoot: string")
+    expect(sandboxEngine).not.toContain("resolveSessionTempRoot")
+    expect(sandboxEngine).not.toMatch(/process\.env(?:\.|\[)["']?TMPDIR/u)
+    const sandboxManager = source("sandbox/engine/manager.ts")
+    expect(sandboxManager).toContain("sessionTempRoot: string")
+    expect(sandboxManager).not.toContain("resolveSessionTempRoot")
+    expect(sandboxManager).not.toMatch(/process\.env(?:\.|\[)["']?TMPDIR/u)
   });
 
   test("routes every session command runner through captured shell authority", () => {
@@ -227,11 +234,19 @@ describe("session home authority architecture", () => {
     expect(resumeSession).toContain("agencHome: string")
   });
 
-  test("namespaces process-global home-derived caches by canonical home", () => {
+  test("namespaces home-derived caches by canonical authority or canonical home", () => {
+    const markdownConfig = source("utils/markdownConfigLoader.ts")
+    expect(markdownConfig).toContain("CanonicalAuthorityCache")
+    expect(markdownConfig).toContain("markdownFilesByAuthority")
+    expect(markdownConfig).not.toContain("getAgenCHomeDir")
+    expect(source("skills/loadSkillsDir.ts")).not.toContain("getAgenCHomeDir")
+
+    const agentLoader = source("tools/AgentTool/loadAgentsDir.ts")
+    expect(agentLoader).toContain("CanonicalAuthorityCache")
+    expect(agentLoader).toContain("agentDefinitionsByAuthority")
+    expect(agentLoader).not.toContain("getAgenCHomeDir")
+
     const expectedHomeKeys = [
-      ["utils/markdownConfigLoader.ts", "${getAgenCHomeDir()}\\u0000${subdir}"],
-      ["skills/loadSkillsDir.ts", "${resolve(cwd)}\\u0000${getAgenCHomeDir()}"],
-      ["tools/AgentTool/loadAgentsDir.ts", "${getAgenCHomeDir()}\\u0000${resolve(cwd)}"],
       ["utils/sessionStorage.ts", "${getAgenCHomeDir()}\\u0000${projectDir}"],
       ["utils/plans.ts", "${getAgenCHomeDir()}\\u0000${getCwd()}"],
       ["memory/paths.ts", "${getAgenCHomeDir()}\\u0000${getSessionRemoteMemoryRoot()"],

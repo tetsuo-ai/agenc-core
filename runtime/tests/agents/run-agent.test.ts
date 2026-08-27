@@ -48,8 +48,10 @@ import {
   _resetAgentRolesForTesting,
   _resetNicknamePoolForTesting,
   createAgentRoleWorkspace,
+  listBuiltInAgentRoles,
   registerAgentRole,
 } from "./role.js";
+import { roleToAgentDefinition } from "../tools/AgentTool/loadAgentsDir.js";
 import { BUILTIN_READONLY_DISALLOWLIST } from "./built-in-prompts.js";
 import {
   createMailboxMetadataRecord,
@@ -1808,17 +1810,22 @@ describe("runAgent", () => {
     const provider = makeProvider([{ content: "nested catalog" }]);
     const exactPluginAgent = {
       agentType: "plugin:strict-reviewer",
-      description: "workspace exact plugin role",
-      source: "plugin",
+      whenToUse: "workspace exact plugin role",
+      source: "plugin" as const,
+      plugin: "plugin",
       getSystemPrompt: () => "strict reviewer prompt",
     };
+    const canonicalDefinitions = [
+      ...listBuiltInAgentRoles().map(roleToAgentDefinition),
+      exactPluginAgent,
+    ];
     const session = makeStubSession({
       services: { provider },
       roleWorkspace: ROLE_WORKSPACE,
       agentDefinitions: {
         agentRoleWorkspaceId: ROLE_WORKSPACE.id,
-        activeAgents: [exactPluginAgent],
-        allAgents: [exactPluginAgent],
+        activeAgents: canonicalDefinitions,
+        allAgents: canonicalDefinitions,
         allowedAgentTypes: ["plugin:strict-reviewer"],
       },
     });
@@ -1861,8 +1868,8 @@ describe("runAgent", () => {
 
     expect(childCatalog).toMatchObject({
       agentRoleWorkspaceId: ROLE_WORKSPACE.id,
-      activeAgents: [exactPluginAgent],
-      allAgents: [exactPluginAgent],
+      activeAgents: canonicalDefinitions,
+      allAgents: canonicalDefinitions,
       allowedAgentTypes: ["plugin:strict-reviewer"],
     });
     expect(childCatalog?.activeAgents).not.toBe(

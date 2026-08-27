@@ -46,6 +46,7 @@ import {
   type SessionTask,
 } from "./tasks.js";
 import type { LLMProvider } from "../llm/types.js";
+import { resolveAgentRuntimeOptions } from "./runtime-options.js";
 import { ToolRouter } from "../tools/router.js";
 import type { Tool } from "../tools/types.js";
 
@@ -152,6 +153,7 @@ function buildSession(): Session {
       isCancelled: () => false,
     },
     provider: mkProvider(),
+    runtimeOptions: resolveAgentRuntimeOptions({}),
     registry: {
       tools: [],
       toLLMTools: () => [],
