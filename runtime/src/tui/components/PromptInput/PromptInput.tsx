@@ -121,6 +121,7 @@ import {
   type PastedContent,
   updateRuntimeState,
 } from "../../../utils/config.js";
+import type { RuntimeStateRepository } from "../../../config/runtime-state-repository.js";
 import { logForDebugging } from "../../../utils/debug.js";
 import {
   parseDirectMemberMessage,
@@ -500,6 +501,7 @@ type Props = {
     readonly footerHint: string;
     readonly allowEmptySubmit: boolean;
   };
+  runtimeStateRepository: RuntimeStateRepository;
 };
 
 // Bottom slot has maxHeight="50%"; reserve lines for footer, border, status.
@@ -650,6 +652,7 @@ function PromptInput({
   onSubmissionBlocked,
   onOpenModelMenu,
   onboardingInput,
+  runtimeStateRepository,
 }: Props): React.ReactNode {
   const isFullscreen = useFullscreenMode();
   const mainLoopModel = useMainLoopModel();
@@ -1412,7 +1415,7 @@ function PromptInput({
     const clearedSubstantialInput = peakLength >= 20 && currentLength <= 5;
     const wasRapidClear = prevLength >= 20 && currentLength <= 5;
     if (clearedSubstantialInput && !wasRapidClear) {
-      const config = getRuntimeState();
+      const config = getRuntimeState(runtimeStateRepository);
       if (!config.hasUsedStash) {
         addNotification({
           key: "stash-hint",
@@ -1599,7 +1602,10 @@ function PromptInput({
     if (onHistoryDown() && footerItems.length > 0) {
       const first = footerItems[0]!;
       selectFooterItem(first);
-      if (first === "tasks" && !getRuntimeState().hasSeenTasksHint) {
+      if (
+        first === "tasks" &&
+        !getRuntimeState(runtimeStateRepository).hasSeenTasksHint
+      ) {
         updateRuntimeState((c) =>
           c.hasSeenTasksHint
             ? c
@@ -1607,6 +1613,7 @@ function PromptInput({
                 ...c,
                 hasSeenTasksHint: true,
               },
+          runtimeStateRepository,
         );
       }
     }
@@ -2485,13 +2492,16 @@ function PromptInput({
       setPastedContentsAndRef({});
       pendingSpaceAfterPillRef.current = false;
       // Track usage for /discover and stop showing hint
-      updateRuntimeState((c) => {
-        if (c.hasUsedStash) return c;
-        return {
-          ...c,
-          hasUsedStash: true,
-        };
-      });
+      updateRuntimeState(
+        (c) => {
+          if (c.hasUsedStash) return c;
+          return {
+            ...c,
+            hasUsedStash: true,
+          };
+        },
+        runtimeStateRepository,
+      );
     }
   }, [
     stashedPrompt,
@@ -3814,6 +3824,7 @@ function PromptInput({
           onOpenTasksDialog={
             isFullscreen ? handleOpenTasksDialog : undefined
           }
+          runtimeState={getRuntimeState(runtimeStateRepository)}
         />
       )}
       {onboardingInput !== undefined || isFullscreen

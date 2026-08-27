@@ -94,19 +94,19 @@ describe("PromptInput utils", () => {
   test("returns newline instructions for terminal and config states", () => {
     mocks.env.terminal = "Apple_Terminal";
     setPlatform("darwin");
-    expect(getNewlineInstructions()).toBe("shift + ⏎ for newline");
+    expect(getNewlineInstructions(mocks.config)).toBe("shift + ⏎ for newline");
 
     mocks.env.terminal = "xterm";
     setPlatform("linux");
     mocks.config.shiftEnterKeyBindingInstalled = true;
-    expect(getNewlineInstructions()).toBe("shift + ⏎ for newline");
+    expect(getNewlineInstructions(mocks.config)).toBe("shift + ⏎ for newline");
 
     mocks.config.shiftEnterKeyBindingInstalled = false;
     mocks.config.hasUsedBackslashReturn = true;
-    expect(getNewlineInstructions()).toBe("\\⏎ for newline");
+    expect(getNewlineInstructions(mocks.config)).toBe("\\⏎ for newline");
 
     mocks.config.hasUsedBackslashReturn = false;
-    expect(getNewlineInstructions()).toBe(
+    expect(getNewlineInstructions(mocks.config)).toBe(
       "backslash (\\) + return (⏎) for newline",
     );
   });

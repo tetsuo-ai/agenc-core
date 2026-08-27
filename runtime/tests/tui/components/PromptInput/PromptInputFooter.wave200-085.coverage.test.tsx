@@ -211,6 +211,7 @@ function props(overrides: Partial<FooterProps> = {}): FooterProps {
     } as FooterProps['toolPermissionContext'],
     verbose: false,
     vimMode: 'INSERT',
+    runtimeState: {},
     ...overrides,
   }
 }

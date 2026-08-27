@@ -143,7 +143,14 @@ async function renderHelp(commands: Command[]): Promise<{
   });
   const onClose = vi.fn();
 
-  root.render(<HelpV2 commands={commands} onClose={onClose} query="deploy" />);
+  root.render(
+    <HelpV2
+      commands={commands}
+      onClose={onClose}
+      query="deploy"
+      runtimeState={{}}
+    />,
+  );
   await sleep();
 
   return {

@@ -23,6 +23,7 @@ import { Notifications } from './Notifications.js';
 import { PromptInputFooterLeftSide } from './PromptInputFooterLeftSide.js';
 import { PromptInputFooterSuggestions, type SuggestionItem, type SuggestionType } from './PromptInputFooterSuggestions.js';
 import { PromptInputHelpMenu } from './PromptInputHelpMenu.js';
+import type { GlobalRuntimeState } from '../../../config/runtime-state-repository.js';
 
 type Props = {
   apiKeyStatus: VerificationStatus;
@@ -64,6 +65,10 @@ type Props = {
   setHistoryQuery: (query: string) => void;
   historyFailedMatch: boolean;
   onOpenTasksDialog?: (taskId?: string) => void;
+  runtimeState: Pick<
+    GlobalRuntimeState,
+    'shiftEnterKeyBindingInstalled' | 'hasUsedBackslashReturn'
+  >;
 };
 function PromptInputFooter({
   apiKeyStatus,
@@ -98,7 +103,8 @@ function PromptInputFooter({
   historyQuery,
   setHistoryQuery,
   historyFailedMatch,
-  onOpenTasksDialog
+  onOpenTasksDialog,
+  runtimeState
 }: Props): ReactNode {
   const settings = useSettings();
   const isFullscreen = useFullscreenMode();
@@ -146,7 +152,7 @@ function PromptInputFooter({
       </Box>;
   }
   if (helpOpen) {
-    return <PromptInputHelpMenu dimColor={true} fixedWidth={true} paddingX={2} />;
+    return <PromptInputHelpMenu dimColor={true} fixedWidth={true} paddingX={2} runtimeState={runtimeState} />;
   }
   return <>
       <Box flexDirection={isNarrow ? 'column' : 'row'} justifyContent={isNarrow ? 'flex-start' : 'space-between'} paddingX={2} gap={isNarrow ? 0 : 1} backgroundColor="surfaceBackground" opaque>

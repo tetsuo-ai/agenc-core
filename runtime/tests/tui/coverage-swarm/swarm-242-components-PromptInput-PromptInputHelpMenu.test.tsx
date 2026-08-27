@@ -35,7 +35,7 @@ beforeEach(() => {
 
 async function renderHelpMenu(): Promise<string> {
   return renderToString(
-    <PromptInputHelpMenu dimColor fixedWidth gap={2} paddingX={1} />,
+    <PromptInputHelpMenu dimColor fixedWidth gap={2} paddingX={1} runtimeState={{}} />,
     { columns: 140, rows: 30 },
   );
 }

@@ -23,6 +23,9 @@ function makeCtx(overrides: Partial<SlashCommandContext> = {}): SlashCommandCont
       services: {
         configStore: {
           homeContext: TEST_REMOTE_AUTH_SESSION_CONTEXT.home,
+          stateRepository: {
+            get: () => ({}),
+          },
         },
         providerEnvironment: TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
       },

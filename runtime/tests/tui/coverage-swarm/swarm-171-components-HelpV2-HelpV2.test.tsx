@@ -276,7 +276,7 @@ async function renderHelp(props: {
   });
 
   const render = async (nextProps: typeof props): Promise<void> => {
-    root.render(<HelpV2 {...nextProps} />);
+    root.render(<HelpV2 {...nextProps} runtimeState={{}} />);
     await sleep();
   };
 

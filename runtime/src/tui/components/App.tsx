@@ -6939,6 +6939,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             setIsSearchingHistory={setIsSearchingHistory}
             helpOpen={helpOpen}
             setHelpOpen={setHelpOpen}
+            runtimeStateRepository={stateRepository}
           />
         </Box>
       </FullscreenModeProvider>
@@ -7150,6 +7151,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       setIsSearchingHistory={setIsSearchingHistory}
       helpOpen={helpOpen}
       setHelpOpen={setHelpOpen}
+      runtimeStateRepository={stateRepository}
     />
   ) : null;
   const bottomContent = (

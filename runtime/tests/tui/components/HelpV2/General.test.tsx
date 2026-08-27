@@ -30,7 +30,7 @@ function RerenderGeneral() {
     }
   }, [tick]);
 
-  return <General />;
+  return <General runtimeState={{}} />;
 }
 
 describe("HelpV2 General", () => {

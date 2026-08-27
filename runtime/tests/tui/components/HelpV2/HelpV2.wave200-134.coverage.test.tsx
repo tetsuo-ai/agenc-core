@@ -134,7 +134,7 @@ function renderNode(commands: Command[], onClose: () => void): React.ReactNode {
     <ModalContext.Provider
       value={{ rows: 18, columns: 90, scrollRef: null }}
     >
-      <HelpV2 commands={commands} onClose={onClose} />
+      <HelpV2 commands={commands} onClose={onClose} runtimeState={{}} />
     </ModalContext.Provider>
   );
 }

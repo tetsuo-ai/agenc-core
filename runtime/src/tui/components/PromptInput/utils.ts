@@ -1,8 +1,8 @@
 import type { VimMode } from '../../../types/textInputTypes.js'
 import type { Key } from '../../ink.js'
 import { stringWidth } from '../../ink/stringWidth.js'
+import type { GlobalRuntimeState } from '../../../config/runtime-state-repository.js'
 import type { AgenCConfig } from '../../../config/schema.js'
-import { getRuntimeState } from '../../../utils/config.js'
 import { env } from '../../../utils/env.js'
 import { getCanonicalSettingsAuthority } from '../../../utils/settings/canonicalAuthority.js'
 /**
@@ -20,19 +20,24 @@ export function formatVimModeIndicator(vimMode: VimMode | undefined): string | n
   return vimMode === undefined ? null : `-- ${vimMode} --`
 }
 
-export function getNewlineInstructions(): string {
+export function getNewlineInstructions(
+  runtimeState: Pick<
+    GlobalRuntimeState,
+    'shiftEnterKeyBindingInstalled' | 'hasUsedBackslashReturn'
+  >,
+): string {
   // Apple Terminal on macOS uses native modifier key detection for Shift+Enter
   if (env.terminal === 'Apple_Terminal' && process.platform === 'darwin') {
     return 'shift + ⏎ for newline'
   }
 
   // For iTerm2 and VSCode, show Shift+Enter instructions if installed
-  if (getRuntimeState().shiftEnterKeyBindingInstalled === true) {
+  if (runtimeState.shiftEnterKeyBindingInstalled === true) {
     return 'shift + ⏎ for newline'
   }
 
   // Otherwise show backslash+return instructions
-  return getRuntimeState().hasUsedBackslashReturn === true
+  return runtimeState.hasUsedBackslashReturn === true
     ? '\\⏎ for newline'
     : 'backslash (\\) + return (⏎) for newline'
 }

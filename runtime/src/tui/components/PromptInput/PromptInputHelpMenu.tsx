@@ -6,6 +6,7 @@ import { isKeybindingCustomizationEnabled } from '../../keybindings/loadUserBind
 import { useShortcutDisplay } from '../../keybindings/useShortcutDisplay.js';
 import { getNewlineInstructions } from './utils.js';
 import { useTerminalSize } from '../../hooks/useTerminalSize.js';
+import type { GlobalRuntimeState } from '../../../config/runtime-state-repository.js';
 
 /**
  * Below this terminal width the 3-column grid (col widths 24 + 35 + auto)
@@ -23,6 +24,10 @@ type Props = {
   fixedWidth?: boolean;
   gap?: number;
   paddingX?: number;
+  runtimeState: Pick<
+    GlobalRuntimeState,
+    'shiftEnterKeyBindingInstalled' | 'hasUsedBackslashReturn'
+  >;
 };
 export function PromptInputHelpMenu(props: Props) {
   const $ = _c(99);
@@ -30,7 +35,8 @@ export function PromptInputHelpMenu(props: Props) {
     dimColor,
     fixedWidth,
     gap,
-    paddingX
+    paddingX,
+    runtimeState
   } = props;
   const {
     columns: terminalColumns
@@ -217,21 +223,8 @@ export function PromptInputHelpMenu(props: Props) {
   } else {
     t32 = $[50];
   }
-  let t33;
-  if ($[51] === Symbol.for("react.memo_cache_sentinel")) {
-    t33 = getNewlineInstructions();
-    $[51] = t33;
-  } else {
-    t33 = $[51];
-  }
-  let t34;
-  if ($[52] !== dimColor) {
-    t34 = <Box><Text dimColor={dimColor}>{t33}</Text></Box>;
-    $[52] = dimColor;
-    $[53] = t34;
-  } else {
-    t34 = $[53];
-  }
+  const t33 = getNewlineInstructions(runtimeState);
+  const t34 = <Box><Text dimColor={dimColor}>{t33}</Text></Box>;
   let t35;
   if ($[54] !== t28 || $[55] !== t29 || $[56] !== t30 || $[57] !== t31 || $[58] !== t32 || $[59] !== t34 || $[60] !== terminalShortcutElement) {
     t35 = <Box flexDirection="column" width={t28}>{t29}{t30}{t31}{t32}{terminalShortcutElement}{t34}</Box>;

@@ -76,7 +76,7 @@ describe('PromptInputHelpMenu optional shortcuts coverage', () => {
       stdout: stdout as unknown as NodeJS.WriteStream,
     })
     const renderNode = () => (
-      <PromptInputHelpMenu dimColor fixedWidth gap={1} paddingX={1} />
+      <PromptInputHelpMenu dimColor fixedWidth gap={1} paddingX={1} runtimeState={{}} />
     )
 
     try {
