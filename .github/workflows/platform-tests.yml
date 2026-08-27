@@ -1239,8 +1239,8 @@ jobs:
             numPassedTestSuites: 12,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 86,
-            numPassedTests: 86,
+            numTotalTests: 94,
+            numPassedTests: 94,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1267,7 +1267,7 @@ jobs:
               `macOS-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("macOS FND/native capability lane passed 86 tests in 8 files with zero skipped");
+          console.log("macOS FND/native capability lane passed 94 tests in 8 files with zero skipped");
           NODE
           test -z "$(git status --porcelain=v1 --untracked-files=all)"
 
@@ -1467,8 +1467,8 @@ jobs:
             numPassedTestSuites: 18,
             numFailedTestSuites: 0,
             numPendingTestSuites: 0,
-            numTotalTests: 93,
-            numPassedTests: 93,
+            numTotalTests: 101,
+            numPassedTests: 101,
             numFailedTests: 0,
             numPendingTests: 0,
             numTodoTests: 0,
@@ -1491,7 +1491,7 @@ jobs:
               `Windows-native files were ${JSON.stringify(files)}, expected ${JSON.stringify(expectedFiles)}`,
             );
           }
-          console.log("Windows FND/native capability lane passed 93 tests in 11 files with zero skipped");
+          console.log("Windows FND/native capability lane passed 101 tests in 11 files with zero skipped");
           '@ | node --input-type=module - $results
           if ($LASTEXITCODE -ne 0) { throw "Windows native result contract failed" }
           if (-not [string]::IsNullOrWhiteSpace(
