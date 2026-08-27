@@ -2072,11 +2072,24 @@ export function useFirstRunOnboardingController(
             options.onAuthPrompt?.(prompt);
           },
         };
-        const result = await submitFirstRunOnboardingInput(
-          checkingState,
-          input,
-          submitContext,
-        );
+        let result: FirstRunOnboardingSubmitResult;
+        try {
+          result = await submitFirstRunOnboardingInput(
+            checkingState,
+            input,
+            submitContext,
+          );
+        } catch (error) {
+          const failedState = {
+            ...stateRef.current,
+            authPrompt: null,
+            error: error instanceof Error ? error.message : String(error),
+            isCheckingConnection: false,
+          };
+          stateRef.current = failedState;
+          setState(failedState);
+          return true;
+        }
         const nextState = {
           ...result.state,
           detectedLocalProviders: stateRef.current.detectedLocalProviders,
@@ -2097,16 +2110,6 @@ export function useFirstRunOnboardingController(
           }
           setActive(false);
         }
-        return true;
-      } catch (error) {
-        const failedState = {
-          ...stateRef.current,
-          authPrompt: null,
-          error: error instanceof Error ? error.message : String(error),
-          isCheckingConnection: false,
-        };
-        stateRef.current = failedState;
-        setState(failedState);
         return true;
       } finally {
         submitInFlight.current = false;
