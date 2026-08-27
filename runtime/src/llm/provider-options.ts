@@ -609,20 +609,29 @@ function resolveProviderCredentialAuthorityCore(
   }
 
   if (provider === "grok" && isGrokComposerModel(requested.model)) {
+    const requestedGrokAcp = requested.extra?.grokAcp;
+    const requestedGrokAcpRecord =
+      requestedGrokAcp !== null &&
+      typeof requestedGrokAcp === "object" &&
+      !Array.isArray(requestedGrokAcp)
+        ? (requestedGrokAcp as Readonly<Record<string, unknown>>)
+        : undefined;
     const binaryPath = nonEmpty(snapshot.AGENC_GROK_CLI);
     const permissions = nonEmpty(snapshot.AGENC_GROK_ACP_PERMISSIONS);
     const path = snapshot.PATH;
     if (
+      requestedGrokAcpRecord !== undefined ||
       binaryPath !== undefined ||
       permissions !== undefined ||
       path !== undefined
     ) {
-      resolvedExtra.grokAcp = {
+      forcedExtra.grokAcp = {
         ...(binaryPath !== undefined ? { binaryPath } : {}),
         ...(permissions !== undefined
           ? { allowPermissions: permissions.toLowerCase() === "allow" }
           : {}),
         ...(path !== undefined ? { path } : {}),
+        ...(requestedGrokAcpRecord ?? {}),
       };
     }
   }

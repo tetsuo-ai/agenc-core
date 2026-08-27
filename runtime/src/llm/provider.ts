@@ -127,6 +127,7 @@ export type ProviderRuntimeExtra = Partial<
     readonly binaryPath?: string;
     readonly allowPermissions?: boolean;
     readonly path?: string;
+    readonly environment?: Readonly<Record<string, string>>;
   };
   readonly defaultHeaders?: Readonly<Record<string, string>>;
   readonly fetchImpl?: typeof fetch;
@@ -986,12 +987,39 @@ function readProviderRuntimeExtra(
     if (!(key in source)) continue;
     const value = source[key];
     if (value === undefined) continue;
-    extra[key] =
+    const cloned =
       key === "gemini"
         ? parseGeminiRuntimeOptions(value)
-        : cloneExtraValue(value);
+        : key === "grokAcp"
+          ? readGrokAcpRuntimeExtra(value)
+          : cloneExtraValue(value);
+    if (cloned !== undefined) extra[key] = cloned;
   }
   return Object.keys(extra).length > 0 ? extra : undefined;
+}
+
+function readGrokAcpRuntimeExtra(
+  value: unknown,
+): ProviderRuntimeExtra["grokAcp"] | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = { ...value } as Record<string, unknown>;
+  const runtime = {
+    ...(readString(record, "binaryPath") !== undefined
+      ? { binaryPath: readString(record, "binaryPath") }
+      : {}),
+    ...(readBoolean(record, "allowPermissions") !== undefined
+      ? { allowPermissions: readBoolean(record, "allowPermissions") }
+      : {}),
+    ...(readString(record, "path") !== undefined
+      ? { path: readString(record, "path") }
+      : {}),
+    ...(readStringRecord(record, "environment") !== undefined
+      ? { environment: readStringRecord(record, "environment") }
+      : {}),
+  };
+  return Object.keys(runtime).length > 0 ? runtime : undefined;
 }
 
 function readRuntimeExtra(
@@ -999,26 +1027,7 @@ function readRuntimeExtra(
 ): ProviderRuntimeExtra {
   const providerFallback = readProviderFallback(extra);
   const gemini = readGeminiRuntimeOptions(extra);
-  const grokAcpRecord = readRecord(extra, "grokAcp");
-  const grokAcp =
-    grokAcpRecord === undefined
-      ? undefined
-      : {
-          ...(readString(grokAcpRecord, "binaryPath") !== undefined
-            ? { binaryPath: readString(grokAcpRecord, "binaryPath") }
-            : {}),
-          ...(readBoolean(grokAcpRecord, "allowPermissions") !== undefined
-            ? {
-                allowPermissions: readBoolean(
-                  grokAcpRecord,
-                  "allowPermissions",
-                ),
-              }
-            : {}),
-          ...(readString(grokAcpRecord, "path") !== undefined
-            ? { path: readString(grokAcpRecord, "path") }
-            : {}),
-        };
+  const grokAcp = readGrokAcpRuntimeExtra(extra?.grokAcp);
   return {
     ...(readString(extra, "systemPrompt") !== undefined
       ? { systemPrompt: readString(extra, "systemPrompt") }
@@ -1498,6 +1507,9 @@ export function createProvider(
             : {}),
           ...(extra.grokAcp?.path !== undefined
             ? { path: extra.grokAcp.path }
+            : {}),
+          ...(extra.grokAcp?.environment !== undefined
+            ? { env: extra.grokAcp.environment }
             : {}),
           ...(sandboxExecutionBroker !== undefined
             ? { sandboxExecutionBroker }

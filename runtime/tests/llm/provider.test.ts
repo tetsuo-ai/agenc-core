@@ -114,6 +114,52 @@ describe("createProvider", () => {
     );
   });
 
+  test("binds composer execution to an explicit child environment", () => {
+    const childEnvironment = {
+      PATH: "/client/bin",
+      HOME: "/client/home",
+      LANG: "en_CA.UTF-8",
+    };
+    const provider = withEnv(
+      {
+        AGENC_GROK_CLI: "/daemon/bin/grok",
+        AGENC_GROK_ACP_PERMISSIONS: "allow",
+      },
+      () =>
+        createProvider("grok", {
+          model: "grok-composer-2.5-fast",
+          extra: {
+            grokAcp: { environment: childEnvironment },
+          },
+        }),
+    );
+
+    childEnvironment.PATH = "/mutated/bin";
+    const internal = provider as unknown as {
+      config: {
+        env: NodeJS.ProcessEnv;
+        allowPermissions?: boolean;
+      };
+      resolveBinary(): string | undefined;
+    };
+    expect(internal.config.env).toMatchObject({
+      PATH: "/client/bin",
+      HOME: "/client/home",
+      LANG: "en_CA.UTF-8",
+    });
+    expect(internal.config.env.AGENC_GROK_CLI).toBeUndefined();
+    expect(internal.config.env.AGENC_GROK_ACP_PERMISSIONS).toBeUndefined();
+    expect(internal.config.allowPermissions).toBeUndefined();
+    expect(internal.resolveBinary()).toBeUndefined();
+    expect(
+      (
+        readProviderFactoryOptions(provider).extra?.grokAcp as {
+          environment: NodeJS.ProcessEnv;
+        }
+      ).environment.PATH,
+    ).toBe("/client/bin");
+  });
+
   test("preserves configured tools in factory accounting options", () => {
     const tools = [
       {

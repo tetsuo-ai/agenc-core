@@ -63,7 +63,7 @@ export interface GrokAcpProviderConfig {
   apiKey?: string;
   /** @deprecated The authenticated sandbox broker is the cwd authority. */
   cwd?: string;
-  /** Grok CLI binary override (default: `grok`, or AGENC_GROK_CLI). */
+  /** Canonically resolved Grok CLI binary override (default: `grok`). */
   binaryPath?: string;
   timeoutMs?: number;
   contextWindowTokens?: number;
@@ -78,12 +78,10 @@ export interface GrokAcpProviderConfig {
 
 function resolvePermissionHandler(
   config: GrokAcpProviderConfig,
-  env: NodeJS.ProcessEnv,
 ): (request: XaiAcpPermissionRequest) => XaiAcpPermissionDecision {
-  const allow =
-    config.allowPermissions ??
-    env.AGENC_GROK_ACP_PERMISSIONS?.trim().toLowerCase() === "allow";
-  return allow ? allowPermissionDecision : rejectPermissionDecision;
+  return config.allowPermissions === true
+    ? allowPermissionDecision
+    : rejectPermissionDecision;
 }
 
 function resolveAuthMethodId(env: NodeJS.ProcessEnv): string {
@@ -374,7 +372,7 @@ export class GrokAcpProvider implements LLMProvider {
       env,
       ...(broker !== undefined ? { sandboxExecutionBroker: broker } : {}),
       clientInfo: { name: "agenc", version: "0" },
-      onPermissionRequest: resolvePermissionHandler(this.config, env),
+      onPermissionRequest: resolvePermissionHandler(this.config),
       ...(this.config.timeoutMs !== undefined
         ? { requestTimeoutMs: this.config.timeoutMs }
         : {}),
@@ -444,11 +442,7 @@ export class GrokAcpProvider implements LLMProvider {
   }
 
   private resolveBinary(): string | undefined {
-    return (
-      this.config.binaryPath?.trim() ||
-      this.env().AGENC_GROK_CLI?.trim() ||
-      undefined
-    );
+    return this.config.binaryPath?.trim() || undefined;
   }
 
   private mapError(error: unknown): Error {

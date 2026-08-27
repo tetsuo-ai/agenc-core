@@ -157,6 +157,41 @@ describe('message flattening', () => {
 })
 
 describe('GrokAcpProvider end to end (fake agent)', () => {
+  test('does not reinterpret child env as CLI or permission authority', async () => {
+    const unresolved = new GrokAcpProvider({
+      model: 'grok-composer-2.5-fast',
+      env: {
+        AGENC_GROK_CLI: '/daemon/bin/grok',
+        AGENC_GROK_ACP_PERMISSIONS: 'allow',
+      },
+    })
+    const permissionProbe = new GrokAcpProvider({
+      model: 'grok-composer-2.5-fast',
+      binaryPath: FIXTURE,
+      env: {
+        AGENC_GROK_ACP_PERMISSIONS: 'allow',
+        FAKE_ACP_REQUEST_PERMISSION: '1',
+      },
+      sandboxExecutionBroker: explicitDangerBroker,
+    })
+
+    try {
+      expect(
+        (
+          unresolved as unknown as {
+            resolveBinary(): string | undefined
+          }
+        ).resolveBinary(),
+      ).toBeUndefined()
+      const response = await permissionProbe.chat([
+        { role: 'user', content: 'request permission' },
+      ])
+      expect(response.content).toContain('perm=selected:reject')
+    } finally {
+      await Promise.all([unresolved.dispose(), permissionProbe.dispose()])
+    }
+  })
+
   test('rejects a managed invocation before starting the ACP transport', async () => {
     const provider = new GrokAcpProvider({
       model: 'grok-composer-2.5-fast',

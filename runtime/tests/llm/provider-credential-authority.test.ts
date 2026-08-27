@@ -154,7 +154,18 @@ describe("provider credential authority", () => {
 
     const resolved = providerOptions.resolveProviderCredentialAuthority(
       "grok",
-      { model: "grok-composer-2.5-fast" },
+      {
+        model: "grok-composer-2.5-fast",
+        extra: {
+          grokAcp: {
+            environment: {
+              PATH: "/client/bin",
+              HOME: "/client/home",
+              LANG: "en_CA.UTF-8",
+            },
+          },
+        },
+      },
       {
         GROK_API_KEY: "client-grok-key",
         AGENC_GROK_CLI: "/client/bin/grok",
@@ -170,6 +181,11 @@ describe("provider credential authority", () => {
           binaryPath: "/client/bin/grok",
           allowPermissions: true,
           path: "/client/bin",
+          environment: {
+            PATH: "/client/bin",
+            HOME: "/client/home",
+            LANG: "en_CA.UTF-8",
+          },
         },
       },
     });

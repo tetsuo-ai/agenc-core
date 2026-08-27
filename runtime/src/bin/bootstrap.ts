@@ -127,6 +127,7 @@ import {
   type ProviderEnvironment,
 } from "../llm/provider-options.js";
 import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
+import { isGrokComposerModel } from "../llm/providers/grok/acp-adapter.js";
 import { runWithStartupProviderSelection } from "../utils/model/providers.js";
 import type { AgenCConfig } from "../config/schema.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
@@ -143,6 +144,7 @@ import {
 import { resolveProjectTrustStateSync } from "../permissions/trust/project-trust.js";
 import { findSuitableShell } from "../utils/Shell.js";
 import { subprocessEnv } from "../utils/subprocessEnv.js";
+import { scrubEnvForChildProcess } from "../unified-exec/scrub-env.js";
 export type { StartupCliFlags, StartupSelection } from "./startup-selection.js";
 import {
   buildBootstrapSessionServices,
@@ -777,6 +779,15 @@ function assertPinnedResumeCwd(
   }
 }
 
+function snapshotGrokAcpChildEnvironment(
+  environment: Readonly<NodeJS.ProcessEnv>,
+): Readonly<Record<string, string>> {
+  const childEnvironment = scrubEnvForChildProcess(environment);
+  delete childEnvironment.AGENC_GROK_CLI;
+  delete childEnvironment.AGENC_GROK_ACP_PERMISSIONS;
+  return Object.freeze(childEnvironment);
+}
+
 export async function bootstrapLocalRuntimeSession(
   options: BootstrapLocalRuntimeSessionOptions,
 ): Promise<LocalRuntimeBootstrap> {
@@ -1112,6 +1123,9 @@ async function bootstrapLocalRuntimeSessionScoped(
     sandboxExecutionBroker,
   });
   const commandExecutionAuthority = options.commandExecutionAuthority;
+  const grokAcpChildEnvironment = snapshotGrokAcpChildEnvironment(
+    commandExecutionAuthority.childEnvironment,
+  );
   const unifiedExecManager = new UnifiedExecProcessManager({
     cwd: workspaceRoot,
     baseEnv: env,
@@ -1249,6 +1263,13 @@ async function bootstrapLocalRuntimeSessionScoped(
       tools: registry.toLLMTools(),
       executionAdmissionRequired: true,
       baseExtra: {
+        ...(provider === "grok" && isGrokComposerModel(selection.model)
+          ? {
+              grokAcp: {
+                environment: grokAcpChildEnvironment,
+              },
+            }
+          : {}),
         emitWarning: emitProviderWarning,
         emitDiagnostic: emitProviderDiagnostic,
         onCapabilityDrift: (warning: {
