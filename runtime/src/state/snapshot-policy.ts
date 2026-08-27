@@ -1,6 +1,9 @@
 import type { JsonObject, JsonValue } from "../app-server/protocol/index.js";
 import type { ToolRecoveryCategory } from "../tools/types.js";
-import { updateAgentRunStatus } from "./agent-runs.js";
+import {
+  advanceAgentRunActivity,
+  updateAgentRunStatus,
+} from "./agent-runs.js";
 import { writeSessionSnapshotAtomically } from "./atomic-snapshot-writes.js";
 import {
   pruneRolloutSessions,
@@ -361,6 +364,10 @@ export class AgenCSessionSnapshotPolicy {
       conversationKey("user", exchange.messageId),
     );
     if (!appended) return undefined;
+    advanceAgentRunActivity(this.#driver, {
+      id: exchange.agentId,
+      lastActiveAt: exchange.acceptedAt,
+    });
     return this.#writeSnapshot(state, "message_exchange");
   }
 

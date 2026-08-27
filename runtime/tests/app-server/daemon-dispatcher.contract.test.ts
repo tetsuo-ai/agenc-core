@@ -811,6 +811,7 @@ describe("AgenC daemon session lifecycle dispatcher", () => {
         agentId: "agent_default",
         status: "idle",
         createdAt: "2026-05-01T09:00:00.000Z",
+        lastActiveAt: "2026-05-01T09:00:00.000Z",
         cwd,
       },
     });

@@ -3928,6 +3928,68 @@ describe("AgenC delegate background-agent runner", () => {
     });
   });
 
+  it("[managed-thread] reports durable acceptance before a long send and not for a duplicate", async () => {
+    const { runner, control } = makeTopLevelRunner({
+      conversationId: "session-durable-acceptance",
+    });
+    await runner.startAgent({
+      objective: "initial prompt",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    const firstAccepted = vi.fn(async () => {});
+    const duplicateAccepted = vi.fn(async () => {});
+    let releaseSend!: () => void;
+    let sendStarted!: () => void;
+    const enteredSend = new Promise<void>((resolve) => {
+      sendStarted = resolve;
+    });
+    control.sendInput.mockImplementationOnce(
+      () =>
+        new Promise<void>((resolve) => {
+          expect(firstAccepted).toHaveBeenCalledWith(
+            "2026-08-27T12:00:00.000Z",
+          );
+          releaseSend = resolve;
+          sendStarted();
+        }),
+    );
+
+    const first = runner.submitAgentMessage("session-durable-acceptance", {
+      sessionId: "session_1",
+      content: "long turn",
+      originalContent: "long turn",
+      messageId: "durable-message-1",
+      streamId: "durable-stream-1",
+      acceptedAt: "2026-08-27T12:00:00.000Z",
+      onDurableAccepted: firstAccepted,
+    });
+    await enteredSend;
+    const duplicate = runner.submitAgentMessage(
+      "session-durable-acceptance",
+      {
+        sessionId: "session_1",
+        content: "long turn",
+        originalContent: "long turn",
+        messageId: "durable-message-1",
+        streamId: "durable-stream-retry",
+        acceptedAt: "2026-08-27T12:05:00.000Z",
+        onDurableAccepted: duplicateAccepted,
+      },
+    );
+
+    expect(firstAccepted).toHaveBeenCalledOnce();
+    expect(duplicateAccepted).not.toHaveBeenCalled();
+    releaseSend();
+    await expect(first).resolves.toMatchObject({ disposition: "started" });
+    await expect(duplicate).resolves.toMatchObject({
+      disposition: "duplicate",
+      acceptedAt: "2026-08-27T12:00:00.000Z",
+    });
+    expect(duplicateAccepted).not.toHaveBeenCalled();
+  });
+
   it("[managed-thread] forwards durable queued prompt events to attached clients", async () => {
     const { runner, session } = makeTopLevelRunner({
       conversationId: "session-queued-user-event",

@@ -4268,6 +4268,79 @@ snapshot_max_bytes = 64
     }
   });
 
+  it("restores session activity from the canonical run timestamp", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const signalProcess = createSignalProcess();
+    const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
+    const cookiePath = resolveAgenCDaemonCookiePath(host.env, host.userHome);
+    seedRecoverableDaemonState(agencHome, {
+      cwd: process.cwd(),
+      runId: "run-activity-recovery",
+      sessionId: "session-activity-recovery",
+    });
+    const permissionModeRegistry = {
+      current: () => createEmptyToolPermissionContext(),
+      update: async () => {},
+    };
+    const runner = new AgenCDelegateBackgroundAgentRunner({
+      bootstrap: (async (options) => {
+        const session = createRecoveredSession(
+          options.conversationId ?? "daemon-activity-recovery",
+          permissionModeRegistry,
+        );
+        return {
+          session,
+          rolloutStore: session.rolloutStore,
+          shutdown: async () => {},
+        };
+      }) as AgenCBootstrapFunction,
+      ensureAgentControl: (() => ({
+        control: {
+          sendInput: async () => {},
+          shutdown: async () => {},
+        },
+        registry: {},
+      })) as AgenCEnsureAgentControlFunction,
+    });
+
+    const running = runAgenCDaemonCli(
+      { kind: "command", action: "run" },
+      { host, io, signalProcess, runner },
+    );
+    let stopped = false;
+    try {
+      await expect(waitForPid(pidPath)).resolves.toBe(4100);
+      const authCookie = (await readFile(cookiePath, "utf8")).trim();
+      const client = createAgenCJsonLineDaemonRequestClient({
+        socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),
+        authCookie,
+        timeoutMs: 1000,
+      });
+
+      const sessions = await client.request("session.list", {
+        agentId: "run-activity-recovery",
+      });
+      expect(
+        sessions.sessions.find(
+          (session) => session.sessionId === "session-activity-recovery",
+        ),
+      ).toMatchObject({
+        lastActiveAt: "2026-05-01T00:05:00.000Z",
+      });
+      signalProcess.emit("SIGTERM");
+      stopped = true;
+      await expect(running).resolves.toBe(0);
+    } finally {
+      if (!stopped) {
+        signalProcess.emit("SIGTERM");
+        await running.catch(() => {});
+      }
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("foreground daemon runs restart recovery before advertising readiness", async () => {
     const agencHome = await tempAgencHome();
     const otherCwd = await mkdtemp(join(tmpdir(), "agenc-daemon-other-cwd-"));
@@ -4425,6 +4498,16 @@ snapshot_max_bytes = 64
       "run-other",
       "run-restart",
     ]);
+    const recoveredSessions = await client.request("session.list", {
+      agentId: "run-restart",
+    });
+    expect(
+      recoveredSessions.sessions.find(
+        (session) => session.sessionId === "session-restart",
+      ),
+    ).toMatchObject({
+      lastActiveAt: "2026-05-01T00:05:00.000Z",
+    });
     const stats = await client.request("health.stats", {});
     // Each retained canonical root plus its daemon attachment session is
     // visible after exact-source startup restoration.

@@ -29,6 +29,57 @@ afterEach(() => {
 });
 
 describe("AgenCSessionSnapshotPolicy", () => {
+  it("persists unique message activity monotonically across restart without counting periodic snapshots", () => {
+    seedRun("run-activity", "session-activity");
+    const policy = new AgenCSessionSnapshotPolicy(driver, {
+      now: clock([
+        "2026-05-01T00:05:00.000Z",
+        "2026-05-01T00:06:00.000Z",
+        "2026-05-01T00:30:00.000Z",
+      ]),
+    });
+
+    policy.recordMessageExchange({
+      sessionId: "session-activity",
+      agentId: "run-activity",
+      content: "accepted",
+      messageId: "message-activity",
+      streamId: "stream-activity",
+      acceptedAt: "2026-05-01T00:05:00.000Z",
+    });
+    expect(
+      policy.recordMessageExchange({
+        sessionId: "session-activity",
+        agentId: "run-activity",
+        content: "accepted",
+        messageId: "message-activity",
+        streamId: "stream-activity-retry",
+        acceptedAt: "2026-05-01T00:09:00.000Z",
+      }),
+    ).toBeUndefined();
+    policy.recordMessageExchange({
+      sessionId: "session-activity",
+      agentId: "run-activity",
+      content: "older accepted timestamp",
+      messageId: "message-activity-older",
+      streamId: "stream-activity-older",
+      acceptedAt: "2026-05-01T00:04:00.000Z",
+    });
+    policy.flushPeriodic();
+
+    expect(runStatus("run-activity")).toEqual({
+      status: "running",
+      last_active_at: "2026-05-01T00:05:00.000Z",
+    });
+
+    driver.close();
+    driver = openStateDatabases({ cwd, agencHome: home });
+    expect(runStatus("run-activity")).toEqual({
+      status: "running",
+      last_active_at: "2026-05-01T00:05:00.000Z",
+    });
+  });
+
   it("snapshots message, tool, and status triggers into session_state_snapshots", () => {
     seedRun("run-1", "session-1");
     const policy = new AgenCSessionSnapshotPolicy(driver, {

@@ -4504,6 +4504,7 @@ async function hydrateAgenCDaemonStartupRecovery(
           agentId: run.id,
           status: sessionStatusForRecoveredRun(run),
           createdAt: run.startedAt,
+          lastActiveAt: run.lastActiveAt,
           ...(run.resumeSource !== undefined
             ? { cwd: run.resumeSource.cwd }
             : {}),

@@ -353,6 +353,14 @@ export interface AgenCBackgroundAgentMessageParams {
   readonly messageId: string;
   readonly streamId: string;
   readonly acceptedAt: string;
+  /**
+   * Runs once for a newly admitted canonical user message, after persistence
+   * and before turn dispatch. Duplicate and rejected submissions do not call
+   * this hook.
+   */
+  readonly onDurableAccepted?: (
+    acceptedAt: string,
+  ) => void | Promise<void>;
   readonly ifBusy?: "reject";
 }
 
@@ -2344,6 +2352,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     submission: ActiveMessageSubmission,
   ): Promise<AgenCBackgroundAgentMessageResult> {
     const input = messageContentToAgentInput(params.content);
+    const notifyDurableAcceptance = () =>
+      params.onDurableAccepted?.(submission.acceptedAt);
     commitDurableRunStartupActivation(active, agentId, this.#now());
     active.lastActiveAt = this.#now();
     if (params.displayUserMessage === null) {
@@ -2365,24 +2375,29 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         },
         { durable: true },
       );
+      await notifyDurableAcceptance();
     } else {
       const displayText =
         params.displayUserMessage ?? messageContentDisplayText(params.content);
-      await this.#emitPersistedUserMessage(active, {
-        id: params.messageId,
-        type: "user_message",
-        messageId: params.messageId,
-        streamId: params.streamId,
-        acceptedAt: params.acceptedAt,
-        clientMessageId: params.messageId,
-        payload: {
-          message: params.originalContent,
-          displayText,
+      await this.#emitPersistedUserMessage(
+        active,
+        {
+          id: params.messageId,
+          type: "user_message",
           messageId: params.messageId,
           streamId: params.streamId,
           acceptedAt: params.acceptedAt,
+          clientMessageId: params.messageId,
+          payload: {
+            message: params.originalContent,
+            displayText,
+            messageId: params.messageId,
+            streamId: params.streamId,
+            acceptedAt: params.acceptedAt,
+          },
         },
-      });
+        notifyDurableAcceptance,
+      );
     }
     if (typeof input === "string") {
       await active.control.sendInput(
@@ -4493,10 +4508,12 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
   async #emitPersistedUserMessage(
     active: ActiveBackgroundAgent,
     event: BackgroundAgentDaemonEvent,
+    onPersisted: () => void | Promise<void> = () => {},
   ): Promise<void> {
     const sessionEvent = sessionUserMessageEventFromDaemonEvent(event);
     if (sessionEvent === null) {
       await this.#emitOrBufferEvent(active, event);
+      await onPersisted();
       return;
     }
 
@@ -4506,9 +4523,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     };
     if (typeof session.emit !== "function") {
       await this.#emitOrBufferEvent(active, event);
+      await onPersisted();
       return;
     }
     session.emit(sessionEvent);
+    await onPersisted();
     if (active.dispatchChain === previousDispatch) {
       await this.#emitOrBufferEvent(active, event);
       return;

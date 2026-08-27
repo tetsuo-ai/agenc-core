@@ -53,7 +53,10 @@ import type {
   AgenCBackgroundAgentSessionEventBinding,
   AgenCBackgroundAgentStartParams,
 } from "./background-agent-runner.js";
-import { AgenCBackgroundAgentSuspensionShutdownError } from "./background-agent-runner.js";
+import {
+  AgenCBackgroundAgentMessageError,
+  AgenCBackgroundAgentSuspensionShutdownError,
+} from "./background-agent-runner.js";
 
 function sequence(values: readonly string[]): () => string {
   let index = 0;
@@ -2266,6 +2269,7 @@ describe("AgenC background agent lifecycle", () => {
       agentId: "agent_1",
       status: "idle",
       createdAt: "2026-05-01T12:00:01.000Z",
+      lastActiveAt: "2026-05-01T12:00:01.000Z",
       cwd: process.cwd(),
       metadata: {
         ticket: "F-06a",
@@ -2308,6 +2312,7 @@ describe("AgenC background agent lifecycle", () => {
           agentId: "agent_1",
           status: "idle",
           createdAt: "2026-05-01T12:00:01.000Z",
+          lastActiveAt: "2026-05-01T12:00:01.000Z",
           cwd: process.cwd(),
           metadata: {
             ticket: "F-06a",
@@ -4519,9 +4524,136 @@ describe("AgenC background agent lifecycle", () => {
           messageId: "message_1",
           streamId: "stream_1",
           acceptedAt: "2026-05-01T12:00:01.000Z",
+          onDurableAccepted: expect.any(Function),
         },
       },
     ]);
+    await expect(sessions.listSessions()).resolves.toMatchObject({
+      sessions: [
+        {
+          sessionId: "session_1",
+          lastActiveAt: "2026-05-01T12:00:01.000Z",
+        },
+      ],
+    });
+  });
+
+  it("records durable message activity before a long turn without advancing duplicates or rejections", async () => {
+    const sessions = new AgenCDaemonSessionManager({
+      createSessionId: sequence(["session_activity"]),
+      now: sequence(["2026-05-01T12:00:00.000Z"]),
+    });
+    let releaseTurn!: () => void;
+    let durableAcceptanceObserved!: () => void;
+    const durableAcceptance = new Promise<void>((resolve) => {
+      durableAcceptanceObserved = resolve;
+    });
+    let submissionCount = 0;
+    const runner: AgenCBackgroundAgentRunner = {
+      startAgent: async () => ({
+        agentId: "agent_activity",
+        startedAt: "2026-05-01T12:00:00.500Z",
+        status: "running",
+      }),
+      submitAgentMessage: async (_agentId, params) => {
+        submissionCount += 1;
+        if (submissionCount === 1) {
+          await params.onDurableAccepted?.(params.acceptedAt);
+          await new Promise<void>((resolve) => {
+            releaseTurn = resolve;
+            durableAcceptanceObserved();
+          });
+          return {
+            disposition: "started" as const,
+            acceptedAt: params.acceptedAt,
+          };
+        }
+        if (submissionCount === 2) {
+          return {
+            disposition: "duplicate" as const,
+            duplicateState: "completed" as const,
+            acceptedAt: "2026-05-01T12:00:01.000Z",
+          };
+        }
+        if (submissionCount === 3) {
+          throw new AgenCBackgroundAgentMessageError(
+            "TURN_IN_PROGRESS",
+            "turn still active",
+          );
+        }
+        await params.onDurableAccepted?.(params.acceptedAt);
+        throw new Error("dispatch failed after durable acceptance");
+      },
+    };
+    const agents = new AgenCDaemonAgentManager({
+      sessionManager: sessions,
+      runner,
+    });
+    await agents.createAgent({
+      cwd: process.cwd(),
+      objective: "track durable activity",
+    });
+
+    let firstSettled = false;
+    const first = agents
+      .streamAgentMessage({
+        sessionId: "session_activity",
+        content: "start long turn",
+        messageId: "message_activity_1",
+        streamId: "stream_activity_1",
+        acceptedAt: "2026-05-01T12:00:01.000Z",
+      })
+      .finally(() => {
+        firstSettled = true;
+      });
+    await durableAcceptance;
+
+    expect(firstSettled).toBe(false);
+    await expect(sessions.getSession("session_activity")).resolves.toMatchObject(
+      {
+        lastActiveAt: "2026-05-01T12:00:01.000Z",
+      },
+    );
+    releaseTurn();
+    await first;
+
+    await expect(
+      agents.streamAgentMessage({
+        sessionId: "session_activity",
+        content: "start long turn",
+        messageId: "message_activity_1",
+        streamId: "stream_activity_retry",
+        acceptedAt: "2026-05-03T12:00:00.000Z",
+      }),
+    ).resolves.toMatchObject({ disposition: "duplicate" });
+    await expect(
+      agents.streamAgentMessage({
+        sessionId: "session_activity",
+        content: "reject this",
+        messageId: "message_activity_2",
+        streamId: "stream_activity_2",
+        acceptedAt: "2026-05-04T12:00:00.000Z",
+      }),
+    ).rejects.toMatchObject({ code: "TURN_IN_PROGRESS" });
+    await expect(sessions.getSession("session_activity")).resolves.toMatchObject(
+      {
+        lastActiveAt: "2026-05-01T12:00:01.000Z",
+      },
+    );
+    await expect(
+      agents.streamAgentMessage({
+        sessionId: "session_activity",
+        content: "persist then fail",
+        messageId: "message_activity_3",
+        streamId: "stream_activity_3",
+        acceptedAt: "2026-05-05T12:00:00.000Z",
+      }),
+    ).rejects.toThrow("dispatch failed after durable acceptance");
+    await expect(sessions.getSession("session_activity")).resolves.toMatchObject(
+      {
+        lastActiveAt: "2026-05-05T12:00:00.000Z",
+      },
+    );
   });
 
   it("records snapshot-policy hooks for agent status and message exchanges", async () => {

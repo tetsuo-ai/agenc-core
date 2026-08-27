@@ -85,6 +85,7 @@ export interface AgenCSessionRestoreRecord {
   readonly agentId: string;
   readonly status?: SessionStatus;
   readonly createdAt?: string;
+  readonly lastActiveAt?: string;
   readonly cwd?: string;
   readonly initialPrompt?: string;
   readonly metadata?: JsonObject;
@@ -101,6 +102,7 @@ interface MutableSession {
   agentId: string;
   status: SessionStatus;
   createdAt: string;
+  lastActiveAt: string;
   cwd?: string;
   initialPrompt?: string;
   metadata?: JsonObject;
@@ -178,6 +180,7 @@ export class AgenCDaemonSessionManager {
       agentId,
       status: "idle",
       createdAt,
+      lastActiveAt: createdAt,
       attachments: new Map(),
       cwd,
     };
@@ -212,11 +215,13 @@ export class AgenCDaemonSessionManager {
     }
     sessionRoleWorkspaceFromMetadata(record.metadata);
 
+    const createdAt = nonEmptyString(record.createdAt) ?? this.#now();
     const session: MutableSession = {
       sessionId,
       agentId,
       status: record.status ?? "waiting",
-      createdAt: nonEmptyString(record.createdAt) ?? this.#now(),
+      createdAt,
+      lastActiveAt: nonEmptyString(record.lastActiveAt) ?? createdAt,
       attachments: new Map(),
     };
     if (record.cwd !== undefined) session.cwd = record.cwd;
@@ -327,6 +332,33 @@ export class AgenCDaemonSessionManager {
       if (raced !== undefined) return toSessionSummary(raced);
       state.sessions.set(recovered.sessionId, recovered);
       return toSessionSummary(recovered);
+    });
+  }
+
+  /**
+   * Records an activity time supplied by a durable content/run boundary.
+   * Callers must provide the source timestamp: reading or attaching to a
+   * session is deliberately not activity and must never move an old thread
+   * into a newer date bucket.
+   */
+  async recordSessionActivity(
+    sessionId: string,
+    occurredAt: string,
+  ): Promise<SessionSummary> {
+    const normalized = nonEmptyString(occurredAt);
+    if (normalized === undefined) {
+      throw new AgenCSessionLifecycleError(
+        "INVALID_ARGUMENT",
+        "AgenC daemon session activity requires a non-empty occurredAt",
+      );
+    }
+    return this.#state.with((state) => {
+      const session = this.#requireSession(state, sessionId);
+      session.lastActiveAt = latestKnownTimestamp(
+        session.lastActiveAt,
+        normalized,
+      );
+      return toSessionSummary(session);
     });
   }
 
@@ -509,6 +541,10 @@ export class AgenCDaemonSessionManager {
 
       session.status = "closed";
       session.closedAt = this.#now();
+      session.lastActiveAt = latestKnownTimestamp(
+        session.lastActiveAt,
+        session.closedAt,
+      );
       session.attachments.clear();
       if (params.reason !== undefined)
         session.terminationReason = params.reason;
@@ -597,6 +633,7 @@ function toSessionSummary(session: MutableSession): SessionSummary {
     agentId: session.agentId,
     status: session.status,
     createdAt: session.createdAt,
+    lastActiveAt: session.lastActiveAt,
     ...(session.cwd !== undefined ? { cwd: session.cwd } : {}),
     ...(roleWorkspace !== undefined ? { roleWorkspace } : {}),
     ...(session.metadata !== undefined ? { metadata: session.metadata } : {}),
@@ -605,6 +642,14 @@ function toSessionSummary(session: MutableSession): SessionSummary {
       : {}),
     ...(session.closedAt !== undefined ? { closedAt: session.closedAt } : {}),
   };
+}
+
+function latestKnownTimestamp(current: string, candidate: string): string {
+  const currentMs = Date.parse(current);
+  const candidateMs = Date.parse(candidate);
+  if (!Number.isFinite(currentMs)) return candidate;
+  if (!Number.isFinite(candidateMs)) return current;
+  return candidateMs >= currentMs ? candidate : current;
 }
 
 function sessionRoleWorkspaceFromMetadata(
@@ -670,6 +715,7 @@ function storedThreadToMutableSession(
     agentId: summary.agentId,
     status: summary.status,
     createdAt: summary.createdAt,
+    lastActiveAt: summary.lastActiveAt,
     attachments: new Map(),
     recoveredFromThreadStore: true,
     ...(summary.cwd !== undefined ? { cwd: summary.cwd } : {}),
@@ -762,6 +808,7 @@ function storedThreadToSessionSummary(
     agentId: agentIdFromThreadSource(thread.source) ?? defaultAgentId,
     status: "waiting",
     createdAt: thread.createdAt,
+    lastActiveAt: thread.updatedAt,
     ...(thread.cwd !== undefined ? { cwd: thread.cwd } : {}),
     metadata,
   };

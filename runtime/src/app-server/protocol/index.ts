@@ -2274,6 +2274,8 @@ export interface SessionSummary extends JsonObject {
   readonly agentId: string;
   readonly status: SessionStatus;
   readonly createdAt: string;
+  /** Latest durable activity or lifecycle transition known to the daemon. */
+  readonly lastActiveAt: string;
   readonly cwd?: string;
   /** Immutable role-discovery authority; execution cwd may be a worktree. */
   readonly roleWorkspace?: {

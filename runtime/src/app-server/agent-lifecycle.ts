@@ -3212,7 +3212,8 @@ export class AgenCDaemonAgentManager {
     readonly methodName?: "message.send" | "message.stream";
   }): Promise<AgenCBackgroundAgentMessageResult> {
     const methodName = params.methodName ?? "message.stream";
-    if (this.#sessionManager === undefined) {
+    const sessionManager = this.#sessionManager;
+    if (sessionManager === undefined) {
       throw new AgenCDaemonAgentLifecycleError(
         "INVALID_ARGUMENT",
         `${methodName} requires a daemon session manager`,
@@ -3225,7 +3226,7 @@ export class AgenCDaemonAgentManager {
       );
     }
 
-    const session = await this.#sessionManager.getSession(params.sessionId);
+    const session = await sessionManager.getSession(params.sessionId);
     if (session === null || !isActiveSession(session)) {
       throw new AgenCDaemonAgentLifecycleError(
         "AGENT_NOT_FOUND",
@@ -3268,6 +3269,20 @@ export class AgenCDaemonAgentManager {
       );
     }
 
+    let durableAcceptanceRecorded = false;
+    const recordDurableAcceptance = async (acceptedAt: string) => {
+      durableAcceptanceRecorded = true;
+      await this.#recordMessageExchangeSnapshot({
+        sessionId: params.sessionId,
+        agentId: session.agentId,
+        ...messageTarget.route,
+        content: params.content as JsonValue,
+        messageId: params.messageId,
+        streamId: params.streamId,
+        acceptedAt,
+      });
+      await sessionManager.recordSessionActivity(params.sessionId, acceptedAt);
+    };
     let submission: AgenCBackgroundAgentMessageResult;
     try {
       submission = (await this.#runner.submitAgentMessage(session.agentId, {
@@ -3284,6 +3299,7 @@ export class AgenCDaemonAgentManager {
         messageId: params.messageId,
         streamId: params.streamId,
         acceptedAt: params.acceptedAt,
+        onDurableAccepted: recordDurableAcceptance,
       })) ?? {
         // Compatibility for injected pre-1.2 runners whose submit method
         // returned void. Production 1.2 runners return the richer result.
@@ -3297,15 +3313,12 @@ export class AgenCDaemonAgentManager {
       throw error;
     }
     if (submission.disposition === "started") {
-      await this.#recordMessageExchangeSnapshot({
-        sessionId: params.sessionId,
-        agentId: session.agentId,
-        ...messageTarget.route,
-        content: params.content as JsonValue,
-        messageId: params.messageId,
-        streamId: params.streamId,
-        acceptedAt: params.acceptedAt,
-      });
+      if (!durableAcceptanceRecorded) {
+        // Compatibility for injected pre-callback runners. The production
+        // runner invokes this at its durable admission boundary, before turn
+        // dispatch can block or fail.
+        await recordDurableAcceptance(submission.acceptedAt);
+      }
     }
     return submission;
   }
