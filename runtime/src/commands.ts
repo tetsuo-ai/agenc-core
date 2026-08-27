@@ -534,23 +534,6 @@ export async function getCommands(
   });
 }
 
-/** Resolve command sources against the immutable active-session plugin root. */
-export function getActiveSessionCommands(
-  cwd: string,
-  config: unknown = {},
-  skillsManager?: SessionServices["skillsManager"],
-): Promise<Command[]> {
-  const pluginStorageRoot = resolvePluginStorageAuthority().pluginStorageRoot;
-  return getCommands(
-    cwd,
-    {
-      pluginStorageRoot,
-      ...(skillsManager !== undefined ? { skillsManager } : {}),
-    },
-    config,
-  );
-}
-
 function pluginConfigSurface(config: unknown): PluginConfigSurface | undefined {
   return isRecord(config)
     ? config as PluginConfigSurface
@@ -717,7 +700,15 @@ export async function getSkillToolCommands(
   config: unknown = {},
   skillsManager?: SessionServices["skillsManager"],
 ): Promise<Command[]> {
-  const allCommands = await getActiveSessionCommands(cwd, config, skillsManager);
+  const pluginStorageRoot = resolvePluginStorageAuthority().pluginStorageRoot;
+  const allCommands = await getCommands(
+    cwd,
+    {
+      pluginStorageRoot,
+      ...(skillsManager !== undefined ? { skillsManager } : {}),
+    },
+    config,
+  );
   return allCommands.filter(
     command =>
       command.type === "prompt" &&

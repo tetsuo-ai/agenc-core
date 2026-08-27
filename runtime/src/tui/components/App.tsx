@@ -210,7 +210,7 @@ import { submitViaElicitationPrompt } from "../elicitation-submit-routing.js";
 import { AskUserQuestionOverlay } from "./AskUserQuestionOverlay.js";
 import {
   findCommand,
-  getActiveSessionCommands,
+  getCommands,
   isCommandEnabled,
   listTuiCommandList,
 } from "../../commands.js";
@@ -4701,15 +4701,30 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     props.session.cwd ??
     props.session.sessionConfiguration?.cwd ??
     process.cwd();
+  const dynamicCommandPluginStorageRoot =
+    props.session.services.runtimeOptions?.pluginStorageRoot;
   const [dynamicTuiCommands, setDynamicTuiCommands] = useState<
     readonly Command[]
   >([]);
   useEffect(() => {
+    if (dynamicCommandPluginStorageRoot === undefined) {
+      setDynamicTuiCommands([]);
+      logForDebugging(
+        "dynamic TUI command load skipped: session is missing captured plugin storage authority",
+        { level: "warn" },
+      );
+      return;
+    }
     let cancelled = false;
-    void getActiveSessionCommands(
+    void getCommands(
       dynamicCommandsCwd,
+      {
+        pluginStorageRoot: dynamicCommandPluginStorageRoot,
+        ...(props.session.services.skillsManager !== undefined
+          ? { skillsManager: props.session.services.skillsManager }
+          : {}),
+      },
       config,
-      props.session.services?.skillsManager,
     )
       .then((all) => {
         if (cancelled) return;
@@ -4738,7 +4753,12 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [dynamicCommandsCwd, config, props.session.services?.skillsManager]);
+  }, [
+    dynamicCommandPluginStorageRoot,
+    dynamicCommandsCwd,
+    config,
+    props.session.services.skillsManager,
+  ]);
   const commands = useMemo(() => {
     const seen = new Set(
       builtinTuiCommands.map((cmd) => cmd.name.toLowerCase()),

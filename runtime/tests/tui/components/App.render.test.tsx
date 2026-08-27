@@ -43,6 +43,7 @@ let mockHasConsoleBillingAccess = false;
 let mockWorktreeSession: unknown = null;
 let mockGlobalConfig: Record<string, unknown> = {};
 const mockTuiCommandList = vi.hoisted(() => [] as Array<Record<string, any>>);
+const commandDiscoveryProbe = vi.hoisted(() => vi.fn());
 const roleDefinitionProbe = vi.hoisted(() =>
   vi.fn((_cwd: string) => [
     {
@@ -473,8 +474,10 @@ vi.mock("../../commands.js", () => ({
     commands.find(
       (command) => command.name === name || command.aliases?.includes(name),
     ) ?? null,
-  getCommands: async () => [],
-  getActiveSessionCommands: async () => mockTuiCommandList,
+  getCommands: async (...args: unknown[]) => {
+    commandDiscoveryProbe(...args);
+    return mockTuiCommandList;
+  },
   isCommandEnabled: () => true,
   listTuiCommandList: () => mockTuiCommandList,
 }));
@@ -859,6 +862,7 @@ function resetShellSurfaceProbe(): void {
   ledgerStatusProbe.refresh.mockClear();
   dismissLedgerVerification();
   mockTuiCommandList.length = 0;
+  commandDiscoveryProbe.mockClear();
   mockTotalCost = 0;
   mockHasConsoleBillingAccess = false;
   mockWorktreeSession = null;
@@ -999,6 +1003,7 @@ function createSession(
     readonly configStore?: import("../../config/store.js").ConfigStore;
     readonly executeShellCommand?: AgenCBridgeSession["executeShellCommand"];
     readonly localExecutionCapable?: boolean;
+    readonly runtimeOptions?: AgenCBridgeSession["services"]["runtimeOptions"];
   } = {},
 ): AgenCBridgeSession {
   const modeSubscribers: Array<
@@ -1017,6 +1022,9 @@ function createSession(
       ? { agentDefinitions: opts.agentDefinitions }
       : {}),
     services: {
+      ...(opts.runtimeOptions !== undefined
+        ? { runtimeOptions: opts.runtimeOptions }
+        : {}),
       configStore: opts.configStore ?? testConfigStore,
       providerEnvironment: TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
       permissionModeRegistry: {
@@ -1255,6 +1263,41 @@ async function runConcurrentExitIntentScenario({
 }
 
 describeWithVitestMocks("AgenCTuiApp render smoke", () => {
+  test("keeps command discovery on session plugin authority across config reload", async () => {
+    const { AgenCTuiApp } = await import("./App.js");
+    const pluginStorageRoot = join(
+      tmpdir(),
+      "agenc-tui-session-plugin-authority",
+    );
+    const configStore = createAppConfigStore();
+    const session = createSession({
+      configStore,
+      runtimeOptions: { pluginStorageRoot } as never,
+    });
+    resetShellSurfaceProbe();
+
+    await withRenderedApp(
+      <AgenCTuiApp session={session} isInteractive={false} />,
+      async () => {
+        await vi.waitFor(() => {
+          expect(commandDiscoveryProbe).toHaveBeenCalled();
+        });
+        const callsBeforeReload = commandDiscoveryProbe.mock.calls.length;
+
+        await configStore.reload();
+
+        await vi.waitFor(() => {
+          expect(commandDiscoveryProbe.mock.calls.length).toBeGreaterThan(
+            callsBeforeReload,
+          );
+        });
+        for (const call of commandDiscoveryProbe.mock.calls) {
+          expect(call[1]).toMatchObject({ pluginStorageRoot });
+        }
+      },
+    );
+  });
+
   test("derives TUI auth reads from the session-owned home and provider environment", async () => {
     const { getTuiRemoteAuthSessionReadContext } = await import("./App.js");
     const session = createSession();
