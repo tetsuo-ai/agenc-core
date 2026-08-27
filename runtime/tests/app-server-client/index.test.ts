@@ -1184,9 +1184,7 @@ describe("app-server-client daemon helpers", () => {
       await expect(run("/provider grok")).resolves.toMatchObject({
         result: {
           kind: "text",
-          text: expect.stringContaining(
-            "not supported by this session",
-          ),
+          text: "Provider unchanged: grok/grok-4.6.",
         },
       });
       await expect(run("/skills")).resolves.toMatchObject({

@@ -119,6 +119,7 @@ import {
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
 import {
+  assertHostedAgencSubscriptionAuthority,
   MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
   requireProviderRuntimeCredential,
   resolveProviderRuntimeAuthority,
@@ -243,6 +244,11 @@ async function resolveAuthModelSelection(params: {
       profileModel: params.model,
     };
   }
+  assertHostedAgencSubscriptionAuthority({
+    provider: params.provider,
+    authBackend: params.authBackend,
+    subscriptionTier: params.subscriptionTier,
+  });
   const inferred = await params.authBackend.inferAgencModel({
     provider: params.provider,
     requestedModel: params.model,
@@ -1318,6 +1324,7 @@ async function bootstrapLocalRuntimeSessionScoped(
   });
   const providerHealthCheck = provider.healthCheck;
   if (
+    !hasManagedCredential &&
     shouldProbeCapabilityEntry(capabilityEntry) &&
     typeof providerHealthCheck === "function"
   ) {

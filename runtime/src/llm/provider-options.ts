@@ -690,6 +690,22 @@ function isEntitledSubscription(
   return tier === "pro" || tier === "team" || tier === "enterprise";
 }
 
+export function assertHostedAgencSubscriptionAuthority(params: {
+  readonly provider: ProviderName;
+  readonly authBackend: AuthBackend | undefined;
+  readonly subscriptionTier: AuthSubscriptionTier | undefined;
+}): void {
+  if (
+    params.provider === "agenc" &&
+    params.authBackend?.kind === "remote" &&
+    !isEntitledSubscription(params.subscriptionTier)
+  ) {
+    throw new Error(
+      "Hosted AgenC model routing requires an active AgenC subscription",
+    );
+  }
+}
+
 function withRuntimeAuthExtra(
   provider: ProviderName,
   options: ProviderFactoryOptions,
@@ -769,15 +785,11 @@ export async function resolveProviderRuntimeAuthority(
       "Managed provider keys require an active AgenC subscription; configure BYOK provider credentials instead",
     );
   }
-  if (
-    provider === "agenc" &&
-    runtime.authBackend?.kind === "remote" &&
-    !isEntitledSubscription(runtime.subscriptionTier)
-  ) {
-    throw new Error(
-      "Hosted AgenC model routing requires an active AgenC subscription",
-    );
-  }
+  assertHostedAgencSubscriptionAuthority({
+    provider,
+    authBackend: runtime.authBackend,
+    subscriptionTier: runtime.subscriptionTier,
+  });
 
   const needsAuthBackend = managedCredential || provider === "agenc";
   const factoryOptions = needsAuthBackend

@@ -98,7 +98,8 @@ describe('Gemini credential authority', () => {
     expect(menuSource).not.toContain('resolveProviderFactoryOptions')
     expect(discoverySource).toContain('resolveProviderCredentialAuthority')
     expect(discoverySource).not.toContain('resolveProviderFactoryOptions')
-    expect(verificationSource).toContain('resolveProviderFactoryOptions')
+    expect(verificationSource).toContain('resolveProviderCredentialAuthority')
+    expect(verificationSource).not.toContain('resolveProviderFactoryOptions')
   })
 
   test('has no second provider transport override channel', () => {

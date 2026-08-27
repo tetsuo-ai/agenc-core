@@ -70,9 +70,7 @@ describe("BYOK fallback", () => {
           },
         }),
       ).rejects.toThrow(
-        // Grok has no managed-key route, so the error names the managed
-        // OpenRouter boundary and both canonical Grok key aliases.
-        /grok provider requires an API key.*Subscription-managed access is currently live for OpenRouter only.*XAI_API_KEY/,
+        /grok provider requires credentials.*XAI_API_KEY or GROK_API_KEY/,
       );
       expect(calls).toEqual(["getSubscriptionTier:conv-no-key"]);
     } finally {
@@ -101,7 +99,7 @@ describe("BYOK fallback", () => {
           },
         }),
       ).rejects.toThrow(
-        /openrouter provider requires an API key.*auth\.managedKeys\.enabled.*OPENROUTER_API_KEY/,
+        /openrouter provider requires credentials.*OPENROUTER_API_KEY.*auth\.managedKeys\.enabled/,
       );
       expect(calls).toEqual(["getSubscriptionTier:conv-no-key-openrouter"]);
     } finally {

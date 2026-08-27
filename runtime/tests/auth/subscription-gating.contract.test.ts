@@ -165,6 +165,8 @@ describe("remote subscription gating", () => {
         },
       });
       shutdown = boot.shutdown;
+      expect(keyVendor).not.toHaveBeenCalled();
+      await boot.provider.getExecutionProfile?.();
       expect(keyVendor).toHaveBeenCalledWith({
         provider: "openrouter",
         sessionId: "conv-free-openrouter",
