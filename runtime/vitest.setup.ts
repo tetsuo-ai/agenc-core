@@ -29,8 +29,6 @@ import { beforeEach } from 'vitest'
 // any other runtime module that can transitively load those boundaries.
 import './tests/helpers/hermetic-managed-policy-mocks.js'
 import './tests/helpers/hermetic-secure-storage-mocks.js'
-import { ConfigStore } from './src/config/store.js'
-import { enterStartupProviderSelectionForTestingOnly } from './src/utils/model/providers.js'
 import { enterCanonicalSettingsAuthority } from './src/utils/settings/canonicalAuthority.js'
 import { installWorkspaceMutationHomeResolverForTestingOnly } from './src/workspace/mutation-coordinator.js'
 import { installNetworkTripwire } from './tests/helpers/network-tripwire.mjs'
@@ -65,7 +63,7 @@ installWorkspaceMutationHomeResolverForTestingOnly(() => {
 // an explicit canonical startup authority so production code can remain
 // fail-closed instead of falling back to mutable process.env selection.
 // Provider-selection tests install narrower scopes around their assertions.
-beforeEach(() => {
+beforeEach(async () => {
   // Individual tests may deliberately delete or replace process.env. Restore
   // the hermetic ingress before constructing the next test's authority.
   sanitizeHermeticEnv(process.env, hermeticHome)
@@ -75,6 +73,14 @@ beforeEach(() => {
   if (home === undefined || home.length === 0) {
     throw new Error('AGENC_HOME is required by the canonical settings test harness')
   }
+  // Keep ConfigStore out of setup-module evaluation. Importing it before a
+  // test file loads would cache transitive OS/process boundaries before that
+  // file's vi.mock declarations can install their test doubles.
+  const [{ ConfigStore }, { enterStartupProviderSelectionForTestingOnly }] =
+    await Promise.all([
+      import('./src/config/store.js'),
+      import('./src/utils/model/providers.js'),
+    ])
   enterCanonicalSettingsAuthority(
     new ConfigStore({
       home,
