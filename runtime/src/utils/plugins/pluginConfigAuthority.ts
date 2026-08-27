@@ -70,7 +70,7 @@ export function resolveSchemaOwnedPluginConfig(
   configValues:
     | Readonly<Record<string, PluginConfigStoredValue>>
     | undefined,
-  vaultValues: Readonly<Record<string, string>> | undefined,
+  secureStorageValues: Readonly<Record<string, string>> | undefined,
 ): Record<string, PluginConfigStoredValue> {
   const plaintextSensitiveFields = Object.keys(schema).filter(
     key =>
@@ -85,8 +85,11 @@ export function resolveSchemaOwnedPluginConfig(
   const resolved: Record<string, PluginConfigStoredValue> = {}
   for (const [key, field] of Object.entries(schema)) {
     if (field.sensitive === true) {
-      if (vaultValues !== undefined && Object.hasOwn(vaultValues, key)) {
-        resolved[key] = vaultValues[key]!
+      if (
+        secureStorageValues !== undefined &&
+        Object.hasOwn(secureStorageValues, key)
+      ) {
+        resolved[key] = secureStorageValues[key]!
       }
       continue
     }

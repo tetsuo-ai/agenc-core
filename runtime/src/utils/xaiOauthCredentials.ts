@@ -223,15 +223,15 @@ const inflightRefreshByHome = new Map<
 export function forceRefreshXaiOauthCredentials(home: HomeContext): Promise<
   XaiOauthCredentialBlob | undefined
 > {
-  const vaultIdentity = secureStorageIdentityKey(home)
-  const existing = inflightRefreshByHome.get(vaultIdentity)
+  const storageIdentity = secureStorageIdentityKey(home)
+  const existing = inflightRefreshByHome.get(storageIdentity)
   if (existing) return existing
   const pending = doRefresh(home).finally(() => {
-    if (inflightRefreshByHome.get(vaultIdentity) === pending) {
-      inflightRefreshByHome.delete(vaultIdentity)
+    if (inflightRefreshByHome.get(storageIdentity) === pending) {
+      inflightRefreshByHome.delete(storageIdentity)
     }
   })
-  inflightRefreshByHome.set(vaultIdentity, pending)
+  inflightRefreshByHome.set(storageIdentity, pending)
   return pending
 }
 

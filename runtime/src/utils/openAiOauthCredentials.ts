@@ -49,14 +49,14 @@ const READ_CACHE_TTL_MS = 30_000
 const REFRESH_WINDOW_MS = 5 * 60_000
 const REFRESH_FAILURE_COOLDOWN_MS = 60_000
 
-const readCacheByVault = new Map<
+const readCacheByStorageIdentity = new Map<
   string,
   {
     readonly at: number
     readonly blob: OpenAiOauthCredentialBlob | undefined
   }
 >()
-const refreshStateByVault = new Map<string, OpenAiRefreshState>()
+const refreshStateByStorageIdentity = new Map<string, OpenAiRefreshState>()
 
 export class OpenAiOauthCredentialConflictError extends Error {
   readonly name = 'OpenAiOauthCredentialConflictError'
@@ -133,7 +133,7 @@ function updateReadCache(
   home: HomeContext,
   blob: OpenAiOauthCredentialBlob | undefined,
 ): void {
-  readCacheByVault.set(secureStorageIdentityKey(home), {
+  readCacheByStorageIdentity.set(secureStorageIdentityKey(home), {
     at: Date.now(),
     blob: blob === undefined ? undefined : structuredClone(blob),
   })
@@ -152,7 +152,7 @@ function readOpenAiOauthCredentialsFresh(
 export function readOpenAiOauthCredentials(
   home: HomeContext,
 ): OpenAiOauthCredentialBlob | undefined {
-  const cached = readCacheByVault.get(secureStorageIdentityKey(home))
+  const cached = readCacheByStorageIdentity.get(secureStorageIdentityKey(home))
   if (cached !== undefined && Date.now() - cached.at < READ_CACHE_TTL_MS) {
     return cached.blob === undefined
       ? undefined
@@ -262,14 +262,14 @@ export function clearOpenAiOauthCredentials(
 }
 
 function refreshState(home: HomeContext): OpenAiRefreshState {
-  const vaultIdentity = secureStorageIdentityKey(home)
-  const existing = refreshStateByVault.get(vaultIdentity)
+  const storageIdentity = secureStorageIdentityKey(home)
+  const existing = refreshStateByStorageIdentity.get(storageIdentity)
   if (existing !== undefined) return existing
   const created: OpenAiRefreshState = {
     inFlightByEnvironment: new WeakMap(),
     lastRefreshFailureAt: null,
   }
-  refreshStateByVault.set(vaultIdentity, created)
+  refreshStateByStorageIdentity.set(storageIdentity, created)
   return created
 }
 

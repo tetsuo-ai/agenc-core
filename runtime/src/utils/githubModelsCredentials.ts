@@ -83,15 +83,15 @@ const refreshByHome = new Map<string, Promise<boolean>>()
 export function refreshGithubModelsTokenIfNeeded(
   home: HomeContext,
 ): Promise<boolean> {
-  const vaultIdentity = secureStorageIdentityKey(home)
-  const existing = refreshByHome.get(vaultIdentity)
+  const storageIdentity = secureStorageIdentityKey(home)
+  const existing = refreshByHome.get(storageIdentity)
   if (existing) return existing
   const pending = refreshGithubModelsTokenIfNeededImpl(home).finally(() => {
-    if (refreshByHome.get(vaultIdentity) === pending) {
-      refreshByHome.delete(vaultIdentity)
+    if (refreshByHome.get(storageIdentity) === pending) {
+      refreshByHome.delete(storageIdentity)
     }
   })
-  refreshByHome.set(vaultIdentity, pending)
+  refreshByHome.set(storageIdentity, pending)
   return pending
 }
 

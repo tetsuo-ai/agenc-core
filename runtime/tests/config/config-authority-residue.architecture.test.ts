@@ -122,7 +122,22 @@ describe("configuration authority residue", () => {
     expect(schema).toContain("export function validateTuiConfig");
     expect(schema).toContain("export const TUI_THEME_SETTINGS");
     expect(theme).toContain("TUI_THEME_SETTINGS");
-    expect(theme).not.toMatch(/export const THEME_SETTINGS = \[/u);
+    expect(theme).not.toContain("export const THEME_SETTINGS");
+  });
+
+  test("native secure-storage code does not restore vault terminology", () => {
+    const source = [
+      "utils/openAiOauthCredentials.ts",
+      "utils/githubModelsCredentials.ts",
+      "utils/xaiOauthCredentials.ts",
+      "utils/plugins/pluginConfigAuthority.ts",
+    ]
+      .map((path) => readFileSync(resolve(SOURCE_ROOT, path), "utf8"))
+      .join("\n");
+
+    expect(source).not.toMatch(
+      /\b(?:readCacheByVault|refreshStateByVault|vaultIdentity|vaultValues)\b/u,
+    );
   });
 
   test("documentation outside the migration reference does not advertise retired authority", () => {

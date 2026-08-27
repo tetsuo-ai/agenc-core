@@ -150,8 +150,9 @@ export function useTheme() {
 }
 
 /**
- * Returns the raw theme setting stored in runtime state. Use this in UI that
- * needs to show 'auto' as a distinct choice (e.g., ThemePicker).
+ * Returns the raw theme setting stored by the canonical settings authority.
+ * Use this in UI that needs to show 'auto' as a distinct choice (for example,
+ * ThemePicker).
  */
 export function useThemeSetting() {
   return useContext(ThemeContext).themeSetting;

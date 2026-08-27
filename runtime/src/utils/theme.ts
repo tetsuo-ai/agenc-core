@@ -1,5 +1,8 @@
 import chalk, { Chalk } from 'chalk'
-import { TUI_THEME_SETTINGS } from '../config/schema.js'
+import {
+  TUI_THEME_SETTINGS,
+  type TuiThemeSetting,
+} from '../config/schema.js'
 import { env } from './env.js'
 
 export type Theme = {
@@ -107,8 +110,6 @@ export const THEME_NAMES = TUI_THEME_SETTINGS.slice(1) as readonly Exclude<
 /** A renderable theme. Always resolvable to a concrete color palette. */
 export type ThemeName = (typeof THEME_NAMES)[number]
 
-export const THEME_SETTINGS = TUI_THEME_SETTINGS
-
 export const AURA_LIFECYCLE_GLYPHS = {
   queued: '○',
   running: '◐',
@@ -124,10 +125,10 @@ export const AURA_PLAN_GLYPHS = {
 } as const
 
 /**
- * A theme preference stored in runtime state. `'auto'` follows the terminal
- * dark/light mode and is resolved to a ThemeName at runtime.
+ * A theme preference stored by the canonical settings authority. `'auto'`
+ * follows the terminal dark/light mode and resolves to a ThemeName at runtime.
  */
-export type ThemeSetting = (typeof THEME_SETTINGS)[number]
+export type ThemeSetting = TuiThemeSetting
 
 /**
  * Light theme using explicit RGB values to avoid inconsistencies

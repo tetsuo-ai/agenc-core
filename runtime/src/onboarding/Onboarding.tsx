@@ -11,7 +11,10 @@ import {
   readProviderConfig,
   resolveProviderSettings,
 } from "../config/resolve-provider.js";
-import type { AgenCConfig } from "../config/schema.js";
+import {
+  TUI_THEME_SETTINGS,
+  type AgenCConfig,
+} from "../config/schema.js";
 import {
   createAuthBackend,
   resolveAuthManagedKeysEnabled,
@@ -88,7 +91,7 @@ import {
   getTerminalBackground,
   isTerminalBackgroundDetected,
 } from "../utils/terminalBackground.js";
-import { THEME_SETTINGS, type ThemeSetting } from "../utils/theme.js";
+import type { ThemeSetting } from "../utils/theme.js";
 import { TerminalSizeContext } from "../tui/ink/components/TerminalSizeContext.js";
 import { WelcomeV2 } from "./WelcomeV2.js";
 import {
@@ -422,7 +425,7 @@ const STEP_TITLES: Readonly<Record<FirstRunOnboardingStepId, string>> =
     "terminal-setup": "Terminal setup",
   });
 
-const THEME_CHOICES: readonly ThemeSetting[] = THEME_SETTINGS;
+const THEME_CHOICES: readonly ThemeSetting[] = TUI_THEME_SETTINGS;
 
 /**
  * Accept exactly the canonical `ThemeSetting` vocabulary. Returns undefined
