@@ -1,0 +1,5 @@
+{
+  "name": "zeroday-hunter",
+  "description": "Exploit-first 0-day hunting: campaigns with quantitative gates, deterministic proof and hashed evidence.",
+  "skills": "./skills"
+}

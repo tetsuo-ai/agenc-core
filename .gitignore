@@ -39,6 +39,7 @@ obj/
 # Keys (CRITICAL - never commit private keys)
 /.wallet/
 *.json
+!/plugins/*/.agenc-plugin/plugin.json
 !/runtime/tests/fnd/fixtures/**/*.json
 !/runtime/tests/fnd/red-probes/manifest.json
 !/package-lock.json
