@@ -13,6 +13,7 @@ import { canonicalSessionEnvironmentKeys } from "../session/environment.js";
 import {
   getGeminiProjectIdHint,
   resolveGeminiCredentialPlan,
+  type GeminiCredentialPlan,
 } from "../utils/geminiAuth.js";
 import {
   readOpenAiOauthCredentials,
@@ -26,8 +27,15 @@ import {
 import {
   resolveProviderBaseURLEnvironment,
   resolveProviderCredentialEnvironment,
+  missingProviderCredentialEnvironmentLabel,
+  providerCredentialEnvironmentProvenance,
+  type ProviderCredentialProvenance,
 } from "./registry/provider-ingress.js";
-import { BUILT_IN_PROVIDER_BASE_URLS } from "./registry/provider-info.js";
+import {
+  BUILT_IN_PROVIDER_BASE_URLS,
+  providerCredentialEnvironmentLabel,
+  resolveBuiltInProviderInfo,
+} from "./registry/provider-info.js";
 import { resolveGrokProviderCredential } from "./xai-capability-config.js";
 import type { ProviderFactoryOptions, ProviderName } from "./provider.js";
 import {
@@ -36,6 +44,7 @@ import {
   readGeminiRuntimeOptions,
 } from "./providers/gemini/runtime-options.js";
 import { createGeminiEndpointPlan } from "./providers/gemini/endpoint-plan.js";
+import { isGrokComposerModel } from "./providers/grok/acp-adapter.js";
 
 export type ProviderEnvironment = Readonly<
   Record<string, string | undefined>
@@ -44,6 +53,45 @@ export type ProviderEnvironment = Readonly<
 /** Lower-precedence credentials discovered at the canonical ingress. */
 export interface ProviderCredentialCandidates {
   readonly savedApiKey?: string;
+}
+
+export type ProviderCredentialReadyMode =
+  | "api-key"
+  | "xai-oauth"
+  | "openai-oauth"
+  | "gemini-access-token"
+  | "gemini-adc"
+  | "aws-sigv4";
+
+export type ProviderCredentialSource =
+  | "explicit"
+  | "environment"
+  | "saved-byok"
+  | "native-sign-in";
+
+export type ProviderCredentialState =
+  | {
+      readonly status: "ready";
+      readonly mode: ProviderCredentialReadyMode;
+      readonly source: ProviderCredentialSource;
+      readonly label: string;
+      readonly provenance?: ProviderCredentialProvenance;
+    }
+  | {
+      readonly status: "optional" | "not-required";
+      readonly mode: "none";
+      readonly label: string;
+    }
+  | {
+      readonly status: "missing";
+      readonly mode: "none";
+      readonly label: string;
+      readonly missingLabel: string;
+    };
+
+export interface ResolvedProviderCredentialAuthority {
+  readonly factoryOptions: ProviderFactoryOptions;
+  readonly credential: ProviderCredentialState;
 }
 
 function nonEmpty(value: string | undefined): string | undefined {
@@ -96,16 +144,257 @@ export function snapshotProviderEnvironment(
   );
 }
 
+function readyCredential(
+  mode: ProviderCredentialReadyMode,
+  source: ProviderCredentialSource,
+  label: string,
+  provenance?: ProviderCredentialProvenance,
+): ProviderCredentialState {
+  return Object.freeze({
+    status: "ready",
+    mode,
+    source,
+    label,
+    ...(provenance === undefined ? {} : { provenance }),
+  });
+}
+
+function missingCredential(
+  label: string,
+  missingLabel = label,
+): ProviderCredentialState {
+  return Object.freeze({
+    status: "missing",
+    mode: "none",
+    label,
+    missingLabel,
+  });
+}
+
+function readExtraString(
+  extra: Readonly<Record<string, unknown>> | undefined,
+  key: string,
+): string | undefined {
+  const value = extra?.[key];
+  return typeof value === "string" ? nonEmpty(value) : undefined;
+}
+
+function projectGeminiCredentialState(
+  plan: GeminiCredentialPlan,
+  environment: ReturnType<typeof resolveProviderCredentialEnvironment>,
+): ProviderCredentialState {
+  if (plan.kind === "api-key") {
+    if (plan.source === "saved-byok") {
+      return readyCredential("api-key", "saved-byok", "saved Gemini BYOK");
+    }
+    if (plan.source === "factory") {
+      return readyCredential("api-key", "explicit", "explicit Gemini API key");
+    }
+    const provenance = environment === undefined
+      ? undefined
+      : providerCredentialEnvironmentProvenance(environment);
+    return readyCredential(
+      "api-key",
+      "environment",
+      plan.source,
+      provenance,
+    );
+  }
+  if (plan.kind === "access-token") {
+    return readyCredential(
+      "gemini-access-token",
+      "environment",
+      plan.source,
+    );
+  }
+  if (plan.kind === "adc") {
+    return readyCredential(
+      "gemini-adc",
+      "environment",
+      plan.source === "well-known-adc"
+        ? "Google application default credentials"
+        : plan.source,
+    );
+  }
+  const missingLabel = plan.expected === "access-token"
+    ? "GEMINI_ACCESS_TOKEN"
+    : plan.expected === "adc"
+      ? plan.configuredPath === undefined
+        ? "Google application default credentials"
+        : `ADC file ${plan.configuredPath}`
+      : plan.expected === "api-key"
+        ? "GEMINI_API_KEY or GOOGLE_API_KEY or saved BYOK"
+        : "Gemini API key, access token, ADC credentials, or saved BYOK";
+  return missingCredential(`${missingLabel} missing`, missingLabel);
+}
+
+function projectProviderCredentialState(params: {
+  readonly provider: ProviderName;
+  readonly requested: ProviderFactoryOptions;
+  readonly snapshot: ProviderEnvironment;
+  readonly candidates: ProviderCredentialCandidates;
+  readonly factoryOptions: ProviderFactoryOptions;
+  readonly credentialEnvironment: ReturnType<
+    typeof resolveProviderCredentialEnvironment
+  >;
+  readonly grokCredential?: ReturnType<typeof resolveGrokProviderCredential>;
+  readonly openAiNativeAuthMode?: "api-key" | "oauth";
+  readonly geminiCredentialPlan?: GeminiCredentialPlan;
+}): ProviderCredentialState {
+  const info = resolveBuiltInProviderInfo(params.provider);
+  if (info === undefined) {
+    return missingCredential("provider credentials", "provider credentials");
+  }
+  if (
+    params.provider === "grok" &&
+    isGrokComposerModel(params.factoryOptions.model)
+  ) {
+    return Object.freeze({
+      status: "not-required",
+      mode: "none",
+      label: "Grok CLI authentication",
+    });
+  }
+  if (params.provider === "gemini") {
+    return params.geminiCredentialPlan === undefined
+      ? missingCredential(
+          "Gemini credential authority missing",
+          "Gemini credentials",
+        )
+      : projectGeminiCredentialState(
+          params.geminiCredentialPlan,
+          params.credentialEnvironment,
+        );
+  }
+  if (params.provider === "openai") {
+    if (params.openAiNativeAuthMode === "oauth") {
+      return readyCredential(
+        "openai-oauth",
+        "native-sign-in",
+        "OpenAI sign-in",
+      );
+    }
+    if (params.openAiNativeAuthMode === "api-key") {
+      return readyCredential(
+        "api-key",
+        "native-sign-in",
+        "stored OpenAI API key",
+      );
+    }
+  }
+  if (
+    params.provider === "grok" &&
+    params.grokCredential?.isOAuth === true
+  ) {
+    return readyCredential(
+      "xai-oauth",
+      "native-sign-in",
+      "xAI OAuth",
+      Object.freeze({ kind: "oauth", provider: "grok" }),
+    );
+  }
+  if (info.credentials.kind === "aws-sigv4") {
+    const accessKeyId = readExtraString(
+      params.factoryOptions.extra,
+      "accessKeyId",
+    );
+    const secretAccessKey = readExtraString(
+      params.factoryOptions.extra,
+      "secretAccessKey",
+    );
+    if (accessKeyId !== undefined && secretAccessKey !== undefined) {
+      const explicit =
+        readExtraString(params.requested.extra, "accessKeyId") !== undefined ||
+        readExtraString(params.requested.extra, "secretAccessKey") !== undefined;
+      const provenance = explicit || params.credentialEnvironment === undefined
+        ? undefined
+        : providerCredentialEnvironmentProvenance(
+            params.credentialEnvironment,
+          );
+      return readyCredential(
+        "aws-sigv4",
+        explicit ? "explicit" : "environment",
+        explicit ? "explicit AWS SigV4 credentials" : "AWS SigV4 environment",
+        provenance,
+      );
+    }
+    const missingFields: string[] = [];
+    if (accessKeyId === undefined) {
+      missingFields.push(info.credentials.accessKeyId.envVars.join(" or "));
+    }
+    if (secretAccessKey === undefined) {
+      missingFields.push(
+        info.credentials.secretAccessKey.envVars.join(" or "),
+      );
+    }
+    const missingLabel = missingFields.join(" and ");
+    return missingCredential(
+      `${missingLabel} missing`,
+      missingLabel,
+    );
+  }
+  if (info.credentials.kind === "none") {
+    return Object.freeze({
+      status: "not-required",
+      mode: "none",
+      label: "no provider credential required",
+    });
+  }
+  const resolvedApiKey = nonEmpty(params.factoryOptions.apiKey);
+  if (resolvedApiKey !== undefined) {
+    const requestedApiKey = nonEmpty(params.requested.apiKey);
+    if (
+      requestedApiKey !== undefined &&
+      requestedApiKey === resolvedApiKey
+    ) {
+      return readyCredential("api-key", "explicit", "explicit API key");
+    }
+    const environmentApiKey = params.credentialEnvironment?.kind === "api-key"
+      ? params.credentialEnvironment.apiKey
+      : undefined;
+    if (
+      environmentApiKey !== undefined &&
+      environmentApiKey.value === resolvedApiKey
+    ) {
+      return readyCredential(
+        "api-key",
+        "environment",
+        environmentApiKey.envVar,
+        providerCredentialEnvironmentProvenance(params.credentialEnvironment!),
+      );
+    }
+    if (nonEmpty(params.candidates.savedApiKey) === resolvedApiKey) {
+      return readyCredential("api-key", "saved-byok", "saved BYOK");
+    }
+    return readyCredential("api-key", "explicit", "resolved API key");
+  }
+  if (!info.credentials.apiKey.required) {
+    return Object.freeze({
+      status: "optional",
+      mode: "none",
+      label: `${providerCredentialEnvironmentLabel(params.provider) ?? "API key"} optional`,
+    });
+  }
+  const missingLabel =
+    missingProviderCredentialEnvironmentLabel(
+      params.provider,
+      params.snapshot,
+    ) ??
+    providerCredentialEnvironmentLabel(params.provider) ??
+    `${info.name} credentials`;
+  return missingCredential(`${missingLabel} missing`, missingLabel);
+}
+
 /**
  * Resolve credentials and endpoint metadata for an explicit provider/model.
  * The provider and model are never inferred from credential names or values.
  */
-export function resolveProviderFactoryOptions(
+function resolveProviderCredentialAuthorityCore(
   provider: ProviderName,
   requested: ProviderFactoryOptions,
   env: ProviderEnvironment,
   candidates: ProviderCredentialCandidates = {},
-): ProviderFactoryOptions {
+): ResolvedProviderCredentialAuthority {
   if (
     provider === "amazon-bedrock" &&
     nonEmpty(requested.apiKey) !== undefined
@@ -122,12 +411,11 @@ export function resolveProviderFactoryOptions(
   const environmentApiKey = credentialEnvironment?.kind === "api-key"
     ? credentialEnvironment.apiKey?.value
     : undefined;
+  const grokCredential = provider === "grok" && home !== undefined
+    ? resolveGrokProviderCredential(home, requested.apiKey, snapshot)
+    : undefined;
   let apiKey = provider === "grok" && home !== undefined
-    ? resolveGrokProviderCredential(
-        home,
-        requested.apiKey,
-        snapshot,
-      ).value ?? nonEmpty(candidates.savedApiKey)
+    ? grokCredential?.value ?? nonEmpty(candidates.savedApiKey)
     : nonEmpty(requested.apiKey) ??
       environmentApiKey ??
       nonEmpty(candidates.savedApiKey);
@@ -139,6 +427,7 @@ export function resolveProviderFactoryOptions(
   const resolvedExtra: Record<string, unknown> = {};
   const forcedExtra: Record<string, unknown> = {};
   let chatGptSubscription = false;
+  let openAiNativeAuthMode: "api-key" | "oauth" | undefined;
   if (provider === "openai") {
     const organization = nonEmpty(snapshot.OPENAI_ORGANIZATION);
     const project = nonEmpty(snapshot.OPENAI_PROJECT);
@@ -151,6 +440,7 @@ export function resolveProviderFactoryOptions(
     if (stored?.apiKey !== undefined) {
       apiKey = stored.apiKey;
       baseURL = assertOpenAiOauthBaseUrl(baseURL);
+      openAiNativeAuthMode = "api-key";
       forcedExtra.authMode = "api_key";
     } else {
       const subscription = resolveStoredChatGptSubscriptionCredentials(stored);
@@ -159,6 +449,7 @@ export function resolveProviderFactoryOptions(
         apiKey = undefined;
         baseURL = CHATGPT_BACKEND_BASE_URL;
         chatGptSubscription = true;
+        openAiNativeAuthMode = "oauth";
         forcedExtra.authMode = "oauth";
         forcedExtra.oauth = {
           accessToken: initialAccessToken,
@@ -209,6 +500,7 @@ export function resolveProviderFactoryOptions(
     }
   }
 
+  let geminiCredentialPlan: GeminiCredentialPlan | undefined;
   if (provider === "gemini") {
     assertNoRetiredGeminiRuntimeFields(requested.extra);
     const requestedRuntime = readGeminiRuntimeOptions(requested.extra);
@@ -222,6 +514,7 @@ export function resolveProviderFactoryOptions(
         apiKey: requested.apiKey,
         savedApiKey: candidates.savedApiKey,
       });
+    geminiCredentialPlan = credentialPlan;
     const usesVertexRouting =
       credentialPlan.kind === "access-token" ||
       credentialPlan.kind === "adc" ||
@@ -295,7 +588,7 @@ export function resolveProviderFactoryOptions(
     delete extra.organization;
     delete extra.project;
   }
-  return {
+  const factoryOptions: ProviderFactoryOptions = {
     ...(home !== undefined ? { credentialHome: home } : {}),
     ...(apiKey !== undefined ? { apiKey } : {}),
     ...(baseURL !== undefined ? { baseURL } : {}),
@@ -306,4 +599,52 @@ export function resolveProviderFactoryOptions(
       : {}),
     ...(extra !== undefined ? { extra } : {}),
   };
+  return Object.freeze({
+    factoryOptions,
+    credential: projectProviderCredentialState({
+      provider,
+      requested,
+      snapshot,
+      candidates,
+      factoryOptions,
+      credentialEnvironment,
+      grokCredential,
+      openAiNativeAuthMode,
+      geminiCredentialPlan,
+    }),
+  });
+}
+
+/**
+ * Resolve runtime factory options and a redacted view of the same direct
+ * credential decision. Menus, command guards, and discovery must consume this
+ * projection instead of rebuilding provider-specific credential rules.
+ */
+export function resolveProviderCredentialAuthority(
+  provider: ProviderName,
+  requested: ProviderFactoryOptions,
+  env: ProviderEnvironment,
+  candidates: ProviderCredentialCandidates = {},
+): ResolvedProviderCredentialAuthority {
+  return resolveProviderCredentialAuthorityCore(
+    provider,
+    requested,
+    env,
+    candidates,
+  );
+}
+
+/** Resolve the credential-bearing options used to construct one provider. */
+export function resolveProviderFactoryOptions(
+  provider: ProviderName,
+  requested: ProviderFactoryOptions,
+  env: ProviderEnvironment,
+  candidates: ProviderCredentialCandidates = {},
+): ProviderFactoryOptions {
+  return resolveProviderCredentialAuthority(
+    provider,
+    requested,
+    env,
+    candidates,
+  ).factoryOptions;
 }
