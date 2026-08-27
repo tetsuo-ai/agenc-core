@@ -3,7 +3,7 @@ import { afterEach, expect, test } from 'bun:test'
 import { resetModelStringsForTestingOnly } from '../../../src/bootstrap/state.ts'
 import { parseUserSpecifiedModel } from '../../../src/utils/model/model.ts'
 import { getModelStrings } from '../../../src/utils/model/modelStrings.ts'
-import { runWithStartupProviderSelection } from '../../../src/utils/model/providers.ts'
+import { runWithCanonicalRuntimeAuthority } from '../../helpers/canonical-runtime-authority.bun.ts'
 
 const originalEnv = {
   AGENC_PROVIDER: process.env.AGENC_PROVIDER,
@@ -13,6 +13,18 @@ const originalEnv = {
 function clearProviderFlags(): void {
   delete process.env.AGENC_PROVIDER
   delete process.env.XAI_API_KEY
+}
+
+function withModelAuthority<T>(
+  provider: string,
+  model: string,
+  operation: () => T,
+): T {
+  return runWithCanonicalRuntimeAuthority(operation, {
+    environment: { ...process.env },
+    model,
+    provider,
+  })
 }
 
 afterEach(() => {
@@ -30,7 +42,11 @@ test('GitHub provider model strings are concrete IDs', () => {
   clearProviderFlags()
   process.env.AGENC_PROVIDER = 'github'
 
-  const modelStrings = runWithStartupProviderSelection({ provider: 'github', model: 'github:copilot', environment: { ...process.env } }, getModelStrings)
+  const modelStrings = withModelAuthority(
+    'github',
+    'github:copilot',
+    getModelStrings,
+  )
 
   for (const value of Object.values(modelStrings)) {
     expect(typeof value).toBe('string')
@@ -42,13 +58,12 @@ test('GitHub provider model strings are safe to parse', () => {
   clearProviderFlags()
   process.env.AGENC_PROVIDER = 'github'
 
-  const modelStrings = runWithStartupProviderSelection({ provider: 'github', model: 'github:copilot', environment: { ...process.env } }, getModelStrings)
-
-  expect(() =>
-    runWithStartupProviderSelection({ provider: 'github', model: 'github:copilot', environment: { ...process.env } }, () =>
+  withModelAuthority('github', 'github:copilot', () => {
+    const modelStrings = getModelStrings()
+    expect(() =>
       parseUserSpecifiedModel(modelStrings.sonnet46 as any),
-    ),
-  ).not.toThrow()
+    ).not.toThrow()
+  })
 })
 
 // Regression: only AGENC_OPUS_4_6_CONFIG defines `xai`/`mistral` keys, so for
@@ -60,7 +75,7 @@ test('xai provider model strings are concrete IDs for every model key', () => {
   process.env.AGENC_PROVIDER = 'grok'
   process.env.XAI_API_KEY = 'xai-test-key'
 
-  const modelStrings = runWithStartupProviderSelection({ provider: 'grok', model: 'grok-4.6', environment: { ...process.env } }, getModelStrings)
+  const modelStrings = withModelAuthority('grok', 'grok-4.6', getModelStrings)
 
   const entries = Object.entries(modelStrings)
   expect(entries.length).toBeGreaterThan(0)
@@ -75,7 +90,11 @@ test('mistral provider model strings are concrete IDs for every model key', () =
   clearProviderFlags()
   process.env.AGENC_PROVIDER = 'mistral'
 
-  const modelStrings = runWithStartupProviderSelection({ provider: 'mistral', model: 'mistral-medium-latest', environment: { ...process.env } }, getModelStrings)
+  const modelStrings = withModelAuthority(
+    'mistral',
+    'mistral-medium-latest',
+    getModelStrings,
+  )
 
   const entries = Object.entries(modelStrings)
   expect(entries.length).toBeGreaterThan(0)

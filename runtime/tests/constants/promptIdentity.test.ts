@@ -1,5 +1,4 @@
 import { afterEach, expect, test } from 'bun:test'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 // MACRO is replaced at build time by Bun.define but not in test mode.
@@ -24,8 +23,7 @@ import {
   resolveAgentRuntimeOptions,
   runWithAgentRuntimeOptions,
 } from '../../src/session/runtime-options.ts'
-import { ConfigStore } from '../../src/config/store.ts'
-import { runWithCanonicalSettingsAuthority } from '../../src/utils/settings/canonicalAuthority.ts'
+import { runWithCanonicalRuntimeAuthority } from '../helpers/canonical-runtime-authority.bun.ts'
 
 const ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd())
 
@@ -39,19 +37,16 @@ afterEach(() => {
 async function withSystemPromptAuthority<T>(
   operation: () => Promise<T> | T,
 ): Promise<T> {
-  const home = join(tmpdir(), 'agenc-prompt-identity-test-home')
-  const store = new ConfigStore({ home, cwd: process.cwd(), env: {} })
-  const runtimeOptions = resolveAgentRuntimeOptions(
-    {},
-    { pluginStorageRoot: join(home, 'plugins') },
+  return await runWithCanonicalRuntimeAuthority(
+    ({ home }) => {
+      const runtimeOptions = resolveAgentRuntimeOptions(
+        {},
+        { pluginStorageRoot: join(home, 'plugins') },
+      )
+      return runWithAgentRuntimeOptions(runtimeOptions, operation)
+    },
+    { model: 'gpt-4o', provider: 'openai' },
   )
-  try {
-    return await runWithAgentRuntimeOptions(runtimeOptions, () =>
-      runWithCanonicalSettingsAuthority(store, operation),
-    )
-  } finally {
-    store.stateRepository.close()
-  }
 }
 
 test('CLI identity prefixes describe AgenC', () => {

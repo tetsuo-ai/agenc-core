@@ -9,6 +9,7 @@ import { AppStateProvider } from '../../../src/tui/state/AppState.tsx'
 import { maskTextWithVisibleEdges } from '../../../src/utils/TextCursor.ts'
 import TextInput from '../../../src/tui/components/TextInput.tsx'
 import VimTextInput from '../../../src/tui/components/VimTextInput.tsx'
+import { runWithCanonicalRuntimeAuthority } from '../../helpers/canonical-runtime-authority.bun.ts'
 
 const SYNC_START = '\x1B[?2026h'
 const SYNC_END = '\x1B[?2026l'
@@ -174,30 +175,32 @@ function DelayedControlledVimTextInput(): React.ReactNode {
 }
 
 test('TextInput renders typed characters before delayed parent value commits', async () => {
-  const { stdout, stdin, getOutput } = createTestStreams()
-  const root = await createRoot({
-    stdout: stdout as unknown as NodeJS.WriteStream,
-    stdin: stdin as unknown as NodeJS.ReadStream,
-    patchConsole: false,
+  await runWithCanonicalRuntimeAuthority(async () => {
+    const { stdout, stdin, getOutput } = createTestStreams()
+    const root = await createRoot({
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      patchConsole: false,
+    })
+
+    root.render(<DelayedControlledTextInput />)
+
+    await Bun.sleep(50)
+    stdin.write('a')
+    await Bun.sleep(25)
+    stdin.write('b')
+    await Bun.sleep(25)
+
+    const output = stripAnsi(extractLastFrame(getOutput()))
+
+    root.unmount()
+    stdin.end()
+    stdout.end()
+    await Bun.sleep(25)
+
+    expect(output).toContain('ab')
+    expect(output).not.toContain('Type here...')
   })
-
-  root.render(<DelayedControlledTextInput />)
-
-  await Bun.sleep(50)
-  stdin.write('a')
-  await Bun.sleep(25)
-  stdin.write('b')
-  await Bun.sleep(25)
-
-  const output = stripAnsi(extractLastFrame(getOutput()))
-
-  root.unmount()
-  stdin.end()
-  stdout.end()
-  await Bun.sleep(25)
-
-  expect(output).toContain('ab')
-  expect(output).not.toContain('Type here...')
 })
 
 test('maskTextWithVisibleEdges preserves only the first and last three chars', () => {
@@ -208,32 +211,34 @@ test('maskTextWithVisibleEdges preserves only the first and last three chars', (
 })
 
 test('VimTextInput preserves rapid typed characters before delayed parent value commits', async () => {
-  const { stdout, stdin, getOutput } = createTestStreams()
-  const root = await createRoot({
-    stdout: stdout as unknown as NodeJS.WriteStream,
-    stdin: stdin as unknown as NodeJS.ReadStream,
-    patchConsole: false,
+  await runWithCanonicalRuntimeAuthority(async () => {
+    const { stdout, stdin, getOutput } = createTestStreams()
+    const root = await createRoot({
+      stdout: stdout as unknown as NodeJS.WriteStream,
+      stdin: stdin as unknown as NodeJS.ReadStream,
+      patchConsole: false,
+    })
+
+    root.render(<DelayedControlledVimTextInput />)
+
+    await Bun.sleep(50)
+    stdin.write('a')
+    await Bun.sleep(25)
+    stdin.write('s')
+    await Bun.sleep(25)
+    stdin.write('d')
+    await Bun.sleep(25)
+    stdin.write('f')
+    await Bun.sleep(25)
+
+    const output = stripAnsi(extractLastFrame(getOutput()))
+
+    root.unmount()
+    stdin.end()
+    stdout.end()
+    await Bun.sleep(25)
+
+    expect(output).toContain('asdf')
+    expect(output).not.toContain('Type here...')
   })
-
-  root.render(<DelayedControlledVimTextInput />)
-
-  await Bun.sleep(50)
-  stdin.write('a')
-  await Bun.sleep(25)
-  stdin.write('s')
-  await Bun.sleep(25)
-  stdin.write('d')
-  await Bun.sleep(25)
-  stdin.write('f')
-  await Bun.sleep(25)
-
-  const output = stripAnsi(extractLastFrame(getOutput()))
-
-  root.unmount()
-  stdin.end()
-  stdout.end()
-  await Bun.sleep(25)
-
-  expect(output).toContain('asdf')
-  expect(output).not.toContain('Type here...')
 })

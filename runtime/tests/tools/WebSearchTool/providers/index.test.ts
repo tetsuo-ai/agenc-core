@@ -1,15 +1,15 @@
 import { describe, expect, test, beforeEach, afterEach } from 'bun:test'
 import { getProviderMode, getProviderChain, getAvailableProviders } from '../../../../src/tools/WebSearchTool/providers/index.ts'
 import type { ProviderMode } from '../../../../src/tools/WebSearchTool/providers/index.ts'
-import { runWithStartupProviderSelection } from '../../../../src/utils/model/providers.ts'
+import { runWithCanonicalRuntimeAuthority } from '../../../helpers/canonical-runtime-authority.bun.ts'
 
 function withEnvironment<T>(
   environment: Readonly<Record<string, string | undefined>>,
   operation: () => T,
 ): T {
-  return runWithStartupProviderSelection(
-    { provider: 'openai', model: 'gpt-5', environment },
+  return runWithCanonicalRuntimeAuthority(
     operation,
+    { environment, model: 'gpt-5', provider: 'openai' },
   )
 }
 
@@ -61,13 +61,13 @@ describe('getProviderMode', () => {
 describe('getProviderChain', () => {
   test('auto mode returns at least one configured provider', () => {
     // DDG isAlways configured (no API key needed)
-    const chain = getProviderChain('auto')
+    const chain = withEnvironment({}, () => getProviderChain('auto'))
     expect(chain.length).toBeGreaterThan(0)
     expect(chain.some(p => p.name === 'duckduckgo')).toBe(true)
   })
 
   test('auto mode does NOT include custom provider', () => {
-    const chain = getProviderChain('auto')
+    const chain = withEnvironment({}, () => getProviderChain('auto'))
     expect(chain.some(p => p.name === 'custom')).toBe(false)
   })
 

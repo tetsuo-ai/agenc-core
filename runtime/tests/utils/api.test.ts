@@ -6,6 +6,7 @@ import {
   prependUserContext,
   toolToAPISchema,
 } from '../../src/utils/api.ts'
+import { runWithCanonicalRuntimeAuthority } from '../helpers/canonical-runtime-authority.bun.ts'
 
 const SkillTool = {
   name: 'Skill',
@@ -16,39 +17,41 @@ const SkillTool = {
 } as unknown as Tool
 
 test('toolToAPISchema preserves provider-specific schema keywords in input_schema', async () => {
-  const schema = await toolToAPISchema(
-    {
-      name: 'WebFetch',
-      inputSchema: z.strictObject({}),
-      inputJSONSchema: {
-        type: 'object',
-        properties: {
-          url: {
-            type: 'string',
-            format: 'uri',
-            description: 'Public HTTP or HTTPS URL',
-          },
-          metadata: {
-            type: 'object',
-            propertyNames: {
-              pattern: '^[a-z]+$',
+  const schema = await runWithCanonicalRuntimeAuthority(() =>
+    toolToAPISchema(
+      {
+        name: 'WebFetch',
+        inputSchema: z.strictObject({}),
+        inputJSONSchema: {
+          type: 'object',
+          properties: {
+            url: {
+              type: 'string',
+              format: 'uri',
+              description: 'Public HTTP or HTTPS URL',
             },
-            properties: {
-              callback: {
-                type: 'string',
-                format: 'uri-reference',
+            metadata: {
+              type: 'object',
+              propertyNames: {
+                pattern: '^[a-z]+$',
+              },
+              properties: {
+                callback: {
+                  type: 'string',
+                  format: 'uri-reference',
+                },
               },
             },
           },
         },
+        prompt: async () => 'Fetch a URL',
+      } as unknown as Tool,
+      {
+        getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+        tools: [] as unknown as Tools,
+        agents: [],
       },
-      prompt: async () => 'Fetch a URL',
-    } as unknown as Tool,
-    {
-      getToolPermissionContext: async () => getEmptyToolPermissionContext(),
-      tools: [] as unknown as Tools,
-      agents: [],
-    },
+    ),
   )
 
   expect(schema).toMatchObject({
@@ -78,11 +81,13 @@ test('toolToAPISchema preserves provider-specific schema keywords in input_schem
 })
 
 test('toolToAPISchema keeps skill required for SkillTool', async () => {
-  const schema = await toolToAPISchema(SkillTool, {
-    getToolPermissionContext: async () => getEmptyToolPermissionContext(),
-    tools: [] as unknown as Tools,
-    agents: [],
-  })
+  const schema = await runWithCanonicalRuntimeAuthority(() =>
+    toolToAPISchema(SkillTool, {
+      getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+      tools: [] as unknown as Tools,
+      agents: [],
+    }),
+  )
 
   expect((schema as { input_schema: unknown }).input_schema).toMatchObject({
     type: 'object',
@@ -91,24 +96,26 @@ test('toolToAPISchema keeps skill required for SkillTool', async () => {
 })
 
 test('toolToAPISchema removes extra required keys not in properties (MCP schema sanitization)', async () => {
-  const schema = await toolToAPISchema(
-    {
-      name: 'mcp__test__create_object',
-      inputSchema: z.strictObject({}),
-      inputJSONSchema: {
-        type: 'object',
-        properties: {
-          name: { type: 'string' },
+  const schema = await runWithCanonicalRuntimeAuthority(() =>
+    toolToAPISchema(
+      {
+        name: 'mcp__test__create_object',
+        inputSchema: z.strictObject({}),
+        inputJSONSchema: {
+          type: 'object',
+          properties: {
+            name: { type: 'string' },
+          },
+          required: ['name', 'attributes'],
         },
-        required: ['name', 'attributes'],
+        prompt: async () => 'Create an object',
+      } as unknown as Tool,
+      {
+        getToolPermissionContext: async () => getEmptyToolPermissionContext(),
+        tools: [] as unknown as Tools,
+        agents: [],
       },
-      prompt: async () => 'Create an object',
-    } as unknown as Tool,
-    {
-      getToolPermissionContext: async () => getEmptyToolPermissionContext(),
-      tools: [] as unknown as Tools,
-      agents: [],
-    },
+    ),
   )
 
   const inputSchema = (schema as { input_schema: { required?: string[] } }).input_schema
