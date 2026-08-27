@@ -7,6 +7,7 @@ import { renderToString } from '../../utils/staticRender.js'
 import {
   TEST_REMOTE_AUTH_SESSION_CONTEXT,
   TEST_RUNTIME_STATE_REPOSITORY,
+  TEST_SETTINGS_AUTHORITY,
 } from '../remoteAuthSessionContext.fixture.js'
 import { AppStateProvider, getDefaultAppState } from '../state/AppState.js'
 import { AGENC_LOGO_MARK_LINES } from './v2/primitives.js'
@@ -39,6 +40,7 @@ const baseProps = {
   isLoading: false,
   providerAuthContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
   stateRepository: TEST_RUNTIME_STATE_REPOSITORY,
+  settingsAuthority: TEST_SETTINGS_AUTHORITY,
   screen: 'main' as const,
   streamingToolUses: [],
 }

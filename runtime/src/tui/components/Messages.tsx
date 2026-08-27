@@ -55,6 +55,10 @@ import {
 } from './messagesBriefFiltering.js';
 import { useFullscreenMode } from '../context/fullscreenModeContext.js';
 import { useSettings } from '../hooks/useSettings.js';
+import {
+  runWithCanonicalSettingsAuthority,
+  type CanonicalSettingsAuthority,
+} from '../../utils/settings/canonicalAuthority.js';
 
 // Memoed logo header: this box is the FIRST sibling before all MessageRows
 // in main-screen mode. If it becomes dirty on every Messages re-render,
@@ -160,6 +164,7 @@ type Props = {
   agentDefinitions?: AgentDefinitionsResult;
   providerAuthContext: ProviderAuthReadContext;
   stateRepository: RuntimeStateRepository;
+  settingsAuthority: CanonicalSettingsAuthority;
   onOpenRateLimitOptions?: () => void;
   /** Hide the logo/header - used for subagent zoom view */
   hideLogo?: boolean;
@@ -292,6 +297,7 @@ const MessagesImpl = ({
   agentDefinitions,
   providerAuthContext,
   stateRepository,
+  settingsAuthority,
   onOpenRateLimitOptions,
   hideLogo = false,
   isLoading,
@@ -467,7 +473,19 @@ const MessagesImpl = ({
     const {
       messages: groupedMessages
     } = applyGrouping(messagesToShow, tools, verbose);
-    const collapsed = collapseBackgroundBashNotifications(collapseHookSummaries(collapseTeammateShutdowns(collapseReadSearchGroups(groupedMessages, tools, fullscreen))), verbose, fullscreen);
+    const collapsed = runWithCanonicalSettingsAuthority(
+      settingsAuthority,
+      () =>
+        collapseBackgroundBashNotifications(
+          collapseHookSummaries(
+            collapseTeammateShutdowns(
+              collapseReadSearchGroups(groupedMessages, tools, fullscreen),
+            ),
+          ),
+          verbose,
+          fullscreen,
+        ),
+    );
     const lookups = buildMessageLookups(normalizedMessages, messagesToShow);
     const hiddenMessageCount = messagesToShowNotTruncated.length - MAX_MESSAGES_TO_SHOW_IN_TRANSCRIPT_MODE;
     return {
@@ -476,7 +494,7 @@ const MessagesImpl = ({
       hasTruncatedMessages,
       hiddenMessageCount
     };
-  }, [verbose, fullscreen, normalizedMessages, isTranscriptMode, syntheticStreamingToolUseMessages, shouldTruncate, tools, isBriefOnly]);
+  }, [verbose, fullscreen, normalizedMessages, isTranscriptMode, syntheticStreamingToolUseMessages, shouldTruncate, tools, isBriefOnly, settingsAuthority]);
 
   // Cheap slice — only runs when scroll range or slice config changes.
   const renderableMessages = useMemo(() => {
@@ -573,7 +591,7 @@ const MessagesImpl = ({
     // sibling after this map, so it's never in renderableMessages — OR it
     // in explicitly so the group flips to past tense as soon as text starts
     // streaming instead of waiting for the block to finalize.
-    const hasContentAfter = msg_8.type === 'collapsed_read_search' && (!!streamingText || hasContentAfterIndex(renderableMessages, index, tools, streamingToolUseIDs, fullscreen));
+    const hasContentAfter = msg_8.type === 'collapsed_read_search' && (!!streamingText || runWithCanonicalSettingsAuthority(settingsAuthority, () => hasContentAfterIndex(renderableMessages, index, tools, streamingToolUseIDs, fullscreen)));
     const k_0 = messageKey(msg_8);
     const row = <MessageRow key={k_0} message={msg_8} isUserContinuation={isUserContinuation} hasContentAfter={hasContentAfter} tools={tools} commands={commands} verbose={verbose || isItemExpanded(msg_8) || cursor?.expanded === true && index === selectedIdx} inProgressToolUseIDs={inProgressToolUseIDs} streamingToolUseIDs={streamingToolUseIDs} screen={screen} canAnimate={canAnimate} onOpenRateLimitOptions={onOpenRateLimitOptions} lastThinkingBlockId={lastThinkingBlockId} latestBashOutputUUID={latestBashOutputUUID} columns={contentColumns} isLoading={isLoading} lookups={lookups_0} />;
 

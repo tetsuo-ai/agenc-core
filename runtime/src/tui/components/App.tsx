@@ -7055,6 +7055,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       showAllInTranscript={showAllInTranscript}
       providerAuthContext={remoteAuthSessionContext}
       stateRepository={stateRepository}
+      settingsAuthority={configStore}
       isLoading={isLoading}
       streamingText={transcript.streamingText}
       streamingThinking={transcript.streamingThinking as never}

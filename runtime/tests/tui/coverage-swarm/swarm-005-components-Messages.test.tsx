@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 import {
   TEST_REMOTE_AUTH_SESSION_CONTEXT,
   TEST_RUNTIME_STATE_REPOSITORY,
+  TEST_SETTINGS_AUTHORITY,
 } from '../remoteAuthSessionContext.fixture.js'
 
 const harness = vi.hoisted(() => ({
@@ -292,6 +293,7 @@ const baseProps = {
   messages: [],
   providerAuthContext: TEST_REMOTE_AUTH_SESSION_CONTEXT,
   stateRepository: TEST_RUNTIME_STATE_REPOSITORY,
+  settingsAuthority: TEST_SETTINGS_AUTHORITY,
   screen: 'main' as const,
   streamingToolUses: [],
   toolJSX: null,
@@ -392,6 +394,27 @@ describe('Messages coverage swarm row 005', () => {
       // the answer instead of duplicating the still-open thinking block.
       expect(harness.thinkingMessages).not.toContain('still thinking')
       expect(harness.progress).toHaveBeenCalledWith('completed')
+    } finally {
+      await rendered.dispose()
+    }
+  })
+
+  test('renders ordinary Write results under the session settings authority', async () => {
+    const rendered = await render(
+      <Messages
+        {...baseProps}
+        messages={[
+          assistantToolUse('write-use-row', 'tool-write', 'Write'),
+          userToolResult('write-result-row', 'tool-write', { path: 'hello.js' }),
+        ]}
+      />,
+    )
+
+    try {
+      expect(harness.rows.map(row => row.uuid)).toEqual([
+        'write-use-row',
+        'write-result-row',
+      ])
     } finally {
       await rendered.dispose()
     }
