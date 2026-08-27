@@ -789,7 +789,9 @@ describe("AgenC MCP management CLI parsing", () => {
 
     expect(show.output().stdout).toContain("Issuer:        https://idp.test");
     expect(show.output().stdout).toContain("Client ID:     agenc-client");
-    expect(show.output().stdout).toContain("Client secret: (stored in keychain)");
+    expect(show.output().stdout).toContain(
+      "Client secret: (stored in native secure storage)",
+    );
     expect(show.output().stdout).toContain("Logged in:     yes");
     expect(show.output().stdout).not.toContain("super-secret");
     expect(show.output().stdout).not.toContain("cached.jwt");

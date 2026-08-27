@@ -176,8 +176,8 @@ async function runXaaSetup(
     const { success, warning } = saveIdpClientSecret(issuer, secret, home);
     if (!success) {
       throw new Error(
-        `Error: settings written but keychain save failed${warning ? ` - ${warning}` : ""}. ` +
-          "Re-run with --client-secret once keychain is available.",
+        `Error: settings written but native secure storage save failed${warning ? ` - ${warning}` : ""}. ` +
+          "Re-run with --client-secret once native secure storage is available.",
       );
     }
   }
@@ -254,7 +254,7 @@ function runXaaShow({ io, home }: McpXaaOptions): void {
     io.stdout.write(`Callback port: ${idp.callback_port}\n`);
   }
   io.stdout.write(
-    `Client secret: ${hasSecret ? "(stored in keychain)" : "(not set - PKCE-only)"}\n`,
+    `Client secret: ${hasSecret ? "(stored in native secure storage)" : "(not set - PKCE-only)"}\n`,
   );
   io.stdout.write(
     `Logged in:     ${hasIdToken ? "yes (id_token cached)" : "no - run 'agenc mcp xaa login'"}\n`,

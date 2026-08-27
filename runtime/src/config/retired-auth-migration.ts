@@ -67,6 +67,7 @@ export interface RetiredAuthFileActionDescriptor {
 export interface RetiredAuthMigrationDescriptor {
   readonly inputs: readonly RetiredAuthMigrationInput[];
   readonly fileActions: readonly RetiredAuthFileActionDescriptor[];
+  /** Stable field name retained for serialized migration-plan compatibility. */
   readonly vaultFields: readonly string[];
   readonly conflicts: readonly RetiredAuthMigrationConflict[];
 }
@@ -78,7 +79,7 @@ export interface RetiredAuthFileAction
   readonly content?: string;
 }
 
-export interface RetiredAuthVaultWrite {
+export interface RetiredAuthSecureStorageWrite {
   readonly field: string;
   /** Structured path segments; unlike `field`, provider slugs are not parsed. */
   readonly path: readonly string[];
@@ -92,13 +93,14 @@ export interface RetiredAuthVaultWrite {
  * In-memory apply payload. It contains credentials and must never be written to
  * a migration plan, journal, backup, archive, log, or diagnostic response.
  */
-export interface RetiredAuthVaultMutation {
-  readonly vaultWrites: readonly RetiredAuthVaultWrite[];
+export interface RetiredAuthSecureStorageMutation {
+  /** Stable field name retained for serialized journal compatibility. */
+  readonly vaultWrites: readonly RetiredAuthSecureStorageWrite[];
   readonly fileActions: readonly RetiredAuthFileAction[];
 }
 
-export class RetiredAuthVaultConflictError extends Error {
-  readonly name = "RetiredAuthVaultConflictError";
+export class RetiredAuthSecureStorageConflictError extends Error {
+  readonly name = "RetiredAuthSecureStorageConflictError";
   readonly field: string;
 
   constructor(field: string) {
@@ -111,7 +113,7 @@ export class RetiredAuthVaultConflictError extends Error {
 
 export interface RetiredAuthMigrationDiscovery {
   readonly descriptor: RetiredAuthMigrationDescriptor;
-  readonly mutation?: RetiredAuthVaultMutation;
+  readonly mutation?: RetiredAuthSecureStorageMutation;
 }
 
 export interface DiscoverRetiredAuthMigrationOptions {
@@ -119,7 +121,7 @@ export interface DiscoverRetiredAuthMigrationOptions {
   /** The OS user home used by the retired remote and ProviderCode defaults. */
   readonly platformHome: string;
   readonly env?: RetiredAuthMigrationEnvironment;
-  readonly currentVault: Readonly<SecureStorageData>;
+  readonly currentSecureStorage: Readonly<SecureStorageData>;
 }
 
 interface Candidate {
@@ -236,12 +238,13 @@ function pathStartsWith(
  * Discover retired credential files without mutating disk or native storage.
  * Every path authority is explicit: no process environment, cwd, or homedir is
  * consulted. If any source is ambiguous, malformed, or conflicts with the
- * current vault, `mutation` is omitted so callers must plan zero writes.
+ * current native secure storage, `mutation` is omitted so callers must plan
+ * zero writes.
  */
 export async function discoverRetiredAuthMigration(
   options: DiscoverRetiredAuthMigrationOptions,
 ): Promise<RetiredAuthMigrationDiscovery> {
-  const builder = new DiscoveryBuilder(options.currentVault);
+  const builder = new DiscoveryBuilder(options.currentSecureStorage);
   migrateRetiredNativeOpenAiOauth(builder);
   const env = options.env ?? {};
   const platformHome = absoluteMigrationPath(
@@ -319,13 +322,13 @@ export async function discoverRetiredAuthMigration(
 }
 
 /**
- * Apply only the imported credential leaves to the vault snapshot captured
- * under the native-storage lock. Unrelated concurrent namespace changes are
+ * Apply only the imported credential leaves to the snapshot captured under
+ * the native secure storage lock. Unrelated concurrent namespace changes are
  * preserved; a changed imported leaf fails closed instead of being clobbered.
  */
-export function applyRetiredAuthVaultMutation(
+export function applyRetiredAuthSecureStorageMutation(
   current: Readonly<SecureStorageData>,
-  mutation: Pick<RetiredAuthVaultMutation, "vaultWrites">,
+  mutation: Pick<RetiredAuthSecureStorageMutation, "vaultWrites">,
 ): SecureStorageData {
   let next = structuredClone(current) as SecureStorageData;
   for (const write of mutation.vaultWrites) {
@@ -333,7 +336,7 @@ export function applyRetiredAuthVaultMutation(
     const matchesDiscovery = existing.present === write.expectedPresent &&
       (!existing.present || sameValue(existing.value, write.expectedValue));
     if (!matchesDiscovery) {
-      throw new RetiredAuthVaultConflictError(write.field);
+      throw new RetiredAuthSecureStorageConflictError(write.field);
     }
     if (!write.desiredPresent) {
       if (existing.present) next = withoutNestedValue(next, write.path);
@@ -345,9 +348,9 @@ export function applyRetiredAuthVaultMutation(
 }
 
 /** Verify only the credential leaves owned by this migration mutation. */
-export function assertRetiredAuthVaultMutationCommitted(
+export function assertRetiredAuthSecureStorageMutationCommitted(
   current: Readonly<SecureStorageData>,
-  mutation: Pick<RetiredAuthVaultMutation, "vaultWrites">,
+  mutation: Pick<RetiredAuthSecureStorageMutation, "vaultWrites">,
 ): void {
   for (const write of mutation.vaultWrites) {
     const existing = nestedField(current, write.path);
@@ -355,19 +358,19 @@ export function assertRetiredAuthVaultMutationCommitted(
       existing.present !== write.desiredPresent ||
       (write.desiredPresent && !sameValue(existing.value, write.value))
     ) {
-      throw new RetiredAuthVaultConflictError(write.field);
+      throw new RetiredAuthSecureStorageConflictError(write.field);
     }
   }
 }
 
 /**
- * Compensate a just-applied retired-auth vault mutation before any plaintext
- * source has been deleted or rewritten. The compare step prevents rollback
- * from overwriting a concurrent update to an imported leaf.
+ * Compensate a just-applied retired-auth secure-storage mutation before any
+ * plaintext source has been deleted or rewritten. The compare step prevents
+ * rollback from overwriting a concurrent update to an imported leaf.
  */
-export function rollbackRetiredAuthVaultMutation(
+export function rollbackRetiredAuthSecureStorageMutation(
   current: Readonly<SecureStorageData>,
-  mutation: Pick<RetiredAuthVaultMutation, "vaultWrites">,
+  mutation: Pick<RetiredAuthSecureStorageMutation, "vaultWrites">,
 ): SecureStorageData {
   let next = structuredClone(current) as SecureStorageData;
   for (const write of [...mutation.vaultWrites].reverse()) {
@@ -376,7 +379,7 @@ export function rollbackRetiredAuthVaultMutation(
       existing.present !== write.desiredPresent ||
       (write.desiredPresent && !sameValue(existing.value, write.value))
     ) {
-      throw new RetiredAuthVaultConflictError(write.field);
+      throw new RetiredAuthSecureStorageConflictError(write.field);
     }
     next = write.expectedPresent
       ? withNestedValue(next, write.path, write.expectedValue)
@@ -816,7 +819,7 @@ function mergeGatewayEnvironmentCredential(
   const field = `gateway.environment[${JSON.stringify(name)}]`;
   const current = builder.nextVault.gateway?.environment?.[name];
   if (current !== undefined && current !== value) {
-    vaultConflict(field, candidate, builder);
+    secureStorageConflict(field, candidate, builder);
     return;
   }
   builder.nextVault = {
@@ -856,7 +859,7 @@ function parseGatewayGeneratedToken(
   }
   const current = builder.nextVault.gateway?.generatedTokens?.[name];
   if (current !== undefined && current !== credential) {
-    vaultConflict(field, candidate, builder);
+    secureStorageConflict(field, candidate, builder);
     return;
   }
   builder.nextVault = {
@@ -894,7 +897,11 @@ function parseRemoteRuntimeToken(
   }
   const current = builder.nextVault.remoteRuntimeAuth?.[field];
   if (current !== undefined && current !== credential) {
-    vaultConflict(fieldPath("remoteRuntimeAuth", field), candidate, builder);
+    secureStorageConflict(
+      fieldPath("remoteRuntimeAuth", field),
+      candidate,
+      builder,
+    );
     return;
   }
   builder.nextVault = {
@@ -1084,7 +1091,11 @@ function mergeLocalLogin(
   const field = "localAuth.login";
   const current = builder.nextVault.localAuth?.login;
   if (current !== undefined && !sameValue(current, credential)) {
-    vaultConflict(field, { kind: "auth-json", path: sourcePath }, builder);
+    secureStorageConflict(
+      field,
+      { kind: "auth-json", path: sourcePath },
+      builder,
+    );
     return;
   }
   builder.nextVault = {
@@ -1105,7 +1116,11 @@ function mergeRemoteBearer(
   const field = "remoteAuth";
   const current = builder.nextVault.remoteAuth;
   if (current !== undefined && !sameValue(current, credential)) {
-    vaultConflict(field, { kind: "auth-json", path: sourcePath }, builder);
+    secureStorageConflict(
+      field,
+      { kind: "auth-json", path: sourcePath },
+      builder,
+    );
     return;
   }
   builder.nextVault = {
@@ -1128,7 +1143,11 @@ function mergeByokMap(
     const field = `localAuth.byokKeys[${JSON.stringify(provider)}]`;
     const current = nextByok[provider];
     if (current !== undefined && !sameValue(current, credential)) {
-      vaultConflict(field, { kind: "byok-json", path: sourcePath }, builder);
+      secureStorageConflict(
+        field,
+        { kind: "byok-json", path: sourcePath },
+        builder,
+      );
       continue;
     }
     Object.defineProperty(nextByok, provider, {
@@ -1162,7 +1181,7 @@ function mergeProviderCodeCredential(
   for (const [field, value] of Object.entries(imported)) {
     const current = existing[field as keyof typeof existing];
     if (current !== undefined && !sameValue(current, value)) {
-      vaultConflict(`openAiOauth.${field}`, candidate, builder);
+      secureStorageConflict(`openAiOauth.${field}`, candidate, builder);
       return;
     }
   }
@@ -1175,7 +1194,7 @@ function mergeProviderCodeCredential(
   }
 }
 
-function vaultConflict(
+function secureStorageConflict(
   field: string,
   candidate: Pick<Candidate, "kind" | "path">,
   builder: DiscoveryBuilder,
@@ -1320,7 +1339,9 @@ function finishDiscovery(
           .map((field) => {
             const path = builder.pathByVaultField.get(field);
             if (path === undefined) {
-              throw new Error(`Missing retired-auth vault path for ${field}`);
+              throw new Error(
+                `Missing retired-auth native secure storage path for ${field}`,
+              );
             }
             const expected = nestedField(builder.initialVault, path);
             const desired = nestedField(builder.nextVault, path);

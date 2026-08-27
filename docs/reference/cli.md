@@ -48,7 +48,7 @@ From `formatCliHelpText()`:
 | `--profile <name>` | Named config profile |
 | `--provider <name>` | Override provider for this session |
 | `--model <id\|provider:id>` | Override model for this session |
-| `--permission-mode <mode>` | Override startup permission mode: `default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, `auto` (internal-only `unattended` / `bubble` are not CLI addressable) |
+| `--permission-mode <mode>` | Override startup mode: `default`, `acceptEdits`, `plan`, `dontAsk`, or `auto`. `bypassPermissions` is an explicit session-only opt-in bound to the current workspace. Internal `unattended` / `bubble` modes are not CLI addressable. |
 | `--autonomous` | Enable autonomous tick mode |
 | `--dangerously-bypass-approvals-and-sandbox` | Bypass approvals and sandbox checks |
 | `--image <file\|url\|data-url>` | Attach a startup image |

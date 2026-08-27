@@ -94,14 +94,14 @@ import {
   type CanonicalStateDocument,
 } from "./state.js";
 import {
-  applyRetiredAuthVaultMutation,
-  assertRetiredAuthVaultMutationCommitted,
+  applyRetiredAuthSecureStorageMutation,
+  assertRetiredAuthSecureStorageMutationCommitted,
   discoverRetiredAuthMigration,
-  rollbackRetiredAuthVaultMutation,
+  rollbackRetiredAuthSecureStorageMutation,
   type RetiredAuthFileAction,
   type RetiredAuthMigrationDescriptor,
   type RetiredAuthMigrationEnvironment,
-  type RetiredAuthVaultMutation,
+  type RetiredAuthSecureStorageMutation,
 } from "./retired-auth-migration.js";
 
 export type ConfigMigrationScope = "user" | "project" | "local" | "managed" | "state";
@@ -4496,7 +4496,7 @@ export async function checkConfigV2Migration(
     home,
     platformHome: retiredAuthPlatformHome,
     env: retiredAuthEnvironment,
-    currentVault: previewSecureStorage,
+    currentSecureStorage: previewSecureStorage,
   });
   if (hasRetiredAuthMigration(retiredAuthDiscovery.descriptor)) {
     retiredAuthMigration = Object.freeze({
@@ -5978,7 +5978,9 @@ async function applyConfigV2MigrationLocked(
     let credentialCanonical: SecureStorageData | undefined;
     let nativeNamespaceCanonical: SecureStorageData | undefined;
     let nativeNamespaceStorage: SecureStorage | undefined;
-    let retiredAuthVaultMutation: RetiredAuthVaultMutation | undefined;
+    let retiredAuthSecureStorageMutation:
+      | RetiredAuthSecureStorageMutation
+      | undefined;
     const credentialFileActions: RetiredAuthFileAction[] = [];
     const credentialVaultFields = new Set<string>();
     const migratedCredentialLeaves = new Map<
@@ -6096,7 +6098,7 @@ async function applyConfigV2MigrationLocked(
       home: plan.home,
       platformHome: plan.retiredAuthMigration.platformHome,
       env: plan.retiredAuthMigration.environment,
-      currentVault: nextSecureStorage,
+      currentSecureStorage: nextSecureStorage,
     });
     if (
       stableJson(discovery.descriptor) !==
@@ -6111,7 +6113,7 @@ async function applyConfigV2MigrationLocked(
         "retired credential migration has conflicts; run check again",
       );
     }
-    retiredAuthVaultMutation = discovery.mutation;
+    retiredAuthSecureStorageMutation = discovery.mutation;
     credentialFileActions.push(...discovery.mutation.fileActions);
     for (const field of discovery.descriptor.vaultFields) {
       credentialVaultFields.add(field);
@@ -6369,11 +6371,11 @@ async function applyConfigV2MigrationLocked(
         );
       }
     }
-    if (retiredAuthVaultMutation !== undefined) {
+    if (retiredAuthSecureStorageMutation !== undefined) {
       try {
-        assertRetiredAuthVaultMutationCommitted(
+        assertRetiredAuthSecureStorageMutationCommitted(
           current,
-          retiredAuthVaultMutation,
+          retiredAuthSecureStorageMutation,
         );
       } catch (error) {
         throw new ConfigMigrationError(
@@ -6427,10 +6429,10 @@ async function applyConfigV2MigrationLocked(
         plan.credentialMigration.sourcePath,
       ).next;
     }
-    if (retiredAuthVaultMutation !== undefined) {
-      next = applyRetiredAuthVaultMutation(
+    if (retiredAuthSecureStorageMutation !== undefined) {
+      next = applyRetiredAuthSecureStorageMutation(
         next,
-        retiredAuthVaultMutation,
+        retiredAuthSecureStorageMutation,
       );
     }
     return next;
@@ -6729,10 +6731,10 @@ async function applyConfigV2MigrationLocked(
             credentialTransaction,
             (current, transaction) => {
             let next = structuredClone(current) as SecureStorageData;
-            if (retiredAuthVaultMutation !== undefined) {
-              next = rollbackRetiredAuthVaultMutation(
+            if (retiredAuthSecureStorageMutation !== undefined) {
+              next = rollbackRetiredAuthSecureStorageMutation(
                 next,
-                retiredAuthVaultMutation,
+                retiredAuthSecureStorageMutation,
               );
             }
             const migratedCredentialFields = new Map<string, unknown>();

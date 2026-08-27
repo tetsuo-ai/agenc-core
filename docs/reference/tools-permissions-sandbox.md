@@ -318,16 +318,29 @@ explicitly cite `tools.ts`.
 Source of truth: `runtime/src/permissions/types.ts` (and
 `runtime/src/types/permissions.ts`).
 
-**User-addressable** (`--permission-mode`, settings, slash `/permissions`):
+**Ordinary user-addressable modes** (`--permission-mode`, settings, slash
+`/permissions`):
 
 | Mode | Intent |
 | --- | --- |
 | `default` | Ask on sensitive / unmatched actions |
 | `acceptEdits` | Auto-approve common edit-class actions; still gate higher risk |
 | `plan` | Planning posture (plan banner in TUI); constrained execution |
-| `bypassPermissions` | YOLO-style skip of approval prompts (deny floor remains; not a sandbox disable) |
 | `dontAsk` | Deny rather than prompt when an ask would be required |
 | `auto` | Classifier-assisted auto decisions |
+
+`bypassPermissions` is restricted. It skips approval prompts down to the deny
+floor, but it does not disable the OS sandbox. `/permissions mode
+bypassPermissions` refuses the transition until the operator runs
+`/permissions accept-bypass`. That confirmation is stored in permission-owned
+runtime state for the exact canonical workspace path and directory identity.
+It does not authorize another path or a replacement directory at the same
+path. Managed policy can disable bypass mode entirely.
+
+`--permission-mode bypassPermissions` is an explicit startup opt-in for the
+current session and workspace; it does not write durable consent. The
+`--dangerously-bypass-approvals-and-sandbox` flag is the separate combined
+escape hatch for bypassed prompts and `danger-full-access`.
 
 **Internal-only** (valid runtime state, not CLI defaults):
 

@@ -309,7 +309,7 @@ it as well. `[budget]`, `[heartbeat]`, `[browser]`, and
 | Paths | Difference |
 | --- | --- |
 | `model` and `providers.<provider>.default_model` | `model` is the active session selection; provider `default_model` is the fallback for that provider when no active model is selected. |
-| `approval_policy` and `permissions.defaultMode` | `approval_policy` is the tool-approval baseline; `defaultMode` selects the user-facing session permission mode (`default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, or `auto`). |
+| `approval_policy` and `permissions.defaultMode` | `approval_policy` is the tool-approval baseline; `defaultMode` selects the user-facing session mode. A configured `bypassPermissions` default takes effect only when exact-workspace consent is already present. |
 | `mcp` and `mcp_servers` | `mcp.server` exposes AgenC as an MCP server; `mcp_servers.<server>` connects AgenC to external MCP servers. |
 | `plugins.plugins.<plugin>.mcp_servers` and `mcp_servers` | The former is plugin-owned and namespaced; the latter is operator-owned global MCP configuration. |
 | `budget` and `agent.budget` | `budget` is recurring daily/monthly autonomy accounting; `agent.budget` caps one background-agent run. |
@@ -503,8 +503,8 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `permissions` | Session-mode and rule block. |
 | `permissions.allow`, `permissions.deny`, `permissions.ask` | `Tool` or `Tool(filter)` rule arrays. |
 | `permissions.additionalDirectories` | Additional permission-scope directories. |
-| `permissions.defaultMode` | User-facing default mode: `default`, `acceptEdits`, `plan`, `bypassPermissions`, `dontAsk`, or `auto`. Internal `bubble`/`unattended` modes cannot be configured. |
-| `permissions.bypassPermissionsMode` | `allow` exposes bypass mode without the dangerous CLI flag; `disable` prohibits it; absence keeps normal behavior. |
+| `permissions.defaultMode` | Default mode: `default`, `acceptEdits`, `plan`, `dontAsk`, or `auto`. `bypassPermissions` is accepted only with durable exact-workspace consent; configuring it does not create consent. Internal `bubble`/`unattended` modes cannot be configured. |
+| `permissions.bypassPermissionsMode` | `allow` makes the restricted bypass mode available. It does not grant or persist consent. `disable` prohibits it. Project and local configuration cannot enable bypass mode. |
 
 ### MCP and protocol
 

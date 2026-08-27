@@ -105,6 +105,19 @@ locally. Turning swarm mode off does not disable explicit use of the
 multi-agent tools. Full routing, receipt, and integration semantics:
 [swarm-orchestration.md](../design/swarm-orchestration.md).
 
+## `/permissions`
+
+`/permissions` opens the permission editor. The command also accepts `list`,
+`add`, `remove`, `export`, and `mode` subcommands.
+
+`bypassPermissions` requires separate consent. Run `/permissions accept-bypass`
+to record consent for the exact canonical workspace path and directory
+identity, then run `/permissions mode bypassPermissions`. The
+consent is stored in permission-owned runtime state and is loaded by later
+sessions for that same workspace. It does not apply to another path or to a
+replacement directory at the same path. Managed policy may disable bypass
+mode.
+
 ---
 
 ## Notes

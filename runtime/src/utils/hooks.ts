@@ -864,7 +864,8 @@ async function execCommandHook(
   }
   // Expose plugin options as env vars too, so hooks can read them without
   // ${user_config.X} in the command string. Sensitive values included — hooks
-  // run the user's own code, same trust boundary as reading keychain directly.
+  // run the user's own code, the same trust boundary as reading native secure
+  // storage directly.
   if (pluginOpts) {
     for (const [key, value] of Object.entries(pluginOpts)) {
       // Sanitize non-identifier chars (bash can't ref $FOO-BAR). The schema
@@ -1768,8 +1769,6 @@ export async function getMatchingHooks(
   try {
     const hookMatchers = getHooksConfig(appState, sessionId, hookEvent);
 
-    // If you change the criteria below, then you must change
-    // src/utils/hooks/hooksConfigManager.ts as well.
     let matchQuery: string | undefined = undefined;
     switch (hookInput.hook_event_name) {
       case "PreToolUse":

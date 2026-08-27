@@ -227,8 +227,10 @@ Under the hood this is
 `agenc -p --output-format stream-json --input-format stream-json`, with the
 prompt written to stdin as `{"type":"prompt","prompt":"..."}`. Exit code 2
 means the run auto-denied a tool permission and gave up (the CLI's
-non-interactive contract); pass `permissionMode: "bypassPermissions"` or use
-the daemon transport when tools must run.
+non-interactive contract). `permissionMode: "bypassPermissions"` is an
+explicit session-only opt-in bound to the subprocess workspace; it does not
+persist consent or disable managed policy. Use the daemon transport when a
+client must resolve permission requests interactively.
 
 The subprocess transport invokes `agenc -p`, so
 `AGENC_ALLOW_UNTRUSTED_HOOKS` in `options.env`, or in the inherited child

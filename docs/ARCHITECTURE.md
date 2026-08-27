@@ -301,15 +301,21 @@ layer resolves an approval decision from the active mode and rule set.
 | `default`           | Ask on request for sensitive tools                              |
 | `acceptEdits`       | Auto-allow file edits; still ask for riskier actions            |
 | `plan`              | Plan-only posture; mutating work gated until exit-plan approval |
-| `bypassPermissions` | YOLO-style: skip prompts down to a deny floor (`--dangerously-bypass-approvals-and-sandbox`)        |
+| `bypassPermissions` | Restricted. Skips prompts down to a deny floor after exact-workspace consent. The dangerous startup flag also disables sandboxing. |
 | `dontAsk`           | Deny when would-ask (no interactive prompt)                     |
 | `auto`              | Classifier-assisted auto mode (feature-gated)                   |
 | `unattended`        | Background-agent policy (allowlist/denylist / pause)            |
 | `bubble`            | Bubble permission decisions to a parent context                 |
 
 When enabled, the OS sandbox confines shell execution at the kernel level.
-`--dangerously-bypass-approvals-and-sandbox` / bypass waives approval prompts — it does **not** enable kernel
-confinement unless the sandbox is explicitly on.
+`bypassPermissions` waives approval prompts and leaves the configured sandbox
+intact. `--dangerously-bypass-approvals-and-sandbox` selects bypass mode and
+`danger-full-access` together.
+
+The TUI requires `/permissions accept-bypass` before switching to
+`bypassPermissions`. AgenC stores that consent against the workspace's
+canonical path and directory identity. A configured bypass default does not
+grant consent by itself.
 
 The `read_only` and `workspace_write` runtime profiles retain a full-disk read
 baseline, matching the live policy's empty allow-read semantics. Explicit

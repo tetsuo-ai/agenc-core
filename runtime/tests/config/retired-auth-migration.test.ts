@@ -13,11 +13,11 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import { resolveHomeContext } from "../../src/config/home.js";
 import {
-  applyRetiredAuthVaultMutation,
-  assertRetiredAuthVaultMutationCommitted,
+  applyRetiredAuthSecureStorageMutation,
+  assertRetiredAuthSecureStorageMutationCommitted,
   discoverRetiredAuthMigration,
-  rollbackRetiredAuthVaultMutation,
-  RetiredAuthVaultConflictError,
+  rollbackRetiredAuthSecureStorageMutation,
+  RetiredAuthSecureStorageConflictError,
   type RetiredAuthMigrationDiscovery,
   type RetiredAuthMigrationEnvironment,
 } from "../../src/config/retired-auth-migration.js";
@@ -53,14 +53,14 @@ async function fixture() {
 
 async function discover(options: {
   readonly env?: RetiredAuthMigrationEnvironment;
-  readonly currentVault?: Readonly<SecureStorageData>;
+  readonly currentSecureStorage?: Readonly<SecureStorageData>;
 }) {
   const context = await fixture();
   const discovery = await discoverRetiredAuthMigration({
     home: context.home,
     platformHome: context.platformHome,
     env: options.env,
-    currentVault: options.currentVault ?? {},
+    currentSecureStorage: options.currentSecureStorage ?? {},
   });
   return { ...context, discovery };
 }
@@ -85,7 +85,7 @@ describe("retired auth credential migration discovery", () => {
         profileId: string;
       };
     };
-    const { discovery } = await discover({ currentVault: current });
+    const { discovery } = await discover({ currentSecureStorage: current });
 
     expect(discovery.descriptor.conflicts).toEqual([]);
     expect(discovery.descriptor.vaultFields).toEqual(["agenc", "openAiOauth"]);
@@ -102,8 +102,8 @@ describe("retired auth credential migration discovery", () => {
     });
     expect((applied as Record<string, unknown>).agenc).toBeUndefined();
     expect(applied.openAiOauth).not.toHaveProperty("profileId");
-    assertRetiredAuthVaultMutationCommitted(applied, discovery.mutation!);
-    expect(rollbackRetiredAuthVaultMutation(
+    assertRetiredAuthSecureStorageMutationCommitted(applied, discovery.mutation!);
+    expect(rollbackRetiredAuthSecureStorageMutation(
       applied,
       discovery.mutation!,
     )).toEqual(current);
@@ -144,7 +144,7 @@ describe("retired auth credential migration discovery", () => {
       home: context.home,
       platformHome: context.platformHome,
       env: { PROVIDER_CODE_AUTH_JSON_PATH: providerPath },
-      currentVault: current,
+      currentSecureStorage: current,
     });
 
     expect(discovery.descriptor.conflicts).toEqual([]);
@@ -169,8 +169,8 @@ describe("retired auth credential migration discovery", () => {
       },
     });
     expect((applied as Record<string, unknown>).agenc).toBeUndefined();
-    assertRetiredAuthVaultMutationCommitted(applied, discovery.mutation!);
-    expect(rollbackRetiredAuthVaultMutation(
+    assertRetiredAuthSecureStorageMutationCommitted(applied, discovery.mutation!);
+    expect(rollbackRetiredAuthSecureStorageMutation(
       applied,
       discovery.mutation!,
     )).toEqual(current);
@@ -195,7 +195,7 @@ describe("retired auth credential migration discovery", () => {
     } as SecureStorageData & {
       agenc: { apiKey: string; accessToken: string };
     };
-    const { discovery } = await discover({ currentVault: current });
+    const { discovery } = await discover({ currentSecureStorage: current });
 
     expect(discovery.mutation).toBeUndefined();
     expect(discovery.descriptor.conflicts).toContainEqual(
@@ -223,7 +223,7 @@ describe("retired auth credential migration discovery", () => {
       home: context.home,
       platformHome: context.platformHome,
       env: {},
-      currentVault: {},
+      currentSecureStorage: {},
     });
 
     expect(discovery.mutation).toBeUndefined();
@@ -262,7 +262,7 @@ describe("retired auth credential migration discovery", () => {
     const discovery = await discoverRetiredAuthMigration({
       home: context.home,
       platformHome: context.platformHome,
-      currentVault: { trustedDeviceToken: "unrelated-native-secret" },
+      currentSecureStorage: { trustedDeviceToken: "unrelated-native-secret" },
     });
 
     expect(discovery.descriptor.conflicts).toEqual([]);
@@ -352,7 +352,7 @@ describe("retired auth credential migration discovery", () => {
     const discovery = await discoverRetiredAuthMigration({
       home: context.home,
       platformHome: context.platformHome,
-      currentVault: {},
+      currentSecureStorage: {},
     });
 
     expect(discovery.descriptor.conflicts).toEqual([]);
@@ -414,7 +414,7 @@ describe("retired auth credential migration discovery", () => {
     const discovery = await discoverRetiredAuthMigration({
       home: context.home,
       platformHome: context.platformHome,
-      currentVault: { trustedDeviceToken: "unrelated-native-secret" },
+      currentSecureStorage: { trustedDeviceToken: "unrelated-native-secret" },
     });
 
     expect(discovery.descriptor.conflicts).toEqual([]);
@@ -537,7 +537,7 @@ describe("retired auth credential migration discovery", () => {
     const discovery = await discoverRetiredAuthMigration({
       home: context.home,
       platformHome: context.platformHome,
-      currentVault: {},
+      currentSecureStorage: {},
     });
 
     expect(discovery.mutation).toBeUndefined();
@@ -568,7 +568,7 @@ describe("retired auth credential migration discovery", () => {
     const discovery = await discoverRetiredAuthMigration({
       home: context.home,
       platformHome: context.platformHome,
-      currentVault: {},
+      currentSecureStorage: {},
     });
 
     expect(discovery.mutation).toBeUndefined();
@@ -596,7 +596,7 @@ describe("retired auth credential migration discovery", () => {
       const discovery = await discoverRetiredAuthMigration({
         home: context.home,
         platformHome: context.platformHome,
-        currentVault: {},
+        currentSecureStorage: {},
       });
 
       expect(discovery.mutation).toBeUndefined();
@@ -628,7 +628,7 @@ describe("retired auth credential migration discovery", () => {
     const discovery = await discoverRetiredAuthMigration({
       home: context.home,
       platformHome: context.platformHome,
-      currentVault: {
+      currentSecureStorage: {
         gateway: {
           environment: {
             AGENC_TELEGRAM_BOT_TOKEN: "native-telegram-secret",
@@ -674,11 +674,11 @@ describe("retired auth credential migration discovery", () => {
     const discovery = await discoverRetiredAuthMigration({
       home: context.home,
       platformHome: context.platformHome,
-      currentVault: {},
+      currentSecureStorage: {},
     });
     expect(discovery.mutation).toBeDefined();
 
-    const applied = applyRetiredAuthVaultMutation(
+    const applied = applyRetiredAuthSecureStorageMutation(
       {
         gateway: {
           generatedTokens: { webchat: "concurrent-webchat-token" },
@@ -686,7 +686,7 @@ describe("retired auth credential migration discovery", () => {
       },
       discovery.mutation!,
     );
-    const rolledBack = rollbackRetiredAuthVaultMutation(
+    const rolledBack = rollbackRetiredAuthSecureStorageMutation(
       {
         ...applied,
         pluginSecrets: { concurrent: { token: "preserve-me" } },
@@ -700,7 +700,7 @@ describe("retired auth credential migration discovery", () => {
       pluginSecrets: { concurrent: { token: "preserve-me" } },
     });
 
-    expect(() => applyRetiredAuthVaultMutation(
+    expect(() => applyRetiredAuthSecureStorageMutation(
       {
         gateway: {
           environment: {
@@ -709,8 +709,8 @@ describe("retired auth credential migration discovery", () => {
         },
       },
       discovery.mutation!,
-    )).toThrowError(RetiredAuthVaultConflictError);
-    expect(() => rollbackRetiredAuthVaultMutation(
+    )).toThrowError(RetiredAuthSecureStorageConflictError);
+    expect(() => rollbackRetiredAuthSecureStorageMutation(
       {
         ...applied,
         gateway: {
@@ -722,7 +722,7 @@ describe("retired auth credential migration discovery", () => {
         },
       },
       discovery.mutation!,
-    )).toThrowError(RetiredAuthVaultConflictError);
+    )).toThrowError(RetiredAuthSecureStorageConflictError);
   });
 
   test("refuses symlink gateway credential inputs without following them", async () => {
@@ -736,7 +736,7 @@ describe("retired auth credential migration discovery", () => {
     const discovery = await discoverRetiredAuthMigration({
       home: context.home,
       platformHome: context.platformHome,
-      currentVault: {},
+      currentSecureStorage: {},
     });
 
     expect(discovery.mutation).toBeUndefined();
@@ -764,7 +764,7 @@ describe("retired auth credential migration discovery", () => {
     const discovery = await discoverRetiredAuthMigration({
       home: context.home,
       platformHome: context.platformHome,
-      currentVault: {},
+      currentSecureStorage: {},
     });
 
     expect(discovery.descriptor.conflicts).toEqual([]);
@@ -807,7 +807,7 @@ describe("retired auth credential migration discovery", () => {
     const discovery = await discoverRetiredAuthMigration({
       home: context.home,
       platformHome: context.platformHome,
-      currentVault: {
+      currentSecureStorage: {
         localAuth: {
           login: {
             token: "native-login-secret",
@@ -843,7 +843,7 @@ describe("retired auth credential migration discovery", () => {
     const discovery = await discoverRetiredAuthMigration({
       home: context.home,
       platformHome: context.platformHome,
-      currentVault: {
+      currentSecureStorage: {
         pluginSecrets: { alpha: { token: "plugin-before" } },
       },
     });
@@ -860,7 +860,7 @@ describe("retired auth credential migration discovery", () => {
       localAuth: {
         login: { token: "concurrent-login", createdAt: CREATED_AT },
       },
-    })).toThrowError(RetiredAuthVaultConflictError);
+    })).toThrowError(RetiredAuthSecureStorageConflictError);
   });
 
   test("compensates imported leaves without reverting unrelated vault changes", async () => {
@@ -874,15 +874,15 @@ describe("retired auth credential migration discovery", () => {
     const discovery = await discoverRetiredAuthMigration({
       home: context.home,
       platformHome: context.platformHome,
-      currentVault: { trustedDeviceToken: "before" },
+      currentSecureStorage: { trustedDeviceToken: "before" },
     });
     expect(discovery.mutation).toBeDefined();
-    const applied = applyRetiredAuthVaultMutation(
+    const applied = applyRetiredAuthSecureStorageMutation(
       { trustedDeviceToken: "changed-concurrently" },
       discovery.mutation!,
     );
 
-    const rolledBack = rollbackRetiredAuthVaultMutation(
+    const rolledBack = rollbackRetiredAuthSecureStorageMutation(
       {
         ...applied,
         pluginSecrets: { alpha: { token: "unrelated" } },
@@ -895,7 +895,7 @@ describe("retired auth credential migration discovery", () => {
       alpha: { token: "unrelated" },
     });
 
-    expect(() => rollbackRetiredAuthVaultMutation(
+    expect(() => rollbackRetiredAuthSecureStorageMutation(
       {
         ...applied,
         localAuth: {
@@ -903,7 +903,7 @@ describe("retired auth credential migration discovery", () => {
         },
       },
       discovery.mutation!,
-    )).toThrowError(RetiredAuthVaultConflictError);
+    )).toThrowError(RetiredAuthSecureStorageConflictError);
   });
 
   test("explicit retired paths are migration-only authorities and ambient home cannot redirect them", async () => {
@@ -933,7 +933,7 @@ describe("retired auth credential migration discovery", () => {
         AGENC_SESSION_INGRESS_TOKEN_FILE: explicitIngress,
         PROVIDER_CODE_AUTH_JSON_PATH: explicitProvider,
       },
-      currentVault: {},
+      currentSecureStorage: {},
     });
 
     expect(discovery.descriptor.conflicts).toEqual([]);
@@ -991,7 +991,7 @@ describe("retired auth credential migration discovery", () => {
     const discovery = await discoverRetiredAuthMigration({
       home: context.home,
       platformHome: context.platformHome,
-      currentVault: {},
+      currentSecureStorage: {},
     });
 
     expect(discovery.mutation).toBeUndefined();
@@ -1017,7 +1017,7 @@ describe("retired auth credential migration discovery", () => {
       home: context.home,
       platformHome: context.platformHome,
       env: { PROVIDER_CODE_AUTH_JSON_PATH: providerPath },
-      currentVault: {},
+      currentSecureStorage: {},
     });
 
     expect(discovery.mutation).toBeUndefined();
@@ -1047,7 +1047,7 @@ describe("retired auth credential migration discovery", () => {
       env: {
         PROVIDER_CODE_AUTH_JSON_PATH: providerPath,
       },
-      currentVault: {},
+      currentSecureStorage: {},
     });
 
     expect(discovery.descriptor.conflicts).toEqual([]);
@@ -1077,7 +1077,7 @@ describe("retired auth credential migration discovery", () => {
         PROVIDER_CODE_AUTH_JSON_PATH: providerPath,
         PROVIDER_CODE_ACCOUNT_ID: "account-from-env",
       },
-      currentVault: {},
+      currentSecureStorage: {},
     });
 
     expect(discovery.mutation).toBeUndefined();
@@ -1104,7 +1104,7 @@ describe("retired auth credential migration discovery", () => {
       home: context.home,
       platformHome: context.platformHome,
       env: { PROVIDER_CODE_AUTH_JSON_PATH: providerPath },
-      currentVault: {},
+      currentSecureStorage: {},
     });
 
     expect(discovery.descriptor.conflicts).toEqual([]);
@@ -1136,7 +1136,7 @@ describe("retired auth credential migration discovery", () => {
         PROVIDER_CODE_AUTH_JSON_PATH: providerPath,
         PROVIDER_CODE_ACCOUNT_ID: "acct-provider",
       },
-      currentVault: {},
+      currentSecureStorage: {},
     });
 
     expect(discovery.descriptor.conflicts).toEqual([]);
@@ -1154,7 +1154,7 @@ function appliedVault(
   current: Readonly<SecureStorageData> = {},
 ): SecureStorageData {
   expect(discovery.mutation).toBeDefined();
-  return applyRetiredAuthVaultMutation(current, discovery.mutation!);
+  return applyRetiredAuthSecureStorageMutation(current, discovery.mutation!);
 }
 
 function byok(provider: string, apiKey: string) {
