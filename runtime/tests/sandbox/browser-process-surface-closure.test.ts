@@ -14,8 +14,6 @@ describe("browser process sandbox closure", () => {
   let root = "";
   let marker = "";
   let executable = "";
-  let savedExecutable: string | undefined;
-  let savedProfile: string | undefined;
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "agenc-browser-boundary-"));
@@ -27,23 +25,9 @@ describe("browser process sandbox closure", () => {
       "utf8",
     );
     await chmod(executable, 0o755);
-    savedExecutable = process.env.AGENC_BROWSER_EXECUTABLE;
-    savedProfile = process.env.AGENC_BROWSER_PROFILE_DIR;
-    process.env.AGENC_BROWSER_EXECUTABLE = executable;
-    process.env.AGENC_BROWSER_PROFILE_DIR = join(root, "profile");
   });
 
   afterEach(async () => {
-    if (savedExecutable === undefined) {
-      delete process.env.AGENC_BROWSER_EXECUTABLE;
-    } else {
-      process.env.AGENC_BROWSER_EXECUTABLE = savedExecutable;
-    }
-    if (savedProfile === undefined) {
-      delete process.env.AGENC_BROWSER_PROFILE_DIR;
-    } else {
-      process.env.AGENC_BROWSER_PROFILE_DIR = savedProfile;
-    }
     if (root !== "") await rm(root, { recursive: true, force: true });
   });
 
@@ -66,7 +50,13 @@ describe("browser process sandbox closure", () => {
     };
     attachSandboxExecutionBroker(args, broker, "interactive");
 
-    const result = await createBrowserTool({ agencHome: root }).execute(args);
+    const result = await createBrowserTool({
+      agencHome: root,
+      config: {
+        executable_path: executable,
+        profile_dir: join(root, "profile"),
+      },
+    }).execute(args);
 
     expect(result).toMatchObject({ isError: true });
     expect(result.content).toContain("sandbox_probe_failed");
