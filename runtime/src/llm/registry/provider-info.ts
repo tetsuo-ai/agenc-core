@@ -512,6 +512,15 @@ export const BUILT_IN_PROVIDER_DEFINITIONS = Object.freeze({
 
 export type BuiltInProviderSlug = keyof typeof BUILT_IN_PROVIDER_DEFINITIONS;
 
+const DEFAULT_BUILT_IN_PROVIDER_SLUG = "grok" as const;
+
+/** The one built-in provider/model pair used when no selection was supplied. */
+export const DEFAULT_BUILT_IN_PROVIDER_SELECTION = Object.freeze({
+  provider: DEFAULT_BUILT_IN_PROVIDER_SLUG,
+  model:
+    BUILT_IN_PROVIDER_DEFINITIONS[DEFAULT_BUILT_IN_PROVIDER_SLUG].defaultModel,
+});
+
 /** Project a globally collision-safe catalog value into its provider-local ID. */
 export function providerLocalModelIdFromCatalog(
   provider: BuiltInProviderSlug,

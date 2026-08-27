@@ -28,6 +28,14 @@ describe("provider authority architecture", () => {
     expect(registry).toMatch(/ProviderCredentialDefinition/u);
     expect(registry).toMatch(/credentials:\s*awsSigV4Credentials/u);
 
+    const configSchema = readFileSync(`${SRC}/config/schema.ts`, "utf8");
+    const defaultConfigSource = configSchema.match(
+      /export function defaultConfig\(\): AgenCConfig \{[\s\S]*?\n\}/u,
+    )?.[0] ?? "";
+    expect(defaultConfigSource).toContain("DEFAULT_BUILT_IN_PROVIDER_SELECTION")
+    expect(defaultConfigSource).not.toMatch(/model:\s*["']grok-4\.6["']/u)
+    expect(defaultConfigSource).not.toMatch(/model_provider:\s*["']grok["']/u)
+
     const production = sourceFiles(SRC).filter(
       (path) => path.endsWith(".ts") || path.endsWith(".tsx"),
     );

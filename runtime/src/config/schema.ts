@@ -28,7 +28,10 @@ import {
   normalizeProviderIdentity,
   RetiredProviderSelectorError,
 } from "../provider-identity.js";
-import { resolveBuiltInProviderSlug } from "../llm/registry/provider-info.js";
+import {
+  DEFAULT_BUILT_IN_PROVIDER_SELECTION,
+  resolveBuiltInProviderSlug,
+} from "../llm/registry/provider-info.js";
 import {
   USER_ADDRESSABLE_PERMISSION_MODES,
   type UserAddressablePermissionMode,
@@ -1026,8 +1029,8 @@ export const KNOWN_CONFIG_KEYS: readonly string[] = Object.freeze([
 export function defaultConfig(): AgenCConfig {
   return Object.freeze({
     configVersion: 2,
-    model: "grok-4.6",
-    model_provider: "grok",
+    model: DEFAULT_BUILT_IN_PROVIDER_SELECTION.model,
+    model_provider: DEFAULT_BUILT_IN_PROVIDER_SELECTION.provider,
     approval_policy: "on-request" as ApprovalPolicy,
     sandbox_mode: "workspace-write" as SandboxMode,
     reasoning_effort: "medium" as ReasoningEffort,

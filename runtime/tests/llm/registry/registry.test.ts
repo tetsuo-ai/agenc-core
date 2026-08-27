@@ -14,6 +14,8 @@ import {
   resolveRegisteredModelCatalogEntry,
 } from "./model-catalog.js";
 import {
+  BUILT_IN_PROVIDER_DEFINITIONS,
+  DEFAULT_BUILT_IN_PROVIDER_SELECTION,
   listBuiltInProviderInfo,
   resolveBuiltInProviderInfo,
 } from "./provider-info.js";
@@ -31,6 +33,22 @@ const DONOR_MODEL_IDS = Object.freeze([
 ]);
 
 describe("LLM registry", () => {
+  it("owns the default config provider and model as one registry selection", () => {
+    expect(DEFAULT_BUILT_IN_PROVIDER_SELECTION).toEqual({
+      provider: "grok",
+      model: "grok-4.6",
+    });
+    expect(DEFAULT_BUILT_IN_PROVIDER_SELECTION.model).toBe(
+      BUILT_IN_PROVIDER_DEFINITIONS[
+        DEFAULT_BUILT_IN_PROVIDER_SELECTION.provider
+      ].defaultModel,
+    );
+    expect(defaultConfig()).toMatchObject({
+      model_provider: DEFAULT_BUILT_IN_PROVIDER_SELECTION.provider,
+      model: DEFAULT_BUILT_IN_PROVIDER_SELECTION.model,
+    });
+  });
+
   it("lists built-in providers with request and auth metadata", () => {
     expect(resolveBuiltInProviderInfo("grok")).toMatchObject({
       id: "grok",
