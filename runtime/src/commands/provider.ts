@@ -14,10 +14,7 @@
 
 import type { Session } from "../session/session.js";
 import type { ProviderSlug } from "../config/provider-model-authority.js";
-import {
-  checkModelHistoryCompat,
-  type HistoryCompatResult,
-} from "./model.js";
+import { checkModelHistoryCompat, type HistoryCompatResult } from "./model.js";
 import type { ProviderModelSelectionOutcome } from "../contracts/provider-model-selection.js";
 import { readCommandConfig } from "./config-context.js";
 import {
@@ -58,6 +55,10 @@ export async function applyProviderSwitch(
   targetModel?: string,
   options: {
     readonly beforeStage?: (selection: {
+      readonly provider: string;
+      readonly model: string;
+    }) => Promise<void> | void;
+    readonly stage?: (selection: {
       readonly provider: string;
       readonly model: string;
     }) => Promise<void> | void;
@@ -144,17 +145,19 @@ export async function applyProviderSwitch(
     };
   }
 
-  await options.beforeStage?.({
+  const stagedSelection = {
     provider: selection.provider,
     model: selection.model,
-  });
+  };
+  if (options.stage !== undefined) {
+    await options.stage(stagedSelection);
+  } else {
+    await options.beforeStage?.(stagedSelection);
 
-  // Use the typed mutator so the I-13 + I-57 staging site has a single
-  // well-typed entry point.
-  sessionShim.setPendingProviderSwitch({
-    provider: selection.provider,
-    model: selection.model,
-  });
+    // Use the typed mutator so the I-13 + I-57 staging site has a single
+    // well-typed entry point.
+    sessionShim.setPendingProviderSwitch(stagedSelection);
+  }
 
   const activeTurnPeek = (
     session as unknown as {
@@ -231,10 +234,7 @@ function resolveProviderCommandSelection(
   }
 }
 
-function updateProviderChrome(
-  ctx: SlashCommandContext,
-  model: string,
-): void {
+function updateProviderChrome(ctx: SlashCommandContext, model: string): void {
   if (typeof ctx.appState?.setAppState === "function") {
     ctx.appState.setAppState((prev: unknown): unknown => {
       if (typeof prev !== "object" || prev === null) return prev;
@@ -289,8 +289,7 @@ export const providerCommand: SlashCommand = {
             }
             if (access.effect === "unchanged") {
               return {
-                message:
-                  `Provider unchanged: ${selection.provider}/${selection.model}.`,
+                message: `Provider unchanged: ${selection.provider}/${selection.model}.`,
                 shouldClose: true,
               };
             }
@@ -347,18 +346,14 @@ export const providerCommand: SlashCommand = {
           model: selection.model,
         });
       }
-      const rejection = formatProviderCommandRejection(
-        access,
-        "provider",
-      );
+      const rejection = formatProviderCommandRejection(access, "provider");
       if (rejection !== undefined) {
         return { kind: "text", text: rejection };
       }
       if (access.effect === "unchanged") {
         return {
           kind: "text",
-          text:
-            `Provider unchanged: ${selection.provider}/${selection.model}.`,
+          text: `Provider unchanged: ${selection.provider}/${selection.model}.`,
         };
       }
       const outcome = await applyProviderSwitch(

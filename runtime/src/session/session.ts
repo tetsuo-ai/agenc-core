@@ -108,8 +108,10 @@ import {
   type DenialTrackingState,
 } from "../permissions/denial-tracking.js";
 import type { ConfigStore } from "../config/store.js";
-import { getCompactSystemPrompt,
-  getSystemPrompt } from "../constants/prompts.js";
+import {
+  getCompactSystemPrompt,
+  getSystemPrompt,
+} from "../constants/prompts.js";
 import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
 import type { Tools as PromptTools } from "../tools/Tool.js";
 import type {
@@ -1117,7 +1119,9 @@ export interface McpManager {
    */
   mcpSurfaceSnapshot?(): McpSurfaceSnapshot;
   /** Subscribe to committed status revisions; candidate transaction state is never emitted. */
-  subscribeMcpSurfaceInvalidations?(listener: (revision: number) => void): () => void;
+  subscribeMcpSurfaceInvalidations?(
+    listener: (revision: number) => void,
+  ): () => void;
 }
 
 export interface McpSurfaceServer {
@@ -1500,6 +1504,13 @@ export interface PendingProviderSwitch {
   readonly provider: string;
   readonly model: string;
   readonly profile?: string;
+}
+
+export interface PreparedSessionProviderSwitch {
+  readonly pending: PendingProviderSwitch;
+  readonly provider: PreparedProviderBinding;
+  readonly modelInfo: ModelInfo;
+  readonly baseInstructions: string;
 }
 
 export interface AppliedProviderSwitchResult {
@@ -2340,6 +2351,8 @@ export class Session {
    * once ConfigStore tracks it.
    */
   pendingProviderSwitch: PendingProviderSwitch | null = null;
+  private preparedPendingProviderSwitch: PreparedSessionProviderSwitch | null =
+    null;
 
   /**
    * T11 W3: active worktree binding for the slash-command adapters.
@@ -2417,9 +2430,7 @@ export class Session {
   private mcpDisposeState: "idle" | "pending" | "fulfilled" | "rejected" =
     "idle";
   private lifecycleState: "open" | "shutting_down" | "closed" = "open";
-  private readonly bundledSkillExtractionLease:
-    | BundledSkillExtractionLease
-    | null;
+  private readonly bundledSkillExtractionLease: BundledSkillExtractionLease | null;
 
   /** Serialize submit calls so the session keeps a single active turn. */
   private submitQueue: Promise<void> = Promise.resolve();
@@ -2610,6 +2621,71 @@ export class Session {
    */
   setPendingProviderSwitch(pendingSwitch: PendingProviderSwitch | null): void {
     this.pendingProviderSwitch = pendingSwitch;
+    this.preparedPendingProviderSwitch = null;
+  }
+
+  async prepareProviderSwitch(
+    pending: PendingProviderSwitch,
+    configSnapshot?: ReturnType<ConfigStore["current"]>,
+  ): Promise<PreparedSessionProviderSwitch> {
+    const liveBinding = this.providerService.current();
+    const configStore = (this.services as Partial<SessionServices>).configStore;
+    const admittedSelection = resolveProviderModelSelection(
+      configSnapshot ?? configStore?.current(),
+      {
+        provider: liveBinding.provider,
+        model: liveBinding.model,
+      },
+      { model_provider: pending.provider, model: pending.model },
+    );
+    const admittedPending: PendingProviderSwitch = Object.freeze({
+      ...pending,
+      provider: admittedSelection.provider,
+      model: admittedSelection.model,
+    });
+    const provider = await this.providerService.prepare({
+      provider: admittedPending.provider,
+      model: admittedPending.model,
+    });
+    const rawModelInfo = await deriveNextModelInfo(
+      this.services.modelsManager,
+      provider.binding.model,
+    );
+    const modelInfo = provider.managedDefaultOutputCap
+      ? capManagedOpenRouterModelInfo(rawModelInfo)
+      : rawModelInfo;
+    const baseInstructions = await buildBaseInstructionsForModel({
+      registry: this.services.registry,
+      model: provider.binding.model,
+      compactProfile: usesLocalToolProfile(provider.binding.provider),
+    });
+    return Object.freeze({
+      pending: admittedPending,
+      provider,
+      modelInfo,
+      baseInstructions,
+    });
+  }
+
+  stagePreparedProviderSwitch(
+    prepared: PreparedSessionProviderSwitch,
+    expectedPending: PendingProviderSwitch | null,
+  ): void {
+    if (this.pendingProviderSwitch !== expectedPending) {
+      throw new Error(
+        "pending provider selection changed while the replacement was prepared",
+      );
+    }
+    if (
+      prepared.provider.expectedRevision !==
+      this.providerService.current().revision
+    ) {
+      throw new Error(
+        "live provider binding changed while the replacement was prepared",
+      );
+    }
+    this.pendingProviderSwitch = prepared.pending;
+    this.preparedPendingProviderSwitch = prepared;
   }
 
   setPendingWorktreeState(
@@ -2799,27 +2875,13 @@ export class Session {
       peeked.sessionConfiguration?.provider?.slug ??
       "unknown";
 
-    let preparedSwitch: PreparedProviderBinding;
+    let prepared: PreparedSessionProviderSwitch;
     try {
-      const configStore = (this.services as Partial<SessionServices>)
-        .configStore;
-      const configSnapshot = configStore?.current();
-      const admittedSelection = resolveProviderModelSelection(
-        configSnapshot,
-        { provider: beforeProvider, model: beforeModel },
-        { model_provider: pending.provider, model: pending.model },
-      );
-      const admittedPending: PendingProviderSwitch = Object.freeze({
-        ...pending,
-        provider: admittedSelection.provider,
-        model: admittedSelection.model,
-      });
-      preparedSwitch = await providerService.prepare(
-        {
-          provider: admittedPending.provider,
-          model: admittedPending.model,
-        },
-      );
+      const retained = this.preparedPendingProviderSwitch;
+      prepared =
+        retained !== null && retained.pending === pending
+          ? retained
+          : await this.prepareProviderSwitch(pending);
     } catch (error) {
       const reason =
         error instanceof Error && error.message.length > 0
@@ -2840,20 +2902,10 @@ export class Session {
       });
       return { applied: false, reason };
     }
-
-    const rawNextModelInfo = await deriveNextModelInfo(
-      this.services.modelsManager,
-      preparedSwitch.binding.model,
-    );
-    const nextModelInfo =
-      preparedSwitch.managedDefaultOutputCap
-        ? capManagedOpenRouterModelInfo(rawNextModelInfo)
-        : rawNextModelInfo;
-    const nextBaseInstructions = await buildBaseInstructionsForModel({
-      registry: this.services.registry,
-      model: preparedSwitch.binding.model,
-      compactProfile: usesLocalToolProfile(preparedSwitch.binding.provider),
-    });
+    if (this.pendingProviderSwitch !== pending) {
+      return { applied: false, reason: "provider switch superseded" };
+    }
+    const preparedSwitch = prepared.provider;
     const previousClient = readProviderHttpClient(liveProvider);
     const nextClient = readProviderHttpClient(preparedSwitch.binding.instance);
 
@@ -2874,10 +2926,10 @@ export class Session {
         ...(cfg.collaborationMode ?? {}),
         model: preparedSwitch.binding.model,
       };
-      cfg.baseInstructions = nextBaseInstructions;
+      cfg.baseInstructions = prepared.baseInstructions;
     });
 
-    (this as { modelInfo: ModelInfo }).modelInfo = nextModelInfo;
+    (this as { modelInfo: ModelInfo }).modelInfo = prepared.modelInfo;
     (this as { config: Config }).config = {
       ...this.config,
       model: preparedSwitch.binding.model,
@@ -2932,8 +2984,10 @@ export class Session {
       runWithCurrentRuntimeSession(this, () =>
         runWithCanonicalSettingsAuthority(configStore, operation),
       );
-    if (opts.ctx === undefined && this.pendingProviderSwitch !== null) {
-      await withTurnAuthority(() => this.consumePendingProviderSwitch());
+    if (opts.ctx === undefined) {
+      while (this.pendingProviderSwitch !== null) {
+        await withTurnAuthority(() => this.consumePendingProviderSwitch());
+      }
     }
     const ctx = withTurnAuthority(
       () =>
@@ -3118,9 +3172,7 @@ export class Session {
     return completion;
   }
 
-  private startOwnedMcpDisposal(
-    retryRejected: boolean,
-  ): Promise<void> | null {
+  private startOwnedMcpDisposal(retryRejected: boolean): Promise<void> | null {
     if (!this.ownsMcpManager) return null;
     if (
       this.mcpDisposeTask !== null &&

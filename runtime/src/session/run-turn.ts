@@ -2282,14 +2282,16 @@ async function runAutoCompact(
           { durable: true },
         );
       }
-      const compacted = cr.transaction === undefined
-        ? buildAgenCPostCompactMessages(compactedRollout)
-        : cr.transaction.committed.replacement_history.map((message) =>
-            responseItemToLlmMessage(message),
-          );
-      const unsentImageTurn = cr.transaction === undefined && shouldKeepUnsentImageTurn
-        ? state.messages.at(-1)
-        : undefined;
+      const compacted =
+        cr.transaction === undefined
+          ? buildAgenCPostCompactMessages(compactedRollout)
+          : cr.transaction.committed.replacement_history.map((message) =>
+              responseItemToLlmMessage(message),
+            );
+      const unsentImageTurn =
+        cr.transaction === undefined && shouldKeepUnsentImageTurn
+          ? state.messages.at(-1)
+          : undefined;
       const applyProjection = (): void => {
         // Replace both the full history view and the per-iteration
         // projection so `prepareContext` (next phase) sees the same
@@ -3751,20 +3753,13 @@ export async function* runTurnKernel(
   };
   const referenceContextItem = toTurnContextItem(ctx);
 
-  // I-13 consumer: apply any staged provider/model/profile switch from
-  // a prior `/model`, `/provider`, `/config profile <name>`, or
-  // recovery-side `model_fallback` before this turn's lifecycle emits
-  // so downstream `turn_context` reflects the intended model slug (for
-  // callers that rebuild `ctx` from `session.state` per turn). The
-  // existing `pendingProviderSwitch` check inside the inner sampling
-  // loop stays as a safety net — the clear here prevents it from
-  // re-terminating this fresh turn.
+  // Session.runTurn consumes a staged operator switch before constructing
+  // this immutable context. Do not consume another switch here: one staged
+  // after context construction belongs to the next turn, and committing it
+  // now would mix that provider with this turn's model metadata and options.
   const sessionOwner = session as Session & {
     consumePendingProviderSwitch?: () => Promise<void>;
   };
-  if (typeof sessionOwner.consumePendingProviderSwitch === "function") {
-    await sessionOwner.consumePendingProviderSwitch();
-  }
   session.bindProviderConversation();
 
   const pendingInputOwnership = pendingInputOwnershipForTurn(ctx);

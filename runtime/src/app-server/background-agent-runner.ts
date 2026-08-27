@@ -84,10 +84,7 @@ import {
   applyPermissionRulesSnapshot,
   loadPermissionRulesSnapshot,
 } from "../permissions/settings.js";
-import {
-  parseRuleString,
-  serializeRuleValue,
-} from "../permissions/rules.js";
+import { parseRuleString, serializeRuleValue } from "../permissions/rules.js";
 import {
   authorizeBypassPermissionsConsent,
   canonicalizeBypassPermissionsCwd,
@@ -139,6 +136,7 @@ import type { AgentStatus as ThreadAgentStatus } from "../agents/status.js";
 import type {
   McpServerMutationResult,
   McpSurfaceSnapshot,
+  PreparedSessionProviderSwitch,
   Session,
 } from "../session/session.js";
 import type { Event } from "../session/event-log.js";
@@ -435,9 +433,7 @@ export interface AgenCBackgroundAgentMessageTerminal extends JsonObject {
 }
 
 export type AgenCBackgroundAgentMessageErrorCode =
-  | "TURN_IN_PROGRESS"
-  | "CLIENT_MESSAGE_ID_CONFLICT"
-  | "PROMPT_BLOCKED";
+  "TURN_IN_PROGRESS" | "CLIENT_MESSAGE_ID_CONFLICT" | "PROMPT_BLOCKED";
 
 export class AgenCBackgroundAgentMessageError extends Error {
   readonly code: AgenCBackgroundAgentMessageErrorCode;
@@ -1168,7 +1164,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // Materialize the client's complete allowlisted snapshot on top of the
     // runner's captured env. Protocol clear markers become absent runtime keys
     // so daemon-start provider/config values cannot leak into this session.
-    const mergedEnv = mergeDaemonClientEnvironment(this.#env, params.envOverrides);
+    const mergedEnv = mergeDaemonClientEnvironment(
+      this.#env,
+      params.envOverrides,
+    );
     const bootstrap = await this.#bootstrap({
       ...(mergedEnv !== undefined ? { env: mergedEnv } : {}),
       ...(this.#authBackend !== undefined
@@ -1366,8 +1365,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         initialRuntimeSettings,
         "initial",
       );
-      const uninstallRuntimeSettingsPreCommit =
-        installRuntimeSettingsPreCommit(active, managedThread.threadId);
+      const uninstallRuntimeSettingsPreCommit = installRuntimeSettingsPreCommit(
+        active,
+        managedThread.threadId,
+      );
       active.uninstallRuntimeSettingsPreCommit = () => {
         uninstallRuntimeSettingsPreCommit();
         uninstallPermissionAuthorityCoordinator();
@@ -2635,7 +2636,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     params: SessionShellExecuteParams,
     signal?: AbortSignal,
   ): Promise<SessionShellExecuteResult> {
-    if (!isRunnableActiveAgent(active) || this.#active.get(agentId) !== active) {
+    if (
+      !isRunnableActiveAgent(active) ||
+      this.#active.get(agentId) !== active
+    ) {
       throw new Error(`AgenC daemon agent not running: ${agentId}`);
     }
     throwIfShellRequestAborted(signal);
@@ -2682,42 +2686,52 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     await active.dispatchChain;
 
     const dispatchResult = await runWithCurrentRuntimeSession(session, () =>
-      runWithCanonicalSettingsAuthority(active.bootstrap.configStore, async () => {
-        throwIfShellRequestAborted(executionSignal);
-        const turn = session.newDefaultTurnWithSubId(`shell-${eventKey}`);
-        const workspaceRoot = runtimeWorkspaceRoot(active.bootstrap);
-        if (
-          turn.cwd !== workspaceRoot ||
-          active.bootstrap.workspaceRoot !== workspaceRoot
-        ) {
-          throw new Error(
-            `Shell cwd authority mismatch for session ${params.sessionId}`,
+      runWithCanonicalSettingsAuthority(
+        active.bootstrap.configStore,
+        async () => {
+          throwIfShellRequestAborted(executionSignal);
+          const turn = session.newDefaultTurnWithSubId(`shell-${eventKey}`);
+          const workspaceRoot = runtimeWorkspaceRoot(active.bootstrap);
+          if (
+            turn.cwd !== workspaceRoot ||
+            active.bootstrap.workspaceRoot !== workspaceRoot
+          ) {
+            throw new Error(
+              `Shell cwd authority mismatch for session ${params.sessionId}`,
+            );
+          }
+          const toolName =
+            resolveDefaultShell() === "powershell"
+              ? "PowerShell"
+              : "system.bash";
+          if (
+            !session.services.registry.tools.some(
+              (tool) => tool.name === toolName,
+            )
+          ) {
+            throw new Error(
+              `Configured shell ${toolName} is not available in session ${params.sessionId}`,
+            );
+          }
+          const router = routerFromRegistry(session.services.registry);
+          return router.dispatchModelToolCall(
+            {
+              id: params.commandId,
+              name: toolName,
+              arguments: JSON.stringify({ command: params.command }),
+            },
+            {
+              ...buildLiveToolDispatchOptions(turn, session, executionSignal),
+              source: "direct",
+            },
           );
-        }
-        const toolName =
-          resolveDefaultShell() === "powershell" ? "PowerShell" : "system.bash";
-        if (
-          !session.services.registry.tools.some((tool) => tool.name === toolName)
-        ) {
-          throw new Error(
-            `Configured shell ${toolName} is not available in session ${params.sessionId}`,
-          );
-        }
-        const router = routerFromRegistry(session.services.registry);
-        return router.dispatchModelToolCall(
-          {
-            id: params.commandId,
-            name: toolName,
-            arguments: JSON.stringify({ command: params.command }),
-          },
-          {
-            ...buildLiveToolDispatchOptions(turn, session, executionSignal),
-            source: "direct",
-          },
-        );
-      }),
+        },
+      ),
     );
-    const result = normalizeSessionShellResult(params.commandId, dispatchResult);
+    const result = normalizeSessionShellResult(
+      params.commandId,
+      dispatchResult,
+    );
     const transcriptOutput =
       `<bash-stdout>${escapeXml(result.stdout)}</bash-stdout>` +
       `<bash-stderr>${escapeXml(result.stderr)}</bash-stderr>`;
@@ -3436,13 +3450,25 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       const previousSettings = ensureInitialRuntimeSettings(active, agentId);
       let preparedSettingsChange: PreparedRuntimeSettingsChange | undefined;
       let preparedSettings: RunRuntimeSettingsSnapshot | undefined;
-      const beforeStage = (selection: {
+      let preparedProviderSwitch: PreparedSessionProviderSwitch | undefined;
+      let stagedProviderSwitch: PreparedSessionProviderSwitch | undefined;
+      const stage = async (selection: {
         readonly provider: string;
         readonly model: string;
-      }): void => {
+      }): Promise<void> => {
         if (preparedSettingsChange !== undefined) {
-          throw new Error(`run ${agentId} model switch prepared more than once`);
+          throw new Error(
+            `run ${agentId} model switch prepared more than once`,
+          );
         }
+        preparedProviderSwitch = await runWithCurrentRuntimeSession(
+          session,
+          () =>
+            runWithCanonicalSettingsAuthority(
+              active.bootstrap.configStore,
+              () => session.prepareProviderSwitch(selection),
+            ),
+        );
         const nextSettings: RunRuntimeSettingsSnapshot = {
           ...captureRuntimeSettings(active),
           provider: selection.provider,
@@ -3455,6 +3481,11 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           nextSettings,
           "model_provider_changed",
         );
+        session.stagePreparedProviderSwitch(
+          preparedProviderSwitch,
+          previousPending,
+        );
+        stagedProviderSwitch = preparedProviderSwitch;
       };
       let outcome: ProviderModelSelectionOutcome;
       try {
@@ -3463,14 +3494,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             session,
             params.model,
             params.provider,
-            { beforeStage },
+            { stage },
           );
         } else if (params.provider !== undefined) {
           outcome = await applyProviderSwitch(
             session,
             params.provider,
             undefined,
-            { beforeStage },
+            { stage },
           );
         } else {
           const settingsEventId = active.runtimeSettingsEventId;
@@ -3499,13 +3530,29 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
             `run ${agentId} model outcome does not match its prepared provider/model pair`,
           );
         }
+        if (outcome.applied) {
+          if (
+            preparedProviderSwitch === undefined ||
+            stagedProviderSwitch !== preparedProviderSwitch ||
+            session.pendingProviderSwitch !== preparedProviderSwitch.pending
+          ) {
+            throw new Error(
+              `run ${agentId} model switch lost its prepared provider binding`,
+            );
+          }
+        }
       } catch (error) {
         if (preparedSettingsChange !== undefined) {
           const rollbackErrors: unknown[] = [];
-          try {
-            session.setPendingProviderSwitch(previousPending);
-          } catch (rollbackError) {
-            rollbackErrors.push(rollbackError);
+          if (
+            stagedProviderSwitch !== undefined &&
+            session.pendingProviderSwitch === stagedProviderSwitch.pending
+          ) {
+            try {
+              session.setPendingProviderSwitch(previousPending);
+            } catch (rollbackError) {
+              rollbackErrors.push(rollbackError);
+            }
           }
           if (rollbackErrors.length === 0) {
             try {
@@ -3574,145 +3621,146 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const registry = active.bootstrap.session.permissionModeRegistry;
     return registry.transact<AgenCBackgroundAgentSetPermissionModeResult>(
       async (liveCurrent) => {
-      if (!isRunnableActiveAgent(active)) {
-        throw new Error(`AgenC daemon agent not running: ${agentId}`);
-      }
-      const sameModeAutoAuthorityRevoked =
-        liveCurrent.mode === "auto" &&
-        target === "auto" &&
-        !runWithCurrentRuntimeSession(active.bootstrap.session, () =>
-          canCycleToAuto(liveCurrent),
-        );
-      if (
-        liveCurrent.mode === target &&
-        target !== "bypassPermissions" &&
-        !sameModeAutoAuthorityRevoked
-      ) {
-        return {
-          next: null,
-          result: () => ({
-            applied: false,
-            previousMode: liveCurrent.mode,
-            mode: target,
-          }),
-        };
-      }
-
-      let transitionContext = liveCurrent;
-      let workspacePath: string | undefined;
-      if (target === "bypassPermissions") {
-        try {
-          const canonicalCwd = canonicalizeBypassPermissionsCwd(
-            runtimeWorkspaceRoot(active.bootstrap),
+        if (!isRunnableActiveAgent(active)) {
+          throw new Error(`AgenC daemon agent not running: ${agentId}`);
+        }
+        const sameModeAutoAuthorityRevoked =
+          liveCurrent.mode === "auto" &&
+          target === "auto" &&
+          !runWithCurrentRuntimeSession(active.bootstrap.session, () =>
+            canCycleToAuto(liveCurrent),
           );
-          workspacePath = canonicalCwd;
-          const stateRepository = active.bootstrap.configStore?.stateRepository;
-          if (stateRepository !== undefined) {
-            for (const acceptedCwd of loadBypassPermissionsConsent(
-              stateRepository,
-              canonicalCwd,
-              { reload: true },
-            )) {
+        if (
+          liveCurrent.mode === target &&
+          target !== "bypassPermissions" &&
+          !sameModeAutoAuthorityRevoked
+        ) {
+          return {
+            next: null,
+            result: () => ({
+              applied: false,
+              previousMode: liveCurrent.mode,
+              mode: target,
+            }),
+          };
+        }
+
+        let transitionContext = liveCurrent;
+        let workspacePath: string | undefined;
+        if (target === "bypassPermissions") {
+          try {
+            const canonicalCwd = canonicalizeBypassPermissionsCwd(
+              runtimeWorkspaceRoot(active.bootstrap),
+            );
+            workspacePath = canonicalCwd;
+            const stateRepository =
+              active.bootstrap.configStore?.stateRepository;
+            if (stateRepository !== undefined) {
+              for (const acceptedCwd of loadBypassPermissionsConsent(
+                stateRepository,
+                canonicalCwd,
+                { reload: true },
+              )) {
+                transitionContext = authorizeBypassPermissionsConsent(
+                  transitionContext,
+                  acceptedCwd,
+                );
+              }
+            }
+            if (params.bypassAuthority === "operator_tool_approval") {
               transitionContext = authorizeBypassPermissionsConsent(
                 transitionContext,
-                acceptedCwd,
+                canonicalCwd,
               );
             }
-          }
-          if (params.bypassAuthority === "operator_tool_approval") {
-            transitionContext = authorizeBypassPermissionsConsent(
-              transitionContext,
-              canonicalCwd,
+          } catch {
+            throw new Error(
+              "Switching to bypassPermissions requires explicit consent for a stable canonical cwd",
             );
           }
-        } catch {
-          throw new Error(
-            "Switching to bypassPermissions requires explicit consent for a stable canonical cwd",
-          );
         }
-      }
-      let nextCtx: ToolPermissionContext;
-      if (sameModeAutoAuthorityRevoked) {
-        nextCtx = createDisabledAutoModeContext(liveCurrent);
-      } else {
-        const transitioned = runWithCurrentRuntimeSession(
-          active.bootstrap.session,
-          () => {
-            if (target !== "bypassPermissions") {
+        let nextCtx: ToolPermissionContext;
+        if (sameModeAutoAuthorityRevoked) {
+          nextCtx = createDisabledAutoModeContext(liveCurrent);
+        } else {
+          const transitioned = runWithCurrentRuntimeSession(
+            active.bootstrap.session,
+            () => {
+              if (target !== "bypassPermissions") {
+                return transitionPermissionMode(
+                  transitionContext.mode,
+                  target,
+                  transitionContext,
+                );
+              }
+              if (workspacePath === undefined) {
+                throw new Error(
+                  "Switching to bypassPermissions requires a canonical workspace",
+                );
+              }
               return transitionPermissionMode(
                 transitionContext.mode,
                 target,
                 transitionContext,
+                { workspacePath },
               );
-            }
-            if (workspacePath === undefined) {
-              throw new Error(
-                "Switching to bypassPermissions requires a canonical workspace",
-              );
-            }
-            return transitionPermissionMode(
-              transitionContext.mode,
-              target,
-              transitionContext,
-              { workspacePath },
-            );
-          },
-        );
-        if ("error" in transitioned) {
-          throw new Error(
-            "Switching to bypassPermissions requires explicit consent for this exact cwd",
-          );
-        }
-        nextCtx = { ...transitioned, mode: target };
-      }
-      const applied =
-        sameModeAutoAuthorityRevoked || liveCurrent.mode !== target;
-      return {
-        next: nextCtx,
-        metadata: {
-          runtimeSettings: {
-            reason: "permission_mode_changed",
-            rollbackOfSettingsEventId: null,
-          },
-        },
-        result: () => {
-          const appliedSettingsEventId = active.runtimeSettingsEventId;
-          const result: AgenCBackgroundAgentSetPermissionModeResult = {
-            applied,
-            previousMode: liveCurrent.mode,
-            mode: nextCtx.mode,
-          };
-          if (!applied || sameModeAutoAuthorityRevoked) return result;
-          // Keep the transaction hook out of JSON and ordinary result equality;
-          // session.setPermissionMode's public result remains unchanged.
-          Object.defineProperty(result, "rollback", {
-            value: async () => {
-              await registry.transact(() => {
-                if (
-                  appliedSettingsEventId === undefined ||
-                  active.runtimeSettingsEventId !== appliedSettingsEventId
-                ) {
-                  throw new Error(
-                    "permission-mode rollback no longer follows the applied settings event",
-                  );
-                }
-                return {
-                  next: liveCurrent,
-                  metadata: {
-                    runtimeSettings: {
-                      reason: "compensating_rollback",
-                      rollbackOfSettingsEventId: appliedSettingsEventId,
-                    },
-                  },
-                  result: () => undefined,
-                };
-              });
             },
-            enumerable: false,
-          });
-          return result;
-        },
-      };
+          );
+          if ("error" in transitioned) {
+            throw new Error(
+              "Switching to bypassPermissions requires explicit consent for this exact cwd",
+            );
+          }
+          nextCtx = { ...transitioned, mode: target };
+        }
+        const applied =
+          sameModeAutoAuthorityRevoked || liveCurrent.mode !== target;
+        return {
+          next: nextCtx,
+          metadata: {
+            runtimeSettings: {
+              reason: "permission_mode_changed",
+              rollbackOfSettingsEventId: null,
+            },
+          },
+          result: () => {
+            const appliedSettingsEventId = active.runtimeSettingsEventId;
+            const result: AgenCBackgroundAgentSetPermissionModeResult = {
+              applied,
+              previousMode: liveCurrent.mode,
+              mode: nextCtx.mode,
+            };
+            if (!applied || sameModeAutoAuthorityRevoked) return result;
+            // Keep the transaction hook out of JSON and ordinary result equality;
+            // session.setPermissionMode's public result remains unchanged.
+            Object.defineProperty(result, "rollback", {
+              value: async () => {
+                await registry.transact(() => {
+                  if (
+                    appliedSettingsEventId === undefined ||
+                    active.runtimeSettingsEventId !== appliedSettingsEventId
+                  ) {
+                    throw new Error(
+                      "permission-mode rollback no longer follows the applied settings event",
+                    );
+                  }
+                  return {
+                    next: liveCurrent,
+                    metadata: {
+                      runtimeSettings: {
+                        reason: "compensating_rollback",
+                        rollbackOfSettingsEventId: appliedSettingsEventId,
+                      },
+                    },
+                    result: () => undefined,
+                  };
+                });
+              },
+              enumerable: false,
+            });
+            return result;
+          },
+        };
       },
     );
   }
@@ -3948,113 +3996,128 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const changes: string[] = [];
     let applied = false;
     let preparedReloadSelection:
-      | ReturnType<typeof resolveProviderModelSelection>
-      | undefined;
+      ReturnType<typeof resolveProviderModelSelection> | undefined;
+    let preparedReloadProviderSwitch: PreparedSessionProviderSwitch | undefined;
     if (params.reload === true) {
-        const preparedConfigReload = await configStore.prepareReload();
-        const preparedMcpAuthorityRefresh =
-          prepareMcpAuthorityRefresh(session);
-        try {
-          const preparedConfig = preparedConfigReload.config;
-          const preparedResolved =
-            params.profile !== undefined
-              ? resolveProfile(preparedConfig, params.profile)
-              : preparedConfig;
-          if (
-            typeof preparedResolved.model === "string" ||
-            typeof preparedResolved.model_provider === "string"
-          ) {
-            preparedReloadSelection = resolveProviderModelSelection(
-              preparedConfig,
-              readSessionSelection(session, {
-                includePending: true,
-                fallbackConfig: preparedConfig,
-              }),
-              {
-                ...(typeof preparedResolved.model_provider === "string"
-                  ? { model_provider: preparedResolved.model_provider }
-                  : {}),
-                ...(typeof preparedResolved.model === "string"
-                  ? { model: preparedResolved.model }
-                  : {}),
-              },
-            );
-          }
-          const permissionSnapshot = await loadPermissionRulesSnapshot({
-            configStore: preparedConfigReload.authority,
-          });
-          await session.permissionModeRegistry.transact((current) => {
-            const configuredExecutionAuthority =
-              active.bootstrap.prepareConfiguredExecutionAuthority(
-                preparedConfigReload.config,
-              );
-            return {
-              next: applyPermissionRulesSnapshot(current, permissionSnapshot),
-              metadata: {
-                runtimeSettings: {
-                  reason: "config_applied" as const,
-                  rollbackOfSettingsEventId: null,
-                },
-                configuredExecutionAuthority,
-                preparedConfigReload,
-                ...(preparedMcpAuthorityRefresh !== undefined
-                  ? { preparedMcpAuthorityRefresh }
-                  : {}),
-              },
-              result: () => undefined,
-            };
-          });
-        } catch (error) {
-          const cleanupErrors: unknown[] = [];
-          if (!preparedConfigReload.settled) {
-            if (preparedConfigReload.state !== "rolled_back") {
-              try {
-                preparedConfigReload.rollback();
-              } catch (rollbackError) {
-                cleanupErrors.push(rollbackError);
-              }
-            }
-            try {
-              preparedConfigReload.settle();
-            } catch (settleError) {
-              cleanupErrors.push(settleError);
-            }
-          }
-          if (cleanupErrors.length > 0) {
-            failClosedDaemonRuntimeAuthority(
-              active,
-              new AggregateError(
-                [error, ...cleanupErrors],
-                "canonical config reload rollback was incomplete",
-                { cause: error },
+      const preparedConfigReload = await configStore.prepareReload();
+      const preparedMcpAuthorityRefresh = prepareMcpAuthorityRefresh(session);
+      try {
+        const preparedConfig = preparedConfigReload.config;
+        const preparedResolved =
+          params.profile !== undefined
+            ? resolveProfile(preparedConfig, params.profile)
+            : preparedConfig;
+        if (
+          typeof preparedResolved.model === "string" ||
+          typeof preparedResolved.model_provider === "string"
+        ) {
+          preparedReloadSelection = resolveProviderModelSelection(
+            preparedConfig,
+            readSessionSelection(session, {
+              includePending: true,
+              fallbackConfig: preparedConfig,
+            }),
+            {
+              ...(typeof preparedResolved.model_provider === "string"
+                ? { model_provider: preparedResolved.model_provider }
+                : {}),
+              ...(typeof preparedResolved.model === "string"
+                ? { model: preparedResolved.model }
+                : {}),
+            },
+          );
+          preparedReloadProviderSwitch = await runWithCurrentRuntimeSession(
+            session,
+            () =>
+              runWithCanonicalSettingsAuthority(
+                preparedConfigReload.authority,
+                () =>
+                  session.prepareProviderSwitch(
+                    {
+                      ...preparedReloadSelection!,
+                      ...(params.profile !== undefined
+                        ? { profile: params.profile }
+                        : {}),
+                    },
+                    preparedConfig,
+                  ),
               ),
-              {
-                brokerReason:
-                  "daemon permission authority failed after canonical publication",
-                abortReason: "permission_authority_failure",
-                abortFailureMessage:
-                  `agent config reload failed and session abort was incomplete for ${agentId}`,
-              },
-            );
-          }
-          throw error;
-        }
-        changes.push("config reloaded from disk");
-        if (preparedMcpAuthorityRefresh !== undefined) {
-          const refreshed = preparedMcpAuthorityRefresh.result;
-          if (refreshed === undefined) {
-            throw new Error(
-              "coordinated MCP authority refresh completed without a result",
-            );
-          }
-          changes.push(
-            `MCP refreshed (${refreshed.configuredServers.length} configured, ${refreshed.requiredServers.length} required)`,
           );
         }
-        applied = true;
-        if (params.profile !== undefined) {
-          resolveProfile(configStore.current(), params.profile);
+        const permissionSnapshot = await loadPermissionRulesSnapshot({
+          configStore: preparedConfigReload.authority,
+        });
+        await session.permissionModeRegistry.transact((current) => {
+          const configuredExecutionAuthority =
+            active.bootstrap.prepareConfiguredExecutionAuthority(
+              preparedConfigReload.config,
+            );
+          return {
+            next: applyPermissionRulesSnapshot(current, permissionSnapshot),
+            metadata: {
+              runtimeSettings: {
+                reason: "config_applied" as const,
+                rollbackOfSettingsEventId: null,
+              },
+              configuredExecutionAuthority,
+              preparedConfigReload,
+              ...(preparedMcpAuthorityRefresh !== undefined
+                ? { preparedMcpAuthorityRefresh }
+                : {}),
+            },
+            result: () => undefined,
+          };
+        });
+      } catch (error) {
+        const cleanupErrors: unknown[] = [];
+        if (!preparedConfigReload.settled) {
+          if (preparedConfigReload.state !== "rolled_back") {
+            try {
+              preparedConfigReload.rollback();
+            } catch (rollbackError) {
+              cleanupErrors.push(rollbackError);
+            }
+          }
+          try {
+            preparedConfigReload.settle();
+          } catch (settleError) {
+            cleanupErrors.push(settleError);
+          }
         }
+        if (cleanupErrors.length > 0) {
+          failClosedDaemonRuntimeAuthority(
+            active,
+            new AggregateError(
+              [error, ...cleanupErrors],
+              "canonical config reload rollback was incomplete",
+              { cause: error },
+            ),
+            {
+              brokerReason:
+                "daemon permission authority failed after canonical publication",
+              abortReason: "permission_authority_failure",
+              abortFailureMessage: `agent config reload failed and session abort was incomplete for ${agentId}`,
+            },
+          );
+        }
+        throw error;
+      }
+      changes.push("config reloaded from disk");
+      if (preparedMcpAuthorityRefresh !== undefined) {
+        const refreshed = preparedMcpAuthorityRefresh.result;
+        if (refreshed === undefined) {
+          throw new Error(
+            "coordinated MCP authority refresh completed without a result",
+          );
+        }
+        changes.push(
+          `MCP refreshed (${refreshed.configuredServers.length} configured, ${refreshed.requiredServers.length} required)`,
+        );
+      }
+      applied = true;
+      if (params.profile !== undefined) {
+        resolveProfile(configStore.current(), params.profile);
+      }
     }
     return withRuntimeSettingsMutation(active, async () => {
       if (!isRunnableActiveAgent(active)) {
@@ -4101,6 +4164,25 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           : undefined);
       const targetModel = targetSelection?.model;
       const stageProvider = targetSelection?.provider;
+      const pendingSelection =
+        targetModel !== undefined && stageProvider !== undefined
+          ? {
+              provider: stageProvider,
+              model: targetModel,
+              ...(params.profile !== undefined
+                ? { profile: params.profile }
+                : {}),
+            }
+          : undefined;
+      const preparedProviderSwitch =
+        pendingSelection === undefined
+          ? undefined
+          : (preparedReloadProviderSwitch ??
+            (await runWithCurrentRuntimeSession(session, () =>
+              runWithCanonicalSettingsAuthority(configStore, () =>
+                session.prepareProviderSwitch(pendingSelection),
+              ),
+            )));
       const nextReasoning = normalizeRuntimeSetting(
         resolved.reasoning_effort,
         RUN_RUNTIME_REASONING_EFFORTS,
@@ -4129,6 +4211,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       const settingsChanged =
         stableStringify(nextSettings) !== stableStringify(previousSettings);
       let preparedSettingsChange: PreparedRuntimeSettingsChange | undefined;
+      let stagedProviderSwitch: PreparedSessionProviderSwitch | undefined;
       if (settingsChanged) {
         preparedSettingsChange = prepareDurableRuntimeSettingsChange(
           active,
@@ -4138,21 +4221,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         );
       }
       try {
-        if (targetModel !== undefined && stageProvider !== undefined) {
-          session.setPendingProviderSwitch({
-            provider: stageProvider,
-            model: targetModel,
-            ...(params.profile !== undefined
-              ? { profile: params.profile }
-              : {}),
-          });
-          changes.push(
-            targetModel !== currentModel
-              ? `model ${currentModel ?? "?"}->${targetModel}`
-              : `model ${targetModel}`,
-          );
-          applied = true;
-        }
         if (
           nextReasoning !== null ||
           nextVerbosity !== null ||
@@ -4186,12 +4254,30 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           }
           applied = true;
         }
+        if (preparedProviderSwitch !== undefined) {
+          session.stagePreparedProviderSwitch(
+            preparedProviderSwitch,
+            previousPending,
+          );
+          stagedProviderSwitch = preparedProviderSwitch;
+          changes.push(
+            targetModel !== currentModel
+              ? `model ${currentModel ?? "?"}->${targetModel}`
+              : `model ${targetModel}`,
+          );
+          applied = true;
+        }
       } catch (error) {
         const rollbackErrors: unknown[] = [];
-        try {
-          session.setPendingProviderSwitch(previousPending);
-        } catch (rollbackError) {
-          rollbackErrors.push(rollbackError);
+        if (
+          stagedProviderSwitch !== undefined &&
+          session.pendingProviderSwitch === stagedProviderSwitch.pending
+        ) {
+          try {
+            session.setPendingProviderSwitch(previousPending);
+          } catch (rollbackError) {
+            rollbackErrors.push(rollbackError);
+          }
         }
         try {
           await session.state.with((state) => {
@@ -5077,8 +5163,7 @@ function agentCostUsd(active: ActiveBackgroundAgent): number {
 
 function activeAgentModel(active: ActiveBackgroundAgent): string {
   return (
-    stringRecordField(active.thread.configSnapshot?.(), "model") ??
-    "agenc"
+    stringRecordField(active.thread.configSnapshot?.(), "model") ?? "agenc"
   );
 }
 
@@ -5401,7 +5486,10 @@ function shellSubmissionMessageId(commandId: string): string {
 }
 
 function shellEventKey(commandId: string): string {
-  return createHash("sha256").update(commandId, "utf8").digest("hex").slice(0, 32);
+  return createHash("sha256")
+    .update(commandId, "utf8")
+    .digest("hex")
+    .slice(0, 32);
 }
 
 function scopeDirectShellDaemonEvent(
@@ -5496,13 +5584,14 @@ function normalizeSessionShellResult(
   const metadataExitCode = metadata.exitCode;
   const codeModeExitCode = codeMode.exit_code;
   const exitCode =
-    typeof metadataExitCode === "number" && Number.isSafeInteger(metadataExitCode)
+    typeof metadataExitCode === "number" &&
+    Number.isSafeInteger(metadataExitCode)
       ? metadataExitCode
-      : typeof codeModeExitCode === "number" && Number.isSafeInteger(codeModeExitCode)
+      : typeof codeModeExitCode === "number" &&
+          Number.isSafeInteger(codeModeExitCode)
         ? codeModeExitCode
         : null;
-  const timedOut =
-    metadata.timedOut === true || codeMode.timed_out === true;
+  const timedOut = metadata.timedOut === true || codeMode.timed_out === true;
   const content = boundShellResultText(dispatch.content);
   const stdout = boundShellResultText(rawStdout);
   const stderr = boundShellResultText(rawStderr);
@@ -7405,11 +7494,9 @@ function failClosedDaemonRuntimeAuthority(
   try {
     session.abortTerminal(options.abortReason);
   } catch (abortError) {
-    throw new AggregateError(
-      [error, abortError],
-      options.abortFailureMessage,
-      { cause: error },
-    );
+    throw new AggregateError([error, abortError], options.abortFailureMessage, {
+      cause: error,
+    });
   }
   throw error;
 }
@@ -7580,16 +7667,16 @@ function installDaemonPermissionAuthorityCoordinator(
             );
           }
         }
-        const failure = cleanupErrors.length === 0
-          ? error
-          : new AggregateError(
-              [error, ...cleanupErrors],
-              "daemon permission authority cleanup was incomplete",
-              { cause: error },
-            );
+        const failure =
+          cleanupErrors.length === 0
+            ? error
+            : new AggregateError(
+                [error, ...cleanupErrors],
+                "daemon permission authority cleanup was incomplete",
+                { cause: error },
+              );
         if (
-          (cleanupErrors.length > 0 ||
-            preparedMcpAuthorityRefreshStarted) &&
+          (cleanupErrors.length > 0 || preparedMcpAuthorityRefreshStarted) &&
           !broker.isClosedAfterLifecycleAuthorityFailure()
         ) {
           broker.closeAfterLifecycleAuthorityFailure(
@@ -7698,18 +7785,15 @@ function prepareMcpAuthorityRefresh(
       } catch (error) {
         task = Promise.reject(error);
       }
-      void task.then(
-        () => {
-          if (!deferred) {
-            failReady(
-              new Error(
-                "MCP authority refresh completed before sandbox deferral was proven",
-              ),
-            );
-          }
-        },
-        failReady,
-      );
+      void task.then(() => {
+        if (!deferred) {
+          failReady(
+            new Error(
+              "MCP authority refresh completed before sandbox deferral was proven",
+            ),
+          );
+        }
+      }, failReady);
       void task.catch(() => undefined);
     },
     waitUntilDeferred: () => ready,
@@ -8023,8 +8107,7 @@ function failClosedRuntimeSettingsAuthority(
   return failClosedDaemonRuntimeAuthority(active, error, {
     brokerReason: "daemon runtime-settings authority is ambiguous",
     abortReason: "permission_authority_failure",
-    abortFailureMessage:
-      `run ${runId} runtime-settings authority failed and session abort was incomplete`,
+    abortFailureMessage: `run ${runId} runtime-settings authority failed and session abort was incomplete`,
   });
 }
 
@@ -8095,8 +8178,7 @@ async function applyRestoredRuntimeSettings(
   if (
     (bypassTransitionCritical &&
       settings.bypassPermissionsWorkspace !== workspaceRoot) ||
-    (!bypassTransitionCritical &&
-      settings.bypassPermissionsWorkspace !== null)
+    (!bypassTransitionCritical && settings.bypassPermissionsWorkspace !== null)
   ) {
     throw new Error(
       "canonical bypass permission workspace does not match restored workspace",
@@ -8439,8 +8521,7 @@ function prepareDurableRuntimeSettingsChange(
     }
     if (recovered === undefined) throw error;
     event = recovered;
-    publish = () =>
-      active.bootstrap.session.publishPreparedEvent(recovered);
+    publish = () => active.bootstrap.session.publishPreparedEvent(recovered);
   }
   if (event.eventId !== eventId || positiveSequence(event.seq) === undefined) {
     throw new Error(`runtime settings ${eventId} lacks canonical coordinates`);
@@ -8507,10 +8588,13 @@ function assertValidRuntimeSettingsSnapshot(
     settings.bypassPermissionsConsentWorkspace === workspaceRoot;
   let providerModelIsCanonical = false;
   try {
-    const selection = mergeProviderModelLayer({}, {
-      model_provider: settings.provider,
-      model: settings.model,
-    });
+    const selection = mergeProviderModelLayer(
+      {},
+      {
+        model_provider: settings.provider,
+        model: settings.model,
+      },
+    );
     providerModelIsCanonical =
       selection.model_provider === settings.provider &&
       selection.model === settings.model;
@@ -9569,9 +9653,7 @@ function installDaemonTurnDriverHooks(
     submit: async (message, opts) => {
       let turnInput = message;
       let promptDisplayText =
-        typeof message === "string"
-          ? message
-          : userPromptDisplayText(message);
+        typeof message === "string" ? message : userPromptDisplayText(message);
       if (
         opts?.editorInteraction === undefined &&
         opts?.[DAEMON_USER_PROMPT_PREPARED] !== true
@@ -9602,8 +9684,7 @@ function installDaemonTurnDriverHooks(
             };
       const rootHumanTurnText =
         opts?.source !== "autonomous_tick" && opts?.displayUserMessage !== null
-          ? (opts?.displayUserMessage ??
-            promptDisplayText)
+          ? (opts?.displayUserMessage ?? promptDisplayText)
           : undefined;
       // displayUserMessage: null suppresses the run-turn user_message
       // emit. On the daemon path, submitAgentMessage above already

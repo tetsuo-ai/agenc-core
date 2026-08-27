@@ -6,9 +6,7 @@ import {
   type AgenCEnsureAgentControlFunction,
 } from "../../src/app-server/background-agent-runner.js";
 import type { AgentStatus } from "../../src/agents/status.js";
-import {
-  createEmptyToolPermissionContext,
-} from "../../src/permissions/types.js";
+import { createEmptyToolPermissionContext } from "../../src/permissions/types.js";
 import { PermissionModeRegistry } from "../../src/permissions/permission-mode.js";
 import { SandboxExecutionBroker } from "../../src/sandbox/execution-broker.js";
 import {
@@ -110,9 +108,10 @@ function makeRunnerHarness(opts: {
     Object.assign(configStore, {
       prepareReload: async () => {
         const previous = configStore.current() as Record<string, unknown>;
-        const staged = typeof configStore.reload === "function"
-          ? await configStore.reload()
-          : previous;
+        const staged =
+          typeof configStore.reload === "function"
+            ? await configStore.reload()
+            : previous;
         let state: "prepared" | "committed" | "published" | "rolled_back" =
           "prepared";
         let settled = false;
@@ -150,12 +149,11 @@ function makeRunnerHarness(opts: {
       },
     });
   }
-  let configuredExecutionAuthority =
-    sessionExecutionAuthorityFromAgenCConfig({
-      config: {},
-      workspaceRoot: process.cwd(),
-      projectTrust: "trusted",
-    });
+  let configuredExecutionAuthority = sessionExecutionAuthorityFromAgenCConfig({
+    config: {},
+    workspaceRoot: process.cwd(),
+    projectTrust: "trusted",
+  });
   const sandboxExecutionBroker = new SandboxExecutionBroker({
     cwd: process.cwd(),
     ...sandboxExecutionBrokerAuthorityFromSessionAuthority(
@@ -202,11 +200,46 @@ function makeRunnerHarness(opts: {
       configStore,
       sandboxExecutionBroker,
     },
-    setPendingProviderSwitch: (spec: {
+    pendingProviderSwitch: null as {
       provider: string;
       model: string;
       profile?: string;
-    }) => {
+    } | null,
+    prepareProviderSwitch: vi.fn(
+      async (spec: { provider: string; model: string; profile?: string }) => ({
+        pending: Object.freeze({ ...spec }),
+        provider: { expectedRevision: 0 },
+        modelInfo: { slug: spec.model },
+        baseInstructions: "",
+      }),
+    ),
+    stagePreparedProviderSwitch(
+      prepared: {
+        pending: { provider: string; model: string; profile?: string };
+      },
+      expectedPending: {
+        provider: string;
+        model: string;
+        profile?: string;
+      } | null,
+    ) {
+      if (this.pendingProviderSwitch !== expectedPending) {
+        throw new Error(
+          "pending provider selection changed during test preparation",
+        );
+      }
+      this.pendingProviderSwitch = prepared.pending;
+      opts.onStagedSwitch?.(prepared.pending);
+    },
+    setPendingProviderSwitch: (
+      spec: {
+        provider: string;
+        model: string;
+        profile?: string;
+      } | null,
+    ) => {
+      session.pendingProviderSwitch = spec;
+      if (spec === null) return;
       opts.onStagedSwitch?.(spec);
     },
     state: {

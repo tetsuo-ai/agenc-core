@@ -319,8 +319,7 @@ function bypassRestoreSettings(
 ): RunRuntimeSettingsSnapshot {
   return {
     permissionMode,
-    prePlanMode:
-      permissionMode === "plan" ? "bypassPermissions" : null,
+    prePlanMode: permissionMode === "plan" ? "bypassPermissions" : null,
     autoModeActive: false,
     autoModeAvailable: true,
     bypassPermissionsModeAvailable: true,
@@ -392,7 +391,9 @@ function makeTopLevelRunner(opts: {
       typeof opts.env?.GROK_API_KEY === "string",
   });
   let permissionRegistryQueue: Promise<void> = Promise.resolve();
-  const withPermissionRegistryLock = <T>(work: () => Promise<T>): Promise<T> => {
+  const withPermissionRegistryLock = <T>(
+    work: () => Promise<T>,
+  ): Promise<T> => {
     const result = permissionRegistryQueue.then(work);
     permissionRegistryQueue = result.then(
       () => {},
@@ -402,9 +403,9 @@ function makeTopLevelRunner(opts: {
   };
   let permissionBeforeUpdate:
     | ((
-      next: ToolPermissionContext,
-      current: ToolPermissionContext,
-      metadata: unknown,
+        next: ToolPermissionContext,
+        current: ToolPermissionContext,
+        metadata: unknown,
       ) =>
         | void
         | (() => void | Promise<void>)
@@ -416,8 +417,7 @@ function makeTopLevelRunner(opts: {
           >)
     | undefined;
   let permissionPublicationCoordinator:
-    | PermissionContextPublicationCoordinator
-    | undefined;
+    PermissionContextPublicationCoordinator | undefined;
   const publishPermissionContext = async (
     next: ToolPermissionContext,
     current: ToolPermissionContext,
@@ -451,7 +451,8 @@ function makeTopLevelRunner(opts: {
       },
       rollback: async () => {
         if (state === "rolled_back") return;
-        if (opts.canonicalRuntimeSettings !== false) permissionContext = current;
+        if (opts.canonicalRuntimeSettings !== false)
+          permissionContext = current;
         state = "rolled_back";
         await prepared?.rollback?.();
       },
@@ -480,15 +481,10 @@ function makeTopLevelRunner(opts: {
       opts.canonicalRuntimeSettings !== false
         ? permissionContext
         : createEmptyToolPermissionContext(),
-    update: vi.fn(
-      (context: ToolPermissionContext, metadata?: unknown) =>
-        withPermissionRegistryLock(async () => {
-          await publishPermissionContext(
-            context,
-            permissionContext,
-            metadata,
-          );
-        }),
+    update: vi.fn((context: ToolPermissionContext, metadata?: unknown) =>
+      withPermissionRegistryLock(async () => {
+        await publishPermissionContext(context, permissionContext, metadata);
+      }),
     ),
     transact: vi.fn(
       <T>(
@@ -497,21 +493,22 @@ function makeTopLevelRunner(opts: {
           readonly metadata?: unknown;
           readonly result: () => T;
         }>,
-      ): Promise<T> => withPermissionRegistryLock(async () => {
-        const current =
-          opts.canonicalRuntimeSettings !== false
-            ? permissionContext
-            : createEmptyToolPermissionContext();
-        const mutation = await transaction(current);
-        if (mutation.next !== null) {
-          await publishPermissionContext(
-            mutation.next,
-            current,
-            mutation.metadata,
-          );
-        }
-        return mutation.result();
-      }),
+      ): Promise<T> =>
+        withPermissionRegistryLock(async () => {
+          const current =
+            opts.canonicalRuntimeSettings !== false
+              ? permissionContext
+              : createEmptyToolPermissionContext();
+          const mutation = await transaction(current);
+          if (mutation.next !== null) {
+            await publishPermissionContext(
+              mutation.next,
+              current,
+              mutation.metadata,
+            );
+          }
+          return mutation.result();
+        }),
     ),
     installBeforeUpdateHook: vi.fn((hook: typeof permissionBeforeUpdate) => {
       permissionBeforeUpdate = hook;
@@ -588,9 +585,7 @@ function makeTopLevelRunner(opts: {
   // physical directory even in skeletal runner tests. Individual rejection
   // tests can still pass an explicit invalid workspaceRoot.
   const workspaceRoot = opts.workspaceRoot ?? process.cwd();
-  const persistedBypassConsent = new Set(
-    opts.persistedBypassConsent ?? [],
-  );
+  const persistedBypassConsent = new Set(opts.persistedBypassConsent ?? []);
   const stateRepository = {
     reload: vi.fn(() => ({})),
     getNamespace: vi.fn((namespace: string) =>
@@ -612,7 +607,8 @@ function makeTopLevelRunner(opts: {
               }),
             ),
           }
-        : {}),
+        : {},
+    ),
   };
   const configPublicationOptions: unknown[] = [];
   const configStore = {
@@ -627,13 +623,12 @@ function makeTopLevelRunner(opts: {
       (opts.configLayers ?? []).filter((layer) => layer.scope === scope),
   };
   Object.assign(configStore, {
-    prepareReload: async function (
-      this: Record<string, unknown>,
-    ) {
+    prepareReload: async function (this: Record<string, unknown>) {
       const reload = this.reload;
-      const staged = typeof reload === "function"
-        ? await (reload as () => Promise<Record<string, unknown>>)()
-        : (this.current as () => Record<string, unknown>)();
+      const staged =
+        typeof reload === "function"
+          ? await (reload as () => Promise<Record<string, unknown>>)()
+          : (this.current as () => Record<string, unknown>)();
       let state: "prepared" | "committed" | "published" | "rolled_back" =
         "prepared";
       let settled = false;
@@ -708,6 +703,7 @@ function makeTopLevelRunner(opts: {
     current: () => ({
       provider: sessionState.sessionConfiguration.provider.slug,
       model: sessionState.sessionConfiguration.collaborationMode.model,
+      revision: 0,
     }),
   };
   let nextInternalSubId = 0;
@@ -730,6 +726,38 @@ function makeTopLevelRunner(opts: {
       model: string;
       profile?: string;
     } | null,
+    prepareProviderSwitch: vi.fn(
+      async (spec: { provider: string; model: string; profile?: string }) => ({
+        pending: Object.freeze({ ...spec }),
+        provider: { expectedRevision: providerService.current().revision },
+        modelInfo: { slug: spec.model },
+        baseInstructions: "",
+      }),
+    ),
+    stagePreparedProviderSwitch(
+      prepared: {
+        pending: { provider: string; model: string; profile?: string };
+        provider: { expectedRevision: number };
+      },
+      expectedPending: {
+        provider: string;
+        model: string;
+        profile?: string;
+      } | null,
+    ) {
+      if (this.pendingProviderSwitch !== expectedPending) {
+        throw new Error(
+          "pending provider selection changed during test preparation",
+        );
+      }
+      if (
+        prepared.provider.expectedRevision !==
+        providerService.current().revision
+      ) {
+        throw new Error("provider binding changed during test preparation");
+      }
+      this.pendingProviderSwitch = prepared.pending;
+    },
     setPendingProviderSwitch(
       spec: {
         provider: string;
@@ -1040,10 +1068,12 @@ function configureSessionShellHarness(
     subscribe: vi.fn(() => () => {}),
   } as unknown as ExecutionAdmissionClient;
 
-  const preHook = vi.fn(({ args }: { readonly args: Record<string, unknown> }) => ({
-    kind: "continue" as const,
-    args: { ...args, observedByPreHook: true },
-  }));
+  const preHook = vi.fn(
+    ({ args }: { readonly args: Record<string, unknown> }) => ({
+      kind: "continue" as const,
+      args: { ...args, observedByPreHook: true },
+    }),
+  );
   const postHook = vi.fn(() => ({ kind: "continue" as const }));
   const checkPermissions = vi.fn((input: unknown) => ({
     behavior: "allow" as const,
@@ -1076,9 +1106,7 @@ function configureSessionShellHarness(
       maxCostUsd: 0,
     }),
     checkPermissions,
-    execute: vi.fn((args: Record<string, unknown>) =>
-      executeShell(args, name),
-    ),
+    execute: vi.fn((args: Record<string, unknown>) => executeShell(args, name)),
   });
   const bashTool = shellTool("system.bash");
   const powerShellTool = shellTool("PowerShell");
@@ -1180,15 +1208,17 @@ describe("AgenC delegate background-agent runner", () => {
     const shell = configureSessionShellHarness(harness, {
       defaultShell: "powershell",
       execute: async (args, toolName) => {
-        const calls = vi.mocked(harness.session.emit).mock.calls as unknown as
-          Array<readonly [unknown, unknown?]>;
+        const calls = vi.mocked(harness.session.emit).mock
+          .calls as unknown as Array<readonly [unknown, unknown?]>;
         const input = calls.find(([event]) => {
-          const payload = (event as {
-            readonly msg?: {
-              readonly type?: unknown;
-              readonly payload?: { readonly message?: unknown };
-            };
-          }).msg;
+          const payload = (
+            event as {
+              readonly msg?: {
+                readonly type?: unknown;
+                readonly payload?: { readonly message?: unknown };
+              };
+            }
+          ).msg;
           return (
             payload?.type === "user_message" &&
             typeof payload.payload?.message === "string" &&
@@ -1247,18 +1277,20 @@ describe("AgenC delegate background-agent runner", () => {
       },
     );
     const result = await execution.then((resolved) => {
-      const calls = vi.mocked(harness.session.emit).mock.calls as unknown as
-        Array<readonly [unknown, unknown?]>;
+      const calls = vi.mocked(harness.session.emit).mock
+        .calls as unknown as Array<readonly [unknown, unknown?]>;
       const durableMessages = calls
         .map(([event, options], index) => ({
           index,
           options,
-          msg: (event as {
-            readonly msg?: {
-              readonly type?: unknown;
-              readonly payload?: { readonly message?: unknown };
-            };
-          }).msg,
+          msg: (
+            event as {
+              readonly msg?: {
+                readonly type?: unknown;
+                readonly payload?: { readonly message?: unknown };
+              };
+            }
+          ).msg,
         }))
         .filter(({ msg }) => msg?.type === "user_message");
       const input = durableMessages.find(({ msg }) =>
@@ -1337,13 +1369,11 @@ describe("AgenC delegate background-agent runner", () => {
           isBypassPermissionsModeAvailable: true,
         }),
       );
-      const lease = runWithCanonicalSettingsAuthority(
-        settingsAuthority,
-        () =>
-          workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
-            workspaceRoot,
-            editorInstanceId: "editor-before-direct-shell",
-          }),
+      const lease = runWithCanonicalSettingsAuthority(settingsAuthority, () =>
+        workspaceMutationCoordinators.acquireEditor(workspaceRoot, {
+          workspaceRoot,
+          editorInstanceId: "editor-before-direct-shell",
+        }),
       );
 
       const result = await harness.runner.executeAgentShell(
@@ -1510,10 +1540,10 @@ describe("AgenC delegate background-agent runner", () => {
       params,
     );
     await expect(
-      harness.runner.executeAgentShell(
-        "session-direct-shell-deduplication",
-        { ...params, command: "printf conflicting" },
-      ),
+      harness.runner.executeAgentShell("session-direct-shell-deduplication", {
+        ...params,
+        command: "printf conflicting",
+      }),
     ).rejects.toThrow(/already used for different content/u);
     expect(shell.bashExecute).toHaveBeenCalledOnce();
 
@@ -1521,7 +1551,10 @@ describe("AgenC delegate background-agent runner", () => {
       content: "once",
       metadata: { stdout: "once", stderr: "", exitCode: 0 },
     });
-    const [firstResult, duplicateResult] = await Promise.all([first, duplicate]);
+    const [firstResult, duplicateResult] = await Promise.all([
+      first,
+      duplicate,
+    ]);
     expect(duplicateResult).toEqual(firstResult);
     expect(shell.bashExecute).toHaveBeenCalledOnce();
   });
@@ -1572,14 +1605,11 @@ describe("AgenC delegate background-agent runner", () => {
     });
 
     await expect(
-      harness.runner.executeAgentShell(
-        "session-direct-shell-thread-running",
-        {
-          sessionId: "session-direct-shell-thread-running",
-          commandId: "shell-thread-running-1",
-          command: "printf blocked",
-        },
-      ),
+      harness.runner.executeAgentShell("session-direct-shell-thread-running", {
+        sessionId: "session-direct-shell-thread-running",
+        commandId: "shell-thread-running-1",
+        command: "printf blocked",
+      }),
     ).rejects.toThrow(/active or queued model turn/u);
     expect(shell.acquire).not.toHaveBeenCalled();
     expect(shell.bashExecute).not.toHaveBeenCalled();
@@ -1868,9 +1898,9 @@ describe("AgenC delegate background-agent runner", () => {
         (notification) => notification.method === "event.agent_status",
       ),
     ).toEqual([]);
-    await expect(harness.runner.getAgentSnapshot(agentId)).resolves.toMatchObject(
-      { status: "idle" },
-    );
+    await expect(
+      harness.runner.getAgentSnapshot(agentId),
+    ).resolves.toMatchObject({ status: "idle" });
 
     const second = await harness.runner.executeAgentShell(agentId, {
       sessionId: agentId,
@@ -1884,9 +1914,9 @@ describe("AgenC delegate background-agent runner", () => {
       stdout: "second command succeeded",
     });
     expect(shell.bashExecute).toHaveBeenCalledTimes(2);
-    await expect(harness.runner.getAgentSnapshot(agentId)).resolves.toMatchObject(
-      { status: "idle" },
-    );
+    await expect(
+      harness.runner.getAgentSnapshot(agentId),
+    ).resolves.toMatchObject({ status: "idle" });
   });
 
   it("[managed-thread] scopes model input across an ambiguous fallback-session boundary", async () => {
@@ -2006,9 +2036,7 @@ describe("AgenC delegate background-agent runner", () => {
     expect(runtimeEnvironment).not.toHaveProperty("AGENC_MODEL");
     expect(runtimeEnvironment).not.toHaveProperty("OPENAI_BASE_URL");
     expect(runtimeEnvironment).not.toHaveProperty("XAI_API_KEY");
-    expect(runtimeEnvironment).not.toHaveProperty(
-      "AGENC_CREDENTIAL_DOCS_MCP",
-    );
+    expect(runtimeEnvironment).not.toHaveProperty("AGENC_CREDENTIAL_DOCS_MCP");
   });
 
   it("waits for the exact terminal generation cleanup before explicit restore", async () => {
@@ -2529,14 +2557,14 @@ describe("AgenC delegate background-agent runner", () => {
         await expect(restoring).rejects.toThrow(
           /requires persisted exact-cwd consent/u,
         );
-        const bootstrapArgv = vi.mocked(harness.bootstrap).mock.calls[0]?.[0]
-          .argv ?? [];
+        const bootstrapArgv =
+          vi.mocked(harness.bootstrap).mock.calls[0]?.[0].argv ?? [];
         expect(bootstrapArgv).not.toContain(
           "--dangerously-bypass-approvals-and-sandbox",
         );
         expect(
-          harness.permissionModeRegistry.current().bypassPermissionsAcceptedIn ??
-            [],
+          harness.permissionModeRegistry.current()
+            .bypassPermissionsAcceptedIn ?? [],
         ).toEqual([]);
         return;
       }
@@ -2578,7 +2606,9 @@ describe("AgenC delegate background-agent runner", () => {
       (item) =>
         (item as { payload?: { msg?: { type?: unknown } } }).payload?.msg
           ?.type === "run_runtime_settings_changed",
-    ) as { readonly payload?: { readonly msg?: { readonly payload?: unknown } } };
+    ) as {
+      readonly payload?: { readonly msg?: { readonly payload?: unknown } };
+    };
     expect(initialSettings.payload?.msg?.payload).toMatchObject({
       permissionMode: "default",
       autoModeActive: false,
@@ -2635,7 +2665,10 @@ describe("AgenC delegate background-agent runner", () => {
     const settingsEvents = rolloutItems.flatMap((item) => {
       const event = item as {
         readonly payload?: {
-          readonly msg?: { readonly type?: unknown; readonly payload?: unknown };
+          readonly msg?: {
+            readonly type?: unknown;
+            readonly payload?: unknown;
+          };
         };
       };
       return event.payload?.msg?.type === "run_runtime_settings_changed"
@@ -2644,7 +2677,8 @@ describe("AgenC delegate background-agent runner", () => {
     });
     expect(settingsEvents).toHaveLength(2);
     expect(settingsEvents.at(-1)).toMatchObject({
-      previousSettingsEventId: "runtime-settings:session-revoked-inactive-bypass-consent:initial",
+      previousSettingsEventId:
+        "runtime-settings:session-revoked-inactive-bypass-consent:initial",
       reason: "config_applied",
       autoModeAvailable: true,
       bypassPermissionsModeAvailable: false,
@@ -2811,8 +2845,9 @@ describe("AgenC delegate background-agent runner", () => {
     ).resolves.toBe(true);
 
     expect(harness.session.pendingProviderSwitch).toEqual(entry.expected);
-    expect(recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload)
-      .toMatchObject(entry.expected);
+    expect(
+      recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload,
+    ).toMatchObject(entry.expected);
   });
 
   it.each([
@@ -3361,8 +3396,8 @@ describe("AgenC delegate background-agent runner", () => {
         if (
           (event as { readonly method?: unknown }).method ===
             "event.mcp_status_changed" &&
-          (event as { readonly params?: { readonly revision?: unknown } }).params
-            ?.revision === 12
+          (event as { readonly params?: { readonly revision?: unknown } })
+            .params?.revision === 12
         ) {
           return new Promise<void>((resolve) => {
             releaseMcpDelivery = resolve;
@@ -4058,10 +4093,7 @@ describe("AgenC delegate background-agent runner", () => {
       const event = (item as { payload?: { msg?: { type?: string } } }).payload;
       return event?.msg?.type?.startsWith("run_") ? [event.msg.type] : [];
     });
-    expect(lifecycle).toEqual([
-      "run_runtime_settings_changed",
-      "run_terminal",
-    ]);
+    expect(lifecycle).toEqual(["run_runtime_settings_changed", "run_terminal"]);
   });
 
   it("cancels and quiesces when the root is idle but a child remains open", async () => {
@@ -4100,10 +4132,7 @@ describe("AgenC delegate background-agent runner", () => {
       const event = (item as { payload?: { msg?: { type?: string } } }).payload;
       return event?.msg?.type?.startsWith("run_") ? [event.msg.type] : [];
     });
-    expect(lifecycle).toEqual([
-      "run_runtime_settings_changed",
-      "run_terminal",
-    ]);
+    expect(lifecycle).toEqual(["run_runtime_settings_changed", "run_terminal"]);
   });
 
   it("canonicalizes cancellation and admission decisions before the terminal tail", async () => {
@@ -4270,10 +4299,7 @@ describe("AgenC delegate background-agent runner", () => {
       await runner.getAgentSnapshot("session-budget-pending-permission"),
     ).toMatchObject({ status: "running" });
 
-    await runner.stopAgent(
-      "session-budget-pending-permission",
-      "test_cleanup",
-    );
+    await runner.stopAgent("session-budget-pending-permission", "test_cleanup");
     await expect(pending).resolves.toMatchObject({
       decision: { kind: "abort" },
     });
@@ -4613,15 +4639,17 @@ describe("AgenC delegate background-agent runner", () => {
       status: "running",
     });
 
-    expect(bootstrap).toHaveBeenCalledWith(expect.objectContaining({
-      env: expect.objectContaining({
-        AGENC_HOME: "/tmp/agenc-home",
+    expect(bootstrap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        env: expect.objectContaining({
+          AGENC_HOME: "/tmp/agenc-home",
+        }),
+        argv: ["/usr/bin/node", "/opt/agenc/bin/agenc.js", "--model", "grok-4"],
+        cwd: "/workspace",
+        executionAdmissionAutonomous: true,
+        csvAgentJobsRepositories,
       }),
-      argv: ["/usr/bin/node", "/opt/agenc/bin/agenc.js", "--model", "grok-4"],
-      cwd: "/workspace",
-      executionAdmissionAutonomous: true,
-      csvAgentJobsRepositories,
-    }));
+    );
     const runtimeEnvironment = vi.mocked(bootstrap).mock.calls[0]?.[0].env;
     expect(runtimeEnvironment).not.toHaveProperty("AGENC_PROVIDER");
     expect(runtimeEnvironment).not.toHaveProperty("AGENC_MODEL");
@@ -4738,9 +4766,7 @@ describe("AgenC delegate background-agent runner", () => {
       readonly pending: unknown;
       readonly snapshotSettled: boolean;
     }> = [];
-    let attachSnapshot:
-      | ReturnType<typeof runner.getAgentSnapshot>
-      | undefined;
+    let attachSnapshot: ReturnType<typeof runner.getAgentSnapshot> | undefined;
     let snapshotSettled = false;
     let attachBarrierHeld = false;
     let attachBarrierProbe: Promise<void> | undefined;
@@ -4765,9 +4791,9 @@ describe("AgenC delegate background-agent runner", () => {
     });
 
     const result = await runner.setAgentModel(agentId, {
-        model: "gpt-5",
-        provider: "openai",
-      });
+      model: "gpt-5",
+      provider: "openai",
+    });
     expect(result).toMatchObject({
       applied: true,
       provider: "openai",
@@ -4812,14 +4838,41 @@ describe("AgenC delegate background-agent runner", () => {
       provider: "openai",
       model: "gpt-5",
     });
-    expect(recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload)
-      .toMatchObject({
-        reason: "model_provider_changed",
-        provider: "openai",
-        model: "gpt-5",
-      });
+    expect(
+      recordedRuntimeSettingsEvents(rolloutItems).at(-1)?.msg?.payload,
+    ).toMatchObject({
+      reason: "model_provider_changed",
+      provider: "openai",
+      model: "gpt-5",
+    });
     await expect(runner.getAgentSnapshot(agentId)).resolves.toMatchObject({
       runtimeSettings: { provider: "openai", model: "gpt-5" },
+    });
+  });
+
+  it("does not publish model settings when provider preparation fails", async () => {
+    const agentId = "model-provider-preparation-failure";
+    const { runner, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const before = recordedRuntimeSettingsEvents(rolloutItems);
+    vi.mocked(session.prepareProviderSwitch).mockRejectedValueOnce(
+      new Error("injected provider preparation failure"),
+    );
+
+    await expect(
+      runner.setAgentModel(agentId, {
+        provider: "openai",
+        model: "gpt-5",
+      }),
+    ).rejects.toThrow("injected provider preparation failure");
+
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(recordedRuntimeSettingsEvents(rolloutItems)).toEqual(before);
+    await expect(runner.getAgentSnapshot(agentId)).resolves.toMatchObject({
+      runtimeSettings: { provider: "grok", model: "base-model" },
     });
   });
 
@@ -4960,6 +5013,19 @@ describe("AgenC delegate background-agent runner", () => {
       get: () => pending,
     });
     Object.assign(session, {
+      stagePreparedProviderSwitch: (prepared: {
+        pending: {
+          provider: string;
+          model: string;
+          profile?: string;
+        };
+      }) => {
+        if (failNextStage) {
+          failNextStage = false;
+          throw new Error("injected isolated snapshot staging failure");
+        }
+        pending = prepared.pending;
+      },
       setPendingProviderSwitch: (
         spec: {
           provider: string;
@@ -4968,10 +5034,6 @@ describe("AgenC delegate background-agent runner", () => {
         } | null,
       ) => {
         pending = spec;
-        if (spec !== null && failNextStage) {
-          failNextStage = false;
-          throw new Error("injected isolated snapshot staging failure");
-        }
       },
     });
 
@@ -5009,6 +5071,19 @@ describe("AgenC delegate background-agent runner", () => {
       get: () => pending,
     });
     Object.assign(session, {
+      stagePreparedProviderSwitch: (prepared: {
+        pending: {
+          provider: string;
+          model: string;
+          profile?: string;
+        };
+      }) => {
+        if (failNextStage) {
+          failNextStage = false;
+          throw new Error("injected provider staging failure");
+        }
+        pending = prepared.pending;
+      },
       setPendingProviderSwitch: (
         spec: {
           provider: string;
@@ -5017,10 +5092,6 @@ describe("AgenC delegate background-agent runner", () => {
         } | null,
       ) => {
         pending = spec;
-        if (spec !== null && failNextStage) {
-          failNextStage = false;
-          throw new Error("injected provider staging failure");
-        }
       },
     });
     await runner.startAgent({ objective: "work", cwd: process.cwd() });
@@ -5030,9 +5101,11 @@ describe("AgenC delegate background-agent runner", () => {
       readonly payload: Record<string, unknown>;
     }> = [];
     const unsubscribe = session.eventLog.subscribe((event: unknown) => {
-      const message = (event as {
-        msg?: { type?: unknown; payload?: Record<string, unknown> };
-      }).msg;
+      const message = (
+        event as {
+          msg?: { type?: unknown; payload?: Record<string, unknown> };
+        }
+      ).msg;
       if (message?.type !== "run_runtime_settings_changed") return;
       published.push({
         pending,
@@ -5085,20 +5158,16 @@ describe("AgenC delegate background-agent runner", () => {
   it("terminal-fences a model change when its fsynced settings event cannot publish", async () => {
     const agentId = "model-settings-publish-failure";
     const publishError = new Error("injected settings publish failure");
-    const {
-      runner,
-      session,
-      rolloutItems,
-      sandboxExecutionBroker,
-    } = makeTopLevelRunner({
-      conversationId: agentId,
-      canonicalRuntimeSettings: true,
-      runtimeSettingsFailpoint: {
-        eventOrdinal: 2,
-        phase: "publish",
-        error: publishError,
-      },
-    });
+    const { runner, session, rolloutItems, sandboxExecutionBroker } =
+      makeTopLevelRunner({
+        conversationId: agentId,
+        canonicalRuntimeSettings: true,
+        runtimeSettingsFailpoint: {
+          eventOrdinal: 2,
+          phase: "publish",
+          error: publishError,
+        },
+      });
     await runner.startAgent({ objective: "work", cwd: process.cwd() });
 
     await expect(
@@ -5139,20 +5208,16 @@ describe("AgenC delegate background-agent runner", () => {
     const compensationError = new Error(
       "injected settings compensation append failure",
     );
-    const {
-      runner,
-      session,
-      rolloutItems,
-      sandboxExecutionBroker,
-    } = makeTopLevelRunner({
-      conversationId: agentId,
-      canonicalRuntimeSettings: true,
-      runtimeSettingsFailpoint: {
-        eventOrdinal: 3,
-        phase: "before_append",
-        error: compensationError,
-      },
-    });
+    const { runner, session, rolloutItems, sandboxExecutionBroker } =
+      makeTopLevelRunner({
+        conversationId: agentId,
+        canonicalRuntimeSettings: true,
+        runtimeSettingsFailpoint: {
+          eventOrdinal: 3,
+          phase: "before_append",
+          error: compensationError,
+        },
+      });
     let pending: {
       provider: string;
       model: string;
@@ -5266,9 +5331,9 @@ describe("AgenC delegate background-agent runner", () => {
     ).rejects.toThrow(/exceeds 4096 rules/u);
 
     expect(permissionUpdates).toEqual([]);
-    expect(
-      permissionModeRegistry.current().alwaysAllowRules.session,
-    ).toEqual(existingRules);
+    expect(permissionModeRegistry.current().alwaysAllowRules.session).toEqual(
+      existingRules,
+    );
   });
 
   it("rejects session rule mutation at the managed-only policy boundary", async () => {
@@ -5405,13 +5470,12 @@ describe("AgenC delegate background-agent runner", () => {
         permissionModeRegistry,
         permissionUpdates,
         forcePermissionContextForTesting,
-      } =
-        makeTopLevelRunner({
-          conversationId: `parent-session-auto-revoked-${String(isAutoModeAvailable)}`,
-          argv: ["node", "agenc"],
-          canonicalRuntimeSettings: true,
-          env,
-        });
+      } = makeTopLevelRunner({
+        conversationId: `parent-session-auto-revoked-${String(isAutoModeAvailable)}`,
+        argv: ["node", "agenc"],
+        canonicalRuntimeSettings: true,
+        env,
+      });
       const agentId = `parent-session-auto-revoked-${String(isAutoModeAvailable)}`;
       await runner.startAgent({ objective: "work", cwd: process.cwd() });
       forcePermissionContextForTesting(
@@ -5697,9 +5761,7 @@ describe("AgenC delegate background-agent runner", () => {
       readonly disabled: boolean;
       readonly snapshotSettled: boolean;
     }> = [];
-    let attachSnapshot:
-      | ReturnType<typeof runner.getAgentSnapshot>
-      | undefined;
+    let attachSnapshot: ReturnType<typeof runner.getAgentSnapshot> | undefined;
     let snapshotSettled = false;
     let attachBarrierHeld = false;
     let attachBarrierProbe: Promise<void> | undefined;
@@ -5725,9 +5787,7 @@ describe("AgenC delegate background-agent runner", () => {
     ).resolves.toMatchObject({ applied: true, disabled: true });
     unsubscribe();
 
-    expect(observations).toEqual([
-      { disabled: true, snapshotSettled: false },
-    ]);
+    expect(observations).toEqual([{ disabled: true, snapshotSettled: false }]);
     await expect(attachSnapshot).resolves.toMatchObject({
       runtimeSettings: { hooksDisabled: true },
     });
@@ -5772,9 +5832,11 @@ describe("AgenC delegate background-agent runner", () => {
       readonly payload: Record<string, unknown>;
     }> = [];
     const unsubscribe = session.eventLog.subscribe((event: unknown) => {
-      const message = (event as {
-        msg?: { type?: unknown; payload?: Record<string, unknown> };
-      }).msg;
+      const message = (
+        event as {
+          msg?: { type?: unknown; payload?: Record<string, unknown> };
+        }
+      ).msg;
       if (message?.type !== "run_runtime_settings_changed") return;
       published.push({
         disabled,
@@ -5820,20 +5882,16 @@ describe("AgenC delegate background-agent runner", () => {
     const agentId = "hooks-settings-publish-failure";
     const publishError = new Error("injected settings publish failure");
     let disabled = false;
-    const {
-      runner,
-      session,
-      rolloutItems,
-      sandboxExecutionBroker,
-    } = makeTopLevelRunner({
-      conversationId: agentId,
-      canonicalRuntimeSettings: true,
-      runtimeSettingsFailpoint: {
-        eventOrdinal: 2,
-        phase: "publish",
-        error: publishError,
-      },
-    });
+    const { runner, session, rolloutItems, sandboxExecutionBroker } =
+      makeTopLevelRunner({
+        conversationId: agentId,
+        canonicalRuntimeSettings: true,
+        runtimeSettingsFailpoint: {
+          eventOrdinal: 2,
+          phase: "publish",
+          error: publishError,
+        },
+      });
     Object.assign(session, {
       services: {
         ...(session as { services: Record<string, unknown> }).services,
@@ -5883,20 +5941,16 @@ describe("AgenC delegate background-agent runner", () => {
     );
     let disabled = false;
     let failNextDisable = true;
-    const {
-      runner,
-      session,
-      rolloutItems,
-      sandboxExecutionBroker,
-    } = makeTopLevelRunner({
-      conversationId: agentId,
-      canonicalRuntimeSettings: true,
-      runtimeSettingsFailpoint: {
-        eventOrdinal: 3,
-        phase: "before_append",
-        error: compensationError,
-      },
-    });
+    const { runner, session, rolloutItems, sandboxExecutionBroker } =
+      makeTopLevelRunner({
+        conversationId: agentId,
+        canonicalRuntimeSettings: true,
+        runtimeSettingsFailpoint: {
+          eventOrdinal: 3,
+          phase: "before_append",
+          error: compensationError,
+        },
+      });
     Object.assign(session, {
       services: {
         ...(session as { services: Record<string, unknown> }).services,
@@ -5966,7 +6020,9 @@ describe("AgenC delegate background-agent runner", () => {
     });
     await runner.startAgent({ objective: "work", cwd: "/workspace" });
 
-    await expect(runner.getAgentHooksStatus("parent-session")).resolves.toMatchObject({
+    await expect(
+      runner.getAgentHooksStatus("parent-session"),
+    ).resolves.toMatchObject({
       disabled: false,
       hardSuppressed: true,
       effectiveDisabled: true,
@@ -6030,6 +6086,16 @@ describe("AgenC delegate background-agent runner", () => {
         profile?: string;
       }) => {
         stagedSwitches.push(spec);
+      },
+      stagePreparedProviderSwitch: (prepared: {
+        pending: {
+          provider: string;
+          model: string;
+          profile?: string;
+        };
+      }) => {
+        stagedSwitches.push(prepared.pending);
+        session.pendingProviderSwitch = prepared.pending;
       },
       state: {
         with: async (fn: (state: unknown) => void) => {
@@ -6125,6 +6191,40 @@ describe("AgenC delegate background-agent runner", () => {
     ]);
   });
 
+  it("does not publish config settings when provider preparation fails", async () => {
+    const agentId = "config-provider-preparation-failure";
+    const { runner, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    Object.assign(session, {
+      services: {
+        ...(session as { services: Record<string, unknown> }).services,
+        configStore: {
+          current: () => ({
+            model: "gpt-5",
+            model_provider: "openai",
+          }),
+        },
+      },
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const before = recordedRuntimeSettingsEvents(rolloutItems);
+    vi.mocked(session.prepareProviderSwitch).mockRejectedValueOnce(
+      new Error("injected config provider preparation failure"),
+    );
+
+    await expect(
+      runner.applyAgentConfig(agentId, { sessionId: agentId }),
+    ).rejects.toThrow("injected config provider preparation failure");
+
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(recordedRuntimeSettingsEvents(rolloutItems)).toEqual(before);
+    await expect(runner.getAgentSnapshot(agentId)).resolves.toMatchObject({
+      runtimeSettings: { provider: "grok", model: "base-model" },
+    });
+  });
+
   it("restores provider and session configuration before publishing config compensation", async () => {
     const agentId = "config-mutation-compensation-order";
     const { runner, session, rolloutItems, rolloutStore } = makeTopLevelRunner({
@@ -6170,9 +6270,11 @@ describe("AgenC delegate background-agent runner", () => {
       readonly payload: Record<string, unknown>;
     }> = [];
     const unsubscribe = session.eventLog.subscribe((event: unknown) => {
-      const message = (event as {
-        msg?: { type?: unknown; payload?: Record<string, unknown> };
-      }).msg;
+      const message = (
+        event as {
+          msg?: { type?: unknown; payload?: Record<string, unknown> };
+        }
+      ).msg;
       if (message?.type !== "run_runtime_settings_changed") return;
       published.push({
         pending: session.pendingProviderSwitch,
@@ -6308,20 +6410,16 @@ describe("AgenC delegate background-agent runner", () => {
     const compensationError = new Error(
       "injected settings compensation append failure",
     );
-    const {
-      runner,
-      session,
-      rolloutItems,
-      sandboxExecutionBroker,
-    } = makeTopLevelRunner({
-      conversationId: agentId,
-      canonicalRuntimeSettings: true,
-      runtimeSettingsFailpoint: {
-        eventOrdinal: 3,
-        phase: "before_append",
-        error: compensationError,
-      },
-    });
+    const { runner, session, rolloutItems, sandboxExecutionBroker } =
+      makeTopLevelRunner({
+        conversationId: agentId,
+        canonicalRuntimeSettings: true,
+        runtimeSettingsFailpoint: {
+          eventOrdinal: 3,
+          phase: "before_append",
+          error: compensationError,
+        },
+      });
     const liveState = session.state.unsafePeek();
     let failNextConfigurationWrite = false;
     Object.assign(session, {
@@ -6433,7 +6531,9 @@ describe("AgenC delegate background-agent runner", () => {
     );
     expect(result.applied).toBe(true);
     expect(result.summary).toContain("config reloaded from disk");
-    expect(result.summary).toContain("MCP refreshed (1 configured, 1 required)");
+    expect(result.summary).toContain(
+      "MCP refreshed (1 configured, 1 required)",
+    );
   });
 
   it("serializes a blocked prepared config reload after a permission-mode publication without mixed authority", async () => {
@@ -6473,7 +6573,7 @@ describe("AgenC delegate background-agent runner", () => {
     Object.assign(configStore, {
       reload: vi.fn(async () => ({ sandbox_mode: "read-only" })),
       prepareReload: vi.fn(async () => {
-        const prepared = await originalPrepareReload() as {
+        const prepared = (await originalPrepareReload()) as {
           publish(options?: CoordinatedConfigStorePublishOptions): void;
         };
         const publish = prepared.publish.bind(prepared);
@@ -6501,15 +6601,17 @@ describe("AgenC delegate background-agent runner", () => {
       readonly configurationMode: string;
     }> = [];
     const unsubscribe = session.eventLog.subscribe((event: unknown) => {
-      const message = (event as {
-        readonly msg?: {
-          readonly type?: unknown;
-          readonly payload?: {
-            readonly reason?: unknown;
-            readonly permissionMode?: unknown;
+      const message = (
+        event as {
+          readonly msg?: {
+            readonly type?: unknown;
+            readonly payload?: {
+              readonly reason?: unknown;
+              readonly permissionMode?: unknown;
+            };
           };
-        };
-      }).msg;
+        }
+      ).msg;
       if (message?.type !== "run_runtime_settings_changed") return;
       publications.push({
         reason: String(message.payload?.reason),
@@ -6597,15 +6699,11 @@ describe("AgenC delegate background-agent runner", () => {
   });
 
   it("keeps the old MCP tool surface revoked until a coordinated config refresh is deferred and settled", async () => {
-    const {
-      runner,
-      session,
-      sessionState,
-      sandboxExecutionBroker,
-    } = makeTopLevelRunner({
-      conversationId: "config-mcp-refresh-quiesced",
-      argv: ["node", "agenc"],
-    });
+    const { runner, session, sessionState, sandboxExecutionBroker } =
+      makeTopLevelRunner({
+        conversationId: "config-mcp-refresh-quiesced",
+        argv: ["node", "agenc"],
+      });
     const reload = vi.fn(async () => ({}));
     let markRefreshStarted!: () => void;
     const refreshStarted = new Promise<void>((resolve) => {
@@ -6671,8 +6769,9 @@ describe("AgenC delegate background-agent runner", () => {
       },
     });
     await runner.startAgent({ objective: "work", cwd: "/workspace" });
-    const unregisterMcpLifecycle =
-      registerSandboxExecutionLifecycleParticipant(sandboxExecutionBroker, {
+    const unregisterMcpLifecycle = registerSandboxExecutionLifecycleParticipant(
+      sandboxExecutionBroker,
+      {
         name: "test-runner-mcp-surface",
         quiesce: async () => {
           mcpSurface = "none";
@@ -6680,7 +6779,8 @@ describe("AgenC delegate background-agent runner", () => {
         resume: async () => {
           markResumeStarted();
         },
-      });
+      },
+    );
 
     try {
       let applySettled = false;
@@ -6735,15 +6835,11 @@ describe("AgenC delegate background-agent runner", () => {
   });
 
   it("closes daemon authority when MCP refresh fails after config publication", async () => {
-    const {
-      runner,
-      session,
-      sessionState,
-      sandboxExecutionBroker,
-    } = makeTopLevelRunner({
-      conversationId: "config-mcp-refresh-failure",
-      argv: ["node", "agenc"],
-    });
+    const { runner, session, sessionState, sandboxExecutionBroker } =
+      makeTopLevelRunner({
+        conversationId: "config-mcp-refresh-failure",
+        argv: ["node", "agenc"],
+      });
     const refreshFailure = new Error("injected MCP refresh failure");
     const reload = vi.fn(async () => ({}));
     const refreshFromAuthority = vi.fn(async () => {
@@ -6778,8 +6874,9 @@ describe("AgenC delegate background-agent runner", () => {
     ).rejects.toBe(refreshFailure);
 
     expect(refreshFromAuthority).toHaveBeenCalledTimes(1);
-    expect(sandboxExecutionBroker.isClosedAfterLifecycleAuthorityFailure())
-      .toBe(true);
+    expect(
+      sandboxExecutionBroker.isClosedAfterLifecycleAuthorityFailure(),
+    ).toBe(true);
     expect(session.abortTerminal).toHaveBeenCalledWith(
       "permission_authority_failure",
     );
@@ -6790,8 +6887,10 @@ describe("AgenC delegate background-agent runner", () => {
         cwd: process.cwd(),
         env: { PATH: process.env.PATH ?? "" },
         trustedExecutable: true,
-      })
-    ).toThrow(/daemon permission authority failed after canonical publication/u);
+      }),
+    ).toThrow(
+      /daemon permission authority failed after canonical publication/u,
+    );
   });
 
   it("setAgentPermissionMode rejects internal-only modes", async () => {
@@ -7084,9 +7183,11 @@ describe("AgenC delegate background-agent runner", () => {
         sessionId: "session-initial-prompt-blocked",
       }),
     );
-    const emittedTypes = vi.mocked(session.emit).mock.calls.map(([event]) =>
-      (event as { msg?: { type?: unknown } }).msg?.type,
-    );
+    const emittedTypes = vi
+      .mocked(session.emit)
+      .mock.calls.map(
+        ([event]) => (event as { msg?: { type?: unknown } }).msg?.type,
+      );
     expect(emittedTypes).not.toContain("user_message");
     expect(rolloutStore.recordRunStartupActivationEvent).not.toHaveBeenCalled();
     expect(stub.thread.submit).not.toHaveBeenCalled();
@@ -7222,11 +7323,12 @@ describe("AgenC delegate background-agent runner", () => {
     const blockHook = vi.fn(() => ({
       blockingError: { blockingError: "follow-up prompt denied" },
     }));
-    const { runner, session, control, stub, rolloutStore } =
-      makeTopLevelRunner({
+    const { runner, session, control, stub, rolloutStore } = makeTopLevelRunner(
+      {
         conversationId: "session-follow-up-prompt-blocked",
         userPromptSubmitHooks: [blockHook],
-      });
+      },
+    );
     await runner.startAgent({
       objective: "passive hook test",
       initialContent: [],
@@ -7257,9 +7359,11 @@ describe("AgenC delegate background-agent runner", () => {
         sessionId: "session-follow-up-prompt-blocked",
       }),
     );
-    const emittedTypes = vi.mocked(session.emit).mock.calls.map(([event]) =>
-      (event as { msg?: { type?: unknown } }).msg?.type,
-    );
+    const emittedTypes = vi
+      .mocked(session.emit)
+      .mock.calls.map(
+        ([event]) => (event as { msg?: { type?: unknown } }).msg?.type,
+      );
     expect(emittedTypes).not.toContain("user_message");
     expect(rolloutStore.recordRunStartupActivationEvent).not.toHaveBeenCalled();
     expect(stub.thread.submit).not.toHaveBeenCalled();
@@ -7304,14 +7408,13 @@ describe("AgenC delegate background-agent runner", () => {
         displayUserMessage: "allowed follow-up prompt",
       }),
     );
-    const sendInputCalls = control.sendInput.mock.calls as unknown as ReadonlyArray<
-      readonly unknown[]
-    >;
+    const sendInputCalls = control.sendInput.mock
+      .calls as unknown as ReadonlyArray<readonly unknown[]>;
     const modelInput = sendInputCalls[0]?.[1];
     expect(typeof modelInput).toBe("string");
-    expect(String(modelInput).match(/session-owned daemon context/g)).toHaveLength(
-      1,
-    );
+    expect(
+      String(modelInput).match(/session-owned daemon context/g),
+    ).toHaveLength(1);
     expect(session.emit).toHaveBeenCalledWith({
       id: "allowed-follow-up-message",
       msg: {

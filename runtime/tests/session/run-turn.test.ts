@@ -6383,7 +6383,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
     }
   });
 
-  test("pendingProviderSwitch is cleared after consumption", async () => {
+  test("an explicit immutable context leaves a newer switch for the next turn", async () => {
     const ctx = mkCtx();
     const { session } = mkSession({
       provider: mkProvider({ content: "hi" }),
@@ -6398,7 +6398,10 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
 
     await drain(session.runTurn("", { ctx }));
 
-    expect(session.pendingProviderSwitch).toBeNull();
+    expect(session.pendingProviderSwitch).toEqual({
+      provider: "grok",
+      model: "grok-4",
+    });
   });
 
   test("mid-turn /model sets pending, aborts current turn, next turn applies the new model", async () => {
@@ -6407,7 +6410,6 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
     // inner-loop safety net terminates turn N cleanly), then turn N+1
     // is a fresh runTurn call that reads the marker and applies the
     // switch to the session config BEFORE any model-dependent work.
-    const ctx = mkCtx();
     const provider = attachProviderApiKey(mkProvider({ content: "first" }));
     const { session, getState } = mkSession({
       provider,
@@ -6433,7 +6435,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
     // Turn N+1: fresh runTurn call. The consumer at the top reads the
     // marker, applies it, and clears it before sampling is needed.
     try {
-      await drain(session.runTurn("", { ctx }));
+      await drain(session.runTurn(""));
     } finally {
       restoreApiKey();
     }
@@ -6510,7 +6512,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
 
     expect(primaryCalls).toBe(1);
     expect(fallbackCalls).toBe(1);
-    expect(consumeSpy).toHaveBeenCalledTimes(2);
+    expect(consumeSpy).toHaveBeenCalledOnce();
     expect(appliedSwitches).toBe(1);
     expect(session.pendingProviderSwitch).toBeNull();
     const turnComplete = events
@@ -6600,7 +6602,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
     expect(primaryCalls).toBe(1);
     expect(fallbackCalls).toBe(0);
     expect(appliedSwitches).toBe(0);
-    expect(consumeSpy).toHaveBeenCalledOnce();
+    expect(consumeSpy).not.toHaveBeenCalled();
     expect(session.pendingProviderSwitch).toBeNull();
     expect(session.services.provider).toBe(primaryProvider);
     expect(getState().sessionConfiguration.provider?.slug).toBe(
@@ -6632,7 +6634,6 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
     // provider keys, and this test previously depended on a developer's
     // real XAI_API_KEY.
     const restoreApiKey = withEnvVar("XAI_API_KEY", "test-key");
-    const ctx = mkCtx();
     const configSnapshot = {
       model: "base-model",
       model_provider: "grok",
@@ -6660,7 +6661,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
 
     try {
       // Empty input still exercises the runTurn switch consumer, then skips sampling.
-      await drain(session.runTurn("", { ctx }));
+      await drain(session.runTurn(""));
 
       expect(session.pendingProviderSwitch).toBeNull();
       expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
@@ -6676,7 +6677,6 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
     // The canonical store has no matching profile. The staged marker already
     // carries the profile's declared model, so the session still applies that
     // validated model without introducing a partial or ambient config source.
-    const ctx = mkCtx();
     const provider = attachProviderApiKey(mkProvider({ content: "hi" }));
     const { session, getState } = mkSession({
       provider,
@@ -6694,7 +6694,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
 
     // Empty input still exercises the runTurn switch consumer, then skips sampling.
     try {
-      await drain(session.runTurn("", { ctx }));
+      await drain(session.runTurn(""));
     } finally {
       restoreApiKey();
     }

@@ -118,6 +118,10 @@ export async function applyModelSwitch(
       readonly provider: string;
       readonly model: string;
     }) => Promise<void> | void;
+    readonly stage?: (selection: {
+      readonly provider: string;
+      readonly model: string;
+    }) => Promise<void> | void;
   } = {},
 ): Promise<ProviderModelSelectionOutcome> {
   const current = readSessionSelection(session);
@@ -204,16 +208,18 @@ export async function applyModelSwitch(
         "in config.toml or use `agenc config set model <name>`.",
     };
   }
-  await options.beforeStage?.({
+  const stagedSelection = {
     provider: selection.provider,
     model: selection.model,
-  });
-  // Use the typed mutator so the I-13 + I-57 staging site has a single
-  // well-typed entry point.
-  sessionShim.setPendingProviderSwitch({
-    provider: selection.provider,
-    model: selection.model,
-  });
+  };
+  if (options.stage !== undefined) {
+    await options.stage(stagedSelection);
+  } else {
+    await options.beforeStage?.(stagedSelection);
+    // Use the typed mutator so the I-13 + I-57 staging site has a single
+    // well-typed entry point.
+    sessionShim.setPendingProviderSwitch(stagedSelection);
+  }
 
   // Peek the active-turn lock without taking it — safe for an immediate
   // command because we only branch on "is there a turn" and the session
@@ -293,10 +299,7 @@ function resolveCommandSelection(
   }
 }
 
-function updateModelChrome(
-  ctx: SlashCommandContext,
-  model: string,
-): void {
+function updateModelChrome(ctx: SlashCommandContext, model: string): void {
   if (typeof ctx.appState?.setAppState === "function") {
     ctx.appState.setAppState((prev: unknown): unknown => {
       if (typeof prev !== "object" || prev === null) return prev;
@@ -347,8 +350,7 @@ export const modelCommand: SlashCommand = {
             }
             if (access.effect === "unchanged") {
               return {
-                message:
-                  `Model unchanged: ${selection.provider}/${selection.model}.`,
+                message: `Model unchanged: ${selection.provider}/${selection.model}.`,
                 shouldClose: true,
               };
             }

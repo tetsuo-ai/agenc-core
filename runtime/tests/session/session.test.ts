@@ -243,16 +243,17 @@ function buildSession(
   const initialSessionConfiguration =
     overrides.sessionConfiguration ?? mkSessionConfiguration();
   const suppliedConfigStore = overrides.services?.configStore;
-  const configStore = suppliedConfigStore instanceof ConfigStore
-    ? suppliedConfigStore
-    : new ConfigStore({
-        home: join(tmpdir(), "agenc-session-test-home"),
-        cwd: config.cwd,
-        env: {},
-        ...(suppliedConfigStore === undefined
-          ? {}
-          : { base: suppliedConfigStore.current() }),
-      });
+  const configStore =
+    suppliedConfigStore instanceof ConfigStore
+      ? suppliedConfigStore
+      : new ConfigStore({
+          home: join(tmpdir(), "agenc-session-test-home"),
+          cwd: config.cwd,
+          env: {},
+          ...(suppliedConfigStore === undefined
+            ? {}
+            : { base: suppliedConfigStore.current() }),
+        });
   const services = {
     admissionRequired: false,
     mcpConnectionManager: {
@@ -271,10 +272,7 @@ function buildSession(
     runtimeOptions: resolveAgentRuntimeOptions(
       {},
       {
-        pluginStorageRoot: join(
-          tmpdir(),
-          "agenc-session-test-plugins",
-        ),
+        pluginStorageRoot: join(tmpdir(), "agenc-session-test-plugins"),
       },
     ),
     permissionModeRegistry: new PermissionModeRegistry(
@@ -294,55 +292,57 @@ function buildSession(
     configStore,
   } as unknown as SessionServices;
   const providerEnvironment = services.providerEnvironment ?? {};
-  const providerService = services.providerService ?? new SessionProviderService({
-    initialProvider: services.provider,
-    ...(initialSessionConfiguration.provider?.slug !== undefined
-      ? { initialProviderName: initialSessionConfiguration.provider.slug }
-      : {}),
-    ...(initialSessionConfiguration.collaborationMode.model !== undefined
-      ? { initialModel: initialSessionConfiguration.collaborationMode.model }
-      : {}),
-    environment: providerEnvironment,
-    ...(overrides.readSavedApiKey !== undefined
-      ? { readSavedApiKey: overrides.readSavedApiKey }
-      : {}),
-    ...(services.authBackend !== undefined
-      ? { authBackend: services.authBackend }
-      : {}),
-    sessionId: "conv-test",
-    ...(services.authSubscriptionTier !== undefined
-      ? { subscriptionTier: services.authSubscriptionTier }
-      : {}),
-    resolvePreparationRequest: (selection) => {
-      const currentConfig = configStore.current();
-      const runtimeRequest = resolveProviderRuntimeRequest({
-        provider: selection.provider,
-        model: selection.model,
-        config: currentConfig,
-        environment: providerEnvironment,
-        ...(configStore instanceof ConfigStore
-          ? { credentialHome: configStore.homeContext }
-          : {}),
-        executionAdmissionRequired: services.admissionRequired !== false,
-      });
-      return {
-        requested: runtimeRequest.requested,
-        runtime: {
-          managedKeysEnabled:
-            currentConfig.auth?.managedKeys?.enabled === true,
-          freeManagedCredential:
-            services.authSubscriptionTier === "free" &&
-            isFreeSubscriptionManagedModel(
-              selection.provider,
-              selection.model,
-            ),
-          applyManagedDefaultOutputCap:
-            selection.provider === "openrouter" &&
-            runtimeRequest.settings?.maxOutputTokens === undefined,
-        },
-      };
-    },
-  });
+  const providerService =
+    services.providerService ??
+    new SessionProviderService({
+      initialProvider: services.provider,
+      ...(initialSessionConfiguration.provider?.slug !== undefined
+        ? { initialProviderName: initialSessionConfiguration.provider.slug }
+        : {}),
+      ...(initialSessionConfiguration.collaborationMode.model !== undefined
+        ? { initialModel: initialSessionConfiguration.collaborationMode.model }
+        : {}),
+      environment: providerEnvironment,
+      ...(overrides.readSavedApiKey !== undefined
+        ? { readSavedApiKey: overrides.readSavedApiKey }
+        : {}),
+      ...(services.authBackend !== undefined
+        ? { authBackend: services.authBackend }
+        : {}),
+      sessionId: "conv-test",
+      ...(services.authSubscriptionTier !== undefined
+        ? { subscriptionTier: services.authSubscriptionTier }
+        : {}),
+      resolvePreparationRequest: (selection) => {
+        const currentConfig = configStore.current();
+        const runtimeRequest = resolveProviderRuntimeRequest({
+          provider: selection.provider,
+          model: selection.model,
+          config: currentConfig,
+          environment: providerEnvironment,
+          ...(configStore instanceof ConfigStore
+            ? { credentialHome: configStore.homeContext }
+            : {}),
+          executionAdmissionRequired: services.admissionRequired !== false,
+        });
+        return {
+          requested: runtimeRequest.requested,
+          runtime: {
+            managedKeysEnabled:
+              currentConfig.auth?.managedKeys?.enabled === true,
+            freeManagedCredential:
+              services.authSubscriptionTier === "free" &&
+              isFreeSubscriptionManagedModel(
+                selection.provider,
+                selection.model,
+              ),
+            applyManagedDefaultOutputCap:
+              selection.provider === "openrouter" &&
+              runtimeRequest.settings?.maxOutputTokens === undefined,
+          },
+        };
+      },
+    });
   const servicesWithProviderAuthority = {
     ...services,
     providerService,
@@ -817,6 +817,52 @@ describe("Session rollout persistence suspension", () => {
 });
 
 describe("Session.consumePendingProviderSwitch", () => {
+  it("does not commit a prepared switch after a newer selection supersedes it", async () => {
+    const session = buildSession({
+      services: {
+        provider: createProvider("grok", {
+          apiKey: "test-key",
+          model: "grok-4",
+        }),
+      },
+    });
+    const originalPrepare = session.prepareProviderSwitch.bind(session);
+    let releasePreparation!: () => void;
+    const preparationBlocked = new Promise<void>((resolve) => {
+      releasePreparation = resolve;
+    });
+    let preparationStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      preparationStarted = resolve;
+    });
+    vi.spyOn(session, "prepareProviderSwitch").mockImplementation(
+      async (pending, configSnapshot) => {
+        preparationStarted();
+        await preparationBlocked;
+        return originalPrepare(pending, configSnapshot);
+      },
+    );
+    session.setPendingProviderSwitch({ provider: "grok", model: "grok-4.3" });
+
+    const firstConsumption = consumePendingProviderSwitch(session);
+    await started;
+    session.setPendingProviderSwitch({ provider: "grok", model: "grok-4.6" });
+    releasePreparation();
+
+    await expect(firstConsumption).resolves.toEqual({
+      applied: false,
+      reason: "provider switch superseded",
+    });
+    expect(session.providerBinding).toMatchObject({
+      provider: "grok",
+      model: "grok-4",
+    });
+    expect(session.pendingProviderSwitch).toEqual({
+      provider: "grok",
+      model: "grok-4.6",
+    });
+  });
+
   it.each([
     {
       policyName: "deny-all",
@@ -1129,7 +1175,9 @@ describe("Session.consumePendingProviderSwitch", () => {
                 credential: "saved-key",
                 source: "saved-byok",
               },
-              endpointPlan: createGeminiEndpointPlan({ baseURL: nativeBaseURL }),
+              endpointPlan: createGeminiEndpointPlan({
+                baseURL: nativeBaseURL,
+              }),
             },
           },
         }),
@@ -1158,22 +1206,24 @@ describe("Session.consumePendingProviderSwitch", () => {
       provider: "gemini",
       model: "gemini-2.5-flash",
     });
-    expect(readProviderFactoryOptions(session.services.provider)).toMatchObject({
-      model: "gemini-2.5-flash",
-      extra: {
-        gemini: {
-          credentialPlan: {
-            kind: "api-key",
-            credential: "saved-key",
-            source: "saved-byok",
-          },
-          endpointPlan: {
-            kind: "custom",
-            nativeBaseURL,
+    expect(readProviderFactoryOptions(session.services.provider)).toMatchObject(
+      {
+        model: "gemini-2.5-flash",
+        extra: {
+          gemini: {
+            credentialPlan: {
+              kind: "api-key",
+              credential: "saved-key",
+              source: "saved-byok",
+            },
+            endpointPlan: {
+              kind: "custom",
+              nativeBaseURL,
+            },
           },
         },
       },
-    });
+    );
     expect(
       readProviderFactoryOptions(session.services.provider).apiKey,
     ).toBeUndefined();
@@ -2583,10 +2633,7 @@ describe("Session.shutdown dispatches SessionEnd hooks", () => {
     const sessionTempRoot = mkdtempSync(
       join(tmpdir(), "agenc-session-shutdown-history-"),
     );
-    const runtimeOptions = resolveAgentRuntimeOptions(
-      {},
-      { sessionTempRoot },
-    );
+    const runtimeOptions = resolveAgentRuntimeOptions({}, { sessionTempRoot });
     const session = buildSession({ services: { runtimeOptions } });
     const historySessionDirectory = join(
       sessionTempRoot,
