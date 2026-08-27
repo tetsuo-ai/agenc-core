@@ -862,7 +862,7 @@ describe("first-run onboarding wizard", () => {
 
   test("does not read saved API keys for local providers", async () => {
     const readSavedApiKey = vi.fn(() => {
-      throw new Error("local providers must not read the native vault");
+      throw new Error("local providers must not read native secure storage");
     });
     nativeByokReadOverride.current = readSavedApiKey;
     try {

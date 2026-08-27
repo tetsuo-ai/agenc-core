@@ -6,6 +6,7 @@ import { describe, expect, test } from "vitest";
 const TEST_ROOT = resolve(import.meta.dirname, "..");
 
 const EXPLICIT_OBSOLETE_ALIAS_FIXTURES = new Set([
+  "bin/agenc-help.test.ts",
   "config/canonical-repository.test.ts",
   "config/plaintext-credential-migration.test.ts",
   "hermetic-test-discovery.test.ts",
