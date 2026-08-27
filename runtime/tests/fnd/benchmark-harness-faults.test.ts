@@ -40,6 +40,7 @@ import {
 import {
   assertNoBenchmarkControlsAtOrAbove,
   cleanupOwnedTemporaryRoot,
+  OWNED_TEMPORARY_ROOT_PREFIX,
   retainedOwnedTemporaryRootPath,
   validateOwnedTemporaryRootPath,
   withOwnedTemporaryRoot,
@@ -86,6 +87,16 @@ const FIXTURE_PRODUCTION_SOURCE = [
   "export const value = dependency;",
   "",
 ].join("\n");
+
+function createDarwinStyleAliasedOwnedRoot(parentRoot: string): string {
+  const canonicalTemporaryDirectory = join(parentRoot, "private", "var");
+  const aliasedTemporaryDirectory = join(parentRoot, "var");
+  mkdirSync(canonicalTemporaryDirectory, { recursive: true });
+  symlinkSync(canonicalTemporaryDirectory, aliasedTemporaryDirectory, "dir");
+  return mkdtempSync(
+    join(aliasedTemporaryDirectory, OWNED_TEMPORARY_ROOT_PREFIX),
+  );
+}
 
 describe("FND benchmark harness fault contracts", () => {
   test("redirects only the exact jsonc-parser ESM entry", () => {
@@ -1034,6 +1045,14 @@ describe("FND benchmark harness fault contracts", () => {
     "holds an authenticated completed %s worker until contained teardown",
     async (benchmarkCase) => {
       await withOwnedTemporaryRoot(async (ownedRoot) => {
+        const workerRoot =
+          benchmarkCase === "csv_scheduler_progress_scan" &&
+          process.platform !== "win32"
+            ? createDarwinStyleAliasedOwnedRoot(ownedRoot)
+            : ownedRoot;
+        if (workerRoot !== ownedRoot) {
+          expect(realpathSync(workerRoot)).not.toBe(workerRoot);
+        }
         const completionNonce = "a".repeat(64);
         const result = await runBoundedChild({
           args: [
@@ -1043,7 +1062,7 @@ describe("FND benchmark harness fault contracts", () => {
             "--point",
             "0",
             "--temporary-root",
-            ownedRoot,
+            workerRoot,
             "--completion-nonce",
             completionNonce,
           ],
@@ -1054,7 +1073,7 @@ describe("FND benchmark harness fault contracts", () => {
               ? { SystemRoot: process.env.SystemRoot ?? "C:\\Windows" }
               : {},
             process.platform,
-            ownedRoot,
+            workerRoot,
           ),
           expectedCompletionRecord: `${BENCHMARK_WORKER_COMPLETION_PREFIX}${completionNonce}`,
           maxOutputBytes: 1_048_576,

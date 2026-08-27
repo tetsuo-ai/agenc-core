@@ -4,6 +4,7 @@ import { join } from "node:path";
 
 import { expect, test } from "vitest";
 
+import { SandboxManager } from "../../sandbox/engine/manager.js";
 import { safePath } from "../../tools/system/filesystem.js";
 import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
 import { WorkspaceMutationCoordinatorRegistry } from "../../workspace/mutation-coordinator.js";
@@ -17,6 +18,9 @@ test(
   "live default workspace-write policy launches pwd through macOS Seatbelt",
   async () => {
     const cwd = process.cwd();
+    const sessionTempRoot = await mkdtemp(
+      join(tmpdir(), "agenc-darwin-seatbelt-temp-"),
+    );
     const profile = permissionProfileForRuntimeContext(
       {
         sandboxMode: "workspace_write",
@@ -34,7 +38,19 @@ test(
       } as never,
       { cwd },
     );
-    const manager = new UnifiedExecProcessManager({ cwd });
+    const transformedSessionTempRoots: string[] = [];
+    const sandboxManager = new SandboxManager();
+    const manager = new UnifiedExecProcessManager({
+      cwd,
+      sessionTempRoot,
+      sandboxManager: {
+        selectInitial: (options) => sandboxManager.selectInitial(options),
+        transform: (request) => {
+          transformedSessionTempRoots.push(request.sessionTempRoot);
+          return sandboxManager.transform(request);
+        },
+      },
+    });
 
     try {
       const result = await manager.execCommand({
@@ -43,14 +59,17 @@ test(
         runtimeSandbox: {
           permissionProfile: profile,
           sandboxPolicyCwd: cwd,
+          sessionTempRoot,
           preference: "require",
         },
       });
 
       expect(result.exitCode).toBe(0);
       expect(result.stdout.trim()).toBe(cwd);
+      expect(transformedSessionTempRoots).toEqual([sessionTempRoot]);
     } finally {
       await manager.closeAll("test cleanup");
+      await rm(sessionTempRoot, { force: true, recursive: true });
     }
   },
 );

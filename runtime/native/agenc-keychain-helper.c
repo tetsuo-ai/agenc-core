@@ -11,6 +11,8 @@
  * on stdout. Exit 2, with empty stderr, means exactly errSecItemNotFound.
  */
 
+#define __STDC_WANT_LIB_EXT1__ 1
+
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
 
@@ -83,11 +85,16 @@ static int fail_osstatus(const char *operation, OSStatus status) {
   return HELPER_ERROR;
 }
 
+/* Apple libc guarantees that memset_s calls are not removed by optimization. */
+static void clear_secret_bytes(void *buffer, size_t length) {
+  if ((buffer != NULL) && (length > 0U)) {
+    (void)memset_s(buffer, length, 0, length);
+  }
+}
+
 static void secret_buffer_dispose(struct secret_buffer *secret) {
   if (secret->data != NULL) {
-    if (secret->length > 0U) {
-      explicit_bzero(secret->data, secret->length);
-    }
+    clear_secret_bytes(secret->data, secret->length);
     free(secret->data);
   }
   secret->data = NULL;
@@ -147,7 +154,7 @@ static int read_secret(struct secret_buffer *secret) {
         goto cleanup;
       }
       memcpy(replacement, buffer, length);
-      explicit_bzero(buffer, length);
+      clear_secret_bytes(buffer, length);
       free(buffer);
       buffer = replacement;
       capacity = next_capacity;
@@ -165,9 +172,7 @@ static int read_secret(struct secret_buffer *secret) {
 
 cleanup:
   if (buffer != NULL) {
-    if (length > 0U) {
-      explicit_bzero(buffer, length);
-    }
+    clear_secret_bytes(buffer, length);
     free(buffer);
   }
   return result;

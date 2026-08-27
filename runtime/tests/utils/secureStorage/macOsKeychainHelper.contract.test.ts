@@ -68,7 +68,15 @@ describe("macOS Keychain native-helper contract", () => {
       "#define SECRET_LIMIT_BYTES ((size_t)16U * 1024U * 1024U)",
     );
     expect(source).toContain("length >= SECRET_LIMIT_BYTES");
-    expect(source).toContain("explicit_bzero(secret->data, secret->length)");
+    expect(source).toContain("#define __STDC_WANT_LIB_EXT1__ 1");
+    expect(source).toContain("(void)memset_s(buffer, length, 0, length)");
+    expect(source).toContain(
+      "clear_secret_bytes(secret->data, secret->length)",
+    );
+    expect(
+      source.match(/clear_secret_bytes\(buffer, length\);/gu),
+    ).toHaveLength(2);
+    expect(source).not.toContain("explicit_bzero");
     expect(source).not.toMatch(/system\s*\(/u);
     expect(source).not.toMatch(/popen\s*\(/u);
     expect(source).not.toContain("/usr/bin/security");
