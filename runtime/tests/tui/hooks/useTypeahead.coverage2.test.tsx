@@ -171,6 +171,7 @@ type HookSnapshot = ReturnType<typeof useTypeahead> & {
 }
 
 const EMPTY_RUNTIME_STATE = Object.freeze({})
+const SETTINGS_AUTHORITY = Object.freeze({}) as never
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -224,6 +225,7 @@ function TypeaheadHarness(props: {
     onSubmit: props.onSubmit,
     setCursorOffset: props.setCursorOffset,
     setSuggestionsState,
+    settingsAuthority: SETTINGS_AUTHORITY,
     suggestionsState,
     runtimeState: EMPTY_RUNTIME_STATE,
   })

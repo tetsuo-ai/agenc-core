@@ -80,6 +80,10 @@ import {
 } from "./typeaheadTokens.js";
 import { consumeAutocompleteEnterKey } from "./typeaheadKeyHandling.js";
 import type { GlobalRuntimeState } from "../../config/runtime-state-repository.js";
+import {
+  type CanonicalSettingsAuthority,
+  runWithCanonicalSettingsAuthority,
+} from "../../utils/settings/canonicalAuthority.js";
 // Re-export the pure utilities so existing call sites keep their imports.
 export {
   extractCompletionToken,
@@ -167,6 +171,7 @@ type Props = {
   markAccepted: () => void;
   onModeChange?: (mode: PromptInputMode) => void;
   runtimeState: Pick<GlobalRuntimeState, 'skillUsage'>;
+  settingsAuthority: CanonicalSettingsAuthority;
 };
 type UseTypeaheadResult = {
   suggestions: SuggestionItem[];
@@ -381,6 +386,7 @@ export function useTypeahead({
   markAccepted,
   onModeChange,
   runtimeState,
+  settingsAuthority,
 }: Props): UseTypeaheadResult {
   const { addNotification } = useNotifications();
   const thinkingToggleShortcut = useShortcutDisplay(
@@ -532,11 +538,15 @@ export function useTypeahead({
         );
       let combinedItems: SuggestionItem[];
       try {
-        combinedItems = await generateUnifiedSuggestions(
-          searchToken,
-          mcpResources,
-          agents,
-          isAtSymbol,
+        combinedItems = await runWithCanonicalSettingsAuthority(
+          settingsAuthority,
+          () =>
+            generateUnifiedSuggestions(
+              searchToken,
+              mcpResources,
+              agents,
+              isAtSymbol,
+            ),
         );
       } catch (error) {
         if (isStaleRequest()) {
@@ -581,6 +591,7 @@ export function useTypeahead({
       agents,
       clearSuggestions,
       isCurrentInputState,
+      settingsAuthority,
     ],
   );
 
@@ -600,7 +611,9 @@ export function useTypeahead({
   // fileSuggestions tests that trigger a refresh directly work correctly.
   useEffect(() => {
     if (process.env.NODE_ENV !== "test") {
-      startBackgroundCacheRefresh();
+      runWithCanonicalSettingsAuthority(settingsAuthority, () => {
+        startBackgroundCacheRefresh();
+      });
     }
     return onIndexBuildComplete(() => {
       const token = latestSearchTokenRef.current;
@@ -618,7 +631,7 @@ export function useTypeahead({
         void fetchFileSuggestions(token, token === "", requestState);
       }
     });
-  }, [fetchFileSuggestions, isCurrentInputState]);
+  }, [fetchFileSuggestions, isCurrentInputState, settingsAuthority]);
 
   // Debounce the file fetch operation. 50ms sits just above macOS default
   // key-repeat (~33ms) so held-delete/backspace coalesces into one search
@@ -1690,11 +1703,15 @@ export function useTypeahead({
             mode: requestMode,
           };
           try {
-            suggestionItems = await generateUnifiedSuggestions(
-              searchToken,
-              mcpResources,
-              agents,
-              isAtSymbol,
+            suggestionItems = await runWithCanonicalSettingsAuthority(
+              settingsAuthority,
+              () =>
+                generateUnifiedSuggestions(
+                  searchToken,
+                  mcpResources,
+                  agents,
+                  isAtSymbol,
+                ),
             );
           } catch (error) {
             if (
@@ -1756,6 +1773,7 @@ export function useTypeahead({
     isCurrentInputState,
     getActiveDirectoryCompletionToken,
     getActiveFileCompletionToken,
+    settingsAuthority,
   ]);
 
   // Handle enter key press - apply and execute suggestions

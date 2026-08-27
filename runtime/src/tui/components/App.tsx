@@ -6940,6 +6940,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
             helpOpen={helpOpen}
             setHelpOpen={setHelpOpen}
             runtimeStateRepository={stateRepository}
+            settingsAuthority={configStore}
           />
         </Box>
       </FullscreenModeProvider>
@@ -7152,6 +7153,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       helpOpen={helpOpen}
       setHelpOpen={setHelpOpen}
       runtimeStateRepository={stateRepository}
+      settingsAuthority={configStore}
     />
   ) : null;
   const bottomContent = (

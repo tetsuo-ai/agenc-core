@@ -122,6 +122,7 @@ import {
   updateRuntimeState,
 } from "../../../utils/config.js";
 import type { RuntimeStateRepository } from "../../../config/runtime-state-repository.js";
+import type { CanonicalSettingsAuthority } from "../../../utils/settings/canonicalAuthority.js";
 import { logForDebugging } from "../../../utils/debug.js";
 import {
   parseDirectMemberMessage,
@@ -502,6 +503,7 @@ type Props = {
     readonly allowEmptySubmit: boolean;
   };
   runtimeStateRepository: RuntimeStateRepository;
+  settingsAuthority: CanonicalSettingsAuthority;
 };
 
 // Bottom slot has maxHeight="50%"; reserve lines for footer, border, status.
@@ -653,6 +655,7 @@ function PromptInput({
   onOpenModelMenu,
   onboardingInput,
   runtimeStateRepository,
+  settingsAuthority,
 }: Props): React.ReactNode {
   const isFullscreen = useFullscreenMode();
   const mainLoopModel = useMainLoopModel();
@@ -2152,6 +2155,7 @@ function PromptInput({
     markAccepted,
     onModeChange,
     runtimeState,
+    settingsAuthority,
   });
 
   // Track if prompt suggestion should be shown (computed later with terminal width).
@@ -3518,6 +3522,7 @@ function PromptInput({
         <QuickOpenDialog
           onDone={() => setShowQuickOpen(false)}
           onInsert={insertWithSpacing}
+          settingsAuthority={settingsAuthority}
         />
       );
     }

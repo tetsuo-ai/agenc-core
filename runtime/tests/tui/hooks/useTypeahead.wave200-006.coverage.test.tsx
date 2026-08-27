@@ -156,6 +156,7 @@ type SuggestionsState = {
 }
 
 const EMPTY_RUNTIME_STATE = Object.freeze({})
+const SETTINGS_AUTHORITY = Object.freeze({}) as never
 
 function createTestStreams(): {
   stdout: PassThrough
@@ -199,6 +200,7 @@ function TypeaheadHarness(): React.ReactNode {
     onSubmit: vi.fn(),
     setCursorOffset: vi.fn(),
     setSuggestionsState,
+    settingsAuthority: SETTINGS_AUTHORITY,
     suggestionsState,
     runtimeState: EMPTY_RUNTIME_STATE,
   })
