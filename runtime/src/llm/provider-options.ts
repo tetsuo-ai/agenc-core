@@ -47,9 +47,7 @@ import { createGeminiEndpointPlan } from "./providers/gemini/endpoint-plan.js";
 import { isGrokComposerModel } from "./providers/grok/acp-adapter.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 
-export type ProviderEnvironment = Readonly<
-  Record<string, string | undefined>
->;
+export type ProviderEnvironment = Readonly<Record<string, string | undefined>>;
 
 /** Lower-precedence credentials discovered at the canonical ingress. */
 export interface ProviderCredentialCandidates {
@@ -111,8 +109,7 @@ export interface ProviderRuntimeCredentialOptions {
   readonly freeManagedCredential?: boolean;
 }
 
-export interface ResolvedProviderRuntimeAuthority
-  extends ResolvedProviderCredentialAuthority {
+export interface ResolvedProviderRuntimeAuthority extends ResolvedProviderCredentialAuthority {
   readonly managedCredential: boolean;
 }
 
@@ -137,7 +134,7 @@ function stringRecord(value: unknown): Readonly<Record<string, string>> {
   const entries = Object.entries(value);
   return entries.some(([, entry]) => typeof entry !== "string")
     ? {}
-    : Object.fromEntries(entries) as Readonly<Record<string, string>>;
+    : (Object.fromEntries(entries) as Readonly<Record<string, string>>);
 }
 
 function assertOpenAiOauthBaseUrl(baseURL: string | undefined): string {
@@ -161,7 +158,7 @@ export function snapshotProviderEnvironment(
   assertCanonicalEnvironmentIngress(env);
   return Object.freeze(
     Object.fromEntries(
-      canonicalSessionEnvironmentKeys(env).flatMap(key =>
+      canonicalSessionEnvironmentKeys(env).flatMap((key) =>
         env[key] === undefined ? [] : [[key, env[key]]],
       ),
     ),
@@ -218,48 +215,39 @@ function projectGeminiCredentialState(
     if (plan.source === "factory") {
       return readyCredential("api-key", "explicit", "explicit Gemini API key");
     }
-    const provenance = environment === undefined
-      ? Object.freeze({
-          kind: "environment" as const,
-          fields: Object.freeze([
-            Object.freeze({ role: "apiKey" as const, envVar: plan.source }),
-          ]),
-        })
-      : providerCredentialEnvironmentProvenance(environment);
-    return readyCredential(
-      "api-key",
-      "environment",
-      plan.source,
-      provenance,
-    );
+    const provenance =
+      environment === undefined
+        ? Object.freeze({
+            kind: "environment" as const,
+            fields: Object.freeze([
+              Object.freeze({ role: "apiKey" as const, envVar: plan.source }),
+            ]),
+          })
+        : providerCredentialEnvironmentProvenance(environment);
+    return readyCredential("api-key", "environment", plan.source, provenance);
   }
   if (plan.kind === "access-token") {
-    return readyCredential(
-      "gemini-access-token",
-      "environment",
-      plan.source,
-    );
+    return readyCredential("gemini-access-token", "environment", plan.source);
   }
   if (plan.kind === "adc") {
     return readyCredential(
       "gemini-adc",
-      plan.source === "well-known-adc"
-        ? "application-default"
-        : "environment",
+      plan.source === "well-known-adc" ? "application-default" : "environment",
       plan.source === "well-known-adc"
         ? "Google application default credentials"
         : plan.source,
     );
   }
-  const missingLabel = plan.expected === "access-token"
-    ? "GEMINI_ACCESS_TOKEN"
-    : plan.expected === "adc"
-      ? plan.configuredPath === undefined
-        ? "Google application default credentials"
-        : `ADC file ${plan.configuredPath}`
-      : plan.expected === "api-key"
-        ? "GEMINI_API_KEY or GOOGLE_API_KEY or saved BYOK"
-        : "Gemini API key, access token, ADC credentials, or saved BYOK";
+  const missingLabel =
+    plan.expected === "access-token"
+      ? "GEMINI_ACCESS_TOKEN"
+      : plan.expected === "adc"
+        ? plan.configuredPath === undefined
+          ? "Google application default credentials"
+          : `ADC file ${plan.configuredPath}`
+        : plan.expected === "api-key"
+          ? "GEMINI_API_KEY or GOOGLE_API_KEY or saved BYOK"
+          : "Gemini API key, access token, ADC credentials, or saved BYOK";
   return missingCredential(
     `${missingLabel} missing`,
     missingLabel,
@@ -322,10 +310,7 @@ function projectProviderCredentialState(params: {
       );
     }
   }
-  if (
-    params.provider === "grok" &&
-    params.grokCredential?.isOAuth === true
-  ) {
+  if (params.provider === "grok" && params.grokCredential?.isOAuth === true) {
     return readyCredential(
       "xai-oauth",
       "native-sign-in",
@@ -345,12 +330,14 @@ function projectProviderCredentialState(params: {
     if (accessKeyId !== undefined && secretAccessKey !== undefined) {
       const explicit =
         readExtraString(params.requested.extra, "accessKeyId") !== undefined ||
-        readExtraString(params.requested.extra, "secretAccessKey") !== undefined;
-      const provenance = explicit || params.credentialEnvironment === undefined
-        ? undefined
-        : providerCredentialEnvironmentProvenance(
-            params.credentialEnvironment,
-          );
+        readExtraString(params.requested.extra, "secretAccessKey") !==
+          undefined;
+      const provenance =
+        explicit || params.credentialEnvironment === undefined
+          ? undefined
+          : providerCredentialEnvironmentProvenance(
+              params.credentialEnvironment,
+            );
       return readyCredential(
         "aws-sigv4",
         explicit ? "explicit" : "environment",
@@ -363,9 +350,7 @@ function projectProviderCredentialState(params: {
       missingFields.push(info.credentials.accessKeyId.envVars.join(" or "));
     }
     if (secretAccessKey === undefined) {
-      missingFields.push(
-        info.credentials.secretAccessKey.envVars.join(" or "),
-      );
+      missingFields.push(info.credentials.secretAccessKey.envVars.join(" or "));
     }
     const missingLabel = missingFields.join(" and ");
     return missingCredential(
@@ -373,12 +358,8 @@ function projectProviderCredentialState(params: {
       missingLabel,
       params.credentialEnvironment === undefined
         ? undefined
-        : providerCredentialEnvironmentProvenance(
-            params.credentialEnvironment,
-          ),
-      params.credentialEnvironment?.sources.length
-        ? "partial"
-        : "absent",
+        : providerCredentialEnvironmentProvenance(params.credentialEnvironment),
+      params.credentialEnvironment?.sources.length ? "partial" : "absent",
     );
   }
   if (info.credentials.kind === "none") {
@@ -391,15 +372,13 @@ function projectProviderCredentialState(params: {
   const resolvedApiKey = nonEmpty(params.factoryOptions.apiKey);
   if (resolvedApiKey !== undefined) {
     const requestedApiKey = nonEmpty(params.requested.apiKey);
-    if (
-      requestedApiKey !== undefined &&
-      requestedApiKey === resolvedApiKey
-    ) {
+    if (requestedApiKey !== undefined && requestedApiKey === resolvedApiKey) {
       return readyCredential("api-key", "explicit", "explicit API key");
     }
-    const environmentApiKey = params.credentialEnvironment?.kind === "api-key"
-      ? params.credentialEnvironment.apiKey
-      : undefined;
+    const environmentApiKey =
+      params.credentialEnvironment?.kind === "api-key"
+        ? params.credentialEnvironment.apiKey
+        : undefined;
     if (
       environmentApiKey !== undefined &&
       environmentApiKey.value === resolvedApiKey
@@ -453,20 +432,24 @@ function resolveProviderCredentialAuthorityCore(
   }
   const snapshot = snapshotProviderEnvironment(env);
   const home = requested.credentialHome;
-  const credentialEnvironment = provider === "gemini"
-    ? undefined
-    : resolveProviderCredentialEnvironment(provider, snapshot);
-  const environmentApiKey = credentialEnvironment?.kind === "api-key"
-    ? credentialEnvironment.apiKey?.value
-    : undefined;
-  const grokCredential = provider === "grok" && home !== undefined
-    ? resolveGrokProviderCredential(home, requested.apiKey, snapshot)
-    : undefined;
-  let apiKey = provider === "grok" && home !== undefined
-    ? grokCredential?.value ?? nonEmpty(candidates.savedApiKey)
-    : nonEmpty(requested.apiKey) ??
-      environmentApiKey ??
-      nonEmpty(candidates.savedApiKey);
+  const credentialEnvironment =
+    provider === "gemini"
+      ? undefined
+      : resolveProviderCredentialEnvironment(provider, snapshot);
+  const environmentApiKey =
+    credentialEnvironment?.kind === "api-key"
+      ? credentialEnvironment.apiKey?.value
+      : undefined;
+  const grokCredential =
+    provider === "grok" && home !== undefined
+      ? resolveGrokProviderCredential(home, requested.apiKey, snapshot)
+      : undefined;
+  let apiKey =
+    provider === "grok" && home !== undefined
+      ? (grokCredential?.value ?? nonEmpty(candidates.savedApiKey))
+      : (nonEmpty(requested.apiKey) ??
+        environmentApiKey ??
+        nonEmpty(candidates.savedApiKey));
   const requestedBaseURL = nonEmpty(requested.baseURL);
   let baseURL =
     requestedBaseURL ??
@@ -483,16 +466,16 @@ function resolveProviderCredentialAuthorityCore(
     if (project !== undefined) resolvedExtra.project = project;
 
     if (nonEmpty(requested.apiKey) === undefined) {
-      const stored = home === undefined
-        ? undefined
-        : readOpenAiOauthCredentials(home);
+      const stored =
+        home === undefined ? undefined : readOpenAiOauthCredentials(home);
       if (stored?.apiKey !== undefined) {
         apiKey = stored.apiKey;
         baseURL = assertOpenAiOauthBaseUrl(baseURL);
         openAiNativeAuthMode = "api-key";
         forcedExtra.authMode = "api_key";
       } else {
-        const subscription = resolveStoredChatGptSubscriptionCredentials(stored);
+        const subscription =
+          resolveStoredChatGptSubscriptionCredentials(stored);
         if (home !== undefined && subscription !== undefined) {
           const initialAccessToken = subscription.bearerToken;
           apiKey = undefined;
@@ -533,7 +516,8 @@ function resolveProviderCredentialAuthorityCore(
               } catch (error) {
                 return {
                   kind: "exhausted" as const,
-                  reason: error instanceof Error ? error.message : String(error),
+                  reason:
+                    error instanceof Error ? error.message : String(error),
                 };
               }
             },
@@ -554,12 +538,16 @@ function resolveProviderCredentialAuthorityCore(
   if (provider === "gemini") {
     assertNoRetiredGeminiRuntimeFields(requested.extra);
     const requestedRuntime = readGeminiRuntimeOptions(requested.extra);
-    if (requestedRuntime !== undefined && nonEmpty(requested.apiKey) !== undefined) {
+    if (
+      requestedRuntime !== undefined &&
+      nonEmpty(requested.apiKey) !== undefined
+    ) {
       throw new Error(
         "Gemini factory options cannot contain both apiKey and extra.gemini credentialPlan",
       );
     }
-    const credentialPlan = requestedRuntime?.credentialPlan ??
+    const credentialPlan =
+      requestedRuntime?.credentialPlan ??
       resolveGeminiCredentialPlan(snapshot, {
         apiKey: requested.apiKey,
         savedApiKey: candidates.savedApiKey,
@@ -571,7 +559,8 @@ function resolveProviderCredentialAuthorityCore(
       (credentialPlan.kind === "none" &&
         (credentialPlan.mode === "access-token" ||
           credentialPlan.mode === "adc"));
-    const project = getGeminiProjectIdHint(snapshot) ??
+    const project =
+      getGeminiProjectIdHint(snapshot) ??
       (credentialPlan.kind === "access-token" || credentialPlan.kind === "adc"
         ? credentialPlan.projectId
         : undefined);
@@ -593,7 +582,8 @@ function resolveProviderCredentialAuthorityCore(
         "Gemini access-token/ADC routing requires both project and location when GEMINI_BASE_URL is not set",
       );
     }
-    const endpointPlan = requestedRuntime?.endpointPlan ??
+    const endpointPlan =
+      requestedRuntime?.endpointPlan ??
       createGeminiEndpointPlan({
         ...(baseURL !== undefined ? { baseURL } : {}),
         ...(baseURL === undefined &&
@@ -603,9 +593,10 @@ function resolveProviderCredentialAuthorityCore(
           ? { vertex: { project, location } }
           : {}),
       });
-    const cachedContent = requestedRuntime === undefined
-      ? nonEmpty(snapshot.GEMINI_CACHED_CONTENT)
-      : requestedRuntime.cachedContent;
+    const cachedContent =
+      requestedRuntime === undefined
+        ? nonEmpty(snapshot.GEMINI_CACHED_CONTENT)
+        : requestedRuntime.cachedContent;
     forcedExtra.gemini = createGeminiRuntimeOptions({
       credentialPlan,
       endpointPlan,
@@ -617,10 +608,42 @@ function resolveProviderCredentialAuthorityCore(
     baseURL = undefined;
   }
 
+  if (provider === "grok" && isGrokComposerModel(requested.model)) {
+    const binaryPath = nonEmpty(snapshot.AGENC_GROK_CLI);
+    const permissions = nonEmpty(snapshot.AGENC_GROK_ACP_PERMISSIONS);
+    const path = snapshot.PATH;
+    if (
+      binaryPath !== undefined ||
+      permissions !== undefined ||
+      path !== undefined
+    ) {
+      resolvedExtra.grokAcp = {
+        ...(binaryPath !== undefined ? { binaryPath } : {}),
+        ...(permissions !== undefined
+          ? { allowPermissions: permissions.toLowerCase() === "allow" }
+          : {}),
+        ...(path !== undefined ? { path } : {}),
+      };
+    }
+  }
+
+  if (provider === "openrouter") {
+    const referer = nonEmpty(snapshot.AGENC_OPENROUTER_HTTP_REFERER);
+    const title = nonEmpty(snapshot.AGENC_OPENROUTER_TITLE);
+    if (referer !== undefined || title !== undefined) {
+      resolvedExtra.defaultHeaders = {
+        ...(referer !== undefined ? { "HTTP-Referer": referer } : {}),
+        ...(title !== undefined ? { "X-Title": title } : {}),
+        ...stringRecord(requested.extra?.defaultHeaders),
+      };
+    }
+  }
+
   if (provider === "amazon-bedrock") {
-    const bedrock = credentialEnvironment?.kind === "aws-sigv4"
-      ? credentialEnvironment
-      : undefined;
+    const bedrock =
+      credentialEnvironment?.kind === "aws-sigv4"
+        ? credentialEnvironment
+        : undefined;
     const accessKeyId = bedrock?.accessKeyId?.value;
     const secretAccessKey = bedrock?.secretAccessKey?.value;
     const sessionToken = bedrock?.sessionToken?.value;
@@ -633,7 +656,13 @@ function resolveProviderCredentialAuthorityCore(
     if (region !== undefined) resolvedExtra.region = region;
   }
 
-  const extra = mergeExtra(requested.extra, resolvedExtra, forcedExtra);
+  let extra = mergeExtra(requested.extra, resolvedExtra, forcedExtra);
+  if (provider === "openrouter" && resolvedExtra.defaultHeaders !== undefined) {
+    extra = {
+      ...(extra ?? {}),
+      defaultHeaders: resolvedExtra.defaultHeaders,
+    };
+  }
   if (chatGptSubscription && extra !== undefined) {
     delete extra.organization;
     delete extra.project;
@@ -713,10 +742,7 @@ function withRuntimeAuthExtra(
   managedCredential: boolean,
 ): ProviderFactoryOptions {
   const sessionId = nonEmpty(runtime.sessionId);
-  if (
-    runtime.authBackend === undefined ||
-    sessionId === undefined
-  ) {
+  if (runtime.authBackend === undefined || sessionId === undefined) {
     return options;
   }
   return {
@@ -759,12 +785,9 @@ export async function resolveProviderRuntimeAuthority(
   ) {
     const savedApiKey = nonEmpty(await runtime.readSavedApiKey(provider));
     if (savedApiKey !== undefined) {
-      resolved = resolveProviderCredentialAuthority(
-        provider,
-        requested,
-        env,
-        { savedApiKey },
-      );
+      resolved = resolveProviderCredentialAuthority(provider, requested, env, {
+        savedApiKey,
+      });
     }
   }
   const sessionId = nonEmpty(runtime.sessionId);

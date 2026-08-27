@@ -67,13 +67,13 @@ import {
 } from "../session/autonomous-mode.js";
 import type { TurnContext } from "../session/turn-context.js";
 import {
-  assertNoRetiredAgentRuntimeEnvironment,
   resolveAutomationAgentRuntimeOptions,
   resolveAgentRuntimeOptions,
   runWithAgentRuntimeOptions,
   validateAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
+import { assertCanonicalEnvironmentIngress } from "../config/environment-ingress.js";
 import { runTurn } from "../session/run-turn.js";
 import { editorInteractionSystemPrompt } from "../session/editor-interaction.js";
 import type { Terminal } from "../session/turn-state.js";
@@ -271,9 +271,7 @@ import {
   setIsRemoteMode,
   setSessionTrustAccepted,
 } from "../bootstrap/state.js";
-import {
-  installAgenCShutdownSignalHandlers,
-} from "../lifecycle/signal-handlers.js";
+import { installAgenCShutdownSignalHandlers } from "../lifecycle/signal-handlers.js";
 import { installGlobalErrorNet } from "../utils/gracefulShutdown.js";
 import { registerProcessOutputErrorHandlers } from "../utils/process.js";
 import { isRecord } from "../utils/record.js";
@@ -2729,9 +2727,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
     tools: Object.freeze([]),
   });
 
-  type DeferredMcpManager = NonNullable<
-    Session["services"]["mcpManager"]
-  >;
+  type DeferredMcpManager = NonNullable<Session["services"]["mcpManager"]>;
 
   const currentLiveMcpManager = (): DeferredMcpManager | undefined =>
     liveSession?.services?.mcpManager;
@@ -2802,10 +2798,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
   ): void => {
     try {
       const unsubscribe = live.subscribeToMcpSurface?.((snapshot) => {
-        if (
-          liveSession !== live ||
-          !mcpSurfaceSubscribers.has(subscriber)
-        ) {
+        if (liveSession !== live || !mcpSurfaceSubscribers.has(subscriber)) {
           return;
         }
         deliverMcpSurfaceSnapshot(subscriber, snapshot);
@@ -2883,9 +2876,7 @@ async function createDeferredDaemonPromptTuiSession(params: {
       return manager.disableServer(name);
     },
     addServer: async (config) => {
-      const manager = requireLiveMcpManager(
-        `add MCP server "${config.name}"`,
-      );
+      const manager = requireLiveMcpManager(`add MCP server "${config.name}"`);
       if (manager.addServer === undefined) {
         throw new Error("MCP add is not supported by this session.");
       }
@@ -4513,11 +4504,11 @@ export async function bootTUIEntry(
     if (
       args.resumeId === undefined &&
       !(await requireProjectTrustForTui({
-          env: sessionEnv,
-          argv: process.argv,
-          startupCliFlags,
-          cwd: cliCwd.cwd,
-        }))
+        env: sessionEnv,
+        argv: process.argv,
+        startupCliFlags,
+        cwd: cliCwd.cwd,
+      }))
     ) {
       return 1;
     }
@@ -4641,7 +4632,8 @@ export async function bootTUIEntry(
           const handle = await boot({
             session: deferred.session,
             model,
-            stdinMode: runtimeOptions.stdinDataMode === true ? "data" : "readable",
+            stdinMode:
+              runtimeOptions.stdinDataMode === true ? "data" : "readable",
             ...(capturedEarlyInput.length > 0
               ? { initialComposerText: capturedEarlyInput }
               : {}),
@@ -4670,7 +4662,10 @@ export async function bootTUIEntry(
         onWarn: (message) => process.stderr.write(`${message}\n`),
       });
       const config = await configStore.reload();
-      const profileName = resolvedStartupProfileName(startupCliFlags, sessionEnv);
+      const profileName = resolvedStartupProfileName(
+        startupCliFlags,
+        sessionEnv,
+      );
       const startup = resolveCanonicalStartupSelection({
         config,
         ...(profileName !== undefined ? { profileName } : {}),
@@ -5374,7 +5369,7 @@ export function shouldLoadMcpCliConfig(argv: readonly string[]): boolean {
  */
 export async function main(): Promise<number> {
   try {
-    assertNoRetiredAgentRuntimeEnvironment(process.env);
+    assertCanonicalEnvironmentIngress(process.env);
   } catch (error) {
     process.stderr.write(
       `agenc: ${error instanceof Error ? error.message : String(error)}\n`,
@@ -5650,8 +5645,7 @@ async function runDefaultAgenCCliRoute(
         io: { stdout: silentStdout, stderr: process.stderr },
       });
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : String(error);
       process.stderr.write(`agenc: daemon autostart failed: ${message}\n`);
       if (!process.stdout.isTTY) {
         return 1;
@@ -5673,8 +5667,7 @@ async function runDefaultAgenCCliRoute(
         startupImages ?? [],
         startupCliFlags,
       ),
-    resumeTUI: (args: ResumeTUIArgs) =>
-      resumeTUIEntry(args, startupCliFlags),
+    resumeTUI: (args: ResumeTUIArgs) => resumeTUIEntry(args, startupCliFlags),
     continueTUI: (args: ContinueTUIArgs) =>
       continueTUIEntry(args, startupCliFlags),
   });

@@ -10,12 +10,8 @@ function buildOpenRouterHeaders(
   headers: Readonly<Record<string, string>> | undefined,
 ): Readonly<Record<string, string>> {
   return {
-    "HTTP-Referer":
-      process.env.AGENC_OPENROUTER_HTTP_REFERER?.trim() ||
-      OPENROUTER_DEFAULT_REFERER,
-    "X-Title":
-      process.env.AGENC_OPENROUTER_TITLE?.trim() ||
-      OPENROUTER_DEFAULT_TITLE,
+    "HTTP-Referer": OPENROUTER_DEFAULT_REFERER,
+    "X-Title": OPENROUTER_DEFAULT_TITLE,
     ...(headers ?? {}),
   };
 }

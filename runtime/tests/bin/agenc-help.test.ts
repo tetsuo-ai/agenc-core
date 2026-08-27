@@ -178,8 +178,37 @@ describe("agenc CLI help", () => {
   it.each(["AGENC_SIMPLE", "AGENC_BARE"] as const)(
     "fails closed when removed %s is present",
     async (key) => {
+      const prevArgv = [...process.argv];
+      const previousValue = process.env[key];
+      const stdoutSpy = vi
+        .spyOn(process.stdout, "write")
+        .mockImplementation(() => true);
+      const stderrSpy = vi
+        .spyOn(process.stderr, "write")
+        .mockImplementation(() => true);
+
+      process.argv = ["/usr/bin/node", "/opt/agenc/bin/agenc.js", "--help"];
+      process.env[key] = "0";
+
+      try {
+        expect(await main()).toBe(2);
+        expect(stdoutSpy).not.toHaveBeenCalled();
+        expect(
+          stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
+        ).toContain(`${key} was removed; use --bare`);
+      } finally {
+        process.argv = prevArgv;
+        if (previousValue === undefined) delete process.env[key];
+        else process.env[key] = previousValue;
+        stdoutSpy.mockRestore();
+        stderrSpy.mockRestore();
+      }
+    },
+  );
+
+  it("rejects obsolete config environment before help short-circuits", async () => {
     const prevArgv = [...process.argv];
-    const previousValue = process.env[key];
+    const previousValue = process.env.OPENAI_MODEL;
     const stdoutSpy = vi
       .spyOn(process.stdout, "write")
       .mockImplementation(() => true);
@@ -188,21 +217,20 @@ describe("agenc CLI help", () => {
       .mockImplementation(() => true);
 
     process.argv = ["/usr/bin/node", "/opt/agenc/bin/agenc.js", "--help"];
-    process.env[key] = "0";
+    process.env.OPENAI_MODEL = "retired-model";
 
     try {
       expect(await main()).toBe(2);
       expect(stdoutSpy).not.toHaveBeenCalled();
       expect(
         stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
-      ).toContain(`${key} was removed; use --bare`);
+      ).toContain("obsolete configuration environment variable OPENAI_MODEL");
     } finally {
       process.argv = prevArgv;
-      if (previousValue === undefined) delete process.env[key];
-      else process.env[key] = previousValue;
+      if (previousValue === undefined) delete process.env.OPENAI_MODEL;
+      else process.env.OPENAI_MODEL = previousValue;
       stdoutSpy.mockRestore();
       stderrSpy.mockRestore();
     }
-    },
-  );
+  });
 });

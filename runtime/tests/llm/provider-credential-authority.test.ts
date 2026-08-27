@@ -4,10 +4,7 @@ import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 
-import {
-  resolveHomeContext,
-  type HomeContext,
-} from "../../src/config/home.js";
+import { resolveHomeContext, type HomeContext } from "../../src/config/home.js";
 import type { SecureStorageData } from "../../src/utils/secureStorage/index.js";
 
 const secureStorageModulePath = "../../src/utils/secureStorage/index.js";
@@ -51,10 +48,7 @@ function installSecureStorage(): void {
 async function createHome(name: string): Promise<HomeContext> {
   const path = join(testRoot, name);
   await mkdir(path, { recursive: true });
-  return resolveHomeContext(
-    { AGENC_HOME: path },
-    { platformHome: testRoot },
-  );
+  return resolveHomeContext({ AGENC_HOME: path }, { platformHome: testRoot });
 }
 
 async function loadCredentialModules() {
@@ -88,8 +82,7 @@ describe("provider credential authority", () => {
   test("uses Grok OAuth from the exact HomeContext when the environment omits AGENC_HOME", async () => {
     const selectedHome = await createHome("selected");
     const otherHome = await createHome("other");
-    const { providerOptions, xaiCredentials } =
-      await loadCredentialModules();
+    const { providerOptions, xaiCredentials } = await loadCredentialModules();
 
     expect(
       xaiCredentials.saveXaiOauthCredentials(selectedHome, {
@@ -156,6 +149,59 @@ describe("provider credential authority", () => {
     expect(resolved.factoryOptions.apiKey).toBeUndefined();
   });
 
+  test("projects Grok composer inputs from one captured client", async () => {
+    const { providerOptions } = await loadCredentialModules();
+
+    const resolved = providerOptions.resolveProviderCredentialAuthority(
+      "grok",
+      { model: "grok-composer-2.5-fast" },
+      {
+        GROK_API_KEY: "client-grok-key",
+        AGENC_GROK_CLI: "/client/bin/grok",
+        AGENC_GROK_ACP_PERMISSIONS: "allow",
+        PATH: "/client/bin",
+      },
+    );
+
+    expect(resolved.factoryOptions).toMatchObject({
+      apiKey: "client-grok-key",
+      extra: {
+        grokAcp: {
+          binaryPath: "/client/bin/grok",
+          allowPermissions: true,
+          path: "/client/bin",
+        },
+      },
+    });
+  });
+
+  test("projects OpenRouter attribution headers from one captured client", async () => {
+    const { providerOptions } = await loadCredentialModules();
+
+    const resolved = providerOptions.resolveProviderCredentialAuthority(
+      "openrouter",
+      {
+        model: "openai/gpt-5",
+        extra: {
+          defaultHeaders: { "X-Explicit": "kept" },
+        },
+      },
+      {
+        OPENROUTER_API_KEY: "client-openrouter-key",
+        AGENC_OPENROUTER_HTTP_REFERER: "https://client.example",
+        AGENC_OPENROUTER_TITLE: "Client title",
+      },
+    );
+
+    expect(resolved.factoryOptions.extra).toMatchObject({
+      defaultHeaders: {
+        "HTTP-Referer": "https://client.example",
+        "X-Title": "Client title",
+        "X-Explicit": "kept",
+      },
+    });
+  });
+
   test("recognizes a stored OpenAI ChatGPT subscription", async () => {
     const home = await createHome("openai-chatgpt");
     const { providerOptions, openAiCredentials } =
@@ -206,9 +252,7 @@ describe("provider credential authority", () => {
       mode: "api-key",
       source: "native-sign-in",
     });
-    expect(resolved.factoryOptions.apiKey).toBe(
-      "stored-openai-platform-key",
-    );
+    expect(resolved.factoryOptions.apiKey).toBe("stored-openai-platform-key");
   });
 
   test("keeps an explicit OpenAI key ahead of stored native credentials", async () => {
@@ -274,37 +318,36 @@ describe("provider credential authority", () => {
         source: "GEMINI_ACCESS_TOKEN",
       },
     },
-  ])("recognizes $name environment credentials", async ({
-    environment,
-    mode,
-    plan,
-  }) => {
-    const { providerOptions } = await loadCredentialModules();
+  ])(
+    "recognizes $name environment credentials",
+    async ({ environment, mode, plan }) => {
+      const { providerOptions } = await loadCredentialModules();
 
-    const resolved = providerOptions.resolveProviderCredentialAuthority(
-      "gemini",
-      { model: "gemini-2.5-pro" },
-      environment,
-    );
+      const resolved = providerOptions.resolveProviderCredentialAuthority(
+        "gemini",
+        { model: "gemini-2.5-pro" },
+        environment,
+      );
 
-    expect(resolved.credential).toMatchObject({
-      status: "ready",
-      mode,
-      source: "environment",
-    });
-    if (plan.kind === "api-key") {
       expect(resolved.credential).toMatchObject({
-        provenance: {
-          kind: "environment",
-          fields: [{ role: "apiKey", envVar: plan.source }],
-        },
+        status: "ready",
+        mode,
+        source: "environment",
       });
-    }
-    expect(resolved.factoryOptions.apiKey).toBeUndefined();
-    expect(resolved.factoryOptions.extra).toMatchObject({
-      gemini: { credentialPlan: plan },
-    });
-  });
+      if (plan.kind === "api-key") {
+        expect(resolved.credential).toMatchObject({
+          provenance: {
+            kind: "environment",
+            fields: [{ role: "apiKey", envVar: plan.source }],
+          },
+        });
+      }
+      expect(resolved.factoryOptions.apiKey).toBeUndefined();
+      expect(resolved.factoryOptions.extra).toMatchObject({
+        gemini: { credentialPlan: plan },
+      });
+    },
+  );
 
   test("recognizes a saved Gemini BYOK key", async () => {
     const { providerOptions } = await loadCredentialModules();
@@ -380,8 +423,7 @@ describe("provider credential authority", () => {
             },
             endpointPlan: {
               kind: "developer",
-              nativeBaseURL:
-                "https://generativelanguage.googleapis.com/v1beta",
+              nativeBaseURL: "https://generativelanguage.googleapis.com/v1beta",
             },
           },
         },
@@ -430,8 +472,7 @@ describe("provider credential authority", () => {
     expect(partial.credential).toMatchObject({
       status: "missing",
       mode: "none",
-      missingLabel:
-        "AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY",
+      missingLabel: "AWS_BEDROCK_SECRET_ACCESS_KEY or AWS_SECRET_ACCESS_KEY",
       provenance: {
         kind: "environment",
         fields: [{ role: "accessKeyId", envVar: "AWS_ACCESS_KEY_ID" }],

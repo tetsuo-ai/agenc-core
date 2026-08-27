@@ -14,8 +14,10 @@
  *  - Workspace authority stays with agenc: client fs/terminal capabilities
  *    are declined and agent permission requests are rejected by default
  *    (AGENC_GROK_ACP_PERMISSIONS=allow opts into the CLI's own tooling).
- *  - Auth belongs to the Grok CLI (its cached OAuth login or XAI_API_KEY);
- *    the spawn env carries GROK_OAUTH2_REFERRER=agenc for attribution.
+ *  - Auth belongs to the creating session. Its resolved XAI/GROK key is
+ *    projected to XAI_API_KEY for the CLI; without one, the CLI uses its
+ *    cached login. Daemon-start credentials are removed from the child env.
+ *  - The spawn env carries GROK_OAUTH2_REFERRER=agenc for attribution.
  */
 
 import { resolve } from "node:path";
@@ -57,6 +59,8 @@ export function isGrokComposerModel(model: string | undefined): boolean {
 
 export interface GrokAcpProviderConfig {
   model: string;
+  /** Session-resolved XAI/GROK credential projected to the CLI's XAI key. */
+  apiKey?: string;
   /** @deprecated The authenticated sandbox broker is the cwd authority. */
   cwd?: string;
   /** Grok CLI binary override (default: `grok`, or AGENC_GROK_CLI). */
@@ -64,21 +68,47 @@ export interface GrokAcpProviderConfig {
   timeoutMs?: number;
   contextWindowTokens?: number;
   env?: NodeJS.ProcessEnv;
+  /** Session-owned PATH used to resolve the Grok CLI. */
+  path?: string;
+  /** Whether ACP permission requests may select an allowing response. */
+  allowPermissions?: boolean;
   /** Authenticated session boundary for the ACP child process. */
   sandboxExecutionBroker?: SandboxExecutionBrokerLike;
 }
 
 function resolvePermissionHandler(
+  config: GrokAcpProviderConfig,
   env: NodeJS.ProcessEnv,
 ): (request: XaiAcpPermissionRequest) => XaiAcpPermissionDecision {
-  const mode = env.AGENC_GROK_ACP_PERMISSIONS?.trim().toLowerCase();
-  return mode === "allow" ? allowPermissionDecision : rejectPermissionDecision;
+  const allow =
+    config.allowPermissions ??
+    env.AGENC_GROK_ACP_PERMISSIONS?.trim().toLowerCase() === "allow";
+  return allow ? allowPermissionDecision : rejectPermissionDecision;
 }
 
 function resolveAuthMethodId(env: NodeJS.ProcessEnv): string {
   return env.XAI_API_KEY?.trim()
     ? GROK_ACP_AUTH_METHOD_API_KEY
     : GROK_ACP_AUTH_METHOD_CACHED_TOKEN;
+}
+
+function snapshotGrokAcpEnvironment(
+  config: GrokAcpProviderConfig,
+): NodeJS.ProcessEnv {
+  const explicitEnvironment = config.env;
+  const environment: NodeJS.ProcessEnv = {
+    ...(explicitEnvironment ?? process.env),
+  };
+  const apiKey =
+    config.apiKey?.trim() ||
+    explicitEnvironment?.XAI_API_KEY?.trim() ||
+    explicitEnvironment?.GROK_API_KEY?.trim() ||
+    undefined;
+  delete environment.XAI_API_KEY;
+  delete environment.GROK_API_KEY;
+  if (apiKey !== undefined) environment.XAI_API_KEY = apiKey;
+  if (config.path !== undefined) environment.PATH = config.path;
+  return Object.freeze(environment);
 }
 
 /**
@@ -144,7 +174,10 @@ export class GrokAcpProvider implements LLMProvider {
   private unregisterLifecycle: (() => void) | null = null;
 
   constructor(config: GrokAcpProviderConfig) {
-    this.config = config;
+    this.config = Object.freeze({
+      ...config,
+      env: snapshotGrokAcpEnvironment(config),
+    });
     const broker = config.sandboxExecutionBroker;
     if (broker !== undefined) {
       this.unregisterLifecycle = registerSandboxExecutionLifecycleParticipant(
@@ -341,7 +374,7 @@ export class GrokAcpProvider implements LLMProvider {
       env,
       ...(broker !== undefined ? { sandboxExecutionBroker: broker } : {}),
       clientInfo: { name: "agenc", version: "0" },
-      onPermissionRequest: resolvePermissionHandler(env),
+      onPermissionRequest: resolvePermissionHandler(this.config, env),
       ...(this.config.timeoutMs !== undefined
         ? { requestTimeoutMs: this.config.timeoutMs }
         : {}),

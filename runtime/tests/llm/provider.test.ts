@@ -14,6 +14,7 @@ import {
 } from "./providers/gemini/index.js";
 import { createGeminiEndpointPlan } from "./providers/gemini/endpoint-plan.js";
 import { GrokProvider } from "./providers/grok/adapter.js";
+import { GrokAcpProvider } from "./providers/grok/acp-adapter.js";
 import { GroqProvider } from "./providers/groq/index.js";
 import { GitHubProvider } from "./providers/github/index.js";
 import { LMStudioProvider } from "./providers/lmstudio/index.js";
@@ -87,6 +88,32 @@ describe("createProvider", () => {
     expect(isFactoryProvider(provider)).toBe(true);
   });
 
+  test("binds composer credentials to the creating session", () => {
+    const provider = withEnv(
+      {
+        XAI_API_KEY: "daemon-xai-key",
+        GROK_API_KEY: "daemon-grok-key",
+      },
+      () =>
+        createProvider("grok", {
+          apiKey: "session-grok-key",
+          model: "grok-composer-2.5-fast",
+        }),
+    );
+
+    expect(provider).toBeInstanceOf(GrokAcpProvider);
+    const environment = (
+      provider as unknown as {
+        config: { env: NodeJS.ProcessEnv };
+      }
+    ).config.env;
+    expect(environment.XAI_API_KEY).toBe("session-grok-key");
+    expect(environment.GROK_API_KEY).toBeUndefined();
+    expect(readProviderFactoryOptions(provider).apiKey).toBe(
+      "session-grok-key",
+    );
+  });
+
   test("preserves configured tools in factory accounting options", () => {
     const tools = [
       {
@@ -109,15 +136,20 @@ describe("createProvider", () => {
 
   test("preserves factory Gemini cached-content through the native request", async () => {
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
-      new Response(JSON.stringify({
-        candidates: [{
-          content: { role: "model", parts: [{ text: "cached" }] },
-          finishReason: "STOP",
-        }],
-      }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      }),
+      new Response(
+        JSON.stringify({
+          candidates: [
+            {
+              content: { role: "model", parts: [{ text: "cached" }] },
+              finishReason: "STOP",
+            },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      ),
     );
     const provider = createProvider(
       "gemini",
@@ -151,30 +183,40 @@ describe("createProvider", () => {
   test("materializes a factory-selected ADC plan on the native request", async () => {
     const directory = mkdtempSync(join(tmpdir(), "agenc-gemini-factory-adc-"));
     const credentialPath = join(directory, "service-account.json");
-    writeFileSync(credentialPath, JSON.stringify({
-      type: "service_account",
-      client_email: "service@example.test",
-      private_key: "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n",
-      project_id: "resource-project",
-      quota_project_id: "billing-project",
-    }));
-    let tokenRequests = 0;
-    const token = vi.spyOn(JWT.prototype, "getAccessToken").mockImplementation(
-      async () => ({
-        token: `adc-request-token-${++tokenRequests}`,
-        res: null,
+    writeFileSync(
+      credentialPath,
+      JSON.stringify({
+        type: "service_account",
+        client_email: "service@example.test",
+        private_key:
+          "-----BEGIN PRIVATE KEY-----\ntest\n-----END PRIVATE KEY-----\n",
+        project_id: "resource-project",
+        quota_project_id: "billing-project",
       }),
     );
-    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(async () =>
-      new Response(JSON.stringify({
-        candidates: [{
-          content: { role: "model", parts: [{ text: "adc" }] },
-          finishReason: "STOP",
-        }],
-      }), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      })
+    let tokenRequests = 0;
+    const token = vi
+      .spyOn(JWT.prototype, "getAccessToken")
+      .mockImplementation(async () => ({
+        token: `adc-request-token-${++tokenRequests}`,
+        res: null,
+      }));
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+      async () =>
+        new Response(
+          JSON.stringify({
+            candidates: [
+              {
+                content: { role: "model", parts: [{ text: "adc" }] },
+                finishReason: "STOP",
+              },
+            ],
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          },
+        ),
     );
 
     try {
@@ -316,31 +358,34 @@ describe("createProvider", () => {
         AWS_BEDROCK_SESSION_TOKEN: undefined,
         AWS_SESSION_TOKEN: undefined,
       };
-      const providerOptions = name === "agenc"
-        ? {
-          extra: {
-            authBackend,
-            sessionId: "session-1",
-          },
-        }
-        : name === "gemini"
-          ? resolveProviderFactoryOptions(
-            "gemini",
-            {},
-            { GEMINI_API_KEY: "registry-test-key" },
-          )
-        : name === "amazon-bedrock"
+      const providerOptions =
+        name === "agenc"
           ? {
-            extra: {
-              accessKeyId: "registry-test-key",
-              secretAccessKey: "registry-secret-key",
-            },
-          }
-          : info?.credentials.kind === "api-key"
-            ? { apiKey: "registry-test-key" }
-            : {};
+              extra: {
+                authBackend,
+                sessionId: "session-1",
+              },
+            }
+          : name === "gemini"
+            ? resolveProviderFactoryOptions(
+                "gemini",
+                {},
+                { GEMINI_API_KEY: "registry-test-key" },
+              )
+            : name === "amazon-bedrock"
+              ? {
+                  extra: {
+                    accessKeyId: "registry-test-key",
+                    secretAccessKey: "registry-secret-key",
+                  },
+                }
+              : info?.credentials.kind === "api-key"
+                ? { apiKey: "registry-test-key" }
+                : {};
 
-      const provider = withEnv(env, () => createProvider(name, providerOptions));
+      const provider = withEnv(env, () =>
+        createProvider(name, providerOptions),
+      );
 
       const options = readProviderFactoryOptions(provider);
       expect(options.model).toBe(info?.defaultModel);
@@ -356,8 +401,7 @@ describe("createProvider", () => {
             },
             endpointPlan: {
               kind: "developer",
-              nativeBaseURL:
-                "https://generativelanguage.googleapis.com/v1beta",
+              nativeBaseURL: "https://generativelanguage.googleapis.com/v1beta",
             },
           },
         });
@@ -407,20 +451,20 @@ describe("createProvider", () => {
       const vendKey = vi.fn(async (provider: string, sessionId: string) =>
         provider === "amazon-bedrock"
           ? {
-            provider,
-            sessionId,
-            kind: "aws-sigv4" as const,
-            accessKeyId: "vended-aws-access",
-            secretAccessKey: "vended-aws-secret",
-            sessionToken: "vended-aws-session",
-            region: "us-west-2",
-          }
+              provider,
+              sessionId,
+              kind: "aws-sigv4" as const,
+              accessKeyId: "vended-aws-access",
+              secretAccessKey: "vended-aws-secret",
+              sessionToken: "vended-aws-session",
+              region: "us-west-2",
+            }
           : {
-            provider,
-            sessionId,
-            kind: "api-key" as const,
-            apiKey: `vended-${provider}-key`,
-          }
+              provider,
+              sessionId,
+              kind: "api-key" as const,
+              apiKey: `vended-${provider}-key`,
+            },
       );
       const vendingAuthBackend: AuthBackend = {
         ...authBackend,
@@ -567,8 +611,9 @@ describe("createProvider", () => {
       },
     });
 
-    expect((provider as unknown as { config: { model: string } }).config.model)
-      .toBe("gpt-5");
+    expect(
+      (provider as unknown as { config: { model: string } }).config.model,
+    ).toBe("gpt-5");
     expect(readProviderFactoryOptions(provider).model).toBe("gpt-5");
   });
 
@@ -611,8 +656,9 @@ describe("createProvider", () => {
         }),
     );
 
-    expect((provider as unknown as { config: { model: string } }).config.model)
-      .toBe("gpt-5");
+    expect(
+      (provider as unknown as { config: { model: string } }).config.model,
+    ).toBe("gpt-5");
     expect(readProviderFactoryOptions(provider).model).toBe("gpt-5");
     await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
       provider: "openai",
@@ -758,7 +804,7 @@ describe("createProvider", () => {
           sessionToken: "explicit-aws-session",
           region: "us-west-2",
         },
-      })
+      }),
     ).toThrow(/requires accessKeyId/u);
     expect(vendKey).not.toHaveBeenCalled();
   });
@@ -870,7 +916,8 @@ describe("createProvider", () => {
   });
 
   test("retries AuthBackend vending after transient delegate failures", async () => {
-    const vendKey = vi.fn()
+    const vendKey = vi
+      .fn()
       .mockRejectedValueOnce(new Error("temporary vending failure"))
       .mockResolvedValueOnce({
         provider: "openai",
@@ -1025,16 +1072,17 @@ describe("createProvider", () => {
 
   test("coalesces concurrent AuthBackend vending for a cold provider", async () => {
     let resolveVend!: () => void;
-    const vendKey = vi.fn((provider: string, sessionId: string) =>
-      new Promise<Awaited<ReturnType<AuthBackend["vendKey"]>>>((resolve) => {
-        resolveVend = () =>
-          resolve({
-            provider,
-            sessionId,
-            kind: "api-key",
-            apiKey: "vended-openai-key",
-          });
-      }),
+    const vendKey = vi.fn(
+      (provider: string, sessionId: string) =>
+        new Promise<Awaited<ReturnType<AuthBackend["vendKey"]>>>((resolve) => {
+          resolveVend = () =>
+            resolve({
+              provider,
+              sessionId,
+              kind: "api-key",
+              apiKey: "vended-openai-key",
+            });
+        }),
     );
     const vendingAuthBackend: AuthBackend = {
       ...authBackend,
@@ -1129,61 +1177,47 @@ describe("createProvider", () => {
       { OPENAI_COMPATIBLE_BASE_URL: "http://127.0.0.1:8000/v1" },
       () => createProvider("openai-compatible", { model: "self-hosted-coder" }),
     );
-    const openrouter = withEnv(
-      { OPENROUTER_API_KEY: undefined },
-      () =>
-        createProvider("openrouter", {
-          apiKey: "or-test",
-          model: "openai/gpt-5",
-        }),
+    const openrouter = withEnv({ OPENROUTER_API_KEY: undefined }, () =>
+      createProvider("openrouter", {
+        apiKey: "or-test",
+        model: "openai/gpt-5",
+      }),
     );
-    const groq = withEnv(
-      { GROQ_API_KEY: undefined },
-      () =>
-        createProvider("groq", {
-          apiKey: "groq-test",
-          model: "llama-3.3-70b-versatile",
-        }),
+    const groq = withEnv({ GROQ_API_KEY: undefined }, () =>
+      createProvider("groq", {
+        apiKey: "groq-test",
+        model: "llama-3.3-70b-versatile",
+      }),
     );
-    const deepseek = withEnv(
-      { DEEPSEEK_API_KEY: undefined },
-      () =>
-        createProvider("deepseek", {
-          apiKey: "deepseek-test",
-          model: "deepseek-v4-pro",
-        }),
+    const deepseek = withEnv({ DEEPSEEK_API_KEY: undefined }, () =>
+      createProvider("deepseek", {
+        apiKey: "deepseek-test",
+        model: "deepseek-v4-pro",
+      }),
     );
-    const mistral = withEnv(
-      { MISTRAL_API_KEY: undefined },
-      () =>
-        createProvider("mistral", {
-          apiKey: "mistral-test",
-          model: "mistral-medium-latest",
-        }),
+    const mistral = withEnv({ MISTRAL_API_KEY: undefined }, () =>
+      createProvider("mistral", {
+        apiKey: "mistral-test",
+        model: "mistral-medium-latest",
+      }),
     );
-    const nvidiaNim = withEnv(
-      { NVIDIA_API_KEY: undefined },
-      () =>
-        createProvider("nvidia-nim", {
-          apiKey: "nvidia-test",
-          model: "nvidia/llama-3.1-nemotron-70b-instruct",
-        }),
+    const nvidiaNim = withEnv({ NVIDIA_API_KEY: undefined }, () =>
+      createProvider("nvidia-nim", {
+        apiKey: "nvidia-test",
+        model: "nvidia/llama-3.1-nemotron-70b-instruct",
+      }),
     );
-    const minimax = withEnv(
-      { MINIMAX_API_KEY: undefined },
-      () =>
-        createProvider("minimax", {
-          apiKey: "minimax-test",
-          model: "MiniMax-M2.5",
-        }),
+    const minimax = withEnv({ MINIMAX_API_KEY: undefined }, () =>
+      createProvider("minimax", {
+        apiKey: "minimax-test",
+        model: "MiniMax-M2.5",
+      }),
     );
-    const github = withEnv(
-      { GITHUB_TOKEN: undefined },
-      () =>
-        createProvider("github", {
-          apiKey: "github-test",
-          model: "github:copilot",
-        }),
+    const github = withEnv({ GITHUB_TOKEN: undefined }, () =>
+      createProvider("github", {
+        apiKey: "github-test",
+        model: "github:copilot",
+      }),
     );
 
     expect(compatible).toBeInstanceOf(OpenAICompatibleProvider);
@@ -1201,18 +1235,16 @@ describe("createProvider", () => {
       'retired provider selector "custom" is not accepted at provider factory; use "openai-compatible" instead',
     );
     expect(() =>
-      createProvider("openai_compatible" as ProviderName, {})
+      createProvider("openai_compatible" as ProviderName, {}),
     ).toThrow('use "openai-compatible" instead');
   });
 
   test("adds the required OpenRouter routing headers", () => {
-    const provider = withEnv(
-      { OPENROUTER_API_KEY: undefined },
-      () =>
-        createProvider("openrouter", {
-          apiKey: "or-test",
-          model: "openai/gpt-5",
-        }),
+    const provider = withEnv({ OPENROUTER_API_KEY: undefined }, () =>
+      createProvider("openrouter", {
+        apiKey: "or-test",
+        model: "openai/gpt-5",
+      }),
     );
 
     expect(
@@ -1225,27 +1257,25 @@ describe("createProvider", () => {
   });
 
   test("normalizes GitHub Copilot aliases case-insensitively", () => {
-    const bare = withEnv(
-      { GITHUB_TOKEN: undefined },
-      () =>
-        createProvider("github", {
-          apiKey: "github-test",
-          model: "GitHub:Copilot",
-        }),
+    const bare = withEnv({ GITHUB_TOKEN: undefined }, () =>
+      createProvider("github", {
+        apiKey: "github-test",
+        model: "GitHub:Copilot",
+      }),
     );
-    const compound = withEnv(
-      { GITHUB_TOKEN: undefined },
-      () =>
-        createProvider("github", {
-          apiKey: "github-test",
-          model: "GitHub:Copilot:gpt-5.4",
-        }),
+    const compound = withEnv({ GITHUB_TOKEN: undefined }, () =>
+      createProvider("github", {
+        apiKey: "github-test",
+        model: "GitHub:Copilot:gpt-5.4",
+      }),
     );
 
-    expect((bare as unknown as { config: OpenAIProviderConfig }).config.model)
-      .toBe("gpt-5.3-codex");
-    expect((compound as unknown as { config: OpenAIProviderConfig }).config.model)
-      .toBe("gpt-5.4");
+    expect(
+      (bare as unknown as { config: OpenAIProviderConfig }).config.model,
+    ).toBe("gpt-5.3-codex");
+    expect(
+      (compound as unknown as { config: OpenAIProviderConfig }).config.model,
+    ).toBe("gpt-5.4");
   });
 
   test("uses the documented openai default model when no model override is supplied", () => {
@@ -1332,23 +1362,25 @@ describe("createProvider", () => {
   });
 
   test("rejects the generic apiKey facade for Bedrock", () => {
-    expect(() => withEnv(
-      {
-        AWS_BEDROCK_ACCESS_KEY_ID: undefined,
-        AWS_ACCESS_KEY_ID: undefined,
-        AWS_BEDROCK_SECRET_ACCESS_KEY: undefined,
-        AWS_SECRET_ACCESS_KEY: undefined,
-      },
-      () =>
-        createProvider("amazon-bedrock", {
-          apiKey: "configured-access-key",
-          model: "amazon.nova-micro-v1:0",
-          extra: {
-            secretAccessKey: "configured-secret-key",
-            region: "us-east-2",
-          },
-        }),
-    )).toThrow(
+    expect(() =>
+      withEnv(
+        {
+          AWS_BEDROCK_ACCESS_KEY_ID: undefined,
+          AWS_ACCESS_KEY_ID: undefined,
+          AWS_BEDROCK_SECRET_ACCESS_KEY: undefined,
+          AWS_SECRET_ACCESS_KEY: undefined,
+        },
+        () =>
+          createProvider("amazon-bedrock", {
+            apiKey: "configured-access-key",
+            model: "amazon.nova-micro-v1:0",
+            extra: {
+              secretAccessKey: "configured-secret-key",
+              region: "us-east-2",
+            },
+          }),
+      ),
+    ).toThrow(
       /amazon-bedrock does not accept the generic apiKey factory option/u,
     );
   });
@@ -1407,8 +1439,9 @@ describe("createProvider", () => {
 
     expect(response.content).toBe("recreated");
     const [, init] = fetchImpl.mock.calls[0] ?? [];
-    expect(new Headers(init?.headers as HeadersInit).get("x-amz-security-token"))
-      .toBe("configured-session-token");
+    expect(
+      new Headers(init?.headers as HeadersInit).get("x-amz-security-token"),
+    ).toBe("configured-session-token");
   });
 
   test("preserves anthropic context-management config in factory state", () => {
@@ -1764,7 +1797,9 @@ describe("createProvider", () => {
       if (name === "ollama") {
         expect(provider).toBeInstanceOf(OllamaProvider);
         expect(isFactoryProvider(provider)).toBe(true);
-        const config = (provider as unknown as { config: { host?: string; model: string } }).config;
+        const config = (
+          provider as unknown as { config: { host?: string; model: string } }
+        ).config;
         expect(config.host).toBe(expectedBaseURL);
         expect(config.model).toBe(expectedModel);
       } else if (name === "gemini") {
@@ -1815,14 +1850,15 @@ describe("createProvider", () => {
         GEMINI_API_KEY: undefined,
         GEMINI_BASE_URL: undefined,
       },
-      () => createProvider(
-        "gemini",
-        resolveProviderFactoryOptions(
+      () =>
+        createProvider(
           "gemini",
-          { model: "gemini-2.5-pro" },
-          process.env,
+          resolveProviderFactoryOptions(
+            "gemini",
+            { model: "gemini-2.5-pro" },
+            process.env,
+          ),
         ),
-      ),
     );
 
     expect(provider).toBeInstanceOf(GeminiProvider);
@@ -1837,8 +1873,7 @@ describe("createProvider", () => {
           },
           endpointPlan: {
             kind: "developer",
-            nativeBaseURL:
-              "https://generativelanguage.googleapis.com/v1beta",
+            nativeBaseURL: "https://generativelanguage.googleapis.com/v1beta",
           },
         },
       },
@@ -1871,12 +1906,13 @@ describe("createProvider", () => {
       gemini: {
         endpointPlan: {
           kind: "developer",
-          nativeBaseURL:
-            "https://generativelanguage.googleapis.com/v1beta",
+          nativeBaseURL: "https://generativelanguage.googleapis.com/v1beta",
         },
       },
     });
-    const rebuilt = readProviderFactoryOptions(createProvider("gemini", options));
+    const rebuilt = readProviderFactoryOptions(
+      createProvider("gemini", options),
+    );
     expect(rebuilt.apiKey).toBeUndefined();
     expect(rebuilt.baseURL).toBeUndefined();
     expect(rebuilt.extra).toMatchObject({
@@ -1925,17 +1961,18 @@ describe("createProvider", () => {
     "X-Goog-Api-Key",
     "x-goog-user-project",
   ])("rejects conflicting Gemini default header %s", (header) => {
-    expect(() =>
-      new GeminiProvider({
-        model: "gemini-2.5-pro",
-        credentialPlan: {
-          kind: "api-key",
-          credential: "factory-key",
-          source: "factory",
-        },
-        endpointPlan: createGeminiEndpointPlan(),
-        defaultHeaders: { [header]: "parallel-credential" },
-      })
+    expect(
+      () =>
+        new GeminiProvider({
+          model: "gemini-2.5-pro",
+          credentialPlan: {
+            kind: "api-key",
+            credential: "factory-key",
+            source: "factory",
+          },
+          endpointPlan: createGeminiEndpointPlan(),
+          defaultHeaders: { [header]: "parallel-credential" },
+        }),
     ).toThrow(/cannot override canonical authentication headers/u);
   });
 
@@ -1985,7 +2022,7 @@ describe("createProvider", () => {
         "gemini",
         { extra: { [field]: value } },
         { GEMINI_API_KEY: "gemini-key" },
-      )
+      ),
     ).toThrow(/retired credential\/config fields/u);
     expect(() =>
       createProvider("gemini", {
@@ -2001,7 +2038,7 @@ describe("createProvider", () => {
             endpointPlan: createGeminiEndpointPlan(),
           },
         },
-      })
+      }),
     ).toThrow(/retired credential\/config fields/u);
   });
 
@@ -2025,7 +2062,7 @@ describe("createProvider", () => {
               endpointPlan: createGeminiEndpointPlan(),
             },
           },
-        })
+        }),
       ).toThrow(expected);
     },
   );
@@ -2082,9 +2119,10 @@ describe("createProvider", () => {
     for (const [provider, definition] of Object.entries(
       BUILT_IN_PROVIDER_DEFINITIONS,
     )) {
-      const primaryCredentialEnvVars = definition.credentials.kind === "api-key"
-        ? definition.credentials.apiKey.envVars
-        : [];
+      const primaryCredentialEnvVars =
+        definition.credentials.kind === "api-key"
+          ? definition.credentials.apiKey.envVars
+          : [];
       for (const envVar of primaryCredentialEnvVars) {
         const resolved = resolveProviderFactoryOptions(
           provider as ProviderName,
@@ -2139,9 +2177,13 @@ describe("createProvider", () => {
     }
 
     expect(
-      resolveProviderFactoryOptions("agenc", {}, {
-        AGENC_API_KEY: "managed-auth-not-byok",
-      }).apiKey,
+      resolveProviderFactoryOptions(
+        "agenc",
+        {},
+        {
+          AGENC_API_KEY: "managed-auth-not-byok",
+        },
+      ).apiKey,
     ).toBeUndefined();
   });
 
@@ -2209,7 +2251,7 @@ describe("createProvider", () => {
         {
           AWS_BEDROCK_SECRET_ACCESS_KEY: "environment-secret",
         },
-      )
+      ),
     ).toThrow(
       /amazon-bedrock does not accept the generic apiKey factory option/u,
     );
@@ -2226,20 +2268,23 @@ describe("createProvider", () => {
         GEMINI_VERTEX_LOCATION: undefined,
         GEMINI_BASE_URL: undefined,
       },
-      () => createProvider(
-        "gemini",
-        resolveProviderFactoryOptions(
+      () =>
+        createProvider(
           "gemini",
-          { model: "gemini-2.5-pro" },
-          process.env,
+          resolveProviderFactoryOptions(
+            "gemini",
+            { model: "gemini-2.5-pro" },
+            process.env,
+          ),
         ),
-      ),
     );
 
     expect(provider).toBeInstanceOf(GeminiProvider);
-    const config = (provider as unknown as {
-      config: GeminiProviderConfig;
-    }).config;
+    const config = (
+      provider as unknown as {
+        config: GeminiProviderConfig;
+      }
+    ).config;
     expect(config.credentialPlan).toEqual({
       kind: "access-token",
       credential: "ya29-env-token",
@@ -2274,20 +2319,23 @@ describe("createProvider", () => {
         GEMINI_VERTEX_LOCATION: undefined,
         GEMINI_BASE_URL: undefined,
       },
-      () => createProvider(
-        "gemini",
-        resolveProviderFactoryOptions(
+      () =>
+        createProvider(
           "gemini",
-          { model: "gemini-2.5-pro" },
-          process.env,
+          resolveProviderFactoryOptions(
+            "gemini",
+            { model: "gemini-2.5-pro" },
+            process.env,
+          ),
         ),
-      ),
     );
 
     expect(provider).toBeInstanceOf(GeminiProvider);
-    const config = (provider as unknown as {
-      config: GeminiProviderConfig;
-    }).config;
+    const config = (
+      provider as unknown as {
+        config: GeminiProviderConfig;
+      }
+    ).config;
     expect(config.credentialPlan).toEqual({
       kind: "access-token",
       credential: "ya29-env-token",
@@ -2321,20 +2369,23 @@ describe("createProvider", () => {
         GEMINI_VERTEX_LOCATION: undefined,
         GEMINI_BASE_URL: undefined,
       },
-      () => createProvider(
-        "gemini",
-        resolveProviderFactoryOptions(
+      () =>
+        createProvider(
           "gemini",
-          { model: "gemini-2.5-pro" },
-          process.env,
+          resolveProviderFactoryOptions(
+            "gemini",
+            { model: "gemini-2.5-pro" },
+            process.env,
+          ),
         ),
-      ),
     );
 
     expect(provider).toBeInstanceOf(GeminiProvider);
-    const config = (provider as unknown as {
-      config: GeminiProviderConfig;
-    }).config;
+    const config = (
+      provider as unknown as {
+        config: GeminiProviderConfig;
+      }
+    ).config;
     expect(config.credentialPlan).toMatchObject({
       kind: "none",
       mode: "adc",
@@ -2379,7 +2430,7 @@ describe("createProvider", () => {
           "gemini",
           { model: "gemini-2.5-pro" },
           env,
-        )
+        ),
       ).toThrow(
         /access-token\/ADC routing requires both project and location/u,
       );
@@ -2604,9 +2655,9 @@ describe("createProvider", () => {
         AGENC_XAI_API_KEY: undefined,
       },
       () => {
-        expect(() =>
-          createProvider("grok", { model: "grok-4.3" }),
-        ).toThrow(/XAI_API_KEY|apiKey/i);
+        expect(() => createProvider("grok", { model: "grok-4.3" })).toThrow(
+          /XAI_API_KEY|apiKey/i,
+        );
       },
     );
   });
@@ -2628,9 +2679,9 @@ describe("createProvider", () => {
         OPENAI_API_KEY: undefined,
       },
       () => {
-        expect(() =>
-          createProvider("openai", { model: "gpt-5.4" }),
-        ).toThrow(/OPENAI_API_KEY|apiKey/i);
+        expect(() => createProvider("openai", { model: "gpt-5.4" })).toThrow(
+          /OPENAI_API_KEY|apiKey/i,
+        );
       },
     );
   });
