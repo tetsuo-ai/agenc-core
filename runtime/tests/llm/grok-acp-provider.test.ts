@@ -169,6 +169,7 @@ describe('GrokAcpProvider end to end (fake agent)', () => {
       model: 'grok-composer-2.5-fast',
       binaryPath: FIXTURE,
       env: {
+        PATH: process.env.PATH,
         AGENC_GROK_ACP_PERMISSIONS: 'allow',
         FAKE_ACP_REQUEST_PERMISSION: '1',
       },

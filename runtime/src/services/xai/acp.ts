@@ -259,6 +259,19 @@ export class XaiAcpClient {
         -STDERR_TAIL_LIMIT,
       )
     })
+    this.child.stdin.on('error', (error: NodeJS.ErrnoException) => {
+      // Writable-stream failures such as EPIPE are emitted asynchronously, so
+      // the try/catch in send() cannot observe them. Keep the listener installed
+      // after closure as well so a late error never becomes an uncaught event.
+      if (this.closed) return
+      this.failAll(
+        new XaiAcpError(
+          'closed',
+          `Grok CLI stdin failed: ${error.message}`,
+        ),
+      )
+      void this.terminateProcessTree().catch(() => {})
+    })
 
     this.reader = createInterface({ input: this.child.stdout })
     this.reader.on('line', line => {

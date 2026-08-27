@@ -195,6 +195,28 @@ describe('XaiAcpClient', () => {
     }))
   })
 
+  test('child stdin closure rejects requests without an uncaught EPIPE', async () => {
+    const client = new XaiAcpClient({
+      command: process.execPath,
+      args: [
+        '-e',
+        "require('node:fs').closeSync(0); setInterval(() => {}, 1000)",
+      ],
+      cwd: process.cwd(),
+      env: process.env,
+      requestTimeoutMs: 500,
+      sandboxExecutionBroker: explicitDangerBroker,
+    })
+    try {
+      await new Promise(resolve => setTimeout(resolve, 100))
+      await expect(client.initialize()).rejects.toMatchObject({
+        code: 'closed',
+      })
+    } finally {
+      await client.dispose()
+    }
+  })
+
   test('prompt timeout produces a typed timeout error', async () => {
     const client = makeClient({
       env: { FAKE_ACP_STALL_PROMPT: '1' },
