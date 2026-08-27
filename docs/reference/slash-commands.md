@@ -27,6 +27,8 @@ Order matches `buildDefaultRegistry`.
 | `/usage` | | Show hosted model usage for your AgenC plan |
 | `/grok-login` | `xai-login` | Sign in with X for Grok subscription access (optional `device` flow) |
 | `/grok-logout` | `xai-logout` | Sign out of the xAI / Grok OAuth session |
+| `/openai-login` | `chatgpt-login` | Sign in with ChatGPT for OpenAI subscription access |
+| `/openai-logout` | `chatgpt-logout` | Sign out of the OpenAI / ChatGPT OAuth session |
 | `/cost` | `stats` | Show session cost, token usage, and per-agent spend |
 | `/model` | | Switch the model (picker or pass a name) |
 | `/provider` | | Switch the LLM provider for subsequent turns |
@@ -39,7 +41,7 @@ Order matches `buildDefaultRegistry`.
 | `/agents` | | Manage agents — opens a picker |
 | `/tasks` | `jobs`, `bashes` | Show live background tasks and spawned agents |
 | `/todos` | `todo` | Show the session todo lists |
-| `/config` | `settings` | Manage configuration — opens a picker |
+| `/config` | | Manage configuration — opens a picker |
 | `/keybindings` | | Scaffold and edit canonical `tui.keybindings`, then reload config |
 | `/hooks` | | Inspect and test AgenC hook configuration |
 | `/skills` | | Manage project skills and show loaded skill roots |
@@ -68,7 +70,7 @@ Order matches `buildDefaultRegistry`.
 
 Sources: `runtime/src/commands/*.ts(x)` modules imported by
 `buildDefaultRegistry` in `registry.ts` (`help`, `hello`, `status`, `auth`,
-`xai-auth`, `cost`, `model`, `provider`, `effort`, `resolve`, `swarm`,
+`xai-auth`, `openai-auth`, `cost`, `model`, `provider`, `effort`, `resolve`, `swarm`,
 `ledger`, `permissions`, `plan`, `agent-management`, `tasks`, `todos`,
 `config`, `keybindings`, `hooks`, `skills`, `mcp`, `remote`, `plugins`, `memory/slash`,
 `resume`, `rewind`, `init`, `output-style`, `clear`, `session-compact`,

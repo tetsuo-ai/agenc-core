@@ -720,6 +720,5 @@ agenc config set tools_config.disabled_tools '["WebSearch"]'
 agenc config validate
 ```
 
-The TUI command is `/config`. The retired `/settings` alias is rejected so the
-removed settings store cannot be mistaken for a second configuration surface.
+The TUI command is `/config`.
 Environment overrides and removed names are cataloged in [env.md](env.md).
