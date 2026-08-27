@@ -7,7 +7,6 @@
  * AgenC memory base, project memory belongs to the current project, and
  * session memory is kept in conversation state rather than a filesystem path.
  */
-import memoize from 'lodash-es/memoize.js'
 import { homedir } from 'os'
 import { isAbsolute, join, normalize, sep } from 'path'
 import {
@@ -25,6 +24,10 @@ import {
 } from '../session/runtime-options.js'
 import { findCanonicalGitRoot } from '../utils/git.js'
 import { sanitizePath } from '../utils/path.js'
+import {
+  CanonicalAuthorityCache,
+  getCanonicalSettingsAuthority,
+} from '../utils/settings/canonicalAuthority.js'
 import {
   getExecutionAuthoritySettings,
   getSettingsForSource,
@@ -208,31 +211,56 @@ function getAutoMemBase(): string {
  *   3. In remote mode, <memoryBase>/projects/<sanitized-git-root>/memory/
  *   4. Otherwise, <projectRoot>/.agenc/memory/
  *
- * Memoized: render-path callers (collapseReadSearchGroups → isAutoManagedMemoryFile)
- * fire per tool-use message per Messages re-render; each miss costs
- * getSettingsForSource reads the already-loaded per-session ConfigStore snapshot.
- * Keyed on projectRoot so tests that change its mock mid-block recompute;
- * runtime options and canonical settings/state snapshots are session-stable in
- * production and covered by per-test cache.clear.
+ * Render-path callers invoke this once per tool-use message per Messages
+ * re-render, so results are cached. The cache is partitioned by the exact
+ * ConfigStore authority, while its key includes every relevant runtime option
+ * and resolved setting that can change the result. Concurrent daemon sessions
+ * can therefore share a home/project without sharing memory-path authority.
  */
-export const getProjectMemoryPath = memoize(
-  (): string => {
-    const override = getAutoMemPathOverride() ?? getAutoMemPathSetting()
-    if (override) {
-      return override
-    }
-    if (getSessionRemoteMemoryRoot() !== undefined) {
-      const projectsDir = join(getMemoryBaseDir(), 'projects')
-      return (
-        join(projectsDir, sanitizePath(getAutoMemBase()), MEMORY_DIRNAME) + sep
-      ).normalize('NFC')
-    }
+const projectMemoryPathCache = new CanonicalAuthorityCache<string>()
+
+function resolveProjectMemoryPath(): string {
+  const override = getAutoMemPathOverride() ?? getAutoMemPathSetting()
+  if (override) {
+    return override
+  }
+  if (getSessionRemoteMemoryRoot() !== undefined) {
+    const projectsDir = join(getMemoryBaseDir(), 'projects')
     return (
-      join(getProjectRoot(), PROJECT_MEMORY_DIR, MEMORY_DIRNAME) + sep
+      join(projectsDir, sanitizePath(getAutoMemBase()), MEMORY_DIRNAME) + sep
     ).normalize('NFC')
+  }
+  return (
+    join(getProjectRoot(), PROJECT_MEMORY_DIR, MEMORY_DIRNAME) + sep
+  ).normalize('NFC')
+}
+
+function projectMemoryPathCacheKey(): string {
+  return [
+    getAgenCHomeDir(),
+    getSessionRemoteMemoryRoot() ?? '',
+    getAutoMemPathOverride() ?? '',
+    getAutoMemPathSetting() ?? '',
+    getProjectRoot(),
+  ].join('\u0000')
+}
+
+export const getProjectMemoryPath = Object.assign(
+  function getProjectMemoryPath(): string {
+    const authority = getCanonicalSettingsAuthority()
+    if (authority === null) return resolveProjectMemoryPath()
+    const key = projectMemoryPathCacheKey()
+    const cached = projectMemoryPathCache.get(key, authority)
+    if (cached !== undefined) return cached
+    const resolved = resolveProjectMemoryPath()
+    projectMemoryPathCache.set(key, resolved, authority)
+    return resolved
   },
-  () =>
-    `${getAgenCHomeDir()}\u0000${getSessionRemoteMemoryRoot() ?? ''}\u0000${getProjectRoot()}`,
+  {
+    cache: Object.freeze({
+      clear: (): void => projectMemoryPathCache.clear(),
+    }),
+  },
 )
 
 export function getAutoMemPath(): string {

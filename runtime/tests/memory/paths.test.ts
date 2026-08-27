@@ -10,6 +10,7 @@ import { ConfigStore } from "../config/store.js";
 import {
   enterCanonicalSettingsAuthority,
   resetCanonicalSettingsAuthorityForTesting,
+  runWithCanonicalSettingsAuthority,
 } from "../utils/settings/canonicalAuthority.js";
 import {
   resolveAgentRuntimeOptions,
@@ -29,6 +30,7 @@ import {
   isGlobalMemoryPath,
   isProjectMemoryPath,
 } from "./paths.js";
+import { checkEditableInternalPath } from "../utils/permissions/filesystem.js";
 
 let tempRoot = "";
 let oldProjectRoot = "";
@@ -143,6 +145,55 @@ describe("memory paths", () => {
     await configStore.reload();
     clearPathCaches();
     expect(getProjectMemoryPath()).toBe(override + sep);
+  });
+
+  it("isolates cached memory paths and write permission across sessions", () => {
+    const home = join(tempRoot, "home");
+    const projectRoot = join(tempRoot, "repo");
+    const override = join(tempRoot, "cowork-a", "memory") + sep;
+    const authorityA = new ConfigStore({ home, cwd: projectRoot, env: {} });
+    const authorityB = new ConfigStore({ home, cwd: projectRoot, env: {} });
+    const runtimeA = resolveAgentRuntimeOptions({}, {
+      coworkMemoryPathOverride: override,
+    });
+    const runtimeB = resolveAgentRuntimeOptions({});
+    const expectedB = join(projectRoot, ".agenc", "memory") + sep;
+
+    const observe = (
+      authority: ConfigStore,
+      runtimeOptions: ReturnType<typeof resolveAgentRuntimeOptions>,
+    ) =>
+      runWithCanonicalSettingsAuthority(authority, () =>
+        runWithAgentRuntimeOptions(runtimeOptions, () => ({
+          path: getProjectMemoryPath(),
+          overridePermission: checkEditableInternalPath(
+            join(override, "foreign.md"),
+            {},
+          ).behavior,
+        })),
+      );
+
+    for (const [firstAuthority, secondAuthority] of [
+      [authorityA, authorityB],
+      [authorityB, authorityA],
+      [authorityA, authorityA],
+    ] as const) {
+      for (const [firstRuntime, secondRuntime] of [
+        [runtimeA, runtimeB],
+        [runtimeB, runtimeA],
+      ] as const) {
+        clearPathCaches();
+        const first = observe(firstAuthority, firstRuntime);
+        const second = observe(secondAuthority, secondRuntime);
+        const sessionA = firstRuntime === runtimeA ? first : second;
+        const sessionB = firstRuntime === runtimeB ? first : second;
+
+        expect(sessionA.path).toBe(override);
+        expect(sessionA.overridePermission).toBe("passthrough");
+        expect(sessionB.path).toBe(expectedB);
+        expect(sessionB.overridePermission).toBe("passthrough");
+      }
+    }
   });
 });
 
