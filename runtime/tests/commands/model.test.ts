@@ -14,6 +14,7 @@ import { resolveHomeContext, type HomeContext } from "../config/home.js";
 import type { ConfigStore } from "../config/store.js";
 import type { Session } from "../session/session.js";
 import { getSecureStorage } from "../utils/secureStorage/index.js";
+import { saveXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
 import type {
   SlashCommandAppStateBridge,
   SlashCommandContext,
@@ -261,6 +262,67 @@ describe("modelCommand", () => {
       isLocalJSXCommand: true,
       shouldHidePromptInput: true,
     });
+  });
+
+  it("uses the ConfigStore home for xAI OAuth when the session environment has no home", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-model-xai-oauth-"));
+    const home = resolveHomeContext(
+      { AGENC_HOME: agencHome },
+      { platformHome: tmpdir() },
+    );
+    try {
+      expect(
+        saveXaiOauthCredentials(home, {
+          accessToken: "model-command-oauth-token",
+          expiresAt: Date.now() + 60_000,
+        }).success,
+      ).toBe(true);
+      const session = stubSession({
+        provider: "grok",
+        model: "grok-4.6",
+        configStore: commandConfigStore(home, {
+          auth: { managedKeys: { enabled: true } },
+        }),
+        environment: Object.freeze({}),
+      });
+      const setToolJSX = vi.fn();
+
+      await modelCommand.execute(mkctx(session, "", { setToolJSX }));
+      const payload = setToolJSX.mock.calls[0]?.[0] as {
+        jsx?: {
+          props?: {
+            onSelect?: (
+              provider: "grok",
+              model: string,
+            ) => Promise<{ message: string; shouldClose: boolean }>;
+          };
+        };
+      };
+      await expect(
+        payload.jsx?.props?.onSelect?.("grok", "grok-4.6"),
+      ).resolves.toEqual({
+        message: "Model unchanged: grok/grok-4.6.",
+        shouldClose: true,
+      });
+      expect(
+        (session as unknown as { pendingProviderSwitch: unknown })
+          .pendingProviderSwitch,
+      ).toBeNull();
+
+      const result = await modelCommand.execute(
+        mkctx(session, "grok:grok-4.5"),
+      );
+      expect(result).toEqual({
+        kind: "text",
+        text: expect.stringContaining('Model switched to "grok-4.5"'),
+      });
+      expect(
+        (session as unknown as { pendingProviderSwitch: unknown })
+          .pendingProviderSwitch,
+      ).toEqual({ provider: "grok", model: "grok-4.5" });
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
   });
 
   it("routes picker selections through provider-model authority", async () => {
@@ -572,6 +634,30 @@ describe("modelCommand", () => {
     const session = stubSession({ abortTerminal });
     await applyModelSwitch(session, "grok-4-fast");
     expect(abortTerminal).not.toHaveBeenCalled();
+  });
+
+  it("does not stage or abort an unchanged model pair", async () => {
+    const abortTerminal = vi.fn();
+    const beforeStage = vi.fn();
+    const session = stubSession({
+      provider: "grok",
+      model: "grok-4.6",
+      activeTurn: { turnId: "active" },
+      abortTerminal,
+    });
+    const stage = vi.spyOn(session, "setPendingProviderSwitch");
+
+    await expect(
+      applyModelSwitch(session, "grok-4.6", "grok", { beforeStage }),
+    ).resolves.toEqual({
+      applied: false,
+      provider: "grok",
+      model: "grok-4.6",
+      summary: "Model unchanged: grok/grok-4.6.",
+    });
+    expect(stage).not.toHaveBeenCalled();
+    expect(abortTerminal).not.toHaveBeenCalled();
+    expect(beforeStage).not.toHaveBeenCalled();
   });
 
   it("blocks an invalid explicit provider without staging", async () => {

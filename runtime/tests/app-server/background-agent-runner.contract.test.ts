@@ -4482,6 +4482,34 @@ describe("AgenC delegate background-agent runner", () => {
     });
   });
 
+  it("keeps the runtime-settings cursor unchanged for the active provider/model pair", async () => {
+    const agentId = "unchanged-provider-model-pair";
+    const { runner, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: agentId,
+      canonicalRuntimeSettings: true,
+    });
+    await runner.startAgent({ objective: "work", cwd: process.cwd() });
+    const before = recordedRuntimeSettingsEvents(rolloutItems);
+    const cursor = before.at(-1)?.eventId;
+
+    await expect(
+      runner.setAgentModel(agentId, {
+        provider: "grok",
+        model: "base-model",
+      }),
+    ).resolves.toMatchObject({
+      applied: false,
+      provider: "grok",
+      model: "base-model",
+      runtimeSettingsEventId: cursor,
+      summary: "Model unchanged: grok/base-model.",
+    });
+    expect(session.pendingProviderSwitch).toBeNull();
+    expect(recordedRuntimeSettingsEvents(rolloutItems)).toHaveLength(
+      before.length,
+    );
+  });
+
   it("rejects an impossible background provider/model pair before durable staging", async () => {
     const agentId = "conflicting-model-provider-selection";
     const { runner, session, rolloutItems } = makeTopLevelRunner({

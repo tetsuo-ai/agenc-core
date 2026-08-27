@@ -24,30 +24,14 @@
  */
 
 import type { Session } from "../session/session.js";
-import {
-  readProviderConfig,
-  resolveProviderSettings,
-} from "../config/resolve-provider.js";
+import { readProviderConfig } from "../config/resolve-provider.js";
 import type { ProviderSlug } from "../config/provider-model-authority.js";
-import {
-  hasEntitledRemoteAuthSessionSync,
-  hasRemoteAuthSessionSync,
-  remoteAuthSessionSubscriptionTierSync,
-} from "../auth/session-state.js";
 import { resolveProviderCapabilityEntry } from "../llm/capabilities.js";
-import { resolveBuiltInProviderInfo } from "../llm/registry/provider-info.js";
-import {
-  missingProviderCredentialEnvironmentLabel,
-} from "../llm/registry/provider-ingress.js";
 import {
   analyzeSessionHistoryRequirements,
   validateHistoryCompatibility,
 } from "../llm/shape-request.js";
-import {
-  providerEnvironmentFromCommandContext,
-  readCommandConfig,
-  remoteAuthContextFromCommandContext,
-} from "./config-context.js";
+import { readCommandConfig } from "./config-context.js";
 import {
   safeExecute,
   type SlashCommand,
@@ -64,14 +48,11 @@ import {
   readSessionSelection,
   resolveSessionProviderModelSelection,
 } from "../session/provider-model-selection.js";
-import {
-  isFreeSubscriptionManagedModel,
-  isSubscriptionManagedModel,
-  providerHasLiveSubscriptionRoute,
-  subscriptionManagedModels,
-  visibleSubscriptionManagedModelsForTier,
-} from "./subscription-managed-models.js";
 import type { ProviderModelSelectionOutcome } from "../contracts/provider-model-selection.js";
+import {
+  createProviderCommandAccessOverlay,
+  formatProviderCommandRejection,
+} from "./provider-command-access.js";
 
 export interface HistoryCompatResult {
   readonly compatible: boolean;
@@ -159,6 +140,17 @@ export async function applyModelSwitch(
       provider: current.provider,
       model: current.model,
       summary: `Model switch to "${targetModel}" blocked: ${message}`,
+    };
+  }
+  if (
+    selection.provider === current.provider &&
+    selection.model === current.model
+  ) {
+    return {
+      applied: false,
+      provider: current.provider,
+      model: current.model,
+      summary: `Model unchanged: ${current.provider}/${current.model}.`,
     };
   }
   const compat = checkModelHistoryCompat(
@@ -301,85 +293,6 @@ function resolveCommandSelection(
   }
 }
 
-function modelSwitchAuthError(
-  ctx: SlashCommandContext,
-  provider: ProviderSlug,
-  targetModel: string,
-): string | undefined {
-  const config = readCommandConfig(ctx);
-  if (config?.auth?.managedKeys?.enabled !== true) return undefined;
-  const environment = providerEnvironmentFromCommandContext(ctx);
-  const authContext = remoteAuthContextFromCommandContext(ctx);
-  const apiKey = resolveProviderSettings(provider, config, environment)?.apiKey;
-  if (apiKey !== undefined && apiKey.trim().length > 0) return undefined;
-  const missingCredentialLabel = missingProviderCredentialEnvironmentLabel(
-    provider,
-    environment,
-  );
-  if (missingCredentialLabel === undefined) return undefined;
-  if (
-    providerHasLiveSubscriptionRoute(provider) &&
-    hasEntitledRemoteAuthSessionSync(authContext)
-  ) {
-    return undefined;
-  }
-  if (
-    providerHasLiveSubscriptionRoute(provider) &&
-    hasRemoteAuthSessionSync(authContext) &&
-    isFreeSubscriptionManagedModel(provider, targetModel)
-  ) {
-    return undefined;
-  }
-  if (
-    resolveBuiltInProviderInfo(provider)?.onboarding.access === "environment"
-  ) {
-    return `Model switch blocked: set ${missingCredentialLabel}.`;
-  }
-  if (providerHasLiveSubscriptionRoute(provider)) {
-    return (
-      `Model switch blocked: sign in with AgenC using /login for free hosted models, upgrade for paid hosted models, ` +
-      `or set ${missingCredentialLabel} for BYOK.`
-    );
-  }
-  return (
-    `Model switch blocked: hosted subscription access is available through ` +
-    `OpenRouter. Run /provider openrouter, or set ${missingCredentialLabel} for BYOK.`
-  );
-}
-
-function subscriptionManagedModelError(
-  ctx: SlashCommandContext,
-  provider: ProviderSlug,
-  targetModel: string,
-): string | undefined {
-  const config = readCommandConfig(ctx);
-  if (config?.auth?.managedKeys?.enabled !== true) return undefined;
-  const environment = providerEnvironmentFromCommandContext(ctx);
-  const authContext = remoteAuthContextFromCommandContext(ctx);
-  const apiKey = resolveProviderSettings(provider, config, environment)?.apiKey;
-  if (apiKey !== undefined && apiKey.trim().length > 0) return undefined;
-  if (
-    missingProviderCredentialEnvironmentLabel(provider, environment) ===
-      undefined
-  ) {
-    return undefined;
-  }
-  if (!providerHasLiveSubscriptionRoute(provider)) return undefined;
-  if (isSubscriptionManagedModel(provider, targetModel)) return undefined;
-  const tier = remoteAuthSessionSubscriptionTierSync(authContext);
-  const example =
-    visibleSubscriptionManagedModelsForTier(provider, tier)[0] ??
-    subscriptionManagedModels(provider)[0];
-  const hint =
-    example !== undefined
-      ? `Try /model ${provider}:${example}, or open /model to pick a hosted route.`
-      : "Open /model to pick a hosted route.";
-  return (
-    `Model "${targetModel}" is not enabled for subscription-managed ` +
-    `${provider}. ${hint}`
-  );
-}
-
 function updateModelChrome(
   ctx: SlashCommandContext,
   model: string,
@@ -421,26 +334,22 @@ export const modelCommand: SlashCommand = {
                 shouldClose: false,
               };
             }
-            const authError = modelSwitchAuthError(
-              ctx,
-              selection.provider,
-              selection.model,
-            );
-            if (authError !== undefined) {
+            const access = createProviderCommandAccessOverlay(ctx).inspect({
+              provider: selection.provider,
+              model: selection.model,
+            });
+            const rejection = formatProviderCommandRejection(access, "model");
+            if (rejection !== undefined) {
               return {
-                message: authError,
+                message: rejection,
                 shouldClose: false,
               };
             }
-            const modelError = subscriptionManagedModelError(
-              ctx,
-              selection.provider,
-              selection.model,
-            );
-            if (modelError !== undefined) {
+            if (access.effect === "unchanged") {
               return {
-                message: modelError,
-                shouldClose: false,
+                message:
+                  `Model unchanged: ${selection.provider}/${selection.model}.`,
+                shouldClose: true,
               };
             }
             const outcome = await applyModelSwitch(
@@ -465,21 +374,19 @@ export const modelCommand: SlashCommand = {
       if (!selection.ok) {
         return { kind: "text", text: selection.error };
       }
-      const authError = modelSwitchAuthError(
-        ctx,
-        selection.provider,
-        selection.model,
-      );
-      if (authError !== undefined) {
-        return { kind: "text", text: authError };
+      const access = createProviderCommandAccessOverlay(ctx).inspect({
+        provider: selection.provider,
+        model: selection.model,
+      });
+      const rejection = formatProviderCommandRejection(access, "model");
+      if (rejection !== undefined) {
+        return { kind: "text", text: rejection };
       }
-      const modelError = subscriptionManagedModelError(
-        ctx,
-        selection.provider,
-        selection.model,
-      );
-      if (modelError !== undefined) {
-        return { kind: "text", text: modelError };
+      if (access.effect === "unchanged") {
+        return {
+          kind: "text",
+          text: `Model unchanged: ${selection.provider}/${selection.model}.`,
+        };
       }
       const outcome = await applyModelSwitch(
         ctx.session,

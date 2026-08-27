@@ -513,6 +513,30 @@ describe("providerCommand", () => {
     expect(abortTerminal).not.toHaveBeenCalled();
   });
 
+  it("does not stage or abort an unchanged provider pair", async () => {
+    const abortTerminal = vi.fn();
+    const beforeStage = vi.fn();
+    const session = stubSession({
+      provider: "grok",
+      model: "grok-4.6",
+      activeTurn: { turnId: "active" },
+      abortTerminal,
+    });
+    const stage = vi.spyOn(session, "setPendingProviderSwitch");
+
+    await expect(
+      applyProviderSwitch(session, "grok", "grok-4.6", { beforeStage }),
+    ).resolves.toEqual({
+      applied: false,
+      provider: "grok",
+      model: "grok-4.6",
+      summary: "Provider unchanged: grok/grok-4.6.",
+    });
+    expect(stage).not.toHaveBeenCalled();
+    expect(abortTerminal).not.toHaveBeenCalled();
+    expect(beforeStage).not.toHaveBeenCalled();
+  });
+
   it("blocks an impossible exact provider pair before staging", async () => {
     const session = stubSession();
 
@@ -751,6 +775,45 @@ describe("providerCommand", () => {
         credentialSource:
           "signed in as operator@example.com via /grok-login",
       });
+    } finally {
+      rmSync(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  it("uses the ConfigStore home for a Grok OAuth provider switch", async () => {
+    const agencHome = mkdtempSync(join(tmpdir(), "agenc-provider-xai-oauth-"));
+    const home = resolveHomeContext(
+      { AGENC_HOME: agencHome },
+      { platformHome: tmpdir() },
+    );
+    try {
+      expect(
+        saveXaiOauthCredentials(home, {
+          accessToken: "provider-command-oauth-token",
+          expiresAt: Date.now() + 60_000,
+        }).success,
+      ).toBe(true);
+      const session = stubSession({
+        provider: "ollama",
+        model: "llama3.3",
+        configStore: commandConfigStore(home, {
+          auth: { managedKeys: { enabled: true } },
+        }),
+        environment: Object.freeze({}),
+      });
+
+      const result = await providerCommand.execute(
+        mkctx(session, "grok grok-4.6"),
+      );
+
+      expect(result).toEqual({
+        kind: "text",
+        text: expect.stringContaining('Provider switched to "grok"'),
+      });
+      expect(
+        (session as unknown as { pendingProviderSwitch: unknown })
+          .pendingProviderSwitch,
+      ).toEqual({ provider: "grok", model: "grok-4.6" });
     } finally {
       rmSync(agencHome, { recursive: true, force: true });
     }
