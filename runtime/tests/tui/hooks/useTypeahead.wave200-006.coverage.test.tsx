@@ -155,6 +155,8 @@ type SuggestionsState = {
   suggestions: SuggestionItem[]
 }
 
+const EMPTY_RUNTIME_STATE = Object.freeze({})
+
 function createTestStreams(): {
   stdout: PassThrough
   stdin: PassThrough & {
@@ -198,6 +200,7 @@ function TypeaheadHarness(): React.ReactNode {
     setCursorOffset: vi.fn(),
     setSuggestionsState,
     suggestionsState,
+    runtimeState: EMPTY_RUNTIME_STATE,
   })
 
   return null

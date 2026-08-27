@@ -656,6 +656,7 @@ function PromptInput({
 }: Props): React.ReactNode {
   const isFullscreen = useFullscreenMode();
   const mainLoopModel = useMainLoopModel();
+  const runtimeState = getRuntimeState(runtimeStateRepository);
   // A local-jsx command (e.g., /mcp while agent is running) renders a full-
   // screen dialog on top of PromptInput via the immediate-command path with
   // shouldHidePromptInput: false. Those dialogs don't register in the overlay
@@ -2150,6 +2151,7 @@ function PromptInput({
       onboardingInput !== undefined || isSearchingHistory || historyIndex > 0,
     markAccepted,
     onModeChange,
+    runtimeState,
   });
 
   // Track if prompt suggestion should be shown (computed later with terminal width).
@@ -3824,7 +3826,7 @@ function PromptInput({
           onOpenTasksDialog={
             isFullscreen ? handleOpenTasksDialog : undefined
           }
-          runtimeState={getRuntimeState(runtimeStateRepository)}
+          runtimeState={runtimeState}
         />
       )}
       {onboardingInput !== undefined || isFullscreen

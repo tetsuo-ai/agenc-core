@@ -209,6 +209,7 @@ type HookSnapshot = ReturnType<typeof useTypeahead> & {
 
 const EMPTY_AGENTS: readonly never[] = []
 const EMPTY_COMMANDS: readonly never[] = []
+const EMPTY_RUNTIME_STATE = Object.freeze({})
 
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
@@ -292,6 +293,7 @@ function TypeaheadHarness(props: {
     setSuggestionsState,
     suggestionsState,
     suppressSuggestions: props.suppressSuggestions,
+    runtimeState: EMPTY_RUNTIME_STATE,
   })
 
   React.useEffect(() => {

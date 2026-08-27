@@ -170,6 +170,8 @@ type HookSnapshot = ReturnType<typeof useTypeahead> & {
   suggestionsState: SuggestionsState
 }
 
+const EMPTY_RUNTIME_STATE = Object.freeze({})
+
 function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -223,6 +225,7 @@ function TypeaheadHarness(props: {
     setCursorOffset: props.setCursorOffset,
     setSuggestionsState,
     suggestionsState,
+    runtimeState: EMPTY_RUNTIME_STATE,
   })
 
   React.useEffect(() => {

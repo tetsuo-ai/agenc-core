@@ -11,6 +11,7 @@ import {
   compareSuggestionsByPriority,
   hasNameOrAliasPrefixMatch,
 } from './sortBySearchPriority.js'
+import type { GlobalRuntimeState } from '../../config/runtime-state-repository.js'
 
 // Treat these characters as word separators for command search
 const SEPARATORS = /[:_-]/g
@@ -168,13 +169,18 @@ export function findMidInputSlashCommand(
 export function getBestCommandMatch(
   partialCommand: string,
   commands: Command[],
+  runtimeState: Pick<GlobalRuntimeState, 'skillUsage'>,
 ): { suffix: string; fullCommand: string } | null {
   if (!partialCommand) {
     return null
   }
 
   // Use existing suggestion logic
-  const suggestions = generateCommandSuggestions('/' + partialCommand, commands)
+  const suggestions = generateCommandSuggestions(
+    '/' + partialCommand,
+    commands,
+    runtimeState,
+  )
   if (suggestions.length === 0) {
     return null
   }
@@ -344,6 +350,7 @@ function ensureUniqueSuggestionIds(items: SuggestionItem[]): SuggestionItem[] {
 export function generateCommandSuggestions(
   input: string,
   commands: Command[],
+  runtimeState: Pick<GlobalRuntimeState, 'skillUsage'>,
 ): SuggestionItem[] {
   // Only process command input
   if (!isCommandInput(input)) {
@@ -367,7 +374,7 @@ export function generateCommandSuggestions(
       .filter(cmd => cmd.type === 'prompt')
       .map(cmd => ({
         cmd,
-        score: getSkillUsageScore(getCommandName(cmd)),
+        score: getSkillUsageScore(getCommandName(cmd), runtimeState),
       }))
       .filter(item => item.score > 0)
       .sort((a, b) => b.score - a.score)
@@ -468,7 +475,7 @@ export function generateCommandSuggestions(
     const aliases = r.item.aliasKey?.map(alias => alias.toLowerCase()) ?? []
     const usage =
       r.item.command.type === 'prompt'
-        ? getSkillUsageScore(getCommandName(r.item.command))
+        ? getSkillUsageScore(getCommandName(r.item.command), runtimeState)
         : 0
     return { r, name, aliases, usage }
   })

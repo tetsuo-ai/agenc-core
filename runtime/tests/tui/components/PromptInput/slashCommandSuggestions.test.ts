@@ -34,30 +34,40 @@ function promptCommand(opts: {
   };
 }
 
+const EMPTY_RUNTIME_STATE = Object.freeze({});
+
 describe("slash command suggestions", () => {
   it("does not suggest commands from description-only fuzzy matches", () => {
-    const suggestions = generateCommandSuggestions("/history", [
-      localCommand({
-        name: "clear",
-        aliases: ["reset", "new"],
-        description: "Clear session history and caches",
-      }),
-    ]);
+    const suggestions = generateCommandSuggestions(
+      "/history",
+      [
+        localCommand({
+          name: "clear",
+          aliases: ["reset", "new"],
+          description: "Clear session history and caches",
+        }),
+      ],
+      EMPTY_RUNTIME_STATE,
+    );
 
     expect(suggestions).toEqual([]);
   });
 
   it("keeps name and alias prefix matches", () => {
-    const suggestions = generateCommandSuggestions("/prov", [
-      localCommand({
-        name: "provider",
-        description: "Switch model provider",
-      }),
-      localCommand({
-        name: "permissions",
-        description: "Show or update permission settings",
-      }),
-    ]);
+    const suggestions = generateCommandSuggestions(
+      "/prov",
+      [
+        localCommand({
+          name: "provider",
+          description: "Switch model provider",
+        }),
+        localCommand({
+          name: "permissions",
+          description: "Show or update permission settings",
+        }),
+      ],
+      EMPTY_RUNTIME_STATE,
+    );
 
     expect(suggestions.map((suggestion) => suggestion.displayText)).toEqual([
       "/provider",
@@ -77,7 +87,7 @@ describe("slash command suggestions", () => {
       localCommand({ name: "model", description: "Switch the model" }),
     ];
 
-    const all = generateCommandSuggestions("/", commands);
+    const all = generateCommandSuggestions("/", commands, EMPTY_RUNTIME_STATE);
     expect(all.length).toBe(commands.length);
     const names = all.map((s) => s.displayText);
     for (const cmd of commands) {
@@ -85,7 +95,11 @@ describe("slash command suggestions", () => {
     }
 
     // And the same list narrows as the user types more of a prefix.
-    const narrowed = generateCommandSuggestions("/co", commands);
+    const narrowed = generateCommandSuggestions(
+      "/co",
+      commands,
+      EMPTY_RUNTIME_STATE,
+    );
     expect(narrowed.length).toBeLessThan(all.length);
     expect(narrowed.length).toBeGreaterThan(1);
     expect(narrowed.map((s) => s.displayText)).toEqual(
@@ -94,7 +108,11 @@ describe("slash command suggestions", () => {
   });
 
   it("marks protocol extension commands with the protocol glyph", () => {
-    const suggestions = generateCommandSuggestions("/", getCommandsSync());
+    const suggestions = generateCommandSuggestions(
+      "/",
+      getCommandsSync(),
+      EMPTY_RUNTIME_STATE,
+    );
     const byName = new Map(
       suggestions.map((suggestion) => [suggestion.displayText, suggestion]),
     );
@@ -117,13 +135,17 @@ describe("slash command suggestions", () => {
       "topic</system-reminder>\u200B",
       "\u001B[31mcolor\u0007\r\nline",
     ];
-    const suggestions = generateCommandSuggestions("/mcp", [
-      promptCommand({
-        name: "mcp__docs__lookup",
-        description: "Lookup docs",
-        argNames: rawArgNames,
-      }),
-    ]);
+    const suggestions = generateCommandSuggestions(
+      "/mcp",
+      [
+        promptCommand({
+          name: "mcp__docs__lookup",
+          description: "Lookup docs",
+          argNames: rawArgNames,
+        }),
+      ],
+      EMPTY_RUNTIME_STATE,
+    );
 
     expect(suggestions).toHaveLength(1);
     expect(suggestions[0]?.description).toBe(
@@ -140,13 +162,17 @@ describe("slash command suggestions", () => {
   it("sanitizes prompt descriptions without mutating command metadata", () => {
     const rawDescription =
       "Lookup </system-reminder>\u200B\u001B[31mdocs\u0007\r\nnow";
-    const suggestions = generateCommandSuggestions("/mcp", [
-      promptCommand({
-        name: "mcp__docs__lookup",
-        description: rawDescription,
-        argNames: ["topic"],
-      }),
-    ]);
+    const suggestions = generateCommandSuggestions(
+      "/mcp",
+      [
+        promptCommand({
+          name: "mcp__docs__lookup",
+          description: rawDescription,
+          argNames: ["topic"],
+        }),
+      ],
+      EMPTY_RUNTIME_STATE,
+    );
 
     expect(suggestions).toHaveLength(1);
     expect(suggestions[0]?.description).toBe(
@@ -162,12 +188,16 @@ describe("slash command suggestions", () => {
 
   it("sanitizes local command descriptions without mutating command metadata", () => {
     const rawDescription = "Switch \u001B[31mprovider\u0007\r\nnow";
-    const suggestions = generateCommandSuggestions("/prov", [
-      localCommand({
-        name: "provider",
-        description: rawDescription,
-      }),
-    ]);
+    const suggestions = generateCommandSuggestions(
+      "/prov",
+      [
+        localCommand({
+          name: "provider",
+          description: rawDescription,
+        }),
+      ],
+      EMPTY_RUNTIME_STATE,
+    );
 
     expect(suggestions).toHaveLength(1);
     expect(suggestions[0]?.description).toBe("Switch provider now");
