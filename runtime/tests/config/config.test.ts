@@ -55,7 +55,6 @@ import {
   resolveAgencHome,
   resolveApiKey,
   resolveProfileName,
-  resolveProviderApiKey,
   resolveProviderBaseURL,
   resolveWorkspace,
   applyEnvOverrides,
@@ -490,12 +489,12 @@ describe("provider resolution (T13)", () => {
 
     expect(settings).toMatchObject({
       provider: "openrouter",
-      apiKey: "or-canonical",
       baseURL: "https://router.example/v1",
       defaultModel: "openai/gpt-5-mini",
       contextWindowTokens: 400_000,
       maxOutputTokens: 128_000,
     });
+    expect(settings).not.toHaveProperty("apiKey");
   });
 
   test("resolveProviderSettings maps [providers.<name>] timeout_ms including the 0 disable value", () => {
@@ -530,10 +529,10 @@ describe("provider resolution (T13)", () => {
 
     expect(settings).toMatchObject({
       provider: "openai-compatible",
-      apiKey: "local-token",
       baseURL: "http://127.0.0.1:8000/v1",
       defaultModel: "local-model",
     });
+    expect(settings).not.toHaveProperty("apiKey");
   });
 
   test("resolveProviderSettings does not project Bedrock access IDs as API keys", () => {
@@ -553,7 +552,7 @@ describe("provider resolution (T13)", () => {
       provider: "amazon-bedrock",
       defaultModel: "amazon.nova-lite-v1:0",
     });
-    expect(settings?.apiKey).toBeUndefined();
+    expect(settings).not.toHaveProperty("apiKey");
   });
 
   test("resolveProviderSettings canonicalizes provider fallback targets", () => {
@@ -1798,55 +1797,6 @@ describe("env: resolvers", () => {
     expect(() =>
       applyEnvOverrides(base, { AGENC_XAI_API_KEY: "retired" }),
     ).toThrow(/obsolete configuration environment variable.*AGENC_XAI_API_KEY/u);
-  });
-
-  test("resolveProviderApiKey follows canonical provider alias order", () => {
-    expect(resolveProviderApiKey("grok", { XAI_API_KEY: "x" })).toBe("x");
-    expect(resolveProviderApiKey("openai", { OPENAI_API_KEY: "o" })).toBe("o");
-    expect(resolveProviderApiKey("anthropic", { ANTHROPIC_API_KEY: "a" })).toBe(
-      "a",
-    );
-    expect(resolveProviderApiKey("lmstudio", {
-      OPENAI_API_KEY: "unrelated",
-    })).toBeUndefined();
-    expect(resolveProviderApiKey("lmstudio", {
-      LMSTUDIO_API_KEY: "studio",
-    })).toBe("studio");
-    expect(
-      resolveProviderApiKey("openai-compatible", { OPENAI_API_KEY: "local" }),
-    ).toBe("local");
-    expect(
-      resolveProviderApiKey("openai-compatible", {
-        OPENAI_COMPATIBLE_API_KEY: "specific",
-        OPENAI_API_KEY: "local",
-      }),
-    ).toBe("specific");
-    expect(resolveProviderApiKey("amazon-bedrock", {
-      AWS_ACCESS_KEY_ID: "aws",
-    })).toBeUndefined();
-    expect(resolveProviderApiKey("amazon-bedrock", {
-      AWS_BEDROCK_ACCESS_KEY_ID: "bedrock-aws",
-      AWS_ACCESS_KEY_ID: "aws",
-    })).toBeUndefined();
-    expect(resolveProviderApiKey("gemini", {
-      GOOGLE_API_KEY: "google",
-    })).toBe("google");
-    expect(resolveProviderApiKey("mistral", {
-      MISTRAL_API_KEY: "mistral",
-    })).toBe("mistral");
-    expect(resolveProviderApiKey("nvidia-nim", {
-      NVIDIA_API_KEY: "nvidia",
-    })).toBe("nvidia");
-    expect(resolveProviderApiKey("minimax", {
-      MINIMAX_API_KEY: "minimax",
-    })).toBe("minimax");
-    expect(resolveProviderApiKey("github", {
-      GH_TOKEN: "github",
-    })).toBe("github");
-    expect(resolveProviderApiKey("ollama", {})).toBeUndefined();
-    expect(resolveProviderApiKey("agenc", {
-      AGENC_API_KEY: "managed-auth",
-    })).toBeUndefined();
   });
 
   test("resolveProviderBaseURL follows canonical provider endpoint aliases", () => {

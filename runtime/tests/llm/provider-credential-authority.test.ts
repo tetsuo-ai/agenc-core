@@ -211,6 +211,42 @@ describe("provider credential authority", () => {
     );
   });
 
+  test("keeps an explicit OpenAI key ahead of stored native credentials", async () => {
+    const home = await createHome("openai-explicit");
+    const { providerOptions, openAiCredentials } =
+      await loadCredentialModules();
+    expect(
+      openAiCredentials.saveOpenAiOauthCredentials(home, {
+        apiKey: "stored-openai-platform-key",
+      }).success,
+    ).toBe(true);
+
+    const resolved = providerOptions.resolveProviderCredentialAuthority(
+      "openai",
+      {
+        apiKey: "explicit-openai-key",
+        credentialHome: home,
+        model: "gpt-5",
+      },
+      {
+        OPENAI_API_KEY: "environment-openai-key",
+        OPENAI_ORGANIZATION: "openai-org",
+        OPENAI_PROJECT: "openai-project",
+      },
+    );
+
+    expect(resolved.credential).toMatchObject({
+      status: "ready",
+      mode: "api-key",
+      source: "explicit",
+    });
+    expect(resolved.factoryOptions.apiKey).toBe("explicit-openai-key");
+    expect(resolved.factoryOptions.extra).toMatchObject({
+      organization: "openai-org",
+      project: "openai-project",
+    });
+  });
+
   test.each([
     {
       name: "Gemini API key",
@@ -461,5 +497,85 @@ describe("provider credential authority", () => {
       source: "explicit",
     });
     expect(explicit.factoryOptions.apiKey).toBe("explicit-anthropic-key");
+  });
+
+  test("reads saved BYOK only after higher-precedence credentials are absent", async () => {
+    const { providerOptions } = await loadCredentialModules();
+    const readSavedApiKey = vi.fn(async () => "saved-anthropic-key");
+
+    const resolved = await providerOptions.resolveProviderRuntimeAuthority(
+      "anthropic",
+      { model: "claude-opus-4-7" },
+      {},
+      { readSavedApiKey },
+    );
+
+    expect(readSavedApiKey).toHaveBeenCalledOnce();
+    expect(readSavedApiKey).toHaveBeenCalledWith("anthropic");
+    expect(resolved.credential).toMatchObject({
+      status: "ready",
+      mode: "api-key",
+      source: "saved-byok",
+    });
+    expect(resolved.factoryOptions.apiKey).toBe("saved-anthropic-key");
+  });
+
+  test("does not read saved BYOK for providers without one-field API-key access", async () => {
+    const { providerOptions } = await loadCredentialModules();
+    const readSavedApiKey = vi.fn(async () => "wrong-key");
+
+    const resolved = await providerOptions.resolveProviderRuntimeAuthority(
+      "amazon-bedrock",
+      { model: "amazon.nova-pro-v1:0" },
+      {},
+      { readSavedApiKey },
+    );
+
+    expect(readSavedApiKey).not.toHaveBeenCalled();
+    expect(resolved.credential.status).toBe("missing");
+  });
+
+  test("marks managed OpenRouter credentials for lazy vending", async () => {
+    const { providerOptions } = await loadCredentialModules();
+    const vendKey = vi.fn(() => {
+      throw new Error("managed credentials must remain lazy");
+    });
+    const authBackend = {
+      kind: "local" as const,
+      login: vi.fn(),
+      logout: vi.fn(),
+      whoami: vi.fn(),
+      vendKey,
+      inferAgencModel: vi.fn(),
+      getLlmUsage: vi.fn(),
+      getSubscriptionTier: vi.fn(),
+    };
+
+    const resolved = await providerOptions.resolveProviderRuntimeAuthority(
+      "openrouter",
+      { model: "x-ai/grok-4.3" },
+      {},
+      {
+        authBackend,
+        managedKeysEnabled: true,
+        sessionId: "managed-session",
+        subscriptionTier: "pro",
+      },
+    );
+
+    expect(vendKey).not.toHaveBeenCalled();
+    expect(resolved.managedCredential).toBe(true);
+    expect(resolved.factoryOptions).toMatchObject({
+      model: "x-ai/grok-4.3",
+      extra: {
+        authBackend,
+        managedCredential: true,
+        maxTokens: 2_048,
+        sessionId: "managed-session",
+        subscriptionTier: "pro",
+      },
+    });
+    expect(resolved.factoryOptions.apiKey).toBeUndefined();
+    expect(resolved.factoryOptions.baseURL).toBeUndefined();
   });
 });

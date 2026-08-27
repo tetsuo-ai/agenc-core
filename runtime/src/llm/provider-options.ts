@@ -45,6 +45,7 @@ import {
 } from "./providers/gemini/runtime-options.js";
 import { createGeminiEndpointPlan } from "./providers/gemini/endpoint-plan.js";
 import { isGrokComposerModel } from "./providers/grok/acp-adapter.js";
+import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 
 export type ProviderEnvironment = Readonly<
   Record<string, string | undefined>
@@ -96,6 +97,26 @@ export interface ResolvedProviderCredentialAuthority {
   readonly factoryOptions: ProviderFactoryOptions;
   readonly credential: ProviderCredentialState;
 }
+
+export type ReadSavedProviderApiKey = (
+  provider: ProviderName,
+) => Promise<string | undefined>;
+
+export interface ProviderRuntimeCredentialOptions {
+  readonly readSavedApiKey?: ReadSavedProviderApiKey;
+  readonly authBackend?: AuthBackend;
+  readonly sessionId?: string;
+  readonly subscriptionTier?: AuthSubscriptionTier;
+  readonly managedKeysEnabled?: boolean;
+  readonly freeManagedCredential?: boolean;
+}
+
+export interface ResolvedProviderRuntimeAuthority
+  extends ResolvedProviderCredentialAuthority {
+  readonly managedCredential: boolean;
+}
+
+export const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 2_048;
 
 function nonEmpty(value: string | undefined): string | undefined {
   const normalized = value?.trim();
@@ -461,68 +482,70 @@ function resolveProviderCredentialAuthorityCore(
     if (organization !== undefined) resolvedExtra.organization = organization;
     if (project !== undefined) resolvedExtra.project = project;
 
-    const stored = home === undefined
-      ? undefined
-      : readOpenAiOauthCredentials(home);
-    if (stored?.apiKey !== undefined) {
-      apiKey = stored.apiKey;
-      baseURL = assertOpenAiOauthBaseUrl(baseURL);
-      openAiNativeAuthMode = "api-key";
-      forcedExtra.authMode = "api_key";
-    } else {
-      const subscription = resolveStoredChatGptSubscriptionCredentials(stored);
-      if (home !== undefined && subscription !== undefined) {
-        const initialAccessToken = subscription.bearerToken;
-        apiKey = undefined;
-        baseURL = CHATGPT_BACKEND_BASE_URL;
-        chatGptSubscription = true;
-        openAiNativeAuthMode = "oauth";
-        forcedExtra.authMode = "oauth";
-        forcedExtra.oauth = {
-          accessToken: initialAccessToken,
-          ...(stored?.refreshToken !== undefined
-            ? { refreshToken: stored.refreshToken }
-            : {}),
-          refreshAccessToken: async () => {
-            try {
-              const refreshed = await refreshOpenAiSubscriptionIfNeeded(
-                home,
-                snapshot,
-                { force: true },
-              );
-              const credentials = refreshed.credentials;
-              if (
-                refreshed.refreshed !== true ||
-                credentials?.apiKey !== undefined ||
-                credentials?.accessToken === undefined
-              ) {
+    if (nonEmpty(requested.apiKey) === undefined) {
+      const stored = home === undefined
+        ? undefined
+        : readOpenAiOauthCredentials(home);
+      if (stored?.apiKey !== undefined) {
+        apiKey = stored.apiKey;
+        baseURL = assertOpenAiOauthBaseUrl(baseURL);
+        openAiNativeAuthMode = "api-key";
+        forcedExtra.authMode = "api_key";
+      } else {
+        const subscription = resolveStoredChatGptSubscriptionCredentials(stored);
+        if (home !== undefined && subscription !== undefined) {
+          const initialAccessToken = subscription.bearerToken;
+          apiKey = undefined;
+          baseURL = CHATGPT_BACKEND_BASE_URL;
+          chatGptSubscription = true;
+          openAiNativeAuthMode = "oauth";
+          forcedExtra.authMode = "oauth";
+          forcedExtra.oauth = {
+            accessToken: initialAccessToken,
+            ...(stored?.refreshToken !== undefined
+              ? { refreshToken: stored.refreshToken }
+              : {}),
+            refreshAccessToken: async () => {
+              try {
+                const refreshed = await refreshOpenAiSubscriptionIfNeeded(
+                  home,
+                  snapshot,
+                  { force: true },
+                );
+                const credentials = refreshed.credentials;
+                if (
+                  refreshed.refreshed !== true ||
+                  credentials?.apiKey !== undefined ||
+                  credentials?.accessToken === undefined
+                ) {
+                  return {
+                    kind: "exhausted" as const,
+                    reason: "OpenAI subscription token refresh is unavailable",
+                  };
+                }
+                return {
+                  kind: "refreshed" as const,
+                  accessToken: credentials.accessToken,
+                  ...(credentials.refreshToken !== undefined
+                    ? { refreshToken: credentials.refreshToken }
+                    : {}),
+                };
+              } catch (error) {
                 return {
                   kind: "exhausted" as const,
-                  reason: "OpenAI subscription token refresh is unavailable",
+                  reason: error instanceof Error ? error.message : String(error),
                 };
               }
-              return {
-                kind: "refreshed" as const,
-                accessToken: credentials.accessToken,
-                ...(credentials.refreshToken !== undefined
-                  ? { refreshToken: credentials.refreshToken }
-                  : {}),
-              };
-            } catch (error) {
-              return {
-                kind: "exhausted" as const,
-                reason: error instanceof Error ? error.message : String(error),
-              };
-            }
-          },
-        };
-        forcedExtra.store = false;
-        forcedExtra.useResponsesApi = true;
-        forcedExtra.chatgptBackend = true;
-        forcedExtra.defaultHeaders = {
-          ...stringRecord(requested.extra?.defaultHeaders),
-          ...chatGptSubscriptionHeaders(subscription.accountId),
-        };
+            },
+          };
+          forcedExtra.store = false;
+          forcedExtra.useResponsesApi = true;
+          forcedExtra.chatgptBackend = true;
+          forcedExtra.defaultHeaders = {
+            ...stringRecord(requested.extra?.defaultHeaders),
+            ...chatGptSubscriptionHeaders(subscription.accountId),
+          };
+        }
       }
     }
   }
@@ -658,6 +681,138 @@ export function resolveProviderCredentialAuthority(
     requested,
     env,
     candidates,
+  );
+}
+
+function isEntitledSubscription(
+  tier: AuthSubscriptionTier | undefined,
+): boolean {
+  return tier === "pro" || tier === "team" || tier === "enterprise";
+}
+
+function withRuntimeAuthExtra(
+  provider: ProviderName,
+  options: ProviderFactoryOptions,
+  runtime: ProviderRuntimeCredentialOptions,
+  managedCredential: boolean,
+): ProviderFactoryOptions {
+  const sessionId = nonEmpty(runtime.sessionId);
+  if (
+    runtime.authBackend === undefined ||
+    sessionId === undefined
+  ) {
+    return options;
+  }
+  return {
+    ...options,
+    extra: {
+      ...(options.extra ?? {}),
+      authBackend: runtime.authBackend,
+      sessionId,
+      ...(runtime.subscriptionTier !== undefined
+        ? { subscriptionTier: runtime.subscriptionTier }
+        : {}),
+      ...(managedCredential ? { managedCredential: true } : {}),
+      ...(managedCredential &&
+      provider === "openrouter" &&
+      options.extra?.maxTokens === undefined
+        ? { maxTokens: MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS }
+        : {}),
+    },
+  };
+}
+
+/**
+ * Resolve the complete credential authority for a live provider binding.
+ * Saved BYOK is read only when explicit, native, and environment credentials
+ * are absent. Subscription credentials remain lazy and are vended only by the
+ * provider wrapper when the first model operation starts.
+ */
+export async function resolveProviderRuntimeAuthority(
+  provider: ProviderName,
+  requested: ProviderFactoryOptions,
+  env: ProviderEnvironment,
+  runtime: ProviderRuntimeCredentialOptions = {},
+): Promise<ResolvedProviderRuntimeAuthority> {
+  let resolved = resolveProviderCredentialAuthority(provider, requested, env);
+  const info = resolveBuiltInProviderInfo(provider);
+  if (
+    resolved.credential.status === "missing" &&
+    info?.onboarding.access === "api-key" &&
+    runtime.readSavedApiKey !== undefined
+  ) {
+    const savedApiKey = nonEmpty(await runtime.readSavedApiKey(provider));
+    if (savedApiKey !== undefined) {
+      resolved = resolveProviderCredentialAuthority(
+        provider,
+        requested,
+        env,
+        { savedApiKey },
+      );
+    }
+  }
+  const sessionId = nonEmpty(runtime.sessionId);
+  const managedCredential =
+    resolved.credential.status === "missing" &&
+    runtime.managedKeysEnabled === true &&
+    info?.onboarding.supportsManagedKeyAccess === true &&
+    runtime.authBackend !== undefined &&
+    sessionId !== undefined;
+
+  if (
+    managedCredential &&
+    runtime.authBackend?.kind === "remote" &&
+    !isEntitledSubscription(runtime.subscriptionTier) &&
+    runtime.freeManagedCredential !== true
+  ) {
+    throw new Error(
+      "Managed provider keys require an active AgenC subscription; configure BYOK provider credentials instead",
+    );
+  }
+  if (
+    provider === "agenc" &&
+    runtime.authBackend?.kind === "remote" &&
+    !isEntitledSubscription(runtime.subscriptionTier)
+  ) {
+    throw new Error(
+      "Hosted AgenC model routing requires an active AgenC subscription",
+    );
+  }
+
+  const needsAuthBackend = managedCredential || provider === "agenc";
+  const factoryOptions = needsAuthBackend
+    ? withRuntimeAuthExtra(
+        provider,
+        resolved.factoryOptions,
+        runtime,
+        managedCredential,
+      )
+    : resolved.factoryOptions;
+  return Object.freeze({
+    factoryOptions,
+    credential: resolved.credential,
+    managedCredential,
+  });
+}
+
+export function requireProviderRuntimeCredential(
+  provider: ProviderName,
+  authority: ResolvedProviderRuntimeAuthority,
+): void {
+  if (
+    authority.credential.status !== "missing" ||
+    authority.managedCredential ||
+    provider === "agenc"
+  ) {
+    return;
+  }
+  const managedHint =
+    resolveBuiltInProviderInfo(provider)?.onboarding
+      .supportsManagedKeyAccess === true
+      ? " or sign in and enable auth.managedKeys.enabled"
+      : "";
+  throw new Error(
+    `${provider} provider requires credentials. Set ${authority.credential.missingLabel}${managedHint}.`,
   );
 }
 

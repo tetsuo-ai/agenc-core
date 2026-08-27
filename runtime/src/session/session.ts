@@ -81,22 +81,16 @@ import {
   type CompactionHistoryMarkerV1,
 } from "./compaction-history-marker.js";
 import {
-  resolveBuiltInProviderSlug,
-  normalizeManagedGatewayModel,
-  type ProviderFactoryOptions,
-  type ProviderName,
-} from "../llm/provider.js";
-import type { ProviderEnvironment } from "../llm/provider-options.js";
+  MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
+  type ProviderEnvironment,
+} from "../llm/provider-options.js";
 import {
   SessionProviderService,
   type PreparedProviderBinding,
   type ProviderBinding,
 } from "./provider-service.js";
 import { resolveProviderModelSelection } from "./provider-model-selection.js";
-import type { ProviderFallbackLadderOptions } from "../llm/api/fallback-ladder.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
-import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
-import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
 import type { BudgetTracker } from "../conversation/token-budget.js";
 import { shutdownEffectSettlementSupervisor } from "../budget/effect-settlement-supervisor.js";
 import type { SessionSubmitOptions } from "./autonomous-mode.js";
@@ -118,10 +112,6 @@ import { getCompactSystemPrompt,
   getSystemPrompt } from "../constants/prompts.js";
 import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
 import type { Tools as PromptTools } from "../tools/Tool.js";
-import {
-  resolveProviderSettings,
-  type ResolvedProviderSettings,
-} from "../config/resolve-provider.js";
 import type {
   ApprovalResolver,
   PermissionRequestHook,
@@ -1440,9 +1430,9 @@ export interface SessionServices {
   readonly environment?: Environment;
   // T-future: AgenC-specific additions
   /**
-   * Canonical provider authority. Session construction fills this for legacy
-   * embedders that supplied only `provider`; production callers should bind it
-   * explicitly so the environment snapshot is captured at ingress.
+   * Canonical provider authority. Session construction supplies a read-only
+   * binding when a standalone embedder provides only `provider`; callers that
+   * support live switching bind the preparation resolver at environment ingress.
    */
   readonly providerService?: SessionProviderService;
   /** Immutable provider-only environment captured for this session. */
@@ -1519,40 +1509,6 @@ export interface AppliedProviderSwitchResult {
   readonly reason?: string;
 }
 
-function buildProviderFallbackLadderOptions(params: {
-  readonly provider: string;
-  readonly model: string;
-  readonly settings: ResolvedProviderSettings | undefined;
-}): ProviderFallbackLadderOptions | undefined {
-  const targets = params.settings?.fallbackTargets;
-  if (!targets || targets.length === 0) return undefined;
-  return {
-    provider: params.provider,
-    model: params.model,
-    targets,
-    ...(params.settings?.fallbackMaxFailures !== undefined
-      ? { maxFailures: params.settings.fallbackMaxFailures }
-      : {}),
-    ...(params.settings?.fallbackStatuses !== undefined &&
-    params.settings.fallbackStatuses.length > 0
-      ? { statuses: params.settings.fallbackStatuses }
-      : {}),
-  };
-}
-
-const MANAGED_KEY_PROVIDERS = new Set<ProviderName>(["openrouter"]);
-
-const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 2_048;
-
-function isManagedCredentialProviderOptions(
-  options: ProviderFactoryOptions | undefined,
-): boolean {
-  return (
-    options?.extra?.managedCredential === true ||
-    options?.extra?.managedGateway === true
-  );
-}
-
 function capManagedOpenRouterModelInfo(modelInfo: ModelInfo): ModelInfo {
   return {
     ...modelInfo,
@@ -1581,207 +1537,6 @@ async function buildBaseInstructionsForModel(params: {
     params.model,
   );
   return sections.join("\n\n");
-}
-
-function isRemoteAuthBackend(authBackend: AuthBackend | undefined): boolean {
-  return authBackend?.kind === "remote";
-}
-
-function isSubscriptionEntitled(
-  tier: AuthSubscriptionTier | undefined,
-): boolean {
-  return tier === "pro" || tier === "team" || tier === "enterprise";
-}
-
-function requiresHostedModelRouting(provider: string, model: string): boolean {
-  const normalizedProvider = provider.trim().toLowerCase();
-  const normalizedModel = model.trim().toLowerCase();
-  return (
-    normalizedProvider === "agenc" ||
-    normalizedModel === "agenc" ||
-    normalizedModel.startsWith("agenc:")
-  );
-}
-
-function allowsFreeManagedProviderKey(params: {
-  readonly provider: string;
-  readonly model: string;
-  readonly subscriptionTier?: AuthSubscriptionTier;
-}): boolean {
-  return (
-    params.subscriptionTier === "free" &&
-    isFreeSubscriptionManagedModel(params.provider, params.model)
-  );
-}
-
-function firstNonEmpty(
-  ...values: Array<string | undefined>
-): string | undefined {
-  for (const value of values) {
-    const trimmed = value?.trim();
-    if (trimmed) return trimmed;
-  }
-  return undefined;
-}
-
-async function vendManagedProviderKey(params: {
-  readonly provider: ProviderName;
-  readonly authBackend: AuthBackend | undefined;
-  readonly sessionId: string;
-  readonly model: string;
-}): Promise<
-  | {
-      readonly apiKey: string;
-      readonly baseURL?: string;
-      readonly model?: string;
-    }
-  | undefined
-> {
-  if (!params.authBackend || !MANAGED_KEY_PROVIDERS.has(params.provider)) {
-    return undefined;
-  }
-  const key = await params.authBackend.vendKey(
-    params.provider,
-    params.sessionId,
-  );
-  if (key.kind !== "api-key") return undefined;
-  const apiKey = firstNonEmpty(key.apiKey);
-  if (apiKey === undefined) return undefined;
-  const baseURL = firstNonEmpty(key.baseUrl);
-  const model =
-    baseURL !== undefined
-      ? normalizeManagedGatewayModel(params.provider, params.model)
-      : params.model;
-  return {
-    apiKey,
-    ...(baseURL !== undefined ? { baseURL } : {}),
-    model,
-  };
-}
-
-async function providerFactoryOptionsFromSettings(params: {
-  readonly provider: string;
-  readonly model: string;
-  readonly settings: ResolvedProviderSettings | undefined;
-  readonly authBackend?: AuthBackend;
-  readonly authSubscriptionTier?: AuthSubscriptionTier;
-  readonly managedKeysEnabled: boolean;
-  readonly sessionId: string;
-  readonly reusableApiKey?: string;
-  readonly executionAdmissionRequired?: boolean;
-}): Promise<ProviderFactoryOptions> {
-  const extra: Record<string, unknown> = {};
-  if (params.settings?.contextWindowTokens !== undefined) {
-    extra.contextWindowTokens = params.settings.contextWindowTokens;
-  }
-  if (params.settings?.maxOutputTokens !== undefined) {
-    extra.maxTokens = params.settings.maxOutputTokens;
-  }
-  if (params.executionAdmissionRequired === true) {
-    extra.maxRetries = 0;
-  } else {
-    const providerFallback = buildProviderFallbackLadderOptions(params);
-    if (providerFallback !== undefined) {
-      extra.providerFallback = providerFallback;
-    }
-  }
-  const normalizedProvider = resolveBuiltInProviderSlug(params.provider);
-  if (normalizedProvider === "agenc" && params.authBackend !== undefined) {
-    extra.authBackend = params.authBackend;
-    extra.sessionId = params.sessionId;
-    if (params.authSubscriptionTier !== undefined) {
-      extra.subscriptionTier = params.authSubscriptionTier;
-    }
-  }
-  const byokApiKey = params.settings?.apiKey ?? params.reusableApiKey;
-  if (
-    isRemoteAuthBackend(params.authBackend) &&
-    !isSubscriptionEntitled(params.authSubscriptionTier) &&
-    !allowsFreeManagedProviderKey({
-      provider: params.provider,
-      model: params.model,
-      subscriptionTier: params.authSubscriptionTier,
-    })
-  ) {
-    if (requiresHostedModelRouting(params.provider, params.model)) {
-      throw new Error(
-        "Hosted AgenC model routing requires an active AgenC subscription",
-      );
-    }
-    if (
-      params.managedKeysEnabled &&
-      byokApiKey === undefined &&
-      normalizedProvider !== undefined &&
-      MANAGED_KEY_PROVIDERS.has(normalizedProvider)
-    ) {
-      throw new Error(
-        "Managed provider keys require an active AgenC subscription; configure BYOK provider credentials instead",
-      );
-    }
-  }
-  const managedCredential =
-    byokApiKey === undefined &&
-    params.managedKeysEnabled &&
-    normalizedProvider !== undefined
-      ? await vendManagedProviderKey({
-          provider: normalizedProvider,
-          authBackend: params.authBackend,
-          sessionId: params.sessionId,
-          model: params.model,
-        })
-      : undefined;
-  const hasManagedCredential = managedCredential !== undefined;
-  if (
-    hasManagedCredential &&
-    normalizedProvider === "openrouter" &&
-    params.settings?.maxOutputTokens === undefined
-  ) {
-    extra.maxTokens = MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS;
-    extra.managedCredential = true;
-  }
-  // Gemini environment credentials are selected from the captured session
-  // environment by resolveProviderFactoryOptions. Do not promote them into
-  // the explicit factory-key precedence slot during a model switch.
-  const apiKey = normalizedProvider === "gemini"
-    ? undefined
-    : params.settings?.apiKey ?? managedCredential?.apiKey;
-  const baseURL = params.settings?.baseURL ?? managedCredential?.baseURL;
-  return {
-    ...(apiKey ? { apiKey } : {}),
-    ...(baseURL ? { baseURL } : {}),
-    ...(params.settings?.timeoutMs !== undefined
-      ? { timeoutMs: params.settings.timeoutMs }
-      : {}),
-    ...(managedCredential?.baseURL !== undefined
-      ? { extra: { ...extra, managedGateway: true } }
-      : {}),
-    ...(managedCredential?.baseURL === undefined &&
-    Object.keys(extra).length > 0
-      ? { extra }
-      : {}),
-  };
-}
-
-function mergeProviderFactoryOptions(
-  base: ProviderFactoryOptions | undefined,
-  override: ProviderFactoryOptions,
-): ProviderFactoryOptions {
-  const canonicalOverride = base?.extra?.gemini === undefined
-    ? override
-    : Object.fromEntries(
-        Object.entries(override).filter(
-          ([key]) => key !== "apiKey" && key !== "baseURL",
-        ),
-      ) as ProviderFactoryOptions;
-  const mergedExtra = {
-    ...(base?.extra ?? {}),
-    ...(canonicalOverride.extra ?? {}),
-  };
-  return {
-    ...(base ?? {}),
-    ...canonicalOverride,
-    ...(Object.keys(mergedExtra).length > 0 ? { extra: mergedExtra } : {}),
-  };
 }
 
 export const DEFAULT_LEGACY_EVENT_QUEUE_DEPTH = 1024;
@@ -3045,7 +2800,6 @@ export class Session {
       "unknown";
 
     let preparedSwitch: PreparedProviderBinding;
-    let targetProviderSettings: ResolvedProviderSettings | undefined;
     try {
       const configStore = (this.services as Partial<SessionServices>)
         .configStore;
@@ -3060,43 +2814,10 @@ export class Session {
         provider: admittedSelection.provider,
         model: admittedSelection.model,
       });
-      const targetNormalizedProvider = admittedSelection.provider;
-      const reusableLiveProviderOptions =
-        providerService.committedFactoryOptions(targetNormalizedProvider);
-      targetProviderSettings =
-        configSnapshot !== undefined
-          ? resolveProviderSettings(
-              targetNormalizedProvider,
-              configSnapshot,
-              providerService.environment(),
-            )
-          : undefined;
-      const settingsOptions = await providerFactoryOptionsFromSettings({
-        provider: targetNormalizedProvider,
-        model: admittedPending.model,
-        settings: targetProviderSettings,
-        authBackend: this.services.authBackend,
-        authSubscriptionTier: this.services.authSubscriptionTier,
-        managedKeysEnabled:
-          configSnapshot === undefined
-            ? false
-            : resolveAuthManagedKeysEnabled(configSnapshot),
-        sessionId: this.conversationId,
-        reusableApiKey: reusableLiveProviderOptions?.apiKey,
-        executionAdmissionRequired: this.services.admissionRequired !== false,
-      });
       preparedSwitch = await providerService.prepare(
         {
           provider: admittedPending.provider,
           model: admittedPending.model,
-        },
-        {
-          ...mergeProviderFactoryOptions(
-            reusableLiveProviderOptions,
-            settingsOptions,
-          ),
-          model: settingsOptions.model ?? admittedPending.model,
-          tools: this.services.registry.toLLMTools(),
         },
       );
     } catch (error) {
@@ -3124,12 +2845,8 @@ export class Session {
       this.services.modelsManager,
       preparedSwitch.binding.model,
     );
-    const preparedSwitchOptions = preparedSwitch.binding.factoryOptions;
     const nextModelInfo =
-      resolveBuiltInProviderSlug(preparedSwitch.binding.provider) ===
-        "openrouter" &&
-      isManagedCredentialProviderOptions(preparedSwitchOptions) &&
-      targetProviderSettings?.maxOutputTokens === undefined
+      preparedSwitch.managedDefaultOutputCap
         ? capManagedOpenRouterModelInfo(rawNextModelInfo)
         : rawNextModelInfo;
     const nextBaseInstructions = await buildBaseInstructionsForModel({

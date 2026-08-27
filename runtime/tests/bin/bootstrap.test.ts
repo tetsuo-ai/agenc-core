@@ -2256,7 +2256,7 @@ describe("bootstrapLocalRuntimeSession", () => {
     }
   });
 
-  it("uses AuthBackend-managed keys and subscription tier in provider startup", async () => {
+  it("defers managed-key vending until the first provider operation", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
     const calls: string[] = [];
@@ -2331,15 +2331,20 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(createProviderSpy).toHaveBeenCalledWith(
         "openrouter",
         expect.objectContaining({
-          apiKey: "managed-key",
-          baseURL: "https://llm.agenc.tech",
-          model: "openrouter/x-ai/grok-4.3",
+          model: "x-ai/grok-4.3",
+          extra: expect.objectContaining({
+            authBackend,
+            managedCredential: true,
+            maxTokens: 2_048,
+            sessionId: "conv-auth",
+            subscriptionTier: "pro",
+          }),
         }),
       );
-      expect(calls).toEqual([
-        "getSubscriptionTier:conv-auth",
-        "vendKey:openrouter:conv-auth",
-      ]);
+      const startupOptions = createProviderSpy.mock.calls[0]?.[1];
+      expect(startupOptions).not.toHaveProperty("apiKey");
+      expect(startupOptions).not.toHaveProperty("baseURL");
+      expect(calls).toEqual(["getSubscriptionTier:conv-auth"]);
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */
@@ -2970,7 +2975,6 @@ describe("bootstrapLocalRuntimeSession", () => {
       expect(createProviderSpy).toHaveBeenCalledWith(
         "agenc",
         expect.objectContaining({
-          baseURL: "http://127.0.0.1:8000/v1",
           model: "agenc",
           extra: expect.objectContaining({
             authBackend,
@@ -2978,6 +2982,9 @@ describe("bootstrapLocalRuntimeSession", () => {
             subscriptionTier: "team",
           }),
         }),
+      );
+      expect(createProviderSpy.mock.calls[0]?.[1]).not.toHaveProperty(
+        "baseURL",
       );
       expect(calls).toEqual([
         "getSubscriptionTier:conv-agenc-provider",

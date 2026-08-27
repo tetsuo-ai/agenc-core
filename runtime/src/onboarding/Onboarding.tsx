@@ -42,18 +42,12 @@ import {
   type BuiltInProviderSlug,
 } from "../llm/registry/provider-info.js";
 import {
-  GROK_OAUTH_CREDENTIAL_PROVENANCE,
-  missingProviderCredentialEnvironmentLabel,
-  providerCredentialEnvironmentProvenance,
-  resolveProviderBaseURLEnvironment,
-  resolveProviderCredentialEnvironment,
   type ProviderCredentialProvenance,
 } from "../llm/registry/provider-ingress.js";
-import { resolveGrokProviderCredential } from "../llm/xai-capability-config.js";
 import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
 import { readLocalByokCredential } from "../auth/native-credentials.js";
-import { resolveProviderFactoryOptions } from "../llm/provider-options.js";
+import { resolveProviderCredentialAuthority } from "../llm/provider-options.js";
 import {
   geminiEndpointFor,
 } from "../llm/providers/gemini/endpoint-plan.js";
@@ -1084,21 +1078,6 @@ function geminiCredentialSourceLabel(
     : plan.source;
 }
 
-function geminiCredentialProvenance(
-  plan: GeminiCredentialPlan,
-): ProviderConnectionCredentialProvenance | undefined {
-  if (
-    plan.kind !== "api-key" ||
-    (plan.source !== "GEMINI_API_KEY" && plan.source !== "GOOGLE_API_KEY")
-  ) {
-    return undefined;
-  }
-  return {
-    kind: "environment",
-    fields: [{ role: "apiKey", envVar: plan.source }],
-  };
-}
-
 function resolveOnboardingGeminiCredentialPlan(
   context: FirstRunOnboardingContext,
 ): GeminiCredentialPlan {
@@ -1121,55 +1100,65 @@ export async function checkOnboardingProviderConnection(
     context.agencHome,
   );
   const environment = ingress.environment;
-  const settings = provider === "gemini"
-    ? undefined
-    : resolveProviderSettings(provider, context.config, environment);
-  const geminiBaseURL = provider === "gemini"
-    ? resolveProviderBaseURLEnvironment(provider, environment)?.value ??
-      readProviderConfig(context.config, provider)?.base_url?.trim()
-    : undefined;
+  const settings = resolveProviderSettings(
+    provider,
+    context.config,
+    environment,
+  );
+  const savedByok = readLocalByokCredential(ingress.home, provider)?.apiKey;
+  let authority: ReturnType<typeof resolveProviderCredentialAuthority>;
+  try {
+    authority = resolveProviderCredentialAuthority(
+      provider,
+      {
+        model,
+        credentialHome: ingress.home,
+        ...(settings?.baseURL !== undefined
+          ? { baseURL: settings.baseURL }
+          : {}),
+      },
+      environment,
+      {
+        ...(savedByok !== undefined ? { savedApiKey: savedByok } : {}),
+      },
+    );
+  } catch (error) {
+    return {
+      provider,
+      model,
+      status: "credentials-required",
+      ok: false,
+      detail: error instanceof Error ? error.message : String(error),
+      credentialLabel:
+        providerCredentialEnvironmentLabel(provider) ?? "provider credentials",
+    };
+  }
   let geminiRuntime: ReturnType<typeof readGeminiRuntimeOptions> = undefined;
   if (provider === "gemini") {
-    try {
-      const factoryOptions = resolveProviderFactoryOptions(
-        provider,
-        {
-          model,
-          credentialHome: ingress.home,
-          ...(geminiBaseURL !== undefined ? { baseURL: geminiBaseURL } : {}),
-        },
-        environment,
-        {
-          savedApiKey: readLocalByokCredential(ingress.home, "gemini")?.apiKey,
-        },
-      );
-      geminiRuntime = readGeminiRuntimeOptions(factoryOptions.extra);
-      if (geminiRuntime === undefined) {
-        throw new Error("Gemini runtime authority was not resolved");
-      }
-    } catch (error) {
+    geminiRuntime = readGeminiRuntimeOptions(authority.factoryOptions.extra);
+    if (geminiRuntime === undefined) {
       return {
         provider,
         model,
         status: "credentials-required",
         ok: false,
-        detail: error instanceof Error ? error.message : String(error),
+        detail: "Gemini runtime authority was not resolved",
         credentialLabel: configuredGeminiCredentialLabel(environment),
       };
     }
   }
   const baseURL = geminiRuntime === undefined
-    ? settings?.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS[provider]
+    ? authority.factoryOptions.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS[provider]
     : geminiEndpointFor(geminiRuntime.endpointPlan);
-  const credentialEnvironment = provider === "gemini"
-    ? undefined
-    : resolveProviderCredentialEnvironment(provider, environment);
   const credentialLabel = provider === "gemini"
     ? geminiCredentialLabel(geminiRuntime!.credentialPlan)
-    : providerCredentialEnvironmentLabel(provider);
-  const environmentProvenance = credentialEnvironment === undefined
-    ? undefined
-    : providerCredentialEnvironmentProvenance(credentialEnvironment);
+    : providerCredentialEnvironmentLabel(provider) ??
+      (authority.credential.status === "missing"
+        ? authority.credential.missingLabel
+        : undefined);
+  const credentialProvenance = "provenance" in authority.credential
+    ? authority.credential.provenance
+    : undefined;
   const onboarding = providerOnboardingInfo(provider);
 
   if (onboarding.access === "managed") {
@@ -1242,7 +1231,10 @@ export async function checkOnboardingProviderConnection(
   }
 
   if (onboarding.access === "environment") {
-    if (credentialEnvironment?.kind !== "aws-sigv4") {
+    if (
+      authority.credential.status !== "ready" &&
+      authority.credential.status !== "missing"
+    ) {
       return {
         provider,
         model,
@@ -1253,20 +1245,16 @@ export async function checkOnboardingProviderConnection(
         baseURL,
       };
     }
-    if (credentialEnvironment.missingRequired.length > 0) {
-      const missingLabel = missingProviderCredentialEnvironmentLabel(
-        provider,
-        environment,
-      );
+    if (authority.credential.status === "missing") {
       return {
         provider,
         model,
         status: "credentials-required",
         ok: false,
-        detail: `Set ${missingLabel ?? credentialLabel ?? "the required provider credentials"} before the first model turn.`,
+        detail: `Set ${authority.credential.missingLabel} before the first model turn.`,
         ...(credentialLabel !== undefined ? { credentialLabel } : {}),
-        ...(environmentProvenance !== undefined
-          ? { credentialProvenance: environmentProvenance }
+        ...(credentialProvenance !== undefined
+          ? { credentialProvenance }
           : {}),
         baseURL,
       };
@@ -1279,8 +1267,8 @@ export async function checkOnboardingProviderConnection(
       detail:
         "Required AWS SigV4 credential fields are present. AgenC will verify them on the first signed Bedrock request.",
       ...(credentialLabel !== undefined ? { credentialLabel } : {}),
-      ...(environmentProvenance !== undefined
-        ? { credentialProvenance: environmentProvenance }
+      ...(credentialProvenance !== undefined
+        ? { credentialProvenance }
         : {}),
       baseURL,
     };
@@ -1288,7 +1276,6 @@ export async function checkOnboardingProviderConnection(
 
   if (provider === "gemini") {
     const credentialPlan = geminiRuntime!.credentialPlan;
-    const credentialProvenance = geminiCredentialProvenance(credentialPlan);
     if (credentialPlan.kind === "none") {
       return {
         provider,
@@ -1355,6 +1342,7 @@ export async function checkOnboardingProviderConnection(
 
   if (
     onboarding.supportsManagedKeyAccess &&
+    authority.credential.status === "missing" &&
     resolveAuthManagedKeysEnabled(context.config) &&
     context.remoteAuthSessionContext !== undefined &&
     hasRemoteAuthSessionSync(context.remoteAuthSessionContext)
@@ -1401,25 +1389,27 @@ export async function checkOnboardingProviderConnection(
     };
   }
 
-  const grokCredential = provider === "grok"
-    ? resolveGrokProviderCredential(ingress.home, undefined, environment)
-    : undefined;
-  const apiKey = provider === "grok"
-    ? grokCredential?.value
-    : settings?.apiKey?.trim();
-  const credentialProvenance: ProviderConnectionCredentialProvenance | undefined =
-    grokCredential?.isOAuth
-      ? GROK_OAUTH_CREDENTIAL_PROVENANCE
-      : environmentProvenance !== undefined &&
-          apiKey !== undefined &&
-          credentialEnvironment?.kind === "api-key" &&
-          credentialEnvironment.apiKey?.value === apiKey
-        ? environmentProvenance
-        : undefined;
+  const apiKey = authority.factoryOptions.apiKey?.trim();
+  if (
+    authority.credential.status === "ready" &&
+    authority.credential.mode === "openai-oauth"
+  ) {
+    return {
+      provider,
+      model,
+      status: "ready",
+      ok: true,
+      detail:
+        "OpenAI sign-in is configured. AgenC will verify it on the first model request.",
+      ...(credentialLabel !== undefined ? { credentialLabel } : {}),
+      baseURL,
+    };
+  }
   if (apiKey !== undefined && apiKey.length > 0) {
     if (
       provider === "grok" &&
-      credentialProvenance?.kind === "oauth" &&
+      authority.credential.status === "ready" &&
+      authority.credential.mode === "xai-oauth" &&
       !isTrustedXaiOauthInferenceBaseUrl(baseURL)
     ) {
       return {

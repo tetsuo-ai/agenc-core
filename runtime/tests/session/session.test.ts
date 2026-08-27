@@ -98,6 +98,9 @@ import { extractBundledSkillFiles } from "../skills/bundled-extraction-registry.
 import { getCurrentBundledSkillExtractionRoot } from "../skills/bundled-root-authority.js";
 import { ConfigStore } from "../config/store.js";
 import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import { SessionProviderService } from "./provider-service.js";
+import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
+import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
 
 (globalThis as Record<string, unknown>).MACRO ??= {
   VERSION: "test-version",
@@ -233,16 +236,23 @@ function buildSession(
     config?: Config;
     modelInfo?: ModelInfo;
     mcpManagerOwnership?: SessionOpts["mcpManagerOwnership"];
+    readSavedApiKey?: (provider: string) => Promise<string | undefined>;
   } = {},
 ): Session {
   const config = overrides.config ?? mkConfig();
-  const configStore =
-    overrides.services?.configStore ??
-    new ConfigStore({
-      home: join(tmpdir(), "agenc-session-test-home"),
-      cwd: config.cwd,
-      env: {},
-    });
+  const initialSessionConfiguration =
+    overrides.sessionConfiguration ?? mkSessionConfiguration();
+  const suppliedConfigStore = overrides.services?.configStore;
+  const configStore = suppliedConfigStore instanceof ConfigStore
+    ? suppliedConfigStore
+    : new ConfigStore({
+        home: join(tmpdir(), "agenc-session-test-home"),
+        cwd: config.cwd,
+        env: {},
+        ...(suppliedConfigStore === undefined
+          ? {}
+          : { base: suppliedConfigStore.current() }),
+      });
   const services = {
     admissionRequired: false,
     mcpConnectionManager: {
@@ -271,22 +281,80 @@ function buildSession(
       ctxWithPermissionMode("default"),
     ),
     provider: mkProvider(),
+    providerEnvironment: {
+      OPENAI_API_KEY: "test-key",
+      XAI_API_KEY: "test-key",
+    },
     registry: {
       tools: [],
       toLLMTools: () => [],
       dispatch: async () => ({ content: "", isError: false }),
     },
     ...(overrides.services ?? {}),
+    configStore,
   } as unknown as SessionServices;
+  const providerEnvironment = services.providerEnvironment ?? {};
+  const providerService = services.providerService ?? new SessionProviderService({
+    initialProvider: services.provider,
+    ...(initialSessionConfiguration.provider?.slug !== undefined
+      ? { initialProviderName: initialSessionConfiguration.provider.slug }
+      : {}),
+    ...(initialSessionConfiguration.collaborationMode.model !== undefined
+      ? { initialModel: initialSessionConfiguration.collaborationMode.model }
+      : {}),
+    environment: providerEnvironment,
+    ...(overrides.readSavedApiKey !== undefined
+      ? { readSavedApiKey: overrides.readSavedApiKey }
+      : {}),
+    ...(services.authBackend !== undefined
+      ? { authBackend: services.authBackend }
+      : {}),
+    sessionId: "conv-test",
+    ...(services.authSubscriptionTier !== undefined
+      ? { subscriptionTier: services.authSubscriptionTier }
+      : {}),
+    resolvePreparationRequest: (selection) => {
+      const currentConfig = configStore.current();
+      const runtimeRequest = resolveProviderRuntimeRequest({
+        provider: selection.provider,
+        model: selection.model,
+        config: currentConfig,
+        environment: providerEnvironment,
+        ...(configStore instanceof ConfigStore
+          ? { credentialHome: configStore.homeContext }
+          : {}),
+        executionAdmissionRequired: services.admissionRequired !== false,
+      });
+      return {
+        requested: runtimeRequest.requested,
+        runtime: {
+          managedKeysEnabled:
+            currentConfig.auth?.managedKeys?.enabled === true,
+          freeManagedCredential:
+            services.authSubscriptionTier === "free" &&
+            isFreeSubscriptionManagedModel(
+              selection.provider,
+              selection.model,
+            ),
+          applyManagedDefaultOutputCap:
+            selection.provider === "openrouter" &&
+            runtimeRequest.settings?.maxOutputTokens === undefined,
+        },
+      };
+    },
+  });
+  const servicesWithProviderAuthority = {
+    ...services,
+    providerService,
+  };
   const opts: SessionOpts = {
     conversationId: "conv-test",
     initialState: {
-      sessionConfiguration:
-        overrides.sessionConfiguration ?? mkSessionConfiguration(),
+      sessionConfiguration: initialSessionConfiguration,
       history: [],
     },
     features: mkFeatures(),
-    services,
+    services: servicesWithProviderAuthority,
     ...(overrides.mcpManagerOwnership !== undefined
       ? { mcpManagerOwnership: overrides.mcpManagerOwnership }
       : {}),
@@ -935,6 +1003,7 @@ describe("Session.consumePendingProviderSwitch", () => {
       const session = buildSession({
         services: {
           provider: startingProvider,
+          providerEnvironment: {},
         },
       });
       session.setPendingProviderSwitch({
@@ -1067,6 +1136,8 @@ describe("Session.consumePendingProviderSwitch", () => {
         providerEnvironment: { GEMINI_BASE_URL: nativeBaseURL },
         configStore: { current: () => ({}) },
       },
+      readSavedApiKey: async (provider) =>
+        provider === "gemini" ? "saved-key" : undefined,
     });
 
     session.setPendingProviderSwitch({
@@ -1173,20 +1244,24 @@ describe("Session.consumePendingProviderSwitch", () => {
         expect(applied).toEqual({
           applied: true,
           provider: "openrouter",
-          model: "openrouter/openai/gpt-5-nano",
+          model: "openai/gpt-5-nano",
         });
-        expect(calls).toEqual(["vendKey:openrouter:conv-test"]);
+        expect(calls).toEqual([]);
         expect(
           readProviderFactoryOptions(session.services.provider),
         ).toMatchObject({
-          apiKey: "managed-openrouter-key",
-          baseURL: "https://llm.agenc.tech",
-          model: "openrouter/openai/gpt-5-nano",
+          model: "openai/gpt-5-nano",
           extra: {
-            managedGateway: true,
+            managedCredential: true,
             maxTokens: 2048,
           },
         });
+        expect(
+          readProviderFactoryOptions(session.services.provider),
+        ).not.toHaveProperty("apiKey");
+        expect(
+          readProviderFactoryOptions(session.services.provider),
+        ).not.toHaveProperty("baseURL");
         expect(session.modelInfo.maxOutputTokens).toBe(2048);
         expect(session.modelInfo.maxOutputTokensUpperLimit).toBe(2048);
         expect(session.modelInfo.maxOutputTokensCappedDefault).toBe(true);
@@ -1257,17 +1332,19 @@ describe("Session.consumePendingProviderSwitch", () => {
           provider: "openrouter",
           model: "openai/gpt-5-nano",
         });
-        expect(calls).toEqual(["vendKey:openrouter:conv-test"]);
+        expect(calls).toEqual([]);
         expect(
           readProviderFactoryOptions(session.services.provider),
         ).toMatchObject({
-          apiKey: "managed-openrouter-key",
           model: "openai/gpt-5-nano",
           extra: {
             managedCredential: true,
             maxTokens: 2048,
           },
         });
+        expect(
+          readProviderFactoryOptions(session.services.provider),
+        ).not.toHaveProperty("apiKey");
         expect(session.modelInfo.maxOutputTokens).toBe(2048);
         expect(session.modelInfo.maxOutputTokensUpperLimit).toBe(2048);
         expect(session.modelInfo.maxOutputTokensCappedDefault).toBe(true);
@@ -1436,7 +1513,7 @@ describe("Session.consumePendingProviderSwitch", () => {
     expect(session.services.provider).toBe(startingProvider);
   });
 
-  it("rebuilds the current provider from the live provider snapshot instead of OPENAI globals", async () => {
+  it("rebuilds the current provider from canonical config instead of live or process-global state", async () => {
     await withEnv(
       {
         OPENAI_API_KEY: undefined,
@@ -1451,6 +1528,10 @@ describe("Session.consumePendingProviderSwitch", () => {
               baseURL: "https://router.example/api/v1",
               model: "openai/gpt-5-mini",
             }),
+            providerEnvironment: {
+              OPENROUTER_API_KEY: "canonical-openrouter-key",
+              OPENROUTER_BASE_URL: "https://canonical-router.example/v1",
+            },
           },
         });
         session.setPendingProviderSwitch({
@@ -1471,8 +1552,8 @@ describe("Session.consumePendingProviderSwitch", () => {
         expect(
           readProviderFactoryOptions(session.services.provider),
         ).toMatchObject({
-          apiKey: "or-test",
-          baseURL: "https://router.example/api/v1",
+          apiKey: "canonical-openrouter-key",
+          baseURL: "https://canonical-router.example/v1",
           model: "openai/gpt-5",
         });
       },

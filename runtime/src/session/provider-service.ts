@@ -9,11 +9,16 @@ import {
   type ProviderName,
 } from "../llm/provider.js";
 import {
-  resolveProviderFactoryOptions,
+  requireProviderRuntimeCredential,
+  resolveProviderRuntimeAuthority,
   snapshotProviderEnvironment,
   type ProviderEnvironment,
+  type ReadSavedProviderApiKey,
 } from "../llm/provider-options.js";
 import type { LLMProvider } from "../llm/types.js";
+import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
+
+export type { ReadSavedProviderApiKey } from "../llm/provider-options.js";
 
 export interface ProviderSelection {
   readonly provider: string;
@@ -31,11 +36,23 @@ export interface ProviderBinding {
 export interface PreparedProviderBinding {
   readonly binding: ProviderBinding;
   readonly expectedRevision: number;
+  readonly managedDefaultOutputCap: boolean;
 }
 
-export type ReadSavedProviderApiKey = (
-  provider: ProviderName,
-) => Promise<string | undefined>;
+export interface ProviderPreparationRuntime {
+  readonly managedKeysEnabled?: boolean;
+  readonly freeManagedCredential?: boolean;
+  readonly applyManagedDefaultOutputCap?: boolean;
+}
+
+export interface ProviderPreparationRequest {
+  readonly requested: ProviderFactoryOptions;
+  readonly runtime?: ProviderPreparationRuntime;
+}
+
+export type ResolveProviderPreparationRequest = (
+  selection: ProviderSelection,
+) => ProviderPreparationRequest | Promise<ProviderPreparationRequest>;
 
 function firstNonEmpty(
   ...values: Array<string | undefined>
@@ -100,10 +117,12 @@ export class SessionProviderService {
   readonly #environment: ProviderEnvironment;
   readonly #credentialHome: ProviderFactoryOptions["credentialHome"];
   readonly #readSavedApiKey: ReadSavedProviderApiKey | undefined;
-  readonly #committedFactoryOptionsByProvider = new Map<
-    ProviderName,
-    ProviderFactoryOptions
-  >();
+  readonly #authBackend: AuthBackend | undefined;
+  readonly #sessionId: string | undefined;
+  readonly #subscriptionTier: AuthSubscriptionTier | undefined;
+  readonly #resolvePreparationRequest:
+    | ResolveProviderPreparationRequest
+    | undefined;
   #binding: ProviderBinding;
 
   constructor(params: {
@@ -112,6 +131,10 @@ export class SessionProviderService {
     readonly initialModel?: string;
     readonly environment?: ProviderEnvironment;
     readonly readSavedApiKey?: ReadSavedProviderApiKey;
+    readonly authBackend?: AuthBackend;
+    readonly sessionId?: string;
+    readonly subscriptionTier?: AuthSubscriptionTier;
+    readonly resolvePreparationRequest?: ResolveProviderPreparationRequest;
   }) {
     this.#environment = snapshotProviderEnvironment(params.environment ?? {});
     this.#binding = bindingFromProvider({
@@ -125,13 +148,10 @@ export class SessionProviderService {
     });
     this.#credentialHome = this.#binding.factoryOptions.credentialHome;
     this.#readSavedApiKey = params.readSavedApiKey;
-    const initialProvider = resolveBuiltInProviderSlug(this.#binding.provider);
-    if (initialProvider !== undefined) {
-      this.#committedFactoryOptionsByProvider.set(
-        initialProvider,
-        cloneOptions(this.#binding.factoryOptions),
-      );
-    }
+    this.#authBackend = params.authBackend;
+    this.#sessionId = params.sessionId;
+    this.#subscriptionTier = params.subscriptionTier;
+    this.#resolvePreparationRequest = params.resolvePreparationRequest;
   }
 
   current(): ProviderBinding {
@@ -142,18 +162,10 @@ export class SessionProviderService {
     return this.#environment;
   }
 
-  committedFactoryOptions(
-    provider: string,
-  ): ProviderFactoryOptions | undefined {
-    const normalized = resolveBuiltInProviderSlug(provider);
-    if (normalized === undefined) return undefined;
-    const options = this.#committedFactoryOptionsByProvider.get(normalized);
-    return options === undefined ? undefined : cloneOptions(options);
-  }
-
   async prepare(
     selection: ProviderSelection,
-    requested: ProviderFactoryOptions,
+    requested?: ProviderFactoryOptions,
+    runtime: ProviderPreparationRuntime = {},
   ): Promise<PreparedProviderBinding> {
     const provider = resolveBuiltInProviderSlug(selection.provider);
     if (provider === undefined) {
@@ -164,25 +176,51 @@ export class SessionProviderService {
       throw new Error(`${provider} provider switch requires an explicit model`);
     }
     const expectedRevision = this.#binding.revision;
-    const savedApiKey =
-      this.#readSavedApiKey === undefined ||
-      this.#committedFactoryOptionsByProvider.has(provider)
-        ? undefined
-        : await this.#readSavedApiKey(provider);
-    const credentialHome = requested.credentialHome ?? this.#credentialHome;
-    const resolved = resolveProviderFactoryOptions(
+    const preparation = requested === undefined
+      ? await this.#resolvePreparationRequest?.({ provider, model })
+      : { requested, runtime };
+    if (preparation === undefined) {
+      throw new Error(
+        `${provider} provider switch has no canonical preparation request`,
+      );
+    }
+    const requestedOptions = preparation.requested;
+    const runtimeOptions = preparation.runtime ?? {};
+    const credentialHome = requestedOptions.credentialHome ?? this.#credentialHome;
+    const authority = await resolveProviderRuntimeAuthority(
       provider,
       {
-        ...requested,
+        ...requestedOptions,
         ...(credentialHome !== undefined ? { credentialHome } : {}),
         model,
       },
       this.#environment,
-      savedApiKey === undefined ? {} : { savedApiKey },
+      {
+        ...(this.#readSavedApiKey !== undefined
+          ? { readSavedApiKey: this.#readSavedApiKey }
+          : {}),
+        ...(this.#authBackend !== undefined
+          ? { authBackend: this.#authBackend }
+          : {}),
+        ...(this.#sessionId !== undefined ? { sessionId: this.#sessionId } : {}),
+        ...(this.#subscriptionTier !== undefined
+          ? { subscriptionTier: this.#subscriptionTier }
+          : {}),
+        ...(runtimeOptions.managedKeysEnabled !== undefined
+          ? { managedKeysEnabled: runtimeOptions.managedKeysEnabled }
+          : {}),
+        ...(runtimeOptions.freeManagedCredential !== undefined
+          ? { freeManagedCredential: runtimeOptions.freeManagedCredential }
+          : {}),
+      },
     );
-    const instance = createProvider(provider, resolved);
+    requireProviderRuntimeCredential(provider, authority);
+    const instance = createProvider(provider, authority.factoryOptions);
     return Object.freeze({
       expectedRevision,
+      managedDefaultOutputCap:
+        authority.managedCredential &&
+        runtimeOptions.applyManagedDefaultOutputCap === true,
       binding: bindingFromProvider({
         provider: instance,
         providerName: provider,
@@ -199,11 +237,7 @@ export class SessionProviderService {
       );
     }
     this.#binding = prepared.binding;
-    const provider = assertBuiltInProviderBinding(this.#binding);
-    this.#committedFactoryOptionsByProvider.set(
-      provider,
-      cloneOptions(this.#binding.factoryOptions),
-    );
+    assertBuiltInProviderBinding(this.#binding);
     return this.#binding;
   }
 }

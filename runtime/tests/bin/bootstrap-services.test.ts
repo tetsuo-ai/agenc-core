@@ -49,6 +49,7 @@ import type { ExecutionAdmissionClient } from "../budget/admission-client.js";
 import type { AdmissionJournalEvent } from "../budget/admission-types.js";
 import type { Event } from "../session/event-log.js";
 import type { Session } from "../session/session.js";
+import { createProvider } from "../llm/provider.js";
 import { normalizeLspServerConfig } from "../services/lsp/config.js";
 import {
   _resetLspManagerForTesting,
@@ -843,22 +844,11 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
     const workspace = mkdtempSync(join(tmpdir(), "agenc-policy-bootstrap-ws-"));
     try {
       const handle = buildBootstrapSessionServices({
-        provider: {
-          name: "anthropic",
-          chat: async () => ({
-            content: "ok",
-            toolCalls: [],
-            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-          }),
-          chatStream: async () => ({
-            content: "ok",
-            toolCalls: [],
-            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
-          }),
-          healthCheck: async () => true,
-        },
+        provider: createProvider("anthropic", {
+          apiKey: "direct-policy-key",
+          model: "claude-opus-4-7",
+        }),
         providerName: "anthropic",
-        apiKey: "direct-policy-key",
         registry: { tools: [] } as never,
         mcpManager: {} as never,
         unifiedExecManager: {} as never,
@@ -1241,7 +1231,6 @@ describe("buildBootstrapSessionServices policy limits wiring", () => {
         healthCheck: async () => true,
       },
       providerName: "anthropic",
-      apiKey: "direct-policy-key",
       registry: { tools: [] } as never,
       mcpManager: {} as never,
       unifiedExecManager: {} as never,

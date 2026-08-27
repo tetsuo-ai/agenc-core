@@ -115,6 +115,7 @@ import {
 import {
   SessionProviderService,
   type ReadSavedProviderApiKey,
+  type ResolveProviderPreparationRequest,
 } from "../session/provider-service.js";
 import { snapshotProviderEnvironment } from "../llm/provider-options.js";
 import { logForDebugging } from "../utils/debug.js";
@@ -132,7 +133,6 @@ interface BootstrapShellSnapshot {
 export interface BootstrapSessionServicesOptions {
   readonly provider: LLMProvider;
   readonly providerName: string;
-  readonly apiKey?: string;
   readonly authBackend?: AuthBackend;
   readonly authSubscriptionTier?: AuthSubscriptionTier;
   readonly registry: ToolRegistry;
@@ -150,6 +150,7 @@ export interface BootstrapSessionServicesOptions {
   readonly conversationId: string;
   readonly model: string;
   readonly readSavedApiKey?: ReadSavedProviderApiKey;
+  readonly resolveProviderPreparationRequest?: ResolveProviderPreparationRequest;
   readonly sessionConfiguration: SessionConfiguration;
   readonly runtimeOptions: AgentRuntimeOptions;
   readonly commandExecutionAuthority: CommandExecutionAuthority;
@@ -563,7 +564,6 @@ function createShellSnapshotTx(
 function createAuthManager(opts: {
   readonly provider: LLMProvider;
   readonly providerName: string;
-  readonly apiKey?: string;
 }): AuthManager {
   const providerOptions = readProviderFactoryOptions(opts.provider);
   const authMode = readRecord(providerOptions.extra)?.authMode;
@@ -577,7 +577,6 @@ function createAuthManager(opts: {
   if (
     providerName === "ollama" ||
     ((providerName === "lmstudio" || providerName === "openai-compatible") &&
-      !opts.apiKey &&
       !providerOptions.apiKey)
   ) {
     return { mode: "local_no_auth" };
@@ -661,7 +660,7 @@ export function buildBootstrapSessionServices(
   );
   const modelClient = new BootstrapModelClient(opts.provider);
   const providerOptions = readProviderFactoryOptions(opts.provider);
-  const policyApiKey = opts.apiKey ?? providerOptions.apiKey;
+  const policyApiKey = providerOptions.apiKey;
   const policyLimits = configurePolicyLimitsService({
     agencHome: opts.agencHome,
     providerName: opts.providerName,
@@ -819,6 +818,19 @@ export function buildBootstrapSessionServices(
     ...(opts.readSavedApiKey !== undefined
       ? { readSavedApiKey: opts.readSavedApiKey }
       : {}),
+    ...(opts.authBackend !== undefined
+      ? { authBackend: opts.authBackend }
+      : {}),
+    sessionId: opts.conversationId,
+    ...(opts.authSubscriptionTier !== undefined
+      ? { subscriptionTier: opts.authSubscriptionTier }
+      : {}),
+    ...(opts.resolveProviderPreparationRequest !== undefined
+      ? {
+          resolvePreparationRequest:
+            opts.resolveProviderPreparationRequest,
+        }
+      : {}),
   });
 
   const services: SessionServices = {
@@ -849,7 +861,6 @@ export function buildBootstrapSessionServices(
     authManager: createAuthManager({
       provider: opts.provider,
       providerName: opts.providerName,
-      ...(opts.apiKey !== undefined ? { apiKey: opts.apiKey } : {}),
     }),
     ...(opts.authBackend !== undefined
       ? { authBackend: opts.authBackend }

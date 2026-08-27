@@ -83,7 +83,11 @@ import {
   type SessionOpts,
   type SessionServices,
 } from "./session.js";
-import { bindingFromProvider } from "./provider-service.js";
+import {
+  bindingFromProvider,
+  SessionProviderService,
+} from "./provider-service.js";
+import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
 import type {
   Config,
   ManagedFeatures,
@@ -579,9 +583,31 @@ function mkSession(opts: {
     ...(opts.skillsManager ? { skillsManager: opts.skillsManager } : {}),
     configStore,
   } as unknown as SessionServices;
+  const providerEnvironment = services.providerEnvironment ?? {};
+  const providerService = new SessionProviderService({
+    initialProvider: services.provider,
+    ...(state.sessionConfiguration.provider?.slug !== undefined
+      ? { initialProviderName: state.sessionConfiguration.provider.slug }
+      : {}),
+    ...(state.sessionConfiguration.collaborationMode.model !== undefined
+      ? { initialModel: state.sessionConfiguration.collaborationMode.model }
+      : {}),
+    environment: providerEnvironment,
+    sessionId: "conv-test",
+    resolvePreparationRequest: (selection) => ({
+      requested: resolveProviderRuntimeRequest({
+        provider: selection.provider,
+        model: selection.model,
+        config: configStore.current(),
+        environment: providerEnvironment,
+        credentialHome: configStore.homeContext,
+        executionAdmissionRequired: services.admissionRequired !== false,
+      }).requested,
+    }),
+  });
   const session = new Session({
     conversationId: "conv-test",
-    services,
+    services: { ...services, providerService },
     initialState: state as unknown as SessionOpts["initialState"],
     features: mkFeatures(),
     jsRepl: { id: "repl-test" },

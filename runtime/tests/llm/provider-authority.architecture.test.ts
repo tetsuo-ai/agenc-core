@@ -80,16 +80,19 @@ describe("provider authority architecture", () => {
     );
 
     const configEnv = readFileSync(`${SRC}/config/env.ts`, "utf8");
-    const providerKeyResolver = configEnv.match(
-      /export function resolveProviderApiKey[\s\S]*?\n\}/u,
-    )?.[0];
     const providerBaseResolver = configEnv.match(
       /export function resolveProviderBaseURL[\s\S]*?\n\}/u,
     )?.[0];
-    expect(providerKeyResolver).toMatch(/resolveProviderApiKeyEnvironment/u);
-    expect(providerKeyResolver).not.toMatch(/switch\s*\(/u);
+    expect(configEnv).not.toMatch(/export function resolveProviderApiKey/u);
     expect(providerBaseResolver).toMatch(/resolveProviderBaseURLEnvironment/u);
     expect(providerBaseResolver).not.toMatch(/switch\s*\(/u);
+
+    const providerSettings = readFileSync(
+      `${SRC}/config/resolve-provider.ts`,
+      "utf8",
+    );
+    expect(providerSettings).not.toMatch(/readonly apiKey\?/u);
+    expect(providerSettings).not.toMatch(/resolveProviderApiKeyEnvironment/u);
 
     const discovery = readFileSync(
       `${SRC}/llm/discovery/provider-discovery.ts`,
@@ -146,6 +149,40 @@ describe("provider authority architecture", () => {
     const bootstrap = readFileSync(`${SRC}/bin/bootstrap.ts`, "utf8");
     expect(bootstrap).not.toMatch(/PROVIDER_API_KEY_ENV_HINTS/u);
     expect(bootstrap).not.toMatch(/providerApiKeyEnvHint/u);
+    expect(bootstrap).not.toMatch(
+      /readLocalByokFallback|vendProviderKeyOrUndefined|requireProviderApiKeyOrUndefined/u,
+    );
+    expect(bootstrap).toMatch(/resolveProviderRuntimeAuthority/u);
+
+    const startupSelection = readFileSync(
+      `${SRC}/bin/startup-selection.ts`,
+      "utf8",
+    );
+    expect(startupSelection).not.toMatch(/\bapiKey\b|resolveProviderSettings/u);
+
+    const session = readFileSync(`${SRC}/session/session.ts`, "utf8");
+    const providerService = readFileSync(
+      `${SRC}/session/provider-service.ts`,
+      "utf8",
+    );
+    expect(session).not.toMatch(
+      /providerFactoryOptionsFromSettings|mergeProviderFactoryOptions/u,
+    );
+    expect(providerService).not.toMatch(/committedFactoryOptions/u);
+
+    const providerCommandAccess = readFileSync(
+      `${SRC}/commands/provider-command-access.ts`,
+      "utf8",
+    );
+    expect(providerCommandAccess).toMatch(/resolveProviderRuntimeRequest/u);
+    expect(providerCommandAccess).not.toMatch(/committedFactoryOptions/u);
+    expect(onboarding).toMatch(/resolveProviderCredentialAuthority/u);
+    expect(onboarding).not.toMatch(
+      /resolveGrokProviderCredential|settings\?\.apiKey/u,
+    );
+    expect(
+      readFileSync(`${SRC}/onboarding/useApiKeyVerification.ts`, "utf8"),
+    ).toMatch(/resolveProviderCredentialAuthority/u);
 
     const modelMetadata = readFileSync(
       `${SRC}/llm/model-metadata.ts`,

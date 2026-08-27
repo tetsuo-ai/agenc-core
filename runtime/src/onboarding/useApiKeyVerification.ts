@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 
 import { resolveProviderSettings } from "../config/resolve-provider.js";
 import type { AgenCConfig } from "../config/schema.js";
-import { resolveProviderFactoryOptions } from "../llm/provider-options.js";
+import { resolveProviderCredentialAuthority } from "../llm/provider-options.js";
 import { geminiEndpointFor } from "../llm/providers/gemini/endpoint-plan.js";
 import { readGeminiRuntimeOptions } from "../llm/providers/gemini/runtime-options.js";
 import {
@@ -124,9 +124,9 @@ export async function verifyApiKey(
     params.config,
     params.env,
   );
-  let factoryOptions: ReturnType<typeof resolveProviderFactoryOptions>;
+  let authority: ReturnType<typeof resolveProviderCredentialAuthority>;
   try {
-    factoryOptions = resolveProviderFactoryOptions(
+    authority = resolveProviderCredentialAuthority(
       provider,
       {
         apiKey,
@@ -143,6 +143,7 @@ export async function verifyApiKey(
         : "Provider verification configuration is invalid.",
     };
   }
+  const factoryOptions = authority.factoryOptions;
   let verificationURL: string;
   let headers: Readonly<Record<string, string>>;
   if (provider === "gemini") {

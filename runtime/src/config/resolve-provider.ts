@@ -1,5 +1,4 @@
 import {
-  resolveProviderApiKey as resolveEnvProviderApiKey,
   resolveProviderBaseURL as resolveEnvProviderBaseURL,
   type EnvSnapshot,
 } from "./env.js";
@@ -15,8 +14,6 @@ import type {
   ProviderConfig,
   ProviderFallbackTargetConfig,
 } from "./schema.js";
-import { resolveGrokProviderApiKey } from "../llm/xai-capability-config.js";
-import { resolveSecureStorageHome } from "../utils/secureStorage/home.js";
 
 export {
   BUILT_IN_PROVIDER_BASE_URLS,
@@ -28,7 +25,6 @@ export type { ProviderSlug } from "./provider-model-authority.js";
 
 export interface ResolvedProviderSettings {
   readonly provider: ProviderSlug;
-  readonly apiKey?: string;
   readonly baseURL?: string;
   readonly defaultModel?: string;
   readonly contextWindowTokens?: number;
@@ -60,16 +56,6 @@ export function resolveProviderSettings(
   const slug = resolveBuiltInProviderSlug(provider);
   if (!slug) return undefined;
   const providerConfig = readProviderConfig(config, slug);
-  // Grok: /grok-login OAuth ALWAYS wins over env BYOK (dead keys in the shell
-  // must not shadow subscription access). Other providers: env as before.
-  const apiKey =
-    slug === "grok"
-      ? resolveGrokProviderApiKey(
-          resolveSecureStorageHome(env),
-          resolveEnvProviderApiKey(slug, env),
-          env,
-        )
-      : resolveEnvProviderApiKey(slug, env);
   const envBaseURL = resolveEnvProviderBaseURL(slug, env);
   const configuredBaseURL = providerConfig?.base_url?.trim();
   const baseURL = envBaseURL ?? configuredBaseURL;
@@ -87,7 +73,6 @@ export function resolveProviderSettings(
   );
   return {
     provider: slug,
-    ...(apiKey ? { apiKey } : {}),
     ...(baseURL ? { baseURL } : {}),
     ...(providerConfig?.default_model?.trim()
       ? { defaultModel: providerConfig.default_model.trim() }

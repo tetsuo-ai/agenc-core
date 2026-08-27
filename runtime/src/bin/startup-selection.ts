@@ -6,7 +6,6 @@ import {
   USER_ADDRESSABLE_PERMISSION_MODES,
   type PermissionMode,
 } from "../permissions/types.js";
-import { resolveProviderSettings } from "../config/resolve-provider.js";
 import {
   resolveProviderModelLayer,
   resolveProviderSlugOrThrow,
@@ -41,7 +40,6 @@ export interface StartupSelection {
   readonly profileName?: string;
   readonly provider: ProviderName;
   readonly model: string;
-  readonly apiKey?: string;
 }
 
 export function readStartupCliFlags(
@@ -141,18 +139,15 @@ export function resolvedStartupProfileName(
 }
 
 /**
- * Resolve provider/model/API-key metadata from an already layered canonical
+ * Resolve provider/model metadata from an already layered canonical
  * snapshot. Generic provider/model/profile env and CLI selectors are not read
- * again here: ConfigStore has already projected those authorities. Provider-
- * specific credential and transport env remains runtime input; model env
- * names are not a second selection authority.
+ * again here: ConfigStore has already projected those authorities. Credentials
+ * and provider transport options belong to the runtime provider authority.
  */
 export function resolveCanonicalStartupSelection(params: {
   readonly config: AgenCConfig;
-  readonly env?: NodeJS.ProcessEnv;
   readonly profileName?: string;
 }): StartupSelection {
-  const env = params.env ?? process.env;
   const config = params.config;
   const configuredProvider = config.model_provider?.trim();
   const model = config.model?.trim();
@@ -186,11 +181,6 @@ export function resolveCanonicalStartupSelection(params: {
           model: canonicalModel,
         });
 
-  const providerSettings = resolveProviderSettings(
-    provider,
-    canonicalConfig,
-    env,
-  );
   return {
     config: canonicalConfig,
     ...(params.profileName !== undefined
@@ -198,6 +188,5 @@ export function resolveCanonicalStartupSelection(params: {
       : {}),
     provider,
     model: canonicalModel,
-    ...(providerSettings?.apiKey ? { apiKey: providerSettings.apiKey } : {}),
   };
 }

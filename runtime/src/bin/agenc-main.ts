@@ -2051,7 +2051,6 @@ export async function oneShotCLI(
     const profileName = resolvedStartupProfileName(startupCliFlags, sessionEnv);
     const startup = resolveCanonicalStartupSelection({
       config,
-      env: sessionEnv,
       ...(profileName !== undefined ? { profileName } : {}),
     });
     const resolvedStartupImages =
@@ -2294,7 +2293,6 @@ export async function runProjectTrustPreflightForTui(
   const profileName = resolvedStartupProfileName(startupCliFlags, env);
   const startup = resolveCanonicalStartupSelection({
     config,
-    env,
     ...(profileName !== undefined ? { profileName } : {}),
   });
   // ConfigStore's repository discovery is the sole project-root authority.
@@ -4675,7 +4673,6 @@ export async function bootTUIEntry(
       const profileName = resolvedStartupProfileName(startupCliFlags, sessionEnv);
       const startup = resolveCanonicalStartupSelection({
         config,
-        env: sessionEnv,
         ...(profileName !== undefined ? { profileName } : {}),
       });
       const initialContent = startupContentFromInputs(

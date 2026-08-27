@@ -250,17 +250,6 @@ export function resolveProfileName(
   return readNonEmpty(readEnv(env).AGENC_PROFILE);
 }
 
-/**
- * Provider-specific API key resolution for startup/bootstrap paths.
- * Returns `undefined` for providers that do not require a key by default.
- */
-export function resolveProviderApiKey(
-  provider: string,
-  env: EnvSnapshot = process.env,
-): string | undefined {
-  return resolveProviderApiKeyEnvironment(provider, readEnv(env))?.value;
-}
-
 export function resolveProviderBaseURL(
   provider: string,
   env: EnvSnapshot = process.env,

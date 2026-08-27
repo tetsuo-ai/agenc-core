@@ -260,7 +260,7 @@ describe("SessionProviderService", () => {
     expect(prepared.binding.factoryOptions.apiKey).toBeUndefined();
   });
 
-  test("preserves Gemini plan precedence and nested cloning across prepare", async () => {
+  test("rejects a forced Gemini ADC mode before an API key can bypass it", async () => {
     const service = new SessionProviderService({
       initialProvider: createProvider(
         "gemini",
@@ -279,43 +279,31 @@ describe("SessionProviderService", () => {
       },
     });
 
-    const forcedAdc = await service.prepare(
-      { provider: "gemini", model: "gemini-2.5-flash" },
-      {},
-    );
-    expect(forcedAdc.binding.factoryOptions.apiKey).toBeUndefined();
-    expect(forcedAdc.binding.factoryOptions.extra).toMatchObject({
-      gemini: {
-        credentialPlan: {
-          kind: "none",
-          mode: "adc",
-          expected: "adc",
-          configuredPath: "/missing/session-adc.json",
-        },
-      },
-    });
-
-    const explicitDuringForcedAdc = await service.prepare(
-      { provider: "gemini", model: "gemini-2.5-flash" },
-      { apiKey: "explicit-key" },
-    );
-    expect(explicitDuringForcedAdc.binding.factoryOptions.apiKey).toBeUndefined();
-    expect(explicitDuringForcedAdc.binding.factoryOptions.extra).toMatchObject({
-      gemini: {
-        credentialPlan: {
-          kind: "none",
-          mode: "adc",
-          expected: "adc",
-          configuredPath: "/missing/session-adc.json",
-        },
-      },
-    });
-    expect(explicitDuringForcedAdc.binding.factoryOptions.extra?.gemini).not.toBe(
-      service.current().factoryOptions.extra?.gemini,
-    );
+    await expect(
+      service.prepare(
+        { provider: "gemini", model: "gemini-2.5-flash" },
+        {},
+      ),
+    ).rejects.toThrow(/ADC file \/missing\/session-adc\.json/u);
+    await expect(
+      service.prepare(
+        { provider: "gemini", model: "gemini-2.5-flash" },
+        { apiKey: "explicit-key" },
+      ),
+    ).rejects.toThrow(/ADC file \/missing\/session-adc\.json/u);
   });
 
-  test("retains only committed provider snapshots for switch-away and back", async () => {
+  test("recomputes switch-away and back from the canonical request", async () => {
+    const resolvePreparationRequest = vi.fn(
+      async ({ provider }: { provider: string; model: string }) =>
+        provider === "gemini"
+          ? { requested: { apiKey: "fresh-key" } }
+          : {
+              requested: {
+                baseURL: "http://127.0.0.1:18000/v1",
+              },
+            },
+    );
     const service = new SessionProviderService({
       initialProvider: createProvider(
         "gemini",
@@ -326,50 +314,28 @@ describe("SessionProviderService", () => {
           { savedApiKey: "saved-key" },
         ),
       ),
+      resolvePreparationRequest,
     });
-    const original = service.committedFactoryOptions("gemini");
-    expect(original).toMatchObject({
-      extra: {
-        gemini: {
-          credentialPlan: {
-            kind: "api-key",
-            credential: "saved-key",
-            source: "saved-byok",
-          },
-        },
-      },
-    });
-    expect(service.committedFactoryOptions("gemini")).not.toBe(original);
 
     const away = await service.prepare(
       { provider: "openai-compatible", model: "local-model" },
-      { baseURL: "http://127.0.0.1:18000/v1" },
-    );
-    const staleReplacement = await service.prepare(
-      { provider: "gemini", model: "gemini-2.5-flash" },
-      { apiKey: "uncommitted-key" },
     );
     service.commit(away);
-    expect(() => service.commit(staleReplacement)).toThrow(
-      /changed while.*prepared/i,
-    );
-
-    const retained = service.committedFactoryOptions("gemini");
     const back = await service.prepare(
       { provider: "gemini", model: "gemini-2.5-flash" },
-      retained ?? {},
     );
     expect(back.binding.factoryOptions).toMatchObject({
       extra: {
         gemini: {
           credentialPlan: {
             kind: "api-key",
-            credential: "saved-key",
-            source: "saved-byok",
+            credential: "fresh-key",
+            source: "factory",
           },
         },
       },
     });
+    expect(resolvePreparationRequest).toHaveBeenCalledTimes(2);
   });
 
   test("lazily consumes secure-storage-only BYOK on the first Ollama to Gemini switch", async () => {

@@ -10,7 +10,6 @@ import {
   type HomeContext,
 } from "../../src/config/home.js";
 import type { ConfigStore } from "../../src/config/store.js";
-import type { ProviderFactoryOptions } from "../../src/llm/provider.js";
 import type { Session } from "../../src/session/session.js";
 import type { SecureStorageData } from "../../src/utils/secureStorage/index.js";
 import type { SlashCommandContext } from "../../src/commands/types.js";
@@ -79,9 +78,6 @@ function stubSession(options: {
   readonly model?: string;
   readonly configStore: CommandConfigStore;
   readonly environment?: EnvSnapshot;
-  readonly committedFactoryOptions?: Readonly<
-    Record<string, ProviderFactoryOptions>
-  >;
 }): Session {
   return {
     state: {
@@ -95,14 +91,6 @@ function stubSession(options: {
     services: {
       configStore: options.configStore,
       providerEnvironment: options.environment ?? Object.freeze({}),
-      ...(options.committedFactoryOptions === undefined
-        ? {}
-        : {
-            providerService: {
-              committedFactoryOptions: (provider: string) =>
-                options.committedFactoryOptions?.[provider],
-            },
-          }),
     },
   } as unknown as Session;
 }
@@ -351,31 +339,13 @@ describe("provider command access", () => {
     expectRedactedSnapshot(token, [accessToken]);
   });
 
-  test("does not label well-known Gemini ADC as environment input", async () => {
+  test("does not inherit Gemini ADC from the live provider binding", async () => {
     const home = await createHome("gemini-well-known-adc-home");
     const { access } = await loadModules();
     const overlay = access.createProviderCommandAccessOverlay(
       commandContext(
         stubSession({
           configStore: commandConfigStore(home),
-          committedFactoryOptions: {
-            gemini: {
-              extra: {
-                gemini: {
-                  credentialPlan: {
-                    kind: "adc",
-                    credentialPath: join(testRoot, "well-known-adc.json"),
-                    source: "well-known-adc",
-                  },
-                  endpointPlan: {
-                    kind: "developer",
-                    nativeBaseURL:
-                      "https://generativelanguage.googleapis.com/v1beta",
-                  },
-                },
-              },
-            },
-          },
         }),
       ),
     );
@@ -384,15 +354,14 @@ describe("provider command access", () => {
       overlay.inspect({ provider: "gemini", model: "gemini-2.5-pro" }),
     ).toMatchObject({
       effect: "switch",
-      route: "direct",
+      route: "deferred",
       directCredential: {
-        status: "ready",
-        mode: "gemini-adc",
-        source: "application-default",
+        status: "missing",
+        mode: "none",
       },
       auth: {
-        state: "ready",
-        source: "Google application default credentials",
+        state: "missing",
+        source: expect.stringContaining("set Gemini"),
       },
     });
   });

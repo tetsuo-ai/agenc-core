@@ -760,7 +760,6 @@ async function createBoundAgenCDaemonOnlyTuiContext(
   const profileName = resolvedStartupProfileName(cli, configEnv);
   const startup = resolveCanonicalStartupSelection({
     config: effectiveConfig,
-    env: configEnv,
     ...(profileName !== undefined ? { profileName } : {}),
   });
   const skillsServices = createLocalSkillsServices({

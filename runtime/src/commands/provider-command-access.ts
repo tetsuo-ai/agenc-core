@@ -6,19 +6,18 @@ import {
 import { readLocalByokCredential } from "../auth/native-credentials.js";
 import type { AuthSubscriptionTier } from "../auth/backend.js";
 import type { ProviderSlug } from "../config/provider-model-authority.js";
-import { readProviderConfig } from "../config/resolve-provider.js";
 import type { ProviderFactoryOptions } from "../llm/provider.js";
 import {
   resolveProviderCredentialAuthority,
   type ProviderCredentialState,
 } from "../llm/provider-options.js";
+import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
 import {
   resolveBuiltInProviderInfo,
   resolveBuiltInProviderRegionalEndpoint,
 } from "../llm/registry/provider-info.js";
 import { geminiEndpointFor } from "../llm/providers/gemini/endpoint-plan.js";
 import { readGeminiRuntimeOptions } from "../llm/providers/gemini/runtime-options.js";
-import { asRecord } from "../utils/record.js";
 import { readBuiltInSessionSelection } from "../session/provider-model-selection.js";
 import {
   providerEnvironmentFromCommandContext,
@@ -105,19 +104,6 @@ function isLocalEndpoint(baseURL: string): boolean {
   }
 }
 
-function committedFactoryOptions(
-  ctx: SlashCommandContext,
-  provider: ProviderSlug,
-): ProviderFactoryOptions | undefined {
-  const services = asRecord(asRecord(ctx.session)?.services);
-  const providerService = asRecord(services?.providerService);
-  const read = providerService?.committedFactoryOptions;
-  if (typeof read !== "function") return undefined;
-  return read.call(services?.providerService, provider) as
-    | ProviderFactoryOptions
-    | undefined;
-}
-
 function directAuthProjection(credential: ProviderCredentialState): {
   readonly state: ProviderCommandAuthState;
   readonly label: string;
@@ -190,12 +176,12 @@ export function createProviderCommandAccessOverlay(
   ctx: SlashCommandContext,
 ): ProviderCommandAccessOverlay {
   const configStore = requireCommandConfigStore(ctx);
-  const config = readCommandConfig(ctx);
+  const config = readCommandConfig(ctx) ?? configStore.current();
   const environment = providerEnvironmentFromCommandContext(ctx);
   const authContext = remoteAuthContextFromCommandContext(ctx);
   const current = readBuiltInSessionSelection(ctx.session, {
     includePending: true,
-    ...(config === undefined ? {} : { fallbackConfig: config }),
+    fallbackConfig: config,
   });
   const managedKeysEnabled = config?.auth?.managedKeys?.enabled === true;
   const signedIn = hasRemoteAuthSessionSync(authContext);
@@ -216,26 +202,13 @@ export function createProviderCommandAccessOverlay(
     }
     const exactCurrent =
       selection.provider === current.provider && selection.model === current.model;
-    const committed = committedFactoryOptions(ctx, selection.provider);
-    const configuredBaseURL = config === undefined
-      ? undefined
-      : readProviderConfig(config, selection.provider)?.base_url?.trim();
-    const committedGeminiRuntime = committed?.extra?.gemini !== undefined;
-    const requested: ProviderFactoryOptions = {
-      credentialHome: configStore.homeContext,
+    const requested = resolveProviderRuntimeRequest({
+      provider: selection.provider,
       model: selection.model,
-      ...(committed?.apiKey === undefined ? {} : { apiKey: committed.apiKey }),
-      ...(committedGeminiRuntime
-        ? committed?.baseURL === undefined
-          ? {}
-          : { baseURL: committed.baseURL }
-        : configuredBaseURL !== undefined
-          ? { baseURL: configuredBaseURL }
-          : committed?.baseURL === undefined
-            ? {}
-            : { baseURL: committed.baseURL }),
-      ...(committed?.extra === undefined ? {} : { extra: committed.extra }),
-    };
+      config,
+      environment,
+      credentialHome: configStore.homeContext,
+    }).requested;
     const managedModels = subscriptionManagedModelsForTier(
       selection.provider,
       tier,

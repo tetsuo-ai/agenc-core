@@ -6,12 +6,6 @@ import { describe, expect, it } from "vitest";
 
 import { defaultConfig } from "../config/schema.js";
 import { ConfigStore } from "../config/store.js";
-import { resolveHomeContext } from "../config/home.js";
-import {
-  clearXaiOauthCredentials,
-  saveXaiOauthCredentials,
-} from "../utils/xaiOauthCredentials.js";
-import { resetCanonicalSettingsAuthorityForTesting } from "../utils/settings/canonicalAuthority.js";
 import {
   readStartupCliFlags,
   resolveCanonicalStartupSelection,
@@ -19,52 +13,6 @@ import {
 } from "./startup-selection.js";
 
 describe("resolveCanonicalStartupSelection", () => {
-  it("uses the captured credential home for the canonical pair", () => {
-    const root = mkdtempSync(join(tmpdir(), "agenc-qualified-model-home-"));
-    const homeA = resolveHomeContext({
-      AGENC_HOME: join(root, "home-a"),
-      HOME: root,
-    });
-    const homeB = resolveHomeContext({
-      AGENC_HOME: join(root, "home-b"),
-      HOME: root,
-    });
-    const previousHome = process.env.AGENC_HOME;
-
-    try {
-      expect(saveXaiOauthCredentials(homeA, {
-        accessToken: "oauth-home-a",
-        expiresAt: Date.now() + 60_000,
-      }).success).toBe(true);
-      expect(saveXaiOauthCredentials(homeB, {
-        accessToken: "oauth-home-b",
-        expiresAt: Date.now() + 60_000,
-      }).success).toBe(true);
-      process.env.AGENC_HOME = homeB.path;
-      resetCanonicalSettingsAuthorityForTesting();
-
-      const resolved = resolveCanonicalStartupSelection({
-        config: defaultConfig(),
-        env: {
-          AGENC_HOME: homeA.path,
-          HOME: root,
-        },
-      });
-
-      expect(resolved).toMatchObject({
-        provider: "grok",
-        model: "grok-4.6",
-        apiKey: "oauth-home-a",
-      });
-    } finally {
-      clearXaiOauthCredentials(homeA);
-      clearXaiOauthCredentials(homeB);
-      if (previousHome === undefined) delete process.env.AGENC_HOME;
-      else process.env.AGENC_HOME = previousHome;
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
   it("reads the canonical top-level model without provider fallback", () => {
     const resolved = resolveCanonicalStartupSelection({
       config: {
@@ -73,7 +21,6 @@ describe("resolveCanonicalStartupSelection", () => {
         model_provider: "grok",
         providers: { grok: { default_model: "grok-4.3" } },
       },
-      env: {},
     });
 
     expect(resolved.provider).toBe("grok");
@@ -83,7 +30,6 @@ describe("resolveCanonicalStartupSelection", () => {
   it("reads the complete built-in default pair", () => {
     const resolved = resolveCanonicalStartupSelection({
       config: defaultConfig(),
-      env: {},
     });
 
     expect(resolved.provider).toBe("grok");
@@ -94,7 +40,6 @@ describe("resolveCanonicalStartupSelection", () => {
     expect(() =>
       resolveCanonicalStartupSelection({
         config: { model: "gpt-5" },
-        env: {},
       })
     ).toThrow(/must contain a provider\/model pair/u);
   });
@@ -108,7 +53,6 @@ describe("resolveCanonicalStartupSelection", () => {
           model: "gpt-5",
           availableModels: ["grok-4.6"],
         },
-        env: {},
       })
     ).toThrow(/managed availableModels policy/u);
   });
@@ -121,7 +65,6 @@ describe("resolveCanonicalStartupSelection", () => {
         model: "github:copilot:gpt-5.3-codex",
         availableModels: ["github:copilot:gpt-5.3-codex"],
       },
-      env: {},
     });
 
     expect(resolved).toMatchObject({
@@ -406,7 +349,6 @@ describe("canonical startup ConfigStore layers", () => {
       const selection = resolveCanonicalStartupSelection({
         config: first,
         profileName: cli.profile,
-        env: {},
       });
       const expected = {
         model_provider: "grok",

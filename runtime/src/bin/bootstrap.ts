@@ -5,19 +5,13 @@ import { join } from "node:path";
 
 import {
   createProvider,
-  normalizeManagedGatewayModel,
   resolveBuiltInProviderSlug,
   type ProviderName,
 } from "../llm/provider.js";
-import { resolveXaiCapabilityExtra } from "../llm/xai-capability-config.js";
 import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
 import type { LLMProvider } from "../llm/types.js";
 import { StaticModelsManager } from "../llm/models-manager.js";
 import { createManagedFeatures } from "../llm/registry/features.js";
-import {
-  providerApiKeyEnvironmentLabel,
-  resolveBuiltInProviderInfo,
-} from "../llm/registry/provider-info.js";
 import {
   markCapabilityDrift,
   markCapabilityVerified,
@@ -118,7 +112,6 @@ import {
   resolveAgencHome as resolveAgencHomeFromEnv,
   resolveWorkspace as resolveWorkspaceFromEnv,
 } from "../config/env.js";
-import { resolveProviderSettings } from "../config/resolve-provider.js";
 import {
   resolveCommandExecutionAuthority,
   resolveAgentRuntimeOptions,
@@ -126,15 +119,17 @@ import {
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
 import {
-  resolveProviderFactoryOptions,
+  MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
+  requireProviderRuntimeCredential,
+  resolveProviderRuntimeAuthority,
   snapshotProviderEnvironment,
   type ProviderEnvironment,
 } from "../llm/provider-options.js";
+import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
 import { runWithStartupProviderSelection } from "../utils/model/providers.js";
 import type { AgenCConfig } from "../config/schema.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
-import { selectByokPrecedenceApiKey } from "../auth/byok-precedence.js";
 import { resolveAuthManagedKeysEnabled } from "../auth/selection.js";
 import { bindSessionAgentControl } from "./delegate-tool.js";
 import {
@@ -201,23 +196,6 @@ function firstNonEmptyString(
   return undefined;
 }
 
-async function readLocalByokFallback(
-  authBackend: LocalAuthBackend,
-  provider: ProviderName,
-  ...higherPrecedenceApiKeys: Array<string | undefined>
-): Promise<string | undefined> {
-  if (
-    resolveBuiltInProviderInfo(provider)?.onboarding.access !== "api-key" ||
-    firstNonEmptyString(...higherPrecedenceApiKeys) !== undefined
-  ) {
-    return undefined;
-  }
-  const apiKey = await authBackend.readByokKey(provider);
-  return typeof apiKey === "string" && apiKey.trim().length > 0
-    ? apiKey.trim()
-    : undefined;
-}
-
 async function resolveAuthSubscriptionTier(
   authBackend: AuthBackend | undefined,
   sessionId: string,
@@ -225,33 +203,6 @@ async function resolveAuthSubscriptionTier(
   if (authBackend === undefined) return "free";
   return authBackend.getSubscriptionTier({ sessionId });
 }
-
-function isRemoteAuthBackend(authBackend: AuthBackend | undefined): boolean {
-  return authBackend?.kind === "remote";
-}
-
-function isSubscriptionEntitled(tier: AuthSubscriptionTier): boolean {
-  return tier === "pro" || tier === "team" || tier === "enterprise";
-}
-
-function providerHasLiveManagedSubscriptionRoute(
-  provider: ProviderName,
-): boolean {
-  return provider === "openrouter";
-}
-
-function allowsFreeManagedProviderKey(params: {
-  readonly provider: ProviderName;
-  readonly model: string;
-  readonly subscriptionTier: AuthSubscriptionTier;
-}): boolean {
-  return (
-    params.subscriptionTier === "free" &&
-    isFreeSubscriptionManagedModel(params.provider, params.model)
-  );
-}
-
-const MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS = 2_048;
 
 async function buildBaseInstructionsForModel(params: {
   readonly registry: ToolRegistry;
@@ -272,41 +223,6 @@ async function buildBaseInstructionsForModel(params: {
     params.model,
   );
   return sections.join("\n\n");
-}
-
-function enforceRemoteSubscriptionGate(params: {
-  readonly authBackend: AuthBackend | undefined;
-  readonly subscriptionTier: AuthSubscriptionTier;
-  readonly provider: ProviderName;
-  readonly model: string;
-  readonly byokApiKey: string | undefined;
-  readonly managedKeysEnabled: boolean;
-}): void {
-  if (!isRemoteAuthBackend(params.authBackend)) return;
-  if (
-    isSubscriptionEntitled(params.subscriptionTier) ||
-    allowsFreeManagedProviderKey({
-      provider: params.provider,
-      model: params.model,
-      subscriptionTier: params.subscriptionTier,
-    })
-  )
-    return;
-  if (isHostedAgencProvider(params.provider)) {
-    throw new Error(
-      "Hosted AgenC model routing requires an active AgenC subscription",
-    );
-  }
-  if (
-    params.managedKeysEnabled &&
-    params.byokApiKey === undefined &&
-    resolveBuiltInProviderInfo(params.provider)?.onboarding
-      .supportsManagedKeyAccess === true
-  ) {
-    throw new Error(
-      "Managed provider keys require an active AgenC subscription; configure BYOK provider credentials instead",
-    );
-  }
 }
 
 async function resolveAuthModelSelection(params: {
@@ -347,71 +263,6 @@ async function resolveAuthModelSelection(params: {
         : params.provider,
     profileModel: inferredModel,
   };
-}
-
-async function vendProviderKeyOrUndefined(params: {
-  readonly authBackend: AuthBackend | undefined;
-  readonly provider: ProviderName;
-  readonly sessionId: string;
-}): Promise<ManagedProviderKeyResult> {
-  if (params.authBackend === undefined) return { attempted: false };
-  if (!providerHasLiveManagedSubscriptionRoute(params.provider)) {
-    return { attempted: false, disabled: true };
-  }
-  try {
-    const key = await params.authBackend.vendKey(
-      params.provider,
-      params.sessionId,
-    );
-    if (key.kind !== "api-key") return { attempted: true };
-    const apiKey = key.apiKey.trim();
-    const baseURL = key.baseUrl?.trim();
-    return apiKey.length > 0
-      ? {
-          attempted: true,
-          apiKey,
-          ...(baseURL ? { baseURL } : {}),
-        }
-      : { attempted: true };
-  } catch {
-    return { attempted: true };
-  }
-}
-
-interface ManagedProviderKeyResult {
-  readonly attempted: boolean;
-  readonly disabled?: boolean;
-  readonly apiKey?: string;
-  readonly baseURL?: string;
-}
-
-function requireProviderApiKeyOrUndefined(params: {
-  readonly provider: ProviderName;
-  readonly apiKey: string | undefined;
-  readonly managedKey: ManagedProviderKeyResult;
-}): string | undefined {
-  if (params.apiKey !== undefined) return params.apiKey;
-  const providerInfo = resolveBuiltInProviderInfo(params.provider);
-  if (
-    providerInfo?.onboarding.access !== "api-key" ||
-    providerInfo.supportsApiKeylessAuth
-  ) {
-    return undefined;
-  }
-  const envHint = providerApiKeyEnvironmentLabel(params.provider);
-  if (envHint === undefined) return undefined;
-  const managedKeyHint = !providerHasLiveManagedSubscriptionRoute(
-    params.provider,
-  )
-    ? "Subscription-managed access is currently live for OpenRouter only."
-    : params.managedKey.disabled
-      ? "Managed key vending is disabled by auth.managedKeys.enabled."
-      : params.managedKey.attempted
-        ? "AuthBackend.vendKey() did not return a usable managed key."
-        : "No AuthBackend was configured to vend a managed key.";
-  throw new Error(
-    `${params.provider} provider requires an API key. ${managedKeyHint} Set ${envHint}.`,
-  );
 }
 
 function parseWorkerEpoch(env: NodeJS.ProcessEnv): number | null {
@@ -1002,7 +853,6 @@ async function bootstrapLocalRuntimeSessionScoped(
   await configStore.reload();
   const startup = resolveCanonicalStartupSelection({
     config: configStore.current(),
-    env,
     ...(profileName !== undefined ? { profileName } : {}),
   });
   const cli = options.cli;
@@ -1218,30 +1068,6 @@ async function bootstrapLocalRuntimeSessionScoped(
     conversationId,
   );
   const localByokAuthBackend = new LocalAuthBackend({ agencHome, env });
-  const managedKeysEnabled = resolveAuthManagedKeysEnabled(startup.config);
-  const startupLocalByokKey = await readLocalByokFallback(
-    localByokAuthBackend,
-    startup.provider,
-    options.apiKey,
-    startup.apiKey,
-  );
-  const startupByokApiKey = firstNonEmptyString(
-    startup.apiKey,
-    startupLocalByokKey,
-  );
-  const byokApiKey = selectByokPrecedenceApiKey({
-    explicitApiKey: options.apiKey,
-    byokApiKey: startupByokApiKey,
-    managedKeysEnabled,
-  });
-  enforceRemoteSubscriptionGate({
-    authBackend: options.authBackend,
-    subscriptionTier: authSubscriptionTier,
-    provider: startup.provider,
-    model: startup.model,
-    byokApiKey,
-    managedKeysEnabled,
-  });
   const modelSelection = await resolveAuthModelSelection({
     authBackend: options.authBackend,
     provider: startup.provider,
@@ -1258,71 +1084,23 @@ async function bootstrapLocalRuntimeSessionScoped(
   }, async () => {
   const profileProvider = modelSelection.profileProvider;
   const model = modelSelection.profileModel;
-  const runtimeProviderSettings = resolveProviderSettings(
-    resolvedProvider,
-    startup.config,
-    env,
-  );
-  const runtimeProviderApiKey = resolvedProvider === startup.provider
-    ? startup.apiKey
-    : runtimeProviderSettings?.apiKey;
-  const runtimeLocalByokKey =
-    resolvedProvider === startup.provider
-      ? startupLocalByokKey
-      : await readLocalByokFallback(
-          localByokAuthBackend,
-          resolvedProvider,
-          options.apiKey,
-          runtimeProviderApiKey,
-        );
-  const runtimeByokApiKey = firstNonEmptyString(
-    runtimeProviderApiKey,
-    runtimeLocalByokKey,
-  );
-  const runtimeSelectedByokApiKey = selectByokPrecedenceApiKey({
-    explicitApiKey: options.apiKey,
-    byokApiKey: runtimeByokApiKey,
-    managedKeysEnabled,
-  });
-  const providerSettings =
-    profileProvider === resolvedProvider
-      ? runtimeProviderSettings
-      : resolveProviderSettings(profileProvider, startup.config, env);
-  const managedKey =
-    runtimeSelectedByokApiKey === undefined &&
-    managedKeysEnabled &&
-    !isHostedAgencProvider(resolvedProvider)
-      ? await vendProviderKeyOrUndefined({
-          authBackend: options.authBackend,
-          provider: resolvedProvider,
-          sessionId: conversationId,
-        })
-      : {
-          attempted: false,
-          ...(!managedKeysEnabled ? { disabled: true } : {}),
-        };
-  const selectedApiKey = requireProviderApiKeyOrUndefined({
+  const initialTransportRequest = resolveProviderRuntimeRequest({
     provider: resolvedProvider,
-    apiKey:
-      runtimeSelectedByokApiKey ??
-      selectByokPrecedenceApiKey({
-        explicitApiKey: undefined,
-        byokApiKey: undefined,
-        managedKeysEnabled,
-        managedApiKey: managedKey.apiKey,
-      }),
-    managedKey,
+    model: providerModel,
+    config: startup.config,
+    environment: providerEnvironment,
+    credentialHome: configStore.homeContext,
+    executionAdmissionRequired: true,
   });
-  const selectedBaseURL = firstNonEmptyString(
-    providerSettings?.baseURL,
-    managedKey.baseURL,
-  );
-  const hasManagedCredential =
-    managedKey.apiKey !== undefined || managedKey.baseURL !== undefined;
-  const selectedProviderModel =
-    managedKey.baseURL !== undefined
-      ? normalizeManagedGatewayModel(resolvedProvider, providerModel)
-      : providerModel;
+  const providerSettings = profileProvider === resolvedProvider
+    ? initialTransportRequest.settings
+    : resolveProviderRuntimeRequest({
+        provider: profileProvider,
+        model,
+        config: startup.config,
+        environment: providerEnvironment,
+      }).settings;
+  const selectedBaseURL = initialTransportRequest.requested.baseURL;
   const mcpManager = createSessionMcpManager([], {
     environment: sessionMcpRequestEnvironment,
     sandboxExecutionBroker,
@@ -1383,24 +1161,6 @@ async function bootstrapLocalRuntimeSessionScoped(
   }): void => {
     // Keep provider request-shape diagnostics out of warning/error streams.
   };
-  const handleCapabilityDrift = (warning: {
-    message: string;
-    status?: number;
-  }): void => {
-    markCapabilityDrift({
-      provider: profileProvider,
-      model,
-      overrides: providerSettings?.capabilityOverrides,
-    });
-    emitProviderWarning({
-      cause: "capability_drift_detected",
-      message:
-        warning.status !== undefined
-          ? `${profileProvider}/${model} rejected a capability the registry claimed it supported (HTTP ${warning.status}): ${warning.message}`
-          : `${profileProvider}/${model} rejected a capability the registry claimed it supported: ${warning.message}`,
-    });
-  };
-
   const { isCoordinatorModeEnabled, LIVE_COORDINATOR_ALLOWED_TOOLS } =
     await import("../coordinator/coordinatorMode.js");
   const coordinatorModeEnabled = isCoordinatorModeEnabled(
@@ -1457,68 +1217,99 @@ async function bootstrapLocalRuntimeSessionScoped(
         : {}),
     },
   });
-  const xaiCapabilityExtra = resolveXaiCapabilityExtra({
-    provider: resolvedProvider,
-    baseURL: selectedBaseURL,
-    grokCapabilities: startup.config.providers?.grok,
-    env,
-  });
-  const providerFactoryApiKey = resolvedProvider === "gemini"
-    ? firstNonEmptyString(options.apiKey)
-    : selectedApiKey;
-  const provider: LLMProvider = createProvider(
-    resolvedProvider as ProviderName,
-    resolveProviderFactoryOptions(resolvedProvider as ProviderName, {
+  const resolveProviderPreparationRequest = async (selection: {
+    readonly provider: string;
+    readonly model: string;
+  }) => {
+    const provider = resolveBuiltInProviderSlug(selection.provider);
+    if (provider === undefined) {
+      throw new Error(`unknown provider "${selection.provider}"`);
+    }
+    const currentConfig = configStore.current();
+    const settingsRequest = resolveProviderRuntimeRequest({
+      provider,
+      model: selection.model,
+      config: currentConfig,
+      environment: providerEnvironment,
       credentialHome: configStore.homeContext,
-      ...(providerFactoryApiKey !== undefined
-        ? { apiKey: providerFactoryApiKey }
-        : {}),
-      ...(selectedBaseURL ? { baseURL: selectedBaseURL } : {}),
-      model: selectedProviderModel,
-      ...(providerSettings?.timeoutMs !== undefined
-        ? { timeoutMs: providerSettings.timeoutMs }
-        : {}),
+      executionAdmissionRequired: true,
+    });
+    const runtimeRequest = resolveProviderRuntimeRequest({
+      provider,
+      model: selection.model,
+      config: currentConfig,
+      environment: providerEnvironment,
+      credentialHome: configStore.homeContext,
       tools: registry.toLLMTools(),
-      extra: {
+      executionAdmissionRequired: true,
+      baseExtra: {
         emitWarning: emitProviderWarning,
         emitDiagnostic: emitProviderDiagnostic,
-        onCapabilityDrift: handleCapabilityDrift,
+        onCapabilityDrift: (warning: {
+          message: string;
+          status?: number;
+        }): void => {
+          markCapabilityDrift({
+            provider,
+            model: selection.model,
+            overrides: settingsRequest.settings?.capabilityOverrides,
+          });
+          emitProviderWarning({
+            cause: "capability_drift_detected",
+            message:
+              warning.status !== undefined
+                ? `${provider}/${selection.model} rejected a capability the registry claimed it supported (HTTP ${warning.status}): ${warning.message}`
+                : `${provider}/${selection.model} rejected a capability the registry claimed it supported: ${warning.message}`,
+          });
+        },
         fetchImpl,
         sandboxExecutionBroker,
-        ...(options.authBackend !== undefined
-          ? {
-              authBackend: options.authBackend,
-              sessionId: conversationId,
-              subscriptionTier: authSubscriptionTier,
-            }
-          : {}),
-        ...(providerSettings?.contextWindowTokens !== undefined
-          ? { contextWindowTokens: providerSettings.contextWindowTokens }
-          : {}),
-        ...(providerSettings?.maxOutputTokens !== undefined
-          ? { maxTokens: providerSettings.maxOutputTokens }
-          : {}),
-        ...(hasManagedCredential &&
-        resolvedProvider === "openrouter" &&
-        providerSettings?.maxOutputTokens === undefined
-          ? { maxTokens: MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS }
-          : {}),
-        // M3 reserves one conservative maximum per provider dispatch. Keep
-        // the wire operation single-attempt; otherwise a hidden retry or
-        // model fallback could spend outside that reservation. The explicit
-        // startup-prewarm fallback is admitted and journaled separately.
-        maxRetries: 0,
-        ...(hasManagedCredential ? { managedCredential: true } : {}),
-        ...(managedKey.baseURL !== undefined ? { managedGateway: true } : {}),
-        // Grok-only server-tool profile from [providers.grok]; empty for non-Grok /
-        // non-direct-xAI hosts so other providers never get xAI payloads.
-        ...xaiCapabilityExtra,
       },
-    }, providerEnvironment, {
-      ...(runtimeLocalByokKey !== undefined
-        ? { savedApiKey: runtimeLocalByokKey }
+    });
+    const explicitApiKey =
+      provider === resolvedProvider
+        ? firstNonEmptyString(options.apiKey)
+        : undefined;
+    return {
+      requested: {
+        ...runtimeRequest.requested,
+        ...(explicitApiKey !== undefined ? { apiKey: explicitApiKey } : {}),
+      },
+      runtime: {
+        managedKeysEnabled: resolveAuthManagedKeysEnabled(currentConfig),
+        freeManagedCredential:
+          authSubscriptionTier === "free" &&
+          isFreeSubscriptionManagedModel(provider, selection.model),
+        applyManagedDefaultOutputCap:
+          provider === "openrouter" &&
+          runtimeRequest.settings?.maxOutputTokens === undefined,
+      },
+    };
+  };
+  const initialPreparation = await resolveProviderPreparationRequest({
+    provider: resolvedProvider,
+    model: providerModel,
+  });
+  const initialAuthority = await resolveProviderRuntimeAuthority(
+    resolvedProvider,
+    initialPreparation.requested,
+    providerEnvironment,
+    {
+      readSavedApiKey: (provider) =>
+        localByokAuthBackend.readByokKey(provider),
+      ...(options.authBackend !== undefined
+        ? { authBackend: options.authBackend }
         : {}),
-    }),
+      sessionId: conversationId,
+      subscriptionTier: authSubscriptionTier,
+      ...initialPreparation.runtime,
+    },
+  );
+  requireProviderRuntimeCredential(resolvedProvider, initialAuthority);
+  const hasManagedCredential = initialAuthority.managedCredential;
+  const provider: LLMProvider = createProvider(
+    resolvedProvider,
+    initialAuthority.factoryOptions,
   );
   const capabilityEntry = resolveProviderCapabilityEntry({
     provider: profileProvider,
@@ -1572,8 +1363,7 @@ async function bootstrapLocalRuntimeSessionScoped(
   const rawModelInfo = await modelsManager.getModelInfo(model);
   const modelInfo =
     hasManagedCredential &&
-    resolvedProvider === "openrouter" &&
-    providerSettings?.maxOutputTokens === undefined
+    initialPreparation.runtime.applyManagedDefaultOutputCap
       ? {
           ...rawModelInfo,
           maxOutputTokens: MANAGED_OPENROUTER_DEFAULT_MAX_OUTPUT_TOKENS,
@@ -1589,7 +1379,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       : rawModelInfo;
   const baseInstructions = await buildBaseInstructionsForModel({
     registry,
-    model: selectedProviderModel,
+    model: providerModel,
     coordinatorMode: coordinatorModeEnabled,
     compactProfile: usesLocalToolProfile(resolvedProvider),
   });
@@ -1679,7 +1469,6 @@ async function bootstrapLocalRuntimeSessionScoped(
     buildBootstrapSessionServices({
       provider,
       providerName: resolvedProvider,
-      ...(providerFactoryApiKey ? { apiKey: providerFactoryApiKey } : {}),
       ...(options.authBackend !== undefined
         ? { authBackend: options.authBackend }
         : {}),
@@ -1699,6 +1488,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       model,
       readSavedApiKey: (provider) =>
         localByokAuthBackend.readByokKey(provider),
+      resolveProviderPreparationRequest,
       sessionConfiguration,
       runtimeOptions,
       commandExecutionAuthority,
