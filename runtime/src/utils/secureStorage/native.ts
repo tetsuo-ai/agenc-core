@@ -67,7 +67,7 @@ function withNativeStorageLock<T>(
 }
 
 /**
- * Read the native OS credential vault. This deliberately disables the
+ * Read the native secure storage. This deliberately disables the
  * plaintext fallback. A null result means no credential record is present;
  * availability is proven by a successful update when a write is requested.
  */
@@ -93,7 +93,7 @@ export function readNativeSecureStorageFresh(
   )
 }
 
-/** Async native-vault read for request paths that must not block on keychain I/O. */
+/** Async native secure storage read for request paths that must not block on keychain I/O. */
 export async function readNativeSecureStorageAsync(
   home: HomeContext,
 ): Promise<SecureStorageData> {
@@ -110,7 +110,7 @@ export async function readNativeSecureStorageAsync(
 
 /**
  * Serialize read-modify-write operations across AgenC processes so one
- * credential namespace cannot overwrite another in the shared native vault
+ * credential namespace cannot overwrite another in the shared native secure storage
  * blob. Returns null when the mutation is a no-op.
  */
 export function updateNativeSecureStorage(

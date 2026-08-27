@@ -1,6 +1,7 @@
 import { isAbsolute, normalize, resolve, sep } from "node:path";
 import { validateHooksConfig } from "../config/schema.js";
 import { isRecord } from "../utils/record.js";
+import { isCanonicalPluginName } from "./identifier.js";
 
 export { isRecord };
 
@@ -194,8 +195,12 @@ function normalizeManifestName(
     issues.push({ path: "name", message: "Plugin name cannot be empty" });
     return "__invalid_plugin_name__";
   }
-  if (name.includes(" ")) {
-    issues.push({ path: "name", message: "Plugin name cannot contain spaces" });
+  if (value !== name || !isCanonicalPluginName(name)) {
+    issues.push({
+      path: "name",
+      message:
+        "Plugin name must be a lowercase canonical identifier using letters, digits, '.', '_', or '-'",
+    });
   }
   return name;
 }

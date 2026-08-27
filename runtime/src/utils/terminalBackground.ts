@@ -2,7 +2,7 @@
  * Terminal dark/light mode detection for the 'auto' theme setting.
  *
  * Detection is based on the terminal's actual background color (queried via
- * OSC 11 by systemThemeWatcher.ts) rather than the OS appearance setting —
+ * OSC 11 by terminalBackgroundWatcher.ts) rather than the OS appearance setting —
  * a dark terminal on a light-mode OS should still resolve to 'dark'.
  *
  * The detected theme is cached module-level so callers can resolve 'auto'
@@ -13,10 +13,10 @@
 
 import type { ThemeName, ThemeSetting } from './theme.js'
 
-export type SystemTheme = 'dark' | 'light'
+export type TerminalBackground = 'dark' | 'light'
 
-let cachedSystemTheme: SystemTheme | undefined
-// Whether `cachedSystemTheme` reflects a real detection ($COLORFGBG parse or an
+let cachedTerminalBackground: TerminalBackground | undefined
+// Whether `cachedTerminalBackground` reflects a real detection ($COLORFGBG parse or an
 // OSC 11 response) rather than the fallback default. Callers that make a
 // directional recommendation (the onboarding theme tip) must not treat a
 // defaulted `dark` as if the terminal was measured.
@@ -26,30 +26,30 @@ let cachedThemeWasDetected = false
  * Get the current terminal theme. Cached after first detection; the watcher
  * updates the cache on live changes.
  */
-export function getSystemThemeName(): SystemTheme {
-  if (cachedSystemTheme === undefined) {
+export function getTerminalBackground(): TerminalBackground {
+  if (cachedTerminalBackground === undefined) {
     const detected = detectFromColorFgBg()
     if (detected !== undefined) {
-      cachedSystemTheme = detected
+      cachedTerminalBackground = detected
       cachedThemeWasDetected = true
     } else {
-      cachedSystemTheme = 'dark'
+      cachedTerminalBackground = 'dark'
       cachedThemeWasDetected = false
     }
   }
-  return cachedSystemTheme
+  return cachedTerminalBackground
 }
 
 /**
- * Whether the current system theme reflects an actual measurement of the
+ * Whether the current terminal background reflects an actual measurement of the
  * terminal background ($COLORFGBG or an OSC 11 response) rather than the
  * fallback default. Many terminals (gnome-terminal, Terminal.app, iTerm2,
  * Windows Terminal, VS Code, Ghostty, kitty, Alacritty) don't export
- * $COLORFGBG, so on those `getSystemThemeName()` returns a guessed `dark`.
+ * $COLORFGBG, so on those `getTerminalBackground()` returns a guessed `dark`.
  */
-export function isSystemThemeDetected(): boolean {
+export function isTerminalBackgroundDetected(): boolean {
   // Resolve the cache so $COLORFGBG is consulted at least once.
-  getSystemThemeName()
+  getTerminalBackground()
   return cachedThemeWasDetected
 }
 
@@ -57,14 +57,16 @@ export function isSystemThemeDetected(): boolean {
  * Update the cached terminal theme. Called by the watcher when the OSC 11
  * query returns so non-React call sites stay in sync.
  */
-export function setCachedSystemTheme(theme: SystemTheme): void {
-  cachedSystemTheme = theme
+export function setCachedTerminalBackground(
+  theme: TerminalBackground,
+): void {
+  cachedTerminalBackground = theme
   cachedThemeWasDetected = true
 }
 
 /** Test-only: clear the module-level detection cache. */
-export function resetSystemThemeCacheForTest(): void {
-  cachedSystemTheme = undefined
+export function resetTerminalBackgroundCacheForTest(): void {
+  cachedTerminalBackground = undefined
   cachedThemeWasDetected = false
 }
 
@@ -73,7 +75,7 @@ export function resetSystemThemeCacheForTest(): void {
  */
 export function resolveThemeSetting(setting: ThemeSetting): ThemeName {
   if (setting === 'auto') {
-    return getSystemThemeName()
+    return getTerminalBackground()
   }
   return setting
 }
@@ -89,7 +91,9 @@ export function resolveThemeSetting(setting: ThemeSetting): ThemeName {
  *
  * Returns undefined for unrecognized formats so callers can fall back.
  */
-export function themeFromOscColor(data: string): SystemTheme | undefined {
+export function themeFromOscColor(
+  data: string,
+): TerminalBackground | undefined {
   const rgb = parseOscRgb(data)
   if (!rgb) return undefined
   // ITU-R BT.709 relative luminance. Midpoint split: > 0.5 is light.
@@ -138,7 +142,7 @@ function hexComponent(hex: string): number {
  * and 9–15 are light. Only set by some terminals (rxvt-family, Konsole,
  * iTerm2 with the option enabled), so this is a best-effort hint.
  */
-function detectFromColorFgBg(): SystemTheme | undefined {
+function detectFromColorFgBg(): TerminalBackground | undefined {
   const colorfgbg = process.env['COLORFGBG']
   if (!colorfgbg) return undefined
   const parts = colorfgbg.split(';')

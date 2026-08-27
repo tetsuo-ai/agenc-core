@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,6 +14,7 @@ import { ConfigStore } from "../config/store.js";
 import {
   DEFAULT_OUTPUT_STYLE_NAME,
   clearAllOutputStylesCache,
+  getAllOutputStyles,
   getOutputStyleConfig,
 } from "../constants/outputStyles.js";
 import {
@@ -17,7 +24,14 @@ import {
 import type { Session } from "../session/session.js";
 import { outputStyleCommand, outputStyleNewCommand } from "./output-style.js";
 import type { SlashCommandContext } from "./types.js";
-import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
+import {
+  resetCanonicalSettingsAuthorityForTesting,
+  runWithCanonicalSettingsAuthority,
+} from "../utils/settings/canonicalAuthority.js";
+import {
+  resolveAgentRuntimeOptions,
+  runWithAgentRuntimeOptions,
+} from "../session/runtime-options.js";
 
 function stubSession(): Session {
   return {
@@ -53,6 +67,7 @@ describe("output-style commands", () => {
     } else {
       process.env.AGENC_HOME = originalAgencHome;
     }
+    resetCanonicalSettingsAuthorityForTesting();
     clearAllOutputStylesCache();
     for (const dir of tempDirs.splice(0)) {
       rmSync(dir, { recursive: true, force: true });
@@ -67,10 +82,19 @@ describe("output-style commands", () => {
     return dir;
   }
 
+  function withOutputStyleRuntime<T>(cwd: string, operation: () => T): T {
+    const runtimeOptions = resolveAgentRuntimeOptions({}, {
+      pluginStorageRoot: join(cwd, "agenc-home", "plugins"),
+    });
+    return runWithAgentRuntimeOptions(runtimeOptions, operation);
+  }
+
   it("lists available styles outside the TUI", async () => {
     const cwd = tempProject();
 
-    const result = await outputStyleCommand.execute(stubCtx(cwd));
+    const result = await withOutputStyleRuntime(cwd, () =>
+      outputStyleCommand.execute(stubCtx(cwd))
+    );
 
     expect(result.kind).toBe("text");
     if (result.kind !== "text") throw new Error("expected text");
@@ -84,8 +108,10 @@ describe("output-style commands", () => {
     const cwd = tempProject();
     const setToolJSX = vi.fn();
 
-    const result = await outputStyleCommand.execute(
-      stubCtx(cwd, "", { setToolJSX }),
+    const result = await withOutputStyleRuntime(cwd, () =>
+      outputStyleCommand.execute(
+        stubCtx(cwd, "", { setToolJSX }),
+      )
     );
 
     expect(result.kind).toBe("skip");
@@ -115,8 +141,10 @@ describe("output-style commands", () => {
 
     const result = await runWithCanonicalSettingsAuthority(
       configStore,
-      () => outputStyleCommand.execute(
-        stubCtx(cwd, "explanatory", { setAppState }),
+      () => withOutputStyleRuntime(cwd, () =>
+        outputStyleCommand.execute(
+          stubCtx(cwd, "explanatory", { setAppState }),
+        )
       ),
     );
 
@@ -132,7 +160,7 @@ describe("output-style commands", () => {
     clearAllOutputStylesCache();
     await expect(
       runWithCanonicalSettingsAuthority(configStore, () =>
-        getOutputStyleConfig(),
+        withOutputStyleRuntime(cwd, () => getOutputStyleConfig()),
       ),
     ).resolves.toMatchObject({ name: "Explanatory" });
   });
@@ -140,13 +168,134 @@ describe("output-style commands", () => {
   it("returns a clear error for unknown styles", async () => {
     const cwd = tempProject();
 
-    const result = await outputStyleCommand.execute(
-      stubCtx(cwd, "does-not-exist"),
+    const result = await withOutputStyleRuntime(cwd, () =>
+      outputStyleCommand.execute(
+        stubCtx(cwd, "does-not-exist"),
+      )
     );
 
     expect(result.kind).toBe("text");
     if (result.kind !== "text") throw new Error("expected text");
     expect(result.text).toContain('Unknown output style "does-not-exist"');
+  });
+
+  it("lists and applies a forced style from a real enabled plugin", async () => {
+    const cwd = tempProject();
+    const home = join(cwd, "agenc-home");
+    const pluginStorageRoot = join(home, "plugins");
+    installOutputStylePlugin(pluginStorageRoot, "Use the enabled plugin style.");
+    const configStore = new ConfigStore({
+      home,
+      base: { plugins: { enabled: true } },
+      env: {},
+      cwd,
+      projectRoot: cwd,
+      projectTrusted: false,
+    });
+
+    const result = await runWithCanonicalSettingsAuthority(configStore, () =>
+      withOutputStyleRuntime(cwd, () =>
+        outputStyleCommand.execute(stubCtx(cwd))
+      )
+    );
+
+    expect(result.kind).toBe("text");
+    if (result.kind !== "text") throw new Error("expected text");
+    expect(result.text).toContain("sample:forced");
+    expect(result.text).toContain("A plugin is forcing the effective style.");
+    await expect(
+      runWithCanonicalSettingsAuthority(configStore, () =>
+        withOutputStyleRuntime(cwd, () => getOutputStyleConfig())
+      ),
+    ).resolves.toMatchObject({
+      name: "sample:forced",
+      prompt: "Use the enabled plugin style.",
+      forceForPlugin: true,
+    });
+  });
+
+  it("isolates interleaved plugin styles for same-home ConfigStores", async () => {
+    const cwd = tempProject();
+    const home = join(cwd, "agenc-home");
+    const pluginStorageRoot = join(home, "plugins");
+    installOutputStylePlugin(pluginStorageRoot, "Only the enabled store sees this.");
+    const common = {
+      home,
+      env: {},
+      cwd,
+      projectRoot: cwd,
+      projectTrusted: false,
+    } as const;
+    const enabledStore = new ConfigStore({
+      ...common,
+      base: { plugins: { enabled: true } },
+    });
+    const disabledStore = new ConfigStore({
+      ...common,
+      base: { plugins: { enabled: false } },
+    });
+    const loadFor = (store: ConfigStore) =>
+      runWithCanonicalSettingsAuthority(store, () =>
+        withOutputStyleRuntime(cwd, () => getAllOutputStyles(cwd))
+      );
+
+    const enabledFirst = await loadFor(enabledStore);
+    const disabled = await loadFor(disabledStore);
+    const enabledAgain = await loadFor(enabledStore);
+
+    expect(enabledFirst["sample:forced"]?.prompt).toBe(
+      "Only the enabled store sees this.",
+    );
+    expect(disabled["sample:forced"]).toBeUndefined();
+    expect(enabledAgain["sample:forced"]?.prompt).toBe(
+      "Only the enabled store sees this.",
+    );
+  });
+
+  it("clears only the active ConfigStore plugin-style cache partition", async () => {
+    const cwd = tempProject();
+    const home = join(cwd, "agenc-home");
+    const pluginStorageRoot = join(home, "plugins");
+    installOutputStylePlugin(pluginStorageRoot, "Original cached prompt.");
+    const common = {
+      home,
+      env: {},
+      cwd,
+      projectRoot: cwd,
+      projectTrusted: false,
+    } as const;
+    const storeA = new ConfigStore({
+      ...common,
+      base: { plugins: { enabled: true } },
+    });
+    const storeB = new ConfigStore({
+      ...common,
+      base: { plugins: { enabled: true, allowlist: ["sample"] } },
+    });
+    const loadFor = (store: ConfigStore) =>
+      runWithCanonicalSettingsAuthority(store, () =>
+        withOutputStyleRuntime(cwd, () => getAllOutputStyles(cwd))
+      );
+
+    await loadFor(storeA);
+    await loadFor(storeB);
+    writePluginOutputStyle(pluginStorageRoot, "Updated prompt.");
+
+    const reloadedA = await runWithCanonicalSettingsAuthority(storeA, () => {
+      clearAllOutputStylesCache();
+      return withOutputStyleRuntime(cwd, () => getAllOutputStyles(cwd));
+    });
+    const stillCachedB = await loadFor(storeB);
+
+    expect(reloadedA["sample:forced"]?.prompt).toBe("Updated prompt.");
+    expect(stillCachedB["sample:forced"]?.prompt).toBe(
+      "Original cached prompt.",
+    );
+
+    resetCanonicalSettingsAuthorityForTesting();
+    clearAllOutputStylesCache();
+    const globallyReloadedB = await loadFor(storeB);
+    expect(globallyReloadedB["sample:forced"]?.prompt).toBe("Updated prompt.");
   });
 
   it("turns /output-style:new into an agent-authored user style prompt", async () => {
@@ -165,3 +314,36 @@ describe("output-style commands", () => {
     expect(result.content).toContain("description: Short replies");
   });
 });
+
+function installOutputStylePlugin(
+  pluginStorageRoot: string,
+  prompt: string,
+): void {
+  const pluginRoot = join(pluginStorageRoot, "sample-plugin");
+  mkdirSync(join(pluginRoot, ".agenc-plugin"), { recursive: true });
+  mkdirSync(join(pluginRoot, "output-styles"), { recursive: true });
+  writeFileSync(
+    join(pluginRoot, ".agenc-plugin", "plugin.json"),
+    `${JSON.stringify({ name: "sample" }, null, 2)}\n`,
+  );
+  writePluginOutputStyle(pluginStorageRoot, prompt);
+}
+
+function writePluginOutputStyle(
+  pluginStorageRoot: string,
+  prompt: string,
+): void {
+  const pluginRoot = join(pluginStorageRoot, "sample-plugin");
+  writeFileSync(
+    join(pluginRoot, "output-styles", "forced.md"),
+    [
+      "---",
+      "name: forced",
+      "description: Forced plugin style",
+      "force-for-plugin: true",
+      "---",
+      prompt,
+      "",
+    ].join("\n"),
+  );
+}

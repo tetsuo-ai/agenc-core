@@ -174,7 +174,7 @@ function validateShellEnvironmentPolicy(value: unknown): void {
       if (!isCredentialLikeFieldName(name)) continue;
       throw new InvalidStrictConfigError(
         `${field}.set.${name}`,
-        "plaintext credential-like environment values are not allowed; use the documented process environment or native vault",
+        "plaintext credential-like environment values are not allowed; use the documented process environment or native secure storage",
       );
     }
   }

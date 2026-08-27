@@ -138,12 +138,14 @@ const client = await connect(); // socket + cookie under AGENC_HOME
   canonical run-settings snapshot required in `agent.attach`. Protocol 1.7
   adds required inactive auto availability and exact-workspace bypass
   capability and consent fields to that snapshot. Core/TUI callers reject an
-  older daemon during initialize. The SDK rejects attachment before dispatch
-  on a negotiated protocol older than 1.7.
-  Protocol 1.8 makes successful `session.setModel` and
-  `session.applyConfig` responses identify the exact canonical settings event
-  and provider/model pair. Core/TUI clients wait for that event before they
-  report success.
+  older daemon during initialize. The SDK rejects `agent.attach` and
+  `createSession()` before dispatch on a negotiated protocol older than 1.8;
+  it does not fall back to `session.create`, because that request cannot bind
+  the caller's exact plugin storage root. Protocol 1.8 requires
+  `runtimeOptions.pluginStorageRoot` in owning agent authority. It also makes
+  successful `session.setModel` and `session.applyConfig` responses identify
+  the exact canonical settings event and provider/model pair. Core/TUI clients
+  wait for that event before they report success.
   Protocols 1.0 through 1.2 advertise `session.mcp.status: false`,
   reject that method, and never receive `event.mcp_status_changed`. Update if
   necessary, then run `agenc daemon restart` so the daemon uses the installed
@@ -199,9 +201,11 @@ Protocol 1.7 adds `session.permissions.mutateRule` for authenticated Core
 clients. It adds or removes one live session permission rule through the
 daemon's permission registry. It is not a public SDK method.
 
-Protocol 1.8 adds the provider, model, and runtime-settings event ID to
-successful model and config mutation responses. Core waits for that exact
-event before updating the TUI or accepting the next runtime-dependent action.
+Protocol 1.8 requires `runtimeOptions.pluginStorageRoot` on `agent.create` and
+in the owning authority returned by `agent.attach`. It also adds the provider,
+model, and runtime-settings event ID to successful model and config mutation
+responses. Core waits for that exact event before updating the TUI or accepting
+the next runtime-dependent action.
 
 ### Race-safe turns and transcript sync (protocol 1.2+)
 

@@ -255,23 +255,14 @@ function isAgenCConfigFilePath(filePath: string): boolean {
     return true
   }
 
-  // Check if file is within .agenc/commands or .agenc/agents directories
-  // using proper path segment validation (not string matching with includes())
-  // pathInWorkingPath now handles case-insensitive comparison to prevent bypasses
-  const commandsDir = join(getOriginalCwd(), '.agenc', 'commands')
+  // Protect the live agent and skill authority directories with path-segment
+  // checks. Retired command directories are ordinary workspace paths.
   const agentsDir = join(getOriginalCwd(), '.agenc', 'agents')
   const skillsDir = join(getOriginalCwd(), '.agenc', 'skills')
-  const openCommandsDir = join(getOriginalCwd(), '.agenc', 'commands')
-  const openAgentsDir = join(getOriginalCwd(), '.agenc', 'agents')
-  const openSkillsDir = join(getOriginalCwd(), '.agenc', 'skills')
 
   return (
-    pathInWorkingPath(filePath, commandsDir) ||
     pathInWorkingPath(filePath, agentsDir) ||
-    pathInWorkingPath(filePath, skillsDir) ||
-    pathInWorkingPath(filePath, openCommandsDir) ||
-    pathInWorkingPath(filePath, openAgentsDir) ||
-    pathInWorkingPath(filePath, openSkillsDir)
+    pathInWorkingPath(filePath, skillsDir)
   )
 }
 
@@ -472,15 +463,16 @@ function isDangerousFilePathToAutoEdit(path: string): boolean {
         continue
       }
 
-      // Special case: .agenc/worktrees/ is a structural path (where AgenC stores
-      // git worktrees), not a user-created dangerous directory. Skip the .agenc
-      // segment when it's followed by 'worktrees'. Any nested .agenc directories
-      // within the worktree (not followed by 'worktrees') are still blocked.
+      // Worktrees are structural, and the retired commands directory has no
+      // runtime authority. Neither inherits the blanket `.agenc` protection.
+      // A nested live `.agenc` directory is still checked on its own segment.
       if (dir === '.agenc') {
         const nextSegment = pathSegments[i + 1]
         if (
           nextSegment &&
-          normalizeCaseForComparison(nextSegment) === 'worktrees'
+          ['commands', 'worktrees'].includes(
+            normalizeCaseForComparison(nextSegment),
+          )
         ) {
           break // Skip this .agenc, continue checking other segments
         }
@@ -626,8 +618,7 @@ function hasSuspiciousWindowsPathPattern(path: string): boolean {
  *
  * This function performs comprehensive safety checks including:
  * - Suspicious Windows path patterns (NTFS streams, 8.3 names, long path prefixes, etc.)
- * - Protected AgenC control files (including the retired
- *   .agenc/settings.json migration input, .agenc/commands/, and .agenc/agents/)
+ * - Protected AgenC control files and live agent/skill authority directories
  * - MCP CLI state files (managed internally by AgenC)
  * - Dangerous files (.bashrc, .gitconfig, .git/, .vscode/, .idea/, etc.)
  *

@@ -118,6 +118,12 @@ export interface AttachmentTrackingState {
    */
   nestedMemoryAttachmentTriggers: Set<string>;
   /**
+   * Nested skill roots discovered by file operations and awaiting one
+   * `dynamic_skill` attachment. Skill activation itself is owned by the
+   * session's SkillsManager; this set only carries display notifications.
+   */
+  dynamicSkillDirTriggers: Set<string>;
+  /**
    * Non-evicting dedupe set for nested instruction/rule files already
    * injected into this session. Kept separate from FileRead's read cache
    * because the read cache can be cleared by compaction or local history
@@ -181,6 +187,7 @@ export function getAttachmentTrackingState(
       hasExitedPlanModeInSession: false,
       hasExitedAutoModeInSession: false,
       nestedMemoryAttachmentTriggers: new Set(),
+      dynamicSkillDirTriggers: new Set(),
       loadedNestedMemoryPaths: new Set(),
       sessionStartMemoryRecallChecked: false,
       surfacedRelevantMemoryPaths: new Set(),

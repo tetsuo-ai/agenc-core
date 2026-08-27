@@ -118,7 +118,7 @@ function resolveWebChatToken(
   return resolveGatewayGeneratedToken(home, "webchat", env.AGENC_WEBCHAT_TOKEN);
 }
 
-/** Explicit env overrides the home-bound native credential-vault token. */
+/** Explicit env overrides the home-bound native secure storage token. */
 export function resolveHooksToken(
   home: HomeContext,
   env: Readonly<Record<string, string | undefined>>,

@@ -154,7 +154,7 @@ export interface SecureStorage {
   /**
    * Return null only when the backend authoritatively proves that no record
    * exists. Backend, decrypt, and parse failures must throw so a shared-blob
-   * read-modify-write can never mistake an unreadable vault for an empty one.
+   * read-modify-write can never mistake unreadable secure storage for empty storage.
   */
   read(): SecureStorageData | null
   /** Bypass any process-local cache for a locked read-modify-write. */
@@ -164,7 +164,7 @@ export interface SecureStorage {
   delete(): boolean
 }
 
-/** Exact native-vault identity used only by the explicit migration command. */
+/** Exact native secure storage identity used only by the explicit migration command. */
 export interface SecureStorageMigrationIdentity {
   readonly serviceName: string
   readonly accountName: string
@@ -188,7 +188,7 @@ const unavailableSecureStorage: SecureStorage = {
 }
 
 /**
- * Get the native secure-storage implementation for the current platform.
+ * Get the native secure storage implementation for the current platform.
  * AgenC never falls back to a plaintext credential file during ordinary
  * runtime operation.
  */
@@ -211,7 +211,7 @@ export function getSecureStorage(
 }
 
 /**
- * Open a specifically identified retired native-vault namespace. Ordinary
+ * Open a specifically identified retired native secure storage namespace. Ordinary
  * runtime code must use getSecureStorage(home); this escape hatch exists only
  * so `agenc config migrate` can perform a checked, one-way namespace cutover.
  */

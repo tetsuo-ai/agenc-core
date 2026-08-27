@@ -41,7 +41,7 @@ import {
 } from './secureStorage/native.js'
 import type { HomeContext } from '../config/home.js'
 import {
-  nativeVaultIdentityKey,
+  secureStorageIdentityKey,
   resolveSecureStorageHome,
 } from './secureStorage/home.js'
 import { getSelectedProviderEnvironment } from './model/providers.js'
@@ -193,7 +193,7 @@ export function getAuthTokenSourceForContext(
     return { source: 'AGENC_OAUTH_TOKEN' as const, hasToken: true }
   }
 
-  // Check for OAuth token from a transient descriptor or the native-vault
+  // Check for OAuth token from a transient descriptor or the native secure storage
   // continuity record used by remote subprocesses.
   const oauthTokenFromFd = getOAuthTokenFromFileDescriptor(home, environment)
   if (oauthTokenFromFd) {
@@ -515,7 +515,7 @@ const readPersistedAgenCAIOAuthTokens = memoize((home: HomeContext): OAuthTokens
     logError(error)
     return null
   }
-}, nativeVaultIdentityKey)
+}, secureStorageIdentityKey)
 
 export function getAgenCAIOAuthTokens(
   home: HomeContext,
@@ -555,7 +555,7 @@ export function getAgenCAIOAuthTokens(
 }
 
 function clearAgenCAIOAuthTokenCache(home: HomeContext): void {
-  readPersistedAgenCAIOAuthTokens.cache.delete?.(nativeVaultIdentityKey(home))
+  readPersistedAgenCAIOAuthTokens.cache.delete?.(secureStorageIdentityKey(home))
 }
 
 /**
@@ -596,7 +596,7 @@ export function handleOAuth401Error(
   failedAccessToken: string,
   environment: ProviderEnvironment,
 ): Promise<boolean> {
-  const key = `${nativeVaultIdentityKey(home)}\0${oauthEnvironmentIdentity(environment)}\0${failedAccessToken}`
+  const key = `${secureStorageIdentityKey(home)}\0${oauthEnvironmentIdentity(environment)}\0${failedAccessToken}`
   const pending = pending401Handlers.get(key)
   if (pending) return pending
 
@@ -688,7 +688,7 @@ export function checkAndRefreshOAuthTokenIfNeeded(
   retryCount = 0,
   force = false,
 ): Promise<boolean> {
-  const key = `${nativeVaultIdentityKey(home)}\0${oauthEnvironmentIdentity(environment)}`
+  const key = `${secureStorageIdentityKey(home)}\0${oauthEnvironmentIdentity(environment)}`
   // Deduplicate concurrent non-retry, non-force calls
   if (retryCount === 0 && !force) {
     const existing = pendingRefreshChecks.get(key)

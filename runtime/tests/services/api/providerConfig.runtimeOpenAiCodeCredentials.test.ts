@@ -22,7 +22,7 @@ test('uses the subscription access token when the native record also has a platf
   expect(credentials).toEqual({
     bearerToken: 'stored-subscription-token',
     accountId: 'acct_stored',
-    source: 'native-vault',
+    source: 'native-secure-storage',
   })
 })
 
@@ -41,7 +41,7 @@ test('native sign-in wins over conflicting ProviderCode environment credentials'
   expect(credentials).toEqual({
     bearerToken: 'stored-subscription-token',
     accountId: 'acct_stored',
-    source: 'native-vault',
+    source: 'native-secure-storage',
   })
 })
 

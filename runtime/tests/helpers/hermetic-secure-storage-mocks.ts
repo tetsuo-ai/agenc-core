@@ -5,7 +5,7 @@ import { join } from 'node:path'
 // The default suite must not query the host's Keychain, Secret Service, or
 // Windows credential infrastructure. Tests for those adapters import them
 // directly with explicit subprocess mocks; ordinary runtime consumers get an
-// isolated in-memory native-vault stand-in.
+// isolated in-memory native secure storage stand-in.
 vi.mock('../../src/utils/secureStorage/index.js', () => {
   type Data = import('../../src/utils/secureStorage/index.js').SecureStorageData
   type Identity = import('../../src/utils/secureStorage/index.js').SecureStorageMigrationIdentity

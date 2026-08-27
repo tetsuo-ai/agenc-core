@@ -26,6 +26,7 @@ export type BuiltinPluginDefinition = {
 }
 
 export type LoadedPlugin = {
+  id: string
   name: string
   manifest: PluginManifest
   path: string

@@ -128,9 +128,9 @@ stores credential values.
 
 - **Local BYOK** — explicit provider environment keys are transient inputs;
   keys saved through AgenC live only in the home-scoped native credential
-  vault. `auth.json` contains non-secret identity/timestamp metadata only.
+  secure storage. `auth.json` contains non-secret identity/timestamp metadata only.
 - **Remote / managed** — `auth.backend = "remote"` with managed keys
-  (`agenc` provider requires managed auth). The stored bearer is native-vault
+  (`agenc` provider requires managed auth). The stored bearer is native secure storage
   state. An explicit constructor token wins over `AGENC_REMOTE_AUTH_TOKEN`,
   which wins over the stored bearer; explicit overrides are not copied into
   `auth.json`.
@@ -154,7 +154,7 @@ stores credential values.
   explicit `HomeContext`; cache/single-flight/refresh-lock state is isolated by
   home, and refresh writes compare-and-swap the exact credential version they
   exchanged so a newer login always wins. Gemini access-token and Application
-  Default Credentials auth has no provider-specific vault namespace. Gemini API
+  Default Credentials auth has no provider-specific secure-storage namespace. Gemini API
   keys explicitly saved through local BYOK live under `localAuth.byokKeys`.
 - **Discovery** — `agenc providers` reports readiness (credentials present, local
   server health for Ollama/LM Studio/openai-compatible, subscription tier)

@@ -147,7 +147,7 @@ describe("startGateway", () => {
       "custom-oauth-webchat-token-12345",
     ],
   ] as const)(
-    "uses the %s OAuth native-vault namespace captured at gateway ingress",
+    "uses the %s OAuth native secure storage namespace captured at gateway ingress",
     async (_label, oauthEnvironment, token) => {
       const environment = Object.freeze({
         AGENC_HOME: home,
@@ -217,7 +217,7 @@ describe("startGateway", () => {
     expect(client.closed).toBe(true);
   });
 
-  test("hooks: --hooks mints a native-vault token, binds loopback, and an authed POST runs a turn end to end", async () => {
+  test("hooks: --hooks mints a native secure storage token, binds loopback, and an authed POST runs a turn end to end", async () => {
     writeConfig({});
     const client = new FakeClient();
     const handle = await startGateway({

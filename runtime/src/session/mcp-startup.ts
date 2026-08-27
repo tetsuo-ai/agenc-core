@@ -116,6 +116,7 @@ export interface SessionMcpResolutionPlan {
 export interface CreateSessionMcpServiceOptions {
   readonly authority: CanonicalSettingsAuthority;
   readonly environment: ProviderEnvironment;
+  readonly pluginStorageRoot: string;
 }
 
 export interface CreateSessionMcpManagerOptions {
@@ -803,7 +804,9 @@ export async function resolveSessionMcpPlan(
   environment: ProviderEnvironment,
   sessionServers: Readonly<Record<string, MCPServerConfig>> = {},
   enabledOverrides: ReadonlyMap<string, boolean> = new Map(),
-  options: McpAuthorityRefreshOptions = {},
+  options: McpAuthorityRefreshOptions & {
+    readonly pluginStorageRoot: string;
+  },
 ): Promise<SessionMcpResolutionPlan> {
   const scopedSessionServers = Object.fromEntries(
     Object.entries(sessionServers).map(([name, config]) => [
@@ -824,10 +827,10 @@ export async function resolveSessionMcpPlan(
     sessionDispositions,
   } = await getAllMcpConfigs(
     authority,
+    options,
     environment,
     scopedSessionServers,
     enabledOverrides,
-    options,
   );
   return {
     configs: Object.entries(servers).map(([name, config]) =>
@@ -845,10 +848,17 @@ export async function resolveSessionMcpPlan(
 export async function resolveSessionMcpConfig(
   authority: CanonicalSettingsAuthority,
   environment: ProviderEnvironment,
+  pluginStorageRoot: string,
   sessionServers: Readonly<Record<string, MCPServerConfig>> = {},
 ): Promise<MCPServerConfig[]> {
   return [
-    ...(await resolveSessionMcpPlan(authority, environment, sessionServers))
+    ...(await resolveSessionMcpPlan(
+      authority,
+      environment,
+      sessionServers,
+      new Map(),
+      { pluginStorageRoot },
+    ))
       .configs,
   ];
 }
@@ -1114,7 +1124,10 @@ export function createSessionMcpService(
           override.enabled,
         ]),
       ),
-      { ...(signal !== undefined ? { signal } : {}) },
+      {
+        pluginStorageRoot: options.pluginStorageRoot,
+        ...(signal !== undefined ? { signal } : {}),
+      },
     );
   const pruneOverlay = (
     state: SessionMcpOverlayState,

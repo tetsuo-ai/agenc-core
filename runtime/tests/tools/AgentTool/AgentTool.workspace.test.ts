@@ -10,6 +10,7 @@ import { ConfigStore } from '../../../src/config/store.js'
 import { createProvider } from '../../../src/llm/provider.js'
 import { runWithCurrentRuntimeSession } from '../../../src/session/current-session.js'
 import { SessionProviderService } from '../../../src/session/provider-service.js'
+import { resolveAgentRuntimeOptions } from '../../../src/session/runtime-options.js'
 import type { Session } from '../../../src/session/session.js'
 import {
   __setAgentMetadataWriterForTesting,
@@ -82,6 +83,9 @@ function sessionFor(
   executionAdmission?: ExecutionAdmissionClient,
 ): Session {
   const configStore = settingsAuthorityFor(cwd)
+  const runtimeOptions = resolveAgentRuntimeOptions({}, {
+    pluginStorageRoot: tempRoot('agent-plugin-storage'),
+  })
   const providerService = new SessionProviderService({
     initialProvider: createProvider('openai-compatible', {
       baseURL: 'http://127.0.0.1:18000/v1',
@@ -95,12 +99,18 @@ function sessionFor(
     roleWorkspace: createAgentRoleWorkspace(cwd),
     config: { coordinatorMode: false },
     services: executionAdmission === undefined
-      ? { admissionRequired: false, configStore, providerService }
+      ? {
+          admissionRequired: false,
+          configStore,
+          providerService,
+          runtimeOptions,
+        }
       : {
           executionAdmission,
           admissionRequired: true,
           configStore,
           providerService,
+          runtimeOptions,
           sandboxExecutionBroker: {
             cwd,
             prepareSpawn: vi.fn(),

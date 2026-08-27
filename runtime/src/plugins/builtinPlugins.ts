@@ -89,6 +89,7 @@ export function getBuiltinPlugins(): {
         : (definition.defaultEnabled ?? true)
 
     const plugin: LoadedPlugin = {
+      id: pluginId,
       name,
       manifest,
       path: definition.root,

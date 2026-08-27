@@ -26,7 +26,7 @@ export interface ChatGptSubscriptionEnvironment {
 export interface ResolvedChatGptSubscriptionCredentials {
   readonly bearerToken: string;
   readonly accountId?: string;
-  readonly source: "environment" | "native-vault" | "none";
+  readonly source: "environment" | "native-secure-storage" | "none";
 }
 
 function nonEmpty(value: string | undefined): string | undefined {
@@ -35,7 +35,7 @@ function nonEmpty(value: string | undefined): string | undefined {
 }
 
 /**
- * Resolve a usable native-vault subscription pair. A platform API key is not
+ * Resolve a usable native secure storage subscription pair. A platform API key is not
  * accepted here because the ChatGPT backend requires the OAuth access token.
  */
 export function resolveStoredChatGptSubscriptionCredentials(
@@ -43,7 +43,7 @@ export function resolveStoredChatGptSubscriptionCredentials(
 ):
   | (ResolvedChatGptSubscriptionCredentials & {
       readonly accountId: string;
-      readonly source: "native-vault";
+      readonly source: "native-secure-storage";
     })
   | undefined {
   const bearerToken = nonEmpty(stored?.accessToken);
@@ -53,12 +53,16 @@ export function resolveStoredChatGptSubscriptionCredentials(
     parseChatgptAccountId(stored?.idToken) ??
     parseChatgptAccountId(bearerToken);
   if (accountId === undefined) return undefined;
-  return Object.freeze({ bearerToken, accountId, source: "native-vault" });
+  return Object.freeze({
+    bearerToken,
+    accountId,
+    source: "native-secure-storage",
+  });
 }
 
 /**
  * Resolve the one ChatGPT subscription credential order used by every active
- * runtime path: a usable native-vault sign-in wins, then the explicit
+ * runtime path: a usable native secure storage sign-in wins, then the explicit
  * ProviderCode environment token, otherwise no credential is available.
  */
 export function resolveChatGptSubscriptionCredentials(options: {

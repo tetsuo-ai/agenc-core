@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
-  nativeVaultIdentityKey,
+  secureStorageIdentityKey,
   resolveSecureStorageHome,
 } from "../../src/utils/secureStorage/home.js";
 
@@ -248,16 +248,16 @@ function installInMemoryNativeStorage(): void {
     >();
     return {
       ...original,
-      getSecureStorage: (home: Parameters<typeof nativeVaultIdentityKey>[0]) => ({
+      getSecureStorage: (home: Parameters<typeof secureStorageIdentityKey>[0]) => ({
         name: "in-memory-native-test-vault",
-        read: () => structuredClone(records.get(nativeVaultIdentityKey(home)) ?? null),
+        read: () => structuredClone(records.get(secureStorageIdentityKey(home)) ?? null),
         readAsync: async () =>
-          structuredClone(records.get(nativeVaultIdentityKey(home)) ?? null),
+          structuredClone(records.get(secureStorageIdentityKey(home)) ?? null),
         update: (data: import("../../src/utils/secureStorage/index.js").SecureStorageData) => {
-          records.set(nativeVaultIdentityKey(home), structuredClone(data));
+          records.set(secureStorageIdentityKey(home), structuredClone(data));
           return { success: true };
         },
-        delete: () => records.delete(nativeVaultIdentityKey(home)),
+        delete: () => records.delete(secureStorageIdentityKey(home)),
       }),
     };
   });

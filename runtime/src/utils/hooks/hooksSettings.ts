@@ -177,10 +177,7 @@ export function hookSourceDescriptionDisplayString(source: HookSource): string {
     case 'localSettings':
       return 'Local config (.agenc/config.local.toml)'
     case 'pluginHook':
-      // Follow-up: Get the actual plugin hook file paths instead of using glob pattern
-      // We should capture the specific plugin paths during hook registration and display them here
-      // e.g., "Plugin hooks (~/.agenc/plugins/repos/source/example-plugin/example-plugin/hooks/hooks.json)"
-      return 'Plugin hooks (~/.agenc/plugins/*/hooks/hooks.json)'
+      return 'Plugin hooks (registered plugin package)'
     case 'sessionHook':
       return 'Session hooks (in-memory, temporary)'
     case 'builtinHook':

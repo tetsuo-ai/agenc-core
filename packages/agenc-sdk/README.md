@@ -35,11 +35,12 @@ stable `clientMessageId` for correlation/idempotent retry. Protocol 1.2 adds
 opt-in `ifBusy: "reject"`, turn-scoped cancellation, identity-bearing
 `transcriptV2()`, distinct delta/committed assistant events, and
 `history_reset`. The SDK capability-falls back when initialization discovers a
-1.0–1.4 daemon. Protocol 1.4 makes owning runtime authority part of
-`agent.attach`; the SDK refuses that request before dispatch on an older daemon
-and uses `session.create` directly when creating a session. Strict admission
-and scoped prompt cancellation fail closed when those guarantees are
-unavailable.
+1.0 through 1.7 daemon. Protocol 1.8 makes complete owning runtime authority,
+including the exact plugin storage root, part of `agent.create` and
+`agent.attach`. The SDK refuses attachment and session creation before dispatch
+on an older daemon. It does not fall back to `session.create`, which cannot bind
+that root. Strict admission and scoped prompt cancellation fail closed when
+those guarantees are unavailable.
 
 ```js
 import { connect, promptViaSubprocess } from "@tetsuo-ai/agenc-sdk";
@@ -50,7 +51,9 @@ const client = await connect({
       ? { behavior: "allow", scope: "once" }
       : { behavior: "deny" },
 });
-const session = await client.createSession();
+const session = await client.createSession({
+  pluginStorageRoot: "/absolute/agenc-home/plugins",
+});
 const run = session.prompt("Summarize the protocol layer.");
 for await (const event of run) {
   if (event.type === "text") process.stdout.write(event.delta);
@@ -63,6 +66,7 @@ await client.close();
 
 - Local endpoint: `${AGENC_HOME:-~/.agenc}/daemon.sock` on Unix; a stable per-home named pipe on Windows
 - Cookie: `${AGENC_HOME:-~/.agenc}/daemon.cookie` (first message must be `initialize` with `authCookie`; `connect()` handles this)
+- Plugin storage: `createSession()` requires an exact absolute `pluginStorageRoot` of at most 4096 UTF-8 bytes, with no surrounding whitespace. `AgencClient` does not reread `AGENC_PLUGIN_CACHE_DIR`, derive a root from `AGENC_HOME`, or accept `agentId`; use `attachAgent()` for an existing agent.
 - Autostart: runs `agenc daemon start` when the socket is down (disable with `autostart: false`)
 - Hook authority: `createSession()` sends `allowUntrustedHooks: false`. A caller using `spawnAgent()` must send complete runtime options and may set the field to `true` only after vetting the workspace. It permits command effects only and cannot override `simpleMode` hook suppression.
 
@@ -80,7 +84,8 @@ environment when `options.env` is omitted, at automation startup.
 
 ```bash
 npm run build --workspace=@tetsuo-ai/agenc-sdk
-node packages/agenc-sdk/examples/one-shot.mjs "say hello in one word"
+AGENC_PLUGIN_CACHE_DIR=/absolute/path/to/agenc/plugins \
+  node packages/agenc-sdk/examples/one-shot.mjs "say hello in one word"
 node packages/agenc-sdk/examples/one-shot.mjs --transport subprocess "say hello"
 ```
 

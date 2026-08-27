@@ -47,17 +47,6 @@ function writePluginSkill(pluginRoot: string, rel: string): string {
   return writeSkill(join(pluginRoot, "skills"), rel);
 }
 
-function writeCommand(root: string, rel: string, body?: string): string {
-  const file = join(root, rel);
-  mkdirSync(join(file, ".."), { recursive: true });
-  writeFileSync(
-    file,
-    body ??
-      `---\ndescription: ${rel} description\n---\n# ${rel}\nUse command.\n`,
-  );
-  return file;
-}
-
 async function flushPromises(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
@@ -79,6 +68,7 @@ describe("local skills loader", () => {
 
     const snapshot = await loadLocalSkillsSnapshot({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       config: { plugins: { enabled: true } },
       env: { HOME: home },
@@ -103,11 +93,53 @@ describe("local skills loader", () => {
     );
   });
 
+  it("isolates plugin skills by storage root while keeping the same AgenC home", async () => {
+    const agencHome = tmpRoot("skills-shared-home");
+    const workspaceRoot = tmpRoot("skills-shared-workspace");
+    const pluginStorageRootA = tmpRoot("plugin-storage-a");
+    const pluginStorageRootB = tmpRoot("plugin-storage-b");
+    writeSkill(join(agencHome, "skills"), "shared-home-skill");
+    writePluginSkill(join(pluginStorageRootA, "alpha"), "alpha-skill");
+    writePluginSkill(join(pluginStorageRootB, "beta"), "beta-skill");
+
+    const config = { plugins: { enabled: true } } as const;
+    const [snapshotA, snapshotB] = await Promise.all([
+      loadLocalSkillsSnapshot({
+        agencHome,
+        pluginStorageRoot: pluginStorageRootA,
+        workspaceRoot,
+        config,
+        env: {},
+      }),
+      loadLocalSkillsSnapshot({
+        agencHome,
+        pluginStorageRoot: pluginStorageRootB,
+        workspaceRoot,
+        config,
+        env: {},
+      }),
+    ]);
+
+    expect(snapshotA.skills.map((skill) => skill.name)).toEqual(
+      expect.arrayContaining(["alpha-skill", "shared-home-skill"]),
+    );
+    expect(snapshotA.skills.map((skill) => skill.name)).not.toContain(
+      "beta-skill",
+    );
+    expect(snapshotB.skills.map((skill) => skill.name)).toEqual(
+      expect.arrayContaining(["beta-skill", "shared-home-skill"]),
+    );
+    expect(snapshotB.skills.map((skill) => skill.name)).not.toContain(
+      "alpha-skill",
+    );
+  });
+
   it("ships Ledger Wallet CLI setup and safety guidance in core", async () => {
     const agencHome = tmpRoot("ledger-skill-home");
     const workspaceRoot = tmpRoot("ledger-skill-workspace");
     const services = createLocalSkillsServices({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       env: {},
     });
@@ -140,6 +172,7 @@ describe("local skills loader", () => {
 
     const services = createLocalSkillsServices({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       env: { HOME: home },
     });
@@ -168,6 +201,7 @@ describe("local skills loader", () => {
 
     await expect(discoverSkillWatchRoots({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       env: { HOME: home },
     })).resolves.toEqual(expect.arrayContaining([
@@ -192,6 +226,7 @@ describe("local skills loader", () => {
 
     const snapshot = await loadLocalSkillsSnapshot({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       env: {},
     });
@@ -213,6 +248,7 @@ describe("local skills loader", () => {
 
     const services = createLocalSkillsServices({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       env: {},
     });
@@ -252,6 +288,7 @@ Read $topic and $focus.
 
     const snapshot = await loadLocalSkillsSnapshot({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       env: {},
     });
@@ -287,6 +324,7 @@ Read $topic and $focus.
 
     const inactive = await loadLocalSkillsSnapshot({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       env: {},
     });
@@ -296,37 +334,41 @@ Read $topic and $focus.
     );
 
     const active = await loadLocalSkillsSnapshot(
-      { agencHome, workspaceRoot, env: {} },
+      { agencHome, pluginStorageRoot: join(agencHome, "plugins"), workspaceRoot, env: {} },
       [join(workspaceRoot, "docs", "intro.md")],
     );
     expect(active.skills.map((skill) => skill.name)).toContain("docs-helper");
   });
 
-  it("loads legacy commands as user-invocable skills", async () => {
+  it("does not load retired command directories", async () => {
     const agencHome = tmpRoot("skills-home");
     const workspaceRoot = tmpRoot("skills-workspace");
-    writeCommand(join(workspaceRoot, ".agenc", "commands"), "review.md");
+    const platformHome = tmpRoot("platform-home");
     writeSkill(join(workspaceRoot, ".agenc", "commands"), "deploy");
+    writeSkill(join(workspaceRoot, ".agents", "commands"), "review");
+    writeSkill(join(agencHome, "commands"), "user-deploy");
+    writeSkill(join(platformHome, ".agents", "commands"), "user-review");
 
     const snapshot = await loadLocalSkillsSnapshot({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
-      env: {},
+      env: { HOME: platformHome },
     });
 
-    expect(snapshot.skills.map((skill) => skill.name)).toEqual(
-      expect.arrayContaining(["review", "deploy"]),
-    );
-    expect(snapshot.skills.find((skill) => skill.name === "review")?.loadedFrom)
-      .toBe("commands_DEPRECATED");
+    const names = snapshot.skills.map((skill) => skill.name);
+    expect(names).not.toContain("review");
+    expect(names).not.toContain("deploy");
+    expect(names).not.toContain("user-review");
+    expect(names).not.toContain("user-deploy");
   });
 
-  it("renders custom command markdown arguments through the loader path", async () => {
+  it("renders skill arguments through the loader path", async () => {
     const agencHome = tmpRoot("skills-home");
     const workspaceRoot = tmpRoot("skills-workspace");
-    writeCommand(
-      join(workspaceRoot, ".agenc", "commands"),
-      "explain.md",
+    writeSkill(
+      join(workspaceRoot, ".agenc", "skills"),
+      "explain",
       `---
 description: Explain a topic
 arguments: topic target
@@ -339,6 +381,7 @@ All=$ARGUMENTS
     );
     const services = createLocalSkillsServices({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       env: {},
     });
@@ -365,6 +408,7 @@ All=$ARGUMENTS
     );
     const services = createLocalSkillsServices({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       env: {},
     });
@@ -390,6 +434,7 @@ All=$ARGUMENTS
 
     const services = createLocalSkillsServices({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       env: {},
     });
@@ -424,6 +469,7 @@ All=$ARGUMENTS
 
     const services = createLocalSkillsServices({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       fileWatcher: watcher,
       skillChangeDetector: detector,
@@ -462,6 +508,7 @@ All=$ARGUMENTS
     const detector = createSkillChangeDetector();
     const services = createLocalSkillsServices({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       fileWatcher: watcher,
       skillChangeDetector: detector,
@@ -477,6 +524,7 @@ All=$ARGUMENTS
       await services.skillsWatcher.start();
       expect(await discoverSkillWatchRoots({
         agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         env: {},
       })).toContain(missingSkillRoot);
@@ -510,6 +558,7 @@ All=$ARGUMENTS
     const secondDetector = createSkillChangeDetector();
     const first = createLocalSkillsServices({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       fileWatcher: watcher,
       skillChangeDetector: firstDetector,
@@ -521,6 +570,7 @@ All=$ARGUMENTS
     });
     const second = createLocalSkillsServices({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       fileWatcher: watcher,
       skillChangeDetector: secondDetector,
@@ -579,6 +629,7 @@ All=$ARGUMENTS
     const detector = createSkillChangeDetector();
     const services = createLocalSkillsServices({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       fileWatcher: watcher,
       skillChangeDetector: detector,
@@ -633,6 +684,7 @@ All=$ARGUMENTS
 
     const services = createLocalSkillsServices({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       env: {},
     });
@@ -680,6 +732,7 @@ All=$ARGUMENTS
     writeSkill(join(configuredPlugin, "skills"), "configured-skill");
     const services = createLocalSkillsServices({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       env: {},
     });
@@ -759,6 +812,7 @@ All=$ARGUMENTS
 
     const roots = await discoverSkillRoots({
       agencHome: join(tmpRoot("missing-home"), "nope"),
+      pluginStorageRoot: join(tmpRoot("missing-plugin-storage"), "nope"),
       workspaceRoot: join(tmpRoot("missing-workspace"), "nope"),
       env: { HOME: tmpRoot("missing-user") },
     });
@@ -767,6 +821,83 @@ All=$ARGUMENTS
     await expect(
       discoverDynamicSkillDirsForPaths([join(nested, "Button.tsx")], workspaceRoot),
     ).resolves.toEqual([join(nested, ".agenc", "skills")]);
+  });
+
+  it("keeps nested and conditional skill discovery inside the owning service", async () => {
+    const agencHome = tmpRoot("skills-home");
+    const workspaceRoot = tmpRoot("skills-workspace");
+    const pluginStorageRoot = join(agencHome, "plugins");
+    const packageRoot = join(workspaceRoot, "packages", "ui");
+    const touchedPath = join(packageRoot, "src", "Button.tsx");
+    const nestedSkillRoot = join(packageRoot, ".agenc", "skills");
+    const deeperSkillRoot = join(packageRoot, "src", ".agenc", "skills");
+
+    writeSkill(
+      join(workspaceRoot, ".agenc", "skills"),
+      "tsx-helper",
+      "---\ndescription: TSX helper\npaths: packages/ui/src/**\n---\nBody\n",
+    );
+    writeSkill(
+      nestedSkillRoot,
+      "ui-helper",
+      "---\ndescription: Package UI helper\n---\nBody\n",
+    );
+    writeSkill(
+      deeperSkillRoot,
+      "ui-helper",
+      "---\ndescription: Source UI helper\n---\nBody\n",
+    );
+
+    const sessionA = createLocalSkillsServices({
+      agencHome,
+      pluginStorageRoot,
+      workspaceRoot,
+      sessionId: "session-a",
+      env: {},
+    });
+    const sessionB = createLocalSkillsServices({
+      agencHome,
+      pluginStorageRoot,
+      workspaceRoot,
+      sessionId: "session-b",
+      env: {},
+    });
+    const namesFor = async (
+      services: ReturnType<typeof createLocalSkillsServices>,
+    ) =>
+      (await services.skillsManager.skillsForConfig({}, null)).availableSkills
+        ?.map((skill) => skill.name) ?? [];
+
+    expect(await namesFor(sessionA)).not.toContain("tsx-helper");
+    expect(await namesFor(sessionA)).not.toContain("ui-helper");
+    expect(await namesFor(sessionB)).not.toContain("tsx-helper");
+    expect(await namesFor(sessionB)).not.toContain("ui-helper");
+
+    await expect(
+      sessionA.skillsManager.discoverSkillDirsForPaths?.([touchedPath]),
+    ).resolves.toEqual([deeperSkillRoot, nestedSkillRoot]);
+
+    expect(await namesFor(sessionA)).toEqual(
+      expect.arrayContaining(["tsx-helper", "ui-helper"]),
+    );
+    await expect(sessionA.skillsManager.resolveSkill?.("ui-helper"))
+      .resolves.toMatchObject({
+        description: "Source UI helper",
+        root: deeperSkillRoot,
+      });
+    expect(await namesFor(sessionB)).not.toContain("tsx-helper");
+    expect(await namesFor(sessionB)).not.toContain("ui-helper");
+    expect(await namesFor(sessionA)).toEqual(
+      expect.arrayContaining(["tsx-helper", "ui-helper"]),
+    );
+
+    sessionA.skillsManager.clearSkillCaches?.();
+
+    expect(await namesFor(sessionB)).not.toContain("tsx-helper");
+    expect(await namesFor(sessionB)).not.toContain("ui-helper");
+    expect(await namesFor(sessionA)).toEqual(
+      expect.arrayContaining(["tsx-helper", "ui-helper"]),
+    );
   });
 });
 
@@ -779,12 +910,14 @@ describe("invoked-skill session scoping", () => {
 
     const sessionA = createLocalSkillsServices({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       sessionId: "session-a",
       env: {},
     });
     const sessionB = createLocalSkillsServices({
       agencHome,
+      pluginStorageRoot: join(agencHome, "plugins"),
       workspaceRoot,
       sessionId: "session-b",
       env: {},
@@ -822,8 +955,8 @@ describe("invoked-skill session scoping", () => {
     // Mirrors the daemon today: bootstrap wiring does not pass a session id
     // into the skills services, but the Skill tool stamps the conversation
     // id on every record.
-    const sessionA = createLocalSkillsServices({ agencHome, workspaceRoot, env: {} });
-    const sessionB = createLocalSkillsServices({ agencHome, workspaceRoot, env: {} });
+    const sessionA = createLocalSkillsServices({ agencHome, pluginStorageRoot: join(agencHome, "plugins"), workspaceRoot, env: {} });
+    const sessionB = createLocalSkillsServices({ agencHome, pluginStorageRoot: join(agencHome, "plugins"), workspaceRoot, env: {} });
 
     sessionA.skillsManager.recordInvokedSkill?.({
       skillName: "skill-a",
@@ -858,7 +991,7 @@ describe("invoked-skill session scoping", () => {
     clearInvokedSkills();
     const agencHome = tmpRoot("skills-home");
     const workspaceRoot = tmpRoot("skills-workspace");
-    const services = createLocalSkillsServices({ agencHome, workspaceRoot, env: {} });
+    const services = createLocalSkillsServices({ agencHome, pluginStorageRoot: join(agencHome, "plugins"), workspaceRoot, env: {} });
 
     services.skillsManager.recordInvokedSkill?.({
       skillName: "legacy-skill",

@@ -47,11 +47,15 @@ vi.mock("../utils/secureStorage/native.js", async importOriginal => {
 });
 
 import { sourcePath } from "../helpers/source-path.ts";
-import { findCommand } from "../commands.js";
+import { findCommand, type Command } from "../commands.js";
 import { MCPManager } from "../mcp-client/manager.js";
 import { mcpServerNameValidationIssue } from "../mcp-client/server-name.js";
-import { pluginDataDirPath } from "./directories.js";
+import {
+  createPluginStorageAuthority,
+  pluginDataDirPath,
+} from "./directories.js";
 import { loadPlugins, type PluginLoadIssue } from "./loader.js";
+import { canonicalPluginRuntimeNamespace } from "./identifier-normalization.js";
 import { substitutePluginTemplate } from "./registration/common.js";
 import {
   loadPluginAgents,
@@ -61,6 +65,7 @@ import {
   loadPluginCommands,
   loadPluginSkills,
   setActivePluginCommandSnapshot,
+  setActivePluginSkillSnapshot,
 } from "./registration/load-plugin-commands.js";
 import { loadPluginHooks } from "./registration/load-plugin-hooks.js";
 import { loadPluginLspServers } from "./registration/lsp-plugin-integration.js";
@@ -75,6 +80,7 @@ import type { SlashCommandContext } from "../commands/types.js";
 import {
   clearAgentDefinitionsCache,
   getAgentDefinitionsWithOverrides,
+  type PluginAgentDefinition,
 } from "../tools/AgentTool/loadAgentsDir.js";
 import { FILE_EDIT_TOOL_NAME } from "../tools/system/file-edit.js";
 import { FILE_READ_TOOL_NAME } from "../tools/system/file-read.js";
@@ -102,7 +108,7 @@ describe("plugin registration", () => {
 
       const commands = await loadPluginCommands({
         cwd: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         plugins,
         sessionId: "session-1",
       });
@@ -112,20 +118,24 @@ describe("plugin registration", () => {
       expect(deploy?.allowedTools).toEqual([
         `Bash(${pluginRoot}/bin/deploy)`,
       ]);
+      const sampleDataDir = pluginDataDirPath(
+        "sample",
+        createPluginStorageAuthority(options.pluginStorageRoot),
+      );
       const prompt = await deploy?.getPromptForCommand?.("prod api", {});
       expect(prompt).toEqual([
         {
           type: "text",
           text:
             `Deploy prod api from ${pluginRoot} into prod with ` +
-            `${options.agencHome}/plugins/data/${pluginRoot.replace(/[^a-zA-Z0-9\-_]/g, "-")} ` +
+            `${sampleDataDir} ` +
             "using [configured:token] tags alpha,beta scopes read,write",
         },
       ]);
 
       const skills = await loadPluginSkills({
         cwd: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         plugins,
       });
       expect(skills.map((skill) => skill.name)).toEqual(["sample:inspector"]);
@@ -138,7 +148,7 @@ describe("plugin registration", () => {
 
       const agents = await loadPluginAgents({
         cwd: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         plugins,
       });
       expect(agents).toHaveLength(1);
@@ -156,7 +166,7 @@ describe("plugin registration", () => {
 
       const hooks = await loadPluginHooks({
         cwd: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         plugins,
         sessionId: "session-1",
       });
@@ -168,7 +178,7 @@ describe("plugin registration", () => {
 
       const mcpServers = await loadPluginMcpServers({
         cwd: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         plugins,
       });
       expect(mcpServers["plugin:sample:local"]).toMatchObject({
@@ -177,7 +187,10 @@ describe("plugin registration", () => {
         cwd: pluginRoot,
         env: expect.objectContaining({
           AGENC_PLUGIN_ROOT: pluginRoot,
-          AGENC_PLUGIN_DATA: pluginDataDirPath(pluginRoot),
+          AGENC_PLUGIN_DATA: pluginDataDirPath(
+            "sample",
+            createPluginStorageAuthority(options.pluginStorageRoot),
+          ),
           AGENC_PLUGIN_NAME: "sample",
           AGENC_PLUGIN_MCP_SERVER: "local",
           AGENC_PLUGIN_SANDBOX: "stdio-child-process",
@@ -189,7 +202,10 @@ describe("plugin registration", () => {
           mode: "stdio-child-process",
           pluginName: "sample",
           pluginRoot,
-          pluginDataDir: pluginDataDirPath(pluginRoot),
+          pluginDataDir: pluginDataDirPath(
+            "sample",
+            createPluginStorageAuthority(options.pluginStorageRoot),
+          ),
           serverName: "local",
           scopedServerName: "plugin:sample:local",
         },
@@ -198,7 +214,7 @@ describe("plugin registration", () => {
 
       const lspServers = await loadPluginLspServers({
         cwd: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         plugins,
       });
       expect(lspServers["plugin:sample:typescript"]).toMatchObject({
@@ -210,7 +226,7 @@ describe("plugin registration", () => {
 
       const outputStyles = await loadPluginOutputStyles({
         cwd: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         plugins,
       });
       expect(outputStyles).toEqual([
@@ -224,7 +240,7 @@ describe("plugin registration", () => {
 
       const snapshot = await refreshPluginRegistrations({
         cwd: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         extraPluginDirs: [pluginRoot],
       });
       expect(snapshot).toMatchObject({
@@ -239,6 +255,108 @@ describe("plugin registration", () => {
         error_count: 0,
       });
     });
+  });
+
+  test("keeps every executable namespace injective across plugin aliases", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-plugin-alias-runtime-"));
+    const workspaceRoot = join(root, "workspace");
+    const pluginStorageRoot = join(root, "home", "plugins");
+    try {
+      for (const [directory, pluginId] of [
+        ["qualified", "foo@bar"],
+        ["dotted", "foo.bar"],
+      ] as const) {
+        const pluginRoot = join(pluginStorageRoot, directory);
+        await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
+          name: "shared-package",
+          mcpServers: { local: { command: "node", args: ["server.mjs"] } },
+          lspServers: {
+            typescript: {
+              command: "node",
+              args: ["lsp.mjs"],
+              extensionToLanguage: { ".ts": "typescript" },
+            },
+          },
+        });
+        await writeJson(
+          join(pluginRoot, ".agenc-plugin", "agenc-install.json"),
+          { dependencyIdentity: pluginId },
+        );
+        await writeFileAt(
+          join(pluginRoot, "commands", "run.md"),
+          "---\naliases:\n  - quick\n  - shared-package:safe\n---\nRun.\n",
+        );
+        await writeFileAt(
+          join(pluginRoot, "agents", "review.md"),
+          "---\ndescription: Review.\n---\nReview.\n",
+        );
+        await writeFileAt(
+          join(pluginRoot, "output-styles", "plain.md"),
+          "---\ndescription: Plain.\n---\nPlain.\n",
+        );
+      }
+
+      const plugins = (await loadPlugins({
+        pluginStorageRoot,
+        workspaceRoot,
+        config: { plugins: { enabled: true } },
+      })).enabled;
+      expect(plugins.map((plugin) => plugin.id).sort()).toEqual([
+        "foo.bar",
+        "foo@bar",
+      ]);
+      expect(new Set(plugins.map((plugin) => plugin.name))).toEqual(
+        new Set(["shared-package"]),
+      );
+
+      const [commands, agents, styles, mcpServers, lspServers] =
+        await Promise.all([
+          loadPluginCommands({ pluginStorageRoot, plugins }),
+          loadPluginAgents({ pluginStorageRoot, plugins }),
+          loadPluginOutputStyles({ pluginStorageRoot, plugins }),
+          loadPluginMcpServers({ pluginStorageRoot, plugins }),
+          loadPluginLspServers({ pluginStorageRoot, plugins }),
+        ]);
+      const namespaces = ["foo@bar", "foo.bar"].map(
+        canonicalPluginRuntimeNamespace,
+      );
+      expect(new Set(namespaces).size).toBe(2);
+      expect(commands.map((command) => command.name).sort()).toEqual(
+        namespaces.map((namespace) => `${namespace}:run`).sort(),
+      );
+      for (const namespace of namespaces) {
+        const command = commands.find((entry) =>
+          entry.name === `${namespace}:run`
+        );
+        expect(command?.aliases).toEqual([
+          `${namespace}:quick`,
+          `${namespace}:safe`,
+        ]);
+      }
+      expect(agents.map((agent) => [agent.agentType, agent.plugin]).sort())
+        .toEqual(namespaces.map((namespace, index) => [
+          `${namespace}:review`,
+          ["foo@bar", "foo.bar"][index],
+        ]).sort());
+      expect(styles.map((style) => [style.name, style.plugin]).sort())
+        .toEqual(namespaces.map((namespace, index) => [
+          `${namespace}:plain`,
+          ["foo@bar", "foo.bar"][index],
+        ]).sort());
+      for (const [pluginId, namespace] of ["foo@bar", "foo.bar"].map(
+        (pluginId) => [pluginId, canonicalPluginRuntimeNamespace(pluginId)] as const,
+      )) {
+        expect(mcpServers[`plugin:${namespace}:local`]).toMatchObject({
+          env: expect.objectContaining({ AGENC_PLUGIN_NAME: pluginId }),
+          pluginSandbox: expect.objectContaining({ pluginName: pluginId }),
+        });
+        expect(lspServers[`plugin:${namespace}:typescript`]).toMatchObject({
+          env: expect.objectContaining({ AGENC_PLUGIN_NAME: pluginId }),
+        });
+      }
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   test("never exposes a manifest-sensitive value from bundled plugin settings", async () => {
@@ -275,7 +393,7 @@ describe("plugin registration", () => {
         ...existing,
         pluginSecrets: {
           ...existing.pluginSecrets,
-          [`${pluginRoot}/local`]: {
+          "sample/local": {
             channel_secret: "channel-vault-token",
           },
         },
@@ -295,7 +413,7 @@ describe("plugin registration", () => {
       );
 
       const servers = await loadPluginMcpServers({
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         plugins: [plugin],
       });
       expect(servers["plugin:sample:local"]?.env?.TOKEN).toBe("stored-token");
@@ -313,7 +431,7 @@ describe("plugin registration", () => {
         join(options.agencHome, "config.toml"),
         [
           "config_version = 2",
-          `[pluginConfigs.${JSON.stringify(pluginRoot)}.options]`,
+          `[pluginConfigs.${JSON.stringify("sample")}.options]`,
           'token = "plaintext-config-token"',
           "",
         ].join("\n"),
@@ -323,7 +441,7 @@ describe("plugin registration", () => {
 
       await expect(
         loadPluginMcpServers({
-          agencHome: options.agencHome,
+          pluginStorageRoot: options.pluginStorageRoot,
           plugins: [plugin],
         }),
       ).rejects.toThrowError(PlaintextPluginSecretError);
@@ -335,6 +453,7 @@ describe("plugin registration", () => {
     const previousCacheDir = process.env.AGENC_PLUGIN_CACHE_DIR;
     const pluginRoot = join(root, ".agents", "plugins", "dollar-plugin");
     const agencHome = join(root, "home");
+    const pluginStorageRoot = join(agencHome, "plugins");
     const cacheRoot = join(root, "cache-$$");
     try {
       process.env.AGENC_PLUGIN_CACHE_DIR = cacheRoot;
@@ -343,7 +462,7 @@ describe("plugin registration", () => {
       });
 
       const result = await loadPlugins({
-        agencHome,
+        pluginStorageRoot,
         workspaceRoot: root,
         config: { plugins: { enabled: true } },
       });
@@ -358,19 +477,24 @@ describe("plugin registration", () => {
       });
       await configStore.reload();
       await runWithCanonicalSettingsAuthority(configStore, async () => {
-        const dataDir = pluginDataDirPath(plugin.source);
+        const dataDir = pluginDataDirPath(
+          plugin.id,
+          createPluginStorageAuthority(pluginStorageRoot),
+        );
         await rm(dataDir, { recursive: true, force: true });
 
         expect(
           substitutePluginTemplate(
             "root=${AGENC_PLUGIN_ROOT} session=${AGENC_SESSION_ID}",
             plugin,
-            { sessionId: "session-$&-$1" },
+            { sessionId: "session-$&-$1", pluginStorageRoot },
           ),
         ).toBe(`root=${plugin.root} session=session-$&-$1`);
         await expect(access(dataDir)).rejects.toBeTruthy();
 
-        expect(substitutePluginTemplate("data=${AGENC_PLUGIN_DATA}", plugin))
+        expect(substitutePluginTemplate("data=${AGENC_PLUGIN_DATA}", plugin, {
+          pluginStorageRoot,
+        }))
           .toBe(`data=${dataDir}`);
         await expect(access(dataDir)).resolves.toBeUndefined();
       });
@@ -380,51 +504,6 @@ describe("plugin registration", () => {
       } else {
         process.env.AGENC_PLUGIN_CACHE_DIR = previousCacheDir;
       }
-      await rm(root, { recursive: true, force: true });
-    }
-  });
-
-  test("resolves CLAUDE_* template aliases for Claude Code ecosystem plugins", async () => {
-    // Plugins written for Claude Code template with ${CLAUDE_PLUGIN_ROOT};
-    // an unconsumed template used to fall through to env-var expansion and
-    // drop the MCP server with "Missing environment variables".
-    const root = await mkdtemp(join(tmpdir(), "agenc-plugin-claude-alias-"));
-    const agencHome = join(root, "home");
-    const workspaceRoot = join(root, "workspace");
-    const pluginRoot = join(agencHome, "plugins", "ccplugin");
-    try {
-      await writeJson(join(pluginRoot, ".agenc-plugin", "plugin.json"), {
-        name: "ccplugin",
-        mcpServers: {
-          goal: {
-            command: "node",
-            args: ["${CLAUDE_PLUGIN_ROOT}/server.mjs"],
-          },
-        },
-      });
-      await writeFileAt(join(agencHome, "config.toml"), "config_version = 2\n");
-      const configStore = new ConfigStore({
-        home: agencHome,
-        cwd: workspaceRoot,
-        projectRoot: workspaceRoot,
-        projectTrusted: false,
-        env: { AGENC_HOME: agencHome, HOME: root },
-      });
-      await configStore.reload();
-      const mcpServers = await runWithCanonicalSettingsAuthority(
-        configStore,
-        () => loadPluginMcpServers({
-          cwd: workspaceRoot,
-          agencHome,
-          workspaceRoot,
-          extraPluginDirs: [pluginRoot],
-        }),
-      );
-      expect(mcpServers["plugin:ccplugin:goal"]).toMatchObject({
-        command: "node",
-        args: [`${pluginRoot}/server.mjs`],
-      });
-    } finally {
       await rm(root, { recursive: true, force: true });
     }
   });
@@ -455,7 +534,7 @@ describe("plugin registration", () => {
 
       const result = await loadPlugins(options);
       const outputStyles = await loadPluginOutputStyles({
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         workspaceRoot: options.workspaceRoot,
         plugins: result.enabled,
       });
@@ -500,7 +579,7 @@ describe("plugin registration", () => {
 
       const result = await loadPlugins(options);
       const mcpServers = await loadPluginMcpServers({
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         workspaceRoot: options.workspaceRoot,
         plugins: result.enabled,
       });
@@ -520,7 +599,7 @@ describe("plugin registration", () => {
       });
 
       const lspServers = await loadPluginLspServers({
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         workspaceRoot: options.workspaceRoot,
         plugins: result.enabled,
       });
@@ -577,11 +656,13 @@ describe("plugin registration", () => {
       const result = await loadPlugins(options);
       const errors: PluginLoadIssue[] = [];
       const mcpServers = await loadPluginMcpServers({
+        pluginStorageRoot: options.pluginStorageRoot,
         plugins: result.enabled,
         errors,
         env: environment,
       });
       const lspServers = await loadPluginLspServers({
+        pluginStorageRoot: options.pluginStorageRoot,
         plugins: result.enabled,
         errors,
         env: environment,
@@ -624,13 +705,17 @@ describe("plugin registration", () => {
 
       const result = await loadPlugins(options);
       const mcpServers = await loadPluginMcpServers({
+        pluginStorageRoot: options.pluginStorageRoot,
         plugins: result.enabled,
       });
       const server = mcpServers["plugin:sample:local"];
 
       expect(server?.env).toMatchObject({
         AGENC_PLUGIN_ROOT: pluginRoot,
-        AGENC_PLUGIN_DATA: pluginDataDirPath(pluginRoot),
+        AGENC_PLUGIN_DATA: pluginDataDirPath(
+          "sample",
+          createPluginStorageAuthority(options.pluginStorageRoot),
+        ),
         AGENC_PLUGIN_NAME: "sample",
         AGENC_PLUGIN_MCP_SERVER: "local",
         AGENC_PLUGIN_SANDBOX: "stdio-child-process",
@@ -650,8 +735,14 @@ describe("plugin registration", () => {
       });
 
       const result = await loadPlugins(options);
-      const first = await loadPluginMcpServers({ plugins: result.enabled });
-      const second = await loadPluginMcpServers({ plugins: result.enabled });
+      const first = await loadPluginMcpServers({
+        pluginStorageRoot: options.pluginStorageRoot,
+        plugins: result.enabled,
+      });
+      const second = await loadPluginMcpServers({
+        pluginStorageRoot: options.pluginStorageRoot,
+        plugins: result.enabled,
+      });
       const names = Object.keys(first);
 
       expect(names).toHaveLength(1);
@@ -689,6 +780,7 @@ describe("plugin registration", () => {
 
       const result = await loadPlugins(options);
       const mcpServers = await loadPluginMcpServers({
+        pluginStorageRoot: options.pluginStorageRoot,
         plugins: result.enabled,
       });
       const manager = new MCPManager(
@@ -713,7 +805,10 @@ describe("plugin registration", () => {
         expect(info.cwd).toBe(serverCwd);
         expect(info.env).toMatchObject({
           AGENC_PLUGIN_ROOT: pluginRoot,
-          AGENC_PLUGIN_DATA: pluginDataDirPath(pluginRoot),
+          AGENC_PLUGIN_DATA: pluginDataDirPath(
+            "sample",
+            createPluginStorageAuthority(options.pluginStorageRoot),
+          ),
           AGENC_PLUGIN_NAME: "sample",
           AGENC_PLUGIN_MCP_SERVER: "local",
           AGENC_PLUGIN_SANDBOX: "stdio-child-process",
@@ -739,6 +834,7 @@ describe("plugin registration", () => {
       const result = await loadPlugins(options);
       const errors: PluginLoadIssue[] = [];
       const mcpServers = await loadPluginMcpServers({
+        pluginStorageRoot: options.pluginStorageRoot,
         plugins: result.enabled,
         errors,
         env: { AGENC_PLUGIN_TEST_CWD_ESCAPE: "../outside" },
@@ -797,7 +893,7 @@ describe("plugin registration", () => {
 
         const snapshot = await refreshPluginRegistrations({
           cwd: root,
-          agencHome: options.agencHome,
+          pluginStorageRoot: options.pluginStorageRoot,
           extraPluginDirs: [pluginRoot],
         });
 
@@ -842,23 +938,25 @@ describe("plugin registration", () => {
     await withTempPlugin(async ({ root, pluginRoot, options }) => {
       const roleWorkspace = createAgentRoleWorkspace(root);
       const hooksRuntime = { setPluginHooks: vi.fn() };
-      const configStore = {
-        current: () => ({
+      const enabledConfig = {
+        configVersion: 2 as const,
+        plugins: {
+          enabled: true,
           plugins: {
-            enabled: true,
-            plugins: {
-              sample: { path: pluginRoot },
+            sample: { path: pluginRoot },
+          },
+        },
+        hooks: {
+          Stop: [
+            {
+              matcher: "*",
+              hooks: [{ type: "command" as const, command: "echo base" }],
             },
-          },
-          hooks: {
-            Stop: [
-              {
-                matcher: "*",
-                hooks: [{ type: "command", command: "echo base" }],
-              },
-            ],
-          },
-        }),
+          ],
+        },
+      };
+      const refreshConfigStore = {
+        current: () => enabledConfig,
       };
       const builtInAgent = {
         agentType: "built-in",
@@ -895,9 +993,9 @@ describe("plugin registration", () => {
       const ctx = {
         cwd: root,
         home: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         argsRaw: "",
-        configStore,
+        configStore: refreshConfigStore,
         appState: {
           getAppState: () => appState,
           setAppState: (updater: (prev: unknown) => unknown) => {
@@ -907,8 +1005,9 @@ describe("plugin registration", () => {
         session: {
           roleWorkspace,
           services: {
-            configStore,
+            configStore: refreshConfigStore,
             hooksRuntime,
+            runtimeOptions: { pluginStorageRoot: options.pluginStorageRoot },
           },
         },
       } as unknown as SlashCommandContext;
@@ -945,20 +1044,46 @@ describe("plugin registration", () => {
           expect.objectContaining({ agentType: "sample:review" }),
         ]);
 
-      await expect(loadPluginCommands({ cwd: root }))
+      await expect(loadPluginCommands({
+        cwd: root,
+        pluginStorageRoot: options.pluginStorageRoot,
+      }))
         .resolves.toEqual([expect.objectContaining({ name: "sample:deploy" })]);
-      await expect(loadPluginAgents({ cwd: root }))
+      await expect(loadPluginAgents({
+        cwd: root,
+        pluginStorageRoot: options.pluginStorageRoot,
+      }))
         .resolves.toEqual([expect.objectContaining({ agentType: "sample:review" })]);
 
+      const catalogConfigStore = new ConfigStore({
+        home: options.agencHome,
+        cwd: root,
+        projectRoot: root,
+        projectTrusted: false,
+        env: {},
+        loader: async () => enabledConfig,
+      });
+      await catalogConfigStore.reload();
       try {
-        await expect(getAgentDefinitionsWithOverrides(root))
-          .resolves.toEqual(
-            expect.objectContaining({
-              activeAgents: expect.arrayContaining([
-                expect.objectContaining({ agentType: "sample:review" }),
-              ]),
+        await runWithCanonicalSettingsAuthority(
+          catalogConfigStore,
+          () => runWithAgentRuntimeOptions(
+            resolveAgentRuntimeOptions({}, {
+              pluginStorageRoot: options.pluginStorageRoot,
             }),
-          );
+            () => expect(getAgentDefinitionsWithOverrides(
+              root,
+              options.pluginStorageRoot,
+            ))
+              .resolves.toEqual(
+                expect.objectContaining({
+                  activeAgents: expect.arrayContaining([
+                    expect.objectContaining({ agentType: "sample:review" }),
+                  ]),
+                }),
+              ),
+          ),
+        );
       } finally {
         clearAgentDefinitionsCache();
       }
@@ -1008,7 +1133,7 @@ describe("plugin registration", () => {
       const ctx = {
         cwd: root,
         home: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         argsRaw: "",
         configStore,
         appState: {
@@ -1020,6 +1145,7 @@ describe("plugin registration", () => {
           services: {
             configStore,
             hooksRuntime,
+            runtimeOptions: { pluginStorageRoot: options.pluginStorageRoot },
           },
         },
       } as unknown as SlashCommandContext;
@@ -1047,13 +1173,17 @@ describe("plugin registration", () => {
       const ctx = {
         cwd: root,
         home: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         argsRaw: "",
         configStore,
         appState: { setAppState },
         session: {
           roleWorkspace,
-          services: { configStore, hooksRuntime },
+          services: {
+            configStore,
+            hooksRuntime,
+            runtimeOptions: { pluginStorageRoot: options.pluginStorageRoot },
+          },
         },
       } as unknown as SlashCommandContext;
 
@@ -1091,7 +1221,7 @@ describe("plugin registration", () => {
       const ctx = {
         cwd: executionCwd,
         home: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         argsRaw: "",
         configStore,
         appState: {
@@ -1102,7 +1232,10 @@ describe("plugin registration", () => {
         },
         session: {
           roleWorkspace,
-          services: { configStore },
+          services: {
+            configStore,
+            runtimeOptions: { pluginStorageRoot: options.pluginStorageRoot },
+          },
         },
       } as unknown as SlashCommandContext;
 
@@ -1113,12 +1246,12 @@ describe("plugin registration", () => {
         activeAgents: [expect.objectContaining({ agentType: "sample:review" })],
       });
       await expect(
-        loadPluginAgents({ cwd: roleWorkspace.cwd, agencHome: options.agencHome }),
+        loadPluginAgents({ cwd: roleWorkspace.cwd, pluginStorageRoot: options.pluginStorageRoot }),
       ).resolves.toEqual([
         expect.objectContaining({ agentType: "sample:review" }),
       ]);
       await expect(
-        loadPluginAgents({ cwd: executionCwd, agencHome: options.agencHome }),
+        loadPluginAgents({ cwd: executionCwd, pluginStorageRoot: options.pluginStorageRoot }),
       ).resolves.toEqual([]);
     });
   });
@@ -1141,95 +1274,195 @@ describe("plugin registration", () => {
       const ctx = {
         cwd,
         home: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         argsRaw: "",
         configStore,
         session: {
           roleWorkspace,
           services: {
             configStore,
+            runtimeOptions: { pluginStorageRoot: options.pluginStorageRoot },
           },
         },
       } as unknown as SlashCommandContext;
 
       await refreshActivePlugins(ctx);
 
-      await expect(loadPluginCommands({ cwd, agencHome: options.agencHome }))
+      await expect(loadPluginCommands({ cwd, pluginStorageRoot: options.pluginStorageRoot }))
         .resolves.toEqual([expect.objectContaining({ name: "sample:deploy" })]);
-      await expect(loadPluginSkills({ cwd, agencHome: options.agencHome }))
+      await expect(loadPluginSkills({ cwd, pluginStorageRoot: options.pluginStorageRoot }))
         .resolves.toEqual([expect.objectContaining({ name: "sample:inspector" })]);
-      await expect(loadPluginAgents({ cwd, agencHome: options.agencHome }))
+      await expect(loadPluginAgents({ cwd, pluginStorageRoot: options.pluginStorageRoot }))
         .resolves.toEqual([expect.objectContaining({ agentType: "sample:review" })]);
 
       clearPluginRegistrationCaches();
 
-      await expect(loadPluginCommands({ cwd, agencHome: options.agencHome }))
+      await expect(loadPluginCommands({ cwd, pluginStorageRoot: options.pluginStorageRoot }))
         .resolves.toEqual([]);
-      await expect(loadPluginSkills({ cwd, agencHome: options.agencHome }))
+      await expect(loadPluginSkills({ cwd, pluginStorageRoot: options.pluginStorageRoot }))
         .resolves.toEqual([]);
-      await expect(loadPluginAgents({ cwd, agencHome: options.agencHome }))
+      await expect(loadPluginAgents({ cwd, pluginStorageRoot: options.pluginStorageRoot }))
         .resolves.toEqual([]);
     });
   });
 
-  test("keeps same-workspace command and agent snapshots isolated by AgenC home", async () => {
+  test("keeps same-workspace command and agent snapshots isolated by plugin storage root", async () => {
     await withTempPlugin(async ({ root, options }) => {
       const result = await loadPlugins(options);
       const commandsA = await loadPluginCommands({
         cwd: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         plugins: result.enabled,
       });
       const agentsA = await loadPluginAgents({
         cwd: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         plugins: result.enabled,
       });
-      const homeB = join(root, "home-b");
+      const pluginStorageRootB = join(root, "plugin-storage-b");
       const commandsB = commandsA.map(command => ({
         ...command,
-        name: `home-b:${command.name}`,
+        name: `storage-b:${command.name}`,
       }));
       const agentsB = agentsA.map(agent => ({
         ...agent,
-        agentType: `home-b:${agent.agentType}`,
+        agentType: `storage-b:${agent.agentType}`,
       }));
 
       setActivePluginCommandSnapshot(
-        { cwd: root, agencHome: options.agencHome },
+        { cwd: root, pluginStorageRoot: options.pluginStorageRoot },
         commandsA,
       );
-      setActivePluginCommandSnapshot({ cwd: root, agencHome: homeB }, commandsB);
+      setActivePluginCommandSnapshot(
+        { cwd: root, pluginStorageRoot: pluginStorageRootB },
+        commandsB,
+      );
       setActivePluginAgentSnapshot(
-        { cwd: root, agencHome: options.agencHome },
+        { cwd: root, pluginStorageRoot: options.pluginStorageRoot },
         agentsA,
       );
       setActivePluginAgentSnapshot(
-        { cwd: root, agencHome: homeB },
+        { cwd: root, pluginStorageRoot: pluginStorageRootB },
         agentsB,
       );
 
       const [resolvedCommandsA, resolvedCommandsB, resolvedAgentsA, resolvedAgentsB] =
         await Promise.all([
-          loadPluginCommands({ cwd: root, agencHome: options.agencHome }),
-          loadPluginCommands({ cwd: root, agencHome: homeB }),
-          loadPluginAgents({ cwd: root, agencHome: options.agencHome }),
-          loadPluginAgents({ cwd: root, agencHome: homeB }),
+          loadPluginCommands({ cwd: root, pluginStorageRoot: options.pluginStorageRoot }),
+          loadPluginCommands({ cwd: root, pluginStorageRoot: pluginStorageRootB }),
+          loadPluginAgents({ cwd: root, pluginStorageRoot: options.pluginStorageRoot }),
+          loadPluginAgents({ cwd: root, pluginStorageRoot: pluginStorageRootB }),
         ]);
 
       expect(resolvedCommandsA.map(command => command.name)).toEqual([
         "sample:deploy",
       ]);
       expect(resolvedCommandsB.map(command => command.name)).toEqual([
-        "home-b:sample:deploy",
+        "storage-b:sample:deploy",
       ]);
       expect(resolvedAgentsA.map(agent => agent.agentType)).toEqual([
         "sample:review",
       ]);
       expect(resolvedAgentsB.map(agent => agent.agentType)).toEqual([
-        "home-b:sample:review",
+        "storage-b:sample:review",
       ]);
       clearPluginRegistrationCaches();
+    });
+  });
+
+  test("keeps same-root plugin snapshots isolated by ConfigStore identity", async () => {
+    await withTempPlugin(async ({ root, options }) => {
+      const sharedHome = options.agencHome;
+      const storeA = new ConfigStore({
+        home: sharedHome,
+        cwd: root,
+        projectRoot: root,
+        projectTrusted: false,
+        base: { plugins: { enabled: true } },
+        env: { AGENC_HOME: sharedHome, HOME: root },
+      });
+      const storeB = new ConfigStore({
+        home: sharedHome,
+        cwd: root,
+        projectRoot: root,
+        projectTrusted: false,
+        base: { plugins: { enabled: false } },
+        env: { AGENC_HOME: sharedHome, HOME: root },
+      });
+      expect(storeA.homeContext.path).toBe(storeB.homeContext.path);
+      expect(storeA.current().plugins?.enabled).toBe(true);
+      expect(storeB.current().plugins?.enabled).toBe(false);
+
+      const identity = {
+        cwd: root,
+        pluginStorageRoot: options.pluginStorageRoot,
+      };
+      const commandA = { name: "home-a:command" } as Command;
+      const commandB = { name: "home-b:command" } as Command;
+      const skillA = { name: "home-a:skill" } as Command;
+      const skillB = { name: "home-b:skill" } as Command;
+      const agentA = { agentType: "home-a:agent" } as PluginAgentDefinition;
+      const agentB = { agentType: "home-b:agent" } as PluginAgentDefinition;
+
+      runWithCanonicalSettingsAuthority(storeA, () => {
+        setActivePluginCommandSnapshot(identity, [commandA]);
+        setActivePluginSkillSnapshot(identity, [skillA]);
+        setActivePluginAgentSnapshot(identity, [agentA]);
+      });
+      runWithCanonicalSettingsAuthority(storeB, () => {
+        setActivePluginCommandSnapshot(identity, [commandB]);
+        setActivePluginSkillSnapshot(identity, [skillB]);
+        setActivePluginAgentSnapshot(identity, [agentB]);
+      });
+
+      const [commandsA, skillsA, agentsA] = await runWithCanonicalSettingsAuthority(
+        storeA,
+        () => Promise.all([
+          loadPluginCommands(identity),
+          loadPluginSkills(identity),
+          loadPluginAgents(identity),
+        ]),
+      );
+      const [commandsB, skillsB, agentsB] = await runWithCanonicalSettingsAuthority(
+        storeB,
+        () => Promise.all([
+          loadPluginCommands(identity),
+          loadPluginSkills(identity),
+          loadPluginAgents(identity),
+        ]),
+      );
+
+      expect(commandsA.map(command => command.name)).toEqual(["home-a:command"]);
+      expect(skillsA.map(command => command.name)).toEqual(["home-a:skill"]);
+      expect(agentsA.map(agent => agent.agentType)).toEqual(["home-a:agent"]);
+      expect(commandsB.map(command => command.name)).toEqual(["home-b:command"]);
+      expect(skillsB.map(command => command.name)).toEqual(["home-b:skill"]);
+      expect(agentsB.map(agent => agent.agentType)).toEqual(["home-b:agent"]);
+
+      runWithCanonicalSettingsAuthority(storeA, () => {
+        clearPluginRegistrationCaches();
+      });
+      const [commandsBAfterClear, skillsBAfterClear, agentsBAfterClear] =
+        await runWithCanonicalSettingsAuthority(
+          storeB,
+          () => Promise.all([
+            loadPluginCommands(identity),
+            loadPluginSkills(identity),
+            loadPluginAgents(identity),
+          ]),
+        );
+      expect(commandsBAfterClear.map(command => command.name)).toEqual([
+        "home-b:command",
+      ]);
+      expect(skillsBAfterClear.map(command => command.name)).toEqual([
+        "home-b:skill",
+      ]);
+      expect(agentsBAfterClear.map(agent => agent.agentType)).toEqual([
+        "home-b:agent",
+      ]);
+      runWithCanonicalSettingsAuthority(storeB, () => {
+        clearPluginRegistrationCaches();
+      });
     });
   });
 
@@ -1247,13 +1480,14 @@ describe("plugin registration", () => {
       await refreshActivePlugins({
         cwd: root,
         home: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         argsRaw: "",
         configStore,
         session: {
           roleWorkspace: createAgentRoleWorkspace(root),
           services: {
             configStore,
+            runtimeOptions: { pluginStorageRoot: options.pluginStorageRoot },
           },
         },
       } as unknown as SlashCommandContext);
@@ -1277,7 +1511,7 @@ describe("plugin registration", () => {
 
       await expect(loadPluginCommands({
         cwd: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         extraPluginDirs: [explicitRoot],
       })).resolves.toEqual(
         expect.arrayContaining([
@@ -1286,7 +1520,7 @@ describe("plugin registration", () => {
       );
       await expect(loadPluginSkills({
         cwd: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         extraPluginDirs: [explicitRoot],
       })).resolves.toEqual(
         expect.arrayContaining([
@@ -1295,7 +1529,7 @@ describe("plugin registration", () => {
       );
       await expect(loadPluginAgents({
         cwd: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         extraPluginDirs: [explicitRoot],
       })).resolves.toEqual(
         expect.arrayContaining([
@@ -1574,7 +1808,7 @@ describe("plugin registration", () => {
       const result = await loadPlugins(options);
       const agents = await loadPluginAgents({
         cwd: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         plugins: result.enabled,
       });
       const unsafe = agents.find((agent) =>
@@ -1617,7 +1851,7 @@ describe("plugin registration", () => {
       const result = await loadPlugins(options);
       const agents = await loadPluginAgents({
         cwd: root,
-        agencHome: options.agencHome,
+        pluginStorageRoot: options.pluginStorageRoot,
         plugins: result.enabled,
       });
 
@@ -1639,11 +1873,11 @@ describe("plugin registration", () => {
         async () => {
         await expect(loadPluginCommands({
           cwd: root,
-          agencHome: options.agencHome,
+          pluginStorageRoot: options.pluginStorageRoot,
         })).resolves.toEqual([]);
         await expect(loadPluginCommands({
           cwd: root,
-          agencHome: options.agencHome,
+          pluginStorageRoot: options.pluginStorageRoot,
           extraPluginDirs: [pluginRoot],
         })).resolves.toEqual([
           expect.objectContaining({ name: "sample:deploy" }),
@@ -1653,7 +1887,7 @@ describe("plugin registration", () => {
     });
   });
 
-  test("implicit command and skill discovery share one runtime plugin load", async () => {
+  test("runtime plugin loads share one root cache and isolate different roots", async () => {
     vi.resetModules();
     const loadPluginsMock = vi.fn(async () => ({
       enabled: [],
@@ -1670,20 +1904,66 @@ describe("plugin registration", () => {
     try {
       const commandsModule = await import("./registration/load-plugin-commands.js");
       const commonModule = await import("./registration/common.js");
+      const { ConfigStore: IsolatedConfigStore } = await import("../config/store.js");
+      const { runWithCanonicalSettingsAuthority: withAuthority } = await import(
+        "../utils/settings/canonicalAuthority.js"
+      );
       commonModule.clearRuntimePluginLoadCache();
+      const authority = new IsolatedConfigStore({
+        home: "/tmp/agenc-plugin-shared-home",
+        cwd: "/tmp/agenc-plugin-shared-load",
+        projectRoot: "/tmp/agenc-plugin-shared-load",
+        env: {
+          AGENC_HOME: "/tmp/agenc-plugin-shared-home",
+          HOME: "/tmp",
+        },
+      });
 
-      await Promise.all([
-        commandsModule.loadPluginCommands({
+      const explicitEnabled = { plugins: { enabled: true } };
+      const explicitDisabled = { plugins: { enabled: false } };
+      await withAuthority(authority, async () => {
+        await commonModule.loadRuntimePlugins({
           cwd: "/tmp/agenc-plugin-shared-load",
-          agencHome: "/tmp/agenc-plugin-shared-home",
-        }),
-        commandsModule.loadPluginSkills({
+          pluginStorageRoot: "/tmp/agenc-plugin-shared-root",
+          config: explicitEnabled,
+        });
+        await commonModule.loadRuntimePlugins({
           cwd: "/tmp/agenc-plugin-shared-load",
-          agencHome: "/tmp/agenc-plugin-shared-home",
-        }),
+          pluginStorageRoot: "/tmp/agenc-plugin-shared-root",
+          config: explicitDisabled,
+        });
+        await commonModule.loadRuntimePlugins({
+          cwd: "/tmp/agenc-plugin-shared-load",
+          pluginStorageRoot: "/tmp/agenc-plugin-shared-root",
+          config: explicitEnabled,
+        });
+      });
+      expect(loadPluginsMock.mock.calls.map(([options]) => options.config)).toEqual([
+        explicitEnabled,
+        explicitDisabled,
+        explicitEnabled,
       ]);
+      loadPluginsMock.mockClear();
+
+      await withAuthority(authority, () => Promise.all([
+          commandsModule.loadPluginCommands({
+            cwd: "/tmp/agenc-plugin-shared-load",
+            pluginStorageRoot: "/tmp/agenc-plugin-shared-root",
+          }),
+          commandsModule.loadPluginSkills({
+            cwd: "/tmp/agenc-plugin-shared-load",
+            pluginStorageRoot: "/tmp/agenc-plugin-shared-root",
+          }),
+        ]));
 
       expect(loadPluginsMock).toHaveBeenCalledTimes(1);
+      await withAuthority(authority, () =>
+        commandsModule.loadPluginCommands({
+          cwd: "/tmp/agenc-plugin-shared-load",
+          pluginStorageRoot: "/tmp/agenc-plugin-other-root",
+        })
+      );
+      expect(loadPluginsMock).toHaveBeenCalledTimes(2);
     } finally {
       vi.doUnmock("./loader.js");
       vi.resetModules();
@@ -1718,7 +1998,7 @@ describe("plugin registration", () => {
       await expect(
         mcpModule.loadPluginMcpServers({
           cwd: "/tmp/agenc-plugin-error-load",
-          agencHome: "/tmp/agenc-plugin-error-home",
+          pluginStorageRoot: "/tmp/agenc-plugin-error-root",
           errors,
         }),
       ).resolves.toEqual({});
@@ -1739,6 +2019,7 @@ async function withTempPlugin(
     readonly configStore: ConfigStore;
     readonly options: {
       readonly agencHome: string;
+      readonly pluginStorageRoot: string;
       readonly workspaceRoot: string;
       readonly extraPluginDirs: readonly string[];
     };
@@ -1747,7 +2028,8 @@ async function withTempPlugin(
   const root = await mkdtemp(join(tmpdir(), "agenc-plugin-registration-"));
   const previousCacheDir = process.env.AGENC_PLUGIN_CACHE_DIR;
   const agencHome = join(root, "home");
-  const pluginRoot = join(agencHome, "plugins", "sample-plugin");
+  const pluginStorageRoot = join(agencHome, "plugins");
+  const pluginRoot = join(pluginStorageRoot, "sample-plugin");
   const workspaceRoot = join(root, "workspace");
   try {
     process.env.AGENC_PLUGIN_CACHE_DIR = join(root, "plugin-cache");
@@ -1908,7 +2190,7 @@ async function withTempPlugin(
     await configStore.reload();
     secureStorageRecords.set(configStore.homeContext.path, {
       pluginSecrets: {
-        [pluginRoot]: { token: "stored-token" },
+        sample: { token: "stored-token" },
       },
     });
     await runWithCanonicalSettingsAuthority(configStore, () => fn({
@@ -1917,6 +2199,7 @@ async function withTempPlugin(
         configStore,
         options: {
           agencHome,
+          pluginStorageRoot,
           workspaceRoot,
           extraPluginDirs: [pluginRoot],
         },

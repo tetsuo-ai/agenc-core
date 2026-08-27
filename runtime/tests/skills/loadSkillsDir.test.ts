@@ -3,84 +3,12 @@ import {
   existsSync,
   mkdtempSync,
   rmSync,
-  mkdirSync,
-  writeFileSync,
 } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'vitest'
-import { resolveHomeContext } from '../../src/config/home.js'
-import { runWithCurrentRuntimeSession } from '../../src/session/current-session.js'
 
-import {
-  getSkillDirCommands,
-  clearSkillCaches,
-  createSkillCommand,
-} from './loadSkillsDir.js'
-
-function writeSkill(agencHome: string, skillPath: string): void {
-  const skillDir = join(agencHome, 'skills', ...skillPath.split('/'))
-  mkdirSync(skillDir, { recursive: true })
-  writeFileSync(
-    join(skillDir, 'SKILL.md'),
-    `---\ndescription: ${skillPath}\n---\n# ${skillPath}\n`,
-    'utf8',
-  )
-}
-
-test('loads flat and nested skills with colon namespaces', async () => {
-  const agencHome = mkdtempSync(join(tmpdir(), 'agenc-skills-'))
-  const cwd = join(agencHome, 'workspace')
-  const originalAgencHome = process.env.AGENC_HOME
-
-  try {
-    mkdirSync(cwd, { recursive: true })
-    writeSkill(agencHome, 'flat-skill')
-    writeSkill(agencHome, 'git/commit')
-    writeSkill(agencHome, 'frontend/react/form')
-
-    process.env.AGENC_HOME = agencHome
-    clearSkillCaches()
-
-    const homeContext = resolveHomeContext(
-      { AGENC_HOME: agencHome, HOME: agencHome },
-      { platformHome: agencHome },
-    )
-    const skills = await runWithCurrentRuntimeSession(
-      { services: { configStore: { homeContext } } } as never,
-      () => getSkillDirCommands(cwd),
-    )
-    const promptSkills = skills.filter(skill => skill.type === 'prompt')
-    const skillNames = promptSkills.map(skill => skill.name).sort()
-
-    assert.deepEqual(skillNames, [
-      'flat-skill',
-      'frontend:react:form',
-      'git:commit',
-    ])
-
-    const nestedSkill = promptSkills.find(skill => skill.name === 'git:commit')
-    assert.ok(nestedSkill)
-    assert.equal(nestedSkill.skillRoot, join(agencHome, 'skills', 'git', 'commit'))
-
-    const deepSkill = promptSkills.find(
-      skill => skill.name === 'frontend:react:form',
-    )
-    assert.ok(deepSkill)
-    assert.equal(
-      deepSkill.skillRoot,
-      join(agencHome, 'skills', 'frontend', 'react', 'form'),
-    )
-  } finally {
-    if (originalAgencHome === undefined) {
-      delete process.env.AGENC_HOME
-    } else {
-      process.env.AGENC_HOME = originalAgencHome
-    }
-    clearSkillCaches()
-    rmSync(agencHome, { recursive: true, force: true })
-  }
-})
+import { createSkillCommand } from './loadSkillsDir.js'
 
 test('repository skill metadata cannot grant authority or execute embedded shell', async () => {
   const root = mkdtempSync(join(tmpdir(), 'agenc-repository-skill-'))

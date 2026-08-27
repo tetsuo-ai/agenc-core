@@ -6,7 +6,7 @@ import { logForDebugging } from 'src/utils/debug.js'
 import { errorMessage } from './errors.js'
 import { getFsImplementation } from './fsOperations.js'
 import type { HomeContext } from '../config/home.js'
-import { nativeVaultIdentityKey } from './secureStorage/home.js'
+import { secureStorageIdentityKey } from './secureStorage/home.js'
 
 type SessionIngressEnvironment = Readonly<Record<string, string | undefined>>
 const descriptorTokenCache = new Map<string, string>()
@@ -24,7 +24,7 @@ function getTokenFromFileDescriptor(
     return readRemoteRuntimeCredential(home, 'sessionIngressToken')
   }
 
-  const cacheKey = `${nativeVaultIdentityKey(home)}\0${fdEnv}`
+  const cacheKey = `${secureStorageIdentityKey(home)}\0${fdEnv}`
   const cachedToken = descriptorTokenCache.get(cacheKey)
   if (cachedToken !== undefined) return cachedToken
 
@@ -82,7 +82,7 @@ function getTokenFromFileDescriptor(
  *     update_environment_variables stdin message from the parent bridge process.
  *  2. File descriptor — AGENC_WEBSOCKET_AUTH_FILE_DESCRIPTOR, read once and
  *     cached.
- *  3. The home-scoped native-vault credential. This covers subprocesses that
+ *  3. The home-scoped native secure storage credential. This covers subprocesses that
  *     cannot inherit the descriptor without creating a plaintext fallback.
  */
 export function getSessionIngressAuthToken(
@@ -95,7 +95,7 @@ export function getSessionIngressAuthToken(
     return envToken
   }
 
-  // 2. Check file descriptor, then the native-vault fallback.
+  // 2. Check file descriptor, then the native secure storage fallback.
   return getTokenFromFileDescriptor(home, environment)
 }
 

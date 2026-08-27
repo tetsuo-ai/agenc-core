@@ -57,9 +57,9 @@ export type AgenCConfigCliCommand =
   | {
       readonly kind: "migrate";
       readonly action: "check" | "apply";
-      readonly retireSharedNativeVault: boolean;
+      readonly retireSharedSecureStorage: boolean;
       readonly confirmRetiredWritersStopped: boolean;
-      readonly retiredVaultAccount?: string;
+      readonly retiredSecureStorageAccount?: string;
     }
   | { readonly kind: "migrate"; readonly action: "rollback"; readonly id: string }
   | { readonly kind: "help"; readonly text: string }
@@ -102,11 +102,11 @@ export function formatAgenCConfigCliHelpText(): string {
     "  validate                     Validate config.toml and schema blocks",
     "  edit                         Open config.toml in the configured editor",
     "  path                         Print the config.toml path",
-    "  migrate [check|apply] [--confirm-retired-writers-stopped] [--retire-shared-native-vault] [--retired-vault-account <name>]",
+    "  migrate [check|apply] [--confirm-retired-writers-stopped] [--retire-shared-secure-storage] [--retired-secure-storage-account <name>]",
     "                               Plan or apply the explicit schema-v2 migration",
     "                               One-way credential cleanup requires the stopped-writer confirmation",
-    "                               The destructive flag asserts no other/default home owns the old shared vault",
-    "                               The account flag selects only a historical USER-bound vault source",
+    "                               The destructive flag asserts no other/default home owns the old shared secure-storage record",
+    "                               The account flag selects only a historical USER-bound secure-storage source",
     "  migrate rollback <id>        Roll back one journaled schema-v2 migration",
     "                               (never recreates deleted plaintext credentials)",
     "",
@@ -181,16 +181,16 @@ export function parseAgenCConfigCliArgs(
       const migrationAction = rest[0] ?? "check";
       if (migrationAction === "check" || migrationAction === "apply") {
         const flags = rest.slice(1);
-        let retireSharedNativeVault = false;
+        let retireSharedSecureStorage = false;
         let confirmRetiredWritersStopped = false;
-        let retiredVaultAccount: string | undefined;
+        let retiredSecureStorageAccount: string | undefined;
         for (let index = 0; index < flags.length; index += 1) {
           const flag = flags[index];
-          if (flag === "--retire-shared-native-vault") {
-            if (retireSharedNativeVault) {
+          if (flag === "--retire-shared-secure-storage") {
+            if (retireSharedSecureStorage) {
               return { kind: "error", message: `${flag} may be specified only once` };
             }
-            retireSharedNativeVault = true;
+            retireSharedSecureStorage = true;
             continue;
           }
           if (flag === "--confirm-retired-writers-stopped") {
@@ -200,10 +200,10 @@ export function parseAgenCConfigCliArgs(
             confirmRetiredWritersStopped = true;
             continue;
           }
-          if (flag === "--retired-vault-account") {
+          if (flag === "--retired-secure-storage-account") {
             const value = flags[index + 1]?.trim();
             if (
-              retiredVaultAccount !== undefined ||
+              retiredSecureStorageAccount !== undefined ||
               value === undefined ||
               value.length === 0 ||
               value.startsWith("--")
@@ -213,23 +213,23 @@ export function parseAgenCConfigCliArgs(
                 message: `${flag} requires exactly one account name and may be specified only once`,
               };
             }
-            retiredVaultAccount = value;
+            retiredSecureStorageAccount = value;
             index += 1;
             continue;
           }
           return {
             kind: "error",
             message:
-              `config migrate ${migrationAction} accepts only --confirm-retired-writers-stopped, --retire-shared-native-vault, and --retired-vault-account <name>`,
+              `config migrate ${migrationAction} accepts only --confirm-retired-writers-stopped, --retire-shared-secure-storage, and --retired-secure-storage-account <name>`,
           };
         }
         return {
           kind: "migrate",
           action: migrationAction,
-          retireSharedNativeVault,
+          retireSharedSecureStorage,
           confirmRetiredWritersStopped,
-          ...(retiredVaultAccount !== undefined
-            ? { retiredVaultAccount }
+          ...(retiredSecureStorageAccount !== undefined
+            ? { retiredSecureStorageAccount }
             : {}),
         };
       }
@@ -347,14 +347,14 @@ async function runConfigMigrate(
     ...(options.globalStatePath !== undefined
       ? { globalStatePath: options.globalStatePath }
       : {}),
-    ...(command.action !== "rollback" && command.retireSharedNativeVault
-      ? { retireSharedNativeVault: true }
+    ...(command.action !== "rollback" && command.retireSharedSecureStorage
+      ? { retireSharedSecureStorage: true }
       : {}),
     ...(command.action !== "rollback" && command.confirmRetiredWritersStopped
       ? { confirmRetiredWritersStopped: true }
       : {}),
-    ...(command.action !== "rollback" && command.retiredVaultAccount !== undefined
-      ? { retiredSecureStorageAccount: command.retiredVaultAccount }
+    ...(command.action !== "rollback" && command.retiredSecureStorageAccount !== undefined
+      ? { retiredSecureStorageAccount: command.retiredSecureStorageAccount }
       : {}),
   };
   if (command.action === "rollback") {
@@ -362,7 +362,7 @@ async function runConfigMigrate(
     io.stdout.write(
       `Rolled back config migration ${rolledBack.id}; restored ${rolledBack.restored} file(s).\n` +
         (rolledBack.credentialsPreserved
-          ? "Native-vault credentials were preserved; deleted plaintext credential inputs were not recreated.\n"
+          ? "Native secure storage credentials were preserved; deleted plaintext credential inputs were not recreated.\n"
           : "") +
         `Journal: ${rolledBack.journalPath}\n`,
     );
@@ -381,7 +381,7 @@ async function runConfigMigrate(
   );
   if (credentialSanitizations > 0) {
     io.stdout.write(
-      "Credential migration writes the native vault first, then deletes each retired plaintext source or rewrites auth.json metadata-only; rollback will not recreate secret fields.\n",
+      "Credential migration writes the native secure storage first, then deletes each retired plaintext source or rewrites auth.json metadata-only; rollback will not recreate secret fields.\n",
     );
   }
   if (plan.requiresRetiredWriterQuiescence) {
@@ -390,20 +390,20 @@ async function runConfigMigrate(
     );
   }
   if (
-    plan.nativeVaultNamespaceMigration?.sourceDisposition === "retain-shared"
+    plan.secureStorageNamespaceMigration?.sourceDisposition === "retain-shared"
   ) {
     io.stdout.write(
-      "The old unscoped native vault is shared with the default and possibly other relocated homes, so it will be copied but retained. Stop older AgenC processes and rerun check/apply with --retire-shared-native-vault only after confirming no other home still owns that record.\n",
+      "The old unscoped native secure storage is shared with the default and possibly other relocated homes, so it will be copied but retained. Stop older AgenC processes and rerun check/apply with --retire-shared-secure-storage only after confirming no other home still owns that record.\n",
     );
   } else if (
-    plan.nativeVaultNamespaceMigration?.sourceDisposition ===
+    plan.secureStorageNamespaceMigration?.sourceDisposition ===
       "delete-shared-confirmed"
   ) {
     io.stdout.write(
-      "Shared native-vault retirement was explicitly confirmed; all older AgenC processes must remain stopped until apply completes.\n",
+      "Shared native secure storage retirement was explicitly confirmed; all older AgenC processes must remain stopped until apply completes.\n",
     );
   } else if (
-    plan.nativeVaultNamespaceMigration?.sourceDisposition ===
+    plan.secureStorageNamespaceMigration?.sourceDisposition ===
       "rewrite-in-place"
   ) {
     io.stdout.write(

@@ -1,6 +1,11 @@
 import { basename } from "node:path";
 
 import type { OutputStyleInput } from "../../prompts/system-prompt.js";
+import {
+  CanonicalAuthorityCache,
+  getCanonicalSettingsAuthority,
+  type CanonicalSettingsAuthority,
+} from "../../utils/settings/canonicalAuthority.js";
 import { isRepositoryControlledPlugin, type LoadedPlugin } from "../loader.js";
 import {
   collectMarkdownFiles,
@@ -12,6 +17,7 @@ import {
   pathIsDirectory,
   pluginScopedIdentifier,
   readMarkdownFile,
+  runtimeIdentityKey,
   type PluginRuntimeLoadOptions,
 } from "./common.js";
 
@@ -39,7 +45,7 @@ async function loadStyleFile(
   if (!file) return null;
   const baseName = coerceString(file.frontmatter.name) ?? markdownStem(filePath);
   const name = pluginScopedIdentifier(
-    plugin.name,
+    plugin.id,
     baseName.split(":").filter((part) => part.length > 0),
     "output_style",
   );
@@ -52,7 +58,7 @@ async function loadStyleFile(
     description,
     prompt: file.markdown.trim(),
     source: "plugin",
-    plugin: plugin.name,
+    plugin: plugin.id,
     filePath,
     ...(file.frontmatter["force-for-plugin"] !== undefined
       ? { forceForPlugin: parseBoolean(file.frontmatter["force-for-plugin"]) }
@@ -94,8 +100,8 @@ async function resolvePlugins(
   return options.plugins ?? await loadRuntimePlugins(options);
 }
 
-export async function loadPluginOutputStyles(
-  options: PluginOutputStyleRegistrationOptions = {},
+async function loadPluginOutputStylesUncached(
+  options: PluginOutputStyleRegistrationOptions,
 ): Promise<readonly PluginOutputStyle[]> {
   const plugins = await resolvePlugins(options);
   const groups = await Promise.all(
@@ -108,6 +114,54 @@ export async function loadPluginOutputStyles(
     .sort((a, b) => a.name.localeCompare(b.name) || basename(a.filePath).localeCompare(basename(b.filePath)));
 }
 
+interface PluginOutputStyleCacheEntry {
+  readonly config: PluginRuntimeLoadOptions["config"];
+  readonly styles: Promise<readonly PluginOutputStyle[]>;
+}
+
+const pluginOutputStylesByAuthority =
+  new CanonicalAuthorityCache<PluginOutputStyleCacheEntry>();
+
+function usesCanonicalPluginConfig(
+  options: PluginOutputStyleRegistrationOptions,
+  authority: CanonicalSettingsAuthority,
+): boolean {
+  return options.plugins === undefined &&
+    options.fresh !== true &&
+    (options.extraPluginDirs?.length ?? 0) === 0 &&
+    options.config === authority.current();
+}
+
+export async function loadPluginOutputStyles(
+  options: PluginOutputStyleRegistrationOptions,
+): Promise<readonly PluginOutputStyle[]> {
+  const authority = getCanonicalSettingsAuthority();
+  if (authority === null || !usesCanonicalPluginConfig(options, authority)) {
+    return loadPluginOutputStylesUncached(options);
+  }
+
+  const key = runtimeIdentityKey({
+    cwd: options.workspaceRoot ?? options.cwd,
+    pluginStorageRoot: options.pluginStorageRoot,
+  });
+  const cached = pluginOutputStylesByAuthority.get(key, authority);
+  if (cached !== undefined && cached.config === options.config) {
+    return cached.styles;
+  }
+
+  const styles = loadPluginOutputStylesUncached(options);
+  const entry: PluginOutputStyleCacheEntry = { config: options.config, styles };
+  pluginOutputStylesByAuthority.set(key, entry, authority);
+  void styles.catch(() => {
+    if (pluginOutputStylesByAuthority.get(key, authority) === entry) {
+      pluginOutputStylesByAuthority.delete(key, authority);
+    }
+  });
+  return styles;
+}
+
 export function clearPluginOutputStyleCache(): void {
-  // Output style loading is uncached; this keeps the registration cache API uniform.
+  const authority = getCanonicalSettingsAuthority();
+  if (authority === null) pluginOutputStylesByAuthority.clear();
+  else pluginOutputStylesByAuthority.clearAuthority(authority);
 }

@@ -67,6 +67,7 @@ import { isBareMode } from "../utils/envUtils.js";
 import {
   resolveAgentRuntimeOptions,
   resolveSessionTempRoot,
+  runWithAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
@@ -120,6 +121,19 @@ function trustWorkspaceForTest(agencHome: string, workspace: string): void {
     cwd: workspace,
     env: process.env,
   });
+}
+
+function withRunSingleTurnRuntime<T>(operation: () => T): T {
+  const runtimeOptions = resolveAgentRuntimeOptions(
+    {},
+    {
+      pluginStorageRoot: join(
+        tmpdir(),
+        "agenc-run-single-turn-test-plugins",
+      ),
+    },
+  );
+  return runWithAgentRuntimeOptions(runtimeOptions, operation);
 }
 
 async function writeResumeRolloutForTest(
@@ -1487,10 +1501,12 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
     });
     // Drain the generator.
     // eslint-disable-next-line no-constant-condition
-    while (true) {
-      const step = await iter.next();
-      if (step.done) break;
-    }
+    await withRunSingleTurnRuntime(async () => {
+      while (true) {
+        const step = await iter.next();
+        if (step.done) break;
+      }
+    });
     expect(reloadConfigFn).toHaveBeenCalledTimes(1);
     expect(assembleSystemPromptFn).toHaveBeenCalledTimes(1);
     expect(runTurnFn).toHaveBeenCalledTimes(1);
@@ -1510,28 +1526,30 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
     await store.reload();
     const latch: ConfigReloadLatch = { requested: false };
 
-    for (let i = 0; i < 3; i++) {
-      const iter = runSingleTurn({
-        session: { emit: vi.fn() } as never,
-        ctx: {} as never,
-        input: `t${i}`,
-        configStore: store,
-        configReloadLatch: latch,
-        memoryPromptText: "",
-        allMemories: [],
-        enabledToolNames: new Set<string>(),
-        mcpServers: [],
-        provider: "grok",
-        reloadConfigFn: reloadConfigFn as never,
-        assembleSystemPromptFn: assembleSystemPromptFn as never,
-        runTurnFn: runTurnFn as never,
-      });
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const step = await iter.next();
-        if (step.done) break;
+    await withRunSingleTurnRuntime(async () => {
+      for (let i = 0; i < 3; i++) {
+        const iter = runSingleTurn({
+          session: { emit: vi.fn() } as never,
+          ctx: {} as never,
+          input: `t${i}`,
+          configStore: store,
+          configReloadLatch: latch,
+          memoryPromptText: "",
+          allMemories: [],
+          enabledToolNames: new Set<string>(),
+          mcpServers: [],
+          provider: "grok",
+          reloadConfigFn: reloadConfigFn as never,
+          assembleSystemPromptFn: assembleSystemPromptFn as never,
+          runTurnFn: runTurnFn as never,
+        });
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const step = await iter.next();
+          if (step.done) break;
+        }
       }
-    }
+    });
     expect(reloadConfigFn).toHaveBeenCalledTimes(3);
     expect(runTurnFn).toHaveBeenCalledTimes(3);
   });
@@ -1572,24 +1590,26 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
       modelInfo: { slug: cfg.model },
     } as never;
 
-    for (let i = 0; i < 2; i++) {
-      const iter = runSingleTurn({
-        session: { emit: vi.fn() } as never,
-        ctx,
-        input: `t${i}`,
-        configStore: store,
-        configReloadLatch: { requested: false },
-        loadTurnInputsFn: loadTurnInputsFn as never,
-        provider: "grok",
-        reloadConfigFn: (async () => ({ reloaded: false })) as never,
-        runTurnFn: fakeRunTurn as never,
-      });
-      // eslint-disable-next-line no-constant-condition
-      while (true) {
-        const step = await iter.next();
-        if (step.done) break;
+    await withRunSingleTurnRuntime(async () => {
+      for (let i = 0; i < 2; i++) {
+        const iter = runSingleTurn({
+          session: { emit: vi.fn() } as never,
+          ctx,
+          input: `t${i}`,
+          configStore: store,
+          configReloadLatch: { requested: false },
+          loadTurnInputsFn: loadTurnInputsFn as never,
+          provider: "grok",
+          reloadConfigFn: (async () => ({ reloaded: false })) as never,
+          runTurnFn: fakeRunTurn as never,
+        });
+        // eslint-disable-next-line no-constant-condition
+        while (true) {
+          const step = await iter.next();
+          if (step.done) break;
+        }
       }
-    }
+    });
 
     expect(loadTurnInputsFn).toHaveBeenCalledTimes(2);
     expect(prompts[0]).not.toContain("PROJECT-ONE");
@@ -1631,7 +1651,9 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
       assembleSystemPromptFn: (async () => ({ text: "SYS" })) as never,
       runTurnFn: runTurnFn as never,
     });
-    for await (const ev of iter) collected.push(ev);
+    await withRunSingleTurnRuntime(async () => {
+      for await (const ev of iter) collected.push(ev);
+    });
     expect(collected).toEqual(events);
   });
 });

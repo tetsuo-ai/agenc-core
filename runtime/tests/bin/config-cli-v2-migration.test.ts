@@ -37,24 +37,24 @@ describe("agenc config migrate", () => {
     expect(parseAgenCConfigCliArgs(["config", "migrate"])).toEqual({
       kind: "migrate",
       action: "check",
-      retireSharedNativeVault: false,
+      retireSharedSecureStorage: false,
       confirmRetiredWritersStopped: false,
     });
     expect(parseAgenCConfigCliArgs(["config", "migrate", "apply"])).toEqual({
       kind: "migrate",
       action: "apply",
-      retireSharedNativeVault: false,
+      retireSharedSecureStorage: false,
       confirmRetiredWritersStopped: false,
     });
     expect(parseAgenCConfigCliArgs([
       "config",
       "migrate",
       "apply",
-      "--retire-shared-native-vault",
+      "--retire-shared-secure-storage",
     ])).toEqual({
       kind: "migrate",
       action: "apply",
-      retireSharedNativeVault: true,
+      retireSharedSecureStorage: true,
       confirmRetiredWritersStopped: false,
     });
     expect(parseAgenCConfigCliArgs([
@@ -62,25 +62,25 @@ describe("agenc config migrate", () => {
       "migrate",
       "apply",
       "--confirm-retired-writers-stopped",
-      "--retire-shared-native-vault",
+      "--retire-shared-secure-storage",
     ])).toEqual({
       kind: "migrate",
       action: "apply",
-      retireSharedNativeVault: true,
+      retireSharedSecureStorage: true,
       confirmRetiredWritersStopped: true,
     });
     expect(parseAgenCConfigCliArgs([
       "config",
       "migrate",
       "check",
-      "--retired-vault-account",
+      "--retired-secure-storage-account",
       "historical-user",
     ])).toEqual({
       kind: "migrate",
       action: "check",
-      retireSharedNativeVault: false,
+      retireSharedSecureStorage: false,
       confirmRetiredWritersStopped: false,
-      retiredVaultAccount: "historical-user",
+      retiredSecureStorageAccount: "historical-user",
     });
     expect(parseAgenCConfigCliArgs([
       "config",
@@ -95,22 +95,22 @@ describe("agenc config migrate", () => {
       "config",
       "migrate",
       "check",
-      "--retired-vault-account",
+      "--retired-secure-storage-account",
     ])).toMatchObject({ kind: "error" });
     expect(parseAgenCConfigCliArgs([
       "config",
       "migrate",
       "apply",
-      "--retired-vault-account",
+      "--retired-secure-storage-account",
       "--confirm-retired-writers-stopped",
     ])).toMatchObject({ kind: "error" });
     expect(parseAgenCConfigCliArgs([
       "config",
       "migrate",
       "check",
-      "--retired-vault-account",
+      "--retired-secure-storage-account",
       "first",
-      "--retired-vault-account",
+      "--retired-secure-storage-account",
       "second",
     ])).toMatchObject({ kind: "error" });
   });
@@ -138,7 +138,7 @@ describe("agenc config migrate", () => {
       {
         kind: "migrate",
         action: "check",
-        retireSharedNativeVault: false,
+        retireSharedSecureStorage: false,
         confirmRetiredWritersStopped: false,
       },
       { ...common, io: checkIo },
@@ -151,7 +151,7 @@ describe("agenc config migrate", () => {
       {
         kind: "migrate",
         action: "apply",
-        retireSharedNativeVault: false,
+        retireSharedSecureStorage: false,
         confirmRetiredWritersStopped: false,
       },
       { ...common, io: applyIo },

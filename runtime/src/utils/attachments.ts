@@ -2406,7 +2406,11 @@ async function getSkillListingAttachments(
   }
 
   const cwd = getProjectRoot()
-  const localCommands = await getSkillToolCommands(cwd)
+  const localCommands = await getSkillToolCommands(
+    cwd,
+    null,
+    toolUseContext.skillsManager,
+  )
   const mcpSkills = getMcpSkillCommands(
     toolUseContext.getAppState().mcp.commands,
   )

@@ -210,7 +210,7 @@ import { submitViaElicitationPrompt } from "../elicitation-submit-routing.js";
 import { AskUserQuestionOverlay } from "./AskUserQuestionOverlay.js";
 import {
   findCommand,
-  getCommands,
+  getActiveSessionCommands,
   isCommandEnabled,
   listTuiCommandList,
 } from "../../commands.js";
@@ -2872,8 +2872,22 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     if (props.session.agentDefinitions !== undefined) {
       return;
     }
+    const pluginStorageRoot =
+      props.session.services.runtimeOptions?.pluginStorageRoot;
+    if (pluginStorageRoot === undefined) {
+      addNotification({
+        key: "agent-catalog-load-error",
+        text: "Session is missing captured plugin storage authority",
+        color: "error",
+        priority: "high",
+      });
+      return;
+    }
     let cancelled = false;
-    void getAgentDefinitionsWithOverrides(props.roleWorkspaceCwd)
+    void getAgentDefinitionsWithOverrides(
+      props.roleWorkspaceCwd,
+      pluginStorageRoot,
+    )
       .then((agentDefinitions) => {
         if (cancelled) return;
         const roleWorkspace = createAgentRoleWorkspace(props.roleWorkspaceCwd);
@@ -2904,6 +2918,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     addNotification,
     props.roleWorkspaceCwd,
     props.session.agentDefinitions,
+    props.session.services.runtimeOptions?.pluginStorageRoot,
     setAppState,
   ]);
   const getBridgeAppState = useCallback(
@@ -4668,7 +4683,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     [commandRegistry],
   );
   // The slash palette (and findCommand execution) previously saw ONLY built-in
-  // commands: dir commands (.agenc/commands), skills (.agenc/skills), bundled
+  // Commands include skills from `.agenc/skills` and bundled sources.
   // skills, and plugin commands were loaded for the model but never surfaced
   // in the composer. Load the full command set for this workspace and merge
   // it in, keeping registry built-ins authoritative on name collisions.
@@ -4681,7 +4696,11 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   >([]);
   useEffect(() => {
     let cancelled = false;
-    void getCommands(dynamicCommandsCwd, config)
+    void getActiveSessionCommands(
+      dynamicCommandsCwd,
+      config,
+      props.session.services?.skillsManager,
+    )
       .then((all) => {
         if (cancelled) return;
         setDynamicTuiCommands(
@@ -4709,7 +4728,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     return () => {
       cancelled = true;
     };
-  }, [dynamicCommandsCwd, config]);
+  }, [dynamicCommandsCwd, config, props.session.services?.skillsManager]);
   const commands = useMemo(() => {
     const seen = new Set(
       builtinTuiCommands.map((cmd) => cmd.name.toLowerCase()),
@@ -5531,7 +5550,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
         // a `/agenc-*` rail would come back as "Unknown command" even though
         // it shows in the palette. Resolve `/name` against `commands` first and
         // expand it into the turn exactly like `$skill` — this is what makes
-        // `.agenc/commands/*.md` rails and skills invocable via `/`. Built-in
+        // Skills may be invoked via `/`. Built-in
         // registry commands (they answer `commandRegistry.find`) are left to
         // the dispatcher below and are never intercepted here.
         const slashPromptCommand = findCommand(

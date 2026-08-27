@@ -31,22 +31,8 @@
  * @module
  */
 
-import {
-  closeSync,
-  constants,
-  existsSync,
-  fstatSync,
-  lstatSync,
-  openSync,
-  readdirSync,
-  readFileSync,
-  realpathSync,
-} from "node:fs";
+import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
-import type { BigIntStats, Dirent } from "node:fs";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import yaml from "js-yaml";
 import type { AgentRegistry } from "./registry.js";
 import { normalizeRawConfig } from "../config/schema.js";
 import { parseToml } from "../config/loader.js";
@@ -54,7 +40,6 @@ import { resolveProfile } from "../config/profiles.js";
 import type { AgenCConfig } from "../config/schema.js";
 import { normalizeExternalText } from "./_deps/file-read.js";
 import { stableStringify } from "../utils/stableStringify.js";
-import { getAgenCHomeDir } from "../utils/envUtils.js";
 import {
   agentRolePresentation,
   canonicalAgentRoleName,
@@ -127,6 +112,7 @@ export interface AgentRole {
   readonly source?:
     | "built-in"
     | "programmatic"
+    | "plugin"
     | "userSettings"
     | "projectSettings"
     | "policySettings";
@@ -387,19 +373,6 @@ for (const role of BUILT_INS) builtInRoles.set(role.name, role);
 
 const registeredRolesByWorkspace = new Map<string, Map<string, AgentRole>>();
 
-interface MarkdownRoleNamespace {
-  readonly roles: Map<string, AgentRole>;
-  readonly signature: string;
-}
-
-// Markdown-loaded roles are namespaced by the requesting workspace so two
-// projects with same-named `.agenc/agents/<name>.md` roles resolve independently
-// inside one daemon process. There is deliberately no cwd-less fallback.
-const markdownRolesByCwd = new Map<string, MarkdownRoleNamespace>();
-let markdownAgentRoleReadHookForTesting:
-  | ((filePath: string) => void)
-  | undefined;
-
 export function registerAgentRole(
   workspace: AgentRoleWorkspace,
   role: AgentRole,
@@ -438,21 +411,9 @@ function lookupRoleByExactName(
   name: string,
 ): AgentRole | undefined {
   return (
-    lookupMarkdownRole(workspace, name) ??
     registeredRolesByWorkspace.get(workspace.id)?.get(name) ??
     builtInRoles.get(name)
   );
-}
-
-function lookupMarkdownRole(
-  workspace: AgentRoleWorkspace,
-  name: string,
-): AgentRole | undefined {
-  loadMarkdownAgentRoles(workspace);
-  const role = markdownRolesByCwd.get(workspace.id)?.roles.get(name);
-  return role?.source === "projectSettings" && isBuiltInRoleNameOrAlias(name)
-    ? undefined
-    : role;
 }
 
 export function getDefaultAgentRole(): AgentRole {
@@ -483,11 +444,6 @@ export function listAgentRoles(
   for (const role of registeredRolesByWorkspace.get(workspace.id)?.values() ?? []) {
     merged.set(role.name, role);
   }
-  loadMarkdownAgentRoles(workspace);
-  const namespace = markdownRolesByCwd.get(workspace.id);
-  if (namespace) {
-    for (const role of namespace.roles.values()) merged.set(role.name, role);
-  }
   return Array.from(merged.values());
 }
 
@@ -508,65 +464,7 @@ export function defaultAgentNicknameCandidates(): ReadonlyArray<string> {
 }
 
 export function _resetAgentRolesForTesting(): void {
-  markdownRolesByCwd.clear();
   registeredRolesByWorkspace.clear();
-  markdownAgentRoleReadHookForTesting = undefined;
-}
-
-/** Deterministic validation-to-open race seam; tests only. */
-export function _setMarkdownAgentRoleReadHookForTesting(
-  hook: ((filePath: string) => void) | undefined,
-): void {
-  markdownAgentRoleReadHookForTesting = hook;
-}
-
-export function loadMarkdownAgentRoles(workspace: AgentRoleWorkspace): void {
-  const key = workspace.id;
-  // Cheap identity/metadata invalidation: inspect candidate role dirs and files
-  // on every load so editing a role .md takes effect for new sessions without
-  // a daemon restart. Only when the signature changes do we securely open and
-  // re-parse the files.
-  const signature = markdownAgentRoleSignature(workspace.cwd);
-  const existing = markdownRolesByCwd.get(key);
-  if (existing !== undefined && existing.signature === signature) return;
-
-  const roles = new Map<string, AgentRole>();
-  for (const file of readMarkdownAgentRoleFiles(workspace.cwd)) {
-    const role = markdownAgentRoleFromFile(file);
-    if (
-      role &&
-      (role.source !== "projectSettings" ||
-        !isBuiltInRoleNameOrAlias(role.name))
-    ) {
-      roles.set(role.name, freezeRole(role));
-    }
-  }
-  markdownRolesByCwd.set(key, { roles, signature });
-}
-
-function isBuiltInRoleNameOrAlias(name: string): boolean {
-  return builtInRoles.has(canonicalAgentRoleName(name));
-}
-
-function markdownAgentRoleSignature(cwd: string): string {
-  const parts: string[] = [];
-  for (const source of markdownAgentRoleDirs(cwd)) {
-    const directory = validateTrustedMarkdownDirectory(source, source.dir);
-    parts.push(
-      `${source.source}\u0000${source.dir}\u0000${directory === null ? "missing-or-untrusted" : trustedDirectorySignature(directory)}`,
-    );
-    // A directory's mtime does not change when a contained file is edited
-    // in place, so include each trusted markdown file's identity and metadata.
-    for (const filePath of collectMarkdownFiles(source)) {
-      const file = validateTrustedMarkdownRoleFile(source, filePath);
-      if (file !== null) {
-        parts.push(
-          `${filePath}\u0000${stableEntrySignature(file.fileState)}`,
-        );
-      }
-    }
-  }
-  return parts.join("\n");
 }
 
 export function resolveAgentRole(
@@ -918,485 +816,6 @@ function deriveRoleRuntimeHints(
   return derived;
 }
 
-type MarkdownAgentRoleFile = {
-  readonly filePath: string;
-  readonly frontmatter: Record<string, unknown>;
-  readonly content: string;
-  readonly source: "userSettings" | "projectSettings" | "policySettings";
-};
-
-interface MarkdownAgentRoleDirectory {
-  readonly dir: string;
-  readonly trustAnchor: string;
-  readonly source: "userSettings" | "projectSettings" | "policySettings";
-}
-
-interface StableEntryState {
-  readonly dev: bigint;
-  readonly ino: bigint;
-  readonly mode: bigint;
-  readonly nlink: bigint;
-  readonly size: bigint;
-  readonly mtimeNs: bigint;
-  readonly ctimeNs: bigint;
-}
-
-interface TrustedDirectoryComponent {
-  readonly path: string;
-  readonly canonicalPath: string;
-  readonly state: StableEntryState;
-}
-
-interface TrustedDirectorySnapshot {
-  readonly components: ReadonlyArray<TrustedDirectoryComponent>;
-  readonly canonicalAnchor: string;
-  readonly canonicalTier: string;
-  readonly canonicalDirectory: string;
-}
-
-interface TrustedMarkdownRoleFileSnapshot {
-  readonly directory: TrustedDirectorySnapshot;
-  readonly canonicalFile: string;
-  readonly fileState: StableEntryState;
-}
-
-interface OpenedMarkdownRoleFile {
-  readonly raw: string;
-  readonly identity: string;
-}
-
-function readMarkdownAgentRoleFiles(cwd: string): MarkdownAgentRoleFile[] {
-  const out: MarkdownAgentRoleFile[] = [];
-  const seenFiles = new Set<string>();
-  for (const source of markdownAgentRoleDirs(cwd)) {
-    for (const filePath of collectMarkdownFiles(source)) {
-      try {
-        const opened = readTrustedMarkdownRoleFile(source, filePath);
-        if (opened === null || seenFiles.has(opened.identity)) continue;
-        seenFiles.add(opened.identity);
-        const { frontmatter, content } = parseMarkdownAgentRole(
-          normalizeExternalText(opened.raw),
-        );
-        out.push({ filePath, frontmatter, content, source: source.source });
-      } catch {
-        continue;
-      }
-    }
-  }
-  return out;
-}
-
-function markdownAgentRoleDirs(cwd: string): MarkdownAgentRoleDirectory[] {
-  const dirs: MarkdownAgentRoleDirectory[] = [];
-  const userRoot = resolve(getAgenCHomeDir());
-  dirs.push({
-    dir: join(userRoot, "agents"),
-    trustAnchor: userRoot,
-    source: "userSettings",
-  });
-
-  const projectDirs: MarkdownAgentRoleDirectory[] = [];
-  let current = resolve(cwd);
-  const home = resolve(homedir());
-  while (true) {
-    projectDirs.push({
-      dir: join(current, ".agenc", "agents"),
-      trustAnchor: current,
-      source: "projectSettings",
-    });
-    if (current === home || current === dirname(current)) break;
-    if (existsSync(join(current, ".git"))) break;
-    current = dirname(current);
-  }
-  dirs.push(...projectDirs.reverse());
-
-  const managed = process.env.AGENC_MANAGED_AGENTS_DIR;
-  if (managed && managed.trim().length > 0) {
-    const managedDir = resolve(managed);
-    dirs.push({
-      dir: managedDir,
-      trustAnchor: dirname(managedDir),
-      source: "policySettings",
-    });
-  }
-
-  return dirs;
-}
-
-function collectMarkdownFiles(
-  source: MarkdownAgentRoleDirectory,
-  dir: string = source.dir,
-  visitedDirs = new Set<string>(),
-): string[] {
-  const before = validateTrustedMarkdownDirectory(source, dir);
-  if (before === null) return [];
-  const dirState = before.components.at(-1)?.state;
-  if (dirState === undefined) return [];
-  const dirKey =
-    dirState.dev === 0n && dirState.ino === 0n
-      ? before.canonicalDirectory
-      : `${dirState.dev}:${dirState.ino}`;
-  if (visitedDirs.has(dirKey)) return [];
-  visitedDirs.add(dirKey);
-
-  let entries: Dirent<string>[];
-  try {
-    entries = readdirSync(dir, { encoding: "utf8", withFileTypes: true });
-  } catch {
-    return [];
-  }
-
-  const files: string[] = [];
-  for (const entry of entries) {
-    if (entry.isSymbolicLink()) continue;
-    const fullPath = join(dir, entry.name);
-    try {
-      const stats = lstatSync(fullPath, { bigint: true });
-      if (stats.isSymbolicLink()) continue;
-      if (stats.isDirectory()) {
-        files.push(...collectMarkdownFiles(source, fullPath, visitedDirs));
-      } else if (
-        stats.isFile() &&
-        entry.name.endsWith(".md") &&
-        validateTrustedMarkdownRoleFile(source, fullPath) !== null
-      ) {
-        files.push(fullPath);
-      }
-    } catch {
-      continue;
-    }
-  }
-  const after = validateTrustedMarkdownDirectory(source, dir);
-  return after !== null && sameTrustedDirectoryIdentity(before, after)
-    ? files.sort()
-    : [];
-}
-
-function validateTrustedMarkdownDirectory(
-  source: MarkdownAgentRoleDirectory,
-  candidateDirectory: string,
-): TrustedDirectorySnapshot | null {
-  try {
-    const anchor = resolve(source.trustAnchor);
-    const tier = resolve(source.dir);
-    const candidate = resolve(candidateDirectory);
-    if (
-      !isSameOrChildPath(anchor, tier) ||
-      !isSameOrChildPath(tier, candidate)
-    ) {
-      return null;
-    }
-
-    const components: TrustedDirectoryComponent[] = [];
-    let componentPath = anchor;
-    const componentPaths = [anchor];
-    const child = relative(anchor, candidate);
-    if (child.length > 0) {
-      for (const component of child.split(sep)) {
-        componentPath = join(componentPath, component);
-        componentPaths.push(componentPath);
-      }
-    }
-
-    for (const path of componentPaths) {
-      const before = lstatSync(path, { bigint: true });
-      if (!before.isDirectory() || before.isSymbolicLink()) return null;
-      const canonicalPath = realpathSync(path);
-      const after = lstatSync(path, { bigint: true });
-      if (
-        !after.isDirectory() ||
-        after.isSymbolicLink() ||
-        !sameStableEntryState(stableEntryState(before), stableEntryState(after))
-      ) {
-        return null;
-      }
-      components.push({
-        path,
-        canonicalPath,
-        state: stableEntryState(after),
-      });
-    }
-
-    const anchorComponent = components[0];
-    const tierComponent = components.find((component) => component.path === tier);
-    const directoryComponent = components.at(-1);
-    if (
-      anchorComponent === undefined ||
-      tierComponent === undefined ||
-      directoryComponent === undefined ||
-      !isSameOrChildPath(
-        anchorComponent.canonicalPath,
-        tierComponent.canonicalPath,
-      ) ||
-      !isSameOrChildPath(
-        tierComponent.canonicalPath,
-        directoryComponent.canonicalPath,
-      )
-    ) {
-      return null;
-    }
-
-    return {
-      components,
-      canonicalAnchor: anchorComponent.canonicalPath,
-      canonicalTier: tierComponent.canonicalPath,
-      canonicalDirectory: directoryComponent.canonicalPath,
-    };
-  } catch {
-    return null;
-  }
-}
-
-function validateTrustedMarkdownRoleFile(
-  source: MarkdownAgentRoleDirectory,
-  filePath: string,
-): TrustedMarkdownRoleFileSnapshot | null {
-  try {
-    const lexicalFile = resolve(filePath);
-    const lexicalTier = resolve(source.dir);
-    if (
-      lexicalFile === lexicalTier ||
-      !isSameOrChildPath(lexicalTier, lexicalFile)
-    ) {
-      return null;
-    }
-    const directory = validateTrustedMarkdownDirectory(
-      source,
-      dirname(lexicalFile),
-    );
-    if (directory === null) return null;
-
-    const before = lstatSync(lexicalFile, { bigint: true });
-    if (
-      !before.isFile() ||
-      before.isSymbolicLink() ||
-      before.nlink !== 1n
-    ) {
-      return null;
-    }
-    const canonicalFile = realpathSync(lexicalFile);
-    const after = lstatSync(lexicalFile, { bigint: true });
-    const beforeState = stableEntryState(before);
-    const afterState = stableEntryState(after);
-    if (
-      !after.isFile() ||
-      after.isSymbolicLink() ||
-      after.nlink !== 1n ||
-      !sameStableEntryState(beforeState, afterState) ||
-      canonicalFile === directory.canonicalDirectory ||
-      !isSameOrChildPath(directory.canonicalDirectory, canonicalFile) ||
-      !isSameOrChildPath(directory.canonicalTier, canonicalFile)
-    ) {
-      return null;
-    }
-    return { directory, canonicalFile, fileState: afterState };
-  } catch {
-    return null;
-  }
-}
-
-function readTrustedMarkdownRoleFile(
-  source: MarkdownAgentRoleDirectory,
-  filePath: string,
-): OpenedMarkdownRoleFile | null {
-  let fd: number | undefined;
-  try {
-    const before = validateTrustedMarkdownRoleFile(source, filePath);
-    if (before === null) return null;
-    markdownAgentRoleReadHookForTesting?.(filePath);
-
-    fd = openSync(
-      filePath,
-      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
-    );
-    const opened = fstatSync(fd, { bigint: true });
-    const openedState = stableEntryState(opened);
-    if (
-      !opened.isFile() ||
-      opened.nlink !== 1n ||
-      !sameStableEntryState(before.fileState, openedState)
-    ) {
-      return null;
-    }
-
-    // The descriptor, not the pathname, is the single source of role bytes.
-    const raw = readFileSync(fd, "utf8");
-    const afterRead = fstatSync(fd, { bigint: true });
-    if (
-      !afterRead.isFile() ||
-      afterRead.nlink !== 1n ||
-      !sameStableEntryState(openedState, stableEntryState(afterRead))
-    ) {
-      return null;
-    }
-
-    const after = validateTrustedMarkdownRoleFile(source, filePath);
-    if (
-      after === null ||
-      after.canonicalFile !== before.canonicalFile ||
-      !sameStableEntryState(after.fileState, before.fileState) ||
-      !sameTrustedDirectoryIdentity(after.directory, before.directory)
-    ) {
-      return null;
-    }
-    return {
-      raw,
-      identity:
-        openedState.dev === 0n && openedState.ino === 0n
-          ? after.canonicalFile
-          : `${openedState.dev}:${openedState.ino}`,
-    };
-  } catch {
-    return null;
-  } finally {
-    if (fd !== undefined) closeSync(fd);
-  }
-}
-
-function stableEntryState(stats: BigIntStats): StableEntryState {
-  return {
-    dev: stats.dev,
-    ino: stats.ino,
-    mode: stats.mode,
-    nlink: stats.nlink,
-    size: stats.size,
-    mtimeNs: stats.mtimeNs,
-    ctimeNs: stats.ctimeNs,
-  };
-}
-
-function sameStableEntryState(
-  left: StableEntryState,
-  right: StableEntryState,
-): boolean {
-  return (
-    left.dev === right.dev &&
-    left.ino === right.ino &&
-    left.mode === right.mode &&
-    left.nlink === right.nlink &&
-    left.size === right.size &&
-    left.mtimeNs === right.mtimeNs &&
-    left.ctimeNs === right.ctimeNs
-  );
-}
-
-function sameTrustedDirectoryIdentity(
-  left: TrustedDirectorySnapshot,
-  right: TrustedDirectorySnapshot,
-): boolean {
-  return (
-    left.canonicalAnchor === right.canonicalAnchor &&
-    left.canonicalTier === right.canonicalTier &&
-    left.canonicalDirectory === right.canonicalDirectory &&
-    left.components.length === right.components.length &&
-    left.components.every((component, index) => {
-      const other = right.components[index];
-      return (
-        other !== undefined &&
-        component.path === other.path &&
-        component.canonicalPath === other.canonicalPath &&
-        component.state.dev === other.state.dev &&
-        component.state.ino === other.state.ino &&
-        component.state.mode === other.state.mode
-      );
-    })
-  );
-}
-
-function trustedDirectorySignature(
-  directory: TrustedDirectorySnapshot,
-): string {
-  const state = directory.components.at(-1)?.state;
-  return state === undefined
-    ? "missing-or-untrusted"
-    : `${directory.canonicalDirectory}:${stableEntrySignature(state)}`;
-}
-
-function stableEntrySignature(state: StableEntryState): string {
-  return [
-    state.dev,
-    state.ino,
-    state.mode,
-    state.nlink,
-    state.size,
-    state.mtimeNs,
-    state.ctimeNs,
-  ].join(":");
-}
-
-function isSameOrChildPath(parent: string, candidate: string): boolean {
-  const child = relative(parent, candidate);
-  return (
-    child === "" ||
-    (child !== ".." && !child.startsWith(`..${sep}`) && !isAbsolute(child))
-  );
-}
-
-function parseMarkdownAgentRole(raw: string): {
-  readonly frontmatter: Record<string, unknown>;
-  readonly content: string;
-} {
-  if (!raw.startsWith("---")) {
-    return { frontmatter: {}, content: raw };
-  }
-  const end = raw.indexOf("\n---", 3);
-  if (end === -1) {
-    return { frontmatter: {}, content: raw };
-  }
-  const frontmatterRaw = raw.slice(3, end);
-  const contentStart = raw.indexOf("\n", end + 4);
-  const content = contentStart === -1 ? "" : raw.slice(contentStart + 1);
-  const parsed = yaml.load(frontmatterRaw);
-  return {
-    frontmatter: isPlainObject(parsed) ? parsed : {},
-    content,
-  };
-}
-
-function markdownAgentRoleFromFile(
-  file: MarkdownAgentRoleFile,
-): AgentRole | null {
-  const name = nonEmptyString(file.frontmatter.name);
-  const description = nonEmptyString(file.frontmatter.description);
-  if (!name || !description) return null;
-
-  const repositoryControlled = file.source === "projectSettings";
-  const tools = parseMarkdownToolList(file.frontmatter.tools);
-  const reasoningEffort = repositoryControlled
-    ? undefined
-    : asAgentReasoningEffort(
-        file.frontmatter.reasoning_effort,
-      );
-  const background =
-    !repositoryControlled &&
-    (file.frontmatter.background === true ||
-      file.frontmatter.background === "true");
-
-  return {
-    name,
-    source: file.source,
-    config: {
-      description: description.replace(/\\n/g, "\n"),
-      systemPrompt: file.content.trim(),
-      ...(tools !== undefined ? { allowlist: tools } : {}),
-      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
-      ...(background ? { background: true } : {}),
-    },
-  };
-}
-
-function parseMarkdownToolList(value: unknown): string[] | undefined {
-  if (value === undefined || value === null) return undefined;
-  const raw = Array.isArray(value) ? value : typeof value === "string" ? [value] : [];
-  const tools = raw
-    .filter((item): item is string => typeof item === "string")
-    .flatMap((item) => item.split(/[,\s]+/))
-    .map((item) => item.trim())
-    .filter(Boolean);
-  if (tools.includes("*")) return undefined;
-  return tools.length > 0 ? tools : undefined;
-}
-
 function readRoleLayerSource(role: AgentRole): Record<string, unknown> {
   if (role.config.configToml !== undefined) {
     return parseRoleLayerToml(role.config.configToml);
@@ -1514,12 +933,6 @@ function cloneRecord<T extends Record<string, unknown>>(value: T): T {
 
 function asString(value: unknown): string | undefined {
   return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim().length > 0
-    ? value.trim()
-    : undefined;
 }
 
 function asPositiveInteger(value: unknown): number | undefined {

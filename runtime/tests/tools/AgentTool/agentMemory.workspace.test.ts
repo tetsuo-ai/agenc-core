@@ -611,7 +611,7 @@ Snapshot role prompt.
     })
     const firstCatalog = await runWithCanonicalSettingsAuthority(
       settingsAuthority,
-      () => loadFreshAgentDefinitions(workspaceA),
+      () => loadFreshAgentDefinitions(workspaceA, join(agencHome, 'plugins')),
     )
     const first = firstCatalog.activeAgents.find(
       definition => definition.agentType === 'snapshot-worker',
@@ -633,7 +633,7 @@ Snapshot role prompt.
 
     const secondCatalog = await runWithCanonicalSettingsAuthority(
       settingsAuthority,
-      () => loadFreshAgentDefinitions(workspaceA),
+      () => loadFreshAgentDefinitions(workspaceA, join(agencHome, 'plugins')),
     )
     const second = secondCatalog.activeAgents.find(
       definition => definition.agentType === 'snapshot-worker',

@@ -541,6 +541,7 @@ export const AgentTool = buildTool({
     } else {
       const freshCatalog = await loadFreshAgentDefinitions(
         parentSession.roleWorkspace.cwd,
+        parentSession.services.runtimeOptions.pluginStorageRoot,
       );
       assertAgentRoleWorkspaceMatches(
         parentSession.roleWorkspace,

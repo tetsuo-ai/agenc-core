@@ -71,6 +71,28 @@ describe("buildDelegateTool", () => {
     );
   });
 
+  it("preserves an exact role name for session-catalog resolution", async () => {
+    const delegateSpy = vi.fn().mockResolvedValue({
+      kind: "rejected",
+      reason: "expected test rejection",
+    });
+    const tool = buildDelegateTool({
+      getSession: () => stubSession(),
+      delegateFn: delegateSpy,
+    });
+
+    await tool.execute({
+      taskPrompt: "review the active diff",
+      // `research` is also a public alias for the built-in scanner. The
+      // session catalog must see the exact name before applying alias fallback.
+      role: "research",
+    });
+
+    expect(delegateSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ role: "research" }),
+    );
+  });
+
   it("publishes a fallback conversation manager on session services", () => {
     const session = stubSession();
 

@@ -8,7 +8,6 @@ import { homedir } from "node:os";
 import {
   basename,
   dirname,
-  extname,
   isAbsolute,
   join,
   relative,
@@ -47,7 +46,6 @@ export type LocalSkillScope =
   | "mcp";
 
 export type LoadedFrom =
-  | "commands_DEPRECATED"
   | "skills"
   | "plugin"
   | "managed"
@@ -120,6 +118,7 @@ export interface LocalSkillsSnapshot {
 
 export interface LocalSkillsServiceOptions {
   readonly agencHome: string;
+  readonly pluginStorageRoot: string;
   readonly workspaceRoot: string;
   /** Session/conversation id owning this skills-service instance. Used to
    *  scope invoked-skill tracking per session in the daemon; when absent,
@@ -142,7 +141,6 @@ interface SkillRoot {
   readonly scope: Exclude<LocalSkillScope, "bundled" | "mcp">;
   readonly source: Exclude<SkillSource, "bundled" | "mcp">;
   readonly loadedFrom: Exclude<LoadedFrom, "bundled" | "mcp">;
-  readonly kind: "skills" | "commands";
 }
 
 interface SkillWithContent {
@@ -208,7 +206,7 @@ function normalizeExistingCandidate(path: string): string {
 }
 
 function rootKey(root: SkillRoot): string {
-  return `${root.kind}:${root.scope}:${root.loadedFrom}:${root.path}`;
+  return `${root.scope}:${root.loadedFrom}:${root.path}`;
 }
 
 async function pathIsDirectory(path: string): Promise<boolean> {
@@ -241,7 +239,6 @@ function normalizeDisplayPath(path: string): string {
 
 function projectDirsUpToHome(
   workspaceRoot: string,
-  subdir: "skills" | "commands",
   home?: string,
 ): string[] {
   const dirs: string[] = [];
@@ -249,8 +246,8 @@ function projectDirsUpToHome(
   let current = resolve(workspaceRoot);
   while (true) {
     if (homeResolved !== null && current === homeResolved) break;
-    dirs.push(join(current, ".agents", subdir));
-    dirs.push(join(current, ".agenc", subdir));
+    dirs.push(join(current, ".agents", "skills"));
+    dirs.push(join(current, ".agenc", "skills"));
     const parent = dirname(current);
     if (parent === current) break;
     current = parent;
@@ -267,22 +264,12 @@ function localSkillRootCandidates(
 
   const roots: SkillRoot[] = [];
 
-  for (const path of projectDirsUpToHome(workspaceRoot, "skills", home)) {
+  for (const path of projectDirsUpToHome(workspaceRoot, home)) {
     roots.push({
       path,
       scope: "project",
       source: "projectSettings",
       loadedFrom: "skills",
-      kind: "skills",
-    });
-  }
-  for (const path of projectDirsUpToHome(workspaceRoot, "commands", home)) {
-    roots.push({
-      path,
-      scope: "project",
-      source: "projectSettings",
-      loadedFrom: "commands_DEPRECATED",
-      kind: "commands",
     });
   }
 
@@ -291,14 +278,6 @@ function localSkillRootCandidates(
     scope: "user",
     source: "userSettings",
     loadedFrom: "skills",
-    kind: "skills",
-  });
-  roots.push({
-    path: join(agencHome, "commands"),
-    scope: "user",
-    source: "userSettings",
-    loadedFrom: "commands_DEPRECATED",
-    kind: "commands",
   });
 
   if (home.length > 0) {
@@ -307,14 +286,6 @@ function localSkillRootCandidates(
       scope: "user",
       source: "userSettings",
       loadedFrom: "skills",
-      kind: "skills",
-    });
-    roots.push({
-      path: join(home, ".agents", "commands"),
-      scope: "user",
-      source: "userSettings",
-      loadedFrom: "commands_DEPRECATED",
-      kind: "commands",
     });
   }
   const managedHome = options.env?.AGENC_MANAGED_HOME;
@@ -324,7 +295,6 @@ function localSkillRootCandidates(
       scope: "managed",
       source: "policySettings",
       loadedFrom: "managed",
-      kind: "skills",
     });
   }
 
@@ -333,13 +303,34 @@ function localSkillRootCandidates(
 
 export async function discoverSkillRoots(
   options: LocalSkillsServiceOptions,
+  discoveredSkillRoots: readonly string[] = [],
 ): Promise<readonly SkillRoot[]> {
-  const agencHome = normalizeExistingCandidate(options.agencHome);
+  const pluginStorageRoot = normalizeExistingCandidate(
+    options.pluginStorageRoot,
+  );
   const workspaceRoot = normalizeExistingCandidate(options.workspaceRoot);
   const roots = localSkillRootCandidates(options);
 
+  for (const path of discoveredSkillRoots) {
+    const normalized = normalizeExistingCandidate(path);
+    const workspaceRelative = relative(workspaceRoot, normalized);
+    if (
+      workspaceRelative.length === 0 ||
+      workspaceRelative.startsWith("..") ||
+      isAbsolute(workspaceRelative)
+    ) {
+      continue;
+    }
+    roots.push({
+      path: normalized,
+      scope: "project",
+      source: "projectSettings",
+      loadedFrom: "skills",
+    });
+  }
+
   const pluginRoots = await discoverPluginSkillRootsWithProvenance({
-    agencHome,
+    pluginStorageRoot,
     workspaceRoot,
     config: options.config,
   });
@@ -351,7 +342,6 @@ export async function discoverSkillRoots(
         ? "projectSettings" as const
         : "plugin" as const,
       loadedFrom: "plugin" as const,
-      kind: "skills" as const,
     })),
   );
 
@@ -370,12 +360,14 @@ export async function discoverSkillRoots(
 export async function discoverSkillWatchRoots(
   options: LocalSkillsServiceOptions,
 ): Promise<readonly string[]> {
-  const agencHome = normalizeExistingCandidate(options.agencHome);
+  const pluginStorageRoot = normalizeExistingCandidate(
+    options.pluginStorageRoot,
+  );
   const workspaceRoot = normalizeExistingCandidate(options.workspaceRoot);
   const roots = [
     ...localSkillRootCandidates(options).map((root) => root.path),
     ...(await discoverPluginSkillRootsWithProvenance({
-      agencHome,
+      pluginStorageRoot,
       workspaceRoot,
       config: options.config,
     })).map((root) => root.path),
@@ -445,57 +437,6 @@ async function findSkillFiles(root: string): Promise<readonly string[]> {
   return out.sort((a, b) => a.localeCompare(b));
 }
 
-async function findMarkdownCommandFiles(root: string): Promise<readonly string[]> {
-  const out: string[] = [];
-  const queue: Array<{ path: string; depth: number }> = [{ path: root, depth: 0 }];
-  const visitedDirs = new Set<string>();
-
-  while (queue.length > 0 && out.length < MAX_SKILL_FILES) {
-    const frame = queue.shift()!;
-    const dirId = await getFileIdentity(frame.path);
-    if (dirId && visitedDirs.has(dirId)) continue;
-    if (dirId) visitedDirs.add(dirId);
-
-    const entries = await readDirEntries(frame.path);
-    for (const entry of entries) {
-      if (out.length >= MAX_SKILL_FILES) break;
-      const next = join(frame.path, entry.name);
-      if (entry.isFile() && extname(entry.name).toLowerCase() === ".md") {
-        out.push(next);
-        continue;
-      }
-      if (!entry.isDirectory() && !entry.isSymbolicLink()) continue;
-      if (SKIP_DIRS.has(entry.name)) continue;
-      if (frame.depth + 1 > MAX_SCAN_DEPTH) continue;
-      if (!(await isDirectoryEntry(next, entry.isSymbolicLink()))) continue;
-      queue.push({ path: next, depth: frame.depth + 1 });
-    }
-  }
-
-  return transformCommandSkillFiles(out.sort((a, b) => a.localeCompare(b)));
-}
-
-function transformCommandSkillFiles(files: readonly string[]): string[] {
-  const byDir = new Map<string, string[]>();
-  for (const file of files) {
-    const dir = dirname(file);
-    const entries = byDir.get(dir) ?? [];
-    entries.push(file);
-    byDir.set(dir, entries);
-  }
-
-  const result: string[] = [];
-  for (const entries of byDir.values()) {
-    const skillFiles = entries.filter(isSkillFile);
-    if (skillFiles.length > 0) {
-      result.push(skillFiles[0]!);
-    } else {
-      result.push(...entries);
-    }
-  }
-  return result.sort((a, b) => a.localeCompare(b));
-}
-
 function isSkillFile(filePath: string): boolean {
   return basename(filePath).toLowerCase() === "skill.md";
 }
@@ -515,14 +456,6 @@ function skillNameForSkillFile(filePath: string, baseDir: string): string {
   const parentOfSkillDir = dirname(skillDirectory);
   const commandBaseName = basename(skillDirectory);
   const namespace = buildNamespace(parentOfSkillDir, baseDir);
-  return namespace ? `${namespace}:${commandBaseName}` : commandBaseName;
-}
-
-function skillNameForCommandFile(filePath: string, baseDir: string): string {
-  if (isSkillFile(filePath)) return skillNameForSkillFile(filePath, baseDir);
-  const fileDirectory = dirname(filePath);
-  const commandBaseName = basename(filePath).replace(/\.md$/iu, "");
-  const namespace = buildNamespace(fileDirectory, baseDir);
   return namespace ? `${namespace}:${commandBaseName}` : commandBaseName;
 }
 
@@ -695,16 +628,13 @@ async function loadSkillFile(
   }
 
   const { frontmatter, markdown } = splitFrontmatter(raw);
-  const skillName =
-    root.kind === "skills"
-      ? skillNameForSkillFile(filePath, root.path)
-      : skillNameForCommandFile(filePath, root.path);
+  const skillName = skillNameForSkillFile(filePath, root.path);
   if (skillName.length === 0) return null;
   const parsed = parseSkillFrontmatterFields(
     frontmatter,
     markdown,
     skillName,
-    root.kind === "commands" ? "Custom command" : "Skill",
+    "Skill",
   );
   const repositoryControlled = isRepositoryControlledSkillSource(root.source);
   const safeParsed = (() => {
@@ -740,10 +670,7 @@ async function loadSkillFile(
 }
 
 async function loadSkillsFromRoot(root: SkillRoot): Promise<readonly SkillWithContent[]> {
-  const files =
-    root.kind === "skills"
-      ? await findSkillFiles(root.path)
-      : await findMarkdownCommandFiles(root.path);
+  const files = await findSkillFiles(root.path);
   const loaded = await Promise.all(files.map((file) => loadSkillFile(file, root)));
   return loaded.filter((entry): entry is SkillWithContent => entry !== null);
 }
@@ -832,8 +759,9 @@ async function renderBundledSkill(
 export async function loadLocalSkillsSnapshot(
   options: LocalSkillsServiceOptions,
   activePaths: readonly string[] = [],
+  discoveredSkillRoots: readonly string[] = [],
 ): Promise<LocalSkillsSnapshot> {
-  const roots = await discoverSkillRoots(options);
+  const roots = await discoverSkillRoots(options, discoveredSkillRoots);
   const loadedNested = await Promise.all(roots.map(loadSkillsFromRoot));
   const deduped = await dedupeSkillsByRealPath(loadedNested.flat());
 
@@ -849,16 +777,25 @@ export async function loadLocalSkillsSnapshot(
   }
 
   const bundled = BUNDLED_SKILLS.map(bundledSkillMetadata);
-  const sortedSkills = [...bundled, ...unconditional].sort((a, b) =>
-    a.name.localeCompare(b.name) || a.path.localeCompare(b.path),
+  const discoveredRoots = new Set(
+    discoveredSkillRoots.map(normalizeExistingCandidate),
   );
+  const sortedSkills = [...bundled, ...unconditional].sort((a, b) => {
+    const byName = a.name.localeCompare(b.name);
+    if (byName !== 0) return byName;
+    if (discoveredRoots.has(a.root) && discoveredRoots.has(b.root)) {
+      const byDepth = b.root.split(sep).length - a.root.split(sep).length;
+      if (byDepth !== 0) return byDepth;
+    }
+    return a.path.localeCompare(b.path);
+  });
 
   return {
     skills: sortedSkills,
     conditionalSkills: conditional.sort((a, b) => a.name.localeCompare(b.name)),
-    skillRoots: unique(
-      roots.filter((root) => root.kind === "skills").map((root) => root.path),
-    ).sort((a, b) => a.localeCompare(b)),
+    skillRoots: unique(roots.map((root) => root.path)).sort((a, b) =>
+      a.localeCompare(b)
+    ),
     pluginSkillRoots: unique(
       roots.filter((root) => root.scope === "plugin").map((root) => root.path),
     ).sort((a, b) => a.localeCompare(b)),
@@ -1152,6 +1089,7 @@ export function createLocalSkillsServices(
     options.config;
   let watchedPluginConfigKey = JSON.stringify(options.config ?? null);
   let activePaths = new Set<string>();
+  let discoveredSkillRoots = new Set<string>();
   let watcherStarted = false;
   // Session scoping for invoked-skill tracking. Records stamped with an
   // explicit sessionId (the Skill tool stamps the conversation id) land in
@@ -1195,11 +1133,19 @@ export function createLocalSkillsServices(
     config?: Pick<AgenCConfig, "plugins">,
   ): Promise<LocalSkillsSnapshot> => {
     const effectiveOptions = config === undefined ? options : { ...options, config };
-    const key = skillSnapshotCacheKey(effectiveOptions.config, activePaths);
+    const key = skillSnapshotCacheKey(
+      effectiveOptions.config,
+      activePaths,
+      discoveredSkillRoots,
+    );
     if (cache?.key !== key) {
       cache = {
         key,
-        value: loadLocalSkillsSnapshot(effectiveOptions, [...activePaths]),
+        value: loadLocalSkillsSnapshot(
+          effectiveOptions,
+          [...activePaths],
+          [...discoveredSkillRoots],
+        ),
       };
     }
     return cache.value;
@@ -1251,7 +1197,10 @@ export function createLocalSkillsServices(
       for (const path of extractActivePaths(input, fsArg)) {
         activePaths.add(path);
       }
-      lastPluginConfig = pluginConfigView(input) ?? options.config;
+      const nextPluginConfig = pluginConfigView(input);
+      if (nextPluginConfig !== undefined) {
+        lastPluginConfig = nextPluginConfig;
+      }
       await restartWatcherIfPluginConfigChanged();
       const snapshot = await load(lastPluginConfig);
       return {
@@ -1283,9 +1232,27 @@ export function createLocalSkillsServices(
     clearInvokedSkillsForAgent,
     clearSkillCaches: clear,
     async discoverSkillDirsForPaths(paths: readonly string[]): Promise<readonly string[]> {
-      const dirs = await discoverDynamicSkillDirsForPaths(paths, options.workspaceRoot);
-      for (const dir of dirs) activePaths.add(dir);
-      if (dirs.length > 0) clear();
+      const touchedPaths = paths.map((path) =>
+        isAbsolute(path)
+          ? resolve(path)
+          : resolve(options.workspaceRoot, path),
+      );
+      const dirs = await discoverDynamicSkillDirsForPaths(
+        touchedPaths,
+        options.workspaceRoot,
+      );
+      let changed = false;
+      for (const path of touchedPaths) {
+        if (activePaths.has(path)) continue;
+        activePaths.add(path);
+        changed = true;
+      }
+      for (const dir of dirs) {
+        if (discoveredSkillRoots.has(dir)) continue;
+        discoveredSkillRoots.add(dir);
+        changed = true;
+      }
+      if (changed) clear();
       return dirs;
     },
   };
@@ -1295,7 +1262,7 @@ export function createLocalSkillsServices(
     pluginsManager: {
       async pluginsForConfig(config) {
         const pluginSkillRoots = await discoverPluginSkillRootsWithProvenance({
-          agencHome: options.agencHome,
+          pluginStorageRoot: options.pluginStorageRoot,
           workspaceRoot: options.workspaceRoot,
           config: pluginConfigView(config),
         });
@@ -1319,10 +1286,12 @@ export function createLocalSkillsServices(
 function skillSnapshotCacheKey(
   config: Pick<AgenCConfig, "plugins"> | undefined,
   activePaths: ReadonlySet<string>,
+  discoveredSkillRoots: ReadonlySet<string>,
 ): string {
   return JSON.stringify({
     plugins: config?.plugins ?? null,
     activePaths: [...activePaths].sort(),
+    discoveredSkillRoots: [...discoveredSkillRoots].sort(),
   });
 }
 

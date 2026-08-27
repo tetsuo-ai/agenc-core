@@ -37,7 +37,6 @@ describe("plugin config authority architecture", () => {
     const manifest = source("plugins/manifest.ts");
     const canonicalLoader = source("plugins/loader.ts");
     const directories = source("plugins/directories.ts");
-    const compatibilityDirectories = source("utils/plugins/pluginDirectories.ts");
     const runtimeOptions = source("session/runtime-options.ts");
 
     expect(manifest).toContain("assertNoRetiredRootPluginManifest");
@@ -55,19 +54,14 @@ describe("plugin config authority architecture", () => {
       sourceFiles(sourceRoot).map((path) => relative(sourceRoot, path)),
     ).not.toContain("utils/plugins/mcpPluginIntegration.ts");
     expect(directories).not.toContain("process.env");
-    expect(compatibilityDirectories).not.toContain("process.env");
     expect(directories).not.toContain("getPluginSeedDirs");
-    expect(compatibilityDirectories).not.toContain("getPluginSeedDirs");
     expect(runtimeOptions).not.toContain("pluginSeedRoots");
     expect(runtimeOptions).toContain("RETIRED_AGENT_RUNTIME_ENV_REPLACEMENTS");
-    expect(runtimeOptions).toContain("AGENC_PLUGIN_SEED_DIR:");
-    expect(runtimeOptions).toContain("one storage authority");
-    expect(runtimeOptions).not.toContain('parseBoolean(env, "AGENC_PLUGIN_USE_ZIP_CACHE"');
-    expect(runtimeOptions).toContain("AGENC_PLUGIN_USE_ZIP_CACHE:");
-    expect(runtimeOptions).toContain("sole versioned directory cache");
+    expect(directories).toContain("one explicit or session-owned plugin storage authority");
     const sourcePaths = sourceFiles(sourceRoot)
       .map((path) => relative(sourceRoot, path).replaceAll("\\", "/"));
     for (const retiredPath of [
+      "utils/plugins/pluginDirectories.ts",
       "utils/plugins/cacheUtils.ts",
       "utils/plugins/dependencyResolver.ts",
       "utils/plugins/gitAvailability.ts",
@@ -84,12 +78,54 @@ describe("plugin config authority architecture", () => {
     }
   });
 
+  test("plugin storage paths and reserved child names have one owner", () => {
+    const directories = source("plugins/directories.ts");
+    const inventory = source("plugins/marketplace/inventory.ts");
+    const loader = source("plugins/loader.ts");
+    const operations = source("plugins/cli/pluginOperations.ts");
+
+    expect(directories).toContain("isReservedPluginStorageChildName");
+    expect(loader).toContain("isReservedPluginStorageChildName(entry.name)");
+    expect(operations).toContain("isReservedPluginStorageChildName(trimmed)");
+    expect(operations).toContain("pluginFilesystemKey(trimmed)");
+    expect(loader).not.toMatch(
+      /const SKIP_PLUGIN_ROOTS = new Set\(\[[^\]]*["'](?:build|cache|coverage|data|dist|marketplaces|node_modules)["']/u,
+    );
+    expect(operations).not.toContain("RESERVED_INSTALL_NAMES");
+
+    expect(inventory).toContain("pluginInventoryPath(");
+    expect(inventory).not.toMatch(
+      /(?:join|resolve)\([\s\S]{0,160}?["']known_marketplaces\.json["']/u,
+    );
+    const inventoryPathConstructors = sourceFiles(sourceRoot)
+      .map((path) => relative(sourceRoot, path).replaceAll("\\", "/"))
+      .filter((path) =>
+        /(?:join|resolve)\([\s\S]{0,160}?["']known_marketplaces\.json["']/u
+          .test(source(path)))
+      .sort();
+    expect(inventoryPathConstructors).toEqual(["plugins/directories.ts"]);
+  });
+
   test("removed plugin directory selectors have no runtime residue", () => {
     const retiredSelector = /AGENC_USE_COWORK_PLUGINS|cowork_plugins|useCoworkPlugins|UseCoworkPlugins/u;
     const violations = sourceFiles(sourceRoot)
       .filter((path) => retiredSelector.test(readFileSync(path, "utf8")))
       .map((path) => relative(sourceRoot, path));
     expect(violations).toEqual([]);
+  });
+
+  test("retired plugin storage environment names are absent from code and docs", () => {
+    const retiredEnvironmentName =
+      /AGENC_PLUGIN_SEED_DIR|AGENC_PLUGIN_USE_ZIP_CACHE|CLAUDE_PLUGIN_(?:ROOT|DATA|SESSION_ID)/u;
+    const sourceViolations = sourceFiles(sourceRoot)
+      .filter((path) => retiredEnvironmentName.test(readFileSync(path, "utf8")))
+      .map((path) => relative(sourceRoot, path));
+    const documentationViolations = markdownFiles(docsRoot)
+      .filter((path) => retiredEnvironmentName.test(readFileSync(path, "utf8")))
+      .map((path) => relative(docsRoot, path));
+
+    expect(sourceViolations).toEqual([]);
+    expect(documentationViolations).toEqual([]);
   });
 
   test("plugin request paths never consult ambient process environment or cwd", () => {
@@ -139,7 +175,7 @@ describe("plugin config authority architecture", () => {
     );
   });
 
-  test("plugin secret writes use serialized native-vault transactions", () => {
+  test("plugin secret writes use serialized native secure storage transactions", () => {
     for (const path of [
       "utils/plugins/pluginOptionsStorage.ts",
       "utils/plugins/mcpbHandler.ts",

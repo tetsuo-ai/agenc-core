@@ -38,13 +38,13 @@ async function loadAuthModule() {
       storageCalls++
       const storageHome = boundHome.path
       return {
-        name: 'test-native-vault',
+        name: 'test-native-secure-storage',
         read: () => structuredClone(vaults.get(storageHome) ?? {}),
         readAsync: async () => structuredClone(vaults.get(storageHome) ?? {}),
         update: (next: SecureStorageData) => {
           vaultWrites++
           if (failVaultWrite) {
-            return { success: false, warning: 'native vault unavailable' }
+            return { success: false, warning: 'native secure storage unavailable' }
           }
           const stored = structuredClone(next)
           vaults.set(storageHome, stored)
@@ -84,7 +84,7 @@ afterEach(() => {
 })
 
 describe('primary API-key native storage', () => {
-  test('stores both the secret and its ambient-key approval only in the native vault', async () => {
+  test('stores both the secret and its ambient-key approval only in the native secure storage', async () => {
     const { saveApiKey } = await loadAuthModule()
 
     await saveApiKey('sk_test-key')
@@ -102,12 +102,12 @@ describe('primary API-key native storage', () => {
     expect(storageCalls).toBeGreaterThan(0)
   })
 
-  test('fails closed before touching state when the native vault rejects the write', async () => {
+  test('fails closed before touching state when the native secure storage rejects the write', async () => {
     failVaultWrite = true
     const { saveApiKey } = await loadAuthModule()
 
     await expect(saveApiKey('sk_test-key')).rejects.toThrow(
-      /native vault unavailable/u,
+      /native secure storage unavailable/u,
     )
     expect(stateWrites).toBe(0)
     expect(runtimeState).not.toHaveProperty('primaryApiKey')

@@ -45,6 +45,7 @@ function sequence(values: readonly string[]): () => string {
 
 interface FakeDaemon {
   readonly client: AgencClient;
+  readonly pluginStorageRoot: string;
   readonly transport: AgenCInProcessDaemonTransport;
   readonly multiplexer: AgenCDaemonClientMultiplexer;
   readonly calls: {
@@ -87,6 +88,7 @@ async function createFakeDaemon(
     sessionManager,
   });
   const calls: FakeDaemon["calls"] = { streamed: [], approved: [], denied: [] };
+  const pluginStorageRoot = await workspaces.create();
 
   let daemon!: FakeDaemon;
   const dispatcher = new AgenCDaemonJsonRpcDispatcher({
@@ -141,6 +143,7 @@ async function createFakeDaemon(
             simpleMode: false,
             stdinDataMode: false,
             remoteMode: false,
+            pluginStorageRoot,
             allowUntrustedHooks: false,
           },
           runtimeSettings: {
@@ -264,6 +267,7 @@ async function createFakeDaemon(
 
   daemon = {
     client,
+    pluginStorageRoot,
     transport,
     multiplexer,
     calls,
@@ -348,6 +352,7 @@ describe("agenc-sdk client over the in-process transport", () => {
 
     const session = await daemon.client.createSession({
       cwd,
+      pluginStorageRoot: daemon.pluginStorageRoot,
       metadata: { source: "sdk-inprocess-test" },
     });
     expect(session.sessionId).toBe("session_1");
@@ -359,6 +364,7 @@ describe("agenc-sdk client over the in-process transport", () => {
       simpleMode: false,
       stdinDataMode: false,
       remoteMode: false,
+      pluginStorageRoot: daemon.pluginStorageRoot,
       allowUntrustedHooks: false,
     });
 
@@ -445,7 +451,9 @@ describe("agenc-sdk client over the in-process transport", () => {
     await daemon.client.initialize();
     // Preserve the public SDK convenience contract: omitting cwd resolves to
     // the caller's existing absolute process.cwd() before session.create.
-    const session = await daemon.client.createSession();
+    const session = await daemon.client.createSession({
+      pluginStorageRoot: daemon.pluginStorageRoot,
+    });
     const result = await session.prompt("run ls").result();
 
     expect(seen).toHaveLength(1);
@@ -494,7 +502,10 @@ describe("agenc-sdk client over the in-process transport", () => {
     });
 
     await daemon.client.initialize();
-    const session = await daemon.client.createSession({ cwd });
+    const session = await daemon.client.createSession({
+      cwd,
+      pluginStorageRoot: daemon.pluginStorageRoot,
+    });
     const result = await session.prompt("run ls").result();
 
     expect(daemon.calls.approved).toHaveLength(0);

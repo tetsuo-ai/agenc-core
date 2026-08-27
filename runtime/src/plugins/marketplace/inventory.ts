@@ -10,7 +10,7 @@
 
 import { randomUUID } from "node:crypto";
 import { mkdir } from "node:fs/promises";
-import { dirname, isAbsolute, join } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import * as lockfile from "../../utils/lockfile.js";
 import { z } from "zod/v4";
 
@@ -22,17 +22,18 @@ import {
 import { duplicateJsonObjectPaths } from "../../config/json.js";
 import { writeDurableAtomicFile } from "../../utils/durable-atomic-file.js";
 import { getFsImplementation } from "../../utils/fsOperations.js";
+import { normalizeExactAbsolutePath } from "../../utils/path-authority.js";
+import { isRecord } from "../../utils/record.js";
+import { jsonParse } from "../../utils/slowOperations.js";
 import {
-  jsonParse,
-} from "../../utils/slowOperations.js";
-import { getPluginsDirectory } from "../../utils/plugins/pluginDirectories.js";
-import { parsePluginIdentifier } from "../identifier.js";
-import {
-  MarketplaceSourceSchema,
-  type PluginMarketplace,
-  type PluginMarketplaceEntry,
-  PluginMarketplaceSchema,
-} from "../../utils/plugins/schemas.js";
+  pluginInventoryPath,
+  pluginMarketplaceRootPath,
+  resolvePluginStorageAuthority,
+  sanitizePluginId,
+  type PluginStorageAuthority,
+} from "../directories.js";
+import { isCanonicalMarketplaceName } from "../identifier.js";
+import { MarketplaceSourceSchema } from "../../utils/plugins/schemas.js";
 
 const KnownMarketplaceSchema = z.object({
   source: MarketplaceSourceSchema().describe(
@@ -80,80 +81,294 @@ const KnownMarketplacesFileSchema = z.record(
   KnownMarketplaceSchema,
 );
 
+const RESERVED_MARKETPLACE_NAMES = new Set(["agenc", "builtin", "curated"]);
+
 export type KnownMarketplace = z.infer<typeof KnownMarketplaceSchema>;
 export type MarketplaceInventory = z.infer<
   typeof KnownMarketplacesFileSchema
 >;
 
 export interface MarketplaceInventoryAuthority {
-  /** Exact `$AGENC_HOME/plugins` root selected at an ingress boundary. */
+  /** Exact plugin storage root selected at an ingress boundary. */
   readonly pluginsDirectory?: string;
 }
 
 export interface MarketplaceInventoryMutationAuthority {
-  /** Exact `$AGENC_HOME/plugins` root selected at an ingress boundary. */
+  /** Exact plugin storage root selected at an ingress boundary. */
   readonly pluginsDirectory: string;
+}
+
+/** Normalize a user-facing marketplace name without changing its identity. */
+export function normalizeMarketplaceName(name: string): string {
+  const trimmed = name.trim();
+  if (trimmed.length === 0) {
+    throw new Error("marketplace name cannot be empty");
+  }
+  if (trimmed.length > 128 || !isCanonicalMarketplaceName(trimmed)) {
+    throw new Error(
+      "marketplace name must be a lowercase canonical segment starting with a letter and using only letters, digits, '.', '_', or '-'",
+    );
+  }
+  if (RESERVED_MARKETPLACE_NAMES.has(trimmed.toLowerCase())) {
+    throw new Error(`marketplace name is reserved: ${trimmed}`);
+  }
+  return trimmed;
+}
+
+/** Derive the only filesystem child name used for a marketplace. */
+export function sanitizeMarketplaceInstallName(name: string): string {
+  return sanitizePluginId(normalizeMarketplaceName(name));
 }
 
 export function getKnownMarketplacesFilePath(
   authority: MarketplaceInventoryAuthority = {},
 ): string {
-  return join(
-    authority.pluginsDirectory ?? getPluginsDirectory(),
-    "known_marketplaces.json",
-  );
-}
-
-function getRetiredMarketplaceIndexPath(
-  authority: MarketplaceInventoryAuthority,
-): string {
-  const pluginsDirectory = authority.pluginsDirectory ?? getPluginsDirectory();
-  return join(pluginsDirectory, "marketplaces", "marketplaces.json");
-}
-
-async function assertNoRetiredMarketplaceIndex(
-  authority: MarketplaceInventoryAuthority,
-): Promise<void> {
-  const retiredPath = getRetiredMarketplaceIndexPath(authority);
-  try {
-    await getFsImplementation().stat(retiredPath);
-  } catch (error) {
-    if (isENOENT(error)) return;
-    throw new Error(
-      `Failed to inspect retired marketplace index at ${retiredPath}: ${errorMessage(error)}`,
-    );
-  }
-  throw new Error(
-    `Retired marketplace index detected at ${retiredPath}. AgenC will not ` +
-      "merge it with known_marketplaces.json. Remove its marketplaces with " +
-      "the previous AgenC version or move the file aside, then re-add each " +
-      "source with `agenc plugin marketplace add <source>`.",
+  return pluginInventoryPath(
+    resolvePluginStorageAuthority(authority.pluginsDirectory),
   );
 }
 
 function parseMarketplaceInventory(
   data: unknown,
   filePath: string,
+  storageAuthority: PluginStorageAuthority,
 ): MarketplaceInventory {
   const parsed = KnownMarketplacesFileSchema.safeParse(data);
   if (!parsed.success) {
-    throw new ConfigParseError(
-      `Marketplace inventory is invalid at ${filePath}: ${parsed.error.issues
+    invalidMarketplaceInventory(
+      `${parsed.error.issues
         .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
-        .join(", ")}. Remove and re-add the affected marketplace with ` +
-        "`agenc plugin marketplace remove <name>` followed by " +
-        "`agenc plugin marketplace add <source>`; AgenC will not reinterpret " +
-        "or migrate this file during startup.",
+        .join(", ")}`,
       filePath,
       data,
     );
   }
+  validateMarketplaceInventoryNames(parsed.data, filePath, data);
+  validateMarketplaceInventoryPaths(
+    parsed.data,
+    filePath,
+    data,
+    storageAuthority,
+  );
   return parsed.data;
+}
+
+function invalidMarketplaceInventory(
+  detail: string,
+  filePath: string,
+  data: unknown,
+): never {
+  throw new ConfigParseError(
+    `Marketplace inventory is invalid at ${filePath}: ${detail}. To remove one ` +
+      "malformed entry stored under an exact canonical name, run `agenc plugin " +
+      "marketplace remove <name>`. For invalid keys, duplicate keys, or damage " +
+      "outside that entry, move this file aside and re-add the marketplaces. " +
+      "AgenC will not reinterpret or migrate this file during startup.",
+    filePath,
+    data,
+  );
+}
+
+function validateMarketplaceInventoryNames(
+  inventory: MarketplaceInventory,
+  filePath: string,
+  data: unknown,
+): void {
+  const names = new Map<string, string>();
+  const storageNames = new Map<string, string>();
+  for (const name of Object.keys(inventory)) {
+    const identity = name.toLowerCase();
+    const existingName = names.get(identity);
+    if (existingName !== undefined) {
+      invalidMarketplaceInventory(
+        `marketplace key '${name}' differs only by case from '${existingName}'`,
+        filePath,
+        data,
+      );
+    }
+    names.set(identity, name);
+  }
+
+  for (const name of Object.keys(inventory)) {
+    let normalized: string;
+    try {
+      normalized = normalizeMarketplaceName(name);
+    } catch (error) {
+      invalidMarketplaceInventory(
+        `marketplace key '${name}' is invalid: ${errorMessage(error)}`,
+        filePath,
+        data,
+      );
+    }
+    if (normalized !== name) {
+      invalidMarketplaceInventory(
+        `marketplace key '${name}' must be stored exactly as '${normalized}'`,
+        filePath,
+        data,
+      );
+    }
+
+    const storageName = sanitizeMarketplaceInstallName(normalized)
+      .toLowerCase();
+    const existingStorageName = storageNames.get(storageName);
+    if (existingStorageName !== undefined) {
+      invalidMarketplaceInventory(
+        `marketplace keys '${existingStorageName}' and '${name}' resolve to the same storage name`,
+        filePath,
+        data,
+      );
+    }
+    storageNames.set(storageName, normalized);
+  }
+}
+
+function validateMarketplaceInventoryPaths(
+  inventory: MarketplaceInventory,
+  filePath: string,
+  data: unknown,
+  storageAuthority: PluginStorageAuthority,
+): void {
+  const entries = Object.entries(inventory);
+  if (entries.length === 0) return;
+
+  const fs = getFsImplementation();
+  const marketplaceRoot = pluginMarketplaceRootPath(storageAuthority);
+  for (const [name, entry] of entries) {
+    const storageName = sanitizeMarketplaceInstallName(name);
+    const expectedInstallLocation = join(marketplaceRoot, storageName);
+    if (entry.installLocation !== expectedInstallLocation) {
+      invalidMarketplaceInventory(
+        `installLocation for marketplace key '${name}' must be exactly ${expectedInstallLocation}`,
+        filePath,
+        data,
+      );
+    }
+
+    let normalizedManifestPath: string;
+    try {
+      normalizedManifestPath = normalizeExactAbsolutePath(
+        entry.manifestPath,
+        `manifestPath for marketplace key '${name}'`,
+      );
+    } catch (error) {
+      invalidMarketplaceInventory(errorMessage(error), filePath, data);
+    }
+    if (normalizedManifestPath !== entry.manifestPath) {
+      invalidMarketplaceInventory(
+        `manifestPath for marketplace key '${name}' must be stored as the exact normalized path ${normalizedManifestPath}`,
+        filePath,
+        data,
+      );
+    }
+    if (!pathIsStrictlyInside(normalizedManifestPath, expectedInstallLocation)) {
+      invalidMarketplaceInventory(
+        `manifestPath must stay inside installLocation for marketplace key '${name}'`,
+        filePath,
+        data,
+      );
+    }
+  }
+
+  let storageRootReal: string;
+  let marketplaceRootReal: string;
+  try {
+    storageRootReal = fs.realpathSync(storageAuthority.pluginStorageRoot);
+    if (!fs.statSync(storageRootReal).isDirectory()) {
+      invalidMarketplaceInventory(
+        `plugin storage root is not a directory: ${storageAuthority.pluginStorageRoot}`,
+        filePath,
+        data,
+      );
+    }
+    marketplaceRootReal = fs.realpathSync(marketplaceRoot);
+    const expectedMarketplaceRootReal = join(
+      storageRootReal,
+      "marketplaces",
+    );
+    if (marketplaceRootReal !== expectedMarketplaceRootReal) {
+      invalidMarketplaceInventory(
+        `marketplace storage root resolves outside the selected plugin storage root: ${marketplaceRoot}`,
+        filePath,
+        data,
+      );
+    }
+    if (!fs.statSync(marketplaceRootReal).isDirectory()) {
+      invalidMarketplaceInventory(
+        `marketplace storage root is not a directory: ${marketplaceRoot}`,
+        filePath,
+        data,
+      );
+    }
+  } catch (error) {
+    if (error instanceof ConfigParseError) throw error;
+    invalidMarketplaceInventory(
+      `cannot resolve marketplace storage under the selected plugin storage root: ${errorMessage(error)}`,
+      filePath,
+      data,
+    );
+  }
+
+  for (const [name, entry] of entries) {
+    const storageName = sanitizeMarketplaceInstallName(name);
+    try {
+      const installLocationReal = fs.realpathSync(entry.installLocation);
+      const expectedInstallLocationReal = join(
+        marketplaceRootReal,
+        storageName,
+      );
+      if (installLocationReal !== expectedInstallLocationReal) {
+        invalidMarketplaceInventory(
+          `installLocation for marketplace key '${name}' resolves outside its canonical marketplace directory`,
+          filePath,
+          data,
+        );
+      }
+      if (!fs.statSync(installLocationReal).isDirectory()) {
+        invalidMarketplaceInventory(
+          `installLocation for marketplace key '${name}' is not a directory`,
+          filePath,
+          data,
+        );
+      }
+
+      const manifestPathReal = fs.realpathSync(entry.manifestPath);
+      if (!pathIsStrictlyInside(manifestPathReal, installLocationReal)) {
+        invalidMarketplaceInventory(
+          `manifestPath for marketplace key '${name}' resolves outside installLocation`,
+          filePath,
+          data,
+        );
+      }
+      if (!fs.statSync(manifestPathReal).isFile()) {
+        invalidMarketplaceInventory(
+          `manifestPath for marketplace key '${name}' is not a file`,
+          filePath,
+          data,
+        );
+      }
+    } catch (error) {
+      if (error instanceof ConfigParseError) throw error;
+      invalidMarketplaceInventory(
+        `cannot resolve the stored paths for marketplace key '${name}': ${errorMessage(error)}`,
+        filePath,
+        data,
+      );
+    }
+  }
+}
+
+function pathIsStrictlyInside(candidate: string, boundary: string): boolean {
+  const pathFromBoundary = relative(boundary, candidate);
+  return pathFromBoundary.length > 0 &&
+    pathFromBoundary !== ".." &&
+    !pathFromBoundary.startsWith(`..${sep}`) &&
+    !isAbsolute(pathFromBoundary);
 }
 
 function parseMarketplaceInventoryText(
   content: string,
   filePath: string,
+  storageAuthority: PluginStorageAuthority,
 ): MarketplaceInventory {
   const duplicatePaths = duplicateJsonObjectPaths(content);
   if (duplicatePaths.length > 0) {
@@ -166,7 +381,11 @@ function parseMarketplaceInventoryText(
     );
   }
   try {
-    return parseMarketplaceInventory(jsonParse(content), filePath);
+    return parseMarketplaceInventory(
+      jsonParse(content),
+      filePath,
+      storageAuthority,
+    );
   } catch (error) {
     if (error instanceof ConfigParseError) throw error;
     throw new ConfigParseError(
@@ -180,13 +399,19 @@ function parseMarketplaceInventoryText(
 export async function loadKnownMarketplacesConfig(
   authority: MarketplaceInventoryAuthority = {},
 ): Promise<MarketplaceInventory> {
-  await assertNoRetiredMarketplaceIndex(authority);
-  const filePath = getKnownMarketplacesFilePath(authority);
+  const storageAuthority = resolvePluginStorageAuthority(
+    authority.pluginsDirectory,
+  );
+  const filePath = pluginInventoryPath(storageAuthority);
   try {
     const content = await getFsImplementation().readFile(filePath, {
       encoding: "utf-8",
     });
-    return parseMarketplaceInventoryText(content, filePath);
+    return parseMarketplaceInventoryText(
+      content,
+      filePath,
+      storageAuthority,
+    );
   } catch (error) {
     if (isENOENT(error)) return {};
     if (error instanceof ConfigParseError) throw error;
@@ -224,133 +449,124 @@ export async function updateMarketplaceInventory<R>(
     current: MarketplaceInventory,
   ) => Promise<MarketplaceInventoryMutation<R>> | MarketplaceInventoryMutation<R>,
 ): Promise<R> {
-  const filePath = getKnownMarketplacesFilePath(authority);
+  const storageAuthority = resolvePluginStorageAuthority(
+    authority.pluginsDirectory,
+  );
+  const filePath = pluginInventoryPath(storageAuthority);
+  return withMarketplaceInventoryLock(filePath, async () => {
+    const current = await loadKnownMarketplacesConfig({
+      pluginsDirectory: storageAuthority.pluginStorageRoot,
+    });
+    const mutation = await operation(current);
+    const inventory = parseMarketplaceInventory(
+      mutation.inventory,
+      filePath,
+      storageAuthority,
+    );
+    await writeMarketplaceInventory(filePath, inventory);
+    return mutation.result;
+  });
+}
+
+/**
+ * Remove one exact canonical key from an inventory that strict loading rejects.
+ * The removed value is never parsed and none of its stored paths are used.
+ */
+export async function removeMarketplaceInventoryEntryForRepair(
+  authority: MarketplaceInventoryMutationAuthority,
+  name: string,
+  beforeCommit?: () => Promise<void>,
+): Promise<boolean> {
+  const canonicalName = normalizeMarketplaceName(name);
+  if (canonicalName !== name) {
+    throw new Error(`marketplace repair requires the exact canonical name: ${canonicalName}`);
+  }
+  const storageAuthority = resolvePluginStorageAuthority(
+    authority.pluginsDirectory,
+  );
+  const filePath = pluginInventoryPath(storageAuthority);
+  return withMarketplaceInventoryLock(filePath, async () => {
+    let content: string;
+    try {
+      content = await getFsImplementation().readFile(filePath, {
+        encoding: "utf-8",
+      });
+    } catch (error) {
+      if (isENOENT(error)) return false;
+      throw error;
+    }
+
+    const duplicatePaths = duplicateJsonObjectPaths(content);
+    if (duplicatePaths.length > 0) {
+      throw new ConfigParseError(
+        `Marketplace inventory contains duplicate object keys at ${filePath}: ` +
+          `${duplicatePaths.join(", ")}. Move the inventory file aside and ` +
+          "re-add the marketplaces; exact-key repair is ambiguous.",
+        filePath,
+        undefined,
+      );
+    }
+
+    let untrusted: unknown;
+    try {
+      untrusted = jsonParse(content);
+    } catch (error) {
+      throw new ConfigParseError(
+        `Marketplace inventory JSON is invalid at ${filePath}: ${errorMessage(error)}. ` +
+          "Move the inventory file aside and re-add the marketplaces.",
+        filePath,
+        undefined,
+      );
+    }
+    if (!isRecord(untrusted)) {
+      throw new ConfigParseError(
+        `Marketplace inventory is not an object at ${filePath}. Move the ` +
+          "inventory file aside and re-add the marketplaces.",
+        filePath,
+        untrusted,
+      );
+    }
+    if (!Object.hasOwn(untrusted, canonicalName)) return false;
+
+    const remaining = Object.fromEntries(
+      Object.entries(untrusted).filter(([key]) => key !== canonicalName),
+    );
+    const inventory = parseMarketplaceInventory(
+      remaining,
+      filePath,
+      storageAuthority,
+    );
+    await beforeCommit?.();
+    await writeMarketplaceInventory(filePath, inventory);
+    return true;
+  });
+}
+
+async function withMarketplaceInventoryLock<R>(
+  filePath: string,
+  operation: () => Promise<R>,
+): Promise<R> {
   await mkdir(dirname(filePath), { recursive: true, mode: 0o700 });
   const release = await lockfile.lock(filePath, {
     ...INVENTORY_LOCK_OPTIONS,
     lockfilePath: `${filePath}.agenc-marketplace-inventory.lock`,
   });
   try {
-    const current = await loadKnownMarketplacesConfig(authority);
-    const mutation = await operation(current);
-    const inventory = parseMarketplaceInventory(mutation.inventory, filePath);
-    const temporaryPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
-    await writeDurableAtomicFile(
-      filePath,
-      temporaryPath,
-      `${JSON.stringify(inventory, null, 2)}\n`,
-      0o600,
-    );
-    return mutation.result;
+    return await operation();
   } finally {
     await release();
   }
 }
 
-async function readCachedMarketplace(
-  manifestPath: string,
-): Promise<PluginMarketplace> {
-  const content = await getFsImplementation().readFile(manifestPath, {
-    encoding: "utf-8",
-  });
-  const duplicatePaths = duplicateJsonObjectPaths(content);
-  if (duplicatePaths.length > 0) {
-    throw new ConfigParseError(
-      `Marketplace manifest contains duplicate object keys at ${manifestPath}: ` +
-        `${duplicatePaths.join(", ")}. Re-add the marketplace from a ` +
-        "corrected source; AgenC will not choose between duplicate declarations.",
-      manifestPath,
-      undefined,
-    );
-  }
-  let data: unknown;
-  try {
-    data = jsonParse(content);
-  } catch (error) {
-    throw new ConfigParseError(
-      `Invalid marketplace JSON at ${manifestPath}: ${errorMessage(error)}`,
-      manifestPath,
-      content,
-    );
-  }
-  const parsed = PluginMarketplaceSchema().safeParse(data);
-  if (!parsed.success) {
-    throw new ConfigParseError(
-      `Invalid marketplace schema at ${manifestPath}: ${parsed.error.issues
-        .map((issue) => `${issue.path.join(".")}: ${issue.message}`)
-        .join(", ")}`,
-      manifestPath,
-      data,
-    );
-  }
-  return parsed.data;
-}
-
-/** Read a catalog from the exact manifest path recorded in inventory. */
-export async function getMarketplaceCacheOnly(
-  name: string,
-  authority: MarketplaceInventoryAuthority = {},
-): Promise<PluginMarketplace | null> {
-  const inventory = await loadKnownMarketplacesConfig(authority);
-  const entry = inventory[name];
-  if (entry === undefined) return null;
-  try {
-    return await readCachedMarketplace(entry.manifestPath);
-  } catch (error) {
-    if (error instanceof ConfigParseError) throw error;
-    if (isENOENT(error)) return null;
-    throw error;
-  }
-}
-
-/**
- * Required read-only catalog lookup. Missing/corrupt cache never triggers an
- * implicit network refresh or alternate-path probe.
- */
-export async function getMarketplace(
-  name: string,
-  authority: MarketplaceInventoryAuthority = {},
-): Promise<PluginMarketplace> {
-  const inventory = await loadKnownMarketplacesConfig(authority);
-  const entry = inventory[name];
-  if (entry === undefined) {
-    throw new Error(
-      `Marketplace '${name}' is not registered. Available marketplaces: ${Object.keys(inventory).join(", ")}`,
-    );
-  }
-  try {
-    return await readCachedMarketplace(entry.manifestPath);
-  } catch (error) {
-    throw new Error(
-      `Marketplace '${name}' is unavailable at its recorded manifest path ` +
-        `${entry.manifestPath}: ${errorMessage(error)}. Re-add it with ` +
-        "`agenc plugin marketplace add <source>`; AgenC will not fetch or " +
-        "infer another cache location during ordinary loading.",
-    );
-  }
-}
-
-export interface MarketplacePluginLookup {
-  readonly entry: PluginMarketplaceEntry;
-  readonly marketplaceInstallLocation: string;
-}
-
-export async function getPluginByIdCacheOnly(
-  pluginId: string,
-  authority: MarketplaceInventoryAuthority = {},
-): Promise<MarketplacePluginLookup | null> {
-  const { name: pluginName, marketplace: marketplaceName } =
-    parsePluginIdentifier(pluginId);
-  if (!pluginName || !marketplaceName) return null;
-  const inventory = await loadKnownMarketplacesConfig(authority);
-  const marketplaceEntry = inventory[marketplaceName];
-  if (marketplaceEntry === undefined) return null;
-  const marketplace = await getMarketplaceCacheOnly(marketplaceName, authority);
-  const entry = marketplace?.plugins.find((plugin) => plugin.name === pluginName);
-  return entry === undefined
-    ? null
-    : {
-        entry,
-        marketplaceInstallLocation: marketplaceEntry.installLocation,
-      };
+async function writeMarketplaceInventory(
+  filePath: string,
+  inventory: MarketplaceInventory,
+): Promise<void> {
+  const temporaryPath = `${filePath}.tmp-${process.pid}-${randomUUID()}`;
+  await writeDurableAtomicFile(
+    filePath,
+    temporaryPath,
+    `${JSON.stringify(inventory, null, 2)}\n`,
+    0o600,
+  );
 }

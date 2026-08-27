@@ -354,7 +354,7 @@ function geminiAuthState(plan: GeminiCredentialPlan): {
       state: "ready",
       label,
       source: plan.source === "saved-byok"
-        ? "native vault saved Gemini BYOK"
+        ? "native secure storage saved Gemini BYOK"
         : `env ${plan.source}`,
     };
   }

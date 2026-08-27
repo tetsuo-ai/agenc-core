@@ -76,7 +76,7 @@ type GeminiAdcInput = Extract<GeminiCredentialPlan, { kind: 'adc' }>
 export type ResolveGeminiCredentialOptions = {
   /** An explicit factory credential; it outranks API-key environment input. */
   apiKey?: string
-  /** A native-vault BYOK candidate, subject to API-key mode precedence. */
+  /** A native secure storage BYOK candidate, subject to API-key mode precedence. */
   savedApiKey?: string
   createGoogleAuthClient?: (
     input: GeminiAdcInput,

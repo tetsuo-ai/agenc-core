@@ -196,28 +196,28 @@ function transportConfigIssue(
 }
 
 function pluginMcpSandboxEnvironment(
-  plugin: Pick<LoadedPlugin, "name" | "root" | "source">,
+  plugin: Pick<LoadedPlugin, "id" | "name" | "root">,
   serverName: string,
-  dataDir = getPluginDataDir(plugin.source),
+  dataDir = getPluginDataDir(plugin.id),
 ): Readonly<Record<(typeof RESERVED_PLUGIN_MCP_SANDBOX_ENV_KEYS)[number], string>> {
   return {
     AGENC_PLUGIN_ROOT: plugin.root,
     AGENC_PLUGIN_DATA: dataDir,
-    AGENC_PLUGIN_NAME: plugin.name,
+    AGENC_PLUGIN_NAME: plugin.id,
     AGENC_PLUGIN_MCP_SERVER: serverName,
     AGENC_PLUGIN_SANDBOX: PLUGIN_MCP_SANDBOX_MODE,
   };
 }
 
 function createPluginMcpSandboxMetadata(
-  plugin: Pick<LoadedPlugin, "name" | "root" | "source">,
+  plugin: Pick<LoadedPlugin, "id" | "name" | "root">,
   serverName: string,
   scopedServerName: string,
-  dataDir = getPluginDataDir(plugin.source),
+  dataDir = getPluginDataDir(plugin.id),
 ): PluginMcpSandboxMetadata {
   return {
     mode: PLUGIN_MCP_SANDBOX_MODE,
-    pluginName: plugin.name,
+    pluginName: plugin.id,
     pluginRoot: plugin.root,
     pluginDataDir: dataDir,
     serverName,
@@ -226,7 +226,7 @@ function createPluginMcpSandboxMetadata(
 }
 
 export function resolvePluginMcpSandboxedServer(
-  plugin: Pick<LoadedPlugin, "name" | "root" | "source">,
+  plugin: Pick<LoadedPlugin, "id" | "name" | "root">,
   serverName: string,
   server: McpServerConfig,
   options: {
@@ -241,9 +241,9 @@ export function resolvePluginMcpSandboxedServer(
     return { server: { ...server } };
   }
 
-  const dataDir = options.dataDir ?? getPluginDataDir(plugin.source);
+  const dataDir = options.dataDir ?? getPluginDataDir(plugin.id);
   const scopedServerName = options.scopedServerName ??
-    pluginScopedServerIdentifier(plugin.name, serverName);
+    pluginScopedServerIdentifier(plugin.id, serverName);
   const cwd = path.resolve(server.cwd ?? plugin.root);
   if (!pathInsideOrEqual(plugin.root, cwd)) {
     return {

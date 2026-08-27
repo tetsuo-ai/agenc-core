@@ -20,7 +20,8 @@ export const JSON_RPC_VERSION = "2.0" as const;
  * 1.6 makes the live canonical run-settings snapshot part of agent.attach.
  * 1.7 adds inactive permission capabilities to that required snapshot and an
  * authenticated internal session permission-rule mutation authority.
- * 1.8 binds successful model and config mutation responses to the exact
+ * 1.8 requires the exact plugin storage root in owning agent runtime authority
+ * and binds successful model and config mutation responses to the exact
  * canonical runtime-settings event that clients must apply.
  * Clients that need any of these additive surfaces must not negotiate an older
  * daemon.
@@ -1059,7 +1060,7 @@ export interface AgentRuntimeOptionsParams extends JsonObject {
   readonly posixShellPath?: string;
   readonly commandWrapperArgv?: readonly string[];
   readonly sessionTempRoot?: string;
-  readonly pluginStorageRoot?: string;
+  readonly pluginStorageRoot: string;
   readonly allowUntrustedHooks: boolean;
 }
 

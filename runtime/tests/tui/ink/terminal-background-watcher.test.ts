@@ -9,7 +9,7 @@ vi.mock('../../../src/utils/log.js', () => ({
 }))
 
 import type { TerminalQuerier } from '../../../src/tui/ink/terminal-querier.js'
-import { watchSystemTheme } from '../../../src/utils/systemThemeWatcher.js'
+import { watchTerminalBackground } from '../../../src/utils/terminalBackgroundWatcher.js'
 
 afterEach(() => {
   vi.useRealTimers()
@@ -34,7 +34,7 @@ function deferred<T>(): {
   return { promise, reject, resolve }
 }
 
-describe('systemThemeWatcher', () => {
+describe('terminalBackgroundWatcher', () => {
   test('polls OSC 11 immediately, repeats on an interval, and cleans up', async () => {
     vi.useFakeTimers()
     const send = vi
@@ -45,7 +45,7 @@ describe('systemThemeWatcher', () => {
     const onThemeChange = vi.fn()
     const querier = { send, flush } as unknown as TerminalQuerier
 
-    const cleanup = watchSystemTheme(querier, onThemeChange)
+    const cleanup = watchTerminalBackground(querier, onThemeChange)
     await flushMicrotasks()
 
     expect(onThemeChange).toHaveBeenLastCalledWith('light')
@@ -77,7 +77,7 @@ describe('systemThemeWatcher', () => {
     const onThemeChange = vi.fn()
     const querier = { send, flush } as unknown as TerminalQuerier
 
-    const cleanup = watchSystemTheme(querier, onThemeChange)
+    const cleanup = watchTerminalBackground(querier, onThemeChange)
     await flushMicrotasks()
 
     expect(logMocks.logError).toHaveBeenCalledWith(pollError)
@@ -102,7 +102,7 @@ describe('systemThemeWatcher', () => {
     const onThemeChange = vi.fn()
     const querier = { send, flush } as unknown as TerminalQuerier
 
-    const cleanup = watchSystemTheme(querier, onThemeChange)
+    const cleanup = watchTerminalBackground(querier, onThemeChange)
     await flushMicrotasks()
 
     expect(logMocks.logError).toHaveBeenCalledWith(flushError)

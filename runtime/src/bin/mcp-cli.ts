@@ -11,7 +11,10 @@ import type { HomeContext } from "../config/home.js";
 import { ConfigStore } from "../config/store.js";
 import { assertCanonicalEnvironmentIngress } from "../config/environment-ingress.js";
 import type { ProviderEnvironment } from "../llm/provider-options.js";
-import { snapshotMcpRequestEnvironment } from "../mcp-client/environment.js";
+import {
+  snapshotMcpRequestEnvironment,
+  snapshotMcpRequestEnvironmentForAuthority,
+} from "../mcp-client/environment.js";
 import type { ToolRegistry } from "../tool-registry.js";
 import {
   formatMcpSseServeUrl,
@@ -20,6 +23,7 @@ import {
   startMcpSseServe,
 } from "../mcp/server/start.js";
 import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
+import { resolvePluginStorageRootAtIngress } from "../session/runtime-options.js";
 
 export {
   formatMcpSseServeUrl,
@@ -55,6 +59,8 @@ export interface AgenCMcpCliOptions {
   readonly configStore?: ConfigStore;
   /** Immutable environment captured by an embedding ingress. */
   readonly environment?: ProviderEnvironment;
+  /** Exact plugin storage root captured by an embedding ingress. */
+  readonly pluginStorageRoot?: string;
 }
 
 const MCP_MANAGEMENT_COMMANDS = new Set([
@@ -189,8 +195,11 @@ export async function runAgenCMcpCli(
     options.environment ?? process.env,
   );
   assertCanonicalEnvironmentIngress(ingress.environment);
-  const environment = snapshotMcpRequestEnvironment(ingress.environment);
-  const home = options.homeContext ?? ingress.home;
+  const ingressEnvironment = snapshotMcpRequestEnvironment(
+    ingress.environment,
+  );
+  const home =
+    options.configStore?.homeContext ?? options.homeContext ?? ingress.home;
   switch (command.kind) {
     case "help":
       io.stdout.write(`${command.text}\n`);
@@ -204,14 +213,29 @@ export async function runAgenCMcpCli(
         const configStore = options.configStore ?? new ConfigStore({
           home: home.path,
           cwd: options.cwd ?? process.cwd(),
-          env: { ...environment, AGENC_HOME: home.path },
+          env: { ...ingressEnvironment, AGENC_HOME: home.path },
         });
         if (options.configStore === undefined) await configStore.reload();
+        const pluginStorageRoot = resolvePluginStorageRootAtIngress(
+          {
+            ...ingress.environment,
+            AGENC_HOME: configStore.homeContext.path,
+          },
+          options.pluginStorageRoot,
+        );
+        const environment = snapshotMcpRequestEnvironmentForAuthority(
+          ingressEnvironment,
+          {
+            agencHome: configStore.homeContext.path,
+            pluginStorageRoot,
+          },
+        );
         return runMcpManagementCommand(
           command.argv,
           io,
           configStore,
           environment,
+          pluginStorageRoot,
         );
       }
     case "serve":
@@ -240,6 +264,7 @@ async function runMcpManagementCommand(
   io: AgenCMcpCliIo,
   configStore: ConfigStore,
   environment: ProviderEnvironment,
+  pluginStorageRoot: string,
 ): Promise<number> {
   try {
     const action = argv[0];
@@ -251,7 +276,7 @@ async function runMcpManagementCommand(
       case "list": {
         assertNoPositionals(rest, "Usage: agenc mcp list");
         const { mcpListHandler } = await import("../cli/handlers/mcp.js");
-        await mcpListHandler(configStore, environment);
+        await mcpListHandler(configStore, environment, pluginStorageRoot);
         return 0;
       }
       case "get": {
@@ -293,7 +318,11 @@ async function runMcpManagementCommand(
         });
         assertNoPositionals(parsed.positionals, "Usage: agenc mcp add-from-agenc-desktop");
         const { mcpAddFromDesktopHandler } = await import("../cli/handlers/mcp.js");
-        await mcpAddFromDesktopHandler(configStore, { scope: parsed.options.scope });
+        await mcpAddFromDesktopHandler(configStore, {
+          environment,
+          pluginStorageRoot,
+          scope: parsed.options.scope,
+        });
         return 0;
       }
       case "reset-project-choices": {
@@ -320,6 +349,7 @@ async function runMcpManagementCommand(
         await mcpDoctorHandler(parsed.positionals[0], {
           authority: configStore,
           environment,
+          pluginStorageRoot,
           scope: parsed.options.scope,
           configOnly: parsed.flags.has("config-only"),
           json: parsed.flags.has("json"),

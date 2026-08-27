@@ -31,7 +31,7 @@ async function loadAuthModule() {
   vi.resetModules()
   vi.doMock(SECURE_STORAGE_MODULE, () => ({
     getSecureStorage: (home: HomeContext) => ({
-      name: `test-native-vault:${home.path}`,
+      name: `test-native-secure-storage:${home.path}`,
       read: () => structuredClone(vaults.get(vaultKey(home)) ?? {}),
       readAsync: async () => {
         const key = vaultKey(home)

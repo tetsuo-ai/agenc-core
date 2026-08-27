@@ -58,6 +58,73 @@ export function getCanonicalSettingsAuthority():
   return authorityStorage.getStore() ?? null;
 }
 
+/**
+ * Process-local cache partitioned by the exact ConfigStore authority object.
+ * Weak authority keys keep completed daemon sessions collectible even when
+ * their workspace, home, and runtime paths match another live session.
+ */
+export class CanonicalAuthorityCache<V> {
+  private partitions = new WeakMap<CanonicalSettingsAuthority, Map<string, V>>();
+
+  private authority(
+    explicit: CanonicalSettingsAuthority | null = getCanonicalSettingsAuthority(),
+  ): CanonicalSettingsAuthority {
+    if (explicit === null) {
+      throw new Error("Canonical authority cache requires a ConfigStore authority");
+    }
+    return explicit;
+  }
+
+  get(
+    key: string,
+    authority: CanonicalSettingsAuthority | null = getCanonicalSettingsAuthority(),
+  ): V | undefined {
+    return this.partitions.get(this.authority(authority))?.get(key);
+  }
+
+  set(
+    key: string,
+    value: V,
+    authority: CanonicalSettingsAuthority | null = getCanonicalSettingsAuthority(),
+  ): void {
+    const owner = this.authority(authority);
+    let partition = this.partitions.get(owner);
+    if (partition === undefined) {
+      partition = new Map<string, V>();
+      this.partitions.set(owner, partition);
+    }
+    partition.set(key, value);
+  }
+
+  delete(
+    key: string,
+    authority: CanonicalSettingsAuthority | null = getCanonicalSettingsAuthority(),
+  ): boolean {
+    const owner = this.authority(authority);
+    const partition = this.partitions.get(owner);
+    if (partition === undefined) return false;
+    const deleted = partition.delete(key);
+    if (partition.size === 0) this.partitions.delete(owner);
+    return deleted;
+  }
+
+  values(
+    authority: CanonicalSettingsAuthority | null = getCanonicalSettingsAuthority(),
+  ): readonly V[] {
+    return [...(this.partitions.get(this.authority(authority))?.values() ?? [])];
+  }
+
+  clearAuthority(
+    authority: CanonicalSettingsAuthority | null = getCanonicalSettingsAuthority(),
+  ): void {
+    this.partitions.delete(this.authority(authority));
+  }
+
+  clear(): void {
+    this.partitions = new WeakMap<CanonicalSettingsAuthority, Map<string, V>>();
+  }
+}
+
 export function getCanonicalConfigLayers(
   scope: ConfigScope,
   authority: CanonicalSettingsAuthority | null = getCanonicalSettingsAuthority(),

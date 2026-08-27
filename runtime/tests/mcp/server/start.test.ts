@@ -310,7 +310,6 @@ describe("mcp server start config", () => {
         recursive: true,
       }),
       mkdir(join(globalHome, "skills", "global-only"), { recursive: true }),
-      mkdir(join(globalHome, "commands"), { recursive: true }),
       mkdir(join(globalHome, "memory"), { recursive: true }),
     ]);
     await Promise.all([
@@ -328,10 +327,6 @@ describe("mcp server start config", () => {
         "---\ndescription: Global prompt\n---\nGlobal prompt sentinel",
       ),
       writeFile(
-        join(globalHome, "commands", "outside-command.md"),
-        "---\ndescription: Outside command\n---\nOutside command sentinel",
-      ),
-      writeFile(
         join(workspaceA, ".agenc", "memory", "workspace-note.md"),
         "Workspace memory sentinel",
       ),
@@ -345,11 +340,6 @@ describe("mcp server start config", () => {
       symlink(
         join(globalHome, "skills", "global-only", "SKILL.md"),
         join(workspaceA, ".agenc", "skills", "leak-prompt.md"),
-      ),
-      symlink(
-        join(globalHome, "commands"),
-        join(workspaceA, ".agenc", "commands"),
-        "dir",
       ),
       symlink(
         join(globalHome, "memory", "global-note.md"),
@@ -387,7 +377,6 @@ describe("mcp server start config", () => {
       expect(JSON.stringify(promptList)).toContain("workspace-only");
       expect(JSON.stringify(promptList)).not.toContain("global-only");
       expect(JSON.stringify(promptList)).not.toContain("leak-prompt");
-      expect(JSON.stringify(promptList)).not.toContain("outside-command");
       const promptGet = await postMcpJson(
         result.server.url,
         oldSession,

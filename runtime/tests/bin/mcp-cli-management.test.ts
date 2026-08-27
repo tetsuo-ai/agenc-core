@@ -1,4 +1,4 @@
-import { mkdtemp, readFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Writable } from "node:stream";
@@ -134,6 +134,7 @@ vi.mock("../utils/settings/settings.js", () => settingsMocks);
 const originalEnv = {
   AGENC_ENABLE_XAA: process.env.AGENC_ENABLE_XAA,
   AGENC_HOME: process.env.AGENC_HOME,
+  AGENC_PLUGIN_CACHE_DIR: process.env.AGENC_PLUGIN_CACHE_DIR,
   HOME: process.env.HOME,
   MCP_XAA_IDP_CLIENT_SECRET: process.env.MCP_XAA_IDP_CLIENT_SECRET,
 };
@@ -155,6 +156,7 @@ beforeEach(async () => {
   agencHome = await mkdtemp(join(tmpdir(), "agenc-mcp-cli-"));
   process.env.AGENC_HOME = agencHome;
   process.env.HOME = agencHome;
+  delete process.env.AGENC_PLUGIN_CACHE_DIR;
   configStore = new ConfigStore({
     home: agencHome,
     env: { AGENC_HOME: agencHome, HOME: agencHome },
@@ -273,6 +275,7 @@ describe("AgenC MCP management CLI parsing", () => {
         homeContext: expect.objectContaining({ path: agencHome }),
       }),
       expect.objectContaining({ PATH: expect.any(String) }),
+      join(agencHome, "plugins"),
     );
 
     await expect(
@@ -336,6 +339,7 @@ describe("AgenC MCP management CLI parsing", () => {
         homeContext: expect.objectContaining({ path: agencHome }),
       }),
       environment: expect.objectContaining({ PATH: expect.any(String) }),
+      pluginStorageRoot: join(agencHome, "plugins"),
       scope: undefined,
       configOnly: true,
       json: true,
@@ -359,6 +363,127 @@ describe("AgenC MCP management CLI parsing", () => {
     const captured = handlerMocks.mcpListHandler.mock.calls.at(-1)?.[1];
     expect(captured).toMatchObject({ MY_MCP_TOKEN: "captured-mcp-token" });
     expect(Object.isFrozen(captured)).toBe(true);
+  });
+
+  test("does not parse unrelated runtime authority for MCP management", async () => {
+    await expect(
+      runAgenCMcpCli(
+        { kind: "management", argv: ["list"] },
+        {
+          configStore,
+          environment: {
+            ...process.env,
+            AGENC_HOME: agencHome,
+            HOME: agencHome,
+            AGENC_TMPDIR: "relative-temp",
+            AGENC_SHELL: "relative-shell",
+            AGENC_SHELL_PREFIX: "&& invalid",
+            AGENC_REMOTE_MEMORY_DIR: "relative-memory",
+          },
+        },
+      ),
+    ).resolves.toBe(0);
+    expect(handlerMocks.mcpListHandler).toHaveBeenLastCalledWith(
+      configStore,
+      expect.objectContaining({
+        AGENC_HOME: configStore.homeContext.path,
+        AGENC_PLUGIN_CACHE_DIR: join(configStore.homeContext.path, "plugins"),
+      }),
+      join(configStore.homeContext.path, "plugins"),
+    );
+  });
+
+  test("defaults plugin storage to the supplied ConfigStore home while preserving the explicit override", async () => {
+    const embeddedHome = await mkdtemp(
+      join(agencHome, "embedded-config-home-"),
+    );
+    const embeddedStore = new ConfigStore({
+      home: embeddedHome,
+      env: { AGENC_HOME: embeddedHome, HOME: embeddedHome },
+      cwd: embeddedHome,
+      projectRoot: embeddedHome,
+      projectTrusted: true,
+      managedConfigPath: join(embeddedHome, "missing-managed.toml"),
+      managedDropInDir: join(embeddedHome, "missing-managed.d"),
+    });
+    await embeddedStore.reload();
+    const ambientEnvironment = {
+      ...process.env,
+      AGENC_HOME: agencHome,
+      HOME: agencHome,
+    };
+    delete ambientEnvironment.AGENC_PLUGIN_CACHE_DIR;
+
+    await expect(
+      runAgenCMcpCli(
+        { kind: "management", argv: ["list"] },
+        { configStore: embeddedStore, environment: ambientEnvironment },
+      ),
+    ).resolves.toBe(0);
+    expect(handlerMocks.mcpListHandler).toHaveBeenLastCalledWith(
+      embeddedStore,
+      expect.objectContaining({
+        AGENC_HOME: embeddedStore.homeContext.path,
+        AGENC_PLUGIN_CACHE_DIR: join(embeddedStore.homeContext.path, "plugins"),
+      }),
+      join(embeddedHome, "plugins"),
+    );
+
+    const overrideRoot = join(agencHome, "operator-plugin-storage");
+    await expect(
+      runAgenCMcpCli(
+        { kind: "management", argv: ["list"] },
+        {
+          configStore: embeddedStore,
+          environment: {
+            ...ambientEnvironment,
+            AGENC_PLUGIN_CACHE_DIR: overrideRoot,
+          },
+        },
+      ),
+    ).resolves.toBe(0);
+    expect(handlerMocks.mcpListHandler).toHaveBeenLastCalledWith(
+      embeddedStore,
+      expect.objectContaining({
+        AGENC_HOME: embeddedStore.homeContext.path,
+        AGENC_PLUGIN_CACHE_DIR: await realpath(overrideRoot),
+      }),
+      await realpath(overrideRoot),
+    );
+  });
+
+  test("canonicalizes an explicit plugin root and rejects a relative one", async () => {
+    const canonicalRoot = await mkdtemp(join(agencHome, "canonical-plugins-"));
+    const linkedRoot = join(agencHome, "linked-plugins");
+    await symlink(
+      canonicalRoot,
+      linkedRoot,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+
+    await expect(
+      runAgenCMcpCli(
+        { kind: "management", argv: ["list"] },
+        { configStore, pluginStorageRoot: linkedRoot },
+      ),
+    ).resolves.toBe(0);
+    expect(handlerMocks.mcpListHandler).toHaveBeenLastCalledWith(
+      configStore,
+      expect.objectContaining({
+        AGENC_HOME: configStore.homeContext.path,
+        AGENC_PLUGIN_CACHE_DIR: await realpath(canonicalRoot),
+      }),
+      await realpath(canonicalRoot),
+    );
+
+    await expect(
+      runAgenCMcpCli(
+        { kind: "management", argv: ["list"] },
+        { configStore, pluginStorageRoot: "relative/plugins" },
+      ),
+    ).rejects.toThrow(
+      "runtimeOptions.pluginStorageRoot must be an absolute path",
+    );
   });
 
   test("rejects extra fixed-arity command arguments", async () => {
@@ -711,7 +836,14 @@ describe("AgenC MCP management CLI parsing", () => {
       expect.objectContaining({
         homeContext: expect.objectContaining({ path: agencHome }),
       }),
-      { scope: undefined },
+      {
+        environment: expect.objectContaining({
+          AGENC_HOME: agencHome,
+          AGENC_PLUGIN_CACHE_DIR: join(agencHome, "plugins"),
+        }),
+        pluginStorageRoot: join(agencHome, "plugins"),
+        scope: undefined,
+      },
     );
   });
 });

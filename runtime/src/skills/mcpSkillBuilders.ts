@@ -18,9 +18,8 @@ import type {
  * reaches almost everything, the single new edge fans out into many new cycle
  * violations in the diff check.
  *
- * Registration happens at loadSkillsDir.ts module init, which is eagerly
- * evaluated at startup via the static import from commands.ts — long before
- * any MCP server connects.
+ * Registration happens when mcpSkills.ts imports loadSkillsDir.ts before it
+ * reads this registry.
  */
 
 export type MCPSkillBuilders = {

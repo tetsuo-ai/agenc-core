@@ -5537,8 +5537,12 @@ export async function main(): Promise<number> {
   const pluginCommand = parseAgenCPluginCliArgs(argv);
   if (pluginCommand !== null) {
     const pluginEnvironment = Object.freeze({ ...process.env });
+    const pluginRuntimeOptions = resolveAgentRuntimeOptions(pluginEnvironment);
     return runAgenCPluginCli(pluginCommand, {
+      agencHome: resolveAgencHome(pluginEnvironment),
       env: pluginEnvironment,
+      pluginStorageRoot: pluginRuntimeOptions.pluginStorageRoot,
+      sessionTempRoot: pluginRuntimeOptions.sessionTempRoot,
       workspaceRoot: process.cwd(),
     });
   }

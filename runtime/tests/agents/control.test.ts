@@ -16,10 +16,8 @@ import { AgentRegistry, type AgentMetadata } from "./registry.js";
 import {
   _resetAgentRolesForTesting,
   _resetNicknamePoolForTesting,
-  agentRoleFingerprint,
   createAgentRoleWorkspace,
   registerAgentRole,
-  requireAgentRole,
 } from "./role.js";
 import { RolloutStore } from "../session/rollout-store.js";
 import { ThreadManager } from "./thread-manager.js";
@@ -136,11 +134,10 @@ function registerDurableSessionRoot(
 }
 
 function roleProvenance(control: AgentControl, roleName: string) {
+  const role = control.roleCatalog.require(roleName);
   return {
     agentRoleWorkspaceId: control.roleWorkspace.id,
-    agentRoleFingerprint: agentRoleFingerprint(
-      requireAgentRole(control.roleWorkspace, roleName),
-    ),
+    agentRoleFingerprint: control.roleCatalog.fingerprint(role),
   };
 }
 
@@ -284,21 +281,12 @@ describe("AgentControl", () => {
     const session = stubSession();
     const registry = new AgentRegistry();
     const control = new AgentControl({ session, registry });
-    registerAgentRole(control.roleWorkspace, {
-      name: "scanner",
-      config: { disallowlist: ["Edit", "Write"] },
-    });
-    const expectedRole = requireAgentRole(control.roleWorkspace, "scanner");
+    const expectedRole = control.roleCatalog.require("scanner");
     const expectedRoleProvenance = {
       agentRole: expectedRole.name,
       agentRoleWorkspaceId: control.roleWorkspace.id,
-      agentRoleFingerprint: agentRoleFingerprint(expectedRole),
+      agentRoleFingerprint: "0".repeat(64),
     };
-
-    registerAgentRole(control.roleWorkspace, {
-      name: "scanner",
-      config: { disallowlist: [] },
-    });
 
     await expect(
       control.spawn({
@@ -315,20 +303,25 @@ describe("AgentControl", () => {
   });
 
   it("spawn() rejects the built-in role when an expected workspace override was removed", async () => {
-    const session = stubSession();
-    const registry = new AgentRegistry();
-    const control = new AgentControl({ session, registry });
-    registerAgentRole(control.roleWorkspace, {
+    const workspace = createAgentRoleWorkspace(agencHome);
+    registerAgentRole(workspace, {
       name: "scanner",
       config: { disallowlist: ["Edit", "Write"] },
     });
-    const expectedRole = requireAgentRole(control.roleWorkspace, "scanner");
+    const originalControl = new AgentControl({
+      session: stubSession({ cwd: workspace.cwd }),
+      registry: new AgentRegistry(),
+    });
+    const expectedRole = originalControl.roleCatalog.require("scanner");
     const expectedRoleProvenance = {
       agentRole: expectedRole.name,
-      agentRoleWorkspaceId: control.roleWorkspace.id,
-      agentRoleFingerprint: agentRoleFingerprint(expectedRole),
+      agentRoleWorkspaceId: originalControl.roleWorkspace.id,
+      agentRoleFingerprint: originalControl.roleCatalog.fingerprint(expectedRole),
     };
     _resetAgentRolesForTesting();
+    const session = stubSession({ cwd: workspace.cwd });
+    const registry = new AgentRegistry();
+    const control = new AgentControl({ session, registry });
 
     await expect(
       control.spawn({
@@ -444,13 +437,13 @@ describe("AgentControl", () => {
         conversationId: "nickname-root",
         rolloutStore,
       });
-      const registry = new AgentRegistry();
-      const control = new AgentControl({ session, registry });
-      registerDurableSessionRoot(control, cwd, "nickname-root");
-      registerAgentRole(control.roleWorkspace, {
+      registerAgentRole(session.roleWorkspace, {
         name: "single-nickname",
         config: { nicknameCandidates: ["only-nickname"] },
       });
+      const registry = new AgentRegistry();
+      const control = new AgentControl({ session, registry });
+      registerDurableSessionRoot(control, cwd, "nickname-root");
       raw.exec(`
         CREATE TRIGGER reject_control_spawn
         BEFORE INSERT ON thread_spawn_edges

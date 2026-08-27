@@ -536,6 +536,7 @@ async function buildServerReport(
     requestedByUser: boolean
     scopeFilter?: McpDoctorScopeFilter
     environment: ProviderEnvironment
+    pluginStorageRoot: string
   },
   validationFindingsByName: Map<string, McpDoctorFinding[]>,
   deps: McpDoctorDependencies,
@@ -556,6 +557,7 @@ async function buildServerReport(
   }
   const { servers: activeServers } = await deps.getAllMcpConfigs(
     authority,
+    { pluginStorageRoot: options.pluginStorageRoot },
     options.environment,
   )
   const runtimeConfig = activeServers[name] ?? undefined
@@ -655,6 +657,7 @@ export async function doctorAllServers(
     configOnly: boolean
     scopeFilter?: McpDoctorScopeFilter
     environment?: ProviderEnvironment
+    pluginStorageRoot: string
   },
   deps: McpDoctorDependencies = DEFAULT_DEPENDENCIES,
 ): Promise<McpDoctorReport> {
@@ -687,6 +690,7 @@ export async function doctorAllServers(
   const { globalFindings, serverFindingsByName } = splitValidationFindings(validationFindings)
   const { servers: activeServers } = await deps.getAllMcpConfigs(
     authority,
+    { pluginStorageRoot: options.pluginStorageRoot },
     options.environment ?? {},
   )
   const names = getServerNames(
@@ -710,6 +714,7 @@ export async function doctorAllServers(
           requestedByUser: false,
           scopeFilter: options.scopeFilter,
           environment: options.environment ?? {},
+          pluginStorageRoot: options.pluginStorageRoot,
         },
         serverFindingsByName,
         deps,
@@ -729,6 +734,7 @@ export async function doctorServer(
     configOnly: boolean
     scopeFilter?: McpDoctorScopeFilter
     environment?: ProviderEnvironment
+    pluginStorageRoot: string
   },
   deps: McpDoctorDependencies = DEFAULT_DEPENDENCIES,
 ): Promise<McpDoctorReport> {
@@ -767,6 +773,7 @@ export async function doctorServer(
       requestedByUser: true,
       scopeFilter: options.scopeFilter,
       environment: options.environment ?? {},
+      pluginStorageRoot: options.pluginStorageRoot,
     },
     serverFindingsByName,
     deps,

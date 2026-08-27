@@ -831,7 +831,7 @@ describe("providerCommand", () => {
     }
   });
 
-  it("shows saved Gemini BYOK from the existing native vault", async () => {
+  it("shows saved Gemini BYOK from the existing native secure storage", async () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-provider-menu-byok-"));
     const environment: EnvSnapshot = Object.freeze({
       AGENC_HOME: agencHome,
@@ -855,7 +855,7 @@ describe("providerCommand", () => {
       expect(snapshot.rows.find((row) => row.provider === "gemini")).toMatchObject({
         authState: "ready",
         auth: "saved BYOK",
-        credentialSource: "native vault saved Gemini BYOK",
+        credentialSource: "native secure storage saved Gemini BYOK",
       });
     } finally {
       rmSync(agencHome, { recursive: true, force: true });

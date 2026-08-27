@@ -21,15 +21,20 @@ import {
   type PluginLoaderOptions,
 } from "../loader.js";
 import type { PluginUserConfigOption } from "../manifest-schema.js";
-import { getPluginDataDir } from "../directories.js";
+import {
+  getPluginDataDir,
+  resolvePluginStorageAuthority,
+} from "../directories.js";
 import { isRecord } from "../manifest-schema.js";
 import { isBareMode } from "../../utils/envUtils.js";
-import { resolveHomeContext } from "../../config/home.js";
 import {
   loadPluginOptions,
   type PluginOptionSchema,
 } from "../../utils/plugins/pluginOptionsStorage.js";
-import { getCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
+import {
+  CanonicalAuthorityCache,
+  getCanonicalSettingsAuthority,
+} from "../../utils/settings/canonicalAuthority.js";
 import type {
   PluginConfigStoredValue,
 } from "../../utils/plugins/pluginConfigAuthority.js";
@@ -44,7 +49,7 @@ const MAX_PLUGIN_REGISTRATION_SCAN_DEPTH = 8;
 export interface PluginRuntimeLoadOptions {
   readonly cwd?: string;
   readonly workspaceRoot?: string;
-  readonly agencHome?: string;
+  readonly pluginStorageRoot: string;
   readonly config?: PluginLoaderOptions["config"];
   readonly extraPluginDirs?: readonly string[];
   readonly env?: NodeJS.ProcessEnv;
@@ -55,8 +60,7 @@ export interface PluginRuntimeLoadOptions {
 
 export interface PluginRuntimeIdentityOptions {
   readonly cwd?: string;
-  readonly agencHome?: string;
-  readonly env?: NodeJS.ProcessEnv;
+  readonly pluginStorageRoot: string;
 }
 
 export interface ParsedMarkdownFile {
@@ -67,7 +71,7 @@ export interface ParsedMarkdownFile {
 }
 
 export function toPluginLoaderOptions(
-  options: PluginRuntimeLoadOptions = {},
+  options: PluginRuntimeLoadOptions,
 ): PluginLoaderOptions {
   const authority = getCanonicalSettingsAuthority();
   const workspaceValue =
@@ -78,18 +82,11 @@ export function toPluginLoaderOptions(
     );
   }
   const workspaceRoot = resolve(workspaceValue);
-  const agencHome = options.agencHome !== undefined
-    ? resolve(options.agencHome)
-    : options.env !== undefined
-      ? resolveHomeContext(options.env).path
-      : authority?.homeContext.path;
-  if (agencHome === undefined) {
-    throw new Error(
-      "Plugin loading requires an explicit AgenC home or session ConfigStore authority",
-    );
-  }
+  const pluginStorageRoot = resolvePluginStorageAuthority(
+    options.pluginStorageRoot,
+  ).pluginStorageRoot;
   return {
-    agencHome,
+    pluginStorageRoot,
     workspaceRoot,
     ...(options.config !== undefined ? { config: options.config } : {}),
     ...(options.extraPluginDirs !== undefined ? { extraPluginDirs: options.extraPluginDirs } : {}),
@@ -97,7 +94,7 @@ export function toPluginLoaderOptions(
 }
 
 export async function loadRuntimePlugins(
-  options: PluginRuntimeLoadOptions = {},
+  options: PluginRuntimeLoadOptions,
 ): Promise<readonly LoadedPlugin[]> {
   const loaderOptions = toPluginLoaderOptions(options);
   const projectResult = (result: PluginLoadResult): readonly LoadedPlugin[] => {
@@ -108,21 +105,28 @@ export async function loadRuntimePlugins(
     const result = await loadPlugins(loaderOptions);
     return projectResult(result);
   }
-  const key = `${loaderOptions.workspaceRoot}\0${loaderOptions.agencHome}`;
-  const cached = runtimePluginLoadCache.get(key);
+  const authority = getCanonicalSettingsAuthority();
+  if (authority === null) {
+    const result = await loadPlugins(loaderOptions);
+    return projectResult(result);
+  }
+  const key = `${loaderOptions.workspaceRoot}\0${loaderOptions.pluginStorageRoot}`;
+  const cached = runtimePluginLoadCache.get(key, authority);
   if (cached !== undefined) return projectResult(await cached);
   const loaded = loadPlugins(loaderOptions).catch((error: unknown) => {
-    runtimePluginLoadCache.delete(key);
+    runtimePluginLoadCache.delete(key, authority);
     throw error;
   });
-  runtimePluginLoadCache.set(key, loaded);
+  runtimePluginLoadCache.set(key, loaded, authority);
   return projectResult(await loaded);
 }
 
-const runtimePluginLoadCache = new Map<string, Promise<PluginLoadResult>>();
+const runtimePluginLoadCache = new CanonicalAuthorityCache<Promise<PluginLoadResult>>();
 
 export function clearRuntimePluginLoadCache(): void {
-  runtimePluginLoadCache.clear();
+  const authority = getCanonicalSettingsAuthority();
+  if (authority === null) runtimePluginLoadCache.clear();
+  else runtimePluginLoadCache.clearAuthority(authority);
 }
 
 export function splitFrontmatter(raw: string): {
@@ -272,6 +276,7 @@ export function descriptionFromMarkdown(raw: string): string | undefined {
 }
 
 export {
+  canonicalPluginRuntimeNamespace,
   normalizePluginIdentifierName,
   normalizePluginIdentifierSegment,
   pluginScopedIdentifier,
@@ -304,7 +309,7 @@ export function pluginSettingValue(
     plugin.manifest.userConfig !== undefined &&
         getCanonicalSettingsAuthority() !== null
       ? loadPluginOptions(
-          plugin.source,
+          plugin.id,
           plugin.manifest.userConfig as unknown as PluginOptionSchema,
         )
       : undefined
@@ -348,7 +353,11 @@ function stringifySettingValue(value: unknown): string | undefined {
 export function substitutePluginTemplate(
   value: string,
   plugin: LoadedPlugin,
-  options: { readonly sessionId?: string; readonly exposeSensitive?: boolean } = {},
+  options: {
+    readonly sessionId?: string;
+    readonly exposeSensitive?: boolean;
+    readonly pluginStorageRoot?: string;
+  } = {},
 ): string {
   return resolvePluginTemplate(value, plugin, options).value;
 }
@@ -368,24 +377,23 @@ function resolvePluginTemplate(
       Record<string, PluginConfigStoredValue>
     >;
     readonly schema?: PluginRuntimeOptionSchema;
+    readonly pluginStorageRoot?: string;
   } = {},
 ): PluginTemplateResolution {
   const missingUserConfig: string[] = [];
   let pluginDataDir: string | undefined;
   const dataDir = (): string => {
-    pluginDataDir ??= formatTemplatePath(getPluginDataDir(plugin.source));
+    pluginDataDir ??= formatTemplatePath(
+      getPluginDataDir(plugin.id, options.pluginStorageRoot),
+    );
     return pluginDataDir;
   };
-  // CLAUDE_* forms are accepted as aliases: plugins written for Claude Code
-  // (the ecosystem agenc installs from) template with ${CLAUDE_PLUGIN_ROOT}
-  // et al., and an unconsumed template previously fell through to env-var
-  // expansion and killed the component with "Missing environment variables".
   let out = value
-    .replace(/\$\{(?:AGENC|CLAUDE)_PLUGIN_ROOT\}/g, () =>
+    .replace(/\$\{AGENC_PLUGIN_ROOT\}/g, () =>
       formatTemplatePath(plugin.root),
     )
-    .replace(/\$\{(?:AGENC|CLAUDE)_PLUGIN_DATA\}/g, () => dataDir())
-    .replace(/\$\{(?:AGENC|CLAUDE)_SESSION_ID\}/g, () => options.sessionId ?? "");
+    .replace(/\$\{AGENC_PLUGIN_DATA\}/g, () => dataDir())
+    .replace(/\$\{AGENC_SESSION_ID\}/g, () => options.sessionId ?? "");
   out = out.replace(/\$\{user_config\.([A-Za-z_][\w.-]*)\}/g, (_match, key: string) => {
     const value = pluginSettingValue(plugin, key, {
       exposeSensitive: options.exposeSensitive,
@@ -438,6 +446,7 @@ export function resolvePluginServerTemplate(
   options: {
     readonly sessionId?: string;
     readonly env?: NodeJS.ProcessEnv;
+    readonly pluginStorageRoot?: string;
     readonly schemaOwnedValues?: Readonly<
       Record<string, PluginConfigStoredValue>
     >;
@@ -449,6 +458,9 @@ export function resolvePluginServerTemplate(
     exposeSensitive: true,
     schemaOwnedValues: options.schemaOwnedValues,
     schema: options.schema,
+    ...(options.pluginStorageRoot !== undefined
+      ? { pluginStorageRoot: options.pluginStorageRoot }
+      : {}),
   });
   const envResult = expandEnvTemplate(pluginResult.value, options.env);
   return {
@@ -459,7 +471,7 @@ export function resolvePluginServerTemplate(
 }
 
 export function runtimeIdentityKey(
-  options: PluginRuntimeIdentityOptions = {},
+  options: PluginRuntimeIdentityOptions,
 ): string {
   const authority = getCanonicalSettingsAuthority();
   const cwdValue = options.cwd ?? authority?.projectRoot;
@@ -469,17 +481,10 @@ export function runtimeIdentityKey(
     );
   }
   const cwd = resolve(cwdValue);
-  const agencHome = options.agencHome !== undefined
-    ? resolve(options.agencHome)
-    : options.env !== undefined
-      ? resolveHomeContext(options.env).path
-      : authority?.homeContext.path;
-  if (agencHome === undefined) {
-    throw new Error(
-      "Plugin runtime identity requires an explicit AgenC home or session ConfigStore authority",
-    );
-  }
-  return `${cwd}\0${agencHome}`;
+  const pluginStorageRoot = resolvePluginStorageAuthority(
+    options.pluginStorageRoot,
+  ).pluginStorageRoot;
+  return `${cwd}\0${pluginStorageRoot}`;
 }
 
 export function isPluginRuntimeSimpleMode(): boolean {

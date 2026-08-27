@@ -33,14 +33,14 @@ export class PlaintextPluginSecretError extends Error {
     super(
       `${location} contains sensitive field(s) in config.toml: ${sorted.join(', ')}. ` +
         'AgenC did not load those values. Reconfigure the plugin from /plugin so ' +
-        'the native credential vault becomes the sole secret owner and the ' +
+        'the native secure storage becomes the sole secret owner and the ' +
         'plaintext fields are scrubbed, or remove them from config.toml.',
     )
     this.fields = sorted
   }
 }
 
-/** Bind plugin config and vault access to the current immutable ConfigStore. */
+/** Bind plugin config and secure-storage access to the current immutable ConfigStore. */
 export function requirePluginConfigAuthority(): CanonicalSettingsAuthority {
   const authority = getCanonicalSettingsAuthority()
   if (authority === null) {
@@ -58,10 +58,10 @@ function copyStoredValue(value: PluginConfigStoredValue): PluginConfigStoredValu
 /**
  * Resolve plugin values according to the current manifest schema.
  *
- * - Sensitive fields may come only from the native vault.
+ * - Sensitive fields may come only from the native secure storage.
  * - Non-sensitive fields may come only from config.toml.
  * - Undeclared/stale fields from either store are not live configuration.
- * - Any plaintext sensitive field is rejected even when a vault value exists,
+ * - Any plaintext sensitive field is rejected even when a secure-storage value exists,
  *   so an insecure duplicate cannot remain hidden on disk.
  */
 export function resolveSchemaOwnedPluginConfig(
@@ -113,7 +113,7 @@ export function assertPluginConfigKeysDeclared(
   }
 }
 
-/** Replace one plugin-secret bucket without mutating or dropping other vault namespaces. */
+/** Replace one plugin-secret bucket without mutating or dropping other secure-storage namespaces. */
 export function withPluginSecretBucket(
   current: Readonly<SecureStorageData>,
   bucketKey: string,

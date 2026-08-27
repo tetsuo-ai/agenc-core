@@ -119,6 +119,7 @@ function callCanonicalInWorkspace(
   tool: Tool,
   workspace: string,
   input: Record<string, unknown>,
+  context: ToolUseContext = toolContext(workspace),
 ) {
   const workspaceSession = {
     conversationId: legacyTestSession.conversationId,
@@ -129,7 +130,7 @@ function callCanonicalInWorkspace(
     runWithCwdOverride(workspace, () =>
       tool.call(
         input,
-        toolContext(workspace),
+        context,
         (async () => undefined) as never,
         {} as never,
       ),
@@ -823,6 +824,43 @@ describe("old-stack tool surface consolidation", () => {
 
       expect(resultText(grep.data)).toContain("demo.txt");
       expect(resultText(glob.data)).toContain("demo.txt");
+    } finally {
+      clearSessionReadState(sessionId, tmpdir());
+      await rm(workspace, { recursive: true, force: true });
+    }
+  });
+
+  test("canonical Write reports its exact path through the owning skill manager", async () => {
+    const workspace = await mkdtemp(join(tmpdir(), "agenc-write-skills-"));
+    const sessionId = "canonical-write-skills-session";
+    const filePath = join(workspace, "packages", "ui", "src", "Button.tsx");
+    const skillRoot = join(workspace, "packages", "ui", ".agenc", "skills");
+    const discoverSkillDirsForPaths = vi.fn(async () => [skillRoot]);
+    const dynamicSkillDirTriggers = new Set<string>();
+    const context = {
+      ...toolContext(workspace),
+      dynamicSkillDirTriggers,
+      skillsManager: {
+        skillsForConfig: vi.fn(async () => ({ invokedSkills: [] })),
+        discoverSkillDirsForPaths,
+      },
+    } as unknown as ToolUseContext;
+
+    try {
+      await callCanonicalInWorkspace(
+        CanonicalFileWriteTool,
+        workspace,
+        {
+          file_path: filePath,
+          content: "export const Button = null;\n",
+          [SESSION_ID_ARG]: sessionId,
+        },
+        context,
+      );
+
+      expect(discoverSkillDirsForPaths).toHaveBeenCalledOnce();
+      expect(discoverSkillDirsForPaths).toHaveBeenCalledWith([filePath]);
+      expect(dynamicSkillDirTriggers).toEqual(new Set([skillRoot]));
     } finally {
       clearSessionReadState(sessionId, tmpdir());
       await rm(workspace, { recursive: true, force: true });

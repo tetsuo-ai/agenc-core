@@ -1,17 +1,17 @@
 import { oscColor, type TerminalQuerier } from '../tui/ink/terminal-querier.js'
 import {
-  setCachedSystemTheme,
+  setCachedTerminalBackground,
   themeFromOscColor,
-  type SystemTheme,
-} from './systemTheme.js'
+  type TerminalBackground,
+} from './terminalBackground.js'
 import { logError } from './log.js'
 
 const OSC_BACKGROUND_COLOR = 11
 const POLL_INTERVAL_MS = 2_000
 
-export function watchSystemTheme(
+export function watchTerminalBackground(
   querier: TerminalQuerier,
-  onThemeChange: (theme: SystemTheme) => void,
+  onThemeChange: (theme: TerminalBackground) => void,
 ): () => void {
   let cancelled = false
   let inFlight = false
@@ -27,7 +27,7 @@ export function watchSystemTheme(
       if (cancelled || !response) return
       const theme = themeFromOscColor(response.data)
       if (!theme) return
-      setCachedSystemTheme(theme)
+      setCachedTerminalBackground(theme)
       onThemeChange(theme)
     } catch (error) {
       logError(error)

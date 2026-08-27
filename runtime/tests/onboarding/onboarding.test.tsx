@@ -642,7 +642,7 @@ describe("first-run onboarding wizard", () => {
     }
   });
 
-  test("probes the saved Gemini BYOK selected from the native vault", async () => {
+  test("probes the saved Gemini BYOK selected from the native secure storage", async () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-onboarding-gemini-byok-"));
     const env = { AGENC_HOME: agencHome, GEMINI_AUTH_MODE: "api-key" };
     const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
@@ -1964,18 +1964,20 @@ describe("wizard theme mapping", () => {
 
 describe("theme step terminal-background awareness", () => {
   test("tells the user which themes read well on the detected terminal background", async () => {
-    const { setCachedSystemTheme } = await import("../utils/systemTheme.js");
+    const { setCachedTerminalBackground } = await import(
+      "../utils/terminalBackground.js"
+    );
     const config = defaultConfig();
     const context = { config, env: {}, checkLocalProviders: false };
     let state = createInitialFirstRunOnboardingState(context);
     state = (await submitFirstRunOnboardingInput(state, "next", context)).state;
 
-    setCachedSystemTheme("dark");
+    setCachedTerminalBackground("dark");
     const darkLines = detailLinesForStep(state, context).join("\n");
     expect(darkLines).toContain("your terminal background looks dark");
     expect(darkLines).toContain('"dark" or "auto" will read best');
 
-    setCachedSystemTheme("light");
+    setCachedTerminalBackground("light");
     const lightLines = detailLinesForStep(state, context).join("\n");
     expect(lightLines).toContain("your terminal background looks light");
     expect(lightLines).toContain('"light" or "auto" will read best');

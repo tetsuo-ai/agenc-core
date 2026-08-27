@@ -26,7 +26,7 @@ config_version = 2
 The user file is `$AGENC_HOME/config.toml`, normally
 `~/.agenc/config.toml`. `AGENC_HOME` moves the complete AgenC home: config,
 runtime state, trust data, daemon identity, caches, migration journals, and
-the native secure-storage namespace. `AGENC_CONFIG_DIR` is removed from normal
+the native secure storage namespace. `AGENC_CONFIG_DIR` is removed from normal
 runtime use; only the migration command may inspect it.
 
 ## Authority boundaries
@@ -120,12 +120,12 @@ The runtime accepts only schema v2. The migration planner is the sole code
 allowed to understand removed files or names. It reports conflicts instead of
 guessing and writes a journal. Replaced non-secret inputs are archived so their
 file changes can be rolled back. Retired plaintext credentials are different:
-apply writes them to the home-bound native vault first and then permanently
+apply writes them to the home-bound native secure storage first and then permanently
 deletes standalone plaintext sources or rewrites `auth.json` to metadata-only
 content, without creating a secret-bearing archive. Rollback never recreates
-plaintext credentials or removes the successfully migrated vault copy.
+plaintext credentials or removes the successfully migrated secure-storage copy.
 
-The same explicit transaction repairs the historical native-vault namespace
+The same explicit transaction repairs the historical native secure storage namespace
 split. Older builds left a relocated `AGENC_HOME` on the unscoped service name,
 while an explicitly set `AGENC_CONFIG_DIR` hashed that directory even when it
 was the default `~/.agenc` path. `migrate check` reads the exact retired and
@@ -140,7 +140,7 @@ unscoped name can be shared by the default and relocated homes, and a scoped
 collide with it. Migration therefore copies these records into the canonical
 home-bound namespace but retains the old record by default. On macOS and
 Linux, destructive retirement requires the operator to pass
-`--retire-shared-native-vault` to both the reviewed check and apply. Before
+`--retire-shared-secure-storage` to both the reviewed check and apply. Before
 using that flag, stop every older AgenC process and independently confirm that
 no default home, relocated home, or colliding directory still owns the record;
 keep those processes stopped until apply completes.
@@ -157,7 +157,7 @@ Successful writes are read back and byte-compared before they are reported.
 Both helpers keep credential bytes on stdin/stdout and reject records at or
 above 16 MiB without changing the prior record.
 
-Current AgenC writers serialize native-vault changes with the home-bound
+Current AgenC writers serialize native secure storage changes with the home-bound
 transaction lock. Secret Service does not provide compare-and-swap: a foreign
 writer that ignores that lock can race between search, mutation, and
 verification. The Linux helper never uses replace-after-absence and never
@@ -172,12 +172,12 @@ historical shell `USER` differs from the stable operating-system account is
 re-encrypted in place. Ordinary startup never reads or falls back to any
 retired identity.
 
-The canonical vault account is captured from a durable operating-system
+The canonical secure-storage account is captured from a durable operating-system
 identity, not the mutable shell `USER` value: POSIX uses numeric `uid:<uid>` and
 Windows uses the DPAPI-bound `current-user` identity. Explicit migration
 reconstructs the historical `USER`-derived account. If the original account
 name is no longer in the environment, pass
-`--retired-vault-account <name>` to both check and apply; the value selects only
+`--retired-secure-storage-account <name>` to both check and apply; the value selects only
 the retired source and never changes ordinary runtime identity.
 
 In this reference, **retired** means there is no ordinary runtime reader,
@@ -186,8 +186,8 @@ the explicit, one-way migration/rejection boundary so existing installations
 can be diagnosed and converted without silently guessing.
 
 ```text
-agenc config migrate check [--confirm-retired-writers-stopped] [--retire-shared-native-vault] [--retired-vault-account <name>]
-agenc config migrate apply [--confirm-retired-writers-stopped] [--retire-shared-native-vault] [--retired-vault-account <name>]
+agenc config migrate check [--confirm-retired-writers-stopped] [--retire-shared-secure-storage] [--retired-secure-storage-account <name>]
+agenc config migrate apply [--confirm-retired-writers-stopped] [--retire-shared-secure-storage] [--retired-secure-storage-account <name>]
 agenc config migrate rollback <journal-id>
 ```
 
@@ -197,7 +197,7 @@ a check with the flag and pass the same flag to apply. The flag is an explicit
 ownership and process-quiescence assertion, not a general migration
 prerequisite; it is refused when the backend cannot identify one exact record.
 Any migration that deletes or rewrites a retired plaintext credential source,
-or deletes a native-vault source, requires
+or deletes a native secure storage source, requires
 `--confirm-retired-writers-stopped` on apply. This is an explicit assertion
 that every old AgenC process capable of recreating a source or stale-writing a
 credential blob was stopped before the reviewed check and will remain stopped
@@ -210,11 +210,11 @@ parse, archive, or rewrite retired inputs. Use the explicit check/apply flow for
 every v1 TOML, JSON, state, trust, or credential migration.
 
 Run `migrate check` and review its conflicts before `apply`. If the native
-vault is unavailable, or its existing value conflicts with the retired source,
+secure storage is unavailable, or its existing value conflicts with the retired source,
 apply leaves every plaintext source untouched and performs no migration. Once
 a credential source has been deleted or sanitized, recovery is intentionally
 one-way: config and state files may be restored, while the credential remains
-only in the native vault.
+only in the native secure storage.
 
 Examples of migration-only names include `tools`, `sandbox_policy`,
 `editorMode`, `enabledPlugins`, `effortLevel`, profile `web_search`/`tools`,
@@ -228,7 +228,7 @@ transports, OAuth blocks, dynamic header helpers, and other fields without a
 lossless canonical representation are reported as conflicts. Retired gateway
 policy JSON moves to `[gateway]`. Plaintext `gateway/env`,
 `gateway/hooks-token`, and `gateway/webchat-token` inputs move one way into the
-native credential vault and are deleted only after its commit succeeds. These
+native secure storage and are deleted only after its commit succeeds. These
 removed names are rejected in a v2 document. The migration-only `_unknown`
 normalization side table exists only to report unmapped v1/JSON data;
 `_unknown` itself is not accepted in schema v2.
@@ -447,7 +447,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `sandbox.ripgrep.command` | Required non-empty ripgrep-compatible command. |
 | `sandbox.ripgrep.args` | Optional command-argument string array. |
 | `shell_environment_policy` | Explicit child-shell environment injection block. |
-| `shell_environment_policy.set`, `shell_environment_policy.set.<name>` | Explicit non-secret string environment map. Credential-like names (`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `AUTHORIZATION`, and related families) are rejected; supply credentials through the documented process environment or native vault instead. |
+| `shell_environment_policy.set`, `shell_environment_policy.set.<name>` | Explicit non-secret string environment map. Credential-like names (`*_API_KEY`, `*_TOKEN`, `*_SECRET`, `*_PASSWORD`, `AUTHORIZATION`, and related families) are rejected; supply credentials through the documented process environment or native secure storage instead. |
 
 ### Authentication, providers, and profiles
 
@@ -563,8 +563,8 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `plugins.plugins.<plugin>.mcp_servers.<name>.tools`, `plugins.plugins.<plugin>.mcp_servers.<name>.tools.<name>` | Per-tool blocks. |
 | `plugins.plugins.<plugin>.mcp_servers.<name>.tools.<name>.default_permission_mode` | Per-tool approval default. Enablement belongs only in the server lists. |
 | `pluginConfigs`, `pluginConfigs.<plugin>` | Plugin preference map. |
-| `pluginConfigs.<plugin>.mcpServers`, `pluginConfigs.<plugin>.mcpServers.<server>`, `pluginConfigs.<plugin>.mcpServers.<server>.<name>` | Open per-server maps for manifest-declared non-sensitive preferences. Sensitive fields belong only in the native vault and are rejected here. |
-| `pluginConfigs.<plugin>.options`, `pluginConfigs.<plugin>.options.<name>` | Open maps for manifest-declared non-sensitive plugin values: string, number, boolean, or string array. Sensitive fields belong only in the native vault and are rejected here. |
+| `pluginConfigs.<plugin>.mcpServers`, `pluginConfigs.<plugin>.mcpServers.<server>`, `pluginConfigs.<plugin>.mcpServers.<server>.<name>` | Open per-server maps for manifest-declared non-sensitive preferences. Sensitive fields belong only in the native secure storage and are rejected here. |
+| `pluginConfigs.<plugin>.options`, `pluginConfigs.<plugin>.options.<name>` | Open maps for manifest-declared non-sensitive plugin values: string, number, boolean, or string array. Sensitive fields belong only in the native secure storage and are rejected here. |
 
 ### LSP, IDE, attachments, and private paths
 
@@ -652,7 +652,7 @@ keybinding file or watcher.
 | `gateway.hooks.allowNonLoopback` | Explicit non-loopback bind opt-in. |
 
 Gateway bot tokens and generated hook/WebChat bearer tokens are not config.
-They live in the home-bound native credential vault or a documented one-shot
+They live in the home-bound native secure storage or a documented one-shot
 environment ingress.
 
 ### Daemon, browser, budget, heartbeat, and transaction guard
@@ -704,8 +704,8 @@ agenc config unset <dot.path>
 agenc config validate
 agenc config edit
 agenc config path
-agenc config migrate check [--confirm-retired-writers-stopped] [--retire-shared-native-vault] [--retired-vault-account <name>]
-agenc config migrate apply [--confirm-retired-writers-stopped] [--retire-shared-native-vault] [--retired-vault-account <name>]
+agenc config migrate check [--confirm-retired-writers-stopped] [--retire-shared-secure-storage] [--retired-secure-storage-account <name>]
+agenc config migrate apply [--confirm-retired-writers-stopped] [--retire-shared-secure-storage] [--retired-secure-storage-account <name>]
 agenc config migrate rollback <journal-id>
 ```
 

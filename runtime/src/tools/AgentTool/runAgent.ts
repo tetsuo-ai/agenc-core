@@ -750,7 +750,11 @@ export async function* runAgent({
     ? []
     : agentDefinition.skills ?? []
   if (skillsToPreload.length > 0) {
-    const allSkills = await getSkillToolCommands(getProjectRoot())
+    const allSkills = await getSkillToolCommands(
+      getProjectRoot(),
+      null,
+      toolUseContext.skillsManager,
+    )
 
     // Filter valid skills and warn about missing ones
     const validSkills: Array<{

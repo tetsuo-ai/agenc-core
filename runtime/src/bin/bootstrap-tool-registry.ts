@@ -1,5 +1,6 @@
 import type { MCPManager } from "../mcp-client/manager.js";
 import type { Session } from "../session/session.js";
+import type { AgentRoleCatalog } from "../agents/role-catalog.js";
 import {
   buildToolRegistry,
   type BuildToolRegistryOptions,
@@ -17,6 +18,7 @@ export interface BootstrapToolRegistryOptions {
   readonly environment?: ProviderEnvironment;
   readonly mcpManager: MCPManager;
   readonly getSession: () => Session | null;
+  readonly roleCatalog?: AgentRoleCatalog;
   readonly csvAgentJobsRepositories: CsvAgentJobsRepositoryProvider;
   readonly emitWarning: (warning: {
     readonly cause: string;
@@ -37,6 +39,9 @@ export function buildBootstrapToolRegistry(
       ? { agencHome: options.agencHome }
       : {}),
     getSession: options.getSession,
+    ...(options.roleCatalog !== undefined
+      ? { roleCatalog: options.roleCatalog }
+      : {}),
     csvAgentJobsRepositories: options.csvAgentJobsRepositories,
     ...(options.toolRegistryOptions?.unifiedExecManager !== undefined
       ? { unifiedExecManager: options.toolRegistryOptions.unifiedExecManager }

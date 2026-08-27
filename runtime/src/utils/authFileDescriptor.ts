@@ -7,12 +7,12 @@ import {
   type RemoteRuntimeCredentialName,
 } from './secureStorage/remoteRuntimeCredentials.js'
 import type { HomeContext } from '../config/home.js'
-import { nativeVaultIdentityKey } from './secureStorage/home.js'
+import { secureStorageIdentityKey } from './secureStorage/home.js'
 
 type DescriptorEnvironment = Readonly<Record<string, string | undefined>>
 
 // Descriptors may be one-shot streams. Cache only successful reads and bind
-// them to both the native-vault home and descriptor identity; native-vault
+// them to both the native secure storage home and descriptor identity; native secure storage
 // reads remain live so another session/process update is immediately visible.
 const descriptorCredentialCache = new Map<string, string>()
 
@@ -34,7 +34,7 @@ function getCredentialFromFd({
     return readRemoteRuntimeCredential(home, storageName)
   }
 
-  const cacheKey = `${nativeVaultIdentityKey(home)}\0${storageName}\0${fdEnv}`
+  const cacheKey = `${secureStorageIdentityKey(home)}\0${storageName}\0${fdEnv}`
   const cached = descriptorCredentialCache.get(cacheKey)
   if (cached !== undefined) return cached
 
@@ -80,7 +80,7 @@ function getCredentialFromFd({
       { level: 'error' },
     )
     // A subprocess may inherit the descriptor number without inheriting the
-    // descriptor itself. The native vault is the only persisted fallback.
+    // descriptor itself. The native secure storage is the only persisted fallback.
     const persisted = readRemoteRuntimeCredential(home, storageName)
     return persisted
   }
@@ -88,7 +88,7 @@ function getCredentialFromFd({
 
 /**
  * Get the CCR-injected OAuth token. The descriptor is the explicit transient
- * source; the home-scoped native vault is the only persisted source.
+ * source; the home-scoped native secure storage is the only persisted source.
  */
 export function getOAuthTokenFromFileDescriptor(
   home: HomeContext,
@@ -105,7 +105,7 @@ export function getOAuthTokenFromFileDescriptor(
 
 /**
  * Get the CCR-injected API key. The descriptor is the explicit transient
- * source; the home-scoped native vault is the only persisted source.
+ * source; the home-scoped native secure storage is the only persisted source.
  */
 export function getApiKeyFromFileDescriptor(
   home: HomeContext,

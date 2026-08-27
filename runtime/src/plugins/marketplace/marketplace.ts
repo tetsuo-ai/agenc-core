@@ -1,25 +1,34 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { statSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { resolveHomeContext } from "../../config/home.js";
-import { duplicateJsonObjectPaths } from "../../config/json.js";
 import {
   getKnownMarketplacesFilePath,
   loadKnownMarketplacesConfig,
+  normalizeMarketplaceName,
+  removeMarketplaceInventoryEntryForRepair,
+  sanitizeMarketplaceInstallName,
   updateMarketplaceInventory,
   type MarketplaceInventory,
   type MarketplaceInventoryMutationAuthority,
   type KnownMarketplace,
 } from "./inventory.js";
+import { ConfigParseError } from "../../utils/errors.js";
+import {
+  parseMarketplaceManifestText,
+  type MarketplaceCatalogPluginSource,
+  type MarketplacePluginAuthPolicy,
+  type MarketplacePluginInstallPolicy,
+  type RawMarketplaceManifest,
+  type RawMarketplaceManifestPlugin,
+} from "./catalog.js";
 import type {
   MarketplaceSource as InventoryMarketplaceSource,
 } from "../../utils/plugins/schemas.js";
-import { isRecord } from "../../utils/record.js";
-import { sanitizePluginId } from "../directories.js";
+import { pluginMarketplaceRootPath } from "../directories.js";
 import { loadPluginManifest } from "../manifest.js";
 import type { PluginManifest, PluginManifestInterface } from "../manifest-schema.js";
-import { validateMarketplaceManifest } from "../validation.js";
 import {
   assertHttpsOrLoopbackUrl,
   fetchWithTimeout as fetchWithTimeoutGuard,
@@ -61,12 +70,12 @@ export interface MarketplaceInterface {
   readonly displayName?: string;
 }
 
-export type MarketplacePluginInstallPolicy =
-  | "NOT_AVAILABLE"
-  | "AVAILABLE"
-  | "INSTALLED_BY_DEFAULT";
-
-export type MarketplacePluginAuthPolicy = "ON_INSTALL" | "ON_USE";
+export type {
+  MarketplacePluginAuthPolicy,
+  MarketplacePluginInstallPolicy,
+  RawMarketplaceManifest,
+  RawMarketplaceManifestPlugin,
+} from "./catalog.js";
 
 export interface MarketplacePluginPolicy {
   readonly installation: MarketplacePluginInstallPolicy;
@@ -154,7 +163,7 @@ export type Fetcher = (
 ) => Promise<FetchResponse>;
 
 export interface MarketplaceOperationOptions {
-  readonly agencHome?: string;
+  readonly pluginStorageRoot: string;
   readonly workspaceRoot?: string;
   readonly env?: NodeJS.ProcessEnv;
   readonly now?: () => Date;
@@ -182,8 +191,10 @@ export interface RemoveMarketplaceInput extends MarketplaceOperationOptions {
 }
 
 export interface RemoveMarketplaceResult {
-  readonly marketplace: MarketplaceRecord;
+  readonly marketplaceName: string;
+  readonly marketplace?: MarketplaceRecord;
   readonly removedInstall: boolean;
+  readonly repairedInventory: boolean;
 }
 
 export interface UpgradeMarketplaceInput extends MarketplaceOperationOptions {
@@ -206,49 +217,26 @@ export interface UpgradeMarketplaceResult {
   readonly skipped: readonly SkippedMarketplaceUpgradeResult[];
 }
 
-export interface RawMarketplaceManifest {
-  readonly name?: string;
-  readonly metadata?: {
-    readonly name?: string;
-    readonly displayName?: string;
-  };
-  readonly interface?: {
-    readonly displayName?: string;
-  };
-  readonly plugins: readonly RawMarketplaceManifestPlugin[];
-}
-
-export interface RawMarketplaceManifestPlugin {
-  readonly name: string;
-  readonly source: unknown;
-  readonly policy?: {
-    readonly installation?: MarketplacePluginInstallPolicy;
-    readonly authentication?: MarketplacePluginAuthPolicy;
-    readonly products?: readonly string[];
-  };
-  readonly category?: string;
-}
-
 const MARKETPLACE_MANIFEST_RELATIVE_PATH = ".agenc-plugin/marketplace.json";
-const RESERVED_MARKETPLACE_NAMES = new Set(["agenc", "builtin", "curated"]);
-const MARKETPLACE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/u;
 const DEFAULT_GIT_TIMEOUT_MS = 120_000;
 const DEFAULT_GIT_MAX_OUTPUT_BYTES = 1_048_576;
 const MARKETPLACE_URL_MANIFEST_MAX_BYTES = 1 * 1024 * 1024;
 const GIT_NO_HOOKS_ARGS = ["-c", "core.hooksPath=/dev/null"] as const;
 
-export function marketplaceStoreRoot(options: MarketplaceOperationOptions = {}): string {
-  return join(resolveMarketplaceAgencHome(options), "plugins", "marketplaces");
+export function marketplaceStoreRoot(options: MarketplaceOperationOptions): string {
+  return pluginMarketplaceRootPath({
+    pluginStorageRoot: options.pluginStorageRoot,
+  });
 }
 
 export function marketplaceInstalledPath(
   name: string,
-  options: MarketplaceOperationOptions = {},
+  options: MarketplaceOperationOptions,
 ): string {
   return join(marketplaceStoreRoot(options), sanitizeMarketplaceInstallName(name));
 }
 
-export function marketplaceIndexPath(options: MarketplaceOperationOptions = {}): string {
+export function marketplaceIndexPath(options: MarketplaceOperationOptions): string {
   return getKnownMarketplacesFilePath(marketplaceInventoryAuthority(options));
 }
 
@@ -256,7 +244,7 @@ function marketplaceInventoryAuthority(
   options: MarketplaceOperationOptions,
 ): MarketplaceInventoryMutationAuthority {
   return {
-    pluginsDirectory: join(resolveMarketplaceAgencHome(options), "plugins"),
+    pluginsDirectory: options.pluginStorageRoot,
   };
 }
 
@@ -365,7 +353,7 @@ function marketplaceInventoryFromRecord(
 }
 
 export async function readMarketplaceIndex(
-  options: MarketplaceOperationOptions = {},
+  options: MarketplaceOperationOptions,
 ): Promise<MarketplaceIndex> {
   const inventory = await loadKnownMarketplacesConfig(
     marketplaceInventoryAuthority(options),
@@ -382,12 +370,6 @@ export async function addMarketplaceOp(
   const staged = await stageMarketplaceSource(source, input);
   try {
     const manifestPath = await resolveMarketplaceManifestPath(staged.root, staged.manifestHint);
-    const validation = await validateMarketplaceManifest(manifestPath);
-    if (!validation.success) {
-      throw new Error(
-        `marketplace manifest failed validation: ${validation.errors.map((error) => error.message).join("; ")}`,
-      );
-    }
     const manifest = await readMarketplaceManifest(manifestPath);
     const name = normalizeMarketplaceName(
       input.name ?? inferMarketplaceName(manifest, source),
@@ -435,28 +417,21 @@ export async function addMarketplaceOp(
 export async function removeMarketplaceOp(
   input: RemoveMarketplaceInput,
 ): Promise<RemoveMarketplaceResult> {
-  let installedPath: string | undefined;
-  let quarantinePath: string | undefined;
-  let quarantined = false;
+  const name = normalizeMarketplaceName(input.name);
+  let removal: QuarantinedMarketplaceInstall | undefined;
+  let inventoryCommitted = false;
   try {
     const marketplace = await updateMarketplaceInventory(
       marketplaceInventoryAuthority(input),
       async (inventory) => {
         const index = marketplaceIndexFromInventory(inventory);
-        const matchedName = findMarketplaceName(index, input.name);
-        if (matchedName === undefined) {
-          throw new Error(`marketplace is not configured: ${input.name}`);
+        const current = index.marketplaces[name];
+        if (current === undefined) {
+          throw new Error(`marketplace is not configured: ${name}`);
         }
-        const current = index.marketplaces[matchedName]!;
-        installedPath = marketplaceInstalledPath(current.name, input);
-        await assertMarketplaceInstallPath(installedPath, input);
-        quarantinePath = `${installedPath}.removed-${process.pid}-${Date.now()}`;
-        if (await pathExists(installedPath)) {
-          await rename(installedPath, quarantinePath);
-          quarantined = true;
-        }
+        removal = await quarantineMarketplaceInstall(current.name, input);
         const nextMarketplaces = { ...index.marketplaces };
-        delete nextMarketplaces[matchedName];
+        delete nextMarketplaces[name];
         return {
           inventory: marketplaceInventoryFromIndex({
             version: 1,
@@ -466,18 +441,88 @@ export async function removeMarketplaceOp(
         };
       },
     );
-    if (quarantined && quarantinePath !== undefined) {
-      await rm(quarantinePath, { recursive: true, force: true });
-    }
-    return { marketplace, removedInstall: quarantined };
+    inventoryCommitted = true;
+    await discardQuarantinedMarketplaceInstall(removal);
+    return {
+      marketplaceName: marketplace.name,
+      marketplace,
+      removedInstall: removal?.quarantined === true,
+      repairedInventory: false,
+    };
   } catch (error) {
-    if (
-      quarantined &&
-      installedPath !== undefined &&
-      quarantinePath !== undefined &&
-      await pathExists(quarantinePath)
-    ) {
-      await rename(quarantinePath, installedPath);
+    if (!inventoryCommitted) {
+      await restoreQuarantinedMarketplaceInstall(removal);
+    }
+    if (!inventoryCommitted && error instanceof ConfigParseError) {
+      return removeMarketplaceFromInvalidInventory(input, name, error);
+    }
+    throw error;
+  }
+}
+
+interface QuarantinedMarketplaceInstall {
+  readonly installedPath: string;
+  readonly quarantinePath: string;
+  readonly quarantined: boolean;
+}
+
+async function quarantineMarketplaceInstall(
+  name: string,
+  input: MarketplaceOperationOptions,
+): Promise<QuarantinedMarketplaceInstall> {
+  const installedPath = marketplaceInstalledPath(name, input);
+  await assertMarketplaceInstallPath(installedPath, input);
+  const quarantinePath = `${installedPath}.removed-${process.pid}-${randomUUID()}`;
+  const quarantined = await pathExists(installedPath);
+  if (quarantined) await rename(installedPath, quarantinePath);
+  return { installedPath, quarantinePath, quarantined };
+}
+
+async function discardQuarantinedMarketplaceInstall(
+  removal: QuarantinedMarketplaceInstall | undefined,
+): Promise<void> {
+  if (removal?.quarantined === true) {
+    await rm(removal.quarantinePath, { recursive: true, force: true });
+  }
+}
+
+async function restoreQuarantinedMarketplaceInstall(
+  removal: QuarantinedMarketplaceInstall | undefined,
+): Promise<void> {
+  if (
+    removal?.quarantined === true &&
+    await pathExists(removal.quarantinePath)
+  ) {
+    await rename(removal.quarantinePath, removal.installedPath);
+  }
+}
+
+async function removeMarketplaceFromInvalidInventory(
+  input: RemoveMarketplaceInput,
+  name: string,
+  parseError: ConfigParseError,
+): Promise<RemoveMarketplaceResult> {
+  let removal: QuarantinedMarketplaceInstall | undefined;
+  let inventoryRepaired = false;
+  try {
+    const removed = await removeMarketplaceInventoryEntryForRepair(
+      marketplaceInventoryAuthority(input),
+      name,
+      async () => {
+        removal = await quarantineMarketplaceInstall(name, input);
+      },
+    );
+    if (!removed) throw parseError;
+    inventoryRepaired = true;
+    await discardQuarantinedMarketplaceInstall(removal);
+    return {
+      marketplaceName: name,
+      removedInstall: removal?.quarantined === true,
+      repairedInventory: true,
+    };
+  } catch (error) {
+    if (!inventoryRepaired) {
+      await restoreQuarantinedMarketplaceInstall(removal);
     }
     throw error;
   }
@@ -609,26 +654,6 @@ export function findMarketplaceManifestPath(root: string): string | undefined {
     return undefined;
   }
   return undefined;
-}
-
-function normalizeMarketplaceName(name: string): string {
-  const trimmed = name.trim();
-  if (trimmed.length === 0) {
-    throw new Error("marketplace name cannot be empty");
-  }
-  if (!MARKETPLACE_NAME_RE.test(trimmed)) {
-    throw new Error(
-      "marketplace name must be an alphanumeric segment with only '.', '_', or '-' separators",
-    );
-  }
-  if (RESERVED_MARKETPLACE_NAMES.has(trimmed.toLowerCase())) {
-    throw new Error(`marketplace name is reserved: ${trimmed}`);
-  }
-  return trimmed;
-}
-
-function sanitizeMarketplaceInstallName(name: string): string {
-  return sanitizePluginId(normalizeMarketplaceName(name));
 }
 
 function findMarketplaceName(
@@ -1021,43 +1046,32 @@ async function resolveMarketplacePluginEntry(
 
 async function resolvePluginSource(
   marketplacePath: string,
-  source: unknown,
+  source: MarketplaceCatalogPluginSource,
 ): Promise<MarketplacePluginSource> {
   if (typeof source === "string") {
     return { type: "local", path: await resolveLocalPluginSourcePath(marketplacePath, source) };
   }
-  if (!isRecord(source)) {
-    throw new Error("marketplace plugin source must be a string or object");
-  }
-  if (source.source === "local" && typeof source.path === "string") {
-    return { type: "local", path: await resolveLocalPluginSourcePath(marketplacePath, source.path) };
-  }
   if (source.source === "local") {
-    throw new Error("local marketplace plugin source must include a string path");
+    return {
+      type: "local",
+      path: await resolveLocalPluginSourcePath(marketplacePath, source.path),
+    };
   }
   if (
-    (source.source === "url" || source.source === "git-subdir" || source.source === "git") &&
-    typeof source.url === "string"
+    source.source === "url" ||
+    source.source === "git-subdir" ||
+    source.source === "git"
   ) {
-    const path = typeof source.path === "string"
+    const path = source.path !== undefined
       ? normalizeRemotePluginSubdir(marketplacePath, source.path)
       : undefined;
-    if (source.source === "git-subdir" && path === undefined) {
-      throw new Error("git-subdir marketplace plugin source must include a path");
-    }
     return {
       type: "git",
       url: normalizeMarketplacePluginGitUrl(marketplacePath, source.url),
       ...(path !== undefined ? { path } : {}),
-      ...(typeof source.ref === "string" && source.ref.trim() ? { ref: source.ref.trim() } : {}),
-      ...(typeof source.sha === "string" && source.sha.trim() ? { sha: source.sha.trim() } : {}),
+      ...(source.ref !== undefined ? { ref: source.ref } : {}),
+      ...(source.sha !== undefined ? { sha: source.sha } : {}),
     };
-  }
-  if (source.source === "git-subdir") {
-    throw new Error("git-subdir marketplace plugin source must include a string url and path");
-  }
-  if (source.source === "git" || source.source === "url") {
-    throw new Error("git marketplace plugin source must include a string url");
   }
   throw new Error("unsupported marketplace plugin source");
 }
@@ -1267,83 +1281,7 @@ function marketplaceRootDir(marketplacePath: string): string {
 
 async function readMarketplaceManifest(path: string): Promise<RawMarketplaceManifest> {
   const content = await readFile(path, "utf8");
-  const duplicatePaths = duplicateJsonObjectPaths(content);
-  if (duplicatePaths.length > 0) {
-    throw new Error(
-      `marketplace manifest contains duplicate object keys: ${duplicatePaths.join(", ")}`,
-    );
-  }
-  const parsed = JSON.parse(content);
-  if (!isRecord(parsed) || !Array.isArray(parsed.plugins)) {
-    throw new Error("marketplace manifest must define a plugins array");
-  }
-  const plugins = parsed.plugins.map((entry, index) => normalizeRawMarketplacePlugin(entry, index));
-  assertNoDuplicateMarketplacePlugins(plugins);
-  return {
-    ...(typeof parsed.name === "string" ? { name: parsed.name } : {}),
-    ...(isRecord(parsed.metadata) ? { metadata: parsed.metadata as RawMarketplaceManifest["metadata"] } : {}),
-    ...(isRecord(parsed.interface) ? { interface: parsed.interface as RawMarketplaceManifest["interface"] } : {}),
-    plugins,
-  };
-}
-
-function normalizeRawMarketplacePlugin(entry: unknown, index: number): RawMarketplaceManifestPlugin {
-  if (!isRecord(entry)) {
-    throw new Error(`marketplace manifest plugin at index ${index} must be an object`);
-  }
-  if (typeof entry.name !== "string" || entry.name.trim().length === 0) {
-    throw new Error(`marketplace manifest plugin at index ${index} must define a non-empty name`);
-  }
-  if (!("source" in entry)) {
-    throw new Error(`marketplace manifest plugin '${entry.name}' must define source`);
-  }
-  return {
-    name: entry.name,
-    source: entry.source,
-    ...(isRecord(entry.policy) ? { policy: normalizeRawMarketplacePluginPolicy(entry.name, entry.policy) } : {}),
-    ...(typeof entry.category === "string" ? { category: entry.category } : {}),
-  };
-}
-
-function normalizeRawMarketplacePluginPolicy(
-  pluginName: string,
-  policy: Readonly<Record<string, unknown>>,
-): RawMarketplaceManifestPlugin["policy"] {
-  if (
-    policy.installation !== undefined &&
-    policy.installation !== "NOT_AVAILABLE" &&
-    policy.installation !== "AVAILABLE" &&
-    policy.installation !== "INSTALLED_BY_DEFAULT"
-  ) {
-    throw new Error(`marketplace manifest plugin '${pluginName}' has invalid installation policy`);
-  }
-  if (
-    policy.authentication !== undefined &&
-    policy.authentication !== "ON_INSTALL" &&
-    policy.authentication !== "ON_USE"
-  ) {
-    throw new Error(`marketplace manifest plugin '${pluginName}' has invalid authentication policy`);
-  }
-  if (policy.products !== undefined && !isStringArray(policy.products)) {
-    throw new Error(`marketplace manifest plugin '${pluginName}' products policy must be an array of strings`);
-  }
-  return {
-    ...(policy.installation !== undefined ? { installation: policy.installation } : {}),
-    ...(policy.authentication !== undefined ? { authentication: policy.authentication } : {}),
-    ...(policy.products !== undefined ? { products: policy.products } : {}),
-  };
-}
-
-function assertNoDuplicateMarketplacePlugins(plugins: readonly RawMarketplaceManifestPlugin[]): void {
-  const seen = new Map<string, string>();
-  for (const plugin of plugins) {
-    const key = sanitizePluginId(plugin.name).toLowerCase();
-    const existing = seen.get(key);
-    if (existing !== undefined) {
-      throw new Error(`marketplace manifest has duplicate plugin names: '${existing}' and '${plugin.name}'`);
-    }
-    seen.set(key, plugin.name);
-  }
+  return parseMarketplaceManifestText(content);
 }
 
 function inferMarketplaceName(manifest: RawMarketplaceManifest, source: MarketplaceSource): string {
@@ -1454,16 +1392,7 @@ function requireMarketplaceEnvironment(
   return options.env;
 }
 
-function resolveMarketplaceAgencHome(options: MarketplaceOperationOptions = {}): string {
-  if (options.agencHome !== undefined) return resolve(options.agencHome);
-  const env = requireMarketplaceEnvironment(options);
-  return resolveHomeContext(
-    env,
-    env.HOME === undefined ? {} : { platformHome: env.HOME },
-  ).path;
-}
-
-function resolveMarketplaceWorkspaceRoot(options: MarketplaceOperationOptions = {}): string {
+function resolveMarketplaceWorkspaceRoot(options: MarketplaceOperationOptions): string {
   if (options.workspaceRoot === undefined) {
     throw new Error(
       "Marketplace operations require an explicit workspace root",
@@ -1538,9 +1467,6 @@ function redactSensitiveText(value: string): string {
     .replace(/((?:token|access_token|password|apikey|api_key)=)[^&\s]+/giu, "$1<redacted>");
 }
 
-function isStringArray(value: unknown): value is readonly string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
-}
 
 async function pathExists(path: string): Promise<boolean> {
   try {

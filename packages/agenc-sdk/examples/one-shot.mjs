@@ -5,7 +5,8 @@
  * Build the package first, then run from the repo root:
  *
  *   npm run build --workspace=@tetsuo-ai/agenc-sdk
- *   node packages/agenc-sdk/examples/one-shot.mjs "say hello in one word"
+ *   AGENC_PLUGIN_CACHE_DIR=/absolute/path/to/agenc/plugins \
+ *     node packages/agenc-sdk/examples/one-shot.mjs "say hello in one word"
  *   node packages/agenc-sdk/examples/one-shot.mjs --transport subprocess "say hello"
  *
  * The daemon transport talks JSON-RPC over the local Unix socket or Windows
@@ -55,7 +56,13 @@ if (transport === "subprocess") {
     },
   });
   try {
-    const session = await client.createSession();
+    const pluginStorageRoot = process.env.AGENC_PLUGIN_CACHE_DIR;
+    if (pluginStorageRoot === undefined) {
+      throw new Error(
+        "Set AGENC_PLUGIN_CACHE_DIR to the exact absolute plugin storage root",
+      );
+    }
+    const session = await client.createSession({ pluginStorageRoot });
     exitCode = await consume(session.prompt(prompt));
     await session.terminate("example done");
   } finally {

@@ -765,6 +765,7 @@ async function createBoundAgenCDaemonOnlyTuiContext(
   });
   const skillsServices = createLocalSkillsServices({
     agencHome,
+    pluginStorageRoot: runtimeOptions.pluginStorageRoot,
     workspaceRoot: roleWorkspace.cwd,
     config: effectiveConfig,
     env: {
@@ -809,7 +810,10 @@ async function createBoundAgenCDaemonOnlyTuiContext(
       allowGpu: effectiveConfig.sandbox?.allow_gpu === true,
     });
     const activeSandboxExecutionBroker = sandboxExecutionBroker;
-    const agentDefinitions = await loadFreshAgentDefinitions(roleWorkspace.cwd);
+    const agentDefinitions = await loadFreshAgentDefinitions(
+      roleWorkspace.cwd,
+      runtimeOptions.pluginStorageRoot,
+    );
     const abortController = new AbortController();
     let nextEventId = 0;
     const sandboxAuthority = captureDaemonTuiSandboxAuthority(

@@ -14,6 +14,7 @@ import {
 import { asRecord, isRecord } from "../utils/record.js";
 import type { Session } from "./session.js";
 import { modelContextWindow, type TurnContext } from "./turn-context.js";
+import { getAttachmentTrackingState } from "./attachment-state.js";
 
 export interface AgenCModelContext {
   readonly model: string;
@@ -63,6 +64,8 @@ export interface AgenCToolUseContext {
   readonly appendSystemMessage?: (message: unknown) => void;
   readonly readFileState: FileStateCache;
   readonly loadedNestedMemoryPaths: Set<string>;
+  readonly dynamicSkillDirTriggers: Set<string>;
+  readonly skillsManager: Session["services"]["skillsManager"];
   readonly setStreamMode: (mode: "requesting" | "responding" | null) => void;
   readonly setResponseLength: (updater: (length: number) => number) => void;
   readonly onCompactProgress: (event: unknown) => void;
@@ -101,6 +104,7 @@ type SessionSurface = {
   readonly appendSystemMessage?: (message: unknown) => void;
   readonly readFileState?: FileStateCache;
   readonly loadedNestedMemoryPaths?: Set<string>;
+  readonly dynamicSkillDirTriggers?: Set<string>;
   readonly mcpClients?: readonly unknown[];
   readonly agentDefinitions?: {
     readonly agentRoleWorkspaceId?: string;
@@ -190,6 +194,7 @@ export function buildAgenCToolUseContext(
   const setAppStateForTasks = surface.setAppStateForTasks ?? setAppState;
   const appendSystemMessage =
     surface.appendSystemMessage ?? createSessionSystemMessageAppender(session);
+  const attachmentState = getAttachmentTrackingState(session);
 
   return {
     abortController: session.abortController ?? new AbortController(),
@@ -224,7 +229,10 @@ export function buildAgenCToolUseContext(
       surface.readFileState ??
       createFileStateCacheWithSizeLimit(READ_FILE_STATE_CACHE_SIZE),
     loadedNestedMemoryPaths:
-      surface.loadedNestedMemoryPaths ?? new Set<string>(),
+      surface.loadedNestedMemoryPaths ?? attachmentState.loadedNestedMemoryPaths,
+    dynamicSkillDirTriggers:
+      surface.dynamicSkillDirTriggers ?? attachmentState.dynamicSkillDirTriggers,
+    skillsManager: session.services.skillsManager,
     setStreamMode: surface.setStreamMode ?? (() => {}),
     setResponseLength: surface.setResponseLength ?? (() => {}),
     onCompactProgress: surface.onCompactProgress ?? (() => {}),
@@ -413,6 +421,7 @@ function readSessionSurface(session: Session): SessionSurface {
     ),
     readFileState: read<FileStateCache>("readFileState"),
     loadedNestedMemoryPaths: read<Set<string>>("loadedNestedMemoryPaths"),
+    dynamicSkillDirTriggers: read<Set<string>>("dynamicSkillDirTriggers"),
     mcpClients: read<readonly unknown[]>("mcpClients"),
     agentDefinitions:
       read<SessionSurface["agentDefinitions"]>("agentDefinitions"),

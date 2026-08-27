@@ -305,7 +305,7 @@ export async function runAutonomyAct(
       io.say('    -H "content-type: application/json" \\');
       io.say('    -d \'{"message":"ping from my first webhook"}\'');
       io.say("");
-      io.say("(Token stored in the home-bound native credential vault.)");
+      io.say("(Token stored in the home-bound native secure storage.)");
     }
   }
 

@@ -12,7 +12,8 @@ import {
   switchSession,
 } from '../../../src/bootstrap/state.js'
 import { resolveHomeContext } from '../../../src/config/home.js'
-import { nativeVaultIdentityKey } from '../../../src/utils/secureStorage/home.js'
+import { secureStorageIdentityKey } from '../../../src/utils/secureStorage/home.js'
+import { resolveSessionTempRoot } from '../../../src/session/runtime-options.js'
 import { resetProjectForTesting } from '../../../src/utils/sessionStorage.js'
 import { getToolResultsDir } from '../../../src/utils/toolResultStorage.js'
 import {
@@ -149,13 +150,18 @@ function seedConnectionCache(
   config: MCPServerConnection['config'],
   connection: MCPServerConnection,
   home?: ReturnType<typeof resolveHomeContext>,
-): void {
-  const key = `${name}-${JSON.stringify(config)}${home ? `-vault-${nativeVaultIdentityKey(home)}` : ''}`
+): string {
+  const sessionTempRootKey =
+    config.type === 'stdio' || config.type === undefined
+      ? `-session-temp-${JSON.stringify(resolveSessionTempRoot())}`
+      : ''
+  const key = `${name}-${JSON.stringify(config)}${home ? `-secure-storage-${secureStorageIdentityKey(home)}` : ''}${sessionTempRootKey}`
   ;(
     connectToServer.cache as {
       set: (key: string, value: Promise<MCPServerConnection>) => unknown
     }
   ).set(key, Promise.resolve(connection))
+  return key
 }
 
 async function waitFor(
@@ -633,7 +639,7 @@ test('fetchResourcesForClient returns an empty list when resources/list omits re
 test('clearServerCache cleans up a cached connected server and invalidates its cache entry', async () => {
   let cleanupCalled = false
   const config = { type: 'stdio', command: 'demo', args: [], scope: 'local' } as const
-  seedConnectionCache(
+  const cacheKey = seedConnectionCache(
     'cached',
     config,
     connectedClient({
@@ -648,7 +654,7 @@ test('clearServerCache cleans up a cached connected server and invalidates its c
   await clearServerCache('cached', config)
 
   assert.equal(cleanupCalled, true)
-  assert.equal(connectToServer.cache.has(`${'cached'}-${JSON.stringify(config)}`), false)
+  assert.equal(connectToServer.cache.has(cacheKey), false)
 })
 
 test('connection cache keeps distinct empty session environment authorities isolated', async () => {

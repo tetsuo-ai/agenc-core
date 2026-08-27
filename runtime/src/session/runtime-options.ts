@@ -8,14 +8,16 @@ import {
   realpathSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, normalize } from "node:path";
+import { isAbsolute, join, normalize } from "node:path";
 import { parse as parseShellWords, type ParseEntry } from "shell-quote";
+import { resolveHomeContext } from "../config/home.js";
 import { isSupportedPosixShellPath } from "../utils/shell/posixShellPath.js";
 import {
   getCurrentRuntimeSession,
   peekScopedRuntimeSession,
 } from "./current-session.js";
 import { withChildTempAuthority } from "../utils/subprocessEnv.js";
+import { normalizeExactAbsolutePath } from "../utils/path-authority.js";
 
 /**
  * Session-scoped operator inputs that must never be inherited from the
@@ -32,7 +34,7 @@ export interface AgentRuntimeOptions {
   readonly posixShellPath?: string;
   readonly commandWrapperArgv?: readonly string[];
   readonly sessionTempRoot: string;
-  readonly pluginStorageRoot?: string;
+  readonly pluginStorageRoot: string;
   readonly allowUntrustedHooks: boolean;
 }
 
@@ -180,14 +182,16 @@ function optionalAbsolutePath(
 }
 
 function requiredAbsolutePath(value: string, key: string): string {
-  const resolved = optionalAbsolutePath(value, key);
-  if (resolved === undefined) {
-    throw new AgentRuntimeOptionsError(`${key} must be a non-empty absolute path`);
+  try {
+    return normalizeExactAbsolutePath(value, key);
+  } catch (error) {
+    throw new AgentRuntimeOptionsError(
+      error instanceof Error ? error.message : String(error),
+    );
   }
-  return resolved;
 }
 
-function establishSessionTempRoot(value: string, key: string): string {
+function establishWritableDirectoryAuthority(value: string, key: string): string {
   const requestedRoot = requiredAbsolutePath(value, key);
   try {
     const created = mkdirSync(requestedRoot, { recursive: true, mode: 0o700 });
@@ -197,7 +201,10 @@ function establishSessionTempRoot(value: string, key: string): string {
       throw new Error("path is not a directory");
     }
     if (created !== undefined) chmodSync(canonicalRoot, 0o700);
-    accessSync(canonicalRoot, fsConstants.W_OK | fsConstants.X_OK);
+    accessSync(
+      canonicalRoot,
+      fsConstants.R_OK | fsConstants.W_OK | fsConstants.X_OK,
+    );
     return canonicalRoot;
   } catch (error) {
     throw new AgentRuntimeOptionsError(
@@ -206,6 +213,48 @@ function establishSessionTempRoot(value: string, key: string): string {
       }`,
     );
   }
+}
+
+/** Resolve only the session temporary-directory authority at process ingress. */
+export function resolveSessionTempRootAtIngress(
+  env: NodeJS.ProcessEnv,
+  explicit?: string,
+): string {
+  return explicit !== undefined
+    ? establishWritableDirectoryAuthority(
+        explicit,
+        "runtimeOptions.sessionTempRoot",
+      )
+    : env.AGENC_TMPDIR !== undefined
+      ? establishWritableDirectoryAuthority(env.AGENC_TMPDIR, "AGENC_TMPDIR")
+      : establishWritableDirectoryAuthority(
+          DEFAULT_SESSION_TEMP_ROOT,
+          "platform temporary directory",
+        );
+}
+
+/** Resolve only the plugin storage authority at process ingress. */
+export function resolvePluginStorageRootAtIngress(
+  env: NodeJS.ProcessEnv,
+  explicit?: string,
+): string {
+  const selected = explicit ??
+    env.AGENC_PLUGIN_CACHE_DIR ??
+    join(
+      resolveHomeContext(
+        env,
+        env.HOME === undefined ? {} : { platformHome: env.HOME },
+      ).path,
+      "plugins",
+    );
+  return establishWritableDirectoryAuthority(
+    selected,
+    explicit !== undefined
+      ? "runtimeOptions.pluginStorageRoot"
+      : env.AGENC_PLUGIN_CACHE_DIR !== undefined
+        ? "AGENC_PLUGIN_CACHE_DIR"
+        : "default plugin storage directory",
+  );
 }
 
 function optionalPosixShellPath(
@@ -252,10 +301,6 @@ function parseWrapper(value: string | undefined): readonly string[] | undefined 
 export const RETIRED_AGENT_RUNTIME_ENV_REPLACEMENTS = Object.freeze({
   AGENC_SIMPLE: "use --bare",
   AGENC_BARE: "use --bare",
-  AGENC_PLUGIN_SEED_DIR:
-    "copy required versioned packages into $AGENC_HOME/plugins/cache (or AGENC_PLUGIN_CACHE_DIR/cache); layered seed directories were removed because plugin packages have one storage authority",
-  AGENC_PLUGIN_USE_ZIP_CACHE:
-    "remove it; plugins use the sole versioned directory cache under $AGENC_HOME/plugins/cache (or AGENC_PLUGIN_CACHE_DIR/cache)",
 } as const);
 
 /** Reject removed runtime-option aliases at every client/startup boundary. */
@@ -366,33 +411,14 @@ function resolveAgentRuntimeOptionsAtIngress(
       : parsedWrapper !== undefined
         ? { commandWrapperArgv: parsedWrapper }
         : {}),
-    sessionTempRoot:
-      overrides.sessionTempRoot !== undefined
-        ? establishSessionTempRoot(
-            overrides.sessionTempRoot,
-            "runtimeOptions.sessionTempRoot",
-          )
-        : env.AGENC_TMPDIR !== undefined
-          ? establishSessionTempRoot(env.AGENC_TMPDIR, "AGENC_TMPDIR")
-          : establishSessionTempRoot(
-              DEFAULT_SESSION_TEMP_ROOT,
-              "platform temporary directory",
-            ),
-    ...(overrides.pluginStorageRoot !== undefined
-      ? {
-          pluginStorageRoot: optionalAbsolutePath(
-            overrides.pluginStorageRoot,
-            "runtimeOptions.pluginStorageRoot",
-          ),
-        }
-      : env.AGENC_PLUGIN_CACHE_DIR !== undefined
-        ? {
-            pluginStorageRoot: optionalAbsolutePath(
-              env.AGENC_PLUGIN_CACHE_DIR,
-              "AGENC_PLUGIN_CACHE_DIR",
-            ),
-          }
-        : {}),
+    sessionTempRoot: resolveSessionTempRootAtIngress(
+      env,
+      overrides.sessionTempRoot,
+    ),
+    pluginStorageRoot: resolvePluginStorageRootAtIngress(
+      env,
+      overrides.pluginStorageRoot,
+    ),
     allowUntrustedHooks:
       overrides.allowUntrustedHooks ??
       (allowUntrustedHooksFromEnvironment
@@ -455,10 +481,14 @@ export function validateAgentRuntimeOptions(
       "runtimeOptions.allowUntrustedHooks is required and must be boolean",
     );
   }
+  if (typeof input.pluginStorageRoot !== "string") {
+    throw new AgentRuntimeOptionsError(
+      "runtimeOptions.pluginStorageRoot is required and must be a string",
+    );
+  }
   for (const [key, entry] of [
     ["posixShellPath", input.posixShellPath],
     ["sessionTempRoot", input.sessionTempRoot],
-    ["pluginStorageRoot", input.pluginStorageRoot],
     ["remoteMemoryRoot", input.remoteMemoryRoot],
     ["coworkMemoryPathOverride", input.coworkMemoryPathOverride],
     ["coworkMemoryExtraGuidelines", input.coworkMemoryExtraGuidelines],

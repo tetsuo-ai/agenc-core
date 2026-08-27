@@ -383,7 +383,7 @@ describe("retired config surface authority", () => {
     expect(plan.conflicts).toEqual(expect.arrayContaining([
       expect.objectContaining({
         field: "providers.grok.api_key_env",
-        reason: expect.stringMatching(/native vault/u),
+        reason: expect.stringMatching(/native secure storage/u),
       }),
     ]));
     expect(plan.writes).toEqual([]);

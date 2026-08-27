@@ -5,10 +5,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 
 const mocks = vi.hoisted(() => ({
   getRuntimeState: vi.fn(() => ({ theme: 'auto' })),
-  getSystemThemeName: vi.fn(() => 'dark'),
+  getTerminalBackground: vi.fn(() => 'dark'),
   updateRuntimeState: vi.fn(),
-  stopWatchingSystemTheme: vi.fn(),
-  watchSystemTheme: vi.fn(),
+  stopWatchingTerminalBackground: vi.fn(),
+  watchTerminalBackground: vi.fn(),
 }))
 
 vi.mock('../../../src/utils/config.js', () => ({
@@ -16,12 +16,12 @@ vi.mock('../../../src/utils/config.js', () => ({
   updateRuntimeState: mocks.updateRuntimeState,
 }))
 
-vi.mock('../../../src/utils/systemTheme.js', () => ({
-  getSystemThemeName: mocks.getSystemThemeName,
+vi.mock('../../../src/utils/terminalBackground.js', () => ({
+  getTerminalBackground: mocks.getTerminalBackground,
 }))
 
-vi.mock('../../../src/utils/systemThemeWatcher.js', () => ({
-  watchSystemTheme: mocks.watchSystemTheme,
+vi.mock('../../../src/utils/terminalBackgroundWatcher.js', () => ({
+  watchTerminalBackground: mocks.watchTerminalBackground,
 }))
 
 import { createRoot, type Root } from '../../../src/tui/ink/root.js'
@@ -114,8 +114,10 @@ async function waitFor(assertion: () => void): Promise<void> {
 describe('ThemeProvider coverage swarm row 091', () => {
   beforeEach(() => {
     mocks.getRuntimeState.mockReturnValue({ theme: 'auto' })
-    mocks.getSystemThemeName.mockReturnValue('dark')
-    mocks.watchSystemTheme.mockReturnValue(mocks.stopWatchingSystemTheme)
+    mocks.getTerminalBackground.mockReturnValue('dark')
+    mocks.watchTerminalBackground.mockReturnValue(
+      mocks.stopWatchingTerminalBackground,
+    )
     mocks.updateRuntimeState.mockImplementation(
       (update: (current: unknown) => unknown) => {
         update({ retained: true, theme: 'light' })
@@ -200,7 +202,7 @@ describe('ThemeProvider coverage swarm row 091', () => {
         expect(snapshots.at(-1)).toEqual({ setting: 'light', theme: 'light' })
       })
       expect(mocks.getRuntimeState).not.toHaveBeenCalled()
-      expect(mocks.getSystemThemeName).not.toHaveBeenCalled()
+      expect(mocks.getTerminalBackground).not.toHaveBeenCalled()
 
       preview?.setPreviewTheme('dark')
       await waitFor(() => {
@@ -219,7 +221,7 @@ describe('ThemeProvider coverage swarm row 091', () => {
       })
 
       expect(onThemeSave).toHaveBeenCalledWith('auto')
-      expect(mocks.getSystemThemeName).toHaveBeenCalledTimes(1)
+      expect(mocks.getTerminalBackground).toHaveBeenCalledTimes(1)
       expect(mocks.updateRuntimeState).not.toHaveBeenCalled()
     } finally {
       await rendered.dispose()
@@ -260,8 +262,8 @@ describe('ThemeProvider coverage swarm row 091', () => {
         expect(snapshots.at(-1)).toEqual({ setting: 'dark', theme: 'light' })
       })
 
-      expect(mocks.watchSystemTheme).not.toHaveBeenCalled()
-      expect(mocks.getSystemThemeName).not.toHaveBeenCalled()
+      expect(mocks.watchTerminalBackground).not.toHaveBeenCalled()
+      expect(mocks.getTerminalBackground).not.toHaveBeenCalled()
     } finally {
       await rendered.dispose()
     }

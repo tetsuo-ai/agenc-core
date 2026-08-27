@@ -32,7 +32,7 @@ gates — re-enter anytime with `agenc onboard <act>`.
 4. **Progressive, resumable.** Per-act completion is tracked locally; no
    phone-home telemetry.
 5. **One writer per file.** Onboarding writes the same paths the runtime
-   reads (`config.toml`, the native credential vault, persona files,
+   reads (`config.toml`, the native secure storage, persona files,
    `HEARTBEAT.md`).
 
 ## Commands
@@ -108,7 +108,7 @@ agenc onboard channel
 
 Pick a surface:
 
-| Surface | Secrets (native OS credential vault) | Notes |
+| Surface | Secrets (native secure storage) | Notes |
 |---|---|---|
 | **Telegram** | `AGENC_TELEGRAM_BOT_TOKEN` | Recommended 2-minute path; @BotFather |
 | **Discord** | `AGENC_DISCORD_BOT_TOKEN` | Enable **MESSAGE CONTENT** intent |
@@ -215,7 +215,7 @@ Requires a remote auth session; default daemon `ws://127.0.0.1:7766`.
 | Path | Purpose |
 |---|---|
 | `$AGENC_HOME/config.toml` | provider, budget, heartbeat, channel policies, bindings, hooks, … |
-| Native OS credential vault (scoped by `AGENC_HOME`) | bot and gateway bearer tokens |
+| Native secure storage (scoped by `AGENC_HOME`) | bot and gateway bearer tokens |
 | `$AGENC_HOME/gateway/pairing.json` | paired peers |
 | Workspace `SOUL.md` / `USER.md` / `IDENTITY.md` / `BOOTSTRAP.md` | persona |
 | Workspace `HEARTBEAT.md` | proactive tick instructions |

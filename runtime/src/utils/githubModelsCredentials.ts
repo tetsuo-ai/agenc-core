@@ -6,7 +6,7 @@ import {
   readNativeSecureStorageAsync,
   updateNativeSecureStorage,
 } from './secureStorage/native.js'
-import { nativeVaultIdentityKey } from './secureStorage/home.js'
+import { secureStorageIdentityKey } from './secureStorage/home.js'
 import { exchangeForCopilotToken } from '../services/github/deviceFlow.js'
 import { getSelectedProviderName } from './model/providers.js'
 
@@ -83,7 +83,7 @@ const refreshByHome = new Map<string, Promise<boolean>>()
 export function refreshGithubModelsTokenIfNeeded(
   home: HomeContext,
 ): Promise<boolean> {
-  const vaultIdentity = nativeVaultIdentityKey(home)
+  const vaultIdentity = secureStorageIdentityKey(home)
   const existing = refreshByHome.get(vaultIdentity)
   if (existing) return existing
   const pending = refreshGithubModelsTokenIfNeededImpl(home).finally(() => {

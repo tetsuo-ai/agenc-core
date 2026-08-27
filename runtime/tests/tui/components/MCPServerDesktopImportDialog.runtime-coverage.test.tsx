@@ -20,6 +20,8 @@ const configMock = vi.hoisted(() => {
 });
 
 const AUTHORITY = {} as CanonicalSettingsAuthority;
+const MCP_ENVIRONMENT = Object.freeze({ MCP_TEMPLATE_TOKEN: "captured-token" });
+const PLUGIN_STORAGE_ROOT = "/captured/plugin-storage";
 
 const dialogMock = vi.hoisted(() => ({
   props: undefined as
@@ -206,6 +208,8 @@ async function renderImportDialog({
   root.render(
     <MCPServerDesktopImportDialog
       authority={AUTHORITY}
+      environment={MCP_ENVIRONMENT}
+      pluginStorageRoot={PLUGIN_STORAGE_ROOT}
       servers={servers}
       scope={scope}
       onDone={onDone}
@@ -221,6 +225,8 @@ async function renderImportDialog({
       root.render(
         <MCPServerDesktopImportDialog
           authority={AUTHORITY}
+          environment={MCP_ENVIRONMENT}
+          pluginStorageRoot={PLUGIN_STORAGE_ROOT}
           servers={servers}
           scope={scope}
           onDone={onDone}

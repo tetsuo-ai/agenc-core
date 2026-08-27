@@ -11,7 +11,7 @@ import type { SecureStorageData } from './index.js'
 export const CREDENTIALS_SERVICE_SUFFIX = '-credentials'
 
 /**
- * Format the native-vault service name. A scoped path is hashed; omitting it
+ * Format the native secure storage service name. A scoped path is hashed; omitting it
  * preserves the original default namespace. Migration code uses this same
  * formatter to locate the retired config-directory-derived identity without
  * giving that variable any ordinary runtime authority.
@@ -52,7 +52,7 @@ export function getSecureStorageServiceName(
 ): string {
   // Use a hash of the canonical home path to create a unique but stable suffix.
   // Only add a suffix for non-default homes. An explicitly configured
-  // default path has the same native-vault identity as the implicit default.
+  // default path has the same native secure storage identity as the implicit default.
   return formatSecureStorageServiceName(
     serviceSuffix,
     home.isDefault ? undefined : home.identityKey,

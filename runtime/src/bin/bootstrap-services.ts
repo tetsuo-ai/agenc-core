@@ -647,6 +647,7 @@ export function buildBootstrapSessionServices(
   const commandExecutionAuthority = opts.commandExecutionAuthority;
   const skillsServices = createLocalSkillsServices({
     agencHome: opts.agencHome,
+    pluginStorageRoot: opts.runtimeOptions.pluginStorageRoot,
     workspaceRoot: opts.workspaceRoot,
     config: opts.configStore.current(),
     env: {

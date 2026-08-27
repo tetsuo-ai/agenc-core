@@ -25,6 +25,7 @@ import {
 } from "../../utils/plugins/mcpbHandler.js";
 import type { PluginConfigStoredValue } from "../../utils/plugins/pluginConfigAuthority.js";
 import type { PluginUserConfigOption } from "../manifest-schema.js";
+import { getPluginDataDir } from "../directories.js";
 
 export interface PluginMcpRegistrationOptions extends PluginRuntimeLoadOptions {
   readonly plugins?: readonly LoadedPlugin[];
@@ -64,13 +65,13 @@ function schemaOwnedServerUserConfig(
   const topLevel = topLevelSchema === undefined
     ? undefined
     : loadPluginOptions(
-        plugin.source,
+        plugin.id,
         topLevelSchema as unknown as PluginOptionSchema,
       );
   const channel = channelSchema === undefined
     ? undefined
     : loadMcpServerUserConfig(
-        plugin.source,
+        plugin.id,
         serverName,
         channelSchema as unknown as UserConfigSchema,
       );
@@ -97,6 +98,9 @@ function resolveServerString(
   const result = resolvePluginServerTemplate(value, plugin, {
     sessionId: options.sessionId,
     env: options.env,
+    ...(options.pluginStorageRoot !== undefined
+      ? { pluginStorageRoot: options.pluginStorageRoot }
+      : {}),
     ...(userConfig === undefined
       ? {}
       : {
@@ -128,7 +132,7 @@ function substituteStringRecord(
 export function resolvePluginMcpEnvironment(
   plugin: LoadedPlugin,
   server: McpServerConfig,
-  options: PluginMcpRegistrationOptions = {},
+  options: PluginMcpRegistrationOptions,
 ): McpServerConfig {
   return resolvePluginMcpEnvironmentWithIssues(plugin, server, options).server;
 }
@@ -221,8 +225,8 @@ function reportServerIssues(
   if (missingUserConfig.length > 0) {
     options.errors?.push({
       type: "mcp",
-      source: `plugin:${plugin.name}`,
-      plugin: plugin.name,
+      source: `plugin:${plugin.id}`,
+      plugin: plugin.id,
       path: serverName,
       message: `Missing user configuration values: ${missingUserConfig.join(", ")}`,
     });
@@ -230,8 +234,8 @@ function reportServerIssues(
   if (missingEnv.length > 0) {
     options.errors?.push({
       type: "mcp",
-      source: `plugin:${plugin.name}`,
-      plugin: plugin.name,
+      source: `plugin:${plugin.id}`,
+      plugin: plugin.id,
       path: serverName,
       message: `Missing environment variables: ${missingEnv.join(", ")}`,
     });
@@ -247,8 +251,8 @@ function reportSandboxIssue(
 ): void {
   options.errors?.push({
     type: "mcp",
-    source: `plugin:${plugin.name}`,
-    plugin: plugin.name,
+    source: `plugin:${plugin.id}`,
+    plugin: plugin.id,
     path: serverName,
     message: issue.message,
   });
@@ -257,11 +261,11 @@ function reportSandboxIssue(
 function addPluginScopeToServers(
   plugin: LoadedPlugin,
   servers: Readonly<Record<string, McpServerConfig>>,
-  options: PluginMcpRegistrationOptions = {},
+  options: PluginMcpRegistrationOptions,
 ): Readonly<Record<string, McpServerConfig>> {
   const scoped: Record<string, McpServerConfig> = {};
   for (const [name, server] of Object.entries(servers)) {
-    const scopedName = pluginScopedServerIdentifier(plugin.name, name);
+    const scopedName = pluginScopedServerIdentifier(plugin.id, name);
     const userConfig = schemaOwnedServerUserConfig(plugin, name);
     const resolved = resolvePluginMcpEnvironmentWithIssues(
       plugin,
@@ -274,7 +278,10 @@ function addPluginScopeToServers(
       plugin,
       name,
       resolved.server,
-      { scopedServerName: scopedName },
+      {
+        scopedServerName: scopedName,
+        dataDir: getPluginDataDir(plugin.id, options.pluginStorageRoot),
+      },
     );
     if ("issue" in sandboxed) {
       reportSandboxIssue(plugin, name, sandboxed.issue, options);
@@ -301,7 +308,7 @@ export interface PluginMcpServerRegistration {
 
 async function extractMcpServerRegistrationsFromPlugins(
   plugins: readonly LoadedPlugin[],
-  options: PluginMcpRegistrationOptions = {},
+  options: PluginMcpRegistrationOptions,
 ): Promise<readonly PluginMcpServerRegistration[]> {
   const registrations: PluginMcpServerRegistration[] = [];
   for (const plugin of plugins.filter(
@@ -309,12 +316,12 @@ async function extractMcpServerRegistrationsFromPlugins(
   )) {
     const scoped = addPluginScopeToServers(plugin, plugin.mcpServers, options);
     for (const serverName of Object.keys(plugin.mcpServers)) {
-      const name = pluginScopedServerIdentifier(plugin.name, serverName);
+      const name = pluginScopedServerIdentifier(plugin.id, serverName);
       const server = scoped[name];
       if (server === undefined) continue;
       registrations.push({
         name,
-        pluginName: plugin.name,
+        pluginName: plugin.id,
         pluginSource: plugin.source,
         serverName,
         server,
@@ -325,14 +332,14 @@ async function extractMcpServerRegistrationsFromPlugins(
 }
 
 export async function loadPluginMcpServerRegistrations(
-  options: PluginMcpRegistrationOptions = {},
+  options: PluginMcpRegistrationOptions,
 ): Promise<readonly PluginMcpServerRegistration[]> {
   const plugins = await resolvePlugins(options);
   return extractMcpServerRegistrationsFromPlugins(plugins, options);
 }
 
 export async function loadPluginMcpServers(
-  options: PluginMcpRegistrationOptions = {},
+  options: PluginMcpRegistrationOptions,
 ): Promise<Readonly<Record<string, McpServerConfig>>> {
   const registrations = await loadPluginMcpServerRegistrations(options);
   return Object.fromEntries(
@@ -344,7 +351,7 @@ export function getUnconfiguredChannels(
   plugin: LoadedPlugin,
 ): readonly PluginChannelRegistration[] {
   return (plugin.manifest.channels ?? []).map((channel) => ({
-    plugin: plugin.name,
+    plugin: plugin.id,
     server: channel.server,
     ...(channel.displayName !== undefined ? { displayName: channel.displayName } : {}),
     configured: channel.userConfig === undefined || (() => {

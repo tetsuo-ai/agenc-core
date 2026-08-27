@@ -20,10 +20,10 @@ function getOauthConfigType(environment: OauthEnvironment): OauthConfigType {
 export function fileSuffixForOauthConfig(
   environment: OauthEnvironment = process.env,
 ): string {
-  // The native-vault namespace must use the suffix of the OAuth configuration
+  // The native secure storage namespace must use the suffix of the OAuth configuration
   // that is actually active. In particular, the current staging placeholder
   // falls back to production and therefore has no suffix. Keeping a second
-  // hand-written switch here previously let file and vault identities diverge.
+  // hand-written switch here previously let file and secure-storage identities diverge.
   return getOauthConfig(environment).OAUTH_FILE_SUFFIX
 }
 

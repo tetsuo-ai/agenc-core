@@ -102,6 +102,7 @@ function formatDoctorReport(report: McpDoctorReport): string {
 export async function mcpDoctorHandler(name: string | undefined, options: {
   authority: CanonicalSettingsAuthority;
   environment: ProviderEnvironment;
+  pluginStorageRoot: string;
   scope?: string;
   configOnly?: boolean;
   json?: boolean;
@@ -114,11 +115,13 @@ export async function mcpDoctorHandler(name: string | undefined, options: {
           configOnly,
           scopeFilter,
           environment: options.environment,
+          pluginStorageRoot: options.pluginStorageRoot,
         })
       : await doctorAllServers(options.authority, {
           configOnly,
           scopeFilter,
           environment: options.environment,
+          pluginStorageRoot: options.pluginStorageRoot,
         })
 
     if (options.json) {
@@ -232,10 +235,15 @@ export async function mcpRemoveHandler(
 export async function mcpListHandler(
   authority: CanonicalSettingsAuthority,
   environment: ProviderEnvironment,
+  pluginStorageRoot: string,
 ): Promise<void> {
   const {
     servers: configs
-  } = await getAllMcpConfigs(authority, environment);
+  } = await getAllMcpConfigs(
+    authority,
+    { pluginStorageRoot },
+    environment,
+  );
   if (Object.keys(configs).length === 0) {
     // biome-ignore lint/suspicious/noConsole:: intentional console output
     console.log('No MCP servers configured. Use `agenc mcp add` to add a server.');
@@ -403,7 +411,9 @@ export async function mcpAddJsonHandler(name: string, json: string, options: {
 export async function mcpAddFromDesktopHandler(
   authority: CanonicalSettingsAuthority,
   options: {
-  scope?: string;
+    environment: ProviderEnvironment;
+    pluginStorageRoot: string;
+    scope?: string;
   },
 ): Promise<void> {
   try {
@@ -419,7 +429,7 @@ export async function mcpAddFromDesktopHandler(
       unmount
     } = await render(<AppStateProvider>
         <KeybindingSetup configStore={authority}>
-          <MCPServerDesktopImportDialog authority={authority} servers={servers} scope={scope} onDone={() => {
+          <MCPServerDesktopImportDialog authority={authority} environment={options.environment} pluginStorageRoot={options.pluginStorageRoot} servers={servers} scope={scope} onDone={() => {
           unmount();
         }} />
         </KeybindingSetup>

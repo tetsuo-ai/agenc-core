@@ -9,9 +9,11 @@ import { delegate } from "../delegate.js";
 import type { MultiAgentV2Options } from "./common.js";
 import type { Session } from "../../session/session.js";
 import { createAgentRoleWorkspace } from "../role.js";
+import { AgentRoleCatalog } from "../role-catalog.js";
 import { signSessionId } from "../_deps/filesystem-args.js";
 
 const ROLE_WORKSPACE = createAgentRoleWorkspace("/repo");
+const ROLE_CATALOG = new AgentRoleCatalog(ROLE_WORKSPACE);
 
 const mockDelegate = vi.mocked(delegate);
 
@@ -88,6 +90,7 @@ function makeOptions(
   return {
     getSession: () => session,
     workspace: ROLE_WORKSPACE,
+    roleCatalog: ROLE_CATALOG,
     ensureAgentControl: () => ({
       control: {
         roleWorkspace: ROLE_WORKSPACE,

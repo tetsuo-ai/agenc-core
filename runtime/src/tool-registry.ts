@@ -103,6 +103,7 @@ import {
   type SandboxExecutionBrokerLike,
 } from "./sandbox/execution-broker.js";
 import type { Session } from "./session/session.js";
+import { getAttachmentTrackingState } from "./session/attachment-state.js";
 import { runAdmittedToolCall } from "./budget/admitted-tool-call.js";
 import { AdmissionDeniedError } from "./budget/admission-client.js";
 import type { ToolEffectDispositionEvidence } from "./contracts/run-contracts.js";
@@ -639,6 +640,17 @@ export function buildToolRegistry(
       }
     }
   };
+  const notifySessionSkillsForTouchedPath = async (
+    absolutePath: string,
+  ): Promise<void> => {
+    const session = options.getSession?.();
+    if (session === null || session === undefined) return;
+    const roots = await session.services.skillsManager
+      .discoverSkillDirsForPaths?.([absolutePath]);
+    if (!roots || roots.length === 0) return;
+    const triggers = getAttachmentTrackingState(session).dynamicSkillDirTriggers;
+    for (const root of roots) triggers.add(root);
+  };
 
   const filesystemCompatibilityTools = createFilesystemTools({
     allowedPaths: [options.workspaceRoot],
@@ -697,6 +709,7 @@ export function buildToolRegistry(
     }),
     createFileWriteTool({
       allowedPaths: [options.workspaceRoot],
+      onTouchedPath: notifySessionSkillsForTouchedPath,
     }),
     createGlobTool({
       allowedPaths: [options.workspaceRoot],

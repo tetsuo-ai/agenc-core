@@ -16,7 +16,7 @@ export interface SecureStorageCommandResult {
   readonly stderr?: string
 }
 
-/** Injectable, shell-free subprocess boundary shared by native-vault adapters. */
+/** Injectable, shell-free subprocess boundary shared by native secure storage adapters. */
 export type SecureStorageCommandRunner = (
   command: string,
   args: string[],

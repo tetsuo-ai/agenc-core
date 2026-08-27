@@ -53,6 +53,8 @@ import {
   serviceMcpServerToCanonicalConfig,
 } from './user-config-toml.js'
 import { mcpServerNameValidationIssue } from '../../mcp-client/server-name.js'
+import { resolvePluginStorageAuthority } from '../../plugins/directories.js'
+import { snapshotMcpRequestEnvironmentForAuthority } from '../../mcp-client/environment.js'
 
 /**
  * Internal utility: Add scope to server configs
@@ -902,6 +904,7 @@ export type McpSessionServerDisposition = 'active' | 'shadowed' | 'blocked'
 
 export interface McpConfigResolutionOptions {
   readonly signal?: AbortSignal
+  readonly pluginStorageRoot: string
 }
 
 function mcpResolutionAbortError(signal: AbortSignal): Error {
@@ -1115,10 +1118,10 @@ function parseCanonicalMcpCandidate(
 /** Resolve the execution-safe outbound MCP set from one config authority. */
 export async function getAllMcpConfigs(
   authority: CanonicalSettingsAuthority,
-  environment: Readonly<Record<string, string | undefined>> = {},
+  options: McpConfigResolutionOptions,
+  environmentInput: Readonly<Record<string, string | undefined>> = {},
   sessionServers: Readonly<Record<string, ScopedMcpServerConfig>> = {},
   enabledOverrides: ReadonlyMap<string, boolean> = new Map(),
-  options: McpConfigResolutionOptions = {},
 ): Promise<{
   servers: Record<string, ScopedMcpServerConfig>
   errors: PluginError[]
@@ -1132,6 +1135,16 @@ export async function getAllMcpConfigs(
 }> {
   throwIfMcpResolutionAborted(options.signal)
   const resolutionAuthority = captureMcpResolutionAuthority(authority)
+  const pluginStorageRoot = resolvePluginStorageAuthority(
+    options.pluginStorageRoot,
+  ).pluginStorageRoot
+  const environment = snapshotMcpRequestEnvironmentForAuthority(
+    environmentInput,
+    {
+      agencHome: resolutionAuthority.homeContext.path,
+      pluginStorageRoot,
+    },
+  )
   const validationErrorsToPluginErrors = (
     errors: readonly ValidationError[],
   ): PluginError[] =>
@@ -1290,7 +1303,7 @@ export async function getAllMcpConfigs(
         () =>
           raceMcpResolutionWithAbort(
             loadPluginMcpServerRegistrations({
-              agencHome: resolutionAuthority.homeContext.path,
+              pluginStorageRoot,
               workspaceRoot: resolutionAuthority.projectRoot,
               config: resolutionAuthority.current(),
               env: { ...environment },

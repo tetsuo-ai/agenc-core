@@ -967,6 +967,7 @@ function attachToolContextSurface(
   Object.assign(session as unknown as Record<string, unknown>, {
     readFileState: toolUseContext.readFileState,
     loadedNestedMemoryPaths: toolUseContext.loadedNestedMemoryPaths,
+    dynamicSkillDirTriggers: toolUseContext.dynamicSkillDirTriggers,
     mcpClients: toolUseContext.options.mcpClients,
     agentDefinitions: toolUseContext.options.agentDefinitions,
     tasks: toolUseContext.getAppState().tasks,

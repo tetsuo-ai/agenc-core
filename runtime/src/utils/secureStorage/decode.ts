@@ -5,7 +5,7 @@ import {
 import { jsonParse } from '../slowOperations.js'
 import type { SecureStorageData } from './index.js'
 
-/** Decode one shared native-vault blob without accepting corrupt emptiness. */
+/** Decode one shared native secure storage blob without accepting corrupt emptiness. */
 export function decodeSecureStorageData(
   text: string,
   backendLabel: string,

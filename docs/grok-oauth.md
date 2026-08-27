@@ -33,7 +33,7 @@ request carries `referrer=agenc` so xAI can attribute usage (their request).
 - Env BYOK applies only when no OAuth token is available (never signed in, or
   after `/grok-logout`). Credential order is then:
   explicit session key → `XAI_API_KEY` → `GROK_API_KEY`.
-- Tokens are stored in the native OS credential vault (Keychain, Secret
+- Tokens are stored in the native secure storage (Keychain, Secret
   Service, or Credential Manager; no plaintext fallback), refresh automatically (~6 h access tokens,
   rotating refresh tokens). xAI expired bearers are often **403**; refresh
   runs on 401 and 403 (two attempts). Admitted turns do not in-band retry:

@@ -20,10 +20,7 @@
 
 import { AgentControl, type LiveAgent } from "../agents/control.js";
 import { delegate, type IsolationMode } from "../agents/delegate.js";
-import {
-  canonicalAgentRoleName,
-  formatAgentRoleLabel,
-} from "../agents/role-presentation.js";
+import { formatAgentRoleLabel } from "../agents/role-presentation.js";
 import { AgentRegistry, type AgentPath } from "../agents/registry.js";
 import { ThreadManager } from "../agents/thread-manager.js";
 import { ConversationThreadManager } from "../conversation/thread-manager.js";
@@ -229,7 +226,7 @@ export function buildDelegateTool(opts: DelegateToolOpts): Tool {
 
     const role =
       typeof args.role === "string" && args.role.length > 0
-        ? canonicalAgentRoleName(args.role)
+        ? args.role
         : undefined;
     const isolation = coerceIsolation(args.isolation);
     const worktreeSlugRaw =

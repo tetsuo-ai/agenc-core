@@ -34,7 +34,7 @@ agenc gateway install-service
 | `pairing pending` | Pending pairing requests not yet approved |
 | `pairing approve` | Approve a pending peer (`<channel> <peerId>`) |
 | `pairing revoke` | Remove a paired sender |
-| `install-service` | Install + start the always-on user service. Both systemd `agenc-gateway.service` and launchd `dev.agenc.gateway` read home-scoped credentials from the native OS vault. |
+| `install-service` | Install + start the always-on user service. Both systemd `agenc-gateway.service` and launchd `dev.agenc.gateway` read credentials from home-scoped native secure storage. |
 
 `run` enables surfaces from flags **and** environment/config:
 
@@ -46,7 +46,7 @@ agenc gateway install-service
 - Discord when `AGENC_DISCORD_BOT_TOKEN` is set
 - Slack when **both** `AGENC_SLACK_BOT_TOKEN` and `AGENC_SLACK_APP_TOKEN` are set
 
-Channel tokens saved by onboarding belong to the native OS credential vault,
+Channel tokens saved by onboarding belong to the native secure storage,
 under the same `AGENC_HOME` identity as config and daemon state. Explicit
 shell exports are supported for one-shot runs and win over stored values.
 Gateway-only secrets are stripped from the environment passed to an
@@ -64,7 +64,7 @@ agenc gateway run --stdio
 # Browser chat (prints loopback URL + token)
 agenc gateway run --webchat
 
-# Telegram (explicit env or the native credential vault)
+# Telegram (explicit env or the native secure storage)
 AGENC_TELEGRAM_BOT_TOKEN=123:ABC agenc gateway run
 
 # Always-on after onboarding
@@ -90,7 +90,7 @@ Serves a minimal browser chat from the gateway process.
   explicit override.
 - Every request is gated by a shared token. The run command prints
   `http://127.0.0.1:<port>/?token=<token>`.
-- Token is persisted in the native credential vault, or set
+- Token is persisted in the native secure storage, or set
   `AGENC_WEBCHAT_TOKEN` for this run (minimum length 16).
 - The web sender is allowlisted by default (no pairing with your own browser
   after presenting the token).
@@ -107,7 +107,7 @@ Official Bot API only (long-poll; no inbound listener, no reverse-engineered
 client). Create a bot with @BotFather, store the token:
 
 ```bash
-# export for a one-shot run; onboarding stores it in the native vault
+# export for a one-shot run; onboarding stores it in the native secure storage
 AGENC_TELEGRAM_BOT_TOKEN=123:ABC
 ```
 
@@ -234,7 +234,7 @@ Serves loopback `POST /hooks/agent` (default port `8377`). Security:
 - Loopback bind; non-loopback host refused without explicit override.
 - Bearer token in the `Authorization` header only — query-string tokens are
   rejected even if the header is also valid.
-- Token from `AGENC_HOOKS_TOKEN` or the home-bound native credential vault.
+- Token from `AGENC_HOOKS_TOKEN` or the home-bound native secure storage.
 - Payload `message` is sanitized and framed like channel text; hook turns
   deny permission requests (autonomous).
 - Every request passes the budget envelope; refusal is HTTP 429, never silent
@@ -389,7 +389,7 @@ agenc gateway pairing revoke telegram 123456789
 | Path | Mode | Role |
 |---|---|---|
 | `config.toml` `[gateway]` | 0600 | policies, bindings, hooks flag |
-| Native OS credential vault | OS-managed | bot tokens and gateway bearer tokens |
+| Native secure storage | OS-managed | bot tokens and gateway bearer tokens |
 | `gateway/pairing.json` | 0600 | paired senders |
 | `gateway/sessions.json` | 0600 | channel → daemon session map |
 | `gateway/control.json` | 0600 | Telegram owner/public state |

@@ -100,6 +100,7 @@ import type { DeepImmutable } from "../types/utils.js";
 import type { AttributionState } from "../utils/commitAttribution.js";
 import type { FileHistoryState } from "../utils/fileHistory.js";
 import type { Theme, ThemeName } from "../utils/theme.js";
+import type { SkillsManager } from "../session/session.js";
 
 export type QueryChainTracking = {
   chainId: string;
@@ -243,6 +244,8 @@ export type ToolUseContext = {
    */
   loadedNestedMemoryPaths?: Set<string>;
   dynamicSkillDirTriggers?: Set<string>;
+  /** Exact session owner for touched-path and nested skill discovery. */
+  skillsManager?: SkillsManager;
   /** Skill names surfaced via skill_discovery this session. Telemetry only (feeds was_discovered). */
   discoveredSkillNames?: Set<string>;
   userModified?: boolean;

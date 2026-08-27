@@ -145,7 +145,7 @@ export interface ConfigV2MigrationPlan {
   readonly writes: readonly ConfigMigrationWrite[];
   readonly archivePaths: readonly string[];
   readonly credentialMigration?: LegacyCredentialMigration;
-  readonly nativeVaultNamespaceMigration?: NativeVaultNamespaceMigration;
+  readonly secureStorageNamespaceMigration?: SecureStorageNamespaceMigration;
   readonly retiredAuthMigration?: RetiredAuthMigrationPlan;
   readonly requiresRetiredWriterQuiescence: boolean;
   readonly retiredWriterQuiescenceConfirmed: boolean;
@@ -164,7 +164,7 @@ export interface LegacyCredentialMigration {
   readonly sha256: string;
 }
 
-export interface NativeVaultNamespaceMigration {
+export interface SecureStorageNamespaceMigration {
   readonly source: SecureStorageMigrationIdentity;
   readonly target: SecureStorageMigrationIdentity;
   readonly sourceLockPath: string;
@@ -188,11 +188,11 @@ export interface ConfigV2MigrationOptions {
   readonly managedSettingsDropInDir?: string;
   readonly globalStatePath?: string;
   readonly id?: string;
-  /** Explicit assertion that no default/other home still owns the shared old vault. */
-  readonly retireSharedNativeVault?: boolean;
+  /** Explicit assertion that no default/other home still owns the old shared secure-storage record. */
+  readonly retireSharedSecureStorage?: boolean;
   /** Explicit assertion required before any one-way retired credential cleanup. */
   readonly confirmRetiredWritersStopped?: boolean;
-  /** Migration-only override for a historical USER-derived vault account. */
+  /** Migration-only override for a historical USER-derived secure-storage account. */
   readonly retiredSecureStorageAccount?: string;
   /** Scope inspected only by the explicit config migration CLI. */
   readonly scope?: "user" | "all";
@@ -264,7 +264,7 @@ interface JournalCredentialMigration {
   readonly canonicalSha256?: string;
   readonly nativeNamespace?: {
     readonly source: SecureStorageMigrationIdentity;
-    readonly sourceDisposition: NativeVaultNamespaceMigration["sourceDisposition"];
+    readonly sourceDisposition: SecureStorageNamespaceMigration["sourceDisposition"];
     readonly sha256: string;
   };
 }
@@ -949,7 +949,7 @@ function parseJsonObject(
       conflicts,
       scope,
       path,
-      "retired JSON appears to contain a plaintext credential; move it to the documented environment variable or native vault and remove the literal value before migration",
+      "retired JSON appears to contain a plaintext credential; move it to the documented environment variable or native secure storage and remove the literal value before migration",
       secretPath,
     );
   }
@@ -1612,7 +1612,7 @@ function blockRetiredProviderApiKeyEnv(
       conflicts,
       scope,
       sourcePath,
-      `providers.${provider}.api_key_env is retired; use the provider's canonical credential environment variable or the native vault`,
+      `providers.${provider}.api_key_env is retired; use the provider's canonical credential environment variable or the native secure storage`,
       `providers.${provider}.api_key_env`,
     );
     delete value.api_key_env;
@@ -4259,10 +4259,12 @@ function hasRetiredAuthMigration(
     descriptor.conflicts.length > 0;
 }
 
-function nativeVaultSourceLockPath(
+function secureStorageSourceLockPath(
   identity: SecureStorageMigrationIdentity,
   platformHome: string,
 ): string {
+  // These lock filenames are an on-disk synchronization ABI. Existing and
+  // updated binaries must contend on the same path during a migration.
   const serviceHash = sha256(
     process.platform === "win32"
       ? identity.serviceName
@@ -4325,9 +4327,9 @@ export async function checkConfigV2Migration(
   const archivePaths: string[] = [];
   const state: JsonRecord = {};
   let credentialMigration: LegacyCredentialMigration | undefined;
-  let nativeVaultNamespaceMigration: NativeVaultNamespaceMigration | undefined;
+  let secureStorageNamespaceMigration: SecureStorageNamespaceMigration | undefined;
   let retiredAuthMigration: RetiredAuthMigrationPlan | undefined;
-  const canonicalVaultIdentity = getCanonicalSecureStorageIdentity(home);
+  const canonicalSecureStorageIdentity = getCanonicalSecureStorageIdentity(home);
   const retiredSecureStorageAccount =
     options.retiredSecureStorageAccount?.trim();
   if (
@@ -4340,76 +4342,76 @@ export async function checkConfigV2Migration(
     )
   ) {
     throw new ConfigMigrationError(
-      "retired native-vault account override must be a non-empty value of at most 1024 characters without NUL bytes",
+      "retired native secure storage account override must be a non-empty value of at most 1024 characters without NUL bytes",
     );
   }
-  const retiredVaultIdentity = getRetiredSecureStorageIdentity(
+  const retiredSecureStorageIdentity = getRetiredSecureStorageIdentity(
     environment,
     secureStoragePlatformHome,
     retiredSecureStorageAccount,
   );
-  const rewritesWindowsVaultInPlace =
+  const rewritesWindowsSecureStorageInPlace =
     process.platform === "win32" &&
     secureStorageIdentitiesDiffer(
-      canonicalVaultIdentity,
-      retiredVaultIdentity,
+      canonicalSecureStorageIdentity,
+      retiredSecureStorageIdentity,
     ) &&
-    windowsSecureStorageTargetIdentity(canonicalVaultIdentity) ===
-      windowsSecureStorageTargetIdentity(retiredVaultIdentity);
-  let previewNativeVault = rewritesWindowsVaultInPlace
+    windowsSecureStorageTargetIdentity(canonicalSecureStorageIdentity) ===
+      windowsSecureStorageTargetIdentity(retiredSecureStorageIdentity);
+  let previewSecureStorage = rewritesWindowsSecureStorageInPlace
     ? {}
     : readNativeSecureStorage(home);
   if (
     secureStorageIdentitiesDiffer(
-      canonicalVaultIdentity,
-      retiredVaultIdentity,
+      canonicalSecureStorageIdentity,
+      retiredSecureStorageIdentity,
     )
   ) {
     const sourceLabel =
-      `native vault ${retiredVaultIdentity.serviceName} at ${retiredVaultIdentity.homePath}`;
+      `native secure storage ${retiredSecureStorageIdentity.serviceName} at ${retiredSecureStorageIdentity.homePath}`;
     let retiredVault: SecureStorageData | null;
-    let retiredVaultStorage: SecureStorage | undefined;
+    let retiredSecureStorage: SecureStorage | undefined;
     try {
-      retiredVaultStorage = getSecureStorageForMigration(
+      retiredSecureStorage = getSecureStorageForMigration(
         home,
-        retiredVaultIdentity,
+        retiredSecureStorageIdentity,
       );
-      retiredVault = readSecureStorageFresh(retiredVaultStorage);
+      retiredVault = readSecureStorageFresh(retiredSecureStorage);
     } catch (error) {
-      if (rewritesWindowsVaultInPlace) {
+      if (rewritesWindowsSecureStorageInPlace) {
         try {
-          previewNativeVault = readNativeSecureStorage(home);
+          previewSecureStorage = readNativeSecureStorage(home);
           retiredVault = null;
         } catch (canonicalError) {
           throw new ConfigMigrationError(
-            `native secure-storage record could not be read with either retired or canonical Windows account identity: ${error instanceof Error ? error.message : String(error)}; ${canonicalError instanceof Error ? canonicalError.message : String(canonicalError)}`,
+            `native secure storage record could not be read with either retired or canonical Windows account identity: ${error instanceof Error ? error.message : String(error)}; ${canonicalError instanceof Error ? canonicalError.message : String(canonicalError)}`,
           );
         }
       } else {
         throw new ConfigMigrationError(
-          `retired native secure-storage namespace could not be read: ${error instanceof Error ? error.message : String(error)}`,
+          `retired native secure storage namespace could not be read: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
     }
-    if (retiredVault !== null && retiredVaultStorage !== undefined) {
+    if (retiredVault !== null && retiredSecureStorage !== undefined) {
       // Historical Keychain/Secret Service names were either unscoped or
       // scoped by only 32 hash bits. Neither proves exclusive ownership: an
       // old default/relocated home or a colliding config directory may still
       // own the same physical record. Windows DPAPI files are home-relative.
       const ambiguousSharedService = process.platform !== "win32";
-      const sourceDisposition: NativeVaultNamespaceMigration["sourceDisposition"] =
-        rewritesWindowsVaultInPlace
+      const sourceDisposition: SecureStorageNamespaceMigration["sourceDisposition"] =
+        rewritesWindowsSecureStorageInPlace
           ? "rewrite-in-place"
           : ambiguousSharedService
-          ? options.retireSharedNativeVault === true
+          ? options.retireSharedSecureStorage === true
             ? "delete-shared-confirmed"
             : "retain-shared"
           : "delete-retired";
-      nativeVaultNamespaceMigration = Object.freeze({
-        source: retiredVaultIdentity,
-        target: canonicalVaultIdentity,
-        sourceLockPath: nativeVaultSourceLockPath(
-          retiredVaultIdentity,
+      secureStorageNamespaceMigration = Object.freeze({
+        source: retiredSecureStorageIdentity,
+        target: canonicalSecureStorageIdentity,
+        sourceLockPath: secureStorageSourceLockPath(
+          retiredSecureStorageIdentity,
           secureStoragePlatformHome,
         ),
         sourceDisposition,
@@ -4417,8 +4419,8 @@ export async function checkConfigV2Migration(
         fields: Object.freeze(Object.keys(retiredVault).sort()),
       });
       try {
-        previewNativeVault = mergeLegacyCredentialBlob(
-          previewNativeVault,
+        previewSecureStorage = mergeLegacyCredentialBlob(
+          previewSecureStorage,
           retiredVault,
           sourceLabel,
         ).next;
@@ -4428,10 +4430,10 @@ export async function checkConfigV2Migration(
           field: "credentials",
           action: "migrate",
           target: sourceDisposition === "retain-shared"
-            ? `canonical native vault ${canonicalVaultIdentity.serviceName}; retain the shared unscoped source because the default or another relocated home may still own it`
+            ? `canonical native secure storage ${canonicalSecureStorageIdentity.serviceName}; retain the shared unscoped source because the default or another relocated home may still own it`
             : sourceDisposition === "rewrite-in-place"
-              ? `canonical native vault ${canonicalVaultIdentity.serviceName}; atomically re-encrypt the same Windows DPAPI file from the retired account entropy to the OS account identity`
-            : `canonical native vault ${canonicalVaultIdentity.serviceName}; delete the reviewed retired source after commit`,
+              ? `canonical native secure storage ${canonicalSecureStorageIdentity.serviceName}; atomically re-encrypt the same Windows DPAPI file from the retired account entropy to the OS account identity`
+            : `canonical native secure storage ${canonicalSecureStorageIdentity.serviceName}; delete the reviewed retired source after commit`,
         }));
       } catch (error) {
         pushConflict(
@@ -4455,11 +4457,11 @@ export async function checkConfigV2Migration(
         legacyCredentialPath,
       );
       const merged = mergeLegacyCredentialBlob(
-        previewNativeVault,
+        previewSecureStorage,
         legacyCredentials,
         legacyCredentialPath,
       );
-      previewNativeVault = merged.next;
+      previewSecureStorage = merged.next;
       credentialMigration = Object.freeze({
         sourcePath: legacyCredentialPath,
         sha256: legacyCredentialInput.input.sha256,
@@ -4494,7 +4496,7 @@ export async function checkConfigV2Migration(
     home,
     platformHome: retiredAuthPlatformHome,
     env: retiredAuthEnvironment,
-    currentVault: previewNativeVault,
+    currentVault: previewSecureStorage,
   });
   if (hasRetiredAuthMigration(retiredAuthDiscovery.descriptor)) {
     retiredAuthMigration = Object.freeze({
@@ -4936,7 +4938,7 @@ export async function checkConfigV2Migration(
   const requiresRetiredWriterQuiescence =
     credentialMigration !== undefined ||
     (retiredAuthMigration?.descriptor.fileActions.length ?? 0) > 0 ||
-    nativeVaultNamespaceMigration !== undefined;
+    secureStorageNamespaceMigration !== undefined;
   return Object.freeze({
     id: options.id ?? randomUUID(),
     home,
@@ -4945,8 +4947,8 @@ export async function checkConfigV2Migration(
     writes: Object.freeze(conflicts.length > 0 ? [] : writes),
     archivePaths: Object.freeze([...new Set(archivePaths)]),
     ...(credentialMigration !== undefined ? { credentialMigration } : {}),
-    ...(nativeVaultNamespaceMigration !== undefined
-      ? { nativeVaultNamespaceMigration }
+    ...(secureStorageNamespaceMigration !== undefined
+      ? { secureStorageNamespaceMigration }
       : {}),
     ...(retiredAuthMigration !== undefined ? { retiredAuthMigration } : {}),
     requiresRetiredWriterQuiescence,
@@ -5730,8 +5732,8 @@ function migrationLockAnchor(home: HomeContext): string {
   return join(home.path, ".config-v2-migration-authority");
 }
 
-function nativeVaultNamespaceLockAnchor(
-  migration: NativeVaultNamespaceMigration,
+function secureStorageNamespaceLockAnchor(
+  migration: SecureStorageNamespaceMigration,
 ): string {
   if (
     !isAbsolute(migration.source.homePath) ||
@@ -5743,7 +5745,7 @@ function nativeVaultNamespaceLockAnchor(
     !isAbsolute(migration.sourceLockPath)
   ) {
     throw new ConfigMigrationError(
-      "invalid retired native secure-storage namespace identity",
+      "invalid retired native secure storage namespace identity",
     );
   }
   return migration.sourceLockPath;
@@ -5766,11 +5768,11 @@ function migrationPlanAuthorityPaths(
       ? [plan.credentialMigration.sourcePath]
       : []),
     ...(plan.retiredAuthMigration?.descriptor.fileActions.map((action) => action.path) ?? []),
-    ...(plan.nativeVaultNamespaceMigration === undefined
+    ...(plan.secureStorageNamespaceMigration === undefined
       ? []
       : [
-          nativeVaultNamespaceLockAnchor(
-            plan.nativeVaultNamespaceMigration,
+          secureStorageNamespaceLockAnchor(
+            plan.secureStorageNamespaceMigration,
           ),
         ]),
   ]);
@@ -5964,13 +5966,13 @@ async function applyConfigV2MigrationLocked(
     }));
   }
 
-    const rewritesWindowsVaultInPlace =
-      plan.nativeVaultNamespaceMigration?.sourceDisposition ===
+    const rewritesWindowsSecureStorageInPlace =
+      plan.secureStorageNamespaceMigration?.sourceDisposition ===
         "rewrite-in-place";
-    const initialNativeVault = rewritesWindowsVaultInPlace
+    const initialSecureStorage = rewritesWindowsSecureStorageInPlace
       ? {}
       : readNativeSecureStorage(plan.home);
-    let nextNativeVault = initialNativeVault;
+    let nextSecureStorage = initialSecureStorage;
     let credentialLegacy: SecureStorageData | undefined;
     let nativeNamespaceLegacy: SecureStorageData | undefined;
     let credentialCanonical: SecureStorageData | undefined;
@@ -6000,7 +6002,7 @@ async function applyConfigV2MigrationLocked(
         stableJson(existing.value) !== stableJson(value)
       ) {
         throw new ConfigMigrationError(
-          `migrated credential sources disagree at native secure-storage path ${key}`,
+          `migrated credential sources disagree at native secure storage path ${key}`,
         );
       }
       migratedCredentialLeaves.set(key, Object.freeze({
@@ -6008,52 +6010,52 @@ async function applyConfigV2MigrationLocked(
         value: structuredClone(value),
       }));
     };
-    if (plan.nativeVaultNamespaceMigration) {
+    if (plan.secureStorageNamespaceMigration) {
     const canonicalIdentity = getCanonicalSecureStorageIdentity(plan.home);
     if (
       stableJson(canonicalIdentity) !==
-      stableJson(plan.nativeVaultNamespaceMigration.target)
+      stableJson(plan.secureStorageNamespaceMigration.target)
     ) {
       throw new ConfigMigrationError(
-        "canonical native secure-storage identity changed after check; run check again",
+        "canonical native secure storage identity changed after check; run check again",
       );
     }
     if (
       !secureStorageIdentitiesDiffer(
         canonicalIdentity,
-        plan.nativeVaultNamespaceMigration.source,
+        plan.secureStorageNamespaceMigration.source,
       )
     ) {
       throw new ConfigMigrationError(
-        "retired native secure-storage namespace resolves to the canonical namespace",
+        "retired native secure storage namespace resolves to the canonical namespace",
       );
     }
     nativeNamespaceStorage = getSecureStorageForMigration(
       plan.home,
-      plan.nativeVaultNamespaceMigration.source,
+      plan.secureStorageNamespaceMigration.source,
     );
     const source = readSecureStorageFresh(nativeNamespaceStorage);
     if (
       source === null ||
-      sha256(stableJson(source)) !== plan.nativeVaultNamespaceMigration.sha256 ||
+      sha256(stableJson(source)) !== plan.secureStorageNamespaceMigration.sha256 ||
       stableJson(Object.keys(source).sort()) !==
-        stableJson(plan.nativeVaultNamespaceMigration.fields)
+        stableJson(plan.secureStorageNamespaceMigration.fields)
     ) {
       throw new ConfigMigrationError(
-        "retired native secure-storage namespace changed after check; run check again",
+        "retired native secure storage namespace changed after check; run check again",
       );
     }
     nativeNamespaceLegacy = structuredClone(source);
     const preview = mergeLegacyCredentialBlob(
-      nextNativeVault,
+      nextSecureStorage,
       nativeNamespaceLegacy,
-      `native vault ${plan.nativeVaultNamespaceMigration.source.serviceName}`,
+      `native secure storage ${plan.secureStorageNamespaceMigration.source.serviceName}`,
     );
     nativeNamespaceCanonical = preview.canonical;
     for (const [field, value] of Object.entries(preview.canonical)) {
       recordMigratedCredentialLeaf([field], value);
     }
-    nextNativeVault = preview.next;
+    nextSecureStorage = preview.next;
     for (const field of preview.addedFields) credentialVaultFields.add(field);
   }
     if (plan.credentialMigration) {
@@ -6071,7 +6073,7 @@ async function applyConfigV2MigrationLocked(
       plan.credentialMigration.sourcePath,
     );
     const preview = mergeLegacyCredentialBlob(
-      nextNativeVault,
+      nextSecureStorage,
       credentialLegacy,
       plan.credentialMigration.sourcePath,
     );
@@ -6079,7 +6081,7 @@ async function applyConfigV2MigrationLocked(
     for (const [field, value] of Object.entries(preview.canonical)) {
       recordMigratedCredentialLeaf([field], value);
     }
-    nextNativeVault = preview.next;
+    nextSecureStorage = preview.next;
     for (const field of preview.addedFields) credentialVaultFields.add(field);
     credentialFileActions.push(Object.freeze({
       kind: "delete",
@@ -6094,7 +6096,7 @@ async function applyConfigV2MigrationLocked(
       home: plan.home,
       platformHome: plan.retiredAuthMigration.platformHome,
       env: plan.retiredAuthMigration.environment,
-      currentVault: nextNativeVault,
+      currentVault: nextSecureStorage,
     });
     if (
       stableJson(discovery.descriptor) !==
@@ -6169,18 +6171,18 @@ async function applyConfigV2MigrationLocked(
     const journalCredential: JournalCredentialMigration | undefined =
     journalCredentialActions.length > 0 ||
       credentialVaultFields.size > 0 ||
-      plan.nativeVaultNamespaceMigration !== undefined
+      plan.secureStorageNamespaceMigration !== undefined
       ? Object.freeze({
           fileActions: Object.freeze(journalCredentialActions),
           vaultFields: Object.freeze([...credentialVaultFields].sort()),
-          ...(plan.nativeVaultNamespaceMigration === undefined
+          ...(plan.secureStorageNamespaceMigration === undefined
             ? {}
             : {
                 nativeNamespace: Object.freeze({
-                  source: plan.nativeVaultNamespaceMigration.source,
+                  source: plan.secureStorageNamespaceMigration.source,
                   sourceDisposition:
-                    plan.nativeVaultNamespaceMigration.sourceDisposition,
-                  sha256: plan.nativeVaultNamespaceMigration.sha256,
+                    plan.secureStorageNamespaceMigration.sourceDisposition,
+                  sha256: plan.secureStorageNamespaceMigration.sha256,
                 }),
               }),
         })
@@ -6410,12 +6412,12 @@ async function applyConfigV2MigrationLocked(
     let next = structuredClone(current) as SecureStorageData;
     if (
       nativeNamespaceLegacy !== undefined &&
-      plan.nativeVaultNamespaceMigration
+      plan.secureStorageNamespaceMigration
     ) {
       next = mergeLegacyCredentialBlob(
         next,
         nativeNamespaceLegacy,
-        `native vault ${plan.nativeVaultNamespaceMigration.source.serviceName}`,
+        `native secure storage ${plan.secureStorageNamespaceMigration.source.serviceName}`,
       ).next;
     }
     if (credentialLegacy !== undefined && plan.credentialMigration) {
@@ -6437,7 +6439,7 @@ async function applyConfigV2MigrationLocked(
     if (journalCredential) {
       const failureMessage =
         "Native secure storage is unavailable; retired credentials and files were not migrated.";
-      credentialTransaction = rewritesWindowsVaultInPlace
+      credentialTransaction = rewritesWindowsSecureStorageInPlace
         ? replaceUnreadableNativeSecureStorageForMigration(
             plan.home,
             buildMigratedCredentialVault({}),
@@ -6552,28 +6554,28 @@ async function applyConfigV2MigrationLocked(
     if (
       nativeNamespaceStorage !== undefined &&
       nativeNamespaceLegacy !== undefined &&
-      plan.nativeVaultNamespaceMigration !== undefined &&
-      plan.nativeVaultNamespaceMigration.sourceDisposition.startsWith("delete-")
+      plan.secureStorageNamespaceMigration !== undefined &&
+      plan.secureStorageNamespaceMigration.sourceDisposition.startsWith("delete-")
     ) {
       verifyCanonicalCredentialCommit();
       if (
         !secureStorageIdentitiesDiffer(
           getCanonicalSecureStorageIdentity(plan.home),
-          plan.nativeVaultNamespaceMigration.source,
+          plan.secureStorageNamespaceMigration.source,
         )
       ) {
         throw new ConfigMigrationError(
-          "retired native secure-storage namespace now resolves to the canonical storage target; migration refuses to delete it",
+          "retired native secure storage namespace now resolves to the canonical storage target; migration refuses to delete it",
         );
       }
       const currentSource = readSecureStorageFresh(nativeNamespaceStorage);
       if (
         currentSource === null ||
         sha256(stableJson(currentSource)) !==
-          plan.nativeVaultNamespaceMigration.sha256
+          plan.secureStorageNamespaceMigration.sha256
       ) {
         throw new ConfigMigrationError(
-          "retired native secure-storage namespace changed before cutover; migration refuses to delete it",
+          "retired native secure storage namespace changed before cutover; migration refuses to delete it",
         );
       }
       nativeNamespaceDeleteAttempted = true;
@@ -6589,29 +6591,29 @@ async function applyConfigV2MigrationLocked(
         sourceAfterDelete = readSecureStorageFresh(nativeNamespaceStorage);
       } catch (error) {
         throw new ConfigMigrationError(
-          `retired native secure-storage deletion outcome is ambiguous; the canonical copy was preserved: ${error instanceof Error ? error.message : String(error)}`,
+          `retired native secure storage deletion outcome is ambiguous; the canonical copy was preserved: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
       if (sourceAfterDelete !== null &&
         sha256(stableJson(sourceAfterDelete)) ===
-          plan.nativeVaultNamespaceMigration.sha256
+          plan.secureStorageNamespaceMigration.sha256
       ) {
         throw new ConfigMigrationError(
           deleteError instanceof Error
-            ? `retired native secure-storage namespace deletion failed: ${deleteError.message}`
+            ? `retired native secure storage namespace deletion failed: ${deleteError.message}`
             : deleteReportedSuccess
-              ? "retired native secure-storage backend reported success but the source still exists"
-              : "retired native secure-storage namespace could not be deleted after canonical vault commit",
+              ? "retired native secure storage backend reported success but the source still exists"
+              : "retired native secure storage namespace could not be deleted after the canonical secure-storage commit",
         );
       } else if (sourceAfterDelete !== null) {
         throw new ConfigMigrationError(
-          "retired native secure-storage namespace changed during deletion; the canonical copy was preserved",
+          "retired native secure storage namespace changed during deletion; the canonical copy was preserved",
         );
       }
     }
     if (
       nativeNamespaceStorage !== undefined &&
-      plan.nativeVaultNamespaceMigration?.sourceDisposition.startsWith(
+      plan.secureStorageNamespaceMigration?.sourceDisposition.startsWith(
         "retain-",
       )
     ) {
@@ -6621,17 +6623,17 @@ async function applyConfigV2MigrationLocked(
       } catch (error) {
         nativeNamespaceCutoverAmbiguous = true;
         throw new ConfigMigrationError(
-          `retained native secure-storage namespace could not be rechecked after canonical commit; the canonical copy was preserved: ${error instanceof Error ? error.message : String(error)}`,
+          `retained native secure storage namespace could not be rechecked after canonical commit; the canonical copy was preserved: ${error instanceof Error ? error.message : String(error)}`,
         );
       }
       if (
         retainedSource === null ||
         sha256(stableJson(retainedSource)) !==
-          plan.nativeVaultNamespaceMigration.sha256
+          plan.secureStorageNamespaceMigration.sha256
       ) {
         nativeNamespaceCutoverAmbiguous = true;
         throw new ConfigMigrationError(
-          "retained native secure-storage namespace changed during credential cutover; the canonical copy was preserved",
+          "retained native secure storage namespace changed during credential cutover; the canonical copy was preserved",
         );
       }
     }
@@ -6678,17 +6680,17 @@ async function applyConfigV2MigrationLocked(
       try {
         if (credentialTransaction === null) {
           throw new ConfigMigrationError(
-            "native secure-storage compensation transaction is missing",
+            "native secure storage compensation transaction is missing",
           );
         }
-        if (rewritesWindowsVaultInPlace) {
+        if (rewritesWindowsSecureStorageInPlace) {
           if (
             nativeNamespaceStorage === undefined ||
             nativeNamespaceLegacy === undefined ||
-            plan.nativeVaultNamespaceMigration === undefined
+            plan.secureStorageNamespaceMigration === undefined
           ) {
             throw new ConfigMigrationError(
-              "Windows native-vault in-place compensation is missing its retired source",
+              "Windows native secure storage in-place compensation is missing its retired source",
             );
           }
           const currentCanonical = readNativeSecureStorageFresh(plan.home);
@@ -6697,7 +6699,7 @@ async function applyConfigV2MigrationLocked(
             stableJson(credentialTransaction.written)
           ) {
             throw new ConfigMigrationError(
-              "canonical Windows native vault changed after in-place re-encryption; compensation refused to overwrite it",
+              "canonical Windows native secure storage changed after in-place re-encryption; compensation refused to overwrite it",
             );
           }
           const restored = nativeNamespaceStorage.update(
@@ -6706,7 +6708,7 @@ async function applyConfigV2MigrationLocked(
           if (!restored.success) {
             throw new ConfigMigrationError(
               restored.warning ??
-                "retired Windows native vault could not be restored after failed migration",
+                "retired Windows native secure storage could not be restored after failed migration",
             );
           }
           const verifiedSource = readSecureStorageFresh(
@@ -6715,10 +6717,10 @@ async function applyConfigV2MigrationLocked(
           if (
             verifiedSource === null ||
             sha256(stableJson(verifiedSource)) !==
-              plan.nativeVaultNamespaceMigration.sha256
+              plan.secureStorageNamespaceMigration.sha256
           ) {
             throw new ConfigMigrationError(
-              "retired Windows native vault restoration could not be verified",
+              "retired Windows native secure storage restoration could not be verified",
             );
           }
         } else {
@@ -6743,7 +6745,7 @@ async function applyConfigV2MigrationLocked(
                 const known = migratedCredentialFields.get(field);
                 if (known !== undefined && stableJson(known) !== stableJson(value)) {
                   throw new ConfigMigrationError(
-                    `migrated credential sources disagree at native secure-storage field ${field}`,
+                    `migrated credential sources disagree at native secure storage field ${field}`,
                   );
                 }
                 migratedCredentialFields.set(field, value);
@@ -7402,7 +7404,7 @@ async function reconcileJournalQuarantines(
       credential.canonicalSha256
   ) {
     throw new ConfigMigrationError(
-      `${operation} preserved credential quarantines because the checkpointed canonical vault revision could not be proven: ${journalPath}`,
+      `${operation} preserved credential quarantines because the checkpointed canonical secure-storage revision could not be proven: ${journalPath}`,
     );
   }
   for (const [index, action] of credential.fileActions.entries()) {

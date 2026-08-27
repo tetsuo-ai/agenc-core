@@ -32,6 +32,9 @@ function createSession(overrides: Record<string, unknown> = {}) {
     services: {
       registry: { toLLMTools: () => [] },
       provider: undefined,
+      skillsManager: {
+        skillsForConfig: vi.fn(async () => ({ invokedSkills: [] })),
+      },
     },
     config: {},
     emit: vi.fn(),
@@ -119,5 +122,57 @@ describe("buildAgenCToolUseContext", () => {
     );
 
     expect(context.options.maxBudgetUsd).toBe(7.25);
+  });
+
+  test("keeps skill discovery and attachment triggers on the exact session", () => {
+    const managerA = {
+      skillsForConfig: vi.fn(async () => ({ invokedSkills: [] })),
+    };
+    const managerB = {
+      skillsForConfig: vi.fn(async () => ({ invokedSkills: [] })),
+    };
+    const sessionA = createSession({
+      conversationId: "session-a",
+      services: {
+        registry: { toLLMTools: () => [] },
+        provider: undefined,
+        skillsManager: managerA,
+      },
+    });
+    const sessionB = createSession({
+      conversationId: "session-b",
+      services: {
+        registry: { toLLMTools: () => [] },
+        provider: undefined,
+        skillsManager: managerB,
+      },
+    });
+
+    const contextA = buildAgenCToolUseContext(
+      sessionA as unknown as Session,
+      createTurnContext(),
+      { llmTools: [] },
+    );
+    const contextB = buildAgenCToolUseContext(
+      sessionB as unknown as Session,
+      createTurnContext(),
+      { llmTools: [] },
+    );
+    contextA.dynamicSkillDirTriggers.add("/tmp/session-a/.agenc/skills");
+    const contextAAgain = buildAgenCToolUseContext(
+      sessionA as unknown as Session,
+      createTurnContext(),
+      { llmTools: [] },
+    );
+
+    expect(contextA.skillsManager).toBe(managerA);
+    expect(contextB.skillsManager).toBe(managerB);
+    expect(contextAAgain.dynamicSkillDirTriggers).toBe(
+      contextA.dynamicSkillDirTriggers,
+    );
+    expect([...contextAAgain.dynamicSkillDirTriggers]).toEqual([
+      "/tmp/session-a/.agenc/skills",
+    ]);
+    expect(contextB.dynamicSkillDirTriggers.size).toBe(0);
   });
 });

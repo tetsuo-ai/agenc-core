@@ -2,7 +2,7 @@
  * Onboarding Act 2b — "take it with you" (onboarding-plan-2026-07 O-3).
  *
  * Guided channel setup: pick a surface, acquire + LIVE-VALIDATE the token,
- * store it in the home-bound native credential vault,
+ * store it in the home-bound native secure storage,
  * explain the pairing default in one sentence, then run the live smoke: the
  * gateway starts in-process, the user messages their bot from their phone,
  * pairs with the code, and sees the agent answer before the act completes.
@@ -200,7 +200,7 @@ export async function runChannelAct(
 
   if (Object.keys(entries).length > 0) {
     updateGatewayCredentialEnvironment(home, entries);
-    io.say("Stored in the home-bound native credential vault — available to");
+    io.say("Stored in the home-bound native secure storage — available to");
     io.say("`agenc gateway run` and the gateway service, never the daemon.");
   }
 

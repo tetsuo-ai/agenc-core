@@ -1,4 +1,27 @@
 import { boundScopedServerIdentifier } from "../identifiers/server-name.js";
+import { isCanonicalPluginIdentity } from "./identifier.js";
+
+const SIMPLE_RUNTIME_PLUGIN_NAMESPACE = /^[a-z][a-z0-9-]*$/u;
+
+/**
+ * Project a canonical plugin ID into an injective runtime namespace.
+ * Ordinary kebab-case IDs stay readable; every other byte is unambiguously
+ * escaped behind a prefix that ordinary IDs cannot produce.
+ */
+export function canonicalPluginRuntimeNamespace(pluginId: string): string {
+  if (!isCanonicalPluginIdentity(pluginId)) {
+    throw new Error(`Invalid canonical plugin ID: ${pluginId}`);
+  }
+  if (SIMPLE_RUNTIME_PLUGIN_NAMESPACE.test(pluginId)) return pluginId;
+  const encoded = [...Buffer.from(pluginId, "utf8")]
+    .map((byte) =>
+      (byte >= 0x61 && byte <= 0x7a) || (byte >= 0x30 && byte <= 0x39)
+        ? String.fromCharCode(byte)
+        : `_${byte.toString(16).padStart(2, "0")}`
+    )
+    .join("");
+  return `p_${encoded}`;
+}
 
 export function normalizePluginIdentifierSegment(
   value: string,
@@ -28,15 +51,18 @@ export function normalizePluginIdentifierName(
 }
 
 export function pluginScopedIdentifier(
-  pluginName: string,
+  pluginId: string,
   parts: readonly string[],
   finalFallback: string,
 ): string {
-  return normalizePluginIdentifierName([pluginName, ...parts], finalFallback);
+  return normalizePluginIdentifierName(
+    [canonicalPluginRuntimeNamespace(pluginId), ...parts],
+    finalFallback,
+  );
 }
 
 export function pluginScopedServerIdentifier(
-  pluginName: string,
+  pluginId: string,
   serverName: string,
 ): string {
   const serverParts = serverName.split(":").filter((part) => part.length > 0);
@@ -44,7 +70,7 @@ export function pluginScopedServerIdentifier(
     normalizePluginIdentifierName(
       [
         "plugin",
-        pluginName,
+        canonicalPluginRuntimeNamespace(pluginId),
         ...(serverParts.length > 0 ? serverParts : ["server"]),
       ],
       "server",

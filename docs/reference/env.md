@@ -134,12 +134,12 @@ Auth backend:
 | --- | --- |
 | `AGENC_AUTH_BACKEND` | `local` or `remote` |
 | `AGENC_AUTH_MANAGED_KEYS_ENABLED` | Boolean-like managed-keys switch |
-| `AGENC_REMOTE_AUTH_TOKEN` | Explicit process/session remote bearer. Overrides a stored native-vault bearer and is never persisted to `auth.json` |
+| `AGENC_REMOTE_AUTH_TOKEN` | Explicit process/session remote bearer. Overrides a stored native secure storage bearer and is never persisted to `auth.json` |
 
 Persisted local-login tokens, saved BYOK keys, remote bearers, and remote
 subprocess credentials live only in the home-scoped native OS credential
-vault. Descriptor variables are transient ingress; after a successful read,
-child-process continuity uses the native vault rather than a token file.
+secure storage. Descriptor variables are transient ingress; after a successful read,
+child-process continuity uses the native secure storage rather than a token file.
 
 Remote MCP `authorization_env` fields accept only names under the reserved
 prefix `AGENC_CREDENTIAL_` (shown as `AGENC_CREDENTIAL_*`). The creating client captures those values into
@@ -206,11 +206,11 @@ Channel tokens live in env, not in TOML:
 
 | Var | Channel |
 | --- | --- |
-| `AGENC_TELEGRAM_BOT_TOKEN` | One-shot Telegram credential; onboarding persists it only in the home-bound native vault |
-| `AGENC_DISCORD_BOT_TOKEN` | One-shot Discord credential; onboarding persists it only in the home-bound native vault |
-| `AGENC_SLACK_BOT_TOKEN`, `AGENC_SLACK_APP_TOKEN` | One-shot Slack credentials; onboarding persists them only in the home-bound native vault |
-| `AGENC_WEBCHAT_TOKEN` | One-shot WebChat bearer override; generated persistent tokens live only in the native vault |
-| `AGENC_HOOKS_TOKEN` | One-shot gateway hooks bearer override. Persistent generated tokens live only in the native vault. |
+| `AGENC_TELEGRAM_BOT_TOKEN` | One-shot Telegram credential; onboarding persists it only in the home-bound native secure storage |
+| `AGENC_DISCORD_BOT_TOKEN` | One-shot Discord credential; onboarding persists it only in the home-bound native secure storage |
+| `AGENC_SLACK_BOT_TOKEN`, `AGENC_SLACK_APP_TOKEN` | One-shot Slack credentials; onboarding persists them only in the home-bound native secure storage |
+| `AGENC_WEBCHAT_TOKEN` | One-shot WebChat bearer override; generated persistent tokens live only in the native secure storage |
+| `AGENC_HOOKS_TOKEN` | One-shot gateway hooks bearer override. Persistent generated tokens live only in the native secure storage. |
 
 [gateway.md](../gateway.md), [remote-control.md](../remote-control.md).
 
@@ -233,7 +233,7 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | `AGENC_SHELL` | Absolute executable path whose filename is `bash` or `zsh`; an unsupported or non-executable explicit path fails instead of falling back |
 | `AGENC_SHELL_PREFIX` | Wrap bash/hook command argv (POSIX) |
 | `AGENC_TMPDIR` | Temp dir for sandbox/permission paths |
-| `AGENC_PLUGIN_CACHE_DIR` | Explicit sole plugin storage root (the versioned cache remains its `cache/` child) |
+| `AGENC_PLUGIN_CACHE_DIR` | Explicit sole plugin storage root (the versioned cache remains its `cache/` child). CLI/runtime ingress captures it once; `AgencClient` callers pass `pluginStorageRoot` directly |
 | `AGENC_ALLOW_UNTRUSTED_HOOKS` | Permit command hook effects in an untrusted workspace at explicit automation startup; see below |
 | `AGENC_ENABLE_TASKS` | TUI task-board pool only. LIVE Task* tools are always registered and deferred |
 | `AGENC_USE_NATIVE_FILE_SEARCH` | Native fuzzy file index path |
@@ -307,7 +307,7 @@ The sections above explain the common operator controls. The index below makes t
 
 ### AGENC_M*
 
-`AGENC_MANAGED_AGENTS_DIR`, `AGENC_MANAGED_HOME`, `AGENC_MANAGED_INSTRUCTIONS`, `AGENC_MAX_CONTEXT_TOKENS`, `AGENC_MAX_SESSION_READ_CONTENT_BYTES`, `AGENC_MAX_TOOL_DRAIN_MS`, `AGENC_MAX_TOOL_RESULT_WINDOW_FRACTION`, `AGENC_MAX_TOOL_USE_CONCURRENCY`, `AGENC_MCP_INSTR_DELTA`, `AGENC_MESSAGING_SOCKET`, `AGENC_MICROCOMPACT_CLEAR_AFTER_MS`, `AGENC_MICROCOMPACT_CLEAR_THINKING`, `AGENC_MICROCOMPACT_CLEAR_TOOL_RESULTS`, `AGENC_MICROCOMPACT_CLEAR_TOOL_USES`.
+`AGENC_MANAGED_HOME`, `AGENC_MANAGED_INSTRUCTIONS`, `AGENC_MAX_CONTEXT_TOKENS`, `AGENC_MAX_SESSION_READ_CONTENT_BYTES`, `AGENC_MAX_TOOL_DRAIN_MS`, `AGENC_MAX_TOOL_RESULT_WINDOW_FRACTION`, `AGENC_MAX_TOOL_USE_CONCURRENCY`, `AGENC_MCP_INSTR_DELTA`, `AGENC_MESSAGING_SOCKET`, `AGENC_MICROCOMPACT_CLEAR_AFTER_MS`, `AGENC_MICROCOMPACT_CLEAR_THINKING`, `AGENC_MICROCOMPACT_CLEAR_TOOL_RESULTS`, `AGENC_MICROCOMPACT_CLEAR_TOOL_USES`.
 
 ### AGENC_N*
 
@@ -401,8 +401,8 @@ migration contract.
 | Removed | Replacement |
 | --- | --- |
 | `AGENC_CONFIG_DIR` | `AGENC_HOME` (moves config, state, daemon identity, plugin storage defaults, and secure-storage namespace together) |
-| `AGENC_REMOTE_TOKEN_DIR`, `AGENC_SESSION_INGRESS_TOKEN_FILE` | No replacement. Persisted remote credentials use the home-scoped native vault; descriptors and direct token env vars remain transient inputs |
-| `PROVIDER_CODE_AUTH_JSON_PATH`, `PROVIDER_CODE_HOME` | No runtime replacement. ProviderCode credentials come from explicit credential env vars or the home-scoped native vault; retired `auth.json` is migration-only input |
+| `AGENC_REMOTE_TOKEN_DIR`, `AGENC_SESSION_INGRESS_TOKEN_FILE` | No replacement. Persisted remote credentials use the home-scoped native secure storage; descriptors and direct token env vars remain transient inputs |
+| `PROVIDER_CODE_AUTH_JSON_PATH`, `PROVIDER_CODE_HOME` | No runtime replacement. ProviderCode credentials come from explicit credential env vars or the home-scoped native secure storage; retired `auth.json` is migration-only input |
 | `AGENC_ENABLE_LEGACY_WINDOWS_PASSWORDVAULT` | No runtime replacement. The explicit migration check reports this unsupported retired PasswordVault source and requires export through a supported prior version; ordinary runtime never enables it |
 | `AGENC_SIMPLE`, `AGENC_BARE` | `--bare` |
 | `AGENC_XAI_API_KEY` | `XAI_API_KEY` or the documented `GROK_API_KEY` alias |
@@ -428,12 +428,10 @@ migration contract.
 | `AGENC_DISABLE_AUTO_MEMORY` | `autoMemoryEnabled` in `config.toml` |
 | `AGENC_DISABLE_FILE_CHECKPOINTING`, `AGENC_ENABLE_SDK_FILE_CHECKPOINTING` | `fileCheckpointingEnabled` in `config.toml` |
 | `AGENC_USE_READABLE_STDIN` | `AGENC_USE_DATA_STDIN=1` |
-| `AGENC_PLUGIN_SEED_DIR` | Copy required versioned packages into `$AGENC_HOME/plugins/cache` (or `AGENC_PLUGIN_CACHE_DIR/cache`) and remove the variable. Layered seed directories were removed because they created a second plugin-package authority. |
-| `AGENC_PLUGIN_USE_ZIP_CACHE` | No replacement. The unused ZIP loader was removed; plugins use the sole versioned directory cache under `$AGENC_HOME/plugins/cache` (or `AGENC_PLUGIN_CACHE_DIR/cache`) |
 | `AGENC_USE_POWERSHELL_TOOL` | No registration switch. PowerShell availability is detected on Windows; `defaultShell` in `config.toml` selects the interactive default |
 
 `AGENC_CONFIG_DIR` is inspected only to locate or reject an ambiguous explicit
-home migration, including the historical native-vault namespace it selected.
+home migration, including the historical native secure storage namespace it selected.
 Ordinary runtime identity comes only from `AGENC_HOME`; see the config
 migration reference for copy/retain and exact-retirement rules. The removed
 watchdog switches, the effort switch, `AGENC_SIMPLE`, and `AGENC_BARE` are

@@ -84,7 +84,7 @@ Resume with `--continue` / `--resume`.
 ```bash
 agenc onboard identity     # SOUL.md / USER.md + one-time naming ritual → IDENTITY.md
 agenc onboard channel      # Telegram / Discord / Slack / WebChat
-                           # live token checks, secrets in the native vault, pairing walkthrough
+                           # live token checks, secrets in the native secure storage, pairing walkthrough
 agenc gateway install-service   # always-on gateway (systemd/launchd)
 ```
 

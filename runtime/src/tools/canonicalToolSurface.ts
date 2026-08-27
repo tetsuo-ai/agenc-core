@@ -9,7 +9,10 @@ import { isRecord } from "../utils/record.js";
 import { createBashTool } from "./system/bash.js";
 import { createFileEditTool } from "./system/file-edit.js";
 import { createFileReadTool } from "./system/file-read.js";
-import { createFileWriteTool } from "./system/file-write.js";
+import {
+  attachFileWriteTouchedPathCallback,
+  createFileWriteTool,
+} from "./system/file-write.js";
 import { createGlobTool } from "./system/glob.js";
 import { createGrepTool } from "./system/grep.js";
 import { withSignedSessionId } from "../agents/_deps/filesystem-args.js";
@@ -62,6 +65,10 @@ interface CanonicalToolOptions {
   readonly userFacingName?: (input: Partial<Record<string, unknown>>) => string;
   readonly summary?: (input: Partial<Record<string, unknown>>) => string | null;
   readonly classifierInput?: (input: Record<string, unknown>) => unknown;
+  readonly configureRuntimeInput?: (
+    input: Record<string, unknown>,
+    context: ToolUseContext,
+  ) => void;
   readonly isSearchOrReadCommand?: (
     input: Record<string, unknown>,
   ) => SearchOrReadClassification;
@@ -478,6 +485,7 @@ function createCanonicalTool(options: CanonicalToolOptions): Tool {
               ? { __onProgress: progressForwarder }
               : {}),
           };
+          options.configureRuntimeInput?.(executionInput, context);
           if (runtimeContext !== undefined) {
             attachToolRuntimeContext(executionInput, runtimeContext);
           }
@@ -544,6 +552,18 @@ function sandboxBrokerFromToolUseContext(
     typeof broker.assertReady === "function"
     ? (candidate as SandboxExecutionBrokerLike)
     : undefined;
+}
+
+async function discoverSkillsForWrittenPath(
+  context: ToolUseContext,
+  absolutePath: string,
+): Promise<void> {
+  const discoveredRoots = await context.skillsManager
+    ?.discoverSkillDirsForPaths?.([absolutePath]);
+  if (!discoveredRoots || discoveredRoots.length === 0) return;
+  for (const root of discoveredRoots) {
+    context.dynamicSkillDirTriggers?.add(root);
+  }
 }
 
 function mapCanonicalInput(
@@ -694,6 +714,11 @@ export const CanonicalFileWriteTool = createCanonicalTool({
     file_path: input.file_path,
     content: input.content,
   }),
+  configureRuntimeInput: (input, context) => {
+    attachFileWriteTouchedPathCallback(input, (absolutePath) =>
+      discoverSkillsForWrittenPath(context, absolutePath)
+    );
+  },
 });
 
 export const CanonicalGrepTool = createCanonicalTool({

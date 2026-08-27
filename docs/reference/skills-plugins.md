@@ -4,7 +4,7 @@ Sources of truth:
 
 | Area | Path |
 | --- | --- |
-| Skill load / `SKILL.md` | `runtime/src/skills/local-loader.ts`, `loadSkillsDir.ts` |
+| Skill load / `SKILL.md` | `runtime/src/skills/local-loader.ts` |
 | Bundled skills | `runtime/src/skills/bundledSkills.ts` |
 | MCP skills | `runtime/src/skills/mcpSkills.ts` |
 | Plugin load / dirs | `runtime/src/plugins/loader.ts`, `directories.ts` |
@@ -30,16 +30,15 @@ Existing directories only (missing roots skipped). Project walk: cwd up to home.
 
 | Scope | Typical roots |
 | --- | --- |
-| Project | Session loader: `<dir>/.agenc/skills`, `<dir>/.agents/skills` (and deprecated `…/commands`). Slash catalog walks **`.agenc/skills` only** |
-| User | `$AGENC_HOME/skills`, `~/.agenc/skills`, `~/.agents/skills`, compat `~/.claude/skills`, `~/.codex/skills` (compat dirs are **skills only**, no `commands`) |
-| Managed | Session loader: `$AGENC_MANAGED_HOME/.agenc/skills`. Slash catalog: `<getManagedFilePath()>/.agenc/skills` (e.g. `/etc/agenc-code/.agenc/skills`) |
+| Project | `<dir>/.agenc/skills`, `<dir>/.agents/skills` |
+| User | `$AGENC_HOME/skills`, `$HOME/.agents/skills` |
+| Managed | `$AGENC_MANAGED_HOME/.agenc/skills` |
 | Plugin | Skill roots exposed by enabled plugins |
 | Bundled / MCP | Built-in definitions and MCP-sourced skills |
 
-`getSkillsPath` (settings source → path) also maps policy/user/project to
-managed / config-home / `.agenc/skills`.
-
-Slash: `/skills` — list roots, manage project skills; also lists bundled skills (tagged `[bundled]`).
+The runtime command catalog and `/skills` use this same discovery result.
+`/skills` can list roots and manage project skills; bundled skills are tagged
+`[bundled]`.
 
 ### Bundled skills
 
@@ -80,26 +79,39 @@ Author under e.g. `.agenc/skills/my-skill/SKILL.md` in the project or
 ### Defaults
 
 - `[plugins] enabled = false` in `defaultConfig()`
-- Installed packages, acquisition cache, marketplace inventory, and private
-  data share the sole `~/.agenc/plugins` storage root.
-  `AGENC_PLUGIN_CACHE_DIR` may select one explicit replacement root; layered
-  seed roots are retired and rejected.
-- Plugin private data: `…/plugins/data/<sanitized-id>/`
+- User-scoped installs, acquisition cache, marketplace inventory, and private
+  data share one plugin storage root. The default is `$AGENC_HOME/plugins`.
+  `AGENC_PLUGIN_CACHE_DIR` replaces that root as one unit. Project-scoped
+  packages remain under the project path shown in the CLI section.
+- Plugin private data uses a collision-resistant child name:
+  `<plugin-storage-root>/data/<readable-id>--<sha256>/`.
 
 ### Manifest
 
 Every plugin requires exactly one manifest at `.agenc-plugin/plugin.json`.
+Its `name` is a lowercase canonical identifier made from letters, digits,
+periods, underscores, and hyphens. Installed aliases may use the qualified
+form `name@marketplace`; that exact ID owns configuration, secrets, and data.
 Component-only directories and marketplace metadata cannot synthesize a live
 plugin. A root
 `plugin.json` is retired: AgenC refuses to load the package and tells the
 operator to move the manifest or reinstall the plugin. Ordinary loading never
 rewrites plugin package content.
 
-The loader never discovers `cache/`, `data/`, or `marketplaces/` as active
-plugin packages. Installed packages become live only through the canonical
-loader and config path; acquisition artifacts cannot become a second plugin
-authority merely by existing under the storage root. The retired registry,
-seed, and ZIP-loader implementations have been removed.
+The loader never discovers internal storage children as active plugin
+packages. The reserved names are `build`, `cache`, `coverage`, `data`, `dist`,
+`marketplaces`, and `node_modules` (case-insensitive). Installed packages
+become live only through the canonical loader and config path; acquisition
+artifacts cannot become a second plugin authority merely by existing under
+the storage root. No registry or cache loader supplies packages from another
+root. If different roots resolve to the same canonical plugin ID, every copy
+is disabled and the diagnostic lists all conflicting roots.
+
+On first discovery after an upgrade, AgenC moves an old private-data directory
+to the hashed layout only when its owner is provable. A lossy old path that
+could belong to more than one canonical ID is left untouched and disables the
+affected plugin with the exact source and destination paths. AgenC never reads
+both layouts as live state.
 
 MCP declarations live only in the manifest's `mcpServers` field. A package
 containing `.mcp.json` is rejected with guidance to move those declarations
@@ -177,7 +189,7 @@ external effect types. See [hooks.md](hooks.md).
 The installed manifest's `userConfig` schema selects exactly one owner for
 each declared value:
 
-- fields marked `sensitive: true` live only in the native OS credential vault;
+- fields marked `sensitive: true` live only in the native secure storage;
 - other declared fields live under `pluginConfigs.<plugin>.options` or the
   channel-specific `pluginConfigs.<plugin>.mcpServers.<server>` table in
   `config.toml`;
@@ -188,12 +200,12 @@ authority. It is not a user-settings or credential surface: values declared
 sensitive by the manifest are ignored there and reported by plugin
 validation/registration. A root `settings.json` beside the manifest is
 rejected with guidance to move its defaults into the manifest and remove the
-file, or reinstall the plugin. Only the native vault value may be substituted into an MCP or LSP
+file, or reinstall the plugin. Only the native secure storage value may be substituted into an MCP or LSP
 server.
 
-A sensitive field found in `config.toml` is rejected even when the vault also
+A sensitive field found in `config.toml` is rejected even when secure storage also
 contains a value. Open `/plugin`, choose the plugin, and use **Configure** to
-write the value to the vault and scrub the plaintext field. AgenC never treats
+write the value to secure storage and scrub the plaintext field. AgenC never treats
 TOML as a secret fallback and never creates a plaintext secret archive during
 this reconfiguration.
 
@@ -213,10 +225,15 @@ agenc plugin marketplace list|add|remove|upgrade …
 
 Dispatch accepts `agenc plugin` only. `agenc plugins` is a **help topic**,
 not an execution alias. TUI: `/plugins` (aliases `/plugin`, `/marketplace`).
-Install roots: user `$AGENC_HOME/plugins/<name>`; project/local
-`<workspace>/.agents/plugins/<name>`. Extra discovery also
+Install roots use the same collision-resistant child key: user
+`<plugin-storage-root>/<readable-id>--<sha256>`; project/local
+`<workspace>/.agents/plugins/<readable-id>--<sha256>`. Extra discovery also
 `<workspace>/plugins/` and git-root `plugins/`. `[plugins] enabled = false`
 in `defaultConfig()`.
+
+A canonical plugin ID can be installed in one managed scope at a time.
+Uninstall it before moving it between user and project/local scope. Uninstall
+still accepts an explicit scope so old duplicate copies can be removed safely.
 
 ### Marketplace
 
@@ -225,7 +242,7 @@ Every source must expose its catalog at `.agenc-plugin/marketplace.json`; a
 root `marketplace.json` is not probed as a fallback. Validate a catalog with
 `plugin validate --marketplace`.
 
-`$AGENC_HOME/plugins/known_marketplaces.json` is strict plugin inventory and
+`<plugin-storage-root>/known_marketplaces.json` is strict plugin inventory and
 cache state, not operator configuration. It records the exact absolute install
 and manifest paths selected by the sole marketplace operation authority in
 `runtime/src/plugins/marketplace/marketplace.ts`. Inventory read-modify-write
@@ -233,9 +250,6 @@ transactions are serialized by plugin root and committed with a durable atomic
 rename. Duplicate JSON keys, unknown fields, relative paths, or policy matchers
 fail closed. Ordinary reads never refresh a source, probe another cache path,
 or migrate an old entry.
-
-The retired `plugins/marketplaces/marketplaces.json` index is rejected with
-remove/re-add guidance; it never competes with `known_marketplaces.json`.
 
 ---
 

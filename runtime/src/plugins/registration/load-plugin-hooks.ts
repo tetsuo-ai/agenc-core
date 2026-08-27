@@ -25,13 +25,21 @@ function substituteHookCommand(
     ...command,
     command: substitutePluginTemplate(command.command, plugin, {
       sessionId: options.sessionId,
+      ...(options.pluginStorageRoot !== undefined
+        ? { pluginStorageRoot: options.pluginStorageRoot }
+        : {}),
     }),
     ...(command.statusMessage !== undefined
       ? {
           statusMessage: substitutePluginTemplate(
             command.statusMessage,
             plugin,
-            { sessionId: options.sessionId },
+            {
+              sessionId: options.sessionId,
+              ...(options.pluginStorageRoot !== undefined
+                ? { pluginStorageRoot: options.pluginStorageRoot }
+                : {}),
+            },
           ),
         }
       : {}),
@@ -78,7 +86,7 @@ async function resolvePlugins(
 }
 
 export async function loadPluginHooks(
-  options: PluginHookRegistrationOptions = {},
+  options: PluginHookRegistrationOptions,
 ): Promise<HooksMap | undefined> {
   const plugins = await resolvePlugins(options);
   let merged: HooksMap | undefined;

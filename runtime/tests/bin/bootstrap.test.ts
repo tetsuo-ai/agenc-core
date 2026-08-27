@@ -260,8 +260,9 @@ describe("bootstrapLocalRuntimeSession", () => {
     });
 
     const providerMod = await import("../llm/provider.js");
-    vi.spyOn(providerMod, "createProvider").mockImplementation(
-      () =>
+    const createProviderSpy = vi
+      .spyOn(providerMod, "createProvider")
+      .mockImplementation(() =>
         ({
           name: "stub",
           chat: async () => ({
@@ -273,8 +274,7 @@ describe("bootstrapLocalRuntimeSession", () => {
               totalTokens: 2,
             },
           }),
-        }) as never,
-    );
+        }) as never);
     vi.spyOn(Session.prototype, "startMcpManager").mockResolvedValue(undefined);
 
     let shutdown: (() => Promise<void>) | null = null;
@@ -303,6 +303,35 @@ describe("bootstrapLocalRuntimeSession", () => {
         effort: "high",
       });
       expect(bootDefinition?.getSystemPrompt()).toBe("Audit without editing.");
+
+      type SpawnToolSchema = {
+        readonly function?: {
+          readonly name?: string;
+          readonly parameters?: {
+            readonly properties?: {
+              readonly agent_type?: { readonly enum?: readonly string[] };
+            };
+          };
+        };
+      };
+      const providerTools = createProviderSpy.mock.calls[0]?.[1].tools as
+        | readonly SpawnToolSchema[]
+        | undefined;
+      const startupSpawnSchema = providerTools?.find(
+        (tool) => tool.function?.name === "spawn_agent",
+      )?.function?.parameters;
+      const liveSpawnSchema = boot.registry
+        .toLLMTools()
+        .find((tool) => tool.function.name === "spawn_agent")
+        ?.function.parameters as SpawnToolSchema["function"] extends {
+          readonly parameters?: infer T;
+        }
+          ? T
+          : never;
+      expect(
+        startupSpawnSchema?.properties?.agent_type?.enum,
+      ).toContain("programmatic-auditor");
+      expect(liveSpawnSchema).toEqual(startupSpawnSchema);
 
       const toolContext = buildAgenCToolUseContext(boot.session, boot.ctx);
       expect(

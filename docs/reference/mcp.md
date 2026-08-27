@@ -185,8 +185,8 @@ native daemon session/capability and traverse the common permission, sandbox,
 admission, redaction, and audit path.
 
 Prompts and resources are scoped to the same canonical workspace: project
-`.agenc/skills`, `.agenc/commands`, `.agenc/memory`, and `AGENC.md`. User-global
-skills, commands, memory, and instructions are never exposed by inbound serve.
+`.agenc/skills`, `.agenc/memory`, and `AGENC.md`. User-global skills, memory,
+and instructions are never exposed by inbound serve.
 Every candidate is canonicalized, regular-file checked, and rejected if a
 symlink resolves outside the workspace. Resource listing remains metadata-only;
 the server revalidates and reads only the resource selected by `resources/read`.

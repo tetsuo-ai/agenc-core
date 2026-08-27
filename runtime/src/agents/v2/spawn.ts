@@ -14,11 +14,9 @@ import {
   assertAgentRoleWorkspaceMatches,
   formatRoleList,
   listAgentRoles,
-  requireAgentRole,
   type AgentRole,
 } from "../role.js";
 import {
-  canonicalAgentRoleName,
   formatAgentRoleLabel,
   formatAgentRolePublicName,
 } from "../role-presentation.js";
@@ -335,15 +333,20 @@ function roleServiceTier(role: AgentRole | undefined): string | undefined {
   return role?.config.serviceTier;
 }
 
-export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
-  const workspaceRoles = listAgentRoles(opts.workspace);
+function buildSpawnAgentSchema(opts: MultiAgentV2Options): Record<string, unknown> {
+  const session = opts.getSession();
+  const workspaceRoles = opts.roleCatalog?.list() ?? (
+    session === null
+      ? listAgentRoles(opts.workspace)
+      : opts.ensureAgentControl(session).control.roleCatalog.list()
+  );
   const roleNames = [...new Set(
     workspaceRoles.flatMap((role) => [
       formatAgentRolePublicName(role.name) ?? role.name,
       role.name,
     ]),
   )].sort();
-  const spawnAgentSchema = {
+  return {
     type: "object",
     properties: {
       message: {
@@ -383,7 +386,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     required: ["message", "task_name"],
     additionalProperties: false,
   };
+}
 
+export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
   const execute = async (
     args: Record<string, unknown>,
   ): Promise<ToolResult> => {
@@ -458,8 +463,10 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     const current = currentAgentContext(session, args, opts);
     if (isCurrentAgentContextError(current)) return current;
     const rawRole = stringValue(args.agent_type);
-    const role =
-      rawRole !== undefined ? canonicalAgentRoleName(rawRole) : undefined;
+    // The session catalog performs exact-name lookup before public alias
+    // fallback. Canonicalizing here would make an executable plugin/workspace
+    // definition whose exact name is also a built-in alias disappear.
+    const role = rawRole;
     const model = stringValue(args.model);
     const rawReasoningEffort = args.reasoning_effort;
     const reasoningEffort = parseReasoningEffort(rawReasoningEffort);
@@ -547,7 +554,7 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     let resolvedRole: AgentRole | undefined;
     try {
       if (role !== undefined) {
-        resolvedRole = requireAgentRole(control.roleWorkspace, role);
+        resolvedRole = control.roleCatalog.require(role);
       }
     } catch (error) {
       return failSpawn(error instanceof Error ? error.message : String(error));
@@ -840,7 +847,9 @@ export function createSpawnAgentTool(opts: MultiAgentV2Options): Tool {
     requiresApproval: true,
     recoveryCategory: "side-effecting",
     admissionEstimate: localZeroAdmissionEstimate,
-    inputSchema: spawnAgentSchema,
+    get inputSchema(): Record<string, unknown> {
+      return buildSpawnAgentSchema(opts);
+    },
     execute,
   };
 }

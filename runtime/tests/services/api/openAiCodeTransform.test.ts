@@ -183,7 +183,7 @@ describe('ProviderCode request translation', () => {
         credentials: {
           bearerToken: 'stored-subscription-token',
           accountId: 'acct_stored',
-          source: 'native-vault',
+          source: 'native-secure-storage',
         },
         environment: Object.freeze({}),
         params: {

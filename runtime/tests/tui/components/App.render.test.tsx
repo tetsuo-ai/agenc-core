@@ -467,6 +467,7 @@ vi.mock("../../commands.js", () => ({
       (command) => command.name === name || command.aliases?.includes(name),
     ) ?? null,
   getCommands: async () => [],
+  getActiveSessionCommands: async () => mockTuiCommandList,
   isCommandEnabled: () => true,
   listTuiCommandList: () => mockTuiCommandList,
 }));

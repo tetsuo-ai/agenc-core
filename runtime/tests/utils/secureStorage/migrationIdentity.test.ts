@@ -25,7 +25,7 @@ afterEach(() => {
   }
 })
 
-describe('retired native-vault identity reconstruction', () => {
+describe('retired native secure storage identity reconstruction', () => {
   test('uses platform homedir rather than an ambient HOME alias', () => {
     const platformHome = join(temp(), 'platform-home')
     const retired = getRetiredSecureStorageIdentity(

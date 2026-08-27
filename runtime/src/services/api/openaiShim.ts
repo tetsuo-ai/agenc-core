@@ -19,7 +19,7 @@
  *   OPENAI_AUTH_SCHEME=bearer|raw     — auth scheme for Authorization/custom header handling
  *   OPENAI_API_FORMAT=chat_completions|responses — request format for compatible APIs
  *   OPENAI_BASE_URL=http://...        — base URL (default: https://api.openai.com/v1)
- *   PROVIDER_CODE_API_KEY or native-vault OAuth — ProviderCode auth for providerCodeplan/providerCodespark
+ *   PROVIDER_CODE_API_KEY or native secure storage OAuth — ProviderCode auth for providerCodeplan/providerCodespark
  *
  * GitHub Copilot API (api.githubcopilot.com), provider-compatible:
  *   GITHUB_TOKEN or GH_TOKEN         — Copilot API token (mapped to Bearer auth)

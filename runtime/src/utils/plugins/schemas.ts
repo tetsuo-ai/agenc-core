@@ -186,41 +186,6 @@ export function validateOfficialNameSource(
 const RelativePath = lazySchema(() => z.string().startsWith('./'))
 
 /**
- * Shared validation for marketplace names in fetched marketplace manifests.
- */
-const MarketplaceNameSchema = lazySchema(() =>
-  z
-    .string()
-    .min(1, 'Marketplace must have a name')
-    .refine(name => !name.includes(' '), {
-      message:
-        'Marketplace name cannot contain spaces. Use kebab-case (e.g., "my-marketplace")',
-    })
-    .refine(
-      name =>
-        !name.includes('/') &&
-        !name.includes('\\') &&
-        !name.includes('..') &&
-        name !== '.',
-      {
-        message:
-          'Marketplace name cannot contain path separators (/ or \\), ".." sequences, or be "."',
-      },
-    )
-    .refine(name => !isBlockedOfficialName(name), {
-      message:
-        'Marketplace name impersonates an official provider/AgenC marketplace',
-    })
-    .refine(name => name.toLowerCase() !== 'inline', {
-      message:
-        'Marketplace name "inline" is reserved for --plugin-dir session plugins',
-    })
-    .refine(name => name.toLowerCase() !== 'builtin', {
-      message: 'Marketplace name "builtin" is reserved for built-in plugins',
-    }),
-)
-
-/**
  * Schema for plugin author information
  */
 export const PluginAuthorSchema = lazySchema(() =>
@@ -237,41 +202,6 @@ export const PluginAuthorSchema = lazySchema(() =>
       .string()
       .optional()
       .describe('Website, GitHub profile, or organization URL'),
-  }),
-)
-
-/**
- * Catalog metadata used to identify and resolve a plugin package. Package
- * declarations are deliberately excluded and belong to the package manifest.
- */
-const MarketplacePluginMetadataSchema = lazySchema(() =>
-  z.object({
-    name: z
-      .string()
-      .min(1, 'Plugin name cannot be empty')
-      .refine(name => !name.includes(' '), {
-        message:
-          'Plugin name cannot contain spaces. Use kebab-case (e.g., "my-plugin")',
-      })
-      .describe(
-        'Unique identifier for the plugin, used for namespacing (prefer kebab-case)',
-      ),
-    version: z
-      .string()
-      .optional()
-      .describe(
-        'Semantic version (e.g., 1.2.3) following semver.org specification',
-      ),
-    description: z
-      .string()
-      .optional()
-      .describe('Brief, user-facing explanation of what the plugin provides'),
-    dependencies: z
-      .array(DependencyRefSchema())
-      .optional()
-      .describe(
-        'Plugins that must be enabled for this plugin to function. Bare names (no "@marketplace") are resolved against the declaring plugin\'s own marketplace.',
-      ),
   }),
 )
 
@@ -539,88 +469,12 @@ export const PluginSourceSchema = lazySchema(() =>
  * This function provides a semantic wrapper around the './' prefix check, making
  * the intent clear and centralizing the logic for determining plugin source type.
  *
- * @param source The plugin source from PluginMarketplaceEntry
+ * @param source The plugin source value to inspect
  * @returns true if the source is a local path, false if it's an external source
  */
 export function isLocalPluginSource(source: PluginSource): source is string {
   return typeof source === 'string' && source.startsWith('./')
 }
-
-/**
- * Schema for individual plugin entries in a marketplace
- *
- * Package declarations are intentionally absent. Every package must carry its
- * own canonical `.agenc-plugin/plugin.json` manifest.
- *
- * Unknown fields are retained so the per-entry loader can reject package
- * declarations with a localized migration diagnostic instead of invalidating
- * unrelated catalog entries.
- */
-export const PluginMarketplaceEntrySchema = lazySchema(() =>
-  z.object({
-      ...MarketplacePluginMetadataSchema().shape,
-      name: z
-        .string()
-        .min(1, 'Plugin name cannot be empty')
-        .refine(name => !name.includes(' '), {
-          message:
-            'Plugin name cannot contain spaces. Use kebab-case (e.g., "my-plugin")',
-        })
-        .describe('Unique identifier matching the plugin name'),
-      source: PluginSourceSchema().describe('Where to fetch the plugin from'),
-      category: z
-        .string()
-        .optional()
-        .describe(
-          'Category for organizing plugins (e.g., "productivity", "development")',
-        ),
-      tags: z
-        .array(z.string())
-        .optional()
-        .describe('Tags for searchability and discovery'),
-    }).passthrough(),
-)
-
-/**
- * Schema for plugin marketplace configuration
- *
- * Defines the structure for curated collections of plugins that can
- * be discovered and installed from a central repository.
- */
-export const PluginMarketplaceSchema = lazySchema(() =>
-  z.object({
-    name: MarketplaceNameSchema(),
-    owner: PluginAuthorSchema().describe(
-      'Marketplace maintainer or curator information',
-    ),
-    plugins: z
-      .array(PluginMarketplaceEntrySchema())
-      .describe('Collection of available plugins in this marketplace'),
-    forceRemoveDeletedPlugins: z
-      .boolean()
-      .optional()
-      .describe(
-        'When true, plugins removed from this marketplace will be automatically uninstalled and flagged for users',
-      ),
-    metadata: z
-      .object({
-        pluginRoot: z
-          .string()
-          .optional()
-          .describe('Base path for relative plugin sources'),
-        version: z.string().optional().describe('Marketplace version'),
-        description: z.string().optional().describe('Marketplace description'),
-      })
-      .optional()
-      .describe('Optional marketplace metadata'),
-    allowCrossMarketplaceDependenciesOn: z
-      .array(z.string())
-      .optional()
-      .describe(
-        "Marketplace names whose plugins may be auto-installed as dependencies. Only the root marketplace's allowlist applies \u2014 no transitive trust.",
-      ),
-  }),
-)
 
 const DEP_REF_REGEX =
   /^[a-z0-9][-a-z0-9._]*(@[a-z0-9][-a-z0-9._]*)?(@\^[^@]*)?$/i
@@ -693,10 +547,3 @@ export type {
   PluginManifest,
   PluginManifestChannel,
 } from '../../plugins/manifest-schema.js'
-
-export type PluginMarketplace = z.infer<
-  ReturnType<typeof PluginMarketplaceSchema>
->
-export type PluginMarketplaceEntry = z.infer<
-  ReturnType<typeof PluginMarketplaceEntrySchema>
->

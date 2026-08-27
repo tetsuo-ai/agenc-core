@@ -9,6 +9,7 @@ import {
   getPluginDataDir,
   getPluginDataDirSize,
   getPluginsDirectory,
+  pluginFilesystemKey,
   sanitizePluginId,
 } from "./directories.js";
 import {
@@ -425,6 +426,12 @@ describe("plugin manifest schema", () => {
       const emptyNameIssues = manifestIssuePaths(() =>
         normalizePluginManifest({ name: "   " }, root),
       );
+      const uppercaseNameIssues = manifestIssuePaths(() =>
+        normalizePluginManifest({ name: "Foo" }, root),
+      );
+      const pathNameIssues = manifestIssuePaths(() =>
+        normalizePluginManifest({ name: "foo/bar" }, root),
+      );
       const bundleIssues = manifestIssuePaths(() =>
         normalizePluginManifest(
           {
@@ -455,6 +462,8 @@ describe("plugin manifest schema", () => {
 
       expect(missingNameIssues).toContain("name");
       expect(emptyNameIssues).toContain("name");
+      expect(uppercaseNameIssues).toContain("name");
+      expect(pathNameIssues).toContain("name");
       expect(bundleIssues).toEqual(
         expect.arrayContaining(["mcpServers[0]", "mcpServers[1]"]),
       );
@@ -683,7 +692,7 @@ describe("plugin loader", () => {
       });
 
       const result = await loadPlugins({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: { plugins: { enabled: false, allowlist: [] } },
       });
@@ -705,7 +714,7 @@ describe("plugin loader", () => {
       });
 
       const result = await loadPlugins({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: {
           plugins: {
@@ -736,7 +745,7 @@ describe("plugin loader", () => {
       });
 
       const result = await loadPlugins({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: {
           plugins: {
@@ -766,7 +775,7 @@ describe("plugin loader", () => {
       });
 
       const result = await loadPlugins({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: {
           plugins: {
@@ -791,14 +800,17 @@ describe("plugin loader", () => {
       await writePluginManifest(join(workspaceRoot, "vendor", "plugins", "toolbox"), {
         name: "toolbox",
       });
+      await mkdir(join(workspaceRoot, "vendor", "plugins", "skills"), {
+        recursive: true,
+      });
 
       const disabled = await loadPlugins({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: { plugins: { enabled: false, dirs: ["vendor/plugins"] } },
       });
       const enabled = await loadPlugins({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: { plugins: { enabled: true, dirs: ["vendor/plugins"] } },
       });
@@ -817,7 +829,7 @@ describe("plugin loader", () => {
       await writePluginManifest(join(agencHome, "plugins", "beta"), { name: "beta" });
 
       const result = await loadPlugins({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: {
           plugins: {
@@ -879,7 +891,7 @@ describe("plugin loader", () => {
       });
 
       const result = await loadPlugins({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: { plugins: { enabled: true } },
       });
@@ -917,7 +929,7 @@ describe("plugin loader", () => {
       });
 
       const result = await loadPlugins({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: {
           plugins: {
@@ -984,7 +996,7 @@ describe("plugin loader", () => {
       });
 
       const result = await loadPlugins({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: { plugins: { enabled: true } },
       });
@@ -1022,7 +1034,7 @@ describe("plugin loader", () => {
       });
 
       const result = await loadPlugins({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: { plugins: { enabled: true, allowlist: ["alpha"] } },
       });
@@ -1121,7 +1133,7 @@ describe("plugin loader", () => {
       const workspaceRoot = join(root, "workspace");
 
       const result = await loadPlugins({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: {
           plugins: {
@@ -1151,7 +1163,7 @@ describe("plugin loader", () => {
       });
 
       const result = await loadPlugins({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: {
           plugins: {
@@ -1211,7 +1223,7 @@ describe("plugin loader", () => {
       });
 
       const result = await loadPlugins({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: { plugins: { enabled: true } },
       });
@@ -1243,7 +1255,7 @@ describe("plugin loader", () => {
       });
 
       const result = await loadPlugins({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: {
           plugins: {
@@ -1438,7 +1450,7 @@ describe("plugin loader", () => {
       }
 
       const roots = await discoverPluginRoots({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: {
           plugins: {
@@ -1451,7 +1463,7 @@ describe("plugin loader", () => {
         },
       });
       const skillRoots = await discoverPluginSkillRoots({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: {
           plugins: {
@@ -1482,6 +1494,171 @@ describe("plugin loader", () => {
     });
   });
 
+  test("fails closed when user and project plugins share one canonical ID", async () => {
+    await withTempDir(async (root) => {
+      const pluginStorageRoot = join(root, "home", "plugins");
+      const workspaceRoot = join(root, "workspace");
+      const userPlugin = join(pluginStorageRoot, "user-copy");
+      const projectPlugin = join(
+        workspaceRoot,
+        ".agents",
+        "plugins",
+        "project-copy",
+      );
+      for (const pluginRoot of [userPlugin, projectPlugin]) {
+        await writePluginManifest(pluginRoot, { name: "shared-identity" });
+        await writeFileAt(
+          join(pluginRoot, "commands", "inspect.md"),
+          "# inspect\n",
+        );
+      }
+
+      const result = await loadPlugins({
+        pluginStorageRoot,
+        workspaceRoot,
+        config: { plugins: { enabled: true } },
+      });
+
+      expect(result.enabled).toEqual([]);
+      expect(result.disabled).toHaveLength(2);
+      expect(result.disabled.map((plugin) => plugin.id)).toEqual([
+        "shared-identity",
+        "shared-identity",
+      ]);
+      expect(result.disabled.every((plugin) => plugin.commands.length === 1))
+        .toBe(true);
+      const identityErrors = result.errors.filter((issue) =>
+        issue.message.includes("Duplicate canonical plugin ID")
+      );
+      expect(identityErrors).toHaveLength(2);
+      for (const issue of identityErrors) {
+        expect(issue.message).toContain(await realpath(userPlugin));
+        expect(issue.message).toContain(await realpath(projectPlugin));
+        expect(issue.message).toContain("No copy was activated");
+      }
+    });
+  });
+
+  test("rejects case-variant manifest names before plugin registration", async () => {
+    await withTempDir(async (root) => {
+      const pluginStorageRoot = join(root, "home", "plugins");
+      const workspaceRoot = join(root, "workspace");
+      await writePluginManifest(join(pluginStorageRoot, "uppercase"), {
+        name: "Foo",
+      });
+      await writePluginManifest(
+        join(workspaceRoot, ".agents", "plugins", "lowercase"),
+        { name: "foo" },
+      );
+
+      const result = await loadPlugins({
+        pluginStorageRoot,
+        workspaceRoot,
+        config: { plugins: { enabled: true } },
+      });
+
+      expect(result.enabled.map((plugin) => plugin.id)).toEqual(["foo"]);
+      expect(result.errors).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: "manifest",
+          message: expect.stringContaining("Plugin manifest failed validation"),
+        }),
+      ]));
+    });
+  });
+
+  test("fails closed when old data cannot identify one canonical plugin", async () => {
+    await withTempDir(async (root) => {
+      const pluginStorageRoot = join(root, "home", "plugins");
+      const workspaceRoot = join(root, "workspace");
+      const qualified = join(pluginStorageRoot, "qualified");
+      const hyphenated = join(pluginStorageRoot, "hyphenated");
+      await writePluginManifest(qualified, { name: "foo" });
+      await writeJson(
+        join(qualified, ".agenc-plugin", "agenc-install.json"),
+        { dependencyIdentity: "foo@bar" },
+      );
+      await writePluginManifest(hyphenated, { name: "foo-bar" });
+      await writeFileAt(
+        join(pluginStorageRoot, "data", "foo-bar", "state.json"),
+        "ambiguous",
+      );
+
+      const result = await loadPlugins({
+        pluginStorageRoot,
+        workspaceRoot,
+        config: { plugins: { enabled: true } },
+      });
+
+      expect(result.enabled).toEqual([]);
+      expect(result.disabled.map((plugin) => plugin.id).sort()).toEqual([
+        "foo-bar",
+        "foo@bar",
+      ]);
+      expect(result.errors).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: "settings",
+          message: expect.stringContaining("cannot be attributed safely"),
+        }),
+      ]));
+    });
+  });
+
+  test("blocks commands, hooks, and MCP from duplicate configured plugin IDs", async () => {
+    await withTempDir(async (root) => {
+      const pluginStorageRoot = join(root, "home", "plugins");
+      const workspaceRoot = join(root, "workspace");
+      const configuredDirA = join(root, "configured-a");
+      const configuredDirB = join(root, "configured-b");
+      const configuredA = join(configuredDirA, "copy-a");
+      const configuredB = join(configuredDirB, "copy-b");
+      for (const pluginRoot of [configuredA, configuredB]) {
+        await writePluginManifest(pluginRoot, {
+          name: "shared-runtime",
+          hooks: "./hooks/hooks.json",
+          mcpServers: {
+            local: { command: "node", args: ["server.mjs"] },
+          },
+        });
+        await writeFileAt(
+          join(pluginRoot, "commands", "inspect.md"),
+          "# inspect\n",
+        );
+        await writeJson(join(pluginRoot, "hooks", "hooks.json"), {
+          hooks: {
+            Stop: [{
+              matcher: "done",
+              hooks: [{ type: "command", command: "true" }],
+            }],
+          },
+        });
+      }
+
+      const result = await loadPlugins({
+        pluginStorageRoot,
+        workspaceRoot,
+        config: {
+          plugins: {
+            enabled: true,
+            dirs: [configuredDirA, configuredDirB],
+          },
+        },
+      });
+
+      expect(result.enabled).toEqual([]);
+      expect(result.disabled).toHaveLength(2);
+      for (const plugin of result.disabled) {
+        expect(plugin.id).toBe("shared-runtime");
+        expect(plugin.commands).toHaveLength(1);
+        expect(plugin.hookSources).toHaveLength(1);
+        expect(Object.keys(plugin.mcpServers)).toEqual(["local"]);
+        expect(plugin.errors.some((issue) =>
+          issue.message.includes("Duplicate canonical plugin ID")
+        )).toBe(true);
+      }
+    });
+  });
+
   test("discovers workspace plugins from the git root when running in a subdirectory", async () => {
     await withTempDir(async (root) => {
       const agencHome = join(root, "home");
@@ -1494,12 +1671,12 @@ describe("plugin loader", () => {
       await writeFileAt(join(repoPlugin, "skills", "zeroday-hunter", "SKILL.md"), "---\nname: x\n---\n");
 
       const roots = await discoverPluginRoots({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: { plugins: { enabled: true } },
       });
       const skillRoots = await discoverPluginSkillRoots({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: { plugins: { enabled: true } },
       });
@@ -1521,12 +1698,12 @@ describe("plugin loader", () => {
       await writeFileAt(join(repoPlugin, "skills", "zeroday-hunter", "SKILL.md"), "---\nname: x\n---\n");
 
       const roots = await discoverPluginRoots({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: { plugins: { enabled: true } },
       });
       const skillRoots = await discoverPluginSkillRoots({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: { plugins: { enabled: true } },
       });
@@ -1553,7 +1730,7 @@ describe("plugin loader", () => {
       await writeFileAt(join(stylePlugin, "output-styles", "plain.md"), "# plain\n");
 
       const result = await loadPlugins({
-        agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         config: { plugins: { enabled: true } },
       });
@@ -1570,36 +1747,94 @@ describe("plugin loader", () => {
         .toEqual([join(stylePlugin, "output-styles")]);
     });
   });
-});
 
-describe("plugin directories", () => {
-  test("uses the canonical AgenC home plugin root without a cache override", async () => {
+  test("never treats known plugin containers as plugins", async () => {
     await withTempDir(async (root) => {
-      const agencHome = join(root, "agenc-home");
+      const pluginStorageRoot = join(root, "plugin-storage");
+      const workspaceRoot = join(root, "workspace");
+      const storagePlugin = join(pluginStorageRoot, "storage-normal");
+      const agentPlugin = join(
+        workspaceRoot,
+        ".agents",
+        "plugins",
+        "agent-normal",
+      );
+      const workspacePlugin = join(
+        workspaceRoot,
+        "plugins",
+        "workspace-normal",
+      );
+      await mkdir(join(pluginStorageRoot, "skills"), { recursive: true });
+      await mkdir(join(workspaceRoot, ".agents", "plugins", "skills"), {
+        recursive: true,
+      });
+      await mkdir(join(workspaceRoot, "plugins", "skills"), {
+        recursive: true,
+      });
+      await writePluginManifest(storagePlugin, { name: "storage-normal" });
+      await writePluginManifest(agentPlugin, { name: "agent-normal" });
+      await writePluginManifest(workspacePlugin, { name: "workspace-normal" });
 
-      expect(getPluginsDirectory({ AGENC_HOME: agencHome }, root)).toBe(
-        join(agencHome, "plugins"),
+      const result = await loadPlugins({
+        pluginStorageRoot,
+        workspaceRoot,
+        config: { plugins: { enabled: true } },
+      });
+
+      expect(result.enabled.map(plugin => plugin.name).sort()).toEqual([
+        "agent-normal",
+        "storage-normal",
+        "workspace-normal",
+      ]);
+      expect(result.enabled.map(plugin => plugin.root)).toEqual(
+        expect.arrayContaining(await Promise.all([
+          realpath(storagePlugin),
+          realpath(agentPlugin),
+          realpath(workspacePlugin),
+        ])),
       );
     });
   });
+});
 
-  test("uses AgenC directory environment and data-dir sanitation", async () => {
+describe("plugin directories", () => {
+  test("uses one explicit plugin storage root", async () => {
     await withTempDir(async (root) => {
-      const env = {
-        AGENC_PLUGIN_CACHE_DIR: join(root, "plugin-cache"),
-      };
+      const pluginStorageRoot = join(root, "plugin-storage");
 
-      expect(getPluginsDirectory(env, root)).toBe(join(root, "plugin-cache"));
+      expect(getPluginsDirectory(pluginStorageRoot)).toBe(pluginStorageRoot);
+    });
+  });
+
+  test("uses the explicit storage authority for sanitized plugin data", async () => {
+    await withTempDir(async (root) => {
+      const pluginStorageRoot = join(root, "plugin-storage");
+
+      expect(getPluginsDirectory(pluginStorageRoot)).toBe(pluginStorageRoot);
       expect(sanitizePluginId("team/plugin@1")).toBe("team-plugin-1");
+      expect(pluginFilesystemKey("foo@bar")).not.toBe(
+        pluginFilesystemKey("foo-bar"),
+      );
 
-      const dataDir = getPluginDataDir("team/plugin@1", env, root);
+      const dataDir = getPluginDataDir("team/plugin@1", pluginStorageRoot);
       await writeFileAt(join(dataDir, "state.json"), "{}");
 
-      await expect(getPluginDataDirSize("team/plugin@1", env, root)).resolves.toMatchObject({
-        bytes: 2,
-      });
-      await deletePluginDataDir("team/plugin@1", env, root);
-      await expect(getPluginDataDirSize("team/plugin@1", env, root)).resolves.toBeNull();
+      await expect(
+        getPluginDataDirSize("team/plugin@1", pluginStorageRoot),
+      ).resolves.toMatchObject({ bytes: 2 });
+      await deletePluginDataDir("team/plugin@1", pluginStorageRoot);
+      await expect(
+        getPluginDataDirSize("team/plugin@1", pluginStorageRoot),
+      ).resolves.toBeNull();
+
+      const marketplaceQualified = getPluginDataDir("foo@bar", pluginStorageRoot);
+      const hyphenated = getPluginDataDir("foo-bar", pluginStorageRoot);
+      expect(marketplaceQualified).not.toBe(hyphenated);
+      await writeFileAt(join(marketplaceQualified, "state.json"), "qualified");
+      await writeFileAt(join(hyphenated, "state.json"), "hyphenated");
+      await deletePluginDataDir("foo@bar", pluginStorageRoot);
+      await expect(getPluginDataDirSize("foo-bar", pluginStorageRoot))
+        .resolves.toMatchObject({ bytes: 10 });
     });
   });
 });

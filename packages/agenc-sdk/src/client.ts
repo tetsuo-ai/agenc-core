@@ -66,13 +66,16 @@ import type {
   CsvJobReviewShowResult,
 } from "./csv-jobs.js";
 
-const SAFE_SDK_RUNTIME_OPTIONS = Object.freeze({
-  simpleMode: false,
-  stdinDataMode: false,
-  remoteMode: false,
-  allowUntrustedHooks: false,
-});
-const AGENT_ATTACH_RUNTIME_AUTHORITY_PROTOCOL_MINOR = 7;
+function safeSdkRuntimeOptions(pluginStorageRoot: string) {
+  return Object.freeze({
+    simpleMode: false,
+    stdinDataMode: false,
+    remoteMode: false,
+    pluginStorageRoot,
+    allowUntrustedHooks: false,
+  });
+}
+const AGENT_ATTACH_RUNTIME_AUTHORITY_PROTOCOL_MINOR = 8;
 
 /**
  * Minimal transport contract. The runtime's
@@ -244,6 +247,13 @@ export interface AgencClientOptions {
   readonly onPermissionRequest?: AgencPermissionCallback;
   /** Default elicitation handler for every prompt run on this client. */
   readonly onElicitationRequest?: AgencElicitationCallback;
+}
+
+export interface AgencCreateSessionParams extends SessionCreateParams {
+  /** Existing agents must be opened with attachAgent(), preserving their owning authority. */
+  readonly agentId?: never;
+  /** Exact plugin storage root captured by the embedding ingress. */
+  readonly pluginStorageRoot: string;
 }
 
 export interface AgencPromptOptions {
@@ -937,47 +947,73 @@ export class AgencClient {
 
   /**
    * Create a runnable daemon session and attach this client to it.
-   * Prefer gateway-style `agent.create` first so `message.send` has a live
-   * agent (todo-133). Falls back to bare `session.create` when `agentId` is
-   * already supplied.
+   * Uses `agent.create` so the exact plugin storage authority is owned by the
+   * new agent. Existing agents must be opened with `attachAgent()`.
    */
-  async createSession(params: SessionCreateParams = {}): Promise<AgencSession> {
-    const existingAgentId =
-      typeof (params as { agentId?: unknown }).agentId === "string"
-        ? String((params as { agentId: string }).agentId).trim()
-        : "";
+  async createSession(params: AgencCreateSessionParams): Promise<AgencSession> {
+    const {
+      pluginStorageRoot: requestedPluginStorageRoot,
+      initialPrompt,
+      metadata,
+      ...sessionParams
+    } = params;
+    const pluginStorageRoot = normalizePluginStorageRoot(
+      requestedPluginStorageRoot,
+    );
+    if (Object.prototype.hasOwnProperty.call(sessionParams, "agentId")) {
+      throw new Error(
+        "AgencClient.createSession cannot apply pluginStorageRoot to an existing agentId; use attachAgent() instead",
+      );
+    }
     // DAE-02: always send absolute client workspace cwd on the wire.
     const cwd = resolveClientCwd(
-      typeof (params as { cwd?: unknown }).cwd === "string"
-        ? String((params as { cwd: string }).cwd)
+      typeof (sessionParams as { cwd?: unknown }).cwd === "string"
+        ? String((sessionParams as { cwd: string }).cwd)
         : undefined,
     );
     const negotiatedVersion = this.#negotiatedClientProtocolVersion;
     const canAttachWithRuntimeAuthority =
       negotiatedVersion === undefined ||
       supportsAgentAttachRuntimeAuthority(negotiatedVersion);
-    if (existingAgentId.length === 0 && canAttachWithRuntimeAuthority) {
-      const agent = await this.spawnAgent({
-        objective:
-          typeof (params as { objective?: unknown }).objective === "string" &&
-          String((params as { objective: string }).objective).trim().length > 0
-            ? String((params as { objective: string }).objective).trim()
-            : "Interactive session",
-        cwd,
-        initialContent: [],
-        runtimeOptions: SAFE_SDK_RUNTIME_OPTIONS,
-      } as AgentCreateParams);
-      const attached = await this.attachAgent(agent.agentId);
-      if (attached.session !== null) {
-        return attached.session;
-      }
+    if (!canAttachWithRuntimeAuthority) {
+      throw new AgencCapabilityUnavailableError(
+        "createSession plugin storage authority",
+        negotiatedVersion,
+      );
     }
-    const created = await this.request("session.create", {
-      ...params,
+
+    const agent = await this.spawnAgent({
+      objective:
+        typeof (sessionParams as { objective?: unknown }).objective ===
+          "string" &&
+        String((sessionParams as { objective: string }).objective).trim()
+          .length > 0
+          ? String((sessionParams as { objective: string }).objective).trim()
+          : "Interactive session",
       cwd,
-    });
-    await this.#attachSession(created.sessionId);
-    return new AgencSession(this, created.sessionId, created.agentId);
+      initialContent: initialPrompt === undefined ? [] : initialPrompt,
+      ...(metadata !== undefined ? { metadata } : {}),
+      runtimeOptions: safeSdkRuntimeOptions(pluginStorageRoot),
+    } as AgentCreateParams);
+    try {
+      const attached = await this.attachAgent(agent.agentId);
+      if (attached.session === null) {
+        throw new Error(
+          `AgenC agent ${agent.agentId} did not expose a session with its owning plugin storage authority`,
+        );
+      }
+      return attached.session;
+    } catch (error) {
+      try {
+        await this.stopAgent(
+          agent.agentId,
+          "SDK session creation failed before attachment completed",
+        );
+      } catch {
+        // Preserve the attachment failure that made createSession unusable.
+      }
+      throw error;
+    }
   }
 
   /** Attach to an existing daemon-owned session by id. */
@@ -1769,7 +1805,6 @@ function assertValidAgentAttachRuntimeAuthority(
     "coworkMemoryExtraGuidelines",
     "posixShellPath",
     "sessionTempRoot",
-    "pluginStorageRoot",
   ] as const) {
     const value = runtimeOptions[key];
     if (value !== undefined && typeof value !== "string") {
@@ -1778,6 +1813,17 @@ function assertValidAgentAttachRuntimeAuthority(
         response,
       );
     }
+  }
+  if (
+    !boundedSettingString(runtimeOptions.pluginStorageRoot, 4_096) ||
+    (runtimeOptions.pluginStorageRoot as string).trim() !==
+      runtimeOptions.pluginStorageRoot ||
+    !isAbsolute(runtimeOptions.pluginStorageRoot as string)
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach runtimeOptions.pluginStorageRoot must be a bounded absolute path",
+      response,
+    );
   }
   const commandWrapperArgv = runtimeOptions.commandWrapperArgv;
   if (
@@ -1921,6 +1967,26 @@ function resolveClientCwd(cwd: string | undefined): string {
     return isAbsolute(trimmed) ? resolve(trimmed) : resolve(base, trimmed);
   }
   return resolve(base);
+}
+
+function normalizePluginStorageRoot(pluginStorageRoot: unknown): string {
+  if (pluginStorageRoot === undefined) {
+    throw new Error(
+      "AgencClient.createSession requires pluginStorageRoot captured at embedding ingress",
+    );
+  }
+  if (
+    typeof pluginStorageRoot !== "string" ||
+    pluginStorageRoot.length === 0 ||
+    pluginStorageRoot.trim() !== pluginStorageRoot ||
+    Buffer.byteLength(pluginStorageRoot, "utf8") > 4_096 ||
+    !isAbsolute(pluginStorageRoot)
+  ) {
+    throw new Error(
+      "pluginStorageRoot must be a non-empty absolute path of at most 4096 UTF-8 bytes with no surrounding whitespace",
+    );
+  }
+  return pluginStorageRoot;
 }
 
 function normalizeClientMessageId(value: string | undefined): string {

@@ -132,7 +132,7 @@ import { createPermissionAuditFileLogger } from "../permissions/permission-audit
 import { loadCanonicalConfig } from "../config/repository.js";
 import { resolveProviderBaseURL } from "../config/env.js";
 import {
-  resolveAgentRuntimeOptions,
+  resolveSessionTempRootAtIngress,
   validateAgentRuntimeOptions,
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
@@ -2894,7 +2894,7 @@ async function runAgenCDaemonForegroundLocked(
     });
     const commandExec = new AgenCCommandExecService({
       agencLinuxSandboxExe: resolveDefaultLinuxSandboxExecutable(),
-      sessionTempRoot: resolveAgentRuntimeOptions(host.env).sessionTempRoot,
+      sessionTempRoot: resolveSessionTempRootAtIngress(host.env),
       allowGpu: activeConfig.sandbox?.allow_gpu === true,
     });
     cleanup.register("daemon-command-exec", async () => {

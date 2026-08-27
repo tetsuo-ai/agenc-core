@@ -34,9 +34,9 @@ import {
   attachMcpManagerToSession,
   createSessionMcpManager,
   createSessionMcpSamplingHandlers,
-  createSessionMcpService,
+  createSessionMcpService as createRuntimeSessionMcpService,
   requiredMcpServerNames,
-  resolveSessionMcpConfig,
+  resolveSessionMcpConfig as resolveRuntimeSessionMcpConfig,
   startMcpManagerForSession,
 } from "./mcp-startup.js";
 import type { Session } from "./session.js";
@@ -74,10 +74,37 @@ const mockLoadPluginMcpServerRegistrations = vi.mocked(
 const UNUSED_AUTHORITY = {
   subscribe: () => () => {},
 } as unknown as CanonicalSettingsAuthority;
+const TEST_PLUGIN_STORAGE_ROOT = join(tmpdir(), "agenc-mcp-plugin-storage");
 const TEST_SERVICE_OPTIONS = Object.freeze({
   authority: UNUSED_AUTHORITY,
   environment: Object.freeze({}),
 });
+
+function createSessionMcpService(
+  manager: Parameters<typeof createRuntimeSessionMcpService>[0],
+  options: Omit<
+    Parameters<typeof createRuntimeSessionMcpService>[1],
+    "pluginStorageRoot"
+  > & { readonly pluginStorageRoot?: string },
+) {
+  return createRuntimeSessionMcpService(manager, {
+    ...options,
+    pluginStorageRoot: options.pluginStorageRoot ?? TEST_PLUGIN_STORAGE_ROOT,
+  });
+}
+
+function resolveSessionMcpConfig(
+  authority: Parameters<typeof resolveRuntimeSessionMcpConfig>[0],
+  environment: Parameters<typeof resolveRuntimeSessionMcpConfig>[1],
+  sessionServers: Parameters<typeof resolveRuntimeSessionMcpConfig>[3] = {},
+) {
+  return resolveRuntimeSessionMcpConfig(
+    authority,
+    environment,
+    TEST_PLUGIN_STORAGE_ROOT,
+    sessionServers,
+  );
+}
 
 function stubManager() {
   const setCallObserver = vi.fn();
@@ -790,6 +817,11 @@ describe("mcp-startup session-owned manager helpers", () => {
         environment: {},
       });
       await service.refreshFromAuthority?.();
+      expect(mockLoadPluginMcpServerRegistrations).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pluginStorageRoot: TEST_PLUGIN_STORAGE_ROOT,
+        }),
+      );
       expect(manager).toBeInstanceOf(MCPManager);
       expect(manager.getConfiguredServers()).toEqual([
         expect.objectContaining({
@@ -930,7 +962,13 @@ describe("mcp-startup session-owned manager helpers", () => {
       new Error("plugin registry unavailable"),
     );
     try {
-      const result = await getAllMcpConfigs(fixture.store, {});
+      const result = await getAllMcpConfigs(
+        fixture.store,
+        { pluginStorageRoot: TEST_PLUGIN_STORAGE_ROOT },
+        {},
+        {},
+        new Map(),
+      );
       expect(Object.keys(result.servers)).toEqual(["allowed"]);
       expect(result.errors).toContainEqual({
         type: "generic-error",
@@ -947,7 +985,13 @@ describe("mcp-startup session-owned manager helpers", () => {
       user: ["[mcp_servers.broken]", "enabled = true"],
     });
     try {
-      const result = await getAllMcpConfigs(fixture.store, {});
+      const result = await getAllMcpConfigs(
+        fixture.store,
+        { pluginStorageRoot: TEST_PLUGIN_STORAGE_ROOT },
+        {},
+        {},
+        new Map(),
+      );
       expect(result.servers).toEqual({});
       expect(result.errors).toEqual([
         expect.objectContaining({
@@ -3281,7 +3325,13 @@ describe("session MCP mutation transactions", () => {
       return [];
     });
     try {
-      const resolution = getAllMcpConfigs(fixture.store, {});
+      const resolution = getAllMcpConfigs(
+        fixture.store,
+        { pluginStorageRoot: TEST_PLUGIN_STORAGE_ROOT },
+        {},
+        {},
+        new Map(),
+      );
       await loaderStarted.promise;
       writeCanonicalFixtureConfig(fixture.userConfigPath, [
         "[mcp_servers.snapshot]",

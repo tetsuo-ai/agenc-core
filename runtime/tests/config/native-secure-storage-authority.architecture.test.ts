@@ -13,7 +13,7 @@ function sourceFiles(directory: string): string[] {
   });
 }
 
-describe("native secure-storage authority", () => {
+describe("native secure storage authority", () => {
   test("Linux credential CRUD uses one exact-item helper surface", () => {
     const adapter = readFileSync(
       join(ROOT, "utils", "secureStorage", "linuxSecretStorage.ts"),
@@ -46,7 +46,7 @@ describe("native secure-storage authority", () => {
     expect(source).toContain("home: HomeContext");
   });
 
-  test("native vault operations and adapters stay bound to explicit HomeContext", () => {
+  test("native secure storage operations and adapters stay bound to explicit HomeContext", () => {
     const native = readFileSync(
       join(ROOT, "utils", "secureStorage", "native.ts"),
       "utf8",
@@ -170,7 +170,7 @@ describe("native secure-storage authority", () => {
     expect(auth).toContain(
       "const readPersistedAgenCAIOAuthTokens = memoize((home: HomeContext)",
     );
-    expect(auth).toContain("}, nativeVaultIdentityKey)");
+    expect(auth).toContain("}, secureStorageIdentityKey)");
     expect(auth).toContain(
       "export function getAgenCAIOAuthTokens(\n  home: HomeContext,\n  environment: ProviderEnvironment,",
     );
@@ -189,7 +189,7 @@ describe("native secure-storage authority", () => {
     expect(agencAiOauthSection).not.toContain("resolveSecureStorageHome");
   });
 
-  test("credential caches use the complete native-vault identity", () => {
+  test("credential caches use the complete native secure storage identity", () => {
     const cacheAuthorities = [
       "auth.ts",
       "openAiOauthCredentials.ts",
@@ -204,11 +204,11 @@ describe("native secure-storage authority", () => {
     );
 
     for (const source of [...cacheAuthorities, mcpClient]) {
-      expect(source).toContain("nativeVaultIdentityKey");
+      expect(source).toContain("secureStorageIdentityKey");
     }
   });
 
-  test("only the native secure-storage implementation accesses storage directly", () => {
+  test("only the native secure storage implementation accesses storage directly", () => {
     const directCallers = sourceFiles(ROOT)
       .filter((path) => readFileSync(path, "utf8").includes("getSecureStorage("))
       .map((path) => relative(ROOT, path).replaceAll("\\", "/"))
@@ -220,7 +220,7 @@ describe("native secure-storage authority", () => {
     ]);
   });
 
-  test("only explicit config migration may open a retired native-vault identity", () => {
+  test("only explicit config migration may open a retired native secure storage identity", () => {
     const callers = sourceFiles(ROOT)
       .filter((path) =>
         readFileSync(path, "utf8").includes("getSecureStorageForMigration(")

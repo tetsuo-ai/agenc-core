@@ -1146,6 +1146,7 @@ export async function spawnTeammate(
   if (config.agent_type) {
     const freshCatalog = await loadFreshAgentDefinitions(
       parentSession.roleWorkspace.cwd,
+      parentSession.services.runtimeOptions.pluginStorageRoot,
     )
     assertAgentRoleWorkspaceMatches(
       parentSession.roleWorkspace,

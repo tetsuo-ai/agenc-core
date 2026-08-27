@@ -180,7 +180,7 @@ export interface AgentRuntimeOptionsParams extends JsonObject {
   readonly posixShellPath?: string;
   readonly commandWrapperArgv?: readonly string[];
   readonly sessionTempRoot?: string;
-  readonly pluginStorageRoot?: string;
+  readonly pluginStorageRoot: string;
   /**
    * Explicit capability for command hook effects in an untrusted workspace.
    * The SDK safe default is false. This field never permits HTTP, prompt, or

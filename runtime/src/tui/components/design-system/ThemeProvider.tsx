@@ -5,7 +5,7 @@ import { useStdin } from '../../ink/components/StdinContext.js';
 import { logError } from '../../../utils/log.js';
 import { getExecutionAuthoritySettings, updateSettingsForSource } from '../../../utils/settings/settings.js';
 import { getCanonicalSettingsAuthority } from '../../../utils/settings/canonicalAuthority.js';
-import { getSystemThemeName, type SystemTheme } from '../../../utils/systemTheme.js'; // upstream-import: keep target is owned by another Z-PURGE item
+import { getTerminalBackground, type TerminalBackground } from '../../../utils/terminalBackground.js'; // upstream-import: keep target is owned by another Z-PURGE item
 import type { ThemeName, ThemeSetting } from '../../../utils/theme.js'; // upstream-import: keep target is owned by another Z-PURGE item
 type ThemeContextValue = {
   /** The saved user preference. May be 'auto'. */
@@ -59,7 +59,7 @@ export function ThemeProvider({
 
   // Track terminal theme for 'auto' resolution. Seeds from $COLORFGBG (or
   // 'dark' if unset); the OSC 11 watcher corrects it on first poll.
-  const [systemTheme, setSystemTheme] = useState<SystemTheme>(() => (initialState ?? themeSetting) === 'auto' ? getSystemThemeName() : 'dark');
+  const [terminalBackground, setTerminalBackground] = useState<TerminalBackground>(() => (initialState ?? themeSetting) === 'auto' ? getTerminalBackground() : 'dark');
 
   // The setting currently in effect (preview wins while picker is open)
   const activeSetting = previewTheme ?? themeSetting;
@@ -75,12 +75,12 @@ export function ThemeProvider({
     if (activeSetting !== 'auto' || !internal_querier) return;
     let cleanup: (() => void) | undefined;
     let cancelled = false;
-    void import('../../../utils/systemThemeWatcher.js').then(({
-      watchSystemTheme
+    void import('../../../utils/terminalBackgroundWatcher.js').then(({
+      watchTerminalBackground
     }) => {
       if (cancelled) return;
       try {
-        cleanup = watchSystemTheme(internal_querier, setSystemTheme);
+        cleanup = watchTerminalBackground(internal_querier, setTerminalBackground);
       } catch (error) {
         logError(error);
       }
@@ -90,7 +90,7 @@ export function ThemeProvider({
       cleanup?.();
     };
   }, [activeSetting, internal_querier]);
-  const currentTheme: ThemeName = activeSetting === 'auto' ? systemTheme : activeSetting;
+  const currentTheme: ThemeName = activeSetting === 'auto' ? terminalBackground : activeSetting;
   const value = useMemo<ThemeContextValue>(() => ({
     themeSetting,
     setThemeSetting: (newSetting: ThemeSetting) => {
@@ -100,14 +100,14 @@ export function ThemeProvider({
       // first poll fires immediately. Seed from the cache so the OSC
       // round-trip doesn't flash the wrong palette.
       if (newSetting === 'auto') {
-        setSystemTheme(getSystemThemeName());
+        setTerminalBackground(getTerminalBackground());
       }
       onThemeSave?.(newSetting);
     },
     setPreviewTheme: (newSetting_0: ThemeSetting) => {
       setPreviewTheme(newSetting_0);
       if (newSetting_0 === 'auto') {
-        setSystemTheme(getSystemThemeName());
+        setTerminalBackground(getTerminalBackground());
       }
     },
     savePreview: () => {

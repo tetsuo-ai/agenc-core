@@ -236,7 +236,7 @@ describe("Secure Storage Platform Implementations", () => {
     test("binds the OS account and OAuth vault namespace in HomeContext", () => {
       const home = resolveHomeContext(
         {
-          AGENC_HOME: "/tmp/bound-native-vault",
+          AGENC_HOME: "/tmp/bound-native-secure-storage",
           USER: "captured-user",
           USER_TYPE: "ant",
           USE_LOCAL_OAUTH: "1",

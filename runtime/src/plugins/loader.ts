@@ -12,6 +12,11 @@ import type {
   PluginMcpServerConfig,
 } from "../config/schema.js";
 import { pluginDependencyIdentityFromSource, verifyPluginDependencyState } from "./resolution.js";
+import {
+  createPluginStorageAuthority,
+  isReservedPluginStorageChildName,
+  migrateLegacyPluginDataDirectories,
+} from "./directories.js";
 import { pluginScopedServerIdentifier } from "./identifier-normalization.js";
 import {
   assertNoRetiredRootPluginManifest,
@@ -75,14 +80,7 @@ const DEFAULT_COMPONENT_DIRS = {
 } as const;
 const SKIP_PLUGIN_ROOTS = new Set([
   ".git",
-  "node_modules",
-  "dist",
-  "build",
-  "coverage",
   ".cache",
-  "cache",
-  "data",
-  "marketplaces",
 ]);
 
 export type PluginLoadIssueType =
@@ -122,6 +120,8 @@ export interface PluginHookSource {
 export type PluginContentProvenance = "authority-controlled" | "repository-controlled";
 
 export interface LoadedPlugin {
+  /** Stable config, option, secret, and data identity. Never a filesystem path. */
+  readonly id: string;
   readonly name: string;
   readonly version?: string;
   readonly description?: string;
@@ -153,6 +153,10 @@ export interface LoadedPlugin {
   readonly errors: readonly PluginLoadIssue[];
 }
 
+function canonicalLoadedPluginId(source: string, manifestName: string): string {
+  return pluginDependencyIdentityFromSource(source) ?? manifestName;
+}
+
 export interface PluginLoadResult {
   readonly enabled: readonly LoadedPlugin[];
   readonly disabled: readonly LoadedPlugin[];
@@ -160,7 +164,7 @@ export interface PluginLoadResult {
 }
 
 export interface PluginLoaderOptions {
-  readonly agencHome: string;
+  readonly pluginStorageRoot: string;
   readonly workspaceRoot: string;
   readonly config?: Pick<AgenCConfig, "plugins"> | undefined;
   readonly extraPluginDirs?: readonly string[];
@@ -333,9 +337,10 @@ async function hasPluginShape(path: string): Promise<boolean> {
 async function discoverRootsUnder(
   baseDir: string,
   contentProvenance: PluginContentProvenance,
+  options: { readonly allowBasePlugin?: boolean } = {},
 ): Promise<DiscoveredPluginRoot[]> {
   if (!(await pathIsDirectory(baseDir))) return [];
-  if (await hasPluginShape(baseDir)) {
+  if (options.allowBasePlugin !== false && await hasPluginManifest(baseDir)) {
     return [{
       path: await maybeRealpath(baseDir),
       source: await installedPluginDependencyIdentity(baseDir) ?? baseDir,
@@ -351,7 +356,11 @@ async function discoverRootsUnder(
   }
   const roots: DiscoveredPluginRoot[] = [];
   for (const entry of entries) {
-    if (!entry.isDirectory() || SKIP_PLUGIN_ROOTS.has(entry.name)) continue;
+    if (
+      !entry.isDirectory() ||
+      SKIP_PLUGIN_ROOTS.has(entry.name) ||
+      isReservedPluginStorageChildName(entry.name)
+    ) continue;
     const candidate = join(baseDir, entry.name);
     if (await hasPluginShape(candidate)) {
       roots.push({
@@ -369,17 +378,16 @@ function contentProvenanceForPath(
   candidate: string,
   canonicalCandidate: string,
   workspaceRoot: string,
-  agencHome: string,
+  pluginStorageRoot: string,
 ): PluginContentProvenance {
   const isWithin = (path: string, root: string): boolean => {
     const pathRelative = relative(resolve(root), resolve(path));
     return pathRelative === "" ||
       (!pathRelative.startsWith("..") && !isAbsolute(pathRelative));
   };
-  const userPluginRoot = resolve(agencHome, "plugins");
   if (
-    isWithin(candidate, userPluginRoot) &&
-    isWithin(canonicalCandidate, userPluginRoot)
+    isWithin(candidate, pluginStorageRoot) &&
+    isWithin(canonicalCandidate, pluginStorageRoot)
   ) {
     return "authority-controlled";
   }
@@ -425,6 +433,9 @@ async function findGitRepoRoot(start: string): Promise<string | undefined> {
 export async function discoverPluginRoots(
   options: PluginLoaderOptions,
 ): Promise<readonly DiscoveredPluginRoot[]> {
+  const pluginStorageRoot = createPluginStorageAuthority(
+    options.pluginStorageRoot,
+  ).pluginStorageRoot;
   const configured = configuredPluginEntries(options.config);
   const autoDiscoveryEnabled = pluginAutoDiscoveryEnabled(options.config);
   const featureEnabled = pluginFeatureEnabled(options.config);
@@ -436,8 +447,9 @@ export async function discoverPluginRoots(
   }
   roots.push(
     ...(await discoverRootsUnder(
-      join(options.agencHome, "plugins"),
+      pluginStorageRoot,
       "authority-controlled",
+      { allowBasePlugin: false },
     )).map((root) => ({
       ...root,
       enabled: root.enabled && autoDiscoveryEnabled,
@@ -445,6 +457,7 @@ export async function discoverPluginRoots(
     ...(await discoverRootsUnder(
       join(options.workspaceRoot, ".agents", "plugins"),
       "repository-controlled",
+      { allowBasePlugin: false },
     )).map((root) => ({
       ...root,
       enabled: root.enabled && autoDiscoveryEnabled,
@@ -455,6 +468,7 @@ export async function discoverPluginRoots(
       ...(await discoverRootsUnder(
         workspacePluginDir,
         "repository-controlled",
+        { allowBasePlugin: false },
       )).map((root) => ({
         ...root,
         enabled: root.enabled && autoDiscoveryEnabled,
@@ -476,7 +490,7 @@ export async function discoverPluginRoots(
         resolvedPath,
         canonicalPath,
         options.workspaceRoot,
-        options.agencHome,
+        pluginStorageRoot,
       ),
     });
   }
@@ -490,8 +504,9 @@ export async function discoverPluginRoots(
           resolvedPath,
           canonicalPath,
           options.workspaceRoot,
-          options.agencHome,
+          pluginStorageRoot,
         ),
+        { allowBasePlugin: false },
       )).map((root) => ({
         ...root,
         enabled: root.enabled && featureEnabled,
@@ -508,7 +523,7 @@ export async function discoverPluginRoots(
           resolvedPath,
           canonicalPath,
           options.workspaceRoot,
-          options.agencHome,
+          pluginStorageRoot,
         ),
       )).map((root) => ({
         ...root,
@@ -559,7 +574,69 @@ export async function loadPlugins(
   const plugins = loaded.flatMap((entry) =>
     entry.plugin === null ? [] : [entry.plugin]
   );
-  const dependencyState = verifyPluginDependencyState(plugins);
+  const pluginsById = new Map<string, LoadedPlugin[]>();
+  for (const plugin of plugins) {
+    pluginsById.set(plugin.id, [
+      ...(pluginsById.get(plugin.id) ?? []),
+      plugin,
+    ]);
+  }
+  const collidingIds = new Set<string>();
+  const identityErrors: PluginLoadIssue[] = [];
+  const identityErrorsByRoot = new Map<string, PluginLoadIssue[]>();
+  for (const [pluginId, candidates] of pluginsById) {
+    if (candidates.length < 2) continue;
+    collidingIds.add(pluginId);
+    const roots = candidates.map((candidate) => candidate.root).sort();
+    const message =
+      `Duplicate canonical plugin ID ${JSON.stringify(pluginId)} resolves to multiple roots: ${roots.join(", ")}. No copy was activated.`;
+    for (const candidate of candidates) {
+      const issue: PluginLoadIssue = {
+        type: "manifest",
+        source: candidate.source,
+        plugin: candidate.name,
+        path: candidate.root,
+        message,
+      };
+      identityErrors.push(issue);
+      identityErrorsByRoot.set(candidate.root, [
+        ...(identityErrorsByRoot.get(candidate.root) ?? []),
+        issue,
+      ]);
+    }
+  }
+  const dataMigrationIssues = await migrateLegacyPluginDataDirectories(
+    plugins.map((plugin) => plugin.id),
+    { pluginStorageRoot: options.pluginStorageRoot },
+  );
+  const dataMigrationIds = new Set(
+    dataMigrationIssues.flatMap((issue) => issue.pluginIds),
+  );
+  const dataMigrationErrors: PluginLoadIssue[] = [];
+  const dataMigrationErrorsByRoot = new Map<string, PluginLoadIssue[]>();
+  for (const issue of dataMigrationIssues) {
+    for (const pluginId of issue.pluginIds) {
+      for (const candidate of pluginsById.get(pluginId) ?? []) {
+        const loadIssue: PluginLoadIssue = {
+          type: "settings",
+          source: candidate.source,
+          plugin: candidate.name,
+          path: issue.legacyPath,
+          message: issue.message,
+        };
+        dataMigrationErrors.push(loadIssue);
+        dataMigrationErrorsByRoot.set(candidate.root, [
+          ...(dataMigrationErrorsByRoot.get(candidate.root) ?? []),
+          loadIssue,
+        ]);
+      }
+    }
+  }
+  const dependencyState = verifyPluginDependencyState(
+    plugins.filter((plugin) =>
+      !collidingIds.has(plugin.id) && !dataMigrationIds.has(plugin.id)
+    ),
+  );
   const dependencyErrors: PluginLoadIssue[] = dependencyState.errors.map((issue) => ({
     type: "dependency",
     source: issue.source,
@@ -574,12 +651,15 @@ export async function loadPlugins(
     ]);
   }
   const finalPlugins = plugins.map((plugin) =>
-    dependencyState.demoted.has(plugin.source)
+    collidingIds.has(plugin.id) || dataMigrationIds.has(plugin.id) ||
+        dependencyState.demoted.has(plugin.source)
       ? {
           ...plugin,
           enabled: false,
           errors: [
             ...plugin.errors,
+            ...(identityErrorsByRoot.get(plugin.root) ?? []),
+            ...(dataMigrationErrorsByRoot.get(plugin.root) ?? []),
             ...(dependencyErrorsBySource.get(plugin.source) ?? []),
           ],
         }
@@ -590,6 +670,8 @@ export async function loadPlugins(
     disabled: finalPlugins.filter((plugin) => !plugin.enabled),
     errors: [
       ...loaded.flatMap((entry) => entry.errors),
+      ...identityErrors,
+      ...dataMigrationErrors,
       ...dependencyErrors,
     ],
   };
@@ -638,7 +720,7 @@ export async function loadPluginMcpServers(
   for (const plugin of result.enabled) {
     if (isRepositoryControlledPlugin(plugin)) continue;
     for (const [serverName, server] of Object.entries(plugin.mcpServers)) {
-      servers[pluginScopedServerIdentifier(plugin.name, serverName)] = server;
+      servers[pluginScopedServerIdentifier(plugin.id, serverName)] = server;
     }
   }
   return servers;
@@ -652,7 +734,7 @@ export async function loadPluginLspServers(
   for (const plugin of result.enabled) {
     if (isRepositoryControlledPlugin(plugin)) continue;
     for (const [serverName, server] of Object.entries(plugin.lspServers)) {
-      servers[pluginScopedServerIdentifier(plugin.name, serverName)] = server;
+      servers[pluginScopedServerIdentifier(plugin.id, serverName)] = server;
     }
   }
   return servers;
@@ -809,6 +891,7 @@ export async function createPluginFromPath(
     : { ...manifestWithoutSettings, settings };
 
   const plugin: LoadedPlugin = {
+    id: canonicalLoadedPluginId(opts.source, manifest.name),
     name: manifest.name,
     ...(manifest.version !== undefined ? { version: manifest.version } : {}),
     ...(manifest.description !== undefined ? { description: manifest.description } : {}),
@@ -853,6 +936,7 @@ function emptyPlugin(
   contentProvenance: PluginContentProvenance,
 ): LoadedPlugin {
   return {
+    id: canonicalLoadedPluginId(source, manifest.name),
     name: manifest.name,
     ...(manifest.version !== undefined ? { version: manifest.version } : {}),
     ...(manifest.description !== undefined ? { description: manifest.description } : {}),
@@ -1583,7 +1667,7 @@ function filterPluginSettingsForManifest(
     path: settingsPath,
     message:
       `Sensitive plugin option(s) ${sensitiveKeys.join(", ")} were ignored in manifest.settings. ` +
-      "Configure them through AgenC so the native credential vault is their sole owner.",
+      "Configure them through AgenC so the native secure storage is their sole owner.",
   });
 
   const next = { ...filtered };

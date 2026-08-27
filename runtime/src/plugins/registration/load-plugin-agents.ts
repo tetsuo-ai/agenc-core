@@ -15,7 +15,10 @@ import type {
 } from "../../tools/AgentTool/loadAgentsDir.js";
 import { isRepositoryControlledPlugin, type LoadedPlugin } from "../loader.js";
 import { isBareMode } from "../../utils/envUtils.js";
-import { getCanonicalSettingsAuthority } from "../../utils/settings/canonicalAuthority.js";
+import {
+  CanonicalAuthorityCache,
+  getCanonicalSettingsAuthority,
+} from "../../utils/settings/canonicalAuthority.js";
 import { getExecutionAuthoritySettings } from "../../utils/settings/settings.js";
 import {
   collectMarkdownFiles,
@@ -52,12 +55,11 @@ interface ActivePluginAgentSnapshot {
   readonly discovery: PluginRuntimeLoadOptions;
 }
 
-const activePluginAgentsByCwd = new Map<string, ActivePluginAgentSnapshot>();
+const activePluginAgentsByCwd = new CanonicalAuthorityCache<ActivePluginAgentSnapshot>();
 
 interface ActivePluginSnapshotOptions {
   readonly cwd: string;
-  readonly agencHome?: string;
-  readonly env?: NodeJS.ProcessEnv;
+  readonly pluginStorageRoot: string;
 }
 
 function setActiveSnapshot(
@@ -141,7 +143,7 @@ function agentName(plugin: LoadedPlugin, file: ParsedMarkdownFile): string {
   const baseName = frontmatterName ?? markdownStem(file.filePath);
   const baseParts = baseName.split(":").filter((part) => part.length > 0);
   return pluginScopedIdentifier(
-    plugin.name,
+    plugin.id,
     [
       ...namespaceFromPath(file.filePath, file.baseDir),
       ...(baseParts.length > 0 ? baseParts : ["agent"]),
@@ -154,6 +156,7 @@ function createPluginAgent(
   plugin: LoadedPlugin,
   file: ParsedMarkdownFile,
   roleCwd: string,
+  pluginStorageRoot: string | undefined,
 ): PluginAgentDefinition | null {
   const repositoryControlled = isRepositoryControlledPlugin(plugin);
   const agentType = agentName(plugin, file);
@@ -164,7 +167,9 @@ function createPluginAgent(
   const memory = repositoryControlled
     ? undefined
     : parseMemoryScope(file.frontmatter.memory);
-  const systemPrompt = substitutePluginTemplate(file.markdown.trim(), plugin);
+  const systemPrompt = substitutePluginTemplate(file.markdown.trim(), plugin, {
+    ...(pluginStorageRoot !== undefined ? { pluginStorageRoot } : {}),
+  });
   const tools = repositoryControlled
     ? undefined
     : addMemoryTools(parseTools(file.frontmatter.tools), memory);
@@ -187,7 +192,7 @@ function createPluginAgent(
     source: "plugin",
     filename: basename(file.filePath, ".md"),
     baseDir: file.baseDir,
-    plugin: plugin.name,
+    plugin: plugin.id,
     ...(repositoryControlled ? { repositoryControlled: true } : {}),
     getSystemPrompt: () => {
       if (!memory || !isAutoMemoryEnabled()) return systemPrompt;
@@ -215,11 +220,14 @@ async function loadAgentFile(
   baseDir: string,
   loadedPaths: Set<string>,
   roleCwd: string,
+  pluginStorageRoot: string | undefined,
 ): Promise<PluginAgentDefinition | null> {
   if (loadedPaths.has(path)) return null;
   loadedPaths.add(path);
   const file = await readMarkdownFile(path, baseDir);
-  return file ? createPluginAgent(plugin, file, roleCwd) : null;
+  return file
+    ? createPluginAgent(plugin, file, roleCwd, pluginStorageRoot)
+    : null;
 }
 
 async function loadAgentsFromPath(
@@ -227,12 +235,20 @@ async function loadAgentsFromPath(
   path: string,
   loadedPaths: Set<string>,
   roleCwd: string,
+  pluginStorageRoot: string | undefined,
 ): Promise<readonly PluginAgentDefinition[]> {
   if (await pathIsDirectory(path)) {
     const files = await collectMarkdownFiles(path);
     const agents = await Promise.all(
       files.map((filePath) =>
-        loadAgentFile(plugin, filePath, path, loadedPaths, roleCwd)
+        loadAgentFile(
+          plugin,
+          filePath,
+          path,
+          loadedPaths,
+          roleCwd,
+          pluginStorageRoot,
+        )
       ),
     );
     return agents.filter((agent): agent is PluginAgentDefinition => agent !== null);
@@ -244,6 +260,7 @@ async function loadAgentsFromPath(
     dirname(path),
     loadedPaths,
     roleCwd,
+    pluginStorageRoot,
   );
   return agent ? [agent] : [];
 }
@@ -251,12 +268,19 @@ async function loadAgentsFromPath(
 async function loadAgentsForPlugin(
   plugin: LoadedPlugin,
   roleCwd: string,
+  pluginStorageRoot: string | undefined,
 ): Promise<readonly PluginAgentDefinition[]> {
   const loadedPaths = new Set<string>();
   const paths = [...new Set(plugin.agentsPaths)];
   const groups = await Promise.all(
     paths.map((path) =>
-      loadAgentsFromPath(plugin, path, loadedPaths, roleCwd)
+      loadAgentsFromPath(
+        plugin,
+        path,
+        loadedPaths,
+        roleCwd,
+        pluginStorageRoot,
+      )
     ),
   );
   return groups.flat();
@@ -269,7 +293,7 @@ async function resolvePlugins(
 }
 
 export async function loadPluginAgents(
-  options: PluginAgentRegistrationOptions = {},
+  options: PluginAgentRegistrationOptions,
 ): Promise<readonly PluginAgentDefinition[]> {
   const hasExplicitInput = hasExplicitPluginDiscoveryInput(options);
   const active = !hasExplicitInput ? getActiveSnapshot(options) : undefined;
@@ -290,11 +314,15 @@ export async function loadPluginAgents(
     );
   }
   const groups = await Promise.all(
-    plugins.map(plugin => loadAgentsForPlugin(plugin, roleCwd)),
+    plugins.map(plugin =>
+      loadAgentsForPlugin(plugin, roleCwd, discoveryOptions.pluginStorageRoot)
+    ),
   );
   return groups.flat().sort((a, b) => a.agentType.localeCompare(b.agentType));
 }
 
 export function clearPluginAgentCache(): void {
-  activePluginAgentsByCwd.clear();
+  const authority = getCanonicalSettingsAuthority();
+  if (authority === null) activePluginAgentsByCwd.clear();
+  else activePluginAgentsByCwd.clearAuthority(authority);
 }

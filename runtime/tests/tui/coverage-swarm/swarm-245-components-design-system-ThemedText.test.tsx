@@ -6,7 +6,7 @@ import { afterEach, describe, expect, test, vi } from 'vitest'
 const mocks = vi.hoisted(() => ({
   feature: vi.fn(() => false),
   getRuntimeState: vi.fn(() => ({ theme: 'dark' })),
-  getSystemThemeName: vi.fn(() => 'dark'),
+  getTerminalBackground: vi.fn(() => 'dark'),
   updateRuntimeState: vi.fn(),
 }))
 
@@ -19,8 +19,8 @@ vi.mock('../../../src/utils/config.js', () => ({
   updateRuntimeState: mocks.updateRuntimeState,
 }))
 
-vi.mock('../../../src/utils/systemTheme.js', () => ({
-  getSystemThemeName: mocks.getSystemThemeName,
+vi.mock('../../../src/utils/terminalBackground.js', () => ({
+  getTerminalBackground: mocks.getTerminalBackground,
 }))
 
 import ThemedText, {

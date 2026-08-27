@@ -6,14 +6,8 @@ import { getLspServerManager } from '../../services/lsp/manager.js'
 import { peekAmbientRuntimeSession } from '../../session/current-session.js'
 import type { SandboxExecutionBrokerLike } from '../../sandbox/execution-broker.js'
 import { checkTeamMemSecrets } from '../../memory/index.js'
-import {
-  activateConditionalSkillsForPaths,
-  addSkillDirectories,
-  discoverSkillDirsForPaths,
-} from '../../skills/loadSkillsDir.js'
 import type { ToolUseContext } from '../Tool.js'
 import { buildTool, type ToolDef } from '../Tool.js'
-import { getCwd } from '../../utils/cwd.js'
 import { logForDebugging } from 'src/utils/debug.js'
 import { countLinesChanged, getPatchForDisplay } from '../../utils/diff.js'
 import { isENOENT } from '../../utils/errors.js'
@@ -237,25 +231,9 @@ export const FileWriteTool = buildTool({
     _,
     parentMessage,
   ) {
-    const { readFileState, updateFileHistoryState, dynamicSkillDirTriggers } =
-      toolUseContext
+    const { readFileState, updateFileHistoryState } = toolUseContext
     const fullFilePath = expandPath(file_path)
     const dir = dirname(fullFilePath)
-
-    // Discover skills from this file's path (fire-and-forget, non-blocking)
-    const cwd = getCwd()
-    const newSkillDirs = await discoverSkillDirsForPaths([fullFilePath], cwd)
-    if (newSkillDirs.length > 0) {
-      // Store discovered dirs for attachment display
-      for (const dir of newSkillDirs) {
-        dynamicSkillDirTriggers?.add(dir)
-      }
-      // Don't await - let skill loading happen in the background
-      addSkillDirectories(newSkillDirs).catch(() => {})
-    }
-
-    // Activate conditional skills whose path patterns match this file
-    activateConditionalSkillsForPaths([fullFilePath], cwd)
 
     await diagnosticTracker.beforeFileEditedCompat(fullFilePath)
 

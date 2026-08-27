@@ -42,12 +42,13 @@ afterEach(() => {
 describe("agent runtime options", () => {
   test("normalizes supported environment values and typed overrides once", () => {
     const sessionTempRoot = join(makeTemporaryDirectory(), "session-temp");
+    const pluginStorageRoot = join(makeTemporaryDirectory(), "plugins");
     const result = resolveAgentRuntimeOptions(
       {
         AGENC_SHELL: "/bin/zsh",
         AGENC_SHELL_PREFIX: 'env "MODE=safe" runner',
         AGENC_TMPDIR: sessionTempRoot,
-        AGENC_PLUGIN_CACHE_DIR: "/var/cache/agenc-plugins",
+        AGENC_PLUGIN_CACHE_DIR: pluginStorageRoot,
         AGENC_COWORK_MEMORY_PATH_OVERRIDE: "/mnt/cowork/memory",
         AGENC_COWORK_MEMORY_EXTRA_GUIDELINES: "Keep workspace facts scoped.",
         AGENC_ALLOW_UNTRUSTED_HOOKS: "0",
@@ -63,7 +64,7 @@ describe("agent runtime options", () => {
       posixShellPath: "/bin/zsh",
       commandWrapperArgv: ["env", "MODE=safe", "runner"],
       sessionTempRoot,
-      pluginStorageRoot: "/var/cache/agenc-plugins",
+      pluginStorageRoot,
       coworkMemoryPathOverride: "/mnt/cowork/memory",
       coworkMemoryExtraGuidelines: "Keep workspace facts scoped.",
       allowUntrustedHooks: false,
@@ -172,40 +173,43 @@ describe("agent runtime options", () => {
     ],
     [{ AGENC_TMPDIR: "relative" }, "AGENC_TMPDIR must be an absolute path"],
     [{ AGENC_TMPDIR: "" }, "AGENC_TMPDIR must be a non-empty absolute path"],
+    [
+      { AGENC_TMPDIR: " /absolute/temp" },
+      "AGENC_TMPDIR must not contain surrounding whitespace",
+    ],
+    [
+      { AGENC_PLUGIN_CACHE_DIR: "relative" },
+      "AGENC_PLUGIN_CACHE_DIR must be an absolute path",
+    ],
+    [
+      { AGENC_PLUGIN_CACHE_DIR: "" },
+      "AGENC_PLUGIN_CACHE_DIR must be a non-empty absolute path",
+    ],
+    [
+      { AGENC_PLUGIN_CACHE_DIR: "/absolute/plugins " },
+      "AGENC_PLUGIN_CACHE_DIR must not contain surrounding whitespace",
+    ],
     [{ AGENC_SIMPLE: "1" }, "AGENC_SIMPLE was removed; use --bare"],
     [{ AGENC_SIMPLE: "0" }, "AGENC_SIMPLE was removed; use --bare"],
     [{ AGENC_BARE: "0" }, "AGENC_BARE was removed; use --bare"],
-    [
-      { AGENC_PLUGIN_SEED_DIR: "/opt/agenc/seed" },
-      "AGENC_PLUGIN_SEED_DIR was removed; copy required versioned packages",
-    ],
-    [
-      { AGENC_PLUGIN_USE_ZIP_CACHE: "0" },
-      "AGENC_PLUGIN_USE_ZIP_CACHE was removed; remove it",
-    ],
-    [
-      { AGENC_PLUGIN_SEED_DIR: "" },
-      "AGENC_PLUGIN_SEED_DIR was removed",
-    ],
-    [
-      { AGENC_PLUGIN_USE_ZIP_CACHE: "" },
-      "AGENC_PLUGIN_USE_ZIP_CACHE was removed",
-    ],
   ])("rejects invalid or obsolete boundary input", (env, message) => {
     expect(() => resolveAgentRuntimeOptions(env)).toThrow(message);
   });
 
   test("wire validation is strict and preserves explicit values", () => {
+    const pluginStorageRoot = join(makeTemporaryDirectory(), "wire-plugins");
     const validated = validateAgentRuntimeOptions({
       simpleMode: false,
       stdinDataMode: false,
       remoteMode: false,
+      pluginStorageRoot,
       allowUntrustedHooks: true,
     });
     expect(validated).toMatchObject({
       simpleMode: false,
       stdinDataMode: false,
       remoteMode: false,
+      pluginStorageRoot,
       allowUntrustedHooks: true,
       sessionTempRoot: resolveAgentRuntimeOptions({}).sessionTempRoot,
     });
@@ -225,6 +229,7 @@ describe("agent runtime options", () => {
         stdinDataMode: false,
         remoteMode: false,
         posixShellPath: "/bin/sh",
+        pluginStorageRoot,
         allowUntrustedHooks: false,
       }),
     ).toThrow("runtimeOptions.posixShellPath must name a bash or zsh executable");
@@ -240,6 +245,14 @@ describe("agent runtime options", () => {
     expect(() => validateAgentRuntimeOptions({})).toThrow(
       AgentRuntimeOptionsError,
     );
+    expect(() =>
+      validateAgentRuntimeOptions({
+        simpleMode: false,
+        stdinDataMode: false,
+        remoteMode: false,
+        allowUntrustedHooks: false,
+      }),
+    ).toThrow("runtimeOptions.pluginStorageRoot is required");
     expect(() =>
       resolveAgentRuntimeOptions({}, { sessionTempRoot: "" }),
     ).toThrow("runtimeOptions.sessionTempRoot must be a non-empty absolute path");
@@ -285,6 +298,24 @@ describe("agent runtime options", () => {
     }
   });
 
+  test("captures and establishes the sole plugin storage root at ingress", () => {
+    const home = join(makeTemporaryDirectory(), "home");
+    const configuredRoot = join(makeTemporaryDirectory(), "plugin-storage");
+
+    const defaults = resolveAgentRuntimeOptions({ AGENC_HOME: home });
+    const configured = resolveAgentRuntimeOptions({
+      AGENC_HOME: home,
+      AGENC_PLUGIN_CACHE_DIR: configuredRoot,
+    });
+
+    expect(defaults.pluginStorageRoot).toBe(realpathSync(join(home, "plugins")));
+    expect(configured.pluginStorageRoot).toBe(realpathSync(configuredRoot));
+    if (process.platform !== "win32") {
+      expect(lstatSync(defaults.pluginStorageRoot).mode & 0o777).toBe(0o700);
+      expect(lstatSync(configured.pluginStorageRoot).mode & 0o777).toBe(0o700);
+    }
+  });
+
   test.skipIf(process.platform === "win32")(
     "canonicalizes a symlinked temp root after validating its target",
     () => {
@@ -309,6 +340,21 @@ describe("agent runtime options", () => {
         expect(() =>
           resolveAgentRuntimeOptions({ AGENC_TMPDIR: root }),
         ).toThrow("AGENC_TMPDIR must resolve to a writable directory");
+      } finally {
+        chmodSync(root, 0o700);
+      }
+    },
+  );
+
+  test.skipIf(process.platform === "win32")(
+    "rejects a plugin root that is not readable",
+    () => {
+      const root = makeTemporaryDirectory();
+      chmodSync(root, 0o300);
+      try {
+        expect(() =>
+          resolveAgentRuntimeOptions({ AGENC_PLUGIN_CACHE_DIR: root }),
+        ).toThrow("AGENC_PLUGIN_CACHE_DIR must resolve to a writable directory");
       } finally {
         chmodSync(root, 0o700);
       }

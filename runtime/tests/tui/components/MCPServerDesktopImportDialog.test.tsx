@@ -101,6 +101,8 @@ const DESKTOP_SERVERS = {
 } satisfies Record<string, McpServerConfig>
 
 const AUTHORITY = {} as CanonicalSettingsAuthority
+const MCP_ENVIRONMENT = Object.freeze({ MCP_TEMPLATE_TOKEN: 'captured-token' })
+const PLUGIN_STORAGE_ROOT = '/captured/plugin-storage'
 
 function scoped(
   config: McpServerConfig,
@@ -171,10 +173,14 @@ function dialogProps(): CapturedDialogProps {
 async function renderDialog({
   servers = DESKTOP_SERVERS,
   existingServers = {},
+  environment = MCP_ENVIRONMENT,
+  pluginStorageRoot = PLUGIN_STORAGE_ROOT,
   scope = 'user',
 }: {
   servers?: Record<string, McpServerConfig>
   existingServers?: Record<string, ScopedMcpServerConfig>
+  environment?: Readonly<Record<string, string | undefined>>
+  pluginStorageRoot?: string
   scope?: ConfigScope
 } = {}) {
   harness.getAllMcpConfigs.mockResolvedValue({ servers: existingServers })
@@ -190,6 +196,8 @@ async function renderDialog({
   root.render(
     <MCPServerDesktopImportDialog
       authority={AUTHORITY}
+      environment={environment}
+      pluginStorageRoot={pluginStorageRoot}
       servers={servers}
       scope={scope}
       onDone={onDone}
@@ -221,6 +229,20 @@ describe('MCPServerDesktopImportDialog', () => {
     harness.logError.mockReset()
     harness.selectProps = undefined
     harness.writeToStdout.mockReset()
+  })
+
+  it('loads collision state with the captured MCP environment and plugin root', async () => {
+    const rendered = await renderDialog()
+
+    try {
+      expect(harness.getAllMcpConfigs).toHaveBeenCalledWith(
+        AUTHORITY,
+        { pluginStorageRoot: PLUGIN_STORAGE_ROOT },
+        MCP_ENVIRONMENT,
+      )
+    } finally {
+      await rendered.dispose()
+    }
   })
 
   it('renders the empty desktop state and cancels as a no-op import', async () => {

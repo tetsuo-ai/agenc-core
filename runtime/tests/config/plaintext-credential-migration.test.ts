@@ -177,7 +177,7 @@ describe("explicit plaintext credential migration", () => {
     });
 
     expect(plan.conflicts).toEqual([]);
-    expect(plan.nativeVaultNamespaceMigration).toMatchObject({
+    expect(plan.secureStorageNamespaceMigration).toMatchObject({
       source: retiredIdentity,
       sourceDisposition: "retain-shared",
       fields: ["mcpOAuthClientConfig", "primaryApiKey"],
@@ -225,9 +225,9 @@ describe("explicit plaintext credential migration", () => {
     const plan = await checkConfigV2Migration({
       ...options(home, "vault-shared-confirmed"),
       platformHome: root,
-      retireSharedNativeVault: true,
+      retireSharedSecureStorage: true,
     });
-    expect(plan.nativeVaultNamespaceMigration?.sourceDisposition).toBe(
+    expect(plan.secureStorageNamespaceMigration?.sourceDisposition).toBe(
       "delete-shared-confirmed",
     );
 
@@ -250,7 +250,7 @@ describe("explicit plaintext credential migration", () => {
       ...options(home, "vault-retain-writer-race"),
       platformHome: root,
     });
-    expect(plan.nativeVaultNamespaceMigration?.sourceDisposition).toBe(
+    expect(plan.secureStorageNamespaceMigration?.sourceDisposition).toBe(
       "retain-shared",
     );
     native.afterUpdate = () => {
@@ -258,7 +258,7 @@ describe("explicit plaintext credential migration", () => {
     };
 
     await expect(applyConfigV2Migration(plan)).rejects.toThrow(
-      /retained native secure-storage namespace changed/u,
+      /retained native secure storage namespace changed/u,
     );
     expect(retiredStorage.read()?.primaryApiKey).toBe("newer-retired-secret");
     expect(native.data.primaryApiKey).toBe("checked-secret");
@@ -287,10 +287,10 @@ describe("explicit plaintext credential migration", () => {
       platformHome: root,
     });
     expect(plan.conflicts).toEqual([]);
-    expect(plan.nativeVaultNamespaceMigration?.source.serviceName).toBe(
+    expect(plan.secureStorageNamespaceMigration?.source.serviceName).toBe(
       retiredIdentity.serviceName,
     );
-    expect(plan.nativeVaultNamespaceMigration?.sourceDisposition).toBe(
+    expect(plan.secureStorageNamespaceMigration?.sourceDisposition).toBe(
       "retain-shared",
     );
 
@@ -323,11 +323,11 @@ describe("explicit plaintext credential migration", () => {
         env,
         platformHome: root,
       });
-      expect(plan.nativeVaultNamespaceMigration).toMatchObject({
+      expect(plan.secureStorageNamespaceMigration).toMatchObject({
         sourceDisposition: "rewrite-in-place",
         source: { accountName: "historical-shell-user" },
       });
-      expect(plan.nativeVaultNamespaceMigration?.target.accountName).not.toBe(
+      expect(plan.secureStorageNamespaceMigration?.target.accountName).not.toBe(
         "historical-shell-user",
       );
 
@@ -412,7 +412,7 @@ describe("explicit plaintext credential migration", () => {
     const plan = await checkConfigV2Migration({
       ...options(home, "vault-restore-on-failure"),
       platformHome: root,
-      retireSharedNativeVault: true,
+      retireSharedSecureStorage: true,
     });
     expect(plan.conflicts).toEqual([]);
     mutateOnDelete = true;
@@ -455,7 +455,7 @@ describe("explicit plaintext credential migration", () => {
     const plan = await checkConfigV2Migration({
       ...options(home, "vault-delete-failure"),
       platformHome: root,
-      retireSharedNativeVault: true,
+      retireSharedSecureStorage: true,
     });
 
     await expect(applyConfigV2Migration(plan)).rejects.toThrow(
@@ -493,7 +493,7 @@ describe("explicit plaintext credential migration", () => {
     const plan = await checkConfigV2Migration({
       ...options(home, "vault-delete-false-but-absent"),
       platformHome: root,
-      retireSharedNativeVault: true,
+      retireSharedSecureStorage: true,
     });
     await expect(applyConfigV2Migration(plan)).resolves.toMatchObject({
       id: "vault-delete-false-but-absent",
@@ -527,7 +527,7 @@ describe("explicit plaintext credential migration", () => {
     const plan = await checkConfigV2Migration({
       ...options(home, "vault-delete-race"),
       platformHome: root,
-      retireSharedNativeVault: true,
+      retireSharedSecureStorage: true,
     });
     await expect(applyConfigV2Migration(plan)).rejects.toThrow(
       /changed during deletion/u,
@@ -606,7 +606,7 @@ describe("explicit plaintext credential migration", () => {
     expect(native.data).toEqual({ trustedDeviceToken: "unrelated" });
   });
 
-  test("moves secrets one-way into the native vault without a plaintext archive", async () => {
+  test("moves secrets one-way into the native secure storage without a plaintext archive", async () => {
     const root = temp();
     const home = join(root, "home");
     const source = join(home, ".credentials.json");
@@ -861,7 +861,7 @@ describe("explicit plaintext credential migration", () => {
     expect(native.data.gateway).toBeDefined();
   });
 
-  test("leaves plaintext bytes untouched when the native vault is unavailable", async () => {
+  test("leaves plaintext bytes untouched when the native secure storage is unavailable", async () => {
     const root = temp();
     const home = join(root, "home");
     const source = join(home, ".credentials.json");
@@ -1020,7 +1020,7 @@ describe("explicit plaintext credential migration", () => {
     }
   });
 
-  test("reports a native-vault conflict during check and plans zero writes", async () => {
+  test("reports a native secure storage conflict during check and plans zero writes", async () => {
     const root = temp();
     const home = join(root, "home");
     const source = join(home, ".credentials.json");

@@ -58,7 +58,7 @@ describe('canonical AgenC home identity', () => {
     expect(before.identityKey).toBe(after.identityKey)
   })
 
-  test('keeps canonical native-vault account stable across USER drift', () => {
+  test('keeps canonical native secure storage account stable across USER drift', () => {
     const root = mkdtempSync(join(tmpdir(), 'agenc-home-account-'))
     roots.push(root)
 

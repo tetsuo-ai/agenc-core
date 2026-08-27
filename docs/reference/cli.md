@@ -246,7 +246,7 @@ agenc gateway pairing revoke <channel> <peerId>
 | Subcommand | Meaning |
 | --- | --- |
 | `run` | Start the gateway (runs until Ctrl-C). `--stdio` local dev channel; `--webchat` loopback token-gated browser UI; `--heartbeat` proactive budget-bounded ticks (`HEARTBEAT.md`); `--hooks` webhook hooks. Telegram when `AGENC_TELEGRAM_BOT_TOKEN` is set (Discord/Slack via their bot tokens / gateway config). |
-| `install-service` | Install + start the always-on gateway user service (systemd or launchd; credentials come from the native vault) |
+| `install-service` | Install + start the always-on gateway user service (systemd or launchd; credentials come from the native secure storage) |
 | `status` | Channels, DM policies, bindings, paired-sender counts |
 | `pairing list` | Paired senders per channel |
 | `pairing pending` | Pending pairing requests (codes not yet approved) |
@@ -444,8 +444,8 @@ agenc config unset <dot.path>
 agenc config validate
 agenc config edit
 agenc config path
-agenc config migrate check [--confirm-retired-writers-stopped] [--retire-shared-native-vault] [--retired-vault-account <name>]
-agenc config migrate apply [--confirm-retired-writers-stopped] [--retire-shared-native-vault] [--retired-vault-account <name>]
+agenc config migrate check [--confirm-retired-writers-stopped] [--retire-shared-secure-storage] [--retired-secure-storage-account <name>]
+agenc config migrate apply [--confirm-retired-writers-stopped] [--retire-shared-secure-storage] [--retired-secure-storage-account <name>]
 agenc config migrate rollback <journal-id>
 ```
 
@@ -471,11 +471,11 @@ agenc config set plugins.enabled true
 agenc config validate
 ```
 
-On macOS and Linux, migration copies an old native-vault record into the
+On macOS and Linux, migration copies an old native secure storage record into the
 canonical home-bound namespace but retains the source by default: unscoped
 names may be shared across homes, and the historical scoped names used only a
 32-bit directory hash. Use
-`--retire-shared-native-vault` on the reviewed check and on apply only after
+`--retire-shared-secure-storage` on the reviewed check and on apply only after
 stopping every older AgenC process and confirming that no default, relocated,
 or hash-colliding home owns that source. The bundled macOS and Linux helpers
 bind reads, updates, and deletes to one exact record and refuse ambiguous
@@ -484,9 +484,9 @@ completes. See
 [config.md](config.md#migration-and-removed-surfaces) for the authority and
 rollback boundaries.
 
-Canonical vault identity uses POSIX numeric `uid:<uid>` or Windows
+Canonical secure-storage identity uses POSIX numeric `uid:<uid>` or Windows
 `current-user` instead of shell `USER`. If migration must open a record written
-under an older account name, pass `--retired-vault-account <name>` to both
+under an older account name, pass `--retired-secure-storage-account <name>` to both
 check and apply. This flag selects only the retired record; it cannot alter
 ordinary runtime identity.
 
@@ -523,6 +523,9 @@ agenc plugin <command> [options]
 
 Install options: `--name`, `--force`, `--keep-data`. Marketplace options:
 `--ref`, `--sparse`.
+
+A canonical plugin ID can be installed in one managed scope at a time. Remove
+the existing copy before installing that ID in another scope.
 
 ---
 

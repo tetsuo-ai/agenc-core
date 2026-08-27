@@ -13,11 +13,11 @@ import type {
 } from '../../../src/utils/secureStorage/index.js'
 import { createTempWorkspaceFixture } from '../../helpers/temp-workspace.js'
 
-const fixture = createTempWorkspaceFixture('agenc-native-vault-')
+const fixture = createTempWorkspaceFixture('agenc-native-secure-storage-')
 const getSecureStorageMock = vi.mocked(getSecureStorage)
 const hermeticStorageFactory = getSecureStorageMock.getMockImplementation()
 
-describe('native secure-storage transactions', () => {
+describe('native secure storage transactions', () => {
   beforeEach(() => {
     if (!hermeticStorageFactory) {
       throw new Error('Expected the hermetic secure-storage mock')

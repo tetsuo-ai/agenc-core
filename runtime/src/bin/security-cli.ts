@@ -306,9 +306,9 @@ const checkHooksExposure: SecurityCheck = (ctx) => {
       title: "Inbound webhooks enabled without a bearer token",
       severity: "critical",
       detail:
-        "[gateway.hooks] enables the /hooks/agent endpoint but neither AGENC_HOOKS_TOKEN nor the native credential vault provides a token (>=16 chars). Until callers hold a token this configuration expresses unauthenticated-automation intent.",
+        "[gateway.hooks] enables the /hooks/agent endpoint but neither AGENC_HOOKS_TOKEN nor the native secure storage provides a token (>=16 chars). Until callers hold a token this configuration expresses unauthenticated-automation intent.",
       remediation:
-        "Set AGENC_HOOKS_TOKEN or start `agenc gateway run` once to mint the home-bound native-vault token, then configure callers with it.",
+        "Set AGENC_HOOKS_TOKEN or start `agenc gateway run` once to mint the home-bound native secure storage token, then configure callers with it.",
       fixable: false,
     });
   }
@@ -394,7 +394,7 @@ export async function buildSecurityAuditReport(
       (environmentToken?.length ?? 0) >= 16 ||
       (generatedToken?.length ?? 0) >= 16;
   } catch {
-    // An unavailable native vault is reported as missing credential below.
+    // An unavailable native secure storage is reported as missing credential below.
   }
   const ctx: SecurityAuditContext = {
     env,

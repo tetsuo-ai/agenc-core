@@ -27,7 +27,7 @@ import {
   substituteUserConfigVariables,
   type PluginOptionSchema,
 } from "./plugins/pluginOptionsStorage.js";
-import { getPluginDataDir } from "./plugins/pluginDirectories.js";
+import { getPluginDataDir } from "../plugins/directories.js";
 import {
   getSessionId,
   getProjectRoot,
@@ -807,13 +807,8 @@ async function execCommandHook(
           (pluginId ? ` (${pluginId} — run /plugin to reinstall)` : ""),
       );
     }
-    // Inline both ROOT and DATA substitution instead of calling
-    // substitutePluginVariables(). That helper normalizes \ → / on Windows
-    // unconditionally — correct for bash (toHookPath already produced /c/...
-    // so it's a no-op) but wrong for PS where toHookPath is identity and we
-    // want native C:\... backslashes. Inlining also lets us use the function-
-    // form .replace() so paths containing $ aren't mangled by $-pattern
-    // interpretation (rare but possible: \\server\c$\plugin).
+    // Use the function form of replace so paths containing `$` are not
+    // interpreted as replacement patterns (for example \\server\c$\plugin).
     const rootPath = toHookPath(pluginRoot);
     command = command.replace(/\$\{AGENC_PLUGIN_ROOT\}/g, () => rootPath);
     if (pluginId) {

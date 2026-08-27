@@ -13,8 +13,11 @@ import { Byline } from './design-system/Byline.js';
 import { Dialog } from './design-system/Dialog.js';
 import { KeyboardShortcutHint } from './design-system/KeyboardShortcutHint.js';
 import type { CanonicalSettingsAuthority } from '../../utils/settings/canonicalAuthority.js';
+import type { ProviderEnvironment } from '../../llm/provider-options.js';
 type Props = {
   authority: CanonicalSettingsAuthority;
+  environment: ProviderEnvironment;
+  pluginStorageRoot: string;
   servers: Record<string, McpServerConfig>;
   scope: ConfigScope;
   onDone(): void;
@@ -57,6 +60,8 @@ export function MCPServerDesktopImportDialog(t0: Props) {
   const $ = _c(36);
   const {
     authority,
+    environment,
+    pluginStorageRoot,
     servers,
     scope,
     onDone
@@ -83,7 +88,7 @@ export function MCPServerDesktopImportDialog(t0: Props) {
   if ($[3] === Symbol.for("react.memo_cache_sentinel")) {
     t3 = () => {
       let mounted = true;
-      getAllMcpConfigs(authority).then((t5) => {
+      getAllMcpConfigs(authority, { pluginStorageRoot }, environment).then((t5) => {
         const {
           servers: servers_0
         } = t5;

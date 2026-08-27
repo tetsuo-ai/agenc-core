@@ -188,7 +188,6 @@ export type CommandBase = {
   disableModelInvocation?: boolean // Whether to disable this command from being invoked by models
   userInvocable?: boolean // Whether users can invoke this skill by typing $skill-name
   loadedFrom?:
-    | 'commands_DEPRECATED'
     | 'skills'
     | 'plugin'
     | 'managed'

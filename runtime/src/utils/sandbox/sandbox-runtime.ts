@@ -256,11 +256,8 @@ export function convertToSandboxRuntimeConfig(
     denyWrite.push(resolve(cwd, '.agenc', 'config.local.toml'))
   }
 
-  // Block writes to .agenc/skills in both original and current working directories.
-  // The sandbox-runtime's getDangerousDirectories() protects .agenc/commands and
-  // .agenc/agents but not .agenc/skills. Skills have the same privilege level
-  // (auto-discovered, auto-loaded, full AgenC capabilities) so they need the
-  // same OS-level sandbox protection.
+  // Block writes to live skill authority in both original and current working
+  // directories. Retired command directories receive no special treatment.
   denyWrite.push(resolve(originalCwd, '.agenc', 'skills'))
   if (cwd !== originalCwd) {
     denyWrite.push(resolve(cwd, '.agenc', 'skills'))

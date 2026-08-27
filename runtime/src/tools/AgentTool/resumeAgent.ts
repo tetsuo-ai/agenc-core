@@ -160,6 +160,7 @@ export async function resumeAgentBackground({
   );
   const freshCatalog = await loadFreshAgentDefinitions(
     parentSession.roleWorkspace.cwd,
+    parentSession.services.runtimeOptions.pluginStorageRoot,
   );
 
   const [transcript, meta] = await Promise.all([

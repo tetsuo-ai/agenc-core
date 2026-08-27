@@ -169,7 +169,7 @@ export function clearIdpIdToken(
 /**
  * Save an IdP client secret to secure storage, keyed by IdP issuer.
  * Separate from MCP server AS secrets — different trust domain.
- * Returns the storage update result so callers can surface native-vault
+ * Returns the storage update result so callers can surface native secure storage
  * failures (for example, a locked Keychain) instead of
  * silently dropping the secret and failing later with invalid_client.
  */

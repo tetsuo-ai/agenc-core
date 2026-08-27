@@ -31,6 +31,7 @@ import {
 } from "./tools/system/editor-proposal.js";
 import { ConfigStore } from "./config/store.js";
 import { defaultConfig } from "./config/schema.js";
+import { getAttachmentTrackingState } from "./session/attachment-state.js";
 
 function buildToolRegistry(options: BuildToolRegistryOptions) {
   return buildProductionToolRegistry({
@@ -104,6 +105,41 @@ describe("T7 tool-registry ConcurrencyClass tagging", () => {
     expect(writeFile?.requiresApproval).toBe(true);
     expect(writeFile?.recoveryCategory).toBe("side-effecting");
     expect(writeFile?.supportsParallelToolCalls).toBe(false);
+  });
+
+  test("Write reports touched paths to only the registry session's skill manager", async () => {
+    const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-registry-write-"));
+    const filePath = join(workspaceRoot, "packages", "ui", "Button.tsx");
+    const skillRoot = join(workspaceRoot, "packages", "ui", ".agenc", "skills");
+    const discoverSkillDirsForPaths = vi.fn(async () => [skillRoot]);
+    const session = {
+      conversationId: "registry-write-session",
+      services: {
+        skillsManager: {
+          skillsForConfig: vi.fn(async () => ({ invokedSkills: [] })),
+          discoverSkillDirsForPaths,
+        },
+      },
+    } as unknown as Session;
+    const registry = buildToolRegistry({
+      workspaceRoot,
+      getSession: () => session,
+    });
+
+    try {
+      const write = registry.tools.find((tool) => tool.name === "Write");
+      await expect(
+        write?.execute({ file_path: filePath, content: "export {};\n" }),
+      ).resolves.toMatchObject({
+        content: `File created successfully at: ${filePath}`,
+      });
+      expect(discoverSkillDirsForPaths).toHaveBeenCalledOnce();
+      expect(discoverSkillDirsForPaths).toHaveBeenCalledWith([filePath]);
+      expect(getAttachmentTrackingState(session).dynamicSkillDirTriggers)
+        .toEqual(new Set([skillRoot]));
+    } finally {
+      await rm(workspaceRoot, { recursive: true, force: true });
+    }
   });
 
   test("bash tool gets BackgroundTerminal + requiresApproval=true", () => {

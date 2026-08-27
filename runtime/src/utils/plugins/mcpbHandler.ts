@@ -138,7 +138,7 @@ function serverSecretsKey(pluginId: string, serverName: string): string {
 /**
  * Load user configuration for an MCP server according to its manifest schema.
  * Non-sensitive values come only from config.toml; sensitive values come only
- * from the native credential vault. A plaintext sensitive duplicate is an
+ * from the native secure storage. A plaintext sensitive duplicate is an
  * explicit error and is never used as fallback.
  *
  * Returns null when the schema owns no configured value — callers skip
@@ -174,7 +174,7 @@ export function loadMcpServerUserConfig(
 /**
  * Save user configuration for an MCP server, splitting by `schema[key].sensitive`.
  * Mirrors savePluginOptions (pluginOptionsStorage.ts:90) for top-level options:
- *   - `sensitive: true` → native OS credential vault
+ *   - `sensitive: true` → native secure storage
  *   - everything else   → config.toml pluginConfigs[pluginId].mcpServers[serverName]
  *
  * Without this split, per-channel `sensitive: true` was a false sense of

@@ -65,7 +65,7 @@ function nonEmpty(value: string | undefined): string | undefined {
  * Canonicalize the home before it participates in daemon identity, locks, or
  * secure-storage service names. Resolve the deepest existing ancestor before
  * appending missing components so creation beneath a symlink cannot change
- * daemon or native-vault identity on the next launch.
+ * daemon or native secure storage identity on the next launch.
  */
 export function canonicalizeHomePath(path: string): string {
   const normalized = path.normalize("NFC");

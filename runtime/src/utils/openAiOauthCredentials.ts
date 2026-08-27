@@ -1,4 +1,4 @@
-/** Canonical native-vault repository for OpenAI/ChatGPT sign-in credentials. */
+/** Canonical native secure storage repository for OpenAI/ChatGPT sign-in credentials. */
 
 import type { HomeContext } from '../config/home.js'
 import type { ProviderEnvironment } from '../llm/provider-options.js'
@@ -18,7 +18,7 @@ import {
   readNativeSecureStorageAsync,
   updateNativeSecureStorage,
 } from './secureStorage/native.js'
-import { nativeVaultIdentityKey } from './secureStorage/home.js'
+import { secureStorageIdentityKey } from './secureStorage/home.js'
 
 export const OPENAI_OAUTH_STORAGE_KEY = 'openAiOauth' as const
 
@@ -64,7 +64,7 @@ export class OpenAiOauthCredentialConflictError extends Error {
   constructor() {
     super(
       'OpenAI credentials changed while an OAuth refresh was in flight; ' +
-        'the newer native-vault value was preserved.',
+        'the newer native secure storage value was preserved.',
     )
   }
 }
@@ -133,7 +133,7 @@ function updateReadCache(
   home: HomeContext,
   blob: OpenAiOauthCredentialBlob | undefined,
 ): void {
-  readCacheByVault.set(nativeVaultIdentityKey(home), {
+  readCacheByVault.set(secureStorageIdentityKey(home), {
     at: Date.now(),
     blob: blob === undefined ? undefined : structuredClone(blob),
   })
@@ -152,7 +152,7 @@ function readOpenAiOauthCredentialsFresh(
 export function readOpenAiOauthCredentials(
   home: HomeContext,
 ): OpenAiOauthCredentialBlob | undefined {
-  const cached = readCacheByVault.get(nativeVaultIdentityKey(home))
+  const cached = readCacheByVault.get(secureStorageIdentityKey(home))
   if (cached !== undefined && Date.now() - cached.at < READ_CACHE_TTL_MS) {
     return cached.blob === undefined
       ? undefined
@@ -262,7 +262,7 @@ export function clearOpenAiOauthCredentials(
 }
 
 function refreshState(home: HomeContext): OpenAiRefreshState {
-  const vaultIdentity = nativeVaultIdentityKey(home)
+  const vaultIdentity = secureStorageIdentityKey(home)
   const existing = refreshStateByVault.get(vaultIdentity)
   if (existing !== undefined) return existing
   const created: OpenAiRefreshState = {

@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it } from "vitest";
 import { parseToml } from "../../config/loader.js";
+import { pluginFilesystemKey } from "../directories.js";
 import {
   defaultRunProcess,
   marketplaceInstalledPath,
@@ -18,6 +19,8 @@ import {
   type AgenCPluginCliOptions,
 } from "./pluginCliCommands.js";
 import type { PluginCliIo } from "./pluginOperations.js";
+import { loadPlugins } from "../loader.js";
+import { substitutePluginTemplate } from "../registration/common.js";
 
 function createIo(): PluginCliIo & {
   readonly stdoutText: () => string;
@@ -63,8 +66,10 @@ async function tempRuntime(): Promise<{
   const root = await mkdtemp(join(tmpdir(), "agenc-plugin-cli-"));
   const agencHome = join(root, "home");
   const workspaceRoot = join(root, "workspace");
+  const sessionTempRoot = join(root, "session-temp");
   await mkdir(agencHome, { recursive: true });
   await mkdir(workspaceRoot, { recursive: true });
+  await mkdir(sessionTempRoot, { recursive: true });
   return { root, agencHome, workspaceRoot };
 }
 
@@ -92,6 +97,8 @@ function options(
 ): AgenCPluginCliOptions {
   return {
     agencHome,
+    pluginStorageRoot: join(agencHome, "plugins"),
+    sessionTempRoot: join(agencHome, "..", "session-temp"),
     workspaceRoot,
     env: {},
     io,
@@ -185,7 +192,13 @@ describe("agenc plugin CLI", () => {
       force: false,
     }, options(agencHome, workspaceRoot, io));
     expect(installExit).toBe(0);
-    await expect(stat(join(agencHome, "plugins", "alpha", ".agenc-plugin", "plugin.json")))
+    await expect(stat(join(
+      agencHome,
+      "plugins",
+      pluginFilesystemKey("alpha"),
+      ".agenc-plugin",
+      "plugin.json",
+    )))
       .resolves.toMatchObject({ size: expect.any(Number) });
     expect(
       parseToml(await readFile(join(agencHome, "config.toml"), "utf8")),
@@ -226,6 +239,129 @@ describe("agenc plugin CLI", () => {
     });
   });
 
+  it("uses one explicit plugin root for install, discovery, and uninstall", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const source = await writePlugin(root, "isolated");
+    const io = createIo();
+    const authority = {
+      ...options(agencHome, workspaceRoot, io),
+      pluginStorageRoot: join(root, "operator-plugins"),
+    };
+
+    expect(await runAgenCPluginCli({
+      kind: "install",
+      source,
+      scope: "user",
+      force: false,
+    }, authority)).toBe(0);
+    const installDirectory = pluginFilesystemKey("isolated");
+    await expect(
+      stat(join(
+        authority.pluginStorageRoot,
+        installDirectory,
+        ".agenc-plugin",
+        "plugin.json",
+      )),
+    ).resolves.toMatchObject({ size: expect.any(Number) });
+
+    const listedIo = createIo();
+    const listedAuthority = { ...authority, io: listedIo };
+    expect(await runAgenCPluginCli({ kind: "list", json: true }, listedAuthority))
+      .toBe(0);
+    expect(JSON.parse(listedIo.stdoutText())).toMatchObject({
+      plugins: [{ name: "isolated" }],
+    });
+
+    const loaded = await loadPlugins({
+      pluginStorageRoot: authority.pluginStorageRoot,
+      workspaceRoot,
+      config: { plugins: { enabled: true } },
+    });
+    const plugin = loaded.enabled.find(candidate => candidate.name === "isolated");
+    expect(plugin?.id).toBe("isolated");
+    const dataDir = substitutePluginTemplate(
+      "${AGENC_PLUGIN_DATA}",
+      plugin!,
+      { pluginStorageRoot: authority.pluginStorageRoot },
+    );
+    await writeFile(join(dataDir, "state.json"), "persisted");
+
+    expect(await runAgenCPluginCli({
+      kind: "uninstall",
+      pluginId: "isolated",
+      scope: "user",
+      keepData: false,
+    }, authority)).toBe(0);
+    await expect(stat(join(authority.pluginStorageRoot, installDirectory)))
+      .rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(dataDir)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(stat(join(agencHome, "plugins")))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("rejects every plugin-storage child name before a user install", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const source = await writePlugin(root, "reserved-name-source");
+    const pluginStorageRoot = join(root, "operator-plugins");
+
+    for (const name of [
+      "build",
+      "cache",
+      "coverage",
+      "data",
+      "dist",
+      "marketplaces",
+      "node_modules",
+    ]) {
+      const io = createIo();
+      const exit = await runAgenCPluginCli({
+        kind: "install",
+        source,
+        scope: "user",
+        name,
+        force: false,
+      }, {
+        ...options(agencHome, workspaceRoot, io),
+        pluginStorageRoot,
+      });
+
+      expect(exit, name).toBe(1);
+      expect(io.stderrText(), name).toContain(
+        `plugin ID is reserved for AgenC internal storage: ${name}`,
+      );
+      await expect(stat(join(pluginStorageRoot, name)), name)
+        .rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
+  it("rejects loader-excluded names for repository-scoped installs too", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const source = await writePlugin(root, "repository-reserved-source");
+
+    for (const scope of ["project", "local"] as const) {
+      const io = createIo();
+      const exit = await runAgenCPluginCli({
+        kind: "install",
+        source,
+        scope,
+        name: "build",
+        force: false,
+      }, options(agencHome, workspaceRoot, io));
+
+      expect(exit, scope).toBe(1);
+      expect(io.stderrText(), scope).toContain(
+        "plugin ID is reserved for AgenC internal storage: build",
+      );
+      await expect(stat(join(
+        workspaceRoot,
+        ".agents",
+        "plugins",
+        pluginFilesystemKey("build"),
+      )))
+        .rejects.toMatchObject({ code: "ENOENT" });
+    }
+  });
+
   it("warns when a project-scope install ships hooks or MCP servers", async () => {
     // Workspace-resident plugin content is repository-controlled, which
     // strips hooks and MCP servers at load time; the install must say so
@@ -261,6 +397,7 @@ describe("agenc plugin CLI", () => {
       kind: "install",
       source,
       scope: "user",
+      name: "withmcp-user",
       force: true,
     }, options(agencHome, workspaceRoot, userIo));
     expect(userExit).toBe(0);
@@ -430,7 +567,7 @@ describe("agenc plugin CLI", () => {
       force: false,
     }, options(agencHome, workspaceRoot, nameIo));
     expect(nameExit).toBe(1);
-    expect(nameIo.stderrText()).toContain("marketplace name must be an alphanumeric segment");
+    expect(nameIo.stderrText()).toContain("marketplace name must be a lowercase canonical segment");
 
     const sparseIo = createIo();
     const sparseExit = await runAgenCPluginCli({
@@ -469,37 +606,72 @@ describe("agenc plugin CLI", () => {
     expect(io.stderrText()).toContain("must not start with '-'");
   });
 
-  it("removes marketplaces by computed install root instead of trusted index paths", async () => {
+  it("rejects marketplace inventory paths outside the canonical install root", async () => {
     const { agencHome, workspaceRoot, root } = await tempRuntime();
     const io = createIo();
-    await mkdir(marketplaceStoreRoot({ agencHome }), { recursive: true });
-    const installedPath = marketplaceInstalledPath("team", { agencHome });
+    const authority = options(agencHome, workspaceRoot, io);
+    await mkdir(marketplaceStoreRoot(authority), { recursive: true });
+    const installedPath = marketplaceInstalledPath("team", authority);
     const hostilePath = join(root, "outside");
     await mkdir(installedPath, { recursive: true });
     await mkdir(hostilePath, { recursive: true });
-    await updateMarketplaceInventory(
-      { pluginsDirectory: join(agencHome, "plugins") },
-      () => ({
-        inventory: {
+    await expect(
+      updateMarketplaceInventory(
+        { pluginsDirectory: authority.pluginStorageRoot },
+        () => ({
+          inventory: {
+            team: {
+              source: { source: "directory", path: installedPath },
+              installLocation: hostilePath,
+              manifestPath: join(hostilePath, ".agenc-plugin", "marketplace.json"),
+              lastUpdated: "2026-05-05T00:00:00.000Z",
+            },
+          },
+          result: undefined,
+        }),
+      ),
+    ).rejects.toThrow("installLocation");
+
+    expect((await stat(hostilePath)).isDirectory()).toBe(true);
+    expect((await stat(installedPath)).isDirectory()).toBe(true);
+    await expect(readFile(marketplaceIndexPath(authority), "utf8"))
+      .rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("repairs one path-escaping marketplace entry without using its stored paths", async () => {
+    const { agencHome, workspaceRoot, root } = await tempRuntime();
+    const io = createIo();
+    const authority = options(agencHome, workspaceRoot, io);
+    const installedPath = marketplaceInstalledPath("team", authority);
+    const hostilePath = join(root, "outside");
+    await mkdir(join(installedPath, ".agenc-plugin"), { recursive: true });
+    await mkdir(hostilePath, { recursive: true });
+    await writeFile(
+      join(installedPath, ".agenc-plugin", "marketplace.json"),
+      '{"plugins":[]}\n',
+    );
+    await writeFile(
+      marketplaceIndexPath(authority),
+      `${JSON.stringify({
         team: {
-          source: { source: "directory", path: installedPath },
+          source: { source: "directory", path: hostilePath },
           installLocation: hostilePath,
           manifestPath: join(hostilePath, ".agenc-plugin", "marketplace.json"),
           lastUpdated: "2026-05-05T00:00:00.000Z",
         },
-        },
-        result: undefined,
-      }),
+      }, null, 2)}\n`,
     );
 
-    const removeExit = await runAgenCPluginCli({
+    const exitCode = await runAgenCPluginCli({
       kind: "marketplace-remove",
       name: "team",
-    }, options(agencHome, workspaceRoot, io));
-    expect(removeExit).toBe(0);
+    }, authority);
+
+    expect(exitCode).toBe(0);
+    expect(io.stdoutText()).toContain("Removed marketplace team");
     expect((await stat(hostilePath)).isDirectory()).toBe(true);
     await expect(stat(installedPath)).rejects.toMatchObject({ code: "ENOENT" });
-    expect(JSON.parse(await readFile(marketplaceIndexPath({ agencHome }), "utf8")))
+    expect(JSON.parse(await readFile(marketplaceIndexPath(authority), "utf8")))
       .toEqual({});
   });
 

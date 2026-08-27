@@ -1184,8 +1184,8 @@ function vaultConflict(
   builder.conflict(
     candidate.kind,
     earlier === undefined
-      ? `Retired credential conflicts with native secure-storage field ${field}`
-      : `Retired credential conflicts with another retired source for native secure-storage field ${field}`,
+      ? `Retired credential conflicts with native secure storage field ${field}`
+      : `Retired credential conflicts with another retired source for native secure storage field ${field}`,
     { path: candidate.path, field },
   );
 }

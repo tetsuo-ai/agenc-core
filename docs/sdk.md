@@ -43,7 +43,9 @@ const client = await connect({
   },
 });
 
-const session = await client.createSession();
+const session = await client.createSession({
+  pluginStorageRoot: "/absolute/agenc-home/plugins",
+});
 const run = session.prompt("Summarize this repo's protocol layer.");
 
 for await (const event of run) {
@@ -79,7 +81,7 @@ await client.close();
 
 Key `AgencClient` methods:
 
-- `createSession(params?)` / `resumeSession(sessionId)` → `AgencSession`
+- `createSession(params)` / `resumeSession(sessionId)` → `AgencSession`
   (`prompt`, `transcript`, `transcriptV2`, `snapshot`, `cancelTurn`, `terminate`)
 - `spawnAgent(params)` → background agent (`agent.create`)
 - `attachAgent(agentId)` → `{ attach, session }` for a running agent
@@ -91,16 +93,27 @@ Key `AgencClient` methods:
   `reattachRun(options)` / `runEvidence(params)` / `cancelRun(id, reason?)`
 - `listCsvJobReviews` / `showCsvJobReview` / `resolveCsvJobReview`
 - `request(method, params)` → raw typed JSON-RPC for any of the **53** daemon methods
-- `initialize` (handshake; SDK retries 1.0–1.4), `close()`
+- `initialize` (handshake; SDK retries 1.0 through 1.7), `close()`
 - `negotiatedProtocolVersion` / `serverProtocolVersion` / `serverCapabilities`
 - `onNotification(cb)` / `onSessionNotification(sessionId, cb)` → raw events
 - Path helpers: `resolveAgencHome`, `resolveDaemonSocketPath`, `resolveDaemonCookiePath`
 
 `createSession()` sends safe runtime options with
-`allowUntrustedHooks: false`. The lower-level `spawnAgent()` API requires a
-complete `runtimeOptions` object. Set `allowUntrustedHooks: true` only when the
-embedding application has vetted the workspace and intends to permit command
-hook effects there. The field never permits HTTP, prompt, or agent hook effects.
+`allowUntrustedHooks: false` and the exact `pluginStorageRoot` passed to that
+call. `AgencClient` does not reread `AGENC_PLUGIN_CACHE_DIR` or derive a root
+from `AGENC_HOME`. The root must be absolute, must not have surrounding
+whitespace, and must be at most 4096 UTF-8 bytes. `createSession()` does not
+accept `agentId`; use `attachAgent()` for an existing agent. The lower-level
+`spawnAgent()` API requires a complete `runtimeOptions` object. Set
+`allowUntrustedHooks: true` only when the embedding application has vetted the
+workspace and intends to permit command hook effects there. The field never
+permits HTTP, prompt, or agent hook effects.
+
+When `initialPrompt` is present, `createSession()` submits it as the new
+agent's initial input. The method also passes `metadata` unchanged to
+`agent.create`. Without `initialPrompt`, the new agent remains idle until the
+first `prompt()` call.
+
 `simpleMode: true`, which is the typed form of `--bare`, still suppresses every
 session hook extension point.
 
@@ -143,9 +156,10 @@ on an older daemon because it could hit a later turn.
 The SDK distinguishes `text` deltas from `message_committed`, reconciles the
 final result with committed text, and exposes `history_reset` for clear,
 compaction, rewind, and rollback. A duplicate without durable terminal proof
-fails with `AgencDuplicateSubmissionIncompleteError`. Initialization retries a
-1.0–1.4 daemon at its reported version and retains negotiated version and
-capability information for safe feature fallback.
+fails with `AgencDuplicateSubmissionIncompleteError`. Initialization retries
+against daemons running protocol 1.0 through 1.7 at the reported version and
+retains negotiated version and capability information for safe feature
+fallback.
 
 ### Handshake and autostart
 
@@ -182,7 +196,14 @@ const transport = new AgenCInProcessDaemonTransport({
 });
 client = createAgencClient({ transport });
 await client.initialize();
+const session = await client.createSession({
+  pluginStorageRoot: "/absolute/agenc-home/plugins",
+});
 ```
+
+Every transport must pass the exact `pluginStorageRoot` to `createSession()`.
+Protocol 1.8 is the first daemon protocol that can bind that root to the new
+agent. The SDK does not rebuild the root from the host process environment.
 
 ## Subprocess transport
 
@@ -221,7 +242,8 @@ state.
 
 ```bash
 npm run build --workspace=@tetsuo-ai/agenc-sdk
-node packages/agenc-sdk/examples/one-shot.mjs "say hello in one word"
+AGENC_PLUGIN_CACHE_DIR=/absolute/path/to/agenc/plugins \
+  node packages/agenc-sdk/examples/one-shot.mjs "say hello in one word"
 node packages/agenc-sdk/examples/one-shot.mjs --transport subprocess "say hello"
 ```
 
@@ -350,9 +372,10 @@ uses advertised capabilities for additive fallbacks. Protocol 1.6 made the
 owning runtime options and live run-settings snapshot required in `agent.attach`.
 Protocol 1.7 adds required inactive auto availability and exact-workspace bypass
 capability and consent fields to that snapshot. The SDK rejects attachment
-before dispatch on an older negotiated protocol and uses `session.create`
-directly instead of spawning an agent it cannot safely attach to.
-Protocol 1.8 binds Core model and config mutation responses to the exact
+and session creation before dispatch on a negotiated protocol below 1.8. It
+does not fall back to `session.create`, because that request cannot bind the
+exact plugin storage root. Protocol 1.8 requires that root in the owning runtime
+options and binds Core model and config mutation responses to the
 runtime-settings event that follows them.
 
 Server→client notifications (`AGENC_SDK_DAEMON_NOTIFICATION_METHODS`, 18 names):

@@ -59,8 +59,13 @@ import {
 import {
   _resetAgentRolesForTesting,
   createAgentRoleWorkspace,
+  listBuiltInAgentRoles,
   registerAgentRole,
 } from "../agents/role.js";
+import {
+  roleToAgentDefinition,
+  type AgentDefinition,
+} from "../tools/AgentTool/loadAgentsDir.js";
 
 const DEFAULT_ROLE_WORKSPACE = createAgentRoleWorkspace(process.cwd());
 const UNUSED_CSV_AGENT_JOBS_REPOSITORIES: CsvAgentJobsRepositoryProvider = {
@@ -118,6 +123,7 @@ function fakeMcpManager() {
 }
 
 function fakeSession(cwd = process.cwd()): Session {
+  const roleWorkspace = createAgentRoleWorkspace(cwd);
   const modelInfo = {
     slug: "test-model",
     effectiveContextWindowPercent: 95,
@@ -136,7 +142,11 @@ function fakeSession(cwd = process.cwd()): Session {
   } as const;
   return {
     conversationId: "session-test",
-    roleWorkspace: createAgentRoleWorkspace(cwd),
+    roleWorkspace,
+    agentDefinitions: {
+      agentRoleWorkspaceId: roleWorkspace.id,
+      activeAgents: listBuiltInAgentRoles().map(roleToAgentDefinition),
+    },
     config: {
       cwd,
     },
@@ -206,6 +216,13 @@ function fakeSession(cwd = process.cwd()): Session {
     nextInternalSubId: () => "event-1",
     eventLog: { emit: (event: unknown) => event },
   } as unknown as Session;
+}
+
+function addSessionAgentDefinition(
+  session: Session,
+  definition: AgentDefinition,
+): void {
+  session.agentDefinitions.activeAgents.push(definition);
 }
 
 async function writeTestSkill(
@@ -2935,6 +2952,7 @@ describe("model-facing tools", () => {
       );
       const localServices = createLocalSkillsServices({
         agencHome,
+        pluginStorageRoot: join(agencHome, "plugins"),
         workspaceRoot,
         env: { HOME: home },
       });
@@ -3453,6 +3471,13 @@ describe("model-facing tools", () => {
         ].join("\n"),
       },
     });
+    addSessionAgentDefinition(session, {
+      agentType: "priority-reviewer",
+      whenToUse: "Review quickly.",
+      source: "flagSettings",
+      baseDir: "programmatic",
+      getSystemPrompt: () => "",
+    });
     delegateMock.mockResolvedValue({
       kind: "async_launched",
       thread: {
@@ -3538,6 +3563,13 @@ describe("model-facing tools", () => {
           "\n",
         ),
       },
+    });
+    addSessionAgentDefinition(session, {
+      agentType: "priority-reviewer",
+      whenToUse: "Review quickly.",
+      source: "flagSettings",
+      baseDir: "programmatic",
+      getSystemPrompt: () => "",
     });
 
     const result = await createModelFacingTools({
@@ -3922,22 +3954,21 @@ describe("model-facing tools", () => {
     });
   });
 
-  it("launches spawn_agent with a workspace markdown role from the canonical role registry", async () => {
+  it("uses the same session catalog role for spawn_agent schema and execution", async () => {
     const workspaceRoot = await mkdtemp(join(tmpdir(), "agenc-spawn-role-"));
-    const agentsDir = join(workspaceRoot, ".agenc", "agents");
-    await mkdir(agentsDir, { recursive: true });
-    await writeFile(
-      join(agentsDir, "reviewer.md"),
-      [
-        "---",
-        "name: project-reviewer",
-        "description: Review project diffs",
-        "---",
-        "Review the active diff before returning.",
-      ].join("\n"),
-    );
-
     const session = fakeSession(workspaceRoot);
+    addSessionAgentDefinition(session, {
+      // `research` is also a public alias for the built-in scanner. Exact
+      // plugin identity must win before alias fallback in both schema and
+      // execution.
+      agentType: "research",
+      whenToUse: "Review plugin-owned security policy",
+      source: "plugin",
+      plugin: "review-plugin",
+      baseDir: join(workspaceRoot, "plugins", "review-plugin", "agents"),
+      roleDefinitionPrompt: "Review the active diff before returning.",
+      getSystemPrompt: () => "Review the active diff before returning.",
+    });
     const joinThread = vi.fn(async () => ({
       threadId: "thread-custom",
       durationMs: 1,
@@ -3951,7 +3982,7 @@ describe("model-facing tools", () => {
           agentId: "thread-custom",
           agentPath: "/root/custom_task",
           nickname: "Custom",
-          role: { name: "project-reviewer" },
+          role: { name: "research" },
           status: {
             value: {
               status: "running",
@@ -3969,19 +4000,22 @@ describe("model-facing tools", () => {
         workspaceRoot,
         getSession: () => session,
       });
-      const result = await tools
-        .find((tool) => tool.name === "spawn_agent")!
-        .execute({
-          message: "inspect",
-          task_name: "custom_task",
-          agent_type: "project-reviewer",
-          fork_turns: "none",
-        });
+      const spawnTool = tools.find((tool) => tool.name === "spawn_agent")!;
+      const schema = spawnTool.inputSchema as {
+        properties: { agent_type: { enum: string[] } };
+      };
+      expect(schema.properties.agent_type.enum).toContain("research");
+      const result = await spawnTool.execute({
+        message: "inspect",
+        task_name: "custom_task",
+        agent_type: "research",
+        fork_turns: "none",
+      });
 
       expect(result.isError).not.toBe(true);
       expect(delegateMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          role: "project-reviewer",
+          role: "research",
           taskPrompt: "inspect",
         }),
       );
@@ -3996,33 +4030,24 @@ describe("model-facing tools", () => {
       mkdtemp(join(tmpdir(), "agenc-spawn-role-b-")),
     ]);
     const [workspaceA, workspaceB] = roots;
-    const writeRole = async (
-      root: string,
-      marker: "A" | "B",
-      effort: "low" | "high",
-    ): Promise<void> => {
-      const agentsDir = join(root, ".agenc", "agents");
-      await mkdir(agentsDir, { recursive: true });
-      await writeFile(
-        join(agentsDir, "reviewer.md"),
-        [
-          "---",
-          "name: shared-reviewer",
-          `description: Workspace ${marker} reviewer`,
-          `effort: ${effort}`,
-          "---",
-          `Workspace ${marker} prompt.`,
-        ].join("\n"),
-      );
-    };
-
-    await Promise.all([
-      writeRole(workspaceA, "A", "low"),
-      writeRole(workspaceB, "B", "high"),
-    ]);
-
     const sessionA = fakeSession(workspaceA);
     const sessionB = fakeSession(workspaceB);
+    addSessionAgentDefinition(sessionA, {
+      agentType: "shared-reviewer",
+      whenToUse: "Workspace A reviewer",
+      source: "projectSettings",
+      baseDir: join(workspaceA, ".agenc", "agents"),
+      roleDefinitionPrompt: "Workspace A prompt.",
+      getSystemPrompt: () => "Workspace A prompt.",
+    });
+    addSessionAgentDefinition(sessionB, {
+      agentType: "shared-reviewer",
+      whenToUse: "Workspace B reviewer",
+      source: "projectSettings",
+      baseDir: join(workspaceB, ".agenc", "agents"),
+      roleDefinitionPrompt: "Workspace B prompt.",
+      getSystemPrompt: () => "Workspace B prompt.",
+    });
     (sessionA as { conversationId: string }).conversationId = "workspace-a";
     (sessionB as { conversationId: string }).conversationId = "workspace-b";
     const toolsA = createModelFacingTools({

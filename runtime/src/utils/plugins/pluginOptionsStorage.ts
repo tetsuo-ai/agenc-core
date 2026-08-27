@@ -4,7 +4,7 @@
  * Plugins declare user-configurable options in `manifest.userConfig` — a record
  * of field schemas matching `McpbUserConfigurationOption`. At enable time the
  * user is prompted for values. Storage splits by `sensitive`:
- *   - `sensitive: true`  → native OS credential vault
+ *   - `sensitive: true`  → native secure storage
  *   - everything else    → config.toml `pluginConfigs[pluginId].options`
  *
  * `loadPluginOptions` reads and merges both. The substitution helpers are also
@@ -35,31 +35,25 @@ import {
   rollbackPluginSecretBucket,
   withPluginSecretBucket,
 } from './pluginConfigAuthority.js'
-import { getPluginDataDir } from './pluginDirectories.js'
 
 export type PluginOptionValues = UserConfigValues
 export type PluginOptionSchema = UserConfigSchema
 
 /**
- * Canonical storage key for a plugin's options in both `settings.pluginConfigs`
- * and `secureStorage.pluginSecrets`. Today this is `plugin.source` — always
- * `"${name}@${marketplace}"` (pluginLoader.ts:1400). `plugin.repository` is
- * a backward-compat alias that's set to the same string (1401); don't use it
- * for storage. UI code that manually constructs `` `${name}@${marketplace}` ``
- * produces the same key by convention — see PluginOptionsFlow, ManagePlugins.
- *
- * Exists so there's exactly one place to change if the key format ever drifts.
+ * Canonical storage key for a plugin's options, secrets, and persistent data.
+ * The loader assigns this ID once. Filesystem source and install paths are
+ * provenance only and never identify durable plugin state.
  */
 export function getPluginStorageId(plugin: LoadedPlugin): string {
-  return plugin.source
+  return plugin.id
 }
 
 /**
  * Load saved option values according to the manifest schema. Non-sensitive
  * fields come only from config.toml and sensitive fields only from the native
- * credential vault. Plaintext sensitive fields are rejected.
+ * secure storage. Plaintext sensitive fields are rejected.
  *
- * Each read uses the request-owned config authority and native vault so one
+ * Each read uses the request-owned config authority and native secure storage so one
  * daemon session can never reuse another session's option snapshot.
  */
 export function loadPluginOptions(
@@ -115,7 +109,7 @@ export async function savePluginOptions(
   const sensitiveKeysInThisSave = new Set(Object.keys(sensitive))
   const nonSensitiveKeysInThisSave = new Set(Object.keys(nonSensitive))
 
-  // Secure storage FIRST — if the native vault fails, throw before touching
+  // Secure storage FIRST — if the native secure storage fails, throw before touching
   // config.toml. Any old plaintext remains rejected until reconfiguration can
   // complete safely; it never becomes a runtime fallback.
   const secureTransaction =
@@ -305,40 +299,6 @@ export function getUnconfiguredOptions(
     }
   }
   return unconfigured
-}
-
-/**
- * Substitute ${AGENC_PLUGIN_ROOT} and ${AGENC_PLUGIN_DATA} with their paths.
- * On Windows, normalizes backslashes to forward slashes so shell commands
- * don't interpret them as escape characters.
- *
- * ${AGENC_PLUGIN_ROOT} — version-scoped install dir (recreated on update)
- * ${AGENC_PLUGIN_DATA} — persistent state dir (survives updates)
- *
- * Both patterns use the function-replacement form of .replace(): ROOT so
- * `$`-patterns in NTFS paths ($$, $', $`, $&) aren't interpreted; DATA so
- * getPluginDataDir (which lazily mkdirs) only runs when actually present.
- *
- * Used in MCP/LSP server command/args/env, hook commands, skill/agent content.
- */
-export function substitutePluginVariables(
-  value: string,
-  plugin: { path: string; source?: string },
-): string {
-  const normalize = (p: string) =>
-    process.platform === 'win32' ? p.replace(/\\/g, '/') : p
-  let out = value.replace(/\$\{AGENC_PLUGIN_ROOT\}/g, () =>
-    normalize(plugin.path),
-  )
-  // source can be absent (e.g. hooks where pluginRoot is a skill root without
-  // a plugin context). In that case ${AGENC_PLUGIN_DATA} is left literal.
-  if (plugin.source) {
-    const source = plugin.source
-    out = out.replace(/\$\{AGENC_PLUGIN_DATA\}/g, () =>
-      normalize(getPluginDataDir(source)),
-    )
-  }
-  return out
 }
 
 /**

@@ -21,19 +21,21 @@ const mocks = vi.hoisted(() => {
     savedConfigs.push(update);
     return { error: null };
   });
-  const getSystemThemeName = vi.fn(() => "light");
-  const stopWatchingSystemTheme = vi.fn();
-  const watchSystemTheme = vi.fn(() => stopWatchingSystemTheme);
+  const getTerminalBackground = vi.fn(() => "light");
+  const stopWatchingTerminalBackground = vi.fn();
+  const watchTerminalBackground = vi.fn(
+    () => stopWatchingTerminalBackground,
+  );
 
   return {
     getCanonicalSettingsAuthority,
     getExecutionAuthoritySettings,
-    getSystemThemeName,
+    getTerminalBackground,
     logError,
     savedConfigs,
     updateSettingsForSource,
-    stopWatchingSystemTheme,
-    watchSystemTheme,
+    stopWatchingTerminalBackground,
+    watchTerminalBackground,
   };
 });
 
@@ -46,12 +48,12 @@ vi.mock("../../../utils/settings/settings.js", () => ({
   updateSettingsForSource: mocks.updateSettingsForSource,
 }));
 
-vi.mock("../../../utils/systemTheme.js", () => ({
-  getSystemThemeName: mocks.getSystemThemeName,
+vi.mock("../../../utils/terminalBackground.js", () => ({
+  getTerminalBackground: mocks.getTerminalBackground,
 }));
 
-vi.mock("../../../utils/systemThemeWatcher.js", () => ({
-  watchSystemTheme: mocks.watchSystemTheme,
+vi.mock("../../../utils/terminalBackgroundWatcher.js", () => ({
+  watchTerminalBackground: mocks.watchTerminalBackground,
 }));
 
 vi.mock("../../../utils/log.js", () => ({
@@ -121,9 +123,9 @@ describe("ThemeProvider", () => {
     mocks.savedConfigs.length = 0;
     mocks.getCanonicalSettingsAuthority.mockReturnValue({});
     mocks.getExecutionAuthoritySettings.mockReturnValue({ tui: { theme: "auto" } });
-    mocks.getSystemThemeName.mockReturnValue("light");
-    mocks.watchSystemTheme.mockImplementation(
-      () => mocks.stopWatchingSystemTheme,
+    mocks.getTerminalBackground.mockReturnValue("light");
+    mocks.watchTerminalBackground.mockImplementation(
+      () => mocks.stopWatchingTerminalBackground,
     );
   });
 
@@ -206,9 +208,9 @@ describe("ThemeProvider", () => {
       );
 
       expect(mocks.getExecutionAuthoritySettings).toHaveBeenCalledTimes(1);
-      expect(mocks.getSystemThemeName).toHaveBeenCalled();
+      expect(mocks.getTerminalBackground).toHaveBeenCalled();
       await waitFor(
-        () => mocks.watchSystemTheme.mock.calls.length > 0,
+        () => mocks.watchTerminalBackground.mock.calls.length > 0,
         "auto theme watcher did not start",
       );
 
@@ -261,7 +263,7 @@ describe("ThemeProvider", () => {
 
   test("logs auto-theme watcher startup failures without unmounting the provider", async () => {
     const watcherError = new Error("theme watcher startup failed");
-    mocks.watchSystemTheme.mockImplementationOnce(() => {
+    mocks.watchTerminalBackground.mockImplementationOnce(() => {
       throw watcherError;
     });
     const snapshots: ThemeSnapshot[] = [];
@@ -292,7 +294,7 @@ describe("ThemeProvider", () => {
       );
 
       await waitFor(
-        () => mocks.watchSystemTheme.mock.calls.length === 1,
+        () => mocks.watchTerminalBackground.mock.calls.length === 1,
         "auto theme watcher did not start",
       );
       await waitFor(
@@ -326,7 +328,7 @@ describe("ThemeProvider", () => {
       );
 
       await waitFor(
-        () => mocks.watchSystemTheme.mock.calls.length === 1,
+        () => mocks.watchTerminalBackground.mock.calls.length === 1,
         "auto theme watcher did not start",
       );
     } finally {
@@ -335,6 +337,6 @@ describe("ThemeProvider", () => {
       stdout.end();
       stderr.end();
     }
-    expect(mocks.stopWatchingSystemTheme).toHaveBeenCalledTimes(1);
+    expect(mocks.stopWatchingTerminalBackground).toHaveBeenCalledTimes(1);
   });
 });

@@ -173,7 +173,7 @@ export async function getproviderClient({
   }
 
   // First-party OAuth and API-key state is irrelevant to explicitly selected
-  // external providers. Keep native-vault access behind the first-party
+  // external providers. Keep native secure storage access behind the first-party
   // routing boundary so third-party requests cannot acquire a second auth
   // authority or fail because unrelated first-party storage is unavailable.
   logForDebugging('[API:auth] OAuth token check starting')

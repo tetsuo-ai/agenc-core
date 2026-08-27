@@ -14,19 +14,19 @@ import {
 export interface SecureStorageIngress {
   /** Complete environment snapshot captured before any asynchronous work. */
   readonly environment: Readonly<HomeEnvironment>;
-  /** Native-vault identity derived from that exact snapshot. */
+  /** Native secure storage identity derived from that exact snapshot. */
   readonly home: HomeContext;
 }
 
 /**
- * Concrete canonical vault identity for caches and single-flight registries.
+ * Concrete canonical secure-storage identity for caches and single-flight registries.
  * Service/account is sufficient on Keychain and Secret Service; DPAPI also
  * stores the record below its bound home, so include the normalized path on
  * Windows. Never key credential state by home.path alone: prod, local, and
  * custom OAuth configurations intentionally use distinct native records at
  * the same home.
  */
-export function nativeVaultIdentityKey(home: HomeContext): string {
+export function secureStorageIdentityKey(home: HomeContext): string {
   const serviceName = getSecureStorageServiceName(
     home,
     CREDENTIALS_SERVICE_SUFFIX,
@@ -59,7 +59,7 @@ export function captureSecureStorageIngress(
 }
 
 /**
- * Resolve a native-vault identity once at the owning runtime boundary. Pass
+ * Resolve a native secure storage identity once at the owning runtime boundary. Pass
  * the returned immutable context through every later read/update/rollback;
  * secure-storage adapters must never re-read ambient home variables.
  */

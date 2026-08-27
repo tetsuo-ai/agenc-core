@@ -22,6 +22,7 @@ import { ConfigStore } from "../../../src/config/store.js";
 import { createProvider } from "../../../src/llm/provider.js";
 import { runWithCurrentRuntimeSession } from "../../../src/session/current-session.js";
 import { SessionProviderService } from "../../../src/session/provider-service.js";
+import { resolveAgentRuntimeOptions } from "../../../src/session/runtime-options.js";
 import type { Session } from "../../../src/session/session.js";
 import { getAgentMemoryDir } from "../../../src/tools/AgentTool/agentMemory.js";
 import {
@@ -116,7 +117,13 @@ function configureBoundarySession(root: string): Session {
   return {
     conversationId: boundarySessionId,
     roleWorkspace: createAgentRoleWorkspace(root),
-    services: { providerService, configStore: settingsAuthorityFor(root) },
+    services: {
+      providerService,
+      configStore: settingsAuthorityFor(root),
+      runtimeOptions: resolveAgentRuntimeOptions({}, {
+        pluginStorageRoot: join(root, "plugins"),
+      }),
+    },
   } as unknown as Session;
 }
 
@@ -260,7 +267,7 @@ Guarded prompt.
     setOriginalCwd(root);
     switchSession("00000000-0000-4000-8000-000000000222" as never, null);
     const firstCatalog = await withBoundaryAuthority(root, () =>
-      loadFreshAgentDefinitions(root),
+      loadFreshAgentDefinitions(root, join(root, "plugins")),
     );
     const first = firstCatalog.activeAgents.find(
       (definition) => definition.agentType === "guarded-worker",
@@ -281,7 +288,9 @@ Guarded prompt.
       resolveAgentDefinitionForResume(
         persistedMetadata,
         workspace,
-        await withBoundaryAuthority(root, () => loadFreshAgentDefinitions(root)),
+        await withBoundaryAuthority(root, () =>
+          loadFreshAgentDefinitions(root, join(root, "plugins")),
+        ),
       ).selectedAgent,
     ).toMatchObject({
       agentType: "guarded-worker",
@@ -291,7 +300,9 @@ Guarded prompt.
       resolveAgentDefinitionForResume(
         persistedMetadata,
         workspace,
-        await withBoundaryAuthority(root, () => loadFreshAgentDefinitions(root)),
+        await withBoundaryAuthority(root, () =>
+          loadFreshAgentDefinitions(root, join(root, "plugins")),
+        ),
       ).selectedAgent,
     ).not.toHaveProperty("permissionMode");
 
@@ -307,7 +318,7 @@ Guarded prompt.
 `,
     );
     const secondCatalog = await withBoundaryAuthority(root, () =>
-      loadFreshAgentDefinitions(root),
+      loadFreshAgentDefinitions(root, join(root, "plugins")),
     );
     const second = secondCatalog.activeAgents.find(
       (definition) => definition.agentType === "guarded-worker",
@@ -342,7 +353,7 @@ Review without mutation.
     );
     __setPluginAgentsLoaderForTesting(async () => []);
     const initialCatalog = await withBoundaryAuthority(root, () =>
-      loadFreshAgentDefinitions(root),
+      loadFreshAgentDefinitions(root, join(root, "plugins")),
     );
     const initialRole = initialCatalog.activeAgents.find(
       (definition) => definition.agentType === "boundary-reviewer",
@@ -409,7 +420,7 @@ Use only this role's project memory.
     );
     __setPluginAgentsLoaderForTesting(async () => []);
     const catalog = await withBoundaryAuthority(root, () =>
-      loadFreshAgentDefinitions(root),
+      loadFreshAgentDefinitions(root, join(root, "plugins")),
     );
     const selectedRole = catalog.activeAgents.find(
       (definition) => definition.agentType === "memory-reviewer",

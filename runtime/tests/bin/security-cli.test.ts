@@ -223,7 +223,7 @@ describe("security audit against a temp home", () => {
     expect(securityAuditExitCode(report)).toBe(1);
   });
 
-  test("hooks enabled WITH a native-vault token is ok", async () => {
+  test("hooks enabled WITH a native secure storage token is ok", async () => {
     writeGatewayConfig({ hooks: { enabled: true } });
     resolveGatewayGeneratedToken(
       resolveHomeContext({ AGENC_HOME: home }),
@@ -240,7 +240,7 @@ describe("security audit against a temp home", () => {
     ["local", { USER_TYPE: "ant", USE_LOCAL_OAUTH: "1" }],
     ["custom", { AGENC_CUSTOM_OAUTH_URL: "https://agenc.tech" }],
   ] as const)(
-    "audits the %s OAuth native-vault namespace from the captured environment",
+    "audits the %s OAuth native secure storage namespace from the captured environment",
     async (_label, oauthEnvironment) => {
       writeGatewayConfig({ hooks: { enabled: true } });
       const capturedEnvironment = Object.freeze({

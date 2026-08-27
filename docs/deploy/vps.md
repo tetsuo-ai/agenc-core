@@ -50,7 +50,7 @@ it does **not** require opening the daemon to the public internet.
 
 ### Channel gateway on a VPS
 
-Tokens saved by onboarding live in the home-bound native OS credential vault. Prefer
+Tokens saved by onboarding live in the home-bound native secure storage. Prefer
 `agenc gateway install-service` (user unit `agenc-gateway`) over long-running
 tmux. For always-on after reboot:
 
@@ -122,7 +122,7 @@ The unit file itself stays credential-free. Managed OpenRouter
 short-lived vended keys instead of a long-lived OpenRouter secret on disk;
 BYOK still wins when set.
 
-Channel secrets for the gateway: the native OS credential vault (or Docker env
+Channel secrets for the gateway: the native secure storage (or Docker env
 equivalents), loaded by `agenc gateway run` / the gateway user unit.
 
 ## One-click templates (owner-publish step)

@@ -100,10 +100,8 @@ import {
 } from "../contracts/csv-job-contract.js";
 import { ensureAgentControl } from "./delegate-tool.js";
 import { createMultiAgentV2Tools } from "../agents/v2/index.js";
-import {
-  createAgentRoleWorkspace,
-  loadMarkdownAgentRoles,
-} from "../agents/role.js";
+import type { AgentRoleCatalog } from "../agents/role-catalog.js";
+import { createAgentRoleWorkspace } from "../agents/role.js";
 import { createTaskTools } from "../tools/tasks/index.js";
 import {
   createStructuredOutputTool,
@@ -159,6 +157,8 @@ export interface ModelFacingToolOptions {
   readonly workspaceRoot: string;
   readonly agencHome?: string;
   readonly getSession: () => Session | null;
+  /** Exact role snapshot available while the provider is built pre-Session. */
+  readonly roleCatalog?: AgentRoleCatalog;
   readonly unifiedExecManager?: UnifiedExecProcessManagerLike;
   readonly emitWarning?: (warning: {
     readonly cause: string;
@@ -1639,8 +1639,8 @@ function createMultiAgentV2RuntimeTools(
 ): readonly Tool[] {
   const csvAgentJobsRepositories =
     opts.csvAgentJobsRepositories ?? UNCONFIGURED_CSV_AGENT_JOBS_REPOSITORIES;
-  const roleWorkspace = createAgentRoleWorkspace(opts.workspaceRoot);
-  loadMarkdownAgentRoles(roleWorkspace);
+  const roleWorkspace =
+    opts.roleCatalog?.workspace ?? createAgentRoleWorkspace(opts.workspaceRoot);
 
   const emit = (
     session: Session,
@@ -1655,6 +1655,7 @@ function createMultiAgentV2RuntimeTools(
   const multiAgentV2Tools = createMultiAgentV2Tools({
     getSession: opts.getSession,
     workspace: roleWorkspace,
+    ...(opts.roleCatalog !== undefined ? { roleCatalog: opts.roleCatalog } : {}),
     ensureAgentControl,
   });
 

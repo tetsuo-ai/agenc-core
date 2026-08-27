@@ -1,4 +1,3 @@
-import memoize from 'lodash-es/memoize.js'
 import { basename } from 'path'
 import type { OutputStyleConfig } from '../constants/outputStyles.js'
 import { logForDebugging } from 'src/utils/debug.js'
@@ -22,8 +21,9 @@ import {
  *
  * @param cwd Current working directory for project directory traversal
  */
-export const getOutputStyleDirStyles = memoize(
-  async (cwd: string): Promise<OutputStyleConfig[]> => {
+export async function getOutputStyleDirStyles(
+  cwd: string,
+): Promise<OutputStyleConfig[]> {
     try {
       const markdownFiles = await loadMarkdownFilesForSubdir(
         'output-styles',
@@ -87,5 +87,4 @@ export const getOutputStyleDirStyles = memoize(
       logError(error)
       return []
     }
-  },
-)
+}

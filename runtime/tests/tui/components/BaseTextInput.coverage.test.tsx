@@ -25,8 +25,8 @@ vi.mock("../../utils/config.js", () => ({
   updateRuntimeState: vi.fn(),
 }));
 
-vi.mock("../../utils/systemTheme.js", () => ({
-  getSystemThemeName: () => "dark",
+vi.mock("../../utils/terminalBackground.js", () => ({
+  getTerminalBackground: () => "dark",
   resolveThemeSetting: () => "dark",
 }));
 

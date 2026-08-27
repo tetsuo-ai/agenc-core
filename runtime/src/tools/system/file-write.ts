@@ -28,11 +28,12 @@
  *   - Path safety enforced via AgenC's `safePath` and
  *     `resolveToolAllowedPaths`.
  *   - Errors are returned as plain text (runtime envelope), not JSON.
+ *   - Successful writes notify the current session's skill manager with the
+ *     resolved path through a per-call callback.
  *
  * Source couplings intentionally not carried:
  *   - VS Code MCP file-update notifications
  *   - `lazySchema` / Zod (AgenC tools use plain JSON Schema POJOs)
- *   - Skill-discovery side effects from the written path
  *   - `fileHistoryTrackEdit` (AgenC's session-read snapshot already
  *     captures the post-write content)
  *
@@ -71,8 +72,44 @@ import {
   executeWorkspaceFileMutation,
   type WorkspaceFileMutationTestHooks,
 } from "../../workspace/file-mutation-transaction.js";
+import { logForDebugging } from "../../utils/debug.js";
 
 export const FILE_WRITE_TOOL_NAME = "Write";
+
+const FILE_WRITE_TOUCHED_PATH_CALLBACK = Symbol(
+  "agenc.fileWriteTouchedPathCallback",
+);
+
+export type FileWriteTouchedPathCallback = (
+  absolutePath: string,
+) => Promise<void> | void;
+
+/**
+ * Bind per-invocation session work without capturing it in the cached Write
+ * tool instance. Model JSON cannot supply the symbol-backed value, and the
+ * property does not participate in input enumeration.
+ */
+export function attachFileWriteTouchedPathCallback(
+  args: Record<string, unknown>,
+  callback: FileWriteTouchedPathCallback,
+): void {
+  Object.defineProperty(args, FILE_WRITE_TOUCHED_PATH_CALLBACK, {
+    value: callback,
+    enumerable: false,
+    configurable: true,
+  });
+}
+
+function readFileWriteTouchedPathCallback(
+  args: Record<string, unknown>,
+): FileWriteTouchedPathCallback | undefined {
+  const callback = (
+    args as Record<PropertyKey, unknown>
+  )[FILE_WRITE_TOUCHED_PATH_CALLBACK];
+  return typeof callback === "function"
+    ? (callback as FileWriteTouchedPathCallback)
+    : undefined;
+}
 
 /**
  * Verbatim wording from the upstream file-write prompt,
@@ -191,6 +228,8 @@ export interface FileWriteToolConfig extends WorkspaceFileMutationTestHooks {
   readonly allowedPaths?: readonly string[];
   /** Optional cap on the number of bytes the tool will write. */
   readonly maxWriteBytes?: number;
+  /** Session-scoped work to run after a write reaches the filesystem. */
+  readonly onTouchedPath?: FileWriteTouchedPathCallback;
   /**
    * Fault-injection seam for the final check-to-open boundary. Production
    * callers never set this.
@@ -563,6 +602,19 @@ export function createFileWriteTool(config: FileWriteToolConfig = {}): Tool {
           sessionId,
           absolutePath,
           buildSnapshot(content, mtimeMs),
+        );
+      }
+
+      try {
+        const onTouchedPath =
+          readFileWriteTouchedPathCallback(rawArgs) ?? config.onTouchedPath;
+        await onTouchedPath?.(absolutePath);
+      } catch (error) {
+        logForDebugging(
+          `Post-write skill discovery failed for ${absolutePath}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+          { level: "warn" },
         );
       }
 

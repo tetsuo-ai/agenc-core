@@ -3,8 +3,10 @@ import { createSpawnAgentTool } from "./spawn.js";
 import type { MultiAgentV2Options } from "./common.js";
 import type { Session } from "../../session/session.js";
 import { createAgentRoleWorkspace } from "../role.js";
+import { AgentRoleCatalog } from "../role-catalog.js";
 
 const ROLE_WORKSPACE = createAgentRoleWorkspace("/repo");
+const ROLE_CATALOG = new AgentRoleCatalog(ROLE_WORKSPACE);
 
 interface FakeSchema {
   readonly type: string;
@@ -31,6 +33,7 @@ function makeOptions(opts: {
   return {
     getSession: () => session,
     workspace: ROLE_WORKSPACE,
+    roleCatalog: ROLE_CATALOG,
     ensureAgentControl: () => {
       throw new Error("not used in schema test");
     },

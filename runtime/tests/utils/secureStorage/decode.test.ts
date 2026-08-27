@@ -2,7 +2,7 @@ import { describe, expect, test } from 'vitest'
 
 import { decodeSecureStorageData } from '../../../src/utils/secureStorage/decode.js'
 
-describe('native secure-storage decoder', () => {
+describe('native secure storage decoder', () => {
   test.each([
     ['null', /non-null JSON object/u],
     ['[]', /non-null JSON object/u],

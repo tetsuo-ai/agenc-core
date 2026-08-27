@@ -1,7 +1,10 @@
 import { describe, expect, test } from 'bun:test'
 import { join } from 'path'
 
-import { isAgenCConfigPath } from '../../src/utils/permissions/filesystem.ts'
+import {
+  checkPathSafetyForAutoEdit,
+  isAgenCConfigPath,
+} from '../../src/utils/permissions/filesystem.ts'
 import { getValidationTip } from '../../src/utils/settings/validationTips.ts'
 
 describe('AgenC config path surfaces', () => {
@@ -30,6 +33,38 @@ describe('AgenC config path surfaces', () => {
         join(process.cwd(), '..', 'other-project', '.agenc', 'unrelated.json'),
       ),
     ).toBe(false)
+  })
+
+  test('retired command roots are ordinary paths while live skill roots stay protected', () => {
+    const retiredCommand = join(
+      process.cwd(),
+      '.agenc',
+      'commands',
+      'review.md',
+    )
+    const retiredAgentCommand = join(
+      process.cwd(),
+      '.agents',
+      'commands',
+      'review.md',
+    )
+    const liveSkill = join(
+      process.cwd(),
+      '.agenc',
+      'skills',
+      'review',
+      'SKILL.md',
+    )
+
+    expect(isAgenCConfigPath(retiredCommand)).toBe(false)
+    expect(checkPathSafetyForAutoEdit(retiredCommand, [retiredCommand]))
+      .toEqual({ safe: true })
+    expect(isAgenCConfigPath(retiredAgentCommand)).toBe(false)
+    expect(
+      checkPathSafetyForAutoEdit(retiredAgentCommand, [retiredAgentCommand]),
+    ).toEqual({ safe: true })
+    expect(checkPathSafetyForAutoEdit(liveSkill, [liveSkill]))
+      .toMatchObject({ safe: false })
   })
 })
 

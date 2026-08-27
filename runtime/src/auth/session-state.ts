@@ -19,7 +19,7 @@ interface RemoteAuthSessionState extends AuthDiskState {
 }
 
 export interface RemoteAuthSessionReadContext {
-  /** Canonical native-vault and metadata identity captured at ingress. */
+  /** Canonical native secure storage and metadata identity captured at ingress. */
   readonly home: HomeContext;
   /** Immutable session/CLI environment captured at the same ingress. */
   readonly environment: EnvSnapshot;

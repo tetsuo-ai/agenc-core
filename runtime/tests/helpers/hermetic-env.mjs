@@ -384,7 +384,6 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_REMOTE_MEMORY_DIR',
   'AGENC_COWORK_MEMORY_PATH_OVERRIDE',
   'AGENC_PLUGIN_CACHE_DIR',
-  'AGENC_PLUGIN_SEED_DIR',
   'AGENC_BROWSER_PROFILE_DIR',
   'AGENC_PROJECT_DIR',
   'AGENC_JOB_DIR',
@@ -649,7 +648,7 @@ export function getOrCreateHermeticTestHome() {
  * - Forces AGENC_HOME to `agencHome` (a per-run temp dir), scopes native
  *   secure-storage service names to that unique home, and redirects OS/XDG
  *   home roots there. This isolates AgenC auth,
- *   native vaults, gcloud ADC, ProviderCode auth, plugins, user-level managed
+ *   native secure storage, gcloud ADC, ProviderCode auth, plugins, user-level managed
  *   settings, platform managed policy, and generic homedir-derived state.
  *   Tests that need another home set it explicitly inside the test, after
  *   setup runs.

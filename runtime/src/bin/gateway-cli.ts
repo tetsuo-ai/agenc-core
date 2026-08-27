@@ -57,7 +57,7 @@ export function formatAgenCGatewayCliHelpText(): string {
     "  agenc gateway run [--stdio] [--webchat] [--heartbeat] [--hooks]",
     "  agenc gateway install-service         Install + start the always-on",
     "                                        gateway user service (systemd or",
-    "                                        launchd; credentials use the native vault)",
+    "                                        launchd; credentials use the native secure storage)",
     "                                        Start the gateway. --stdio enables",
     "                                        the local dev channel; --webchat a",
     "                                        loopback token-gated browser UI;",
@@ -240,7 +240,7 @@ export async function runAgenCGatewayCli(
       handle = await start({
         agencHome,
         // Explicit environment credentials override the home-bound native
-        // vault; startGateway performs the one credential merge.
+        // secure storage; startGateway performs the one credential merge.
         env,
         stdio: command.stdio,
         webchat: command.webchat,
@@ -371,7 +371,7 @@ export async function runAgenCGatewayCli(
 /**
  * Install the gateway as a per-user service so channels/heartbeat/cron/hooks
  * survive reboots. Both systemd (Linux) and launchd (macOS) let the gateway
- * process read its home-bound native credential-vault namespace.
+ * process read its home-bound native secure storage namespace.
  * User-scoped only — no sudo, no system daemons.
  */
 export async function installGatewayService(options: {

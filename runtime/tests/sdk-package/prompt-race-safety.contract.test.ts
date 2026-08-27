@@ -45,6 +45,7 @@ const VALID_ATTACH_RUNTIME_OPTIONS = Object.freeze({
   simpleMode: false,
   stdinDataMode: false,
   remoteMode: false,
+  pluginStorageRoot: "/tmp/agenc-sdk-plugin-storage",
   allowUntrustedHooks: false,
 });
 const VALID_ATTACH_CWD = "/tmp/agenc-sdk-agent-workspace";
@@ -77,6 +78,9 @@ class PromptTransport implements AgencTransport {
   initializeFailures = 0;
   attachRuntimeOptions: unknown;
   attachRuntimeSettings: unknown = VALID_ATTACH_RUNTIME_SETTINGS;
+  attachFailure: Error | undefined;
+  attachSessionIds: readonly string[] = ["session_1"];
+  stopFailure: Error | undefined;
   duplicateIncomplete = false;
 
   async request<Method extends AgencDaemonMethod>(
@@ -124,26 +128,44 @@ class PromptTransport implements AgencTransport {
       });
     }
     if (request.method === "agent.attach") {
+      if (this.attachFailure !== undefined) throw this.attachFailure;
       return success(request, {
         agentId: String((request.params as JsonObject).agentId),
         attachmentId: "attachment_agent_1",
-        sessionIds: ["session_1"],
+        sessionIds: this.attachSessionIds,
         runtimeSettingsEventId: "settings:agent_1:initial",
-        sessions: [
-          {
-            sessionId: "session_1",
-            agentId: String((request.params as JsonObject).agentId),
-            status: "running",
-            createdAt: "2026-08-17T00:00:00.000Z",
-            cwd: VALID_ATTACH_CWD,
-          },
-        ],
+        sessions: this.attachSessionIds.map((sessionId) => ({
+          sessionId,
+          agentId: String((request.params as JsonObject).agentId),
+          status: "running",
+          createdAt: "2026-08-17T00:00:00.000Z",
+          cwd: VALID_ATTACH_CWD,
+        })),
         ...(this.attachRuntimeOptions === undefined
           ? {}
           : { runtimeOptions: this.attachRuntimeOptions }),
         ...(this.attachRuntimeSettings === undefined
           ? {}
           : { runtimeSettings: this.attachRuntimeSettings }),
+      });
+    }
+    if (request.method === "agent.create") {
+      return success(request, {
+        agentId: "agent_1",
+        objective: "Interactive session",
+        status: "running",
+        createdAt: "2026-08-17T00:00:00.000Z",
+        startedAt: "2026-08-17T00:00:00.000Z",
+        lastActiveAt: "2026-08-17T00:00:00.000Z",
+        sessionIds: ["session_1"],
+      });
+    }
+    if (request.method === "agent.stop") {
+      if (this.stopFailure !== undefined) throw this.stopFailure;
+      return success(request, {
+        agentId: String((request.params as JsonObject).agentId),
+        stopped: true,
+        stoppedAt: "2026-08-17T00:00:00.000Z",
       });
     }
     if (request.method === "session.create") {
@@ -343,16 +365,16 @@ describe("agenc-sdk prompt race safety", () => {
     },
   );
 
-  it("rejects agent attachment below protocol 1.7 before dispatch", async () => {
+  it("rejects agent attachment below protocol 1.8 before dispatch", async () => {
     const transport = new PromptTransport();
-    transport.initializeVersion = "1.6.0";
+    transport.initializeVersion = "1.7.0";
     transport.initializeFailures = 1;
     const client = await initializedClient(transport);
 
     await expect(client.attachAgent("agent_1")).rejects.toMatchObject({
       name: "AgencCapabilityUnavailableError",
       capability: "agent.attach runtime authority",
-      negotiatedProtocolVersion: "1.6.0",
+      negotiatedProtocolVersion: "1.7.0",
     });
     expect(
       transport.requests.filter((request) => request.method === "agent.attach"),
@@ -361,15 +383,15 @@ describe("agenc-sdk prompt race safety", () => {
 
   it.each([
     undefined,
+    { ...VALID_ATTACH_RUNTIME_OPTIONS, pluginStorageRoot: undefined },
+    { ...VALID_ATTACH_RUNTIME_OPTIONS, pluginStorageRoot: "relative/plugins" },
+    { ...VALID_ATTACH_RUNTIME_OPTIONS, pluginStorageRoot: "  " },
     {
-      simpleMode: false,
-      stdinDataMode: false,
-      remoteMode: false,
-      allowUntrustedHooks: false,
+      ...VALID_ATTACH_RUNTIME_OPTIONS,
       posixShellPath: 42,
     },
   ])(
-    "rejects malformed protocol 1.7 agent attachment authority %#",
+    "rejects malformed protocol 1.8 agent attachment authority %#",
     async (runtimeOptions) => {
       const transport = new PromptTransport();
       transport.attachRuntimeOptions = runtimeOptions;
@@ -386,7 +408,7 @@ describe("agenc-sdk prompt race safety", () => {
     },
   );
 
-  it("accepts protocol 1.7 inactive permission capabilities bound to the primary cwd", async () => {
+  it("accepts protocol 1.8 inactive permission capabilities bound to the primary cwd", async () => {
     const transport = new PromptTransport();
     transport.attachRuntimeOptions = VALID_ATTACH_RUNTIME_OPTIONS;
     transport.attachRuntimeSettings = {
@@ -435,7 +457,7 @@ describe("agenc-sdk prompt race safety", () => {
     },
     { ...VALID_ATTACH_RUNTIME_SETTINGS, model: "   " },
   ])(
-    "rejects missing or impossible protocol 1.7 runtime settings %#",
+    "rejects missing or impossible protocol 1.8 runtime settings %#",
     async (runtimeSettings) => {
       const transport = new PromptTransport();
       transport.attachRuntimeOptions = VALID_ATTACH_RUNTIME_OPTIONS;
@@ -453,24 +475,176 @@ describe("agenc-sdk prompt race safety", () => {
     },
   );
 
-  it("uses session.create below protocol 1.7 without orphaning an agent", async () => {
+  it("refuses session creation below protocol 1.8 before dispatch", async () => {
     const transport = new PromptTransport();
-    transport.initializeVersion = "1.3.0";
+    transport.initializeVersion = "1.7.0";
     transport.initializeFailures = 1;
     const client = await initializedClient(transport);
 
     await expect(
-      client.createSession({ cwd: "/tmp/agenc-sdk-old-protocol" }),
-    ).resolves.toMatchObject({ sessionId: "session_1" });
+      client.createSession({
+        cwd: "/tmp/agenc-sdk-old-protocol",
+        pluginStorageRoot: "/tmp/agenc-sdk-old-protocol-plugins",
+      }),
+    ).rejects.toMatchObject({
+      name: "AgencCapabilityUnavailableError",
+      capability: "createSession plugin storage authority",
+      negotiatedProtocolVersion: "1.7.0",
+    });
     expect(
       transport.requests.filter(
         (request) =>
-          request.method === "agent.create" || request.method === "agent.attach",
+          request.method === "agent.create" ||
+          request.method === "agent.attach" ||
+          request.method === "session.create",
       ),
     ).toEqual([]);
+  });
+
+  it("forwards the exact public session params through agent.create", async () => {
+    const transport = new PromptTransport();
+    transport.attachRuntimeOptions = VALID_ATTACH_RUNTIME_OPTIONS;
+    const client = await initializedClient(transport);
+
+    await client.createSession({
+      cwd: VALID_ATTACH_CWD,
+      pluginStorageRoot: VALID_ATTACH_RUNTIME_OPTIONS.pluginStorageRoot,
+      initialPrompt: "Inspect the current workspace",
+      metadata: {
+        source: "sdk-contract-test",
+        request: { id: "request_1" },
+      },
+    });
+
+    const createRequests = transport.requests.filter(
+      (request) => request.method === "agent.create",
+    );
+    expect(createRequests).toHaveLength(1);
+    expect(createRequests[0]?.params).toEqual({
+      objective: "Interactive session",
+      cwd: VALID_ATTACH_CWD,
+      initialContent: "Inspect the current workspace",
+      metadata: {
+        source: "sdk-contract-test",
+        request: { id: "request_1" },
+      },
+      runtimeOptions: VALID_ATTACH_RUNTIME_OPTIONS,
+    });
     expect(
-      transport.requests.map((request) => request.method),
-    ).toContain("session.create");
+      transport.requests.filter(
+        (request) => request.method === "session.create",
+      ),
+    ).toEqual([]);
+  });
+
+  it("stops the new agent when attaching the created session throws", async () => {
+    const transport = new PromptTransport();
+    transport.attachFailure = new Error("attach transport failed");
+    transport.stopFailure = new Error("stop transport failed");
+    const client = await initializedClient(transport);
+
+    await expect(
+      client.createSession({
+        cwd: VALID_ATTACH_CWD,
+        pluginStorageRoot: VALID_ATTACH_RUNTIME_OPTIONS.pluginStorageRoot,
+      }),
+    ).rejects.toThrow("attach transport failed");
+
+    const stopRequests = transport.requests.filter(
+      (request) => request.method === "agent.stop",
+    );
+    expect(stopRequests).toHaveLength(1);
+    expect(stopRequests[0]?.params).toEqual({
+      agentId: "agent_1",
+      reason: "SDK session creation failed before attachment completed",
+    });
+  });
+
+  it("stops the new agent when attachment reports no session ids", async () => {
+    const transport = new PromptTransport();
+    transport.attachSessionIds = [];
+    const client = await initializedClient(transport);
+
+    await expect(
+      client.createSession({
+        cwd: VALID_ATTACH_CWD,
+        pluginStorageRoot: VALID_ATTACH_RUNTIME_OPTIONS.pluginStorageRoot,
+      }),
+    ).rejects.toMatchObject({ name: "AgencMalformedResponseError" });
+
+    expect(
+      transport.requests.filter((request) => request.method === "agent.stop"),
+    ).toHaveLength(1);
+  });
+
+  it("requires plugin storage authority before creating a modern agent", async () => {
+    const transport = new PromptTransport();
+    const client = await initializedClient(transport);
+
+    await expect(
+      client.createSession({
+        cwd: "/tmp/agenc-sdk-missing-plugin-root",
+      } as never),
+    ).rejects.toThrow(
+      "AgencClient.createSession requires pluginStorageRoot captured at embedding ingress",
+    );
+    expect(
+      transport.requests.filter((request) => request.method === "agent.create"),
+    ).toEqual([]);
+  });
+
+  it.each([
+    ["leading whitespace", " /tmp/agenc-sdk-plugin-storage"],
+    ["trailing whitespace", "/tmp/agenc-sdk-plugin-storage "],
+    ["a relative path", "relative/agenc-sdk-plugin-storage"],
+    ["a blank path", "   "],
+    ["more than 4096 UTF-8 bytes", `/${"a".repeat(4_096)}`],
+  ])(
+    "rejects plugin storage authority with %s before dispatch",
+    async (_case, pluginStorageRoot) => {
+      const transport = new PromptTransport();
+      const client = await initializedClient(transport);
+
+      await expect(
+        client.createSession({
+          cwd: "/tmp/agenc-sdk-invalid-plugin-root",
+          pluginStorageRoot,
+        }),
+      ).rejects.toThrow(
+        "pluginStorageRoot must be a non-empty absolute path of at most 4096 UTF-8 bytes with no surrounding whitespace",
+      );
+      expect(
+        transport.requests.filter(
+          (request) =>
+            request.method === "agent.create" ||
+            request.method === "agent.attach" ||
+            request.method === "session.create",
+        ),
+      ).toEqual([]);
+    },
+  );
+
+  it("rejects agentId because session.create cannot bind plugin storage authority", async () => {
+    const transport = new PromptTransport();
+    const client = await initializedClient(transport);
+
+    await expect(
+      client.createSession({
+        agentId: "agent_1",
+        cwd: "/tmp/agenc-sdk-existing-agent",
+        pluginStorageRoot: "/tmp/agenc-sdk-existing-agent-plugins",
+      } as never),
+    ).rejects.toThrow(
+      "AgencClient.createSession cannot apply pluginStorageRoot to an existing agentId; use attachAgent() instead",
+    );
+    expect(
+      transport.requests.filter(
+        (request) =>
+          request.method === "agent.create" ||
+          request.method === "agent.attach" ||
+          request.method === "session.create",
+      ),
+    ).toEqual([]);
   });
 
   it("recognizes an older daemon that accepts a higher-minor initialize", async () => {

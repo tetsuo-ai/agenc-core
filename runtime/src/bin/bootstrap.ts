@@ -25,7 +25,10 @@ import {
   shouldProbeCapabilityEntry,
 } from "../llm/capabilities.js";
 import { MCPManager } from "../mcp-client/manager.js";
-import { snapshotMcpRequestEnvironment } from "../mcp-client/environment.js";
+import {
+  snapshotMcpRequestEnvironment,
+  snapshotMcpRequestEnvironmentForAuthority,
+} from "../mcp-client/environment.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { isAutoModeGateEnabled } from "../permissions/classifier.js";
 import { ApprovalStore as RuntimeApprovalStore } from "../permissions/approval-cache.js";
@@ -80,10 +83,11 @@ import type { EventMsg } from "../session/event-log.js";
 import type { RolloutItem } from "../session/rollout-item.js";
 import type { RunResumeReason } from "../contracts/run-contracts.js";
 import { AgentControl } from "../agents/control.js";
+import { AgentRoleCatalog } from "../agents/role-catalog.js";
 import { ThreadManager } from "../agents/thread-manager.js";
 import { ConversationThreadManager } from "../conversation/thread-manager.js";
 import { AgentRegistry } from "../agents/registry.js";
-import { createAgentRoleWorkspace, listAgentRoles } from "../agents/role.js";
+import { createAgentRoleWorkspace } from "../agents/role.js";
 import { loadFreshAgentDefinitions } from "../tools/AgentTool/loadAgentsDir.js";
 import {
   type BuildToolRegistryOptions,
@@ -651,6 +655,10 @@ function buildDeferredConfig(
   cwd: string,
   model: string,
   config: AgenCConfig,
+  agentDefinitions: readonly {
+    readonly agentType: string;
+    readonly whenToUse: string;
+  }[],
   sandboxStatus?: ReturnType<SandboxExecutionBroker["status"]>,
 ): Config {
   const modelReasoningEffort = config.reasoning_effort;
@@ -722,10 +730,10 @@ function buildDeferredConfig(
     },
     /** T-future: ghost-snapshot state machine (agenc runtime workspace restore). */
     ghostSnapshot: { enabled: false },
-    /** T9: real `agentRoles` list from role layer (`agents/role.ts`). */
-    agentRoles: listAgentRoles(createAgentRoleWorkspace(cwd)).map((role) => ({
-      name: role.name,
-      description: role.config.description ?? "",
+    /** T9: exact session-owned executable agent catalog. */
+    agentRoles: agentDefinitions.map((definition) => ({
+      name: definition.agentType,
+      description: definition.whenToUse,
     })),
   };
 }
@@ -999,6 +1007,11 @@ async function bootstrapLocalRuntimeSessionScoped(
   });
   const cli = options.cli;
   const runtimeOptions = options.runtimeOptions;
+  const sessionMcpRequestEnvironment =
+    snapshotMcpRequestEnvironmentForAuthority(mcpRequestEnvironment, {
+      agencHome: configStore.homeContext.path,
+      pluginStorageRoot: runtimeOptions.pluginStorageRoot,
+    });
   const sessionTempRoot = runtimeOptions.sessionTempRoot;
   const autonomousModeEnabled =
     cli.autonomousMode === true || startup.config.autonomous_mode === true;
@@ -1311,7 +1324,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       ? normalizeManagedGatewayModel(resolvedProvider, providerModel)
       : providerModel;
   const mcpManager = createSessionMcpManager([], {
-    environment: mcpRequestEnvironment,
+    environment: sessionMcpRequestEnvironment,
     sandboxExecutionBroker,
   });
   const commandExecutionAuthority = options.commandExecutionAuthority;
@@ -1393,6 +1406,12 @@ async function bootstrapLocalRuntimeSessionScoped(
   const coordinatorModeEnabled = isCoordinatorModeEnabled(
     startup.config.coordinator_mode,
   );
+  const roleWorkspace = createAgentRoleWorkspace(workspaceRoot);
+  const agentDefinitions = await loadFreshAgentDefinitions(
+    roleWorkspace.cwd,
+    runtimeOptions.pluginStorageRoot,
+  );
+  const roleCatalog = new AgentRoleCatalog(roleWorkspace, agentDefinitions);
   const ownedCsvAgentJobsRepositories =
     options.csvAgentJobsRepositories === undefined
       ? new CsvAgentJobsRepositoryAuthority({ agencHome })
@@ -1407,6 +1426,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     environment: providerEnvironment,
     mcpManager,
     getSession: () => sessionRef,
+    roleCatalog,
     csvAgentJobsRepositories,
     emitWarning: emitProviderWarning,
     toolRegistryOptions: {
@@ -1533,6 +1553,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       autonomous_mode: autonomousModeEnabled,
       coordinator_mode: coordinatorModeEnabled,
     },
+    agentDefinitions.activeAgents,
     sandboxExecutionBroker.status(),
   );
   const modelsManager = new StaticModelsManager({
@@ -1651,7 +1672,8 @@ async function bootstrapLocalRuntimeSessionScoped(
   let ctxForReturn: TurnContext | null = null;
   const mcpService = createSessionMcpService(mcpManager, {
     authority: configStore,
-    environment: mcpRequestEnvironment,
+    environment: sessionMcpRequestEnvironment,
+    pluginStorageRoot: options.runtimeOptions.pluginStorageRoot,
   });
   const bootstrapServices: BootstrapSessionServicesHandle =
     buildBootstrapSessionServices({
@@ -1794,8 +1816,6 @@ async function bootstrapLocalRuntimeSessionScoped(
   };
 
   try {
-    const roleWorkspace = createAgentRoleWorkspace(workspaceRoot);
-    const agentDefinitions = await loadFreshAgentDefinitions(roleWorkspace.cwd);
     // Construct the session through `bootstrapSession` so shell
     // discovery, SessionConfigured emit, startup prewarm, and
     // resume-history recording all flow through the shared entry
@@ -1853,6 +1873,7 @@ async function bootstrapLocalRuntimeSessionScoped(
         const agentControl = new AgentControl({
           session: s,
           registry: agentRegistry,
+          roleCatalog,
         });
         const threadManager = new ThreadManager({
           control: agentControl,

@@ -72,7 +72,7 @@ Everything past the launcher lives in the single runtime workspace
 | `session/`                                                               | Session engine: turn loop, transcript, canonical append-only rollout journal + `index.json`, persist-before-publish events, resume, cost, autonomous mode                                                                                      |
 | `agents/`                                                                | Background-agent state, registry, roles, mailbox, worktree isolation, multi-agent v2 tools, CSV jobs (`agents/jobs/`), `WorkflowTool` DAG (`agents/workflow-*.ts`), delegate/fork                                                                 |
 | `workflow/`                                                              | M5 verified-change pipeline (`agenc run start`). Not the `WorkflowTool` DAG.                                                                                                                                                                    |
-| `auth/`                                                                  | Local and remote auth backends, native-vault credential namespaces, BYOK precedence, provider auth selection, session auth metadata                                                                                                                                                   |
+| `auth/`                                                                  | Local and remote auth backends, native secure storage credential namespaces, BYOK precedence, provider auth selection, session auth metadata                                                                                                                                                   |
 | `llm/`                                                                   | Provider-neutral client/request shaping, provider-aware complete-request [token accounting](design/provider-aware-token-accounting.md), model catalog, retries, streaming, wire adapters, OAuth refresh                                                                                                       |
 | `tools/`                                                                 | Built-in model tools (Bash, File read/write/edit, `apply_patch`, Web fetch/search, LSP, MCP, Agent/subagent, Task*, …)                                                                                                                         |
 | `tool-registry.ts` / `tools.ts`                                          | Tool registration and assembly entry points                                                                                                                                                                                                    |
@@ -143,12 +143,12 @@ The daemon and runtime persist under one home. Relocate with an absolute
 
 Login tokens, provider BYOK keys, remote bearers, and persisted remote
 subprocess credentials are not file state. They live only in the native OS
-credential vault, in home-scoped `localAuth`, `remoteAuth`, and
+secure storage, in home-scoped `localAuth`, `remoteAuth`, and
 `remoteRuntimeAuth` namespaces; OpenAI/ChatGPT OAuth uses the separate
 `openAiOauth` namespace. GitHub Models access/OAuth tokens, xAI OAuth, and
 AgenC AI subscription OAuth use the `githubModels`, `xaiOauth`, and
 `agencAiOauth` namespaces respectively. Gemini access-token and Application
-Default Credentials auth has no provider-specific vault namespace; Gemini API
+Default Credentials auth has no provider-specific secure-storage namespace; Gemini API
 keys explicitly saved through local BYOK live under `localAuth.byokKeys`.
 Native updates use a cross-process
 locked read-modify-write so one namespace cannot overwrite another, and an

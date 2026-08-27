@@ -35,7 +35,7 @@ import mapValues from 'lodash-es/mapValues.js'
 import memoize from 'lodash-es/memoize.js'
 import { getOriginalCwd, getSessionId } from '../../bootstrap/state.js'
 import type { HomeContext } from '../../config/home.js'
-import { nativeVaultIdentityKey } from '../../utils/secureStorage/home.js'
+import { secureStorageIdentityKey } from '../../utils/secureStorage/home.js'
 import type { ProviderEnvironment } from '../../llm/provider-options.js'
 import { getOauthConfig } from '../../constants/oauth.js'
 import { PRODUCT_URL } from '../../constants/product.js'
@@ -464,7 +464,7 @@ function getServerCacheKey(
   const homeKey =
     !usesCredentialHome || options?.home === undefined
       ? ''
-      : `-vault-${nativeVaultIdentityKey(options.home)}`
+      : `-secure-storage-${secureStorageIdentityKey(options.home)}`
   const environment = options?.environment ?? EMPTY_MCP_ENVIRONMENT
   // The one module-owned empty sentinel represents process-ingress utilities
   // with no bound session and keeps their historical deterministic cache key.

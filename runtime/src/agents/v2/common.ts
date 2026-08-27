@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { AgentControl } from "../control.js";
+import type { AgentRoleCatalog } from "../role-catalog.js";
 import {
   ROOT_AGENT_PATH,
   type AgentPath,
@@ -43,6 +44,8 @@ export function localZeroAdmissionEstimate(): ToolAdmissionEstimate {
 export interface MultiAgentV2Options {
   readonly getSession: () => Session | null;
   readonly workspace: AgentRoleWorkspace;
+  /** Exact startup/session catalog used before and after Session construction. */
+  readonly roleCatalog?: AgentRoleCatalog;
   readonly ensureAgentControl: (session: Session) => {
     readonly control: AgentControl;
     readonly registry: AgentRegistry;

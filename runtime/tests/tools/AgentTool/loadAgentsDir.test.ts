@@ -1,4 +1,5 @@
 import {
+  chmodSync,
   linkSync,
   mkdtempSync,
   mkdirSync,
@@ -62,6 +63,7 @@ type SettingSourceForTesting = (typeof allSettingSources)[number]
 
 const temporaryRoots: string[] = []
 let testSettingsAuthority: ConfigStore
+let testPluginStorageRoot: string
 
 function agent(agentType: string, source: AgentDefinition['source']): AgentDefinition {
   return {
@@ -103,6 +105,7 @@ beforeEach(async () => {
   const projectRoot = tempWorkspaceRoot('canonical-authority')
   const home = join(projectRoot, 'home')
   mkdirSync(home, { recursive: true })
+  testPluginStorageRoot = join(home, 'plugins')
   testSettingsAuthority = new ConfigStore({
     home,
     cwd: projectRoot,
@@ -211,7 +214,7 @@ describe('AgentTool loadAgentsDir adapter', () => {
 
       const assertCatalog = async (): Promise<void> => {
         const catalog = await withTestSettingsAuthority(() =>
-          loadFreshAgentDefinitions(workspaceA),
+          loadFreshAgentDefinitions(workspaceA, testPluginStorageRoot),
         )
         const types = catalog.activeAgents.map(definition => definition.agentType)
         expect(types).toContain('authority-local')
@@ -250,7 +253,10 @@ describe('AgentTool loadAgentsDir adapter', () => {
     vi.stubEnv('AGENC_HOME', agencHome)
     __setPluginAgentsLoaderForTesting(async () => [])
 
-    const catalog = await loadFreshAgentDefinitions(workspace)
+    const catalog = await loadFreshAgentDefinitions(
+      workspace,
+      testPluginStorageRoot,
+    )
 
     expect(
       catalog.allAgents.map(definition => definition.agentType),
@@ -472,7 +478,7 @@ Loaded through shared discovery.
     __setPluginAgentsLoaderForTesting(async () => [])
 
     const definitions = await withTestSettingsAuthority(() =>
-      getAgentDefinitionsWithOverrides(root),
+      getAgentDefinitionsWithOverrides(root, testPluginStorageRoot),
     )
     expect(definitions.allAgents).toEqual(
       expect.arrayContaining([
@@ -504,7 +510,10 @@ Should be disabled with project settings.
     clearAgentDefinitionsCache()
     __setPluginAgentsLoaderForTesting(async () => [])
 
-    const definitions = await getAgentDefinitionsWithOverrides(root)
+    const definitions = await getAgentDefinitionsWithOverrides(
+      root,
+      testPluginStorageRoot,
+    )
     expect(definitions.allAgents.map(agent => agent.agentType)).not.toContain(
       'disabled-project-agent',
     )
@@ -535,7 +544,7 @@ Only load once.
     __setPluginAgentsLoaderForTesting(async () => [])
     try {
       const definitions = await withTestSettingsAuthority(() =>
-        getAgentDefinitionsWithOverrides(root),
+        getAgentDefinitionsWithOverrides(root, testPluginStorageRoot),
       )
       const deduped = definitions.allAgents.filter(
         agent => agent.agentType === 'deduped-agent',
@@ -579,7 +588,7 @@ Review local changes.
     __setPluginAgentsLoaderForTesting(async () => [pluginAgent])
 
     const definitions = await withTestSettingsAuthority(() =>
-      getAgentDefinitionsWithOverrides(process.cwd()),
+      getAgentDefinitionsWithOverrides(process.cwd(), testPluginStorageRoot),
     )
     expect(definitions.allAgents.map(agent => agent.agentType)).toContain(
       'local-reviewer',
@@ -596,6 +605,75 @@ Review local changes.
     })
     expect(getAgentColor('local-reviewer')).toBe('blue_FOR_SUBAGENTS_ONLY')
     expect(getAgentColor('plugin-helper')).toBe('red_FOR_SUBAGENTS_ONLY')
+  })
+
+  test('isolates cached plugin agents by captured plugin root for the same home and workspace', async () => {
+    const sharedHome = tempWorkspaceRoot('shared-plugin-home')
+    const workspace = tempWorkspaceRoot('shared-plugin-workspace')
+    const pluginStorageRootA = join(sharedHome, 'plugin-roots', 'a')
+    const pluginStorageRootB = join(sharedHome, 'plugin-roots', 'b')
+    vi.stubEnv('AGENC_HOME', sharedHome)
+
+    let loads = 0
+    __setMarkdownAgentDirsForTesting([])
+    __setPluginAgentsLoaderForTesting(async ({ pluginStorageRoot }) => {
+      loads += 1
+      if (
+        pluginStorageRoot !== pluginStorageRootA &&
+        pluginStorageRoot !== pluginStorageRootB
+      ) {
+        throw new Error(`Unexpected plugin root: ${pluginStorageRoot}`)
+      }
+      const suffix = pluginStorageRoot === pluginStorageRootA ? 'a' : 'b'
+      return [
+        {
+          agentType: `isolated-${suffix}`,
+          whenToUse: `Use plugin root ${suffix}`,
+          source: 'plugin',
+          plugin: `plugin-${suffix}`,
+          getSystemPrompt: () => `Plugin root ${suffix}`,
+        },
+      ]
+    })
+
+    const optionsA = resolveAgentRuntimeOptions(
+      { AGENC_HOME: sharedHome },
+      { pluginStorageRoot: pluginStorageRootA },
+    )
+    const optionsB = resolveAgentRuntimeOptions(
+      { AGENC_HOME: sharedHome },
+      { pluginStorageRoot: pluginStorageRootB },
+    )
+    const [catalogA, catalogB] = await withTestSettingsAuthority(() =>
+      Promise.all([
+        runWithAgentRuntimeOptions(optionsA, () =>
+          getAgentDefinitionsWithOverrides(
+            workspace,
+            optionsA.pluginStorageRoot,
+          ),
+        ),
+        runWithAgentRuntimeOptions(optionsB, () =>
+          getAgentDefinitionsWithOverrides(
+            workspace,
+            optionsB.pluginStorageRoot,
+          ),
+        ),
+      ]),
+    )
+
+    expect(loads).toBe(2)
+    expect(catalogA.activeAgents.map(agent => agent.agentType)).toContain(
+      'isolated-a',
+    )
+    expect(catalogA.activeAgents.map(agent => agent.agentType)).not.toContain(
+      'isolated-b',
+    )
+    expect(catalogB.activeAgents.map(agent => agent.agentType)).toContain(
+      'isolated-b',
+    )
+    expect(catalogB.activeAgents.map(agent => agent.agentType)).not.toContain(
+      'isolated-a',
+    )
   })
 
   test('fingerprints the exact executable definition and rejects stale metadata', () => {
@@ -636,7 +714,7 @@ Review local changes.
     __setPluginAgentsLoaderForTesting(async () => [pluginAgent])
 
     const catalog = await withTestSettingsAuthority(() =>
-      loadFreshAgentDefinitions('/tmp'),
+      loadFreshAgentDefinitions('/tmp', testPluginStorageRoot),
     )
     const selected = catalog.activeAgents.find(a => a.agentType === 'runner')
     expect(selected).toMatchObject({
@@ -665,7 +743,7 @@ Broken prompt.
     __setPluginAgentsLoaderForTesting(async () => [])
 
     const definitions = await withTestSettingsAuthority(() =>
-      getAgentDefinitionsWithOverrides(process.cwd()),
+      getAgentDefinitionsWithOverrides(process.cwd(), testPluginStorageRoot),
     )
     expect(definitions.activeAgents.length).toBeGreaterThan(0)
     expect(definitions.activeAgents.every(agent => agent.source === 'built-in')).toBe(
@@ -693,7 +771,10 @@ Broken prompt.
     __setPluginAgentsLoaderForTesting(async () => [])
     __setMarkdownAgentDirsForTesting([])
 
-    const definitions = await getAgentDefinitionsWithOverrides(process.cwd())
+    const definitions = await getAgentDefinitionsWithOverrides(
+      process.cwd(),
+      testPluginStorageRoot,
+    )
     expect(definitions.activeAgents.length).toBeGreaterThan(0)
     expect(definitions.activeAgents.every(agent => agent.source === 'built-in')).toBe(
       true,
@@ -728,8 +809,8 @@ Broken prompt.
     __setMarkdownAgentDirsForTesting([])
 
     const [catalogA, catalogB] = await Promise.all([
-      loadFreshAgentDefinitions(workspaceA),
-      loadFreshAgentDefinitions(workspaceB),
+      loadFreshAgentDefinitions(workspaceA, testPluginStorageRoot),
+      loadFreshAgentDefinitions(workspaceB, testPluginStorageRoot),
     ])
     const selectedA = findAgentDefinitionByType(
       catalogA.activeAgents,
@@ -757,9 +838,26 @@ Broken prompt.
     )
   })
 
-  test('keeps workspace programmatic roles in the simple-mode catalog', async () => {
+  test('keeps only built-ins and explicit programmatic roles in simple mode', async () => {
     const workspace = tempWorkspaceRoot('programmatic-simple')
     const roleWorkspace = createAgentRoleWorkspace(workspace)
+    const markdownDir = tempAgentDir()
+    writeFileSync(
+      join(markdownDir, 'disk-role.md'),
+      `---\nname: disk-role\ndescription: Disk role\n---\nDisk prompt.\n`,
+    )
+    __setMarkdownAgentDirsForTesting([
+      { dir: markdownDir, source: 'projectSettings' },
+    ])
+    const pluginLoader = vi.fn(async (): Promise<PluginAgentDefinition[]> => [{
+      agentType: 'plugin-role',
+      source: 'plugin',
+      plugin: 'simple-plugin',
+      whenToUse: 'Plugin role',
+      baseDir: '/plugins/simple-plugin/agents',
+      getSystemPrompt: () => 'Plugin prompt.',
+    }])
+    __setPluginAgentsLoaderForTesting(pluginLoader)
     registerAgentRole(roleWorkspace, {
       name: 'programmatic-simple-reviewer',
       config: {
@@ -769,16 +867,20 @@ Broken prompt.
         disallowlist: ['Write'],
       },
     })
-    const catalog = await runWithAgentRuntimeOptions(
-      resolveAgentRuntimeOptions({}, { simpleMode: true }),
-      () => loadFreshAgentDefinitions(workspace),
+    const runtimeOptions = resolveAgentRuntimeOptions({}, { simpleMode: true })
+    const catalog = await runWithAgentRuntimeOptions(runtimeOptions, () =>
+      loadFreshAgentDefinitions(workspace, runtimeOptions.pluginStorageRoot),
     )
     const selected = findAgentDefinitionByType(
       catalog.activeAgents,
       'programmatic-simple-reviewer',
     )
+    const types = catalog.activeAgents.map(definition => definition.agentType)
 
     expect(catalog.agentRoleWorkspaceId).toBe(roleWorkspace.id)
+    expect(types).not.toContain('disk-role')
+    expect(types).not.toContain('plugin-role')
+    expect(pluginLoader).not.toHaveBeenCalled()
     expect(selected).toMatchObject({
       source: 'flagSettings',
       tools: ['FileRead'],
@@ -786,6 +888,180 @@ Broken prompt.
       agentRoleFingerprint: expect.any(String),
     })
     expect(selected?.getSystemPrompt()).toBe('Review without writing.')
+  })
+
+  test('uses the exact ConfigStore plugin snapshot for same-cwd A to B to A loads', async () => {
+    const root = tempWorkspaceRoot('plugin-config-authority')
+    const workspace = join(root, 'workspace')
+    const home = join(root, 'home')
+    const pluginStorageRoot = join(home, 'plugins')
+    const pluginRoot = join(pluginStorageRoot, 'catalog-plugin')
+    mkdirSync(join(pluginRoot, '.agenc-plugin'), { recursive: true })
+    mkdirSync(join(pluginRoot, 'agents'), { recursive: true })
+    mkdirSync(workspace, { recursive: true })
+    writeFileSync(
+      join(pluginRoot, '.agenc-plugin', 'plugin.json'),
+      `${JSON.stringify({ name: 'catalog-plugin' })}\n`,
+    )
+    writeFileSync(
+      join(pluginRoot, 'agents', 'review.md'),
+      [
+        '---',
+        'name: review',
+        'description: Review through the enabled plugin',
+        '---',
+        'Plugin-owned review prompt.',
+      ].join('\n'),
+    )
+    __setMarkdownAgentDirsForTesting([])
+
+    const storeA = new ConfigStore({
+      home,
+      cwd: workspace,
+      projectRoot: workspace,
+      projectTrusted: false,
+      base: { plugins: { enabled: true } },
+      env: {},
+    })
+    const storeB = new ConfigStore({
+      home,
+      cwd: workspace,
+      projectRoot: workspace,
+      projectTrusted: false,
+      base: { plugins: { enabled: false } },
+      env: {},
+    })
+    await Promise.all([storeA.reload(), storeB.reload()])
+
+    const load = (store: ConfigStore) =>
+      runWithCanonicalSettingsAuthority(store, () =>
+        loadFreshAgentDefinitions(workspace, pluginStorageRoot),
+      )
+    const [catalogA, catalogB, catalogAAgain] = await Promise.all([
+      load(storeA),
+      load(storeB),
+      load(storeA),
+    ])
+    const types = (catalog: Awaited<ReturnType<typeof load>>) =>
+      catalog.activeAgents.map(definition => definition.agentType)
+
+    expect(types(catalogA)).toContain('catalog-plugin:review')
+    expect(types(catalogB)).not.toContain('catalog-plugin:review')
+    expect(types(catalogAAgain)).toContain('catalog-plugin:review')
+
+    writeFileSync(
+      join(pluginRoot, 'agents', 'review.md'),
+      [
+        '---',
+        'name: review',
+        'description: Review through the refreshed plugin',
+        '---',
+        'Refreshed plugin-owned review prompt.',
+      ].join('\n'),
+    )
+    const refreshedA = await load(storeA)
+    const refreshedAgent = refreshedA.activeAgents.find(
+      definition => definition.agentType === 'catalog-plugin:review',
+    )
+    expect(refreshedAgent?.whenToUse).toBe(
+      'Review through the refreshed plugin',
+    )
+    expect(refreshedAgent?.getSystemPrompt()).toBe(
+      'Refreshed plugin-owned review prompt.',
+    )
+  })
+
+  test('keeps only managed and plugin agents under strict plugin-only policy', async () => {
+    const root = tempWorkspaceRoot('strict-plugin-agent-authority')
+    const workspace = join(root, 'workspace')
+    const home = join(root, 'home')
+    const pluginStorageRoot = join(home, 'plugins')
+    const pluginRoot = join(pluginStorageRoot, 'trusted-plugin')
+    const managedConfigPath = join(root, 'managed', 'config.toml')
+    mkdirSync(join(workspace, '.agenc', 'agents'), { recursive: true })
+    mkdirSync(join(home, 'agents'), { recursive: true })
+    mkdirSync(join(pluginRoot, '.agenc-plugin'), { recursive: true })
+    mkdirSync(join(pluginRoot, 'agents'), { recursive: true })
+    mkdirSync(join(root, 'managed'), { recursive: true })
+    writeFileSync(
+      join(workspace, '.agenc', 'agents', 'project.md'),
+      `---\nname: project-agent\ndescription: Project role\n---\nProject prompt.\n`,
+    )
+    writeFileSync(
+      join(home, 'agents', 'user.md'),
+      `---\nname: user-agent\ndescription: User role\n---\nUser prompt.\n`,
+    )
+    writeFileSync(
+      join(pluginRoot, '.agenc-plugin', 'plugin.json'),
+      `${JSON.stringify({ name: 'trusted-plugin' })}\n`,
+    )
+    writeFileSync(
+      join(pluginRoot, 'agents', 'review.md'),
+      `---\nname: review\ndescription: Trusted plugin role\n---\nPlugin prompt.\n`,
+    )
+    writeFileSync(
+      managedConfigPath,
+      `config_version = 2\nstrictPluginOnlyCustomization = ["agents"]\n`,
+      { mode: 0o600 },
+    )
+    chmodSync(managedConfigPath, 0o600)
+    const store = new ConfigStore({
+      home,
+      cwd: workspace,
+      projectRoot: workspace,
+      projectTrusted: true,
+      managedConfigPath,
+      managedDropInDir: join(root, 'managed', 'config.d'),
+      base: { plugins: { enabled: true } },
+      env: { AGENC_HOME: home },
+    })
+    await store.reload()
+
+    const catalog = await runWithCanonicalSettingsAuthority(store, () =>
+      loadFreshAgentDefinitions(workspace, pluginStorageRoot),
+    )
+    const types = catalog.activeAgents.map(definition => definition.agentType)
+
+    expect(types).toContain('trusted-plugin:review')
+    expect(types).not.toContain('project-agent')
+    expect(types).not.toContain('user-agent')
+    expect(catalog.activeAgents).toEqual(
+      expect.arrayContaining([expect.objectContaining({ source: 'built-in' })]),
+    )
+  })
+
+  test('reports plugin discovery failures in the canonical catalog', async () => {
+    const root = tempWorkspaceRoot('plugin-agent-errors')
+    const workspace = join(root, 'workspace')
+    const home = join(root, 'home')
+    const pluginStorageRoot = join(home, 'plugins')
+    const pluginRoot = join(pluginStorageRoot, 'broken-plugin')
+    mkdirSync(join(pluginRoot, '.agenc-plugin'), { recursive: true })
+    mkdirSync(workspace, { recursive: true })
+    writeFileSync(
+      join(pluginRoot, '.agenc-plugin', 'plugin.json'),
+      '{ invalid json',
+    )
+    __setMarkdownAgentDirsForTesting([])
+    const store = new ConfigStore({
+      home,
+      cwd: workspace,
+      projectRoot: workspace,
+      projectTrusted: false,
+      base: { plugins: { enabled: true } },
+      env: {},
+    })
+    await store.reload()
+
+    const catalog = await runWithCanonicalSettingsAuthority(store, () =>
+      loadFreshAgentDefinitions(workspace, pluginStorageRoot),
+    )
+
+    expect(catalog.failedFiles).toEqual([
+      expect.objectContaining({
+        path: join(pluginRoot, '.agenc-plugin', 'plugin.json'),
+      }),
+    ])
   })
 
   test('renders full AgentTool guidance for non-coordinator prompts', async () => {

@@ -30,7 +30,7 @@ import {
   readNativeSecureStorage,
   updateNativeSecureStorage,
 } from './secureStorage/native.js'
-import { nativeVaultIdentityKey } from './secureStorage/home.js'
+import { secureStorageIdentityKey } from './secureStorage/home.js'
 
 export const XAI_OAUTH_STORAGE_KEY = 'xaiOauth' as const
 
@@ -56,7 +56,7 @@ export type XaiOauthCredentialBlob = {
 type StorageShape = { xaiOauth?: XaiOauthCredentialBlob } & Record<string, unknown>
 
 /**
- * Secure-storage reads invoke the platform vault adapter, and the grok
+ * Secure-storage reads invoke the platform adapter, and the grok
  * credential fallback sits on provider-resolution
  * paths that run often. A short TTL cache keeps those paths cheap;
  * save/clear update it immediately and the refresh path bypasses it.
@@ -75,7 +75,7 @@ function readXaiOauthCredentialsFresh(
     const data = readNativeSecureStorage(home) as StorageShape
     const blob = data?.xaiOauth
     const result = blob?.accessToken?.trim() ? blob : undefined
-    readCacheByHome.set(nativeVaultIdentityKey(home), {
+    readCacheByHome.set(secureStorageIdentityKey(home), {
       at: Date.now(),
       blob: result,
     })
@@ -88,7 +88,7 @@ function readXaiOauthCredentialsFresh(
 export function readXaiOauthCredentials(
   home: HomeContext,
 ): XaiOauthCredentialBlob | undefined {
-  const cached = readCacheByHome.get(nativeVaultIdentityKey(home))
+  const cached = readCacheByHome.get(secureStorageIdentityKey(home))
   if (cached !== undefined && Date.now() - cached.at < READ_CACHE_TTL_MS) {
     return cached.blob
   }
@@ -133,7 +133,7 @@ export function saveXaiOauthCredentials(
       current => ({ ...current, [XAI_OAUTH_STORAGE_KEY]: blob }),
       'Native secure storage is unavailable; xAI OAuth credentials were not saved.',
     )
-    readCacheByHome.set(nativeVaultIdentityKey(home), {
+    readCacheByHome.set(secureStorageIdentityKey(home), {
       at: Date.now(),
       blob,
     })
@@ -159,7 +159,7 @@ export function clearXaiOauthCredentials(
       },
       'Native secure storage is unavailable; xAI OAuth credentials were not cleared.',
     )
-    readCacheByHome.set(nativeVaultIdentityKey(home), {
+    readCacheByHome.set(secureStorageIdentityKey(home), {
       at: Date.now(),
       blob: undefined,
     })
@@ -223,7 +223,7 @@ const inflightRefreshByHome = new Map<
 export function forceRefreshXaiOauthCredentials(home: HomeContext): Promise<
   XaiOauthCredentialBlob | undefined
 > {
-  const vaultIdentity = nativeVaultIdentityKey(home)
+  const vaultIdentity = secureStorageIdentityKey(home)
   const existing = inflightRefreshByHome.get(vaultIdentity)
   if (existing) return existing
   const pending = doRefresh(home).finally(() => {
@@ -386,12 +386,12 @@ function compareAndSetXaiOauthCredentials(
     'Native secure storage is unavailable; xAI OAuth refresh state was not saved.',
   )
   if (written) {
-    readCacheByHome.set(nativeVaultIdentityKey(home), {
+    readCacheByHome.set(secureStorageIdentityKey(home), {
       at: Date.now(),
       blob: replacement,
     })
   } else {
-    readCacheByHome.set(nativeVaultIdentityKey(home), {
+    readCacheByHome.set(secureStorageIdentityKey(home), {
       at: Date.now(),
       blob: observed,
     })
