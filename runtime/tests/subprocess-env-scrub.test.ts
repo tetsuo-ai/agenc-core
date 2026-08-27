@@ -27,6 +27,8 @@ const SECRETS: Record<string, string> = {
   AZURE_CLIENT_CERTIFICATE_PATH: '/tmp/client-certificate.pem',
   ALL_INPUTS: '{"token":"secret"}',
   SSH_SIGNING_KEY: '/tmp/signing-key',
+  WEB_KEY: 'web-secret',
+  AGENC_CLIENT_KEY_PASSPHRASE: 'client-key-secret',
 }
 
 const TOUCHED_KEYS = [

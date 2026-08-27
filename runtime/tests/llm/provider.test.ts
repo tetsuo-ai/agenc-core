@@ -151,6 +151,18 @@ describe("createProvider", () => {
     expect(internal.config.env.AGENC_GROK_ACP_PERMISSIONS).toBeUndefined();
     expect(internal.config.allowPermissions).toBeUndefined();
     expect(internal.resolveBinary()).toBeUndefined();
+    const returnedEnvironment = (
+      readProviderFactoryOptions(provider).extra?.grokAcp as {
+        environment: NodeJS.ProcessEnv;
+      }
+    ).environment;
+    expect(returnedEnvironment.PATH).toBe("/client/bin");
+    expect(Object.isFrozen(returnedEnvironment)).toBe(true);
+    try {
+      returnedEnvironment.PATH = "/tampered/bin";
+    } catch {
+      // Frozen snapshots throw in strict mode and remain unchanged everywhere.
+    }
     expect(
       (
         readProviderFactoryOptions(provider).extra?.grokAcp as {

@@ -900,6 +900,8 @@ function cloneProviderFactoryOptions(
                 ? value
                 : key === "gemini"
                   ? parseGeminiRuntimeOptions(value)
+                  : key === "grokAcp"
+                    ? readGrokAcpRuntimeExtra(value)
                   : cloneExtraValue(value),
             ]),
           ),
@@ -1005,7 +1007,8 @@ function readGrokAcpRuntimeExtra(
     return undefined;
   }
   const record = { ...value } as Record<string, unknown>;
-  const runtime = {
+  const environment = readStringRecord(record, "environment");
+  const runtime = Object.freeze({
     ...(readString(record, "binaryPath") !== undefined
       ? { binaryPath: readString(record, "binaryPath") }
       : {}),
@@ -1015,10 +1018,10 @@ function readGrokAcpRuntimeExtra(
     ...(readString(record, "path") !== undefined
       ? { path: readString(record, "path") }
       : {}),
-    ...(readStringRecord(record, "environment") !== undefined
-      ? { environment: readStringRecord(record, "environment") }
+    ...(environment !== undefined
+      ? { environment: Object.freeze(environment) }
       : {}),
-  };
+  });
   return Object.keys(runtime).length > 0 ? runtime : undefined;
 }
 

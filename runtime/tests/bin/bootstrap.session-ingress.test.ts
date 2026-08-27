@@ -124,6 +124,8 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
       LANG: "en_CA.UTF-8",
       OPENAI_API_KEY: "must-not-reach-child",
       GITHUB_TOKEN: "must-not-reach-child",
+      WEB_KEY: "must-not-reach-child",
+      AGENC_CLIENT_KEY_PASSPHRASE: "must-not-reach-child",
       PUBLIC_SENTINEL: "preserved",
     };
     delete sessionEnvironment.AGENC_GROK_CLI;
@@ -160,6 +162,10 @@ describe("bootstrapLocalRuntimeSession session-ingress startup wiring", () => {
       ).toBeUndefined();
       expect(grokAcp?.environment?.OPENAI_API_KEY).toBeUndefined();
       expect(grokAcp?.environment?.GITHUB_TOKEN).toBeUndefined();
+      expect(grokAcp?.environment?.WEB_KEY).toBeUndefined();
+      expect(
+        grokAcp?.environment?.AGENC_CLIENT_KEY_PASSPHRASE,
+      ).toBeUndefined();
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */
