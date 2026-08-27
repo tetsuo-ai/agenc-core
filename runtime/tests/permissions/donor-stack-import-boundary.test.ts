@@ -33,7 +33,6 @@ const BASELINE: readonly string[] = [
   "services/api/anthropic.ts",
   "services/api/logging.ts",
   "services/api/promptCacheBreakDetection.ts",
-  "skills/bundledSkills.ts",
   "tasks/InProcessTeammateTask/types.ts",
   "tools/AgentTool/agentToolUtils.ts",
   "tools/BashTool/bashCommandHelpers.ts",

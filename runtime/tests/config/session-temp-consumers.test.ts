@@ -10,8 +10,8 @@ import {
   runWithAgentRuntimeOptions,
 } from "../../src/session/runtime-options.js";
 import { loadLocalSkillsSnapshot } from "../../src/skills/local-loader.js";
+import { getCurrentBundledSkillExtractionRoot } from "../../src/skills/bundled-root-authority.js";
 import { materializeRipgrepIgnoreFiles } from "../../src/tools/system/ripgrep-ignore-snapshot.js";
-import { getBundledSkillsRoot } from "../../src/utils/permissions/filesystem.js";
 import { createPrivateTempFile } from "../../src/utils/tempfile.js";
 
 const roots: string[] = [];
@@ -91,7 +91,7 @@ describe("session temp consumers", () => {
       runWithAgentRuntimeOptions(
         resolveAgentRuntimeOptions({}, { sessionTempRoot: root }),
         async () => {
-          const canonicalRoot = getBundledSkillsRoot();
+          const canonicalRoot = getCurrentBundledSkillExtractionRoot();
           const snapshot = await loadLocalSkillsSnapshot({
             agencHome: join(root, "home"),
             workspaceRoot: join(root, "workspace"),

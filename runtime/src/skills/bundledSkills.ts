@@ -1,12 +1,12 @@
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/index.mjs'
 import type { ToolUseContext } from '../tools/Tool.js'
 import type { Command } from '../types/command.js'
-import { getBundledSkillsRoot } from '../utils/permissions/filesystem.js'
 import type { HooksSettings } from '../schemas/hooks.js'
 import {
   extractBundledSkillFiles,
   getBundledSkillDirectory,
 } from './bundled-extraction-registry.js'
+import { getCurrentBundledSkillExtractionRoot } from './bundled-root-authority.js'
 // Pure data (type-only back-reference to this module — no runtime cycle).
 import { AGENC_MARKETPLACE_KIT_INSTALLER_SKILL } from './bundled/agencMarketplaceKitInstaller.js'
 import { BROWSER_AUTOMATION_SKILL } from './bundled/browserAutomation.js'
@@ -63,7 +63,7 @@ export function registerBundledSkill(definition: BundledSkillDefinition): void {
   if (hasFiles) {
     const inner = definition.getPromptForCommand
     getPromptForCommand = async (args, ctx) => {
-      const root = getBundledSkillsRoot()
+      const root = getCurrentBundledSkillExtractionRoot()
       const extractedDir = await extractBundledSkillFiles(
         root,
         definition.name,
@@ -125,7 +125,10 @@ export function clearBundledSkills(): void {
  * Deterministic extraction directory for a bundled skill's reference files.
  */
 export function getBundledSkillExtractDir(skillName: string): string {
-  return getBundledSkillDirectory(getBundledSkillsRoot(), skillName)
+  return getBundledSkillDirectory(
+    getCurrentBundledSkillExtractionRoot(),
+    skillName,
+  )
 }
 
 function prependBaseDir(

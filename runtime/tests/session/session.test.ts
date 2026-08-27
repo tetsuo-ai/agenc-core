@@ -94,8 +94,8 @@ import {
   clearSessionReadState,
   recordSessionRead,
 } from "../tools/system/filesystem.js";
-import { getBundledSkillsRoot } from "../utils/permissions/filesystem.js";
 import { extractBundledSkillFiles } from "../skills/bundled-extraction-registry.js";
+import { getCurrentBundledSkillExtractionRoot } from "../skills/bundled-root-authority.js";
 import { ConfigStore } from "../config/store.js";
 import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 
@@ -2479,7 +2479,7 @@ describe("Session.shutdown dispatches SessionEnd hooks", () => {
     const first = buildSession({ services: { runtimeOptions } });
     const second = buildSession({ services: { runtimeOptions } });
     const bundledRoot = runWithAgentRuntimeOptions(runtimeOptions, () =>
-      getBundledSkillsRoot(),
+      getCurrentBundledSkillExtractionRoot(),
     );
 
     try {

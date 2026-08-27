@@ -35,7 +35,7 @@ function context(
 describe('checkReadPermissionForTool under bypassPermissions', () => {
   let root = ''
   // MACRO is an esbuild build-time define, undefined under vitest. The
-  // auto-allow case reaches getBundledSkillsRoot() which dereferences
+  // auto-allow case resolves the bundled-skill registry, which dereferences
   // MACRO.VERSION, so define a stand-in to keep that path from throwing
   // `ReferenceError: MACRO is not defined`.
   const hadMacro = 'MACRO' in globalThis

@@ -18,7 +18,7 @@ import {
   getSessionTempNamespaceName,
   resolveSessionTempRoot,
 } from '../../session/runtime-options.js'
-import { getBundledSkillExtractionRoot } from '../../skills/bundled-extraction-registry.js'
+import { getCurrentBundledSkillExtractionRoot } from '../../skills/bundled-root-authority.js'
 import { getAgentMemoryAuthorization } from '../agentContext.js'
 import {
   AGENC_FOLDER_PERMISSION_PATTERN,
@@ -357,26 +357,6 @@ export function getAgenCTempDir(): string {
   const resolved = join(resolvedBaseTmpDir, getSessionTempNamespaceName()) + sep
   agencTempDirs.set(baseTmpDir, resolved)
   return resolved
-}
-
-/**
- * Root for bundled-skill file extraction (see bundledSkills.ts).
- *
- * SECURITY: The per-temp-authority random nonce is the load-bearing defense.
- * Every other path component (VERSION, skill name, file keys) is public
- * knowledge, so without it a local attacker can pre-create the tree on a
- * shared /tmp — sticky bit prevents deletion, not creation — and either
- * symlink an intermediate directory (O_NOFOLLOW only checks the final
- * component) or own a parent dir and swap file contents post-write for prompt
- * injection via the read allowlist. diskOutput.ts gets the same property from
- * the session-ID UUID in its path.
- *
- * The shared extraction registry keeps this stable for a captured session temp
- * root, bounds ownerless CLI entries, and removes Session-owned roots after the
- * final owner shuts down.
- */
-export function getBundledSkillsRoot(): string {
-  return getBundledSkillExtractionRoot(resolveSessionTempRoot())
 }
 
 /**
@@ -1911,11 +1891,10 @@ export function checkReadableInternalPath(
   }
 
   // Bundled skill reference files extracted on first invocation.
-  // SECURITY: See getBundledSkillsRoot() — the per-root nonce in the path
-  // is the load-bearing defense; uid/VERSION alone are public knowledge and
-  // squattable. We always write-before-read on invocation, so content under
-  // this subtree is harness-controlled.
-  const bundledSkillsRoot = getBundledSkillsRoot() + sep
+  // The canonical bundled-root authority includes a per-root nonce. The uid
+  // and VERSION are public, so they cannot safely authorize a shared temp path
+  // on their own. Invocation always writes before reading this subtree.
+  const bundledSkillsRoot = getCurrentBundledSkillExtractionRoot() + sep
   if (normalizedPath.startsWith(bundledSkillsRoot)) {
     return {
       behavior: 'allow',
