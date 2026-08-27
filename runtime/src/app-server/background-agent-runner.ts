@@ -6388,6 +6388,10 @@ const CANONICAL_CORE_SESSION_EVENT_TYPES: ReadonlySet<string> = new Set([
   "run_suspended",
   "run_resumed",
   "run_cancel_requested",
+  // Runtime selections (including permissionMode) are canonical run state.
+  // Live clients must observe the exact sequenced record so their state can
+  // reconcile with run.replay after reconnect.
+  "run_runtime_settings_changed",
 ]);
 
 export function daemonEventFromUnboundSessionEvent(event: {

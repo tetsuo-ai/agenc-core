@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { daemonEventFromUnboundSessionEvent } from "../../src/app-server/background-agent-runner.js";
+import {
+  daemonEventFromUnboundSessionEvent,
+  notificationFromDaemonEvent,
+} from "../../src/app-server/background-agent-runner.js";
 
 // Live-bridge coverage for session events the PhaseEvent pipeline does not
 // carry. token_count and the tool_input_* streaming family are persisted to
@@ -119,6 +122,69 @@ describe("daemon live bridge for usage and tool-input events", () => {
           "lmstudio: AdmissionDeniedError: execution admission deny: context_window_exceeded",
       },
     });
+  });
+
+  it("forwards sequenced runtime settings so live clients observe permission mode", () => {
+    const daemonEvent = daemonEventFromUnboundSessionEvent({
+      eventId: "run-runtime-settings:run-1:3:change-1",
+      id: "run-runtime-settings:run-1:3:change-1",
+      seq: 31,
+      msg: {
+        type: "run_runtime_settings_changed",
+        payload: {
+          runId: "run-1",
+          epoch: 3,
+          permissionMode: "plan",
+          prePlanMode: "bypassPermissions",
+          autoModeActive: false,
+          reason: "permission_mode_changed",
+        },
+      },
+    });
+
+    expect(daemonEvent).toEqual({
+      id: "run-runtime-settings:run-1:3:change-1",
+      eventId: "run-runtime-settings:run-1:3:change-1",
+      sequence: 31,
+      type: "run_runtime_settings_changed",
+      payload: {
+        runId: "run-1",
+        epoch: 3,
+        permissionMode: "plan",
+        prePlanMode: "bypassPermissions",
+        autoModeActive: false,
+        reason: "permission_mode_changed",
+      },
+    });
+    if (daemonEvent === null) throw new Error("expected bridged daemon event");
+    expect(
+      notificationFromDaemonEvent("session-1", "agent-1", daemonEvent),
+    ).toMatchObject({
+      method: "event.session_event",
+      params: {
+        sessionId: "session-1",
+        agentId: "agent-1",
+        eventId: "run-runtime-settings:run-1:3:change-1",
+        sequence: 31,
+        event: {
+          type: "run_runtime_settings_changed",
+          payload: { permissionMode: "plan" },
+        },
+      },
+    });
+  });
+
+  it("does not synthesize coordinates for runtime settings events", () => {
+    expect(
+      daemonEventFromUnboundSessionEvent({
+        eventId: "run-runtime-settings:unsequenced",
+        id: "run-runtime-settings:unsequenced",
+        msg: {
+          type: "run_runtime_settings_changed",
+          payload: { permissionMode: "plan" },
+        },
+      }),
+    ).toBeNull();
   });
 
   it("still drops malformed tool_input payloads", () => {
