@@ -262,7 +262,10 @@ describe("hermetic test discovery", () => {
     );
     expect(bubblewrapSource).toContain("new SandboxExecutionBroker({");
     expect(bubblewrapSource).toContain("const status = broker.status()");
-    expect(bubblewrapSource).toContain('broker.prepareSpawn("tool"');
+    expect(bubblewrapSource).toContain('.prepareSpawn("tool"');
+    expect(
+      bubblewrapSource.match(/\.run\(async \(command\) =>/gu),
+    ).toHaveLength(2);
     expect(bubblewrapSource).toContain("agenc-native-userns (unconfined)");
     expect(bubblewrapSource).toContain(
       "tcpRoundTrip(address.port, baselineToken)",
