@@ -331,6 +331,7 @@ autostart = true
     host.recordDaemon(5300);
     await writeAgenCDaemonPid(pidPath, 5300);
     const connectedPids: number[] = [];
+    const identityPublicationBarrier = vi.fn();
 
     await expect(
       ensureAgenCDaemonAutostart({
@@ -339,6 +340,7 @@ autostart = true
         connect: ({ pid }) => {
           connectedPids.push(pid);
         },
+        identityPublicationBarrier,
       }),
     ).resolves.toEqual({
       pid: 5300,
@@ -349,6 +351,10 @@ autostart = true
     });
     expect(host.spawnedPids).toEqual([]);
     expect(connectedPids).toEqual([5300]);
+    expect(identityPublicationBarrier).toHaveBeenCalledOnce();
+    await expect(
+      lstat(join(agencHome, "daemon-lifecycle.lock.sqlite")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
 
     await rm(agencHome, { recursive: true, force: true });
   });

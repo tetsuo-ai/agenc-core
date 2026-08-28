@@ -273,41 +273,51 @@ async function ensureAgenCDaemonAutostartCycle(
     // numeric PID as the daemon: bind the sidecar to the authenticated socket
     // and stable process identity, then repair the pid file while the lifecycle
     // transaction excludes a concurrent publisher.
-    await withAgenCDaemonLifecycleLock(host, async () => {
-      pid = await readAgenCDaemonPid(pidPath);
-      const sidecarIdentity = daemonInstanceIdentityFromRuntimeInfo(
-        readDaemonRuntimeInfo(runtimeInfoPath),
-      );
-      if (
-        pid !== null &&
-        host.isPidRunning(pid) &&
-        sidecarIdentity !== null &&
-        sidecarIdentity.pid !== pid
-      ) {
-        const stalePid = pid;
-        const rebound = await proveRecordedAgenCDaemonInstance({
-          expectedPid: sidecarIdentity.pid,
-          pidPath,
-          runtimeInfoPath,
-          host,
-          options,
-        });
-        const sidecarNow = daemonInstanceIdentityFromRuntimeInfo(
+    const initialSidecarIdentity = daemonInstanceIdentityFromRuntimeInfo(
+      readDaemonRuntimeInfo(runtimeInfoPath),
+    );
+    if (
+      pid === null ||
+      !host.isPidRunning(pid) ||
+      initialSidecarIdentity === null ||
+      initialSidecarIdentity.pid !== pid
+    ) {
+      await withAgenCDaemonLifecycleLock(host, async () => {
+        pid = await readAgenCDaemonPid(pidPath);
+        const sidecarIdentity = daemonInstanceIdentityFromRuntimeInfo(
           readDaemonRuntimeInfo(runtimeInfoPath),
         );
         if (
-          rebound !== null &&
-          (await readAgenCDaemonPid(pidPath)) === stalePid &&
-          sidecarNow !== null &&
-          sameAgenCDaemonInstanceIdentity(rebound.identity, sidecarNow)
+          pid !== null &&
+          host.isPidRunning(pid) &&
+          sidecarIdentity !== null &&
+          sidecarIdentity.pid !== pid
         ) {
-          await writeAgenCDaemonPid(pidPath, rebound.identity.pid);
-          pid = rebound.identity.pid;
-        } else {
-          pid = await readAgenCDaemonPid(pidPath);
+          const stalePid = pid;
+          const rebound = await proveRecordedAgenCDaemonInstance({
+            expectedPid: sidecarIdentity.pid,
+            pidPath,
+            runtimeInfoPath,
+            host,
+            options,
+          });
+          const sidecarNow = daemonInstanceIdentityFromRuntimeInfo(
+            readDaemonRuntimeInfo(runtimeInfoPath),
+          );
+          if (
+            rebound !== null &&
+            (await readAgenCDaemonPid(pidPath)) === stalePid &&
+            sidecarNow !== null &&
+            sameAgenCDaemonInstanceIdentity(rebound.identity, sidecarNow)
+          ) {
+            await writeAgenCDaemonPid(pidPath, rebound.identity.pid);
+            pid = rebound.identity.pid;
+          } else {
+            pid = await readAgenCDaemonPid(pidPath);
+          }
         }
-      }
-    });
+      });
+    }
 
     let respawnReason: string | null = null;
     if (pid !== null && !host.isPidRunning(pid)) {
