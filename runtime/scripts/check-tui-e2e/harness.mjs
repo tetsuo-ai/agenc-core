@@ -864,7 +864,12 @@ export class TuiSession {
    * Bytes-stopped is robust across all of those: the TUI keeps repainting
    * footer/spinner/streaming bytes while busy and goes quiet when idle.
    */
-  async waitForIdle({ idleWindow = 1200, timeout = 30_000 } = {}) {
+  async waitForIdle({
+    idleWindow = 1200,
+    timeout = 30_000,
+    requireRenderedFrame = false,
+  } = {}) {
+    const waitLabel = requireRenderedFrame ? "waitForPrompt" : "waitForIdle";
     const start = Date.now();
     let lastSize = this.buffer.length;
     let stableSince = Date.now();
@@ -872,7 +877,10 @@ export class TuiSession {
       this.throwIfAborted();
       if (this.buffer.length === lastSize) {
         const frame = this.latestFrame;
-        if (frameLooksBusy(frame)) {
+        if (
+          frameLooksBusy(frame) ||
+          (requireRenderedFrame && frame.trim().length === 0)
+        ) {
           stableSince = Date.now();
         } else if (Date.now() - stableSince >= idleWindow) {
           this.watermark = this.buffer.length;
@@ -884,20 +892,20 @@ export class TuiSession {
       }
       if (this.exited) {
         throw new Error(
-          `waitForIdle: TUI exited before idle (code=${this.exitInfo?.exitCode}, signal=${this.exitInfo?.signal})`,
+          `${waitLabel}: TUI exited before idle (code=${this.exitInfo?.exitCode}, signal=${this.exitInfo?.signal})`,
         );
       }
       await sleep(100);
     }
-    throw new Error(`waitForIdle: timeout after ${timeout}ms`);
+    throw new Error(`${waitLabel}: timeout after ${timeout}ms`);
   }
 
   /**
-   * Alias for `waitForIdle`. Reads more naturally in scenarios that say
-   * "wait until the TUI is back at the prompt." Same semantics.
+   * Wait for at least one rendered frame and then for the TUI to become idle.
+   * A quiet blank PTY is still starting and cannot accept scenario input.
    */
   async waitForPrompt(opts = {}) {
-    return this.waitForIdle(opts);
+    return this.waitForIdle({ ...opts, requireRenderedFrame: true });
   }
 
   /**

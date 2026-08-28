@@ -6,6 +6,7 @@ import {
   INITIAL_STATE,
   parseMultipleKeypresses,
 } from "../../../src/tui/ink/parse-keypress.js";
+import { TuiSession } from "../../../scripts/check-tui-e2e/harness.mjs";
 import {
   runEmbeddedNeovimCommand,
   waitForFrameText,
@@ -19,6 +20,19 @@ import {
 // Neovim lane covers four lower-level real-process lifecycle tests; the full
 // PTY scenario remains local, so do not treat this file as e2e coverage.
 describe("embedded Neovim BUFFER PTY gate files", () => {
+  it("does not accept a blank quiet frame as a rendered prompt", async () => {
+    const blankSession = new TuiSession();
+    await expect(
+      blankSession.waitForPrompt({ idleWindow: 0, timeout: 50 }),
+    ).rejects.toThrow("waitForPrompt: timeout after 50ms");
+
+    const renderedSession = new TuiSession();
+    renderedSession.buffer = "Describe a task…";
+    await expect(
+      renderedSession.waitForPrompt({ idleWindow: 0, timeout: 50 }),
+    ).resolves.toBeUndefined();
+  });
+
   it("reports an early TUI exit with its latest rendered frame", async () => {
     await expect(waitForFrameText(
       {
