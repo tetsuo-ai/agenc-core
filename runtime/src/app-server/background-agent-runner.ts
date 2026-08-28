@@ -2666,53 +2666,136 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     );
     await active.dispatchChain;
 
-    const dispatchResult = await runWithCurrentRuntimeSession(session, () =>
-      runWithCanonicalSettingsAuthority(
-        active.bootstrap.configStore,
-        async () => {
-          throwIfShellRequestAborted(executionSignal);
-          const turn = session.newDefaultTurnWithSubId(`shell-${eventKey}`);
-          const workspaceRoot = runtimeWorkspaceRoot(active.bootstrap);
-          if (
-            turn.cwd !== workspaceRoot ||
-            active.bootstrap.workspaceRoot !== workspaceRoot
-          ) {
-            throw new Error(
-              `Shell cwd authority mismatch for session ${params.sessionId}`,
-            );
-          }
-          const toolName =
-            resolveDefaultShell() === "powershell"
-              ? "PowerShell"
-              : "system.bash";
-          if (
-            !session.services.registry.tools.some(
-              (tool) => tool.name === toolName,
-            )
-          ) {
-            throw new Error(
-              `Configured shell ${toolName} is not available in session ${params.sessionId}`,
-            );
-          }
-          const router = routerFromRegistry(session.services.registry);
-          return router.dispatchModelToolCall(
-            {
-              id: params.commandId,
-              name: toolName,
-              arguments: JSON.stringify({ command: params.command }),
+    let startedTool:
+      | { readonly name: string; readonly turnId: string }
+      | undefined;
+    const emitToolCompletion = (
+      toolName: string,
+      completion: {
+        readonly result: string;
+        readonly isError: boolean;
+        readonly turnId: string;
+        readonly metadata?: Readonly<Record<string, unknown>>;
+      },
+    ): void => {
+      session.emit(
+        {
+          eventId: `shell-tool-result:${eventKey}`,
+          id: `shell-tool-result:${eventKey}`,
+          msg: {
+            type: "tool_call_completed",
+            payload: {
+              callId: params.commandId,
+              toolName,
+              result: completion.result,
+              isError: completion.isError,
+              metadata: {
+                ...completion.metadata,
+                toolName,
+                source: "direct",
+              },
             },
-            {
-              ...buildLiveToolDispatchOptions(turn, session, executionSignal),
-              source: "direct",
-            },
-          );
+          },
         },
-      ),
-    );
+        {
+          durable: true,
+          turnId: completion.turnId,
+          toolResultBytes: Buffer.byteLength(completion.result, "utf8"),
+        },
+      );
+    };
+    let dispatch: {
+      readonly result: ToolDispatchResult;
+      readonly toolName: string;
+      readonly turnId: string;
+    };
+    try {
+      dispatch = await runWithCurrentRuntimeSession(session, () =>
+        runWithCanonicalSettingsAuthority(
+          active.bootstrap.configStore,
+          async () => {
+            throwIfShellRequestAborted(executionSignal);
+            const turn = session.newDefaultTurnWithSubId(`shell-${eventKey}`);
+            const workspaceRoot = runtimeWorkspaceRoot(active.bootstrap);
+            if (
+              turn.cwd !== workspaceRoot ||
+              active.bootstrap.workspaceRoot !== workspaceRoot
+            ) {
+              throw new Error(
+                `Shell cwd authority mismatch for session ${params.sessionId}`,
+              );
+            }
+            const toolName =
+              resolveDefaultShell() === "powershell"
+                ? "PowerShell"
+                : "system.bash";
+            if (
+              !session.services.registry.tools.some(
+                (tool) => tool.name === toolName,
+              )
+            ) {
+              throw new Error(
+                `Configured shell ${toolName} is not available in session ${params.sessionId}`,
+              );
+            }
+            startedTool = { name: toolName, turnId: turn.subId };
+            session.emit(
+              {
+                eventId: `shell-tool-start:${eventKey}`,
+                id: params.commandId,
+                msg: {
+                  type: "tool_call_started",
+                  payload: {
+                    callId: params.commandId,
+                    toolName,
+                    args: JSON.stringify({ command: params.command }),
+                  },
+                },
+              },
+              { durable: true },
+            );
+            await active.dispatchChain;
+            const router = routerFromRegistry(session.services.registry);
+            const result = await router.dispatchModelToolCall(
+              {
+                id: params.commandId,
+                name: toolName,
+                arguments: JSON.stringify({ command: params.command }),
+              },
+              {
+                ...buildLiveToolDispatchOptions(turn, session, executionSignal),
+                source: "direct",
+              },
+            );
+            return { result, toolName, turnId: turn.subId };
+          },
+        ),
+      );
+    } catch (error) {
+      if (startedTool !== undefined) {
+        const failure = error instanceof Error ? error.message : String(error);
+        emitToolCompletion(startedTool.name, {
+          turnId: startedTool.turnId,
+          result: failure,
+          isError: true,
+        });
+        await active.dispatchChain;
+      }
+      throw error;
+    }
     const result = normalizeSessionShellResult(
       params.commandId,
-      dispatchResult,
+      dispatch.result,
     );
+    emitToolCompletion(dispatch.toolName, {
+      turnId: dispatch.turnId,
+      result: dispatch.result.content,
+      isError: dispatch.result.isError === true,
+      ...(dispatch.result.metadata !== undefined
+        ? { metadata: dispatch.result.metadata }
+        : {}),
+    });
+    await active.dispatchChain;
     const transcriptOutput =
       `<bash-stdout>${escapeXml(result.stdout)}</bash-stdout>` +
       `<bash-stderr>${escapeXml(result.stderr)}</bash-stderr>`;

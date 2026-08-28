@@ -1337,8 +1337,164 @@ describe("AgenC delegate background-agent runner", () => {
     expect(shell.preHook).toHaveBeenCalledOnce();
     expect(shell.postHook).toHaveBeenCalledOnce();
     expect(shell.subscribeToModeChange).toHaveBeenCalledOnce();
+    const canonicalToolEvents = (
+      vi.mocked(harness.session.emit).mock.calls as unknown as Array<
+        readonly [
+          {
+            readonly msg?: {
+              readonly type?: unknown;
+              readonly payload?: Readonly<Record<string, unknown>>;
+            };
+          },
+          unknown?,
+        ]
+      >
+    )
+      .map(([event, options]) => ({ msg: event.msg, options }))
+      .filter(({ msg }) =>
+        msg?.type === "tool_call_started" ||
+        msg?.type === "tool_call_completed",
+      );
+    expect(canonicalToolEvents).toEqual([
+      {
+        msg: {
+          type: "tool_call_started",
+          payload: expect.objectContaining({
+            callId: "shell-authorities-1",
+            toolName: "PowerShell",
+          }),
+        },
+        options: { durable: true },
+      },
+      {
+        msg: {
+          type: "tool_call_completed",
+          payload: expect.objectContaining({
+            callId: "shell-authorities-1",
+            toolName: "PowerShell",
+            result: "shell content",
+            isError: false,
+            metadata: expect.objectContaining({ toolName: "PowerShell" }),
+          }),
+        },
+        options: {
+          durable: true,
+          turnId: expect.stringMatching(/^shell-/u),
+          toolResultBytes: Buffer.byteLength("shell content", "utf8"),
+        },
+      },
+    ]);
+    const durableShellEvents = harness.rolloutItems.flatMap((item) => {
+      const payload = (item as {
+        readonly type?: unknown;
+        readonly payload?: {
+          readonly msg?: {
+            readonly type?: unknown;
+            readonly payload?: Readonly<Record<string, unknown>>;
+          };
+        };
+      });
+      if (payload.type !== "event_msg" || payload.payload?.msg === undefined) {
+        return [];
+      }
+      const message = payload.payload.msg;
+      if (
+        message.type !== "user_message" &&
+        message.type !== "tool_call_started" &&
+        message.type !== "tool_call_completed"
+      ) {
+        return [];
+      }
+      const callId = message.payload?.callId;
+      const queuedCommandUuid = message.payload?.queuedCommandUuid;
+      return callId === "shell-authorities-1" ||
+        queuedCommandUuid === "shell-authorities-1"
+        ? [message]
+        : [];
+    });
+    expect(durableShellEvents.map(event => event.type)).toEqual([
+      "user_message",
+      "tool_call_started",
+      "tool_call_completed",
+      "user_message",
+    ]);
     expect(harness.stub.thread.submit).not.toHaveBeenCalled();
     expect(harness.control.sendInput).not.toHaveBeenCalled();
+  });
+
+  it("[managed-thread] durably closes direct shell state when dispatch rejects after start", async () => {
+    const agentId = "session-direct-shell-dispatch-rejection";
+    const harness = makeTopLevelRunner({
+      conversationId: agentId,
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    const shell = configureSessionShellHarness(harness);
+    await harness.runner.startAgent({
+      objective: "deferred direct shell",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
+    const registeredTools = shell.registry.tools;
+    let toolReads = 0;
+    Object.defineProperty(shell.registry, "tools", {
+      configurable: true,
+      get: () => {
+        toolReads += 1;
+        if (toolReads === 1) return registeredTools;
+        throw new Error("injected router construction failure");
+      },
+    });
+
+    await expect(
+      harness.runner.executeAgentShell(agentId, {
+        sessionId: agentId,
+        commandId: "shell-dispatch-rejection-1",
+        command: "printf never-dispatched",
+      }),
+    ).rejects.toThrow("injected router construction failure");
+
+    const lifecycle = harness.rolloutItems.flatMap((item) => {
+      const message = (item as {
+        readonly type?: unknown;
+        readonly payload?: {
+          readonly msg?: {
+            readonly type?: unknown;
+            readonly payload?: Readonly<Record<string, unknown>>;
+          };
+        };
+      }).payload?.msg;
+      return message?.payload?.callId === "shell-dispatch-rejection-1" &&
+        (message.type === "tool_call_started" ||
+          message.type === "tool_call_completed")
+        ? [message]
+        : [];
+    });
+    expect(lifecycle).toEqual([
+      expect.objectContaining({
+        type: "tool_call_started",
+        payload: expect.objectContaining({
+          callId: "shell-dispatch-rejection-1",
+          toolName: "system.bash",
+        }),
+      }),
+      expect.objectContaining({
+        type: "tool_call_completed",
+        payload: expect.objectContaining({
+          callId: "shell-dispatch-rejection-1",
+          toolName: "system.bash",
+          result: "injected router construction failure",
+          isError: true,
+        }),
+      }),
+    ]);
+    expect(shell.bashExecute).not.toHaveBeenCalled();
   });
 
   it("[managed-thread] denies direct shell while Editor owns the workspace", async () => {
