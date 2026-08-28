@@ -24,6 +24,7 @@ import { describe, expect, test } from "vitest";
 import { publishBenchmarkArtifacts } from "../../benchmarks/fnd/artifact-output.mjs";
 import { readBoundedRegularFile } from "../../benchmarks/fnd/bounded-file.mjs";
 import {
+  BENCHMARK_PLAN,
   BENCHMARK_WORKER_COMPLETION_PREFIX,
   normalizeResourceUsageMaxRssBytes,
   summarizeSamples,
@@ -74,6 +75,13 @@ import {
 const RUNTIME_ROOT = join(import.meta.dirname, "../..");
 const RUNNER_PATH = join(RUNTIME_ROOT, "benchmarks/fnd/run-baselines.mjs");
 const CASE_WORKER_PATH = join(RUNTIME_ROOT, "benchmarks/fnd/case-worker.mjs");
+const COMPLETED_BENCHMARK_CASES = BENCHMARK_PLAN.cases
+  .filter(({ expectedTermination }) => expectedTermination === "completed")
+  .map(({ id: benchmarkCase, timeoutMs }) => ({ benchmarkCase, timeoutMs }));
+const COMPLETED_BENCHMARK_TEST_TIMEOUT_MS =
+  Math.max(...COMPLETED_BENCHMARK_CASES.map(({ timeoutMs }) => timeoutMs)) +
+  CHILD_TERMINATION_SETTLEMENT_TIMEOUT_MS +
+  5_000;
 const NPM_CLI_BOUNDARY_PROBE_TIMEOUT_MS = 15_000;
 // The Windows-native lane runs this fixture alongside process and ACL probes;
 // keep setup bounded while allowing for hosted process-startup contention.
@@ -1046,12 +1054,9 @@ describe("FND benchmark harness fault contracts", () => {
     expect(existsSync(temporaryRoot!)).toBe(false);
   });
 
-  test.each([
-    "patch_delete_parser_historical_comparison",
-    "csv_scheduler_progress_scan",
-  ] as const)(
-    "holds an authenticated completed %s worker until contained teardown",
-    async (benchmarkCase) => {
+  test.each(COMPLETED_BENCHMARK_CASES)(
+    "holds an authenticated completed $benchmarkCase worker until contained teardown",
+    async ({ benchmarkCase, timeoutMs }) => {
       await withOwnedTemporaryRoot(async (ownedRoot) => {
         const workerRoot =
           benchmarkCase === "csv_scheduler_progress_scan" &&
@@ -1093,7 +1098,7 @@ describe("FND benchmark harness fault contracts", () => {
           env: workerEnvironment,
           expectedCompletionRecord: `${BENCHMARK_WORKER_COMPLETION_PREFIX}${completionNonce}`,
           maxOutputBytes: 1_048_576,
-          timeoutMs: 10_000,
+          timeoutMs,
         });
         expect(result.timedOut).toBe(false);
         expect(result.exitCode).toBe(0);
@@ -1101,6 +1106,7 @@ describe("FND benchmark harness fault contracts", () => {
         expect(JSON.parse(result.stdout)).toMatchObject({ status: "completed" });
       });
     },
+    COMPLETED_BENCHMARK_TEST_TIMEOUT_MS,
   );
 
   test("rejects overflow after an authenticated record in the same chunk", async () => {
