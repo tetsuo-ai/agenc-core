@@ -1,5 +1,19 @@
 import { describe, expect, test, vi } from "vitest";
 
+const { loadTieredInstructionsMock } = vi.hoisted(() => ({
+  loadTieredInstructionsMock: vi.fn(async () => ({
+    managed: null,
+    user: null,
+    project: null,
+    local: null,
+  })),
+}));
+
+vi.mock("../prompts/agenc-md.js", async importOriginal => ({
+  ...(await importOriginal<typeof import("../prompts/agenc-md.js")>()),
+  loadTieredInstructions: loadTieredInstructionsMock,
+}));
+
 // session-compact.ts now imports from system-prompt.ts (to count the
 // per-turn system message in /context) and that pulls in `bun:bundle`
 // transitively. Mock it so vitest can load the module without a Bun
@@ -322,6 +336,80 @@ describe("/context display: computeContextUsageBreakdown", () => {
 });
 
 describe("/context TUI bridge", () => {
+  test("loads managed policy from the session's captured authority", async () => {
+    const capturedManagedPath = "/captured/policy/AGENC.md";
+    const ambientManagedPath = "/ambient/policy/AGENC.md";
+    const previousAmbient = process.env.AGENC_MANAGED_INSTRUCTIONS;
+    process.env.AGENC_MANAGED_INSTRUCTIONS = ambientManagedPath;
+    loadTieredInstructionsMock.mockClear();
+
+    try {
+      const setToolJSX = vi.fn();
+      const session = {
+        abortController: new AbortController(),
+        conversationId: "session-managed-authority",
+        newDefaultTurnWithSubId: () => ({
+          cwd: "/tmp/agenc-context",
+          config: {},
+          modelInfo: {
+            slug: "grok-4",
+            contextWindow: 200_000,
+            effectiveContextWindowPercent: 100,
+          },
+          modelProviderId: "xai",
+          options: {},
+        }),
+        nextInternalSubId: () => "sub-1",
+        snapshotHistoryMessages: () => [],
+        state: {
+          unsafePeek: () => ({ totalTokenUsage: { promptTokens: 0 } }),
+        },
+        permissionModeRegistry: { current: () => undefined },
+        services: {
+          registry: {
+            toLLMTools: () => [],
+            allSpecs: () => [],
+          },
+          configStore: {
+            current: () => ({}),
+            homeContext: { path: "/captured/home" },
+            managedPaths: { instructions: capturedManagedPath },
+          },
+          permissionModeRegistry: { current: () => undefined },
+          providerEnvironment: TEST_PROVIDER_ENVIRONMENT,
+          provider: {},
+        },
+        emit: vi.fn(),
+        clearProviderResponseId: vi.fn(),
+      };
+
+      const result = await contextCommand.execute({
+        session: session as never,
+        argsRaw: "",
+        cwd: "/tmp/agenc-context",
+        home: "/home/test",
+        appState: { setToolJSX },
+      });
+
+      expect(result).toEqual({ kind: "skip" });
+      expect(loadTieredInstructionsMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          configHomeDir: "/captured/home",
+          managedPath: capturedManagedPath,
+        }),
+      );
+      expect(loadTieredInstructionsMock).not.toHaveBeenCalledWith(
+        expect.objectContaining({ managedPath: ambientManagedPath }),
+      );
+    } finally {
+      if (previousAmbient === undefined) {
+        delete process.env.AGENC_MANAGED_INSTRUCTIONS;
+      } else {
+        process.env.AGENC_MANAGED_INSTRUCTIONS = previousAmbient;
+      }
+    }
+  });
+
   test("opens the v2 context usage modal from the slash command", async () => {
     const setToolJSX = vi.fn();
     const session = {
