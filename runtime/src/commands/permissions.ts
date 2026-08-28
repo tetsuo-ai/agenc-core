@@ -58,6 +58,7 @@ import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import {
   authorizeBypassPermissionsConsent,
   canonicalizeBypassPermissionsCwd,
+  prepareBypassPermissionsConsent,
   recordBypassPermissionsConsent,
 } from "../permissions/bypass-consent-state.js";
 import {
@@ -678,26 +679,21 @@ async function handleAcceptBypassSubcommand(
         latest,
         workspacePath,
       );
-      if (persistenceStore !== null) {
-        try {
-          recordBypassPermissionsConsent(
-            persistenceStore.stateRepository,
-            workspacePath,
-          );
-        } catch (error) {
-          throw new Error(
-            `Cannot persist bypassPermissions consent: ${
-              error instanceof Error ? error.message : String(error)
-            }`,
-            { cause: error },
-          );
-        }
-      }
       return {
         next:
-          alreadyInSession && latest.isBypassPermissionsModeAvailable
+          persistenceStore === null &&
+          alreadyInSession &&
+          latest.isBypassPermissionsModeAvailable
             ? null
             : authorized,
+        ...(persistenceStore !== null
+          ? {
+              preparedUpdate: prepareBypassPermissionsConsent(
+                persistenceStore.stateRepository,
+                workspacePath,
+              ),
+            }
+          : {}),
         result: () => alreadyInSession,
       };
     });

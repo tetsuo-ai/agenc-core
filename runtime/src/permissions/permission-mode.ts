@@ -817,6 +817,8 @@ export interface PermissionContextTransaction<T> {
   /** Null keeps the current context and skips durability/publication. */
   readonly next: ToolPermissionContext | null;
   readonly metadata?: unknown;
+  /** Command-owned durable work committed and rolled back with publication. */
+  readonly preparedUpdate?: PermissionContextPreparedUpdate;
   /** Evaluated under the registry lock after any publication has completed. */
   readonly result: () => T;
 }
@@ -1038,6 +1040,7 @@ export class PermissionModeRegistry {
       candidate,
       mutation.metadata,
       externalAuthorityGeneration,
+      mutation.preparedUpdate,
     );
     return { mutation, notify };
   }
@@ -1046,6 +1049,7 @@ export class PermissionModeRegistry {
     newCtx: ToolPermissionContext,
     metadata?: unknown,
     externalAuthorityGeneration?: number,
+    transactionPreparedUpdate?: PermissionContextPreparedUpdate,
   ): Promise<() => void> {
     this.assertPublicationAuthorityAvailable(externalAuthorityGeneration);
     const current = this.ctx;
@@ -1055,10 +1059,16 @@ export class PermissionModeRegistry {
       current,
       metadata,
     );
-    const prepared =
+    const ownerPreparedUpdate =
       typeof preparedResult === "function"
         ? { commit: preparedResult }
         : preparedResult;
+    const preparedUpdates = [
+      ownerPreparedUpdate,
+      transactionPreparedUpdate,
+    ].filter(
+      (entry): entry is PermissionContextPreparedUpdate => entry !== undefined,
+    );
     const publicationState: {
       value:
         | "prepared"
@@ -1080,7 +1090,9 @@ export class PermissionModeRegistry {
         publicationState.value = "committing";
         try {
           this.assertPublicationAuthorityAvailable(externalAuthorityGeneration);
-          await prepared?.commit();
+          for (const preparedUpdate of preparedUpdates) {
+            await preparedUpdate.commit();
+          }
           this.assertPublicationAuthorityAvailable(externalAuthorityGeneration);
           // `current()` is intentionally lock-free. Publish only after the
           // prepared durability barrier has proved its commit so no reader can
@@ -1118,14 +1130,26 @@ export class PermissionModeRegistry {
         }
         publicationState.value = "rolling_back";
         this.ctx = current;
-        try {
-          await prepared?.rollback?.();
-          publicationState.value = "rolled_back";
-        } catch (error) {
-          rollbackFailure = error;
-          publicationState.value = "rollback_failed";
-          throw error;
+        const rollbackErrors: unknown[] = [];
+        for (const preparedUpdate of [...preparedUpdates].reverse()) {
+          try {
+            await preparedUpdate.rollback?.();
+          } catch (error) {
+            rollbackErrors.push(error);
+          }
         }
+        if (rollbackErrors.length === 0) {
+          publicationState.value = "rolled_back";
+          return;
+        }
+        rollbackFailure = rollbackErrors.length === 1
+          ? rollbackErrors[0]
+          : new AggregateError(
+              rollbackErrors,
+              "permission context prepared updates failed to roll back",
+            );
+        publicationState.value = "rollback_failed";
+        throw rollbackFailure;
       },
     };
 
@@ -1164,9 +1188,21 @@ export class PermissionModeRegistry {
       }
     }
 
-    try {
-      await prepared?.settle?.();
-    } catch (settleError) {
+    const settleErrors: unknown[] = [];
+    for (const preparedUpdate of [...preparedUpdates].reverse()) {
+      try {
+        await preparedUpdate.settle?.();
+      } catch (error) {
+        settleErrors.push(error);
+      }
+    }
+    if (settleErrors.length > 0) {
+      const settleError = settleErrors.length === 1
+        ? settleErrors[0]
+        : new AggregateError(
+            settleErrors,
+            "permission context prepared updates failed to settle",
+          );
       publicationError =
         publicationError === undefined
           ? settleError

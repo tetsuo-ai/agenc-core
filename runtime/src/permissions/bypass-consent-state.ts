@@ -29,6 +29,39 @@ interface PersistedBypassPermissionsConsent extends JsonRecord {
   readonly ino: string;
 }
 
+export interface PreparedBypassPermissionsConsent {
+  commit(): void;
+  rollback(): void;
+}
+
+function persistedBypassPermissionsConsent(
+  cwd: string,
+): {
+  readonly identity: BypassPermissionsCwdIdentity;
+  readonly persisted: PersistedBypassPermissionsConsent;
+} {
+  const identity = resolveBypassPermissionsCwdIdentity(cwd);
+  return {
+    identity,
+    persisted: Object.freeze({
+      version: BYPASS_ACCEPTANCE_VERSION,
+      canonicalCwd: identity.canonicalCwd,
+      dev: identity.dev.toString(10),
+      ino: identity.ino.toString(10),
+    }),
+  };
+}
+
+function samePersistedConsent(
+  left: PersistedBypassPermissionsConsent | undefined,
+  right: PersistedBypassPermissionsConsent,
+): boolean {
+  return left?.version === right.version &&
+    left.canonicalCwd === right.canonicalCwd &&
+    left.dev === right.dev &&
+    left.ino === right.ino;
+}
+
 function resolveBypassPermissionsCwdIdentity(
   cwd: string,
 ): BypassPermissionsCwdIdentity {
@@ -91,24 +124,13 @@ export function recordBypassPermissionsConsent(
   repository: RuntimeStateRepository,
   cwd: string,
 ): CanonicalBypassPermissionsCwd {
-  const identity = resolveBypassPermissionsCwdIdentity(cwd);
-  const persisted = Object.freeze({
-    version: BYPASS_ACCEPTANCE_VERSION,
-    canonicalCwd: identity.canonicalCwd,
-    dev: identity.dev.toString(10),
-    ino: identity.ino.toString(10),
-  });
+  const { identity, persisted } = persistedBypassPermissionsConsent(cwd);
   repository.updateNamespace(PERMISSIONS_STATE_NAMESPACE, (current) => {
     const accepted = current[BYPASS_ACCEPTANCE_FIELD] as
       | Readonly<Record<string, PersistedBypassPermissionsConsent>>
       | undefined;
     const existing = accepted?.[identity.canonicalCwd];
-    if (
-      existing?.version === persisted.version &&
-      existing.canonicalCwd === persisted.canonicalCwd &&
-      existing.dev === persisted.dev &&
-      existing.ino === persisted.ino
-    ) {
+    if (samePersistedConsent(existing, persisted)) {
       return current as JsonRecord;
     }
     return {
@@ -120,6 +142,60 @@ export function recordBypassPermissionsConsent(
     };
   });
   return identity.canonicalCwd;
+}
+
+/** Prepare an exact-cwd state update that can be rolled back with authority. */
+export function prepareBypassPermissionsConsent(
+  repository: RuntimeStateRepository,
+  cwd: string,
+): PreparedBypassPermissionsConsent {
+  const { identity, persisted } = persistedBypassPermissionsConsent(cwd);
+  let updateObserved = false;
+  let previous: PersistedBypassPermissionsConsent | undefined;
+
+  return Object.freeze({
+    commit: () => {
+      repository.updateNamespace(PERMISSIONS_STATE_NAMESPACE, (current) => {
+        updateObserved = true;
+        const accepted = current[BYPASS_ACCEPTANCE_FIELD] as
+          | Readonly<Record<string, PersistedBypassPermissionsConsent>>
+          | undefined;
+        previous = accepted?.[identity.canonicalCwd];
+        if (samePersistedConsent(previous, persisted)) return current as JsonRecord;
+        return {
+          ...current,
+          [BYPASS_ACCEPTANCE_FIELD]: {
+            ...accepted,
+            [identity.canonicalCwd]: persisted,
+          },
+        };
+      });
+    },
+    rollback: () => {
+      if (!updateObserved) return;
+      repository.updateNamespace(PERMISSIONS_STATE_NAMESPACE, (current) => {
+        const accepted = current[BYPASS_ACCEPTANCE_FIELD] as
+          | Readonly<Record<string, PersistedBypassPermissionsConsent>>
+          | undefined;
+        if (!samePersistedConsent(accepted?.[identity.canonicalCwd], persisted)) {
+          return current as JsonRecord;
+        }
+        const restored = { ...accepted };
+        if (previous === undefined) {
+          delete restored[identity.canonicalCwd];
+        } else {
+          restored[identity.canonicalCwd] = previous;
+        }
+        const next = { ...current } as JsonRecord;
+        if (Object.keys(restored).length === 0) {
+          delete next[BYPASS_ACCEPTANCE_FIELD];
+        } else {
+          next[BYPASS_ACCEPTANCE_FIELD] = restored;
+        }
+        return next;
+      });
+    },
+  });
 }
 
 export function bindBypassPermissionsConsent(

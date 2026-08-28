@@ -1070,6 +1070,60 @@ describe("permissionsCommand — bypassPermissions consent gate", () => {
     }
   });
 
+  it("rolls back durable consent when daemon authority publication rejects", async () => {
+    const tmp = mkdtempSync(join(tmpdir(), "agenc-bypass-publish-fail-"));
+    const workspace = join(tmp, "workspace");
+    mkdirSync(workspace);
+    const configStore = new ConfigStore({
+      home: tmp,
+      env: { AGENC_HOME: tmp, HOME: tmp },
+      cwd: workspace,
+    });
+    try {
+      const registry = new PermissionModeRegistry(
+        createEmptyToolPermissionContext(),
+      );
+      const initial = registry.current();
+      registry.installPublicationCoordinator(async (
+        _next,
+        _current,
+        _metadata,
+        publication,
+      ) => {
+        await publication.commit();
+        throw new Error("daemon authority publication rejected");
+      });
+      const session = {
+        services: { permissionModeRegistry: registry, configStore },
+        setDaemonPermissionMode: vi.fn(),
+      } as unknown as Session;
+
+      const result = await permissionsCommand.execute(
+        stubCtx({
+          registry,
+          session,
+          configStore,
+          argsRaw: "accept-bypass",
+          cwd: workspace,
+        }),
+      );
+
+      expect(result).toMatchObject({
+        kind: "error",
+        message: expect.stringContaining("daemon authority publication rejected"),
+      });
+      expect(registry.current()).toBe(initial);
+      expect(
+        loadBypassPermissionsConsent(configStore.stateRepository, workspace, {
+          reload: true,
+        }),
+      ).toEqual([]);
+    } finally {
+      configStore.stateRepository.close();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   it("does not persist daemon consent rejected by the latest policy", async () => {
     const tmp = mkdtempSync(join(tmpdir(), "agenc-bypass-policy-"));
     const workspace = join(tmp, "workspace");
