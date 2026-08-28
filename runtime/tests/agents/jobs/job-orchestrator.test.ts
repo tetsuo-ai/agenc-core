@@ -28,9 +28,11 @@ const schedulerStressRows =
   configuredSchedulerStressRows > 0
     ? configuredSchedulerStressRows
     : 4_097;
+// This contract measures paging and resident memory, not wall-clock latency.
+// Loaded hosted shards can complete the same bounded work well after 20 seconds.
 const schedulerStressTimeoutMs =
   process.env.AGENC_CSV_SCHEDULER_STRESS_ROWS === undefined
-    ? 20_000
+    ? 3 * 60_000
     : 10 * 60_000;
 
 beforeEach(async () => {
