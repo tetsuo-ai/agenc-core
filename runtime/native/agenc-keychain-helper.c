@@ -440,7 +440,7 @@ static OSStatus copy_keychain_add_target(CFArrayRef search_list,
   }
 #pragma clang diagnostic pop
 
-  if (status != errSecSuccess) {
+  if ((status != errSecSuccess) && (status != errSecNoDefaultKeychain)) {
     goto cleanup;
   }
   if (target == NULL) {
