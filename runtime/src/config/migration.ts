@@ -69,6 +69,7 @@ import {
 import { parseToml } from "./loader.js";
 import { retiredProjectMcpJsonCandidates } from "./retired-input-preflight.js";
 import { logForDebugging } from "../utils/debug.js";
+import { resolveManagedConfigPath } from "../utils/settings/managedPath.js";
 import { serializeConfigToml } from "./serialize.js";
 import { findConfigSourceCollisions } from "./source-identity.js";
 import {
@@ -350,17 +351,6 @@ function reportMigrationAuthorityReleaseErrors(
     );
   } catch {
     // A diagnostic sink cannot change a completed migration operation.
-  }
-}
-
-function defaultManagedConfigPath(): string {
-  switch (process.platform) {
-    case "darwin":
-      return "/Library/Application Support/AgenC/config.toml";
-    case "win32":
-      return join(process.env.ProgramData ?? "C:\\ProgramData", "AgenC", "config.toml");
-    default:
-      return "/etc/agenc/config.toml";
   }
 }
 
@@ -4311,7 +4301,7 @@ export async function checkConfigV2Migration(
     options.projectRoot ?? findProjectRootSync(cwd)?.rootDir ?? cwd,
   );
   const managedConfigPath = resolve(
-    options.managedConfigPath ?? defaultManagedConfigPath(),
+    options.managedConfigPath ?? resolveManagedConfigPath(environment),
   );
   const managedSettingsPath = resolve(
     options.managedSettingsPath ??

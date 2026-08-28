@@ -1,6 +1,7 @@
 import { dirname, join, resolve } from "node:path";
 
 import { findProjectRootSync } from "../session/session-store.js";
+import { resolveManagedConfigPath } from "../utils/settings/managedPath.js";
 import {
   applyEnvOverrides,
   resolveProfileName,
@@ -200,17 +201,6 @@ const UNTRUSTED_REPOSITORY_ALLOWED_KEYS = new Set([
   "sandbox_mode",
   "sandbox",
 ]);
-
-function defaultManagedConfigPath(): string {
-  switch (process.platform) {
-    case "darwin":
-      return "/Library/Application Support/AgenC/config.toml";
-    case "win32":
-      return join(process.env.ProgramData ?? "C:\\ProgramData", "AgenC", "config.toml");
-    default:
-      return "/etc/agenc/config.toml";
-  }
-}
 
 function source(
   scope: ConfigScope,
@@ -1224,7 +1214,7 @@ export async function assertNoRetiredConfigInputsForMutation(
     cwd,
     projectRoot,
     managedConfigPath:
-      options.managedConfigPath ?? defaultManagedConfigPath(),
+      options.managedConfigPath ?? resolveManagedConfigPath(env),
   });
 }
 
@@ -1260,7 +1250,8 @@ async function loadLayeredConfigInternal(
   const cwd = includeWorkspaceLayers
     ? resolve(options.cwd ?? process.cwd())
     : home.path;
-  const managedPath = options.managedConfigPath ?? defaultManagedConfigPath();
+  const managedPath =
+    options.managedConfigPath ?? resolveManagedConfigPath(env);
   const managedDir = options.managedDropInDir ?? join(dirname(managedPath), "config.d");
   const managedLayers = await readManagedLayers(managedPath, managedDir);
   const sources: ConfigLayerSnapshot[] = [];
