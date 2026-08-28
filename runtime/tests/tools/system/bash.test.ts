@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { EventEmitter } from "node:events";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, sep } from "node:path";
@@ -44,6 +45,7 @@ import type { Logger } from "../../utils/logger.js";
 import {
   resolveAgentRuntimeOptions,
   runWithAgentRuntimeOptions,
+  type CommandExecutionAuthority,
 } from "../../../src/session/runtime-options.js";
 
 // Mock the process-creation calls owned by this suite while preserving the
@@ -482,6 +484,132 @@ describe("system.bash tool", () => {
     expect(args).toEqual(["status", "--short"]);
     expect((opts as Record<string, unknown>).cwd).toBe("/tmp");
     expect((opts as Record<string, unknown>).shell).toBe(false);
+  });
+
+  it("resolves captured shell, wrapper, PATH, and HOME independently for concurrent sessions", async () => {
+    const authority = new AsyncLocalStorage<CommandExecutionAuthority>();
+    const scripts = new Map<string, string>();
+    const commands: SupervisedProcessCommand[] = [];
+    vi.mocked(writeFileSync).mockImplementation((path, data) => {
+      scripts.set(String(path), String(data));
+    });
+    mockRunSupervisedProcess.mockImplementation(async (input) => {
+      const capture = async (command: SupervisedProcessCommand) => {
+        commands.push(command);
+        return supervisedResult();
+      };
+      return "run" in input ? input.run(capture) : capture(input);
+    });
+    const tool = createBashTool({
+      cwd: "/tmp",
+      commandExecutionAuthority: () => {
+        const current = authority.getStore();
+        if (current === undefined) {
+          throw new Error("test command authority is not scoped");
+        }
+        return current;
+      },
+    });
+    const sessionA = Object.freeze({
+      path: "/session-a/bin/zsh",
+      commandWrapperArgv: Object.freeze(["env", "SESSION_MARKER=a"]),
+      childEnvironment: Object.freeze({
+        PATH: "/session-a/bin",
+        HOME: "/home/session-a",
+      }),
+    });
+    const sessionB = Object.freeze({
+      path: "/session-b/bin/bash",
+      commandWrapperArgv: Object.freeze(["env", "SESSION_MARKER=b"]),
+      childEnvironment: Object.freeze({
+        PATH: "/session-b/bin",
+        HOME: "/home/session-b",
+      }),
+    });
+
+    await Promise.all([
+      authority.run(sessionA, () =>
+        tool.execute({ command: "printf session-a" }),
+      ),
+      authority.run(sessionB, () =>
+        tool.execute({ command: "printf session-b" }),
+      ),
+    ]);
+
+    expect(commands).toHaveLength(2);
+    const byHome = new Map(commands.map((command) => [command.env.HOME, command]));
+    const commandA = byHome.get("/home/session-a");
+    const commandB = byHome.get("/home/session-b");
+    expect(commandA).toMatchObject({
+      program: "/session-a/bin/zsh",
+      env: {
+        PATH: "/session-a/bin",
+        HOME: "/home/session-a",
+      },
+    });
+    expect(commandB).toMatchObject({
+      program: "/session-b/bin/bash",
+      env: {
+        PATH: "/session-b/bin",
+        HOME: "/home/session-b",
+      },
+    });
+    expect(scripts.get(commandA?.args[0] ?? "")).toContain(
+      "SESSION_MARKER\\=a",
+    );
+    expect(scripts.get(commandA?.args[0] ?? "")).toContain("printf session-a");
+    expect(scripts.get(commandB?.args[0] ?? "")).toContain(
+      "SESSION_MARKER\\=b",
+    );
+    expect(scripts.get(commandB?.args[0] ?? "")).toContain("printf session-b");
+
+    await Promise.all([
+      authority.run(sessionA, () =>
+        tool.execute({ command: "/usr/bin/printf", args: ["direct-a"] }),
+      ),
+      authority.run(sessionB, () =>
+        tool.execute({ command: "/usr/bin/printf", args: ["direct-b"] }),
+      ),
+    ]);
+
+    const directA = commands.find(
+      (captured) => captured.args[0] === "direct-a",
+    );
+    const directB = commands.find(
+      (captured) => captured.args[0] === "direct-b",
+    );
+    expect(directA).toMatchObject({
+      program: "/usr/bin/printf",
+      args: ["direct-a"],
+      env: {
+        PATH: "/session-a/bin",
+        HOME: "/home/session-a",
+      },
+    });
+    expect(directB).toMatchObject({
+      program: "/usr/bin/printf",
+      args: ["direct-b"],
+      env: {
+        PATH: "/session-b/bin",
+        HOME: "/home/session-b",
+      },
+    });
+  });
+
+  it("fails closed when a configured command authority is unavailable", async () => {
+    const tool = createBashTool({
+      commandExecutionAuthority: () => undefined as never,
+    });
+
+    const result = await tool.execute({ command: "printf should-not-run" });
+
+    expect(result).toMatchObject({
+      isError: true,
+      content: expect.stringContaining(
+        "no session command authority was resolved",
+      ),
+    });
+    expect(mockRunSupervisedProcess).not.toHaveBeenCalled();
   });
 
   it("returns durationMs and truncated fields", async () => {

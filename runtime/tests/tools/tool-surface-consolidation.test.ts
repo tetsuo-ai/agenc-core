@@ -74,6 +74,14 @@ beforeEach(() => {
       admissionRequired: false,
       configStore: createTestConfigStore({ cwd: tmpdir() }),
       runtimeOptions: resolveAgentRuntimeOptions({}),
+      userShell: Object.freeze({
+        path: "/bin/bash",
+        commandWrapperArgv: Object.freeze([]),
+        childEnvironment: Object.freeze({
+          PATH: "/usr/local/bin:/usr/bin:/bin",
+          HOME: tmpdir(),
+        }),
+      }),
       providerService: new SessionProviderService({
         initialProvider: { name: "stub-provider" } as never,
         initialProviderName: "grok",
@@ -328,6 +336,38 @@ describe("old-stack tool surface consolidation", () => {
     );
 
     expect(block.is_error).toBe(true);
+  });
+
+  test("canonical Bash fails closed without a runtime session", async () => {
+    clearCurrentRuntimeSession(legacyTestSession);
+    await expect(
+      CanonicalBashTool.call(
+        { command: "printf should-not-run" },
+        toolContext(),
+        (async () => undefined) as never,
+        {} as never,
+      ),
+    ).rejects.toThrow("tool_admission_session_unavailable");
+  });
+
+  test("canonical Bash fails closed when the runtime session is ambiguous", async () => {
+    const secondSession = {
+      ...legacyTestSession,
+      conversationId: "tool-surface-second-session",
+    } as Session;
+    setCurrentRuntimeSession(secondSession);
+    try {
+      await expect(
+        CanonicalBashTool.call(
+          { command: "printf should-not-run" },
+          toolContext(),
+          (async () => undefined) as never,
+          {} as never,
+        ),
+      ).rejects.toThrow("tool_admission_session_unavailable");
+    } finally {
+      clearCurrentRuntimeSession(secondSession);
+    }
   });
 
   test("canonical Bash wrapper forwards system Bash progress updates", async () => {

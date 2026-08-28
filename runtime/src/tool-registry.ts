@@ -686,6 +686,19 @@ export function buildToolRegistry(
     }),
     createBashTool({
       cwd: options.workspaceRoot,
+      ...(options.getSession !== undefined
+        ? {
+            commandExecutionAuthority: () => {
+              const session = options.getSession?.();
+              if (session === null || session === undefined) {
+                throw new Error(
+                  "system.bash requires an active session command authority",
+                );
+              }
+              return session.services.userShell;
+            },
+          }
+        : {}),
       ...(options.bashExecObserver !== undefined
         ? { execObserver: options.bashExecObserver }
         : {}),

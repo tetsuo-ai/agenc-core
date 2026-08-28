@@ -5,6 +5,7 @@
  */
 
 import type { Logger } from "../../utils/logger.js";
+import type { CommandExecutionAuthority } from "../../session/runtime-options.js";
 
 // ============================================================================
 // Bash tool types
@@ -28,8 +29,10 @@ export interface BashToolConfig {
   readonly denyExclusions?: readonly string[];
   /** Max output size in bytes (default: 100_000) */
   readonly maxOutputBytes?: number;
-  /** Environment variables to pass to spawned process (default: minimal — PATH only) */
-  readonly env?: Record<string, string>;
+  /** Environment variables to pass to spawned process (default: minimal PATH/HOME). */
+  readonly env?: Readonly<Record<string, string>>;
+  /** Resolve the immutable session shell/environment policy for each execution. */
+  readonly commandExecutionAuthority?: () => CommandExecutionAuthority;
   /** Logger for execution events and security denials */
   readonly logger?: Logger;
   /** Lock working directory — reject per-call cwd overrides from LLM (default: false) */

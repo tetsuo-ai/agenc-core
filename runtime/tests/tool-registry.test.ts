@@ -1081,8 +1081,29 @@ describe("tool-registry dynamic and deferred catalog", () => {
   });
 
   test("deferred bash surface is cataloged and loads by explicit selection", async () => {
+    const baseSession = createSkillSession();
+    const session = {
+      ...baseSession,
+      services: {
+        ...baseSession.services,
+        userShell: Object.freeze({
+          path: "/bin/sh",
+          commandWrapperArgv: Object.freeze([
+            "env",
+            "AGENC_REGISTRY_AUTHORITY=bound",
+            "/bin/sh",
+            "-c",
+          ]),
+          childEnvironment: Object.freeze({
+            PATH: "/usr/bin:/bin",
+            HOME: "/tmp/agenc-registry-authority",
+          }),
+        }),
+      },
+    } as Session;
     const registry = buildToolRegistry({
       workspaceRoot: "/tmp",
+      getSession: () => session,
       sandboxExecutionBroker: explicitDangerBroker,
     });
     const bash = registry.tools.find((tool) => tool.name === "system.bash");
@@ -1122,10 +1143,13 @@ describe("tool-registry dynamic and deferred catalog", () => {
     const rawStringResult = await registry.dispatch({
       id: "bash-raw-string",
       name: "system.bash",
-      arguments: "printf agenc-bash-raw",
+      arguments:
+        "printf '%s' \"$AGENC_REGISTRY_AUTHORITY:$HOME:$PATH\"",
     });
     expect(rawStringResult.isError).toBeUndefined();
-    expect(rawStringResult.content).toContain("agenc-bash-raw");
+    expect(rawStringResult.content).toContain(
+      "bound:/tmp/agenc-registry-authority:/usr/bin:/bin",
+    );
 
     const objectResult = await registry.dispatch({
       id: "bash-object",

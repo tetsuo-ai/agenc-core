@@ -101,6 +101,9 @@ describe("session home authority architecture", () => {
     const configuredHooks = source("hooks/engine/command-runner.ts");
     const autoFix = source("services/autoFix/autoFixRunner.ts");
     const unifiedExec = source("unified-exec/process-manager.ts");
+    const systemBash = source("tools/system/bash.ts");
+    const toolRegistry = source("tool-registry.ts");
+    const canonicalTools = source("tools/canonicalToolSurface.ts");
     const commandExecution = source("utils/shell/commandExecution.ts");
     const shell = source("utils/Shell.ts");
     const bashProvider = source("utils/shell/bashProvider.ts");
@@ -138,6 +141,15 @@ describe("session home authority architecture", () => {
     expect(autoFix).not.toContain("process.env.SHELL");
     expect(unifiedExec).toContain("wrapCommandForShell");
     expect(unifiedExec).not.toContain("process.env.SHELL");
+    expect(systemBash).toContain("commandAuthority?.childEnvironment");
+    expect(systemBash).toContain("commandAuthority?.path");
+    expect(systemBash).toContain("wrapCommandForShell(");
+    expect(systemBash).not.toContain("process.env.PATH");
+    expect(systemBash).not.toContain("process.env.HOME");
+    expect(toolRegistry).toContain("session.services.userShell");
+    expect(canonicalTools).toContain(
+      'requireCurrentRuntimeSession("system.bash command execution")',
+    );
   });
 
   test("keys session environment scripts by explicit home and session identity", () => {

@@ -3,7 +3,10 @@ import { z } from "zod/v4";
 
 import { runAdmittedLegacyToolCall } from "../budget/admitted-legacy-tool-call.js";
 import { getSessionId } from "../bootstrap/state.js";
-import { peekAmbientRuntimeSession } from "../session/current-session.js";
+import {
+  peekAmbientRuntimeSession,
+  requireCurrentRuntimeSession,
+} from "../session/current-session.js";
 import { getCwd } from "../utils/cwd.js";
 import { isRecord } from "../utils/record.js";
 import { createBashTool } from "./system/bash.js";
@@ -646,7 +649,13 @@ export const CanonicalBashTool = createCanonicalTool({
   searchHint: "execute shell commands",
   maxResultSizeChars: Infinity,
   inputSchema: bashInputSchema,
-  createRuntimeTool: (root) => createBashTool({ cwd: root }),
+  createRuntimeTool: (root) =>
+    createBashTool({
+      cwd: root,
+      commandExecutionAuthority: () =>
+        requireCurrentRuntimeSession("system.bash command execution").services
+          .userShell,
+    }),
   recoveryCategory: "side-effecting",
   mapInput: (input, root) => ({
     command: input.command,

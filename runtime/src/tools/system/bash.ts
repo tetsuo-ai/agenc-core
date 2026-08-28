@@ -46,6 +46,7 @@ import {
 } from "../../utils/supervisedProcess.js";
 import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { resolveSessionTempRoot } from "../../session/runtime-options.js";
+import { wrapCommandForShell } from "../../utils/shell/commandExecution.js";
 
 const SHELL_WRAPPER_COMMANDS = new Set([
   "bash",
@@ -530,15 +531,18 @@ function matchesDenyPrefix(base: string): boolean {
 }
 
 /**
- * Build a minimal environment for spawned processes.
- * Only exposes PATH by default to prevent secret exfiltration.
+ * Build a string-only environment for spawned processes. Standalone callers
+ * receive fixed minimal defaults; runtime callers inject the captured session
+ * child environment through `commandExecutionAuthority`.
  */
-function buildEnv(configEnv?: Record<string, string>): Record<string, string> {
-  if (configEnv) return configEnv;
-  return {
-    PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
-    HOME: process.env.HOME ?? "",
-  };
+function buildEnv(configEnv?: Readonly<NodeJS.ProcessEnv>): Record<string, string> {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(configEnv ?? {})) {
+    if (typeof value === "string") env[key] = value;
+  }
+  env.PATH ??= "/usr/local/bin:/usr/bin:/bin";
+  env.HOME ??= "";
+  return env;
 }
 
 function validateWorkingDirectory(cwd: string): string | null {
@@ -837,7 +841,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
   const defaultTimeout = config?.timeoutMs;
   const maxTimeoutMs = config?.maxTimeoutMs ?? defaultTimeout;
   const maxOutputBytes = config?.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES;
-  const env = buildEnv(config?.env);
+  const standaloneEnv = buildEnv(config?.env);
   const logger: Logger = config?.logger ?? silentLogger;
   const lockCwd = config?.lockCwd ?? false;
   const shellModeEnabled = config?.shellMode !== false;
@@ -910,6 +914,29 @@ export function createBashTool(config?: BashToolConfig): Tool {
       }
       const abortSignal = input.__abortSignal;
       const onProgress = input.__onProgress;
+
+      let commandAuthority:
+        | ReturnType<NonNullable<BashToolConfig["commandExecutionAuthority"]>>
+        | undefined;
+      if (config?.commandExecutionAuthority !== undefined) {
+        try {
+          commandAuthority = config.commandExecutionAuthority();
+          if (commandAuthority === undefined) {
+            throw new Error("no session command authority was resolved");
+          }
+        } catch (error) {
+          return errorResult(
+            `Shell command authority is unavailable: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+      const env = buildEnv(
+        commandAuthority?.childEnvironment ?? standaloneEnv,
+      );
+      const shellPath = commandAuthority?.path ?? "/bin/bash";
+      const commandWrapperArgv = commandAuthority?.commandWrapperArgv ?? [];
 
       // Validate command
       if (
@@ -988,8 +1015,11 @@ export function createBashTool(config?: BashToolConfig): Tool {
           }
         }
 
-        execCommand = "/bin/bash";
-        execArgs = ["-c", shellCommand];
+        execCommand = shellPath;
+        execArgs = [
+          "-c",
+          wrapCommandForShell(shellPath, commandWrapperArgv, shellCommand),
+        ];
       } else {
         // Direct mode: validate command shape, builtins, and deny/allow lists
         if (
@@ -1243,7 +1273,13 @@ export function createBashTool(config?: BashToolConfig): Tool {
       if (useShellMode) {
         let scriptArtifact: ReturnType<typeof createShellScriptArtifact>;
         try {
-          scriptArtifact = createShellScriptArtifact(shellCommand);
+          scriptArtifact = createShellScriptArtifact(
+            wrapCommandForShell(
+              shellPath,
+              commandWrapperArgv,
+              shellCommand,
+            ),
+          );
         } catch (writeErr) {
           return emitEnd(
             errorResult(
@@ -1252,7 +1288,7 @@ export function createBashTool(config?: BashToolConfig): Tool {
           );
         }
         const scriptPath = scriptArtifact.path;
-        const sandboxed = withSandbox("/bin/bash", [scriptPath]);
+        const sandboxed = withSandbox(shellPath, [scriptPath]);
         if (!sandboxed.ok) {
           try {
             rmSync(scriptArtifact.directory, {
