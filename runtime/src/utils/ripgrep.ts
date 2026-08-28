@@ -74,9 +74,17 @@ export function resolveRipgrepConfig({
   return { mode: 'builtin', command: builtinCommand, args: [] }
 }
 
-const getRipgrepConfig = memoize((): RipgrepConfig => {
+export type RipgrepIngressOptions = {
+  readonly environment: NodeJS.ProcessEnv
+  readonly systemExecutablePath: string
+}
+
+function buildRipgrepConfig(
+  environment: NodeJS.ProcessEnv,
+  systemExecutablePath: string,
+): RipgrepConfig {
   const userWantsSystemRipgrep = isEnvDefinedFalsy(
-    process.env.USE_BUILTIN_RIPGREP,
+    environment.USE_BUILTIN_RIPGREP,
   )
   const bundledMode = isInBundledMode()
   const rgRoot = path.resolve(__dirname, 'vendor', 'ripgrep')
@@ -85,7 +93,6 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
       ? path.resolve(rgRoot, `${process.arch}-win32`, 'rg.exe')
       : path.resolve(rgRoot, `${process.arch}-${process.platform}`, 'rg')
   const builtinExists = existsSync(builtinCommand)
-  const { cmd: systemExecutablePath } = findExecutable('rg', [])
 
   return resolveRipgrepConfig({
     userWantsSystemRipgrep,
@@ -94,7 +101,20 @@ const getRipgrepConfig = memoize((): RipgrepConfig => {
     builtinExists,
     systemExecutablePath,
   })
+}
+
+const getRipgrepConfig = memoize((): RipgrepConfig => {
+  const { cmd: systemExecutablePath } = findExecutable('rg', [])
+  return buildRipgrepConfig(process.env, systemExecutablePath)
 })
+
+function getRipgrepConfigForIngress(
+  options?: RipgrepIngressOptions,
+): RipgrepConfig {
+  return options === undefined
+    ? getRipgrepConfig()
+    : buildRipgrepConfig(options.environment, options.systemExecutablePath)
+}
 
 export function ripgrepCommand(): {
   rgPath: string
@@ -511,16 +531,16 @@ let ripgrepStatus: {
  * Get ripgrep status and configuration info
  * Returns current configuration immediately, with working status if available
  */
-export function getRipgrepStatus(): {
+export function getRipgrepStatus(options?: RipgrepIngressOptions): {
   mode: 'system' | 'builtin' | 'embedded'
   path: string
   working: boolean | null // null if not yet tested
 } {
-  const config = getRipgrepConfig()
+  const config = getRipgrepConfigForIngress(options)
   return {
     mode: config.mode,
     path: config.command,
-    working: ripgrepStatus?.working ?? null,
+    working: options === undefined ? ripgrepStatus?.working ?? null : null,
   }
 }
 
@@ -530,8 +550,10 @@ export function getRipgrepStatus(): {
  * `agenc doctor` to report rg status with a fix hint on a clean machine where
  * no system rg is on PATH and no binary is bundled. Never throws.
  */
-export async function probeRipgrepAvailable(): Promise<boolean> {
-  const config = getRipgrepConfig()
+export async function probeRipgrepAvailable(
+  options?: RipgrepIngressOptions,
+): Promise<boolean> {
+  const config = getRipgrepConfigForIngress(options)
   try {
     if (config.argv0) {
       // Embedded ripgrep is only reachable under a Bun-compiled binary, which
@@ -541,7 +563,11 @@ export async function probeRipgrepAvailable(): Promise<boolean> {
     const test = await execFileNoThrow(
       config.command,
       [...config.args, '--version'],
-      { timeout: 5000 },
+      {
+        timeout: 5000,
+        useCwd: false,
+        env: options?.environment,
+      },
     )
     return test.code === 0 && test.stdout.startsWith('ripgrep ')
   } catch {

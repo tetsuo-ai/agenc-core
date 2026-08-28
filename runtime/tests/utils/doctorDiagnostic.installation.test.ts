@@ -168,6 +168,24 @@ describe("Doctor installation detection", () => {
     ).resolves.toBeNull();
   });
 
+  it.skipIf(process.platform === "win32")(
+    "finds the active wrapper only through captured PATH",
+    async () => {
+      const { root, runtimeBin, wrapperPath, wrapper } = fixture();
+      const ambientBin = join(root, "ambient-bin");
+      mkdirSync(ambientBin);
+      process.env.PATH = ambientBin;
+
+      await expect(
+        findActiveGeneratedWrapper({
+          invokedPath: runtimeBin,
+          environment: { PATH: dirname(wrapperPath) },
+          cwd: root,
+        }),
+      ).resolves.toEqual(wrapper);
+    },
+  );
+
   it("proves a direct private-Node runtime without relying on a PATH wrapper", () => {
     const root = mkdtempSync(join(tmpdir(), "agenc-private-runtime-"));
     roots.push(root);
@@ -315,6 +333,7 @@ describe("Doctor installation detection", () => {
             PATH: emptyBin,
           },
           capturedAgencHome,
+          root,
         ),
       ).resolves.toEqual([
         {
@@ -328,61 +347,58 @@ describe("Doctor installation detection", () => {
     }
   });
 
-  it.skipIf(process.platform === "win32")(
-    "uses captured USERPROFILE for native PATH warnings",
-    async () => {
-      const root = mkdtempSync(join(tmpdir(), "agenc-doctor-profile-"));
-      roots.push(root);
-      const capturedProfile = join(root, "captured-profile");
-      const ambientProfile = join(root, "ambient-profile");
-      const agencHome = join(root, "agenc-home");
-      mkdirSync(capturedProfile);
-      mkdirSync(ambientProfile);
-      mkdirSync(agencHome);
-      process.env.HOME = ambientProfile;
+  it("uses captured USERPROFILE and Path for native PATH warnings", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-doctor-profile-"));
+    roots.push(root);
+    const capturedProfile = join(root, "captured-profile");
+    const ambientProfile = join(root, "ambient-profile");
+    const agencHome = join(root, "agenc-home");
+    mkdirSync(capturedProfile);
+    mkdirSync(ambientProfile);
+    mkdirSync(agencHome);
+    process.env.HOME = ambientProfile;
 
-      const home = resolveHomeContext(
-        { AGENC_HOME: agencHome },
-        { platformHome: capturedProfile },
+    const home = resolveHomeContext(
+      { AGENC_HOME: agencHome },
+      { platformHome: capturedProfile },
+    );
+    const stateRepository = new RuntimeStateRepository(home, {
+      storage: "memory",
+    });
+    try {
+      const capturedLocalBin = join(capturedProfile, ".local", "bin");
+      const ambientLocalBin = join(ambientProfile, ".local", "bin");
+      const baseEnvironment = {
+        AGENC_HOME: agencHome,
+        USERPROFILE: capturedProfile,
+        SHELL: "/bin/zsh",
+        DISABLE_INSTALLATION_CHECKS: "1",
+      };
+      const clean = await detectConfigurationIssues(
+        "native",
+        stateRepository,
+        { ...baseEnvironment, Path: capturedLocalBin },
+        root,
+        agencHome,
       );
-      const stateRepository = new RuntimeStateRepository(home, {
-        storage: "memory",
-      });
-      try {
-        const capturedLocalBin = join(capturedProfile, ".local", "bin");
-        const ambientLocalBin = join(ambientProfile, ".local", "bin");
-        const baseEnvironment = {
-          AGENC_HOME: agencHome,
-          USERPROFILE: capturedProfile,
-          SHELL: "/bin/zsh",
-          DISABLE_INSTALLATION_CHECKS: "1",
-        };
-        const clean = await detectConfigurationIssues(
-          "native",
-          stateRepository,
-          { ...baseEnvironment, PATH: capturedLocalBin },
-          root,
-          agencHome,
-        );
-        const warned = await detectConfigurationIssues(
-          "native",
-          stateRepository,
-          { ...baseEnvironment, PATH: ambientLocalBin },
-          root,
-          agencHome,
-        );
+      const warned = await detectConfigurationIssues(
+        "native",
+        stateRepository,
+        { ...baseEnvironment, Path: ambientLocalBin },
+        root,
+        agencHome,
+      );
 
-        expect(
-          clean.some(({ issue }) => issue.includes("not in your PATH")),
-        ).toBe(false);
-        expect(
-          warned.some(({ issue }) => issue.includes("not in your PATH")),
-        ).toBe(true);
-      } finally {
-        stateRepository.close();
-      }
-    },
-  );
+      expect(
+        clean.some(({ issue }) => issue.includes("not in your PATH")),
+      ).toBe(false);
+      expect(
+        warned.some(({ issue }) => issue.includes("not in your PATH")),
+      ).toBe(true);
+    } finally {
+      stateRepository.close();
+    }
+  });
 
   it("checks local accessibility against captured PATH", async () => {
     const root = mkdtempSync(join(tmpdir(), "agenc-doctor-local-path-"));

@@ -1,11 +1,8 @@
-import { execa } from 'execa'
 import { realpath } from 'fs/promises'
 import { homedir } from 'os'
 import {
   delimiter,
   dirname,
-  extname,
-  isAbsolute,
   join,
   normalize,
   posix,
@@ -33,7 +30,11 @@ import {
 import { selectPinnedRipgrepPath } from '../tools/system/pinned-ripgrep.js'
 import { getCwd } from './cwd.js'
 import { isEnvTruthy } from './envUtils.js'
-import { execFileNoThrow } from './execFileNoThrow.js'
+import {
+  execFileNoThrow,
+  execFileNoThrowWithCwd,
+} from './execFileNoThrow.js'
+import { findExecutableOnCapturedPath } from './findExecutable.js'
 import { getFsImplementation } from './fsOperations.js'
 import {
   GENERATED_WRAPPER_MAX_BYTES,
@@ -47,15 +48,10 @@ import {
   localInstallationExists,
 } from './localInstaller.js'
 import {
-  detectApk,
-  detectAsdf,
-  detectDeb,
   detectHomebrew,
-  detectMise,
-  detectPacman,
-  detectRpm,
-  detectWinget,
   getPackageManager,
+  getPackageManagerForIngress,
+  type PackageManager,
 } from './nativeInstaller/packageManagers.js'
 import { getPlatform } from './platform.js'
 import {
@@ -142,6 +138,8 @@ function getNormalizedPaths(): [invokedPath: string, execPath: string] {
 
 export type ActiveGeneratedWrapperOptions = {
   readonly invokedPath?: string
+  readonly environment?: NodeJS.ProcessEnv
+  readonly cwd?: string
   /**
    * Explicit command path for deterministic callers/tests. `undefined` looks
    * up `agenc` on PATH; `null` deliberately skips wrapper discovery.
@@ -162,7 +160,13 @@ export async function findActiveGeneratedWrapper(
   let commandPath = options.commandPath
   if (commandPath === undefined) {
     try {
-      commandPath = await which(getCliBinaryName())
+      commandPath = options.environment === undefined
+        ? await which(getCliBinaryName())
+        : await findExecutableOnCapturedPath(
+            getCliBinaryName(),
+            options.environment,
+            options.cwd ?? getCwd() ?? process.cwd(),
+          )
     } catch {
       return null
     }
@@ -213,6 +217,7 @@ export async function findActiveGeneratedWrapper(
 export type InstallationDetectionOptions = ActiveGeneratedWrapperOptions & {
   readonly activeGeneratedWrapper?: GeneratedWrapper | null
   readonly environment?: NodeJS.ProcessEnv
+  readonly packageManager?: PackageManager
 }
 
 export type PrivateNodeRuntimeDetectionOptions = {
@@ -268,16 +273,14 @@ export async function getCurrentInstallationType(
   // Check if running in bundled mode first
   if (isInBundledMode()) {
     // Check if this bundled instance was installed by a package manager
-    if (
-      detectHomebrew() ||
-      detectWinget() ||
-      detectMise() ||
-      detectAsdf() ||
-      (await detectPacman()) ||
-      (await detectDeb()) ||
-      (await detectRpm()) ||
-      (await detectApk())
-    ) {
+    const packageManager = options.packageManager ??
+      (options.environment === undefined
+        ? await getPackageManager()
+        : await getPackageManagerForIngress({
+            environment,
+            cwd: options.cwd ?? getCwd() ?? process.cwd(),
+          }))
+    if (packageManager !== 'unknown') {
       return 'package-manager'
     }
     return 'native'
@@ -317,13 +320,16 @@ export async function getCurrentInstallationType(
     return 'npm-global'
   }
 
-  const npmConfigResult = await execa('npm config get prefix', {
-    shell: true,
-    reject: false,
-    env: environment,
-  })
+  const cwd = options.cwd ?? getCwd() ?? process.cwd()
+  const npmPath = await findExecutableOnCapturedPath('npm', environment, cwd)
+  if (npmPath === null) return 'unknown'
+  const npmConfigResult = await execFileNoThrowWithCwd(
+    npmPath,
+    ['config', 'get', 'prefix'],
+    { env: environment, cwd },
+  )
   const globalPrefix =
-    npmConfigResult.exitCode === 0 ? npmConfigResult.stdout.trim() : null
+    npmConfigResult.code === 0 ? npmConfigResult.stdout.trim() : null
 
   if (globalPrefix && invokedPath.startsWith(globalPrefix)) {
     return 'npm-global'
@@ -429,53 +435,6 @@ function getCapturedPlatformHome(
   )
 }
 
-async function findExecutableOnCapturedPath(
-  command: string,
-  environment: NodeJS.ProcessEnv,
-  cwd: string,
-): Promise<string | null> {
-  const searchPath =
-    nonEmptyEnvironmentValue(environment.PATH) ??
-    nonEmptyEnvironmentValue(environment.Path)
-  if (searchPath === undefined) return null
-
-  const windows = getPlatform() === 'windows'
-  const extensions =
-    windows && extname(command).length === 0
-      ? (nonEmptyEnvironmentValue(environment.PATHEXT) ?? '.COM;.EXE;.BAT;.CMD')
-          .split(';')
-          .map(extension => extension.trim())
-          .filter(Boolean)
-      : ['']
-  for (const rawDirectory of searchPath.split(delimiter)) {
-    const unquoted = rawDirectory.length >= 2 &&
-      rawDirectory.startsWith('"') &&
-      rawDirectory.endsWith('"')
-      ? rawDirectory.slice(1, -1)
-      : rawDirectory
-    const directory = unquoted.length === 0
-      ? cwd
-      : isAbsolute(unquoted)
-        ? unquoted
-        : resolve(cwd, unquoted)
-    for (const extension of extensions) {
-      const candidate = join(directory, `${command}${extension}`)
-      try {
-        const stat = await getFsImplementation().stat(candidate)
-        if (
-          stat.isFile() &&
-          (windows || (stat.mode & 0o111) !== 0)
-        ) {
-          return candidate
-        }
-      } catch {
-        // Continue to the next captured PATH candidate.
-      }
-    }
-  }
-  return null
-}
-
 export function getInvokedBinary(): string {
   try {
     // For bundled/compiled executables, show the actual binary path
@@ -510,6 +469,7 @@ export async function detectMultipleInstallations(
   stateRepository: RuntimeStateRepository,
   environment: NodeJS.ProcessEnv,
   configHomeDir: string,
+  cwd: string,
 ): Promise<Array<{ type: string; path: string }>> {
   const fs = getFsImplementation()
   const installations: Array<{ type: string; path: string }> = []
@@ -525,12 +485,17 @@ export async function detectMultipleInstallations(
   if (MACRO.PACKAGE_URL && MACRO.PACKAGE_URL !== '@tetsuo-ai/runtime') {
     packagesToCheck.push(MACRO.PACKAGE_URL)
   }
-  const npmResult = await execFileNoThrow('npm', [
-    '-g',
-    'config',
-    'get',
-    'prefix',
-  ], { env: environment })
+  const npmPath = await findExecutableOnCapturedPath('npm', environment, cwd)
+  const npmResult = npmPath === null
+    ? { code: 1, stdout: '', stderr: '' }
+    : await execFileNoThrowWithCwd(
+        npmPath,
+        ['-g', 'config', 'get', 'prefix'],
+        {
+          cwd: getCapturedPlatformHome(environment) ?? cwd,
+          env: environment,
+        },
+      )
   if (npmResult.code === 0 && npmResult.stdout) {
     const npmPrefix = npmResult.stdout.trim()
     const isWindows = getPlatform() === 'windows'
@@ -654,7 +619,7 @@ export async function detectConfigurationIssues(
   // Check if ~/.local/bin is in PATH for native installations
   const platformHome = getCapturedPlatformHome(environment)
   if (type === 'native' && platformHome !== undefined) {
-    const path = environment.PATH || ''
+    const path = environment.PATH ?? environment.Path ?? ''
     const pathDirectories = path.split(delimiter)
     const localBinPath = join(platformHome, '.local', 'bin')
 
@@ -1083,10 +1048,21 @@ export async function getDoctorDiagnostic(
   },
 ): Promise<DiagnosticInfo> {
   const operatorConfig = authority.current()
-  const activeGeneratedWrapper = await findActiveGeneratedWrapper()
+  const detectedPackageManager = isInBundledMode()
+    ? await getPackageManagerForIngress({
+        environment: ingress.environment,
+        cwd: ingress.cwd,
+      })
+    : undefined
+  const activeGeneratedWrapper = await findActiveGeneratedWrapper({
+    environment: ingress.environment,
+    cwd: ingress.cwd,
+  })
   const installationType = await getCurrentInstallationType({
     activeGeneratedWrapper,
     environment: ingress.environment,
+    cwd: ingress.cwd,
+    packageManager: detectedPackageManager,
   })
   // The bundler substitutes `MACRO.VERSION` (property access) with a string
   // literal at build time, but never defines the bare `MACRO` identifier — so a
@@ -1106,6 +1082,7 @@ export async function getDoctorDiagnostic(
     authority.stateRepository,
     ingress.environment,
     authority.homeContext.path,
+    ingress.cwd,
   )
   const warnings = await detectConfigurationIssues(
     installationType,
@@ -1168,7 +1145,12 @@ export async function getDoctorDiagnostic(
   // Check permissions for global installations
   let hasUpdatePermissions: boolean | null = null
   if (installationType === 'npm-global') {
-    const permCheck = await checkGlobalInstallPermissions()
+    const permCheck = await checkGlobalInstallPermissions({
+      environment: ingress.environment,
+      cwd:
+        getCapturedPlatformHome(ingress.environment) ??
+        authority.homeContext.path,
+    })
     hasUpdatePermissions = permCheck.hasPermissions
 
     // Add warning if no permissions
@@ -1186,9 +1168,18 @@ export async function getDoctorDiagnostic(
   // Get ripgrep status and configuration. The lazy first-use probe never runs
   // in the doctor path, so actively probe here to report a truthful status (and
   // an actionable warning) on a clean machine with no system rg.
-  const ripgrepStatusRaw = getRipgrepStatus()
+  const capturedRipgrepPath = await findExecutableOnCapturedPath(
+    'rg',
+    ingress.environment,
+    ingress.cwd,
+  )
+  const ripgrepIngress = {
+    environment: ingress.environment,
+    systemExecutablePath: capturedRipgrepPath ?? 'rg',
+  }
+  const ripgrepStatusRaw = getRipgrepStatus(ripgrepIngress)
   const configuredRipgrepWorking =
-    ripgrepStatusRaw.working ?? (await probeRipgrepAvailable())
+    ripgrepStatusRaw.working ?? (await probeRipgrepAvailable(ripgrepIngress))
   const grepPinnedWorking = await probePinnedGrepAvailable()
 
   const ripgrepDiagnostic = buildRipgrepDiagnostic(
@@ -1233,7 +1224,7 @@ export async function getDoctorDiagnostic(
   // Get package manager info if running from package manager
   const packageManager =
     installationType === 'package-manager'
-      ? await getPackageManager()
+      ? detectedPackageManager
       : undefined
 
   const diagnostic: DiagnosticInfo = {

@@ -1164,7 +1164,6 @@ describe("app-server-client daemon helpers", () => {
         ...process.env,
         AGENC_HOME: agencHome,
         HOME: agencHome,
-        XAI_API_KEY: "test-key",
       };
       const contextPromise = createAgenCDaemonOnlyTuiContext({
         env: contextEnvironment,

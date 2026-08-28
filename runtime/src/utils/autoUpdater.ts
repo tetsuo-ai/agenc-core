@@ -10,6 +10,7 @@ import { env } from './env.js'
 import { getAgenCHomeDir } from './envUtils.js'
 import { AgenCError, getErrnoCode, isENOENT } from './errors.js'
 import { execFileNoThrowWithCwd } from './execFileNoThrow.js'
+import { findExecutableOnCapturedPath } from './findExecutable.js'
 import { getFsImplementation } from './fsOperations.js'
 import { gracefulShutdownSync } from './gracefulShutdown.js'
 import { logError } from './log.js'
@@ -264,19 +265,33 @@ async function releaseLock(): Promise<void> {
   }
 }
 
-async function getInstallationPrefix(): Promise<string | null> {
+export type GlobalInstallPermissionOptions = {
+  readonly environment?: NodeJS.ProcessEnv
+  readonly cwd?: string
+}
+
+async function getInstallationPrefix(
+  options: GlobalInstallPermissionOptions = {},
+): Promise<string | null> {
   // Run from home directory to avoid reading project-level .npmrc/.bunfig.toml
   const isBun = env.isRunningWithBun()
+  const cwd = options.cwd ?? homedir()
+  const command = isBun ? 'bun' : 'npm'
+  const executable = options.environment === undefined
+    ? command
+    : await findExecutableOnCapturedPath(command, options.environment, cwd)
+  if (executable === null) return null
   let prefixResult = null
   if (isBun) {
-    prefixResult = await execFileNoThrowWithCwd('bun', ['pm', 'bin', '-g'], {
-      cwd: homedir(),
+    prefixResult = await execFileNoThrowWithCwd(executable, ['pm', 'bin', '-g'], {
+      cwd,
+      env: options.environment,
     })
   } else {
     prefixResult = await execFileNoThrowWithCwd(
-      'npm',
+      executable,
       ['-g', 'config', 'get', 'prefix'],
-      { cwd: homedir() },
+      { cwd, env: options.environment },
     )
   }
   if (prefixResult.code !== 0) {
@@ -286,12 +301,14 @@ async function getInstallationPrefix(): Promise<string | null> {
   return prefixResult.stdout.trim()
 }
 
-export async function checkGlobalInstallPermissions(): Promise<{
+export async function checkGlobalInstallPermissions(
+  options: GlobalInstallPermissionOptions = {},
+): Promise<{
   hasPermissions: boolean
   npmPrefix: string | null
 }> {
   try {
-    const prefix = await getInstallationPrefix()
+    const prefix = await getInstallationPrefix(options)
     if (!prefix) {
       return { hasPermissions: false, npmPrefix: null }
     }
