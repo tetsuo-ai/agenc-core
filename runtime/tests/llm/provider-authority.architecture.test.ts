@@ -400,6 +400,17 @@ describe("provider authority architecture", () => {
     expect(existsSync(`${SRC}/utils/providerValidation.ts`)).toBe(false);
   });
 
+  test("the Grok ACP transport has no ambient environment fallback", () => {
+    for (const path of [
+      "llm/providers/grok/acp-adapter.ts",
+      "services/xai/acp.ts",
+    ]) {
+      expect(readFileSync(`${SRC}/${path}`, "utf8")).not.toContain(
+        "process.env",
+      );
+    }
+  });
+
   test("the retired AgenC-specific xAI credential alias is rejection-only", () => {
     const offenders = sourceFiles(SRC)
       .filter((path) => /\.(?:ts|tsx)$/u.test(path))

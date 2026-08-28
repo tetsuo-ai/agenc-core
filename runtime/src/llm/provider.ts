@@ -1522,8 +1522,15 @@ export function createProvider(
         );
         const storedExtra = readProviderRuntimeExtra(opts.extra);
         const factoryApiKey = resolveFactoryApiKey(opts);
+        const acpEnvironment = extra.grokAcp?.environment;
+        if (acpEnvironment === undefined) {
+          throw new Error(
+            "grok composer provider requires a prepared child environment in factory options extra",
+          );
+        }
         const acpProvider = new GrokAcpProvider({
           model: grokRequestedModel as string,
+          env: acpEnvironment,
           ...(factoryApiKey !== undefined ? { apiKey: factoryApiKey } : {}),
           ...(extra.grokAcp?.binaryPath !== undefined
             ? { binaryPath: extra.grokAcp.binaryPath }
@@ -1533,9 +1540,6 @@ export function createProvider(
             : {}),
           ...(extra.grokAcp?.path !== undefined
             ? { path: extra.grokAcp.path }
-            : {}),
-          ...(extra.grokAcp?.environment !== undefined
-            ? { env: extra.grokAcp.environment }
             : {}),
           ...(sandboxExecutionBroker !== undefined
             ? { sandboxExecutionBroker }

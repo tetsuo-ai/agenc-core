@@ -110,7 +110,8 @@ export interface XaiAcpClientOptions {
   args?: readonly string[]
   /** @deprecated The authenticated sandbox broker is the cwd authority. */
   cwd: string
-  env?: NodeJS.ProcessEnv
+  /** Prepared child environment captured at provider ingress. */
+  env: NodeJS.ProcessEnv
   /** Authenticated session boundary used for the Grok CLI process. */
   sandboxExecutionBroker?: SandboxExecutionBrokerLike
   clientInfo?: { name: string; version: string }
@@ -193,7 +194,7 @@ export class XaiAcpClient {
       // authenticated workspace authority.
       cwd: sandboxExecutionBroker.cwd,
     }
-    const sourceEnv = options.env ?? process.env
+    const sourceEnv = options.env
     const env = {
       ...scrubEnvForChildProcess(sourceEnv),
       // ACP is the one child that legitimately consumes this provider secret.

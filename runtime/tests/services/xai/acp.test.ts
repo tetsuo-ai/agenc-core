@@ -187,6 +187,7 @@ describe('XaiAcpClient', () => {
       new XaiAcpClient({
         command: 'definitely-not-a-real-grok-binary',
         cwd: process.cwd(),
+        env: process.env,
         sandboxExecutionBroker: explicitDangerBroker,
       }),
     ).toThrowError(expect.objectContaining({
@@ -310,6 +311,7 @@ describe('XaiAcpClient', () => {
           command: process.execPath,
           args: [executable],
           cwd: root,
+          env: process.env,
           sandboxExecutionBroker: broker,
         }),
       ).toThrowError(expect.objectContaining({
@@ -457,6 +459,7 @@ describe('XaiAcpClient', () => {
           command: process.execPath,
           args: [agentPath],
           cwd: root,
+          env: process.env,
           sandboxExecutionBroker: broker,
           terminateGraceMs: 50,
           settleBackstopMs: 500,

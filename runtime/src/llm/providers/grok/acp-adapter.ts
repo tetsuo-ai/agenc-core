@@ -67,7 +67,8 @@ export interface GrokAcpProviderConfig {
   binaryPath?: string;
   timeoutMs?: number;
   contextWindowTokens?: number;
-  env?: NodeJS.ProcessEnv;
+  /** Prepared child environment captured at provider ingress. */
+  env: NodeJS.ProcessEnv;
   /** Session-owned PATH used to resolve the Grok CLI. */
   path?: string;
   /** Whether ACP permission requests may select an allowing response. */
@@ -93,14 +94,13 @@ function resolveAuthMethodId(env: NodeJS.ProcessEnv): string {
 function snapshotGrokAcpEnvironment(
   config: GrokAcpProviderConfig,
 ): NodeJS.ProcessEnv {
-  const explicitEnvironment = config.env;
   const environment: NodeJS.ProcessEnv = {
-    ...(explicitEnvironment ?? process.env),
+    ...config.env,
   };
   const apiKey =
     config.apiKey?.trim() ||
-    explicitEnvironment?.XAI_API_KEY?.trim() ||
-    explicitEnvironment?.GROK_API_KEY?.trim() ||
+    config.env.XAI_API_KEY?.trim() ||
+    config.env.GROK_API_KEY?.trim() ||
     undefined;
   delete environment.XAI_API_KEY;
   delete environment.GROK_API_KEY;
@@ -268,10 +268,6 @@ export class GrokAcpProvider implements LLMProvider {
     return tracked;
   }
 
-  private env(): NodeJS.ProcessEnv {
-    return this.config.env ?? process.env;
-  }
-
   private async run(
     messages: LLMMessage[],
     options?: LLMChatOptions,
@@ -360,7 +356,7 @@ export class GrokAcpProvider implements LLMProvider {
           : "composer provider is quiesced for a workspace transition",
       );
     }
-    const env = this.env();
+    const env = this.config.env;
     const broker = this.config.sandboxExecutionBroker;
     const client = new XaiAcpClient({
       ...(this.resolveBinary() !== undefined

@@ -88,6 +88,16 @@ describe("createProvider", () => {
     expect(isFactoryProvider(provider)).toBe(true);
   });
 
+  test("rejects composer construction without a prepared child environment", () => {
+    expect(() =>
+      createProvider("grok", {
+        model: "grok-composer-2.5-fast",
+      }),
+    ).toThrow(
+      "grok composer provider requires a prepared child environment in factory options extra",
+    );
+  });
+
   test("binds composer credentials to the creating session", () => {
     const provider = withEnv(
       {
@@ -98,6 +108,14 @@ describe("createProvider", () => {
         createProvider("grok", {
           apiKey: "session-grok-key",
           model: "grok-composer-2.5-fast",
+          extra: {
+            grokAcp: {
+              environment: {
+                PATH: "/client/bin",
+                HOME: "/client/home",
+              },
+            },
+          },
         }),
     );
 
@@ -109,6 +127,8 @@ describe("createProvider", () => {
     ).config.env;
     expect(environment.XAI_API_KEY).toBe("session-grok-key");
     expect(environment.GROK_API_KEY).toBeUndefined();
+    expect(environment.PATH).toBe("/client/bin");
+    expect(environment.HOME).toBe("/client/home");
     expect(readProviderFactoryOptions(provider).apiKey).toBe(
       "session-grok-key",
     );
