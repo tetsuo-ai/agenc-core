@@ -223,6 +223,8 @@ import {
 import { getInitializationStatus } from '../lsp/manager.js'
 import { peekAmbientRuntimeSession } from '../../session/current-session.js'
 import { installStreamWatchdog } from '../../llm/stream-watchdog.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
+import type { ProviderBinding } from '../../session/provider-service.js'
 import { isToolFromMcpServer } from '../mcp/utils.js'
 import { withStreamingVCR, withVCR } from '../vcr.js'
 import {
@@ -932,8 +934,7 @@ function shouldDeferLspTool(tool: Tool): boolean {
 
 /**
  * Per-attempt timeout for non-streaming fallback requests, in milliseconds.
- * Reads API_TIMEOUT_MS when set so slow backends and the streaming path
- * share the same ceiling.
+ * Uses the timeout already prepared for the request's provider binding.
  *
  * Remote sessions default to 120s to stay under CCR's container idle-kill
  * (~5min) so a hung fallback to a wedged backend surfaces a clean
@@ -942,9 +943,10 @@ function shouldDeferLspTool(tool: Tool): boolean {
  * Otherwise defaults to 300s — long enough for slow backends without
  * approaching the API's 10-minute non-streaming boundary.
  */
-function getNonstreamingFallbackTimeoutMs(): number {
-  const override = parseInt(process.env.API_TIMEOUT_MS || '', 10)
-  if (override) return override
+function getNonstreamingFallbackTimeoutMs(
+  preparedTimeoutMs: number | undefined,
+): number {
+  if (preparedTimeoutMs !== undefined) return preparedTimeoutMs
   return isSessionRemoteMode() ? 120_000 : 300_000
 }
 
@@ -958,6 +960,8 @@ async function* executeNonStreamingRequest(
     model: string
     fetchOverride?: Options['fetchOverride']
     source: string
+    providerBinding: ProviderBinding
+    providerEnvironment: ProviderEnvironment
   },
   retryOptions: {
     model: string
@@ -977,7 +981,9 @@ async function* executeNonStreamingRequest(
    */
   _originatingRequestId?: string | null,
 ): AsyncGenerator<SystemAPIErrorMessage, BetaMessage> {
-  const fallbackTimeoutMs = getNonstreamingFallbackTimeoutMs()
+  const fallbackTimeoutMs = getNonstreamingFallbackTimeoutMs(
+    clientOptions.providerBinding.factoryOptions.timeoutMs,
+  )
   const generator = withRetry(
     () =>
       getproviderClient({
@@ -985,6 +991,8 @@ async function* executeNonStreamingRequest(
         model: clientOptions.model,
         fetchOverride: clientOptions.fetchOverride,
         source: clientOptions.source,
+        providerBinding: clientOptions.providerBinding,
+        providerEnvironment: clientOptions.providerEnvironment,
       }),
     async (anthropic, attempt, context) => {
       const start = Date.now()
@@ -1175,6 +1183,12 @@ async function* queryModel(
   const previousRequestId = getPreviousRequestIdFromMessages(messages)
 
   const resolvedModel = options.model
+  const providerService = peekAmbientRuntimeSession()?.services.providerService
+  if (providerService === undefined) {
+    throw new Error('legacy provider request has no captured provider binding')
+  }
+  const providerBinding = providerService.current()
+  const providerEnvironment = providerService.environment()
 
   const isAgenticQuery =
     options.querySource.startsWith('repl_main_thread') ||
@@ -1779,6 +1793,8 @@ async function* queryModel(
           model: options.model,
           fetchOverride: options.fetchOverride,
           source: options.querySource,
+          providerBinding,
+          providerEnvironment,
         }),
       async (anthropic, attempt, context) => {
         attemptNumber = attempt
@@ -2305,7 +2321,12 @@ async function* queryModel(
       // fallback event firing but the call itself hanging at dispatch).
       logForDiagnosticsNoPII('info', 'cli_nonstreaming_fallback_started')
       const result = yield* executeNonStreamingRequest(
-        { model: options.model, source: options.querySource },
+        {
+          model: options.model,
+          source: options.querySource,
+          providerBinding,
+          providerEnvironment,
+        },
         {
           model: options.model,
           fallbackModel: options.fallbackModel,
@@ -2389,7 +2410,12 @@ async function* queryModel(
       try {
         // Fall back to non-streaming mode
         const result = yield* executeNonStreamingRequest(
-          { model: options.model, source: options.querySource },
+          {
+            model: options.model,
+            source: options.querySource,
+            providerBinding,
+            providerEnvironment,
+          },
           {
             model: options.model,
             fallbackModel: options.fallbackModel,

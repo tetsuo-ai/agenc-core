@@ -72,6 +72,14 @@ const harness = vi.hoisted(() => {
     pendingCacheEdits: null,
     pinnedCacheEdits: [],
     pinCacheEdits: vi.fn(),
+    providerBinding: {
+      provider: 'anthropic',
+      model: 'test-model',
+      instance: {},
+      factoryOptions: {},
+      revision: 1,
+    },
+    providerEnvironment: {} as Readonly<Record<string, string | undefined>>,
   }
 
   const makeStream = (events: AnyRecord[]) => ({
@@ -183,6 +191,21 @@ vi.mock('../../../src/utils/model/providers.js', () => ({
   getSelectedProviderEnvironment: () => process.env,
   isFirstPartyproviderBaseUrl: () => true,
   isGithubNativeproviderMode: () => false,
+}))
+
+vi.mock('../../../src/session/current-session.js', async importOriginal => ({
+  ...(await importOriginal()),
+  peekAmbientRuntimeSession: () => ({
+    services: {
+      providerService: {
+        current: () => harness.providerBinding,
+        environment: () => harness.providerEnvironment,
+      },
+      runtimeOptions: {
+        remoteMode: false,
+      },
+    },
+  }),
 }))
 
 vi.mock('../../../src/utils/auth.js', () => ({
@@ -415,6 +438,14 @@ function resetHarness(): void {
   harness.pendingCacheEdits = null
   harness.pinnedCacheEdits = []
   harness.pinCacheEdits.mockClear()
+  harness.providerBinding = {
+    provider: 'anthropic',
+    model: 'test-model',
+    instance: {},
+    factoryOptions: {},
+    revision: 1,
+  }
+  harness.providerEnvironment = {}
 }
 
 function baseOptions(overrides: AnyRecord = {}): AnyRecord {
@@ -857,6 +888,44 @@ describe('provider API requests', () => {
       true,
       undefined,
     ])
+    const nonStreamingCall = harness.createCalls.find(
+      ({ params }: AnyRecord) => params.stream !== true,
+    )
+    expect(nonStreamingCall?.options?.timeout).toBe(300_000)
+  })
+
+  test('nonstreaming fallback keeps the prepared binding timeout after environment mutation', async () => {
+    harness.providerBinding = {
+      provider: 'anthropic',
+      model: 'test-model',
+      instance: {},
+      factoryOptions: { timeoutMs: 4321 },
+      revision: 7,
+    }
+    harness.providerEnvironment = { API_TIMEOUT_MS: '8765' }
+    process.env.API_TIMEOUT_MS = '9876'
+    harness.streamEvents = []
+
+    for await (const _event of queryModelWithStreaming({
+      messages: [userMessage()],
+      systemPrompt: asSystemPrompt(['prepared timeout']),
+      thinkingConfig: { type: 'disabled' },
+      tools: [],
+      signal: new AbortController().signal,
+      options: baseOptions(),
+    })) {
+      // Drain the fallback response.
+    }
+
+    const nonStreamingCall = harness.createCalls.find(
+      ({ params }: AnyRecord) => params.stream !== true,
+    )
+    expect(nonStreamingCall?.options?.timeout).toBe(4321)
+    expect(harness.getClientCalls).toHaveLength(2)
+    for (const clientCall of harness.getClientCalls) {
+      expect(clientCall.providerBinding).toBe(harness.providerBinding)
+      expect(clientCall.providerEnvironment).toBe(harness.providerEnvironment)
+    }
   })
 
   test('queryModelWithStreaming sends budgeted thinking below max tokens when adaptive thinking is disabled', async () => {
