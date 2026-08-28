@@ -117,4 +117,19 @@ describe("agenc daemon startup requirement", () => {
       "agenc: daemon autostart failed: socket unavailable",
     );
   });
+
+  it("rejects a retired startup flag before daemon autostart", async () => {
+    daemonMocks.resolveAgenCDaemonAutostartEnabled.mockResolvedValue(true);
+    daemonMocks.ensureAgenCDaemonAutostart.mockResolvedValue(undefined);
+
+    const result = await withMain(["--yolo"]);
+
+    expect(result).toEqual({
+      code: 2,
+      stderr: expect.stringContaining(
+        "unknown option '--yolo'. Use '--dangerously-bypass-approvals-and-sandbox' instead.",
+      ),
+    });
+    expect(daemonMocks.ensureAgenCDaemonAutostart).not.toHaveBeenCalled();
+  });
 });

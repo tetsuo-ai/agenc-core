@@ -192,6 +192,21 @@ describe("runtime SDK surface hygiene", () => {
     ).toHaveLength(6);
   });
 
+  test("SDK permission-mode descriptions use the canonical bypass contract", () => {
+    const schemas = readRepoFile("runtime/src/entrypoints/sdk/coreSchemas.ts");
+    const generated = readRepoFile(
+      "runtime/src/entrypoints/sdk/coreTypes.generated.ts",
+    );
+
+    for (const source of [schemas, generated]) {
+      expect(source).toContain(
+        "Skips prompts down to the deny floor after exact-workspace consent",
+      );
+      expect(source).not.toContain("allowDangerouslySkipPermissions");
+      expect(source).not.toContain("Bypass all permission checks");
+    }
+  });
+
   test("generated SDK type workflow uses the checked-in validator", () => {
     const runtimePkg = JSON.parse(readRepoFile("runtime/package.json")) as {
       scripts?: Record<string, string>;

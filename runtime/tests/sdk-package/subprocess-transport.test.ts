@@ -3,7 +3,7 @@
  * (`packages/agenc-sdk/src/subprocess.ts`) with a fake `agenc -p` child:
  * no daemon, no real spawn. The fake replays the CLI's
  * `--output-format stream-json` contract (`{type:"event"}` lines followed
- * by one `{type:"result"}` line) exactly as `runtime/src/bin/agenc.ts`
+ * by one `{type:"result"}` line) exactly as `runtime/src/bin/agenc-main.ts`
  * emits it.
  */
 

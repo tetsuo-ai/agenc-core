@@ -662,8 +662,7 @@ export function parseBaseToolsFromCLI(
 export interface InitialPermissionModeInput {
   /** Raw CLI `--permission-mode` value, if present. */
   readonly permissionModeCli?: string;
-  /** `--dangerously-bypass-approvals-and-sandbox` flag (runtime alias
-   * for `--dangerously-skip-permissions`). */
+  /** Canonical `--dangerously-bypass-approvals-and-sandbox` flag. */
   readonly dangerouslySkipPermissions?: boolean;
   /** Resolved managed policy (for permissions.bypassPermissionsMode). */
   readonly policySettings?: AgenCConfig | null;

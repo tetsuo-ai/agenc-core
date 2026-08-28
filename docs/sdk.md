@@ -448,7 +448,7 @@ params/result maps declare every method. Change the daemon protocol and
 `vitest` fails until the mirror is updated.
 
 Event semantics (streamed text extraction, terminal-status detection) mirror
-the CLI's daemon one-shot path in `runtime/src/bin/agenc.ts`
+the CLI's daemon one-shot path in `runtime/src/bin/agenc-main.ts`
 (`daemonOneShotMessageChunk` / `daemonOneShotFinalStatus`), so an embedder
 sees the same output and completion behavior as `agenc -p`.
 

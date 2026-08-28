@@ -25,6 +25,10 @@ describe("agenc CLI help", () => {
     expect(help).toContain("agenc agent start");
     expect(help).toContain("agenc config validate");
     expect(help).toContain("agenc daemon <stop|status|reload|restart>");
+    expect(help).toContain("agenc doctor [--json | --apparmor-profile]");
+    expect(help).toContain("agenc remote <on|status|off>");
+    expect(help).toContain("Diagnose installation and runtime readiness");
+    expect(help).toContain("Manage phone remote-control pairing");
     expect(help).toContain("agenc mcp serve --transport stdio");
     expect(help).toContain("-p, --print");
     expect(help).toContain(

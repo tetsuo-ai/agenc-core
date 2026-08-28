@@ -6,7 +6,7 @@
  * adapts its line-delimited output onto the same event-iterable interface
  * as {@link AgencSession.prompt}.
  *
- * stream-json contract (mirrors `runtime/src/bin/agenc.ts`):
+ * stream-json contract (mirrors `runtime/src/bin/agenc-main.ts`):
  *   - stdin: one JSON object per line; `{"type":"prompt","prompt":"..."}`
  *     (also accepts `input_text` / user `message` records).
  *   - stdout: `{"type":"event","sessionId","agentId","event":<daemon

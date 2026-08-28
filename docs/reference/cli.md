@@ -4,13 +4,9 @@ Live help: `agenc help` and `agenc help <topic>`. Sources:
 `runtime/src/bin/*-cli.ts`, `runtime/src/app-server/{daemon,agent}-cli.ts`,
 `runtime/src/plugins/cli/pluginCliCommands.ts`,
 `runtime/src/permissions/permission-cli.ts`, and top-level
-`formatCliHelpText()` in `runtime/src/bin/agenc.ts`.
-
-**Note:** top-level `formatCliHelpText()` in `runtime/src/bin/agenc-main.ts`
-is incomplete relative to real dispatch. `doctor` and `remote` have topic
-help but may not appear in the top-level usage block. `gateway`, `onboard`,
-`state`, `update`, `agent start`, and `mcp` usage lines in that block omit
-flags this page lists. This page documents the **dispatched** surface.
+`formatCliHelpText()` in `runtime/src/bin/agenc-main.ts`.
+Top-level help is a command index; `agenc help <topic>` contains each
+command's full syntax and options.
 
 Version: **0.17.0**. Default session provider **grok**, fresh-config session model
 **grok-4.6** (see [providers.md](providers.md)).

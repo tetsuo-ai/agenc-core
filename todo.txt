@@ -347,7 +347,8 @@ M2 DONE WHEN:
 - The tests exercise the real request/spawn/tool boundary, not only a helper.
 - No surface can bypass required instructions, workspace scoping, or
   sandbox/permission policy implicitly. Explicit operator-selected modes such as
-  `--yolo` remain visible, deliberate, and auditable policy decisions.
+  `--dangerously-bypass-approvals-and-sandbox` remain visible, deliberate,
+  and auditable policy decisions.
 
 
 M3 -- CREATE ONE DAEMON-OWNED EXECUTION ADMISSION KERNEL

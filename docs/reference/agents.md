@@ -292,7 +292,7 @@ Unattended flags must come **before** the objective; the first non-flag token
 ends option parsing (flags after the objective become part of the objective
 text).
 
-Source: `runtime/src/app-server/agent-cli.ts` (dispatched from `bin/agenc.ts`).
+Source: `runtime/src/app-server/agent-cli.ts` (dispatched from `bin/agenc-main.ts`).
 See also [cli.md](cli.md).
 
 Related TUI: `/coordinator` (alias `/fleet`) toggles coordinator mode for the

@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vitest'
 
 type SpawnFlagState = {
-  readonly bypassPermissions?: boolean
   readonly chromeFlag?: boolean
   readonly inlinePlugins?: readonly string[]
   readonly settingsPath?: string
@@ -21,7 +20,6 @@ async function loadSpawnUtils(state: SpawnFlagState = {}) {
     getChromeFlagOverride: () => state.chromeFlag,
     getFlagSettingsPath: () => state.settingsPath,
     getInlinePlugins: () => state.inlinePlugins ?? [],
-    getSessionBypassPermissionsMode: () => state.bypassPermissions ?? false,
   }))
   vi.doMock('../../../src/utils/bundledMode.js', () => ({
     isInBundledMode: () => false,
@@ -37,6 +35,25 @@ async function loadSpawnUtils(state: SpawnFlagState = {}) {
 }
 
 describe('buildInheritedCliFlags', () => {
+  test('uses the canonical bypass flag from the explicit permission mode', async () => {
+    const { buildInheritedCliFlags } = await loadSpawnUtils()
+
+    const flags = buildInheritedCliFlags({
+      permissionMode: 'bypassPermissions',
+    })
+
+    expect(flags).toContain('--dangerously-bypass-approvals-and-sandbox')
+    expect(flags).not.toContain('--dangerously-skip-permissions')
+  })
+
+  test('does not invent bypass authority for a non-bypass mode', async () => {
+    const { buildInheritedCliFlags } = await loadSpawnUtils()
+
+    expect(buildInheritedCliFlags({ permissionMode: 'default' })).toBe(
+      '--teammate-mode default',
+    )
+  })
+
   test('propagates auto permission mode and teammate mode together', async () => {
     const { buildInheritedCliFlags } = await loadSpawnUtils({
       teammateMode: 'tmux',

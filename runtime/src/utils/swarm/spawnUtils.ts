@@ -5,7 +5,6 @@
 import {
   getChromeFlagOverride,
   getInlinePlugins,
-  getSessionBypassPermissionsMode,
 } from '../../bootstrap/state.js'
 import { quote } from '../bash/shellQuote.js'
 import { isInBundledMode } from '../bundledMode.js'
@@ -15,6 +14,7 @@ import { TEAMMATE_COMMAND_ENV_VAR } from './constants.js'
 import { getActiveAgentRuntimeOptions } from '../../session/runtime-options.js'
 import { getAgenCHomeDir } from '../envUtils.js'
 import { getSelectedProviderSelection } from '../model/providers.js'
+import { DANGEROUS_BYPASS_FLAG } from '../../bin/startup-flags.js'
 
 /**
  * Gets the command to use for spawning teammate processes.
@@ -49,11 +49,8 @@ export function buildInheritedCliFlags(options?: {
   // Plan mode takes precedence over bypass permissions for safety
   if (planModeRequired) {
     // Don't inherit bypass permissions when plan mode is required
-  } else if (
-    permissionMode === 'bypassPermissions' ||
-    getSessionBypassPermissionsMode()
-  ) {
-    flags.push('--dangerously-skip-permissions')
+  } else if (permissionMode === 'bypassPermissions') {
+    flags.push(DANGEROUS_BYPASS_FLAG)
   } else if (permissionMode === 'acceptEdits') {
     flags.push('--permission-mode acceptEdits')
   } else if (permissionMode === 'auto') {

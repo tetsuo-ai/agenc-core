@@ -374,6 +374,8 @@ export function formatCliHelpText(): string {
     "       agenc trajectories export [--format sft|dpo] [--dir <path>] [--out <file>]",
     "       agenc daemon start [--foreground]",
     "       agenc daemon <stop|status|reload|restart>",
+    "       agenc doctor [--json | --apparmor-profile]",
+    "       agenc remote <on|status|off>",
     "       agenc agent start <objective>",
     "       agenc agent list",
     "       agenc agent attach <id>",
@@ -399,6 +401,8 @@ export function formatCliHelpText(): string {
     "  state                                   Export or import project state",
     "  trajectories                            Curate exported trajectories into training JSONL",
     "  daemon                                  Manage the local AgenC daemon",
+    "  doctor                                  Diagnose installation and runtime readiness",
+    "  remote                                  Manage phone remote-control pairing",
     "  agent                                   Start, attach, inspect, or stop background agents",
     "  mcp                                     Manage MCP servers or serve read-only AgenC tools over MCP",
     "  help [command]                          Show top-level or command help",
@@ -5655,6 +5659,7 @@ async function runDefaultAgenCCliRoute(
     }
   }
   if (
+    routePlan.kind !== "errorAndExit" &&
     !targetResumeRoute &&
     (await resolveAgenCDaemonAutostartEnabled(process.env))
   ) {
