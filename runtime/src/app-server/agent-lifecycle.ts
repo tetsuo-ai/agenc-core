@@ -201,6 +201,7 @@ import type { CodePredictionSource } from "../services/code-prediction/types.js"
 export type AgenCDaemonAgentLifecycleErrorCode =
   | "AGENT_NOT_FOUND"
   | "BACKGROUND_RUNNER_UNAVAILABLE"
+  | "CANONICAL_SESSION_ALREADY_ACTIVE"
   | "EXECUTION_ADMISSION_REQUIRED"
   | "INVALID_ARGUMENT"
   | "INVALID_CURSOR"
@@ -685,7 +686,7 @@ export class AgenCDaemonAgentManager {
           !isStaleAgent(existing)
         ) {
           throw new AgenCDaemonAgentLifecycleError(
-            "INVALID_ARGUMENT",
+            "CANONICAL_SESSION_ALREADY_ACTIVE",
             `canonical session ${resumeSessionId} already has a live daemon agent`,
           );
         }

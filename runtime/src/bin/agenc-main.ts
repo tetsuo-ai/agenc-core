@@ -124,6 +124,7 @@ import {
   runAgenCRemoteCli,
 } from "./remote-cli.js";
 import {
+  AgenCDaemonResponseError,
   collectDaemonClientEnvOverrides,
   createConnectedAgenCJsonLineDaemonTuiClient,
   defaultEnsureDaemonReady,
@@ -5161,6 +5162,14 @@ function assertLiveAgentMatchesResumeDescriptor(
   }
 }
 
+function isCanonicalSessionAlreadyActiveError(error: unknown): boolean {
+  return (
+    error instanceof AgenCDaemonResponseError &&
+    isRecord(error.data) &&
+    error.data.code === "CANONICAL_SESSION_ALREADY_ACTIVE"
+  );
+}
+
 async function resumeResolvedTUIEntry(
   descriptor: ResolvedResumeSession,
   displayId: string,
@@ -5242,6 +5251,9 @@ async function resumeResolvedTUIEntry(
               startupCliFlags,
             });
           } catch (resumeError) {
+            if (!isCanonicalSessionAlreadyActiveError(resumeError)) {
+              throw resumeError;
+            }
             const raced = await deps.findAgentBySessionId(
               daemonClient,
               authoritative.sessionId,

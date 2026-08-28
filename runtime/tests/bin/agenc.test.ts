@@ -71,6 +71,7 @@ import {
   type AgentRuntimeOptions,
 } from "../session/runtime-options.js";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
+import { AgenCDaemonResponseError } from "../app-server/agent-cli.js";
 
 function stubSession() {
   return {
@@ -3034,9 +3035,11 @@ describe("main() smoke", () => {
       sessionId: conversationId,
       cwd: tmpCwd,
       liveAgent: false,
-      resumePromptAgentError: new Error(
-        `canonical session ${conversationId} already has a live daemon agent`,
-      ),
+      resumePromptAgentError: new AgenCDaemonResponseError({
+        code: -32602,
+        message: `canonical session ${conversationId} already has a live daemon agent`,
+        data: { code: "CANONICAL_SESSION_ALREADY_ACTIVE" },
+      }),
     });
     daemon.findAgentBySessionId
       .mockResolvedValueOnce(null)
@@ -3085,6 +3088,88 @@ describe("main() smoke", () => {
       await rm(tmpCwd, { recursive: true, force: true });
     }
   });
+
+  it.each([
+    {
+      label: "different resume authority",
+      error: new AgenCDaemonResponseError({
+        code: -32602,
+        message: "canonical session is already being resumed with different authority",
+        data: { code: "INVALID_ARGUMENT" },
+      }),
+    },
+    {
+      label: "an unrelated restore failure",
+      error: new Error("restore failed after bootstrap"),
+    },
+  ])(
+    "resumeTUIEntry does not mask $label when a live agent appears",
+    async ({ error }) => {
+      const tmpHome = await mkdtemp(join(tmpdir(), "agenc-race-deny-home-"));
+      const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-race-deny-cwd-"));
+      const prevEnv = { ...process.env };
+      const conversationId = "conv-racedenied1";
+      process.env.AGENC_HOME = tmpHome;
+      process.env.AGENC_WORKSPACE = tmpCwd;
+      process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+      const rolloutPath = await writeResumeRolloutForTest(
+        tmpCwd,
+        conversationId,
+        tmpHome,
+      );
+      const rolloutIdentity = await lstat(rolloutPath, { bigint: true });
+      const daemon = installDaemonCliDepsForTest({
+        agentId: conversationId,
+        sessionId: conversationId,
+        cwd: tmpCwd,
+        liveAgent: false,
+        resumePromptAgentError: error,
+      });
+      daemon.findAgentBySessionId
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          agentId: conversationId,
+          agentPath: "/root",
+          objective: "retained prompt",
+          status: "running",
+          createdAt: "2026-08-19T00:00:00.000Z",
+          cwd: tmpCwd,
+          activeSessionIds: [conversationId],
+          metadata: {
+            agentPath: "/root",
+            canonicalRolloutPath: rolloutPath,
+            canonicalRolloutDev: rolloutIdentity.dev.toString(10),
+            canonicalRolloutIno: rolloutIdentity.ino.toString(10),
+          },
+        });
+      const stderrSpy = vi
+        .spyOn(process.stderr, "write")
+        .mockImplementation(() => true);
+
+      try {
+        trustWorkspaceForTest(tmpHome, tmpCwd);
+        await expect(
+          resumeTUIEntry({ resumeId: conversationId }),
+        ).resolves.toBe(1);
+        expect(daemon.resumePromptAgent).toHaveBeenCalledOnce();
+        expect(daemon.findAgentBySessionId).toHaveBeenCalledOnce();
+        expect(daemon.requests).not.toContainEqual(
+          expect.objectContaining({ method: "agent.attach" }),
+        );
+        expect(stderrSpy).toHaveBeenCalledWith(
+          expect.stringContaining(error.message),
+        );
+      } finally {
+        stderrSpy.mockRestore();
+        for (const key of Object.keys(process.env)) {
+          if (!(key in prevEnv)) delete process.env[key];
+        }
+        Object.assign(process.env, prevEnv);
+        await rm(tmpHome, { recursive: true, force: true });
+        await rm(tmpCwd, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("attach binds local TUI work to the daemon session runtime options", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-bare-attach-home-"));
