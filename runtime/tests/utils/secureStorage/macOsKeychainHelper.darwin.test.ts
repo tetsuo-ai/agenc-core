@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -11,6 +11,14 @@ if (process.platform !== "darwin") {
 }
 
 test("compiles and performs exact missing/create/update/read/delete Keychain CRUD", () => {
+  const testHome = process.env.HOME?.trim();
+  if (testHome === undefined || testHome.length === 0) {
+    throw new Error("the native Keychain helper test requires HOME");
+  }
+  mkdirSync(join(testHome, "Library", "Preferences"), {
+    recursive: true,
+    mode: 0o700,
+  });
   const work = mkdtempSync(join(tmpdir(), "agenc-keychain-helper-test-"));
   const source = resolve(
     import.meta.dirname,
