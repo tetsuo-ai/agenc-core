@@ -328,17 +328,17 @@ cleanup:
   return result;
 }
 
-static CFMutableDictionaryRef
-create_persistent_ref_query(CFDataRef persistent_ref) {
+static CFMutableDictionaryRef create_item_list_query(CFTypeRef item) {
   CFMutableDictionaryRef query = CFDictionaryCreateMutable(
       kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
       &kCFTypeDictionaryValueCallBacks);
-  const void *item_values[] = {persistent_ref};
+  const void *item_values[] = {item};
   CFArrayRef item_list;
 
   if (query == NULL) {
     return NULL;
   }
+  CFDictionarySetValue(query, kSecClass, kSecClassGenericPassword);
   item_list = CFArrayCreate(kCFAllocatorDefault, item_values, 1,
                             &kCFTypeArrayCallBacks);
   if (item_list == NULL) {
@@ -350,15 +350,71 @@ create_persistent_ref_query(CFDataRef persistent_ref) {
   return query;
 }
 
+/*
+ * Apple requires a persistent reference to be converted with kSecReturnRef
+ * before the resulting transient item reference is used for another return
+ * type. Passing a persistent reference directly with kSecReturnData is an
+ * invalid parameter combination on macOS.
+ */
+static OSStatus
+copy_item_by_persistent_ref(CFDataRef persistent_ref,
+                            SecKeychainItemRef *item_out) {
+  CFMutableDictionaryRef query = NULL;
+  CFTypeRef matched = NULL;
+  OSStatus status;
+
+  *item_out = NULL;
+  query = create_item_list_query(persistent_ref);
+  if (query == NULL) {
+    return errSecAllocate;
+  }
+  CFDictionarySetValue(query, kSecReturnRef, kCFBooleanTrue);
+  CFDictionarySetValue(query, kSecMatchLimit, kSecMatchLimitOne);
+
+  status = SecItemCopyMatching(query, &matched);
+  if (status != errSecSuccess) {
+    goto cleanup;
+  }
+#pragma clang diagnostic push
+/* Generic passwords return deprecated file-based SecKeychainItem references. */
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  if ((matched == NULL) ||
+      (CFGetTypeID(matched) != SecKeychainItemGetTypeID())) {
+    status = errSecParam;
+    goto cleanup;
+  }
+#pragma clang diagnostic pop
+
+  *item_out = (SecKeychainItemRef)matched;
+  matched = NULL;
+
+cleanup:
+  if (matched != NULL) {
+    CFRelease(matched);
+  }
+  CFRelease(query);
+  return status;
+}
+
 static enum exact_item_result
 copy_data_by_persistent_ref(CFDataRef persistent_ref, CFDataRef *data_out) {
   CFMutableDictionaryRef query = NULL;
+  SecKeychainItemRef item = NULL;
   CFTypeRef matched = NULL;
   OSStatus status;
   enum exact_item_result result = EXACT_ITEM_ERROR;
 
   *data_out = NULL;
-  query = create_persistent_ref_query(persistent_ref);
+  status = copy_item_by_persistent_ref(persistent_ref, &item);
+  if (status == errSecItemNotFound) {
+    result = EXACT_ITEM_NOT_FOUND;
+    goto cleanup;
+  }
+  if (status != errSecSuccess) {
+    (void)fail_osstatus("Keychain exact reference lookup", status);
+    goto cleanup;
+  }
+  query = create_item_list_query(item);
   if (query == NULL) {
     (void)fail_message("cannot allocate exact Keychain read query");
     goto cleanup;
@@ -391,33 +447,54 @@ cleanup:
   if (query != NULL) {
     CFRelease(query);
   }
+  if (item != NULL) {
+    CFRelease(item);
+  }
   return result;
 }
 
 static OSStatus update_by_persistent_ref(CFDataRef persistent_ref,
                                          CFDictionaryRef values) {
-  CFMutableDictionaryRef query = create_persistent_ref_query(persistent_ref);
-  OSStatus status;
+  SecKeychainItemRef item = NULL;
+  CFMutableDictionaryRef query = NULL;
+  OSStatus status = copy_item_by_persistent_ref(persistent_ref, &item);
 
-  if (query == NULL) {
-    (void)fail_message("cannot allocate exact Keychain update query");
-    return errSecAllocate;
+  if (status == errSecSuccess) {
+    query = create_item_list_query(item);
+    if (query == NULL) {
+      status = errSecAllocate;
+    } else {
+      status = SecItemUpdate(query, values);
+    }
   }
-  status = SecItemUpdate(query, values);
-  CFRelease(query);
+  if (query != NULL) {
+    CFRelease(query);
+  }
+  if (item != NULL) {
+    CFRelease(item);
+  }
   return status;
 }
 
 static OSStatus delete_by_persistent_ref(CFDataRef persistent_ref) {
-  CFMutableDictionaryRef query = create_persistent_ref_query(persistent_ref);
-  OSStatus status;
+  SecKeychainItemRef item = NULL;
+  CFMutableDictionaryRef query = NULL;
+  OSStatus status = copy_item_by_persistent_ref(persistent_ref, &item);
 
-  if (query == NULL) {
-    (void)fail_message("cannot allocate exact Keychain delete query");
-    return errSecAllocate;
+  if (status == errSecSuccess) {
+    query = create_item_list_query(item);
+    if (query == NULL) {
+      status = errSecAllocate;
+    } else {
+      status = SecItemDelete(query);
+    }
   }
-  status = SecItemDelete(query);
-  CFRelease(query);
+  if (query != NULL) {
+    CFRelease(query);
+  }
+  if (item != NULL) {
+    CFRelease(item);
+  }
   return status;
 }
 

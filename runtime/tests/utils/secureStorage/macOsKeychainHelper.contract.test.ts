@@ -20,6 +20,7 @@ describe("macOS Keychain native-helper contract", () => {
     expect(source).toContain("kSecReturnPersistentRef");
     expect(source).toContain("kSecMatchItemList");
     expect(source).toContain("copy_unique_persistent_ref");
+    expect(source).toContain("copy_item_by_persistent_ref");
     expect(source).toContain("count != 1");
     expect(source).toContain(
       "multiple Keychain records match the exact service/account identity",
@@ -54,6 +55,53 @@ describe("macOS Keychain native-helper contract", () => {
 
     expect(source).not.toContain("SecItemUpdate(identity_query");
     expect(source).not.toContain("SecItemDelete(identity_query");
+    expect(
+      source.match(/create_item_list_query\(persistent_ref\)/gu),
+    ).toHaveLength(1);
+    const itemListQueryIndex = source.indexOf(
+      "static CFMutableDictionaryRef create_item_list_query(CFTypeRef item)",
+    );
+    const itemListClassIndex = source.indexOf(
+      "CFDictionarySetValue(query, kSecClass, kSecClassGenericPassword)",
+      itemListQueryIndex,
+    );
+    const itemListIndex = source.indexOf(
+      "CFDictionarySetValue(query, kSecMatchItemList, item_list)",
+      itemListClassIndex,
+    );
+    expect(itemListQueryIndex).toBeGreaterThan(0);
+    expect(itemListClassIndex).toBeGreaterThan(itemListQueryIndex);
+    expect(itemListIndex).toBeGreaterThan(itemListClassIndex);
+
+    const exactConversionIndex = source.indexOf(
+      "copy_item_by_persistent_ref(CFDataRef persistent_ref",
+    );
+    const returnRefIndex = source.indexOf(
+      "CFDictionarySetValue(query, kSecReturnRef, kCFBooleanTrue)",
+      exactConversionIndex,
+    );
+    const convertedItemIndex = source.indexOf(
+      "SecItemCopyMatching(query, &matched)",
+      returnRefIndex,
+    );
+    const exactDataIndex = source.indexOf(
+      "copy_data_by_persistent_ref(CFDataRef persistent_ref",
+      convertedItemIndex,
+    );
+    const transientItemQueryIndex = source.indexOf(
+      "query = create_item_list_query(item)",
+      exactDataIndex,
+    );
+    const returnDataIndex = source.indexOf(
+      "CFDictionarySetValue(query, kSecReturnData, kCFBooleanTrue)",
+      transientItemQueryIndex,
+    );
+    expect(exactConversionIndex).toBeGreaterThan(0);
+    expect(returnRefIndex).toBeGreaterThan(exactConversionIndex);
+    expect(convertedItemIndex).toBeGreaterThan(returnRefIndex);
+    expect(exactDataIndex).toBeGreaterThan(convertedItemIndex);
+    expect(transientItemQueryIndex).toBeGreaterThan(exactDataIndex);
+    expect(returnDataIndex).toBeGreaterThan(transientItemQueryIndex);
 
     const defaultLookupIndex = source.indexOf(
       "SecKeychainCopyDomainDefault(kSecPreferencesDomainUser, &target)",
