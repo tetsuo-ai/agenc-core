@@ -16,13 +16,12 @@ import { CronDeleteTool } from './tools/ScheduleCronTool/CronDeleteTool.js'
 import { CronListTool } from './tools/ScheduleCronTool/CronListTool.js'
 import * as coordinatorMode from './coordinator/coordinatorMode.js'
 // Dead code elimination: conditional import for internal-only tools.
-// Tools that are not part of this build at all (Sleep, RemoteTrigger,
+// Tools that are not part of this pool (Sleep,
 // SendUserFile, PushNotification, SubscribePR, OverflowTest,
 // TerminalCapture, WebBrowser, Snip, ListPeers, Workflow) used to sit
 // here as hard-null consts spread into getAllBaseTools() — pure dead
 // code that read like a second catalog. Deleted; the LIVE runtime
-// registry (tool-registry.ts + bin/model-facing-tools.ts) is where
-// those capabilities exist today.
+// registry (tool-registry.ts + bin/model-facing-tools.ts) is authoritative.
 import { TaskOutputTool } from './tools/TaskOutputTool/TaskOutputTool.js'
 import { WebSearchTool } from './tools/WebSearchTool/WebSearchTool.js'
 import { TodoWriteTool } from './tools/TodoWriteTool/TodoWriteTool.js'

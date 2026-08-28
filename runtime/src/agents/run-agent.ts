@@ -2387,7 +2387,6 @@ const THREAD_SPAWN_MAIN_THREAD_TOOL_NAMES = new Set([
   "CronDelete",
   "CronList",
   "WorkflowTool",
-  "RemoteTrigger",
   "EnterPlanMode",
   "ExitPlanMode",
 ]);

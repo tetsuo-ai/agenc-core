@@ -470,7 +470,7 @@ describe("model-facing tools", () => {
     expect(allNames).not.toContain("WebFetch");
     expect(allNames).not.toContain("Brief");
 
-    for (const removedName of ["WebFetch", "Brief"]) {
+    for (const removedName of ["WebFetch", "Brief", "RemoteTrigger"]) {
       const result = await registry.dispatch({
         id: `removed-${removedName}`,
         name: removedName,

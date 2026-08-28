@@ -51,6 +51,9 @@ describe('home and runtime-state authority boundary', () => {
         content.includes('keychainPrefetch.js')
           ? 'keychainPrefetch.js'
           : undefined,
+        content.includes('runtime-tools/state.json')
+          ? 'runtime-tools/state.json'
+          : undefined,
       ].filter((reason): reason is string => reason !== undefined)
       return reasons.map(reason => `${relative(sourceRoot, path)}: ${reason}`)
     })

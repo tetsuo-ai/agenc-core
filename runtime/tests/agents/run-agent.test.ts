@@ -3741,7 +3741,6 @@ describe("runAgent", () => {
       "CronDelete",
       "CronList",
       "WorkflowTool",
-      "RemoteTrigger",
       "EnterPlanMode",
       "ExitPlanMode",
     ];

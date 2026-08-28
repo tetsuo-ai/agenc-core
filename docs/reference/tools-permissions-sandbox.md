@@ -149,7 +149,6 @@ path. Model-facing search is `WebSearch` (plus gated `XSearch` when enabled).
 | `VerifyPlanExecution` | Compare plan vs progress summary |
 | `WorkflowTool` | Bounded event-driven agent DAG runner; **deferred**. See [workflows.md](workflows.md) |
 | `CronCreate` / `CronDelete` / `CronList` | Local scheduled prompts (`.agenc/scheduled_tasks.json`); **deferred** |
-| `RemoteTrigger` | Deferred; inspect local scheduled defs only |
 
 ### Interaction / user input
 
@@ -283,7 +282,7 @@ Exact visibility is request-scoped and config-dependent. As coded in
   are **deferred**.
 - **Deferred / discoverable examples:** `system.bash`, git/symbol `system.*`
   intel tools, MCP tools when `deferMcpTools` is on, MCP resource helpers,
-  `RemoteTrigger`, passthrough `StructuredOutput`, and other tools marked
+  passthrough `StructuredOutput`, and other tools marked
   `metadata.deferred`.
 
 Coordinator mode further **allowlists** orchestration tools only — see

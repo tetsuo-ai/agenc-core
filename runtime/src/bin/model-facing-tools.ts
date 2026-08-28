@@ -220,19 +220,6 @@ export function isGrokDirectXaiSession(opts: {
   return isDirectXaiInferenceHost(opts.sessionBaseURL);
 }
 
-interface StoredCron {
-  readonly id: string;
-  readonly schedule: string;
-  readonly prompt: string;
-  readonly timezone?: string;
-  readonly durable: boolean;
-  readonly createdAt: string;
-}
-
-interface ToolState {
-  readonly crons: readonly StoredCron[];
-}
-
 interface WebSearchFilters {
   readonly allowedDomains: readonly string[];
   readonly blockedDomains: readonly string[];
@@ -358,30 +345,6 @@ function stateRoot(opts: ModelFacingToolOptions): string {
       : { AGENC_HOME: opts.agencHome },
   ).path;
 }
-
-function stateFile(opts: ModelFacingToolOptions): string {
-  return join(stateRoot(opts), "runtime-tools", "state.json");
-}
-
-async function readState(opts: ModelFacingToolOptions): Promise<ToolState> {
-  try {
-    const raw = await readFile(stateFile(opts), "utf8");
-    const parsed = JSON.parse(raw) as Partial<ToolState>;
-    return {
-      crons: Array.isArray(parsed.crons) ? parsed.crons : [],
-    };
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
-      return { crons: [] };
-    }
-    throw error;
-  }
-}
-
-// NOTE: the legacy runtime-tools/state.json cron store is READ-only now
-// (RemoteTrigger's stub still lists it). Cron definitions live in the
-// scheduler's own store (.agenc/scheduled_tasks.json via utils/cronTasks)
-// so registered jobs actually fire; the old file's entries never did.
 
 function resolveWorkspacePath(
   opts: ModelFacingToolOptions,
@@ -4965,39 +4928,6 @@ function createPowerShellTool(opts: ModelFacingToolOptions): readonly Tool[] {
   ];
 }
 
-function createRemoteTriggerTool(opts: ModelFacingToolOptions): Tool {
-  return {
-    name: "RemoteTrigger",
-    description:
-      "Inspect local scheduled prompt definitions. Remote hosted trigger management is not enabled in this runtime.",
-    metadata: toolMetadata("workflow", {
-      deferred: true,
-      keywords: ["remote", "trigger", "schedule"],
-    }),
-    isReadOnly: true,
-    recoveryCategory: "idempotent",
-    inputSchema: {
-      type: "object",
-      properties: {
-        action: { type: "string", enum: ["list", "get"] },
-        trigger_id: { type: "string" },
-      },
-      additionalProperties: false,
-    },
-    execute: async (args) => {
-      const action = stringValue(args.action) ?? "list";
-      const state = await readState(opts);
-      if (action === "get") {
-        const id = stringValue(args.trigger_id);
-        return json({
-          trigger: state.crons.find((cron) => cron.id === id) ?? null,
-        });
-      }
-      return json({ triggers: state.crons });
-    },
-  };
-}
-
 export function createModelFacingTools(
   opts: ModelFacingToolOptions,
 ): readonly Tool[] {
@@ -5053,7 +4983,6 @@ export function createModelFacingTools(
     ...createPlanAndMessageTools(scopedOpts),
     ...createTaskTools(scopedOpts),
     ...createCronAndWorkflowTools(scopedOpts),
-    createRemoteTriggerTool(scopedOpts),
     ...createPowerShellTool(scopedOpts),
     createEditorProposalTool(),
     createSessionStructuredOutputTool(scopedOpts),
