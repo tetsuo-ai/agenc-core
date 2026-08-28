@@ -4,6 +4,79 @@ import { QuickJsCodeModeService } from "./service.js";
 import type { Tool } from "../types.js";
 
 describe("code-mode tools", () => {
+  test("settles exec and wait argument validation as confirmed no-effect", async () => {
+    const service = new QuickJsCodeModeService({ enabled: true });
+    const [exec, wait] = createCodeModeTools({
+      service,
+      getEnabledTools: () => [],
+    });
+
+    const invalidExec = await exec.execute({ code: "" });
+    const invalidWait = await wait.execute({
+      cell_id: "missing",
+      yield_time_ms: -1,
+    });
+
+    expect(invalidExec).toMatchObject({
+      isError: true,
+      effectDisposition: {
+        disposition: "confirmed_no_effect",
+        evidenceKind: "boundary_not_crossed",
+        evidenceRef: "tool:code-mode:exec:validation",
+      },
+    });
+    expect(invalidWait).toMatchObject({
+      isError: true,
+      effectDisposition: {
+        disposition: "confirmed_no_effect",
+        evidenceKind: "boundary_not_crossed",
+        evidenceRef: "tool:code-mode:wait:validation",
+      },
+    });
+  });
+
+  test("settles enabled-tool projection failures before worker execution", async () => {
+    const service = new QuickJsCodeModeService({ enabled: true });
+    const [exec] = createCodeModeTools({
+      service,
+      descriptionTools: [],
+      getEnabledTools: () => {
+        throw new Error("tool catalog unavailable");
+      },
+    });
+
+    const result = await exec.execute({ code: 'text("never runs")' });
+
+    expect(result).toMatchObject({
+      isError: true,
+      content: "tool catalog unavailable",
+      effectDisposition: {
+        disposition: "confirmed_no_effect",
+        evidenceKind: "boundary_not_crossed",
+        evidenceRef: "tool:code-mode:exec:validation",
+      },
+    });
+  });
+
+  test("settles disabled exec and unknown wait cells as confirmed no-effect", async () => {
+    const service = new QuickJsCodeModeService({ enabled: false });
+    const [exec, wait] = createCodeModeTools({
+      service,
+      getEnabledTools: () => [],
+    });
+
+    const disabled = await exec.execute({ code: 'text("unused")' });
+    const missing = await wait.execute({ cell_id: "does-not-exist" });
+
+    for (const result of [disabled, missing]) {
+      expect(result.isError).toBe(true);
+      expect(result.effectDisposition).toMatchObject({
+        disposition: "confirmed_no_effect",
+        evidenceKind: "boundary_not_crossed",
+      });
+    }
+  });
+
   test("exec and wait tool adapters expose running cell lifecycle", async () => {
     const service = new QuickJsCodeModeService({ enabled: true });
     const tools = createCodeModeTools({
@@ -65,5 +138,32 @@ describe("code-mode tools", () => {
     expect(result.content.startsWith("hello")).toBe(true);
     expect(result.content).toMatch(/\[code_mode status=completed [^\]]+\]$/);
     expect(exec.description).toContain("system_echo");
+  });
+
+  test("does not claim no-effect after a nested dispatch boundary", async () => {
+    const service = new QuickJsCodeModeService({ enabled: true });
+    const mutatingTool: Tool = {
+      name: "Write",
+      description: "Mutates a file.",
+      inputSchema: { type: "object" },
+      execute: async () => ({ content: "unused" }),
+    };
+    const worker = service.startTurnWorker({
+      invokeTool: async () => ({ written: true }),
+    });
+    const [exec] = createCodeModeTools({
+      service,
+      getEnabledTools: () => [mutatingTool],
+    });
+
+    const result = await exec.execute({
+      code: 'await tools.Write({ path: "x" }); throw new Error("after write")',
+      __callId: "exec-after-effect",
+    });
+    worker.dispose();
+
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("after write");
+    expect(result.effectDisposition).toBeUndefined();
   });
 });

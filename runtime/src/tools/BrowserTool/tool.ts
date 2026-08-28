@@ -14,6 +14,7 @@
  */
 
 import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
+import { validationErrorToolResult } from "../results.js";
 import type { FunctionCallOutputContentItem } from "../context.js";
 import type { PermissionResult, PermissionUpdate } from "../../permissions/types.js";
 import type { ToolEvaluatorContext } from "../../permissions/evaluator.js";
@@ -82,6 +83,10 @@ function str(value: unknown): string | undefined {
 
 function errorResult(message: string): ToolResult {
   return { content: message, isError: true };
+}
+
+function preEffectErrorResult(evidenceRef: string, message: string): ToolResult {
+  return validationErrorToolResult(`tool:browser:${evidenceRef}`, message);
 }
 
 function safeAgencHome(explicit?: string): string | undefined {
@@ -243,14 +248,27 @@ export function createBrowserTool(
   ): Promise<ToolResult> {
     const action = str(input.action);
     if (action === undefined || !BROWSER_ACTIONS.includes(action as never)) {
-      return errorResult(
+      return preEffectErrorResult(
+        "input-validation",
         `action must be one of: ${BROWSER_ACTIONS.join(", ")}`,
       );
     }
     const requiredError = validateRequired(action, input);
-    if (requiredError !== undefined) return errorResult(requiredError);
+    if (requiredError !== undefined) {
+      return preEffectErrorResult("input-validation", requiredError);
+    }
     if (sandboxExecutionBroker === undefined) {
-      throw missingSandboxExecutionBoundary("browser");
+      const error = missingSandboxExecutionBoundary("browser");
+      return preEffectErrorResult(
+        "sandbox-boundary-missing",
+        `Browser action failed: ${error.message}`,
+      );
+    }
+    if (isSandboxExecutionBrokerDisposed(sandboxExecutionBroker)) {
+      return preEffectErrorResult(
+        "sandbox-authority-disposed",
+        "Browser action failed: browser sandbox authority has been disposed",
+      );
     }
     const mgr = await ensureManager(sandboxExecutionBroker);
 

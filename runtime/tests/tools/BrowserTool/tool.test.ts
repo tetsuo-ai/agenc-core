@@ -20,6 +20,7 @@ import {
   attachSandboxExecutionBroker,
 } from "../../../src/sandbox/execution-broker.js";
 import { disposeSandboxExecutionBroker } from "../../../src/sandbox/execution-lifecycle.js";
+import type { ToolResult } from "../../../src/tools/types.js";
 
 function evaluatorContext(): ToolEvaluatorContext {
   const permissionContext = createEmptyToolPermissionContext();
@@ -31,6 +32,15 @@ function evaluatorContext(): ToolEvaluatorContext {
 async function check(input: Record<string, unknown>): Promise<PermissionResult> {
   const tool = createBrowserTool();
   return await tool.checkPermissions!(input, evaluatorContext());
+}
+
+function expectConfirmedNoEffect(result: ToolResult, evidenceRef: string): void {
+  expect(result.effectDisposition).toMatchObject({
+    disposition: "confirmed_no_effect",
+    evidenceKind: "boundary_not_crossed",
+    evidenceRef,
+  });
+  expect(result.effectDisposition?.evidenceSha256).toMatch(/^[0-9a-f]{64}$/u);
 }
 
 describe("Browser tool contract", () => {
@@ -110,18 +120,28 @@ describe("Browser tool validation (no browser launched)", () => {
     const result = await createBrowserTool().execute({ action: "fly" });
     expect(result.isError).toBe(true);
     expect(result.content).toContain("action must be one of");
+    expectConfirmedNoEffect(result, "tool:browser:input-validation");
   });
 
   test("rejects navigate without a url", async () => {
     const result = await createBrowserTool().execute({ action: "navigate" });
     expect(result.isError).toBe(true);
     expect(result.content).toContain("requires a url");
+    expectConfirmedNoEffect(result, "tool:browser:input-validation");
   });
 
   test("rejects click without a ref", async () => {
     const result = await createBrowserTool().execute({ action: "click" });
     expect(result.isError).toBe(true);
     expect(result.content).toContain("requires a ref");
+    expectConfirmedNoEffect(result, "tool:browser:input-validation");
+  });
+
+  test("settles a missing sandbox boundary before manager initialization", async () => {
+    const result = await createBrowserTool().execute({ action: "tabs" });
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("no authenticated runtime policy");
+    expectConfirmedNoEffect(result, "tool:browser:sandbox-boundary-missing");
   });
 
   test("closes and detaches a broker-owned manager when child authority is disposed", async () => {
@@ -147,6 +167,40 @@ describe("Browser tool validation (no browser launched)", () => {
     const afterDisposal = await tool.execute(args);
     expect(afterDisposal).toMatchObject({ isError: true });
     expect(afterDisposal.content).toContain("authority has been disposed");
+    expectConfirmedNoEffect(
+      afterDisposal,
+      "tool:browser:sandbox-authority-disposed",
+    );
     expect(listTabs).toHaveBeenCalledOnce();
+  });
+
+  test("keeps a failure after navigation dispatched as an unknown outcome", async () => {
+    const closeAll = vi.fn(async () => {});
+    const snapshot = vi.fn(async () => {
+      throw new Error("snapshot failed after navigation");
+    });
+    const navigate = vi.fn(async () => ({ snapshot }));
+    const tool = createBrowserTool({
+      manager: { closeAll, navigate } as never,
+    });
+    const broker = new SandboxExecutionBroker({
+      mode: "danger_full_access",
+      cwd: "/child-browser-workspace",
+    });
+    const args: Record<string, unknown> = {
+      action: "navigate",
+      url: "https://example.com",
+    };
+    attachSandboxExecutionBroker(args, broker, "browser");
+
+    const result = await tool.execute(args);
+    expect(navigate).toHaveBeenCalledOnce();
+    expect(snapshot).toHaveBeenCalledOnce();
+    expect(result.isError).toBe(true);
+    expect(result.content).toContain("snapshot failed after navigation");
+    expect(result.effectDisposition).toBeUndefined();
+
+    await disposeSandboxExecutionBroker(broker);
+    expect(closeAll).toHaveBeenCalledOnce();
   });
 });

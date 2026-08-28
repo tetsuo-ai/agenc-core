@@ -53,6 +53,66 @@ describe("QuickJsCodeModeService", () => {
     expect(content).toMatch(/\[code_mode status=completed [^\]]+\]$/);
   });
 
+  test("marks runtime failures before any effect as confirmed no-effect", async () => {
+    const service = makeService();
+    const response = await service.execute(
+      await request(service, 'throw new Error("before effects")'),
+    );
+    const result = codeModeRuntimeResponseToToolResult(response);
+
+    expect(response).toMatchObject({
+      type: "result",
+      effectBoundaryCrossed: false,
+    });
+    expect(result).toMatchObject({
+      isError: true,
+      effectDisposition: {
+        disposition: "confirmed_no_effect",
+        evidenceKind: "boundary_not_crossed",
+      },
+    });
+  });
+
+  test("tracks persisted store and notification effects before runtime failure", async () => {
+    const service = makeService();
+    const notified: string[] = [];
+    const worker = service.startTurnWorker({
+      invokeTool: async () => undefined,
+      notify: ({ text }) => notified.push(text),
+    });
+
+    const storedResponse = await service.execute(
+      await request(
+        service,
+        'store("saved", 42); throw new Error("after store")',
+      ),
+    );
+    const notifyResponse = await service.execute(
+      await request(
+        service,
+        'notify("visible"); throw new Error("after notify")',
+      ),
+    );
+    worker.dispose();
+
+    expect(storedResponse).toMatchObject({
+      type: "result",
+      effectBoundaryCrossed: true,
+    });
+    expect(notifyResponse).toMatchObject({
+      type: "result",
+      effectBoundaryCrossed: true,
+    });
+    expect(
+      codeModeRuntimeResponseToToolResult(storedResponse).effectDisposition,
+    ).toBeUndefined();
+    expect(
+      codeModeRuntimeResponseToToolResult(notifyResponse).effectDisposition,
+    ).toBeUndefined();
+    expect(await service.storedValues()).toMatchObject({ saved: 42 });
+    expect(notified).toContain("visible");
+  });
+
   test("stores serializable values across exec cells", async () => {
     const service = makeService();
     await service.execute(
@@ -83,6 +143,82 @@ describe("QuickJsCodeModeService", () => {
     });
     expect(final.type).toBe("result");
     expect(final.contentItems).toEqual([{ type: "input_text", text: "later" }]);
+  });
+
+  test("does not clobber a concurrent cell store or claim no-effect from a stale failure", async () => {
+    const service = makeService();
+    const first = await service.execute(
+      await request(service, 'await yield_control(); store("newer", 1)'),
+    );
+    const second = await service.execute(
+      await request(
+        service,
+        'await yield_control(); throw new Error("stale failure")',
+      ),
+    );
+
+    expect(first.type).toBe("yielded");
+    expect(second.type).toBe("yielded");
+
+    const firstFinal = await service.wait({
+      cellId: first.cellId,
+      yieldTimeMs: 500,
+    });
+    const secondFinal = await service.wait({
+      cellId: second.cellId,
+      yieldTimeMs: 500,
+    });
+
+    expect(await service.storedValues()).toEqual({ newer: 1 });
+    expect(secondFinal).toMatchObject({
+      type: "result",
+      errorText: "stale failure",
+      storedValues: { newer: 1 },
+      effectBoundaryCrossed: false,
+    });
+    expect(
+      codeModeRuntimeResponseToToolResult(secondFinal).effectDisposition,
+    ).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+    });
+    expect(firstFinal).toMatchObject({
+      type: "result",
+      storedValues: { newer: 1 },
+      effectBoundaryCrossed: true,
+    });
+  });
+
+  test("rejects a stale store snapshot instead of overwriting newer values", async () => {
+    const service = makeService();
+    const first = await service.execute(
+      await request(service, 'await yield_control(); store("value", "newer")'),
+    );
+    const second = await service.execute(
+      await request(service, 'await yield_control(); store("value", "stale")'),
+    );
+
+    expect(first.type).toBe("yielded");
+    expect(second.type).toBe("yielded");
+    await service.wait({ cellId: first.cellId, yieldTimeMs: 500 });
+    const stale = await service.wait({
+      cellId: second.cellId,
+      yieldTimeMs: 500,
+    });
+
+    expect(await service.storedValues()).toEqual({ value: "newer" });
+    expect(stale).toMatchObject({
+      type: "result",
+      storedValues: { value: "newer" },
+      effectBoundaryCrossed: false,
+    });
+    expect(stale.errorText).toContain("stale store update was not applied");
+    expect(
+      codeModeRuntimeResponseToToolResult(stale).effectDisposition,
+    ).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+    });
   });
 
   test("nested tools resolve through the attached turn host", async () => {

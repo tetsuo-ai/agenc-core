@@ -17,11 +17,13 @@ import {
   backgroundTaskLifecycle,
   isTerminalTaskStatus,
   stopTask,
+  StopTaskError,
   type BackgroundTaskLifecycle,
 } from "../../tasks/index.js";
 import type { Tool } from "../types.js";
 import {
   TASK_CONCURRENCY,
+  asTaskPreEffectRefusal,
   numberValue,
   stringValue,
   taskStrictArgs,
@@ -187,13 +189,21 @@ export function createBackgroundTaskTools(
         const strict = taskStrictArgs(args, {
           allowed: new Set(["task_id", "shell_id"]),
         });
-        if (strict) return strict;
+        if (strict) {
+          return asTaskPreEffectRefusal(
+            strict,
+            "tool:task-stop:input-validation",
+          );
+        }
         const taskId = stringValue(args.task_id) ?? stringValue(args.shell_id);
         if (!taskId) {
-          return taskTextResult(
-            "Missing required parameter: task_id",
-            { error: "Missing required parameter: task_id" },
-            true,
+          return asTaskPreEffectRefusal(
+            taskTextResult(
+              "Missing required parameter: task_id",
+              { error: "Missing required parameter: task_id" },
+              true,
+            ),
+            "tool:task-stop:input-validation",
           );
         }
         try {
@@ -215,7 +225,16 @@ export function createBackgroundTaskTools(
         } catch (error) {
           const message =
             error instanceof Error ? error.message : String(error);
-          return taskTextResult(message, { error: message }, true);
+          const result = taskTextResult(message, { error: message }, true);
+          return error instanceof StopTaskError &&
+            (error.code === "not_found" ||
+              error.code === "not_running" ||
+              error.code === "unsupported_type")
+            ? asTaskPreEffectRefusal(
+                result,
+                `tool:task-stop:${error.code}`,
+              )
+            : result;
         }
       },
     },

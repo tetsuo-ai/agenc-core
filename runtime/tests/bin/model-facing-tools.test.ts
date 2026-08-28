@@ -26,7 +26,11 @@ import {
   _clearAgentControlCacheForTesting,
   _setAgentControlForTesting,
 } from "./delegate-tool.js";
-import { AgentControl } from "../agents/control.js";
+import {
+  AgentAssignmentRejectedError,
+  AgentControl,
+  ThreadNotFoundError,
+} from "../agents/control.js";
 import { AgentRegistry } from "../agents/registry.js";
 import {
   checkForLSPDiagnostics,
@@ -3015,6 +3019,11 @@ describe("model-facing tools", () => {
     });
     expect(assign.isError).toBe(true);
     expect(JSON.parse(assign.content).error).toContain("unknown field `items`");
+    expect(assign.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+      evidenceRef: "agents-v2-strict-args",
+    });
 
     // followup_task (the deferred assign_task alias) no longer exists.
     expect(byName.has("followup_task")).toBe(false);
@@ -4358,6 +4367,26 @@ describe("model-facing tools", () => {
     expect(JSON.parse(result.content).error).toContain(
       "agent reference cannot be resolved",
     );
+    expect(result.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+      evidenceRef: "agents-v2-message-target-resolution",
+    });
+
+    const assignment = await byName.get("assign_task")!.execute({
+      target: "/root/missing_child",
+      message: "verify the fix",
+    });
+
+    expect(assignment.isError).toBe(true);
+    expect(JSON.parse(assignment.content).error).toContain(
+      "agent reference cannot be resolved",
+    );
+    expect(assignment.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+      evidenceRef: "agents-v2-message-target-resolution",
+    });
   });
 
   it("send_message emits the interaction end event after delivery failure", async () => {
@@ -4416,6 +4445,7 @@ describe("model-facing tools", () => {
       expect(JSON.parse(result.content).error).toBe(
         "agent with id agent-1 is closed",
       );
+      expect(result.effectDisposition).toBeUndefined();
       expect(
         emitted.map((event) => (event as { msg: { type: string } }).msg.type),
       ).toEqual([
@@ -4426,6 +4456,53 @@ describe("model-facing tools", () => {
         (emitted[1] as { msg: { payload: { status: unknown } } }).msg.payload
           .status,
       ).toEqual({ status: "shutdown" });
+    } finally {
+      _clearAgentControlCacheForTesting();
+    }
+  });
+
+  it("send_message proves no delivery when the target closes during dispatch", async () => {
+    const session = fakeSession();
+    const control = {
+      registerSessionRoot: vi.fn(),
+      getLive: vi.fn(() => ({
+        agentId: "agent-1",
+        agentPath: "/root/task_1",
+        role: { name: "worker" },
+      })),
+      getAgentMetadata: vi.fn(() => ({
+        agentId: "agent-1",
+        agentPath: "/root/task_1",
+        agentRole: "worker",
+      })),
+      resolveAgentReference: vi.fn(() => "agent-1"),
+      sendInterAgentCommunication: vi.fn(async () => {
+        throw new ThreadNotFoundError("agent-1");
+      }),
+      getStatus: vi.fn(async () => ({ status: "shutdown" as const })),
+    };
+    _setAgentControlForTesting(session, {
+      control: control as never,
+      registry: {} as never,
+    });
+    try {
+      const send = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "send_message")!;
+
+      const result = await send.execute({
+        target: "/root/task_1",
+        message: "hello",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content).error).toContain("not found");
+      expect(result.effectDisposition).toMatchObject({
+        disposition: "confirmed_no_effect",
+        evidenceKind: "boundary_not_crossed",
+        evidenceRef: "agents-v2-message-not-delivered",
+      });
     } finally {
       _clearAgentControlCacheForTesting();
     }
@@ -4751,6 +4828,64 @@ describe("model-facing tools", () => {
     }
   });
 
+  it("assign_task proves no effect when an idle assignment is refused", async () => {
+    const session = fakeSession();
+    const idleStatus = {
+      status: "idle" as const,
+      turnId: "turn-1",
+      endedAtMs: 1,
+    };
+    const control = {
+      registerSessionRoot: vi.fn(),
+      getLive: vi.fn(() => ({
+        agentId: "agent-1",
+        agentPath: "/root/task_1",
+        role: { name: "worker" },
+        status: { value: idleStatus },
+      })),
+      getAgentMetadata: vi.fn(() => ({
+        agentId: "agent-1",
+        agentPath: "/root/task_1",
+        agentRole: "worker",
+      })),
+      resolveAgentReference: vi.fn(() => "agent-1"),
+      assignTask: vi.fn(() => {
+        throw new AgentAssignmentRejectedError(
+          "assignment_outstanding",
+          "agent /root/task_1 already has an outstanding assignment",
+        );
+      }),
+      getStatus: vi.fn(async () => idleStatus),
+    };
+    _setAgentControlForTesting(session, {
+      control: control as never,
+      registry: {} as never,
+    });
+    try {
+      const assign = createModelFacingTools({
+        workspaceRoot: process.cwd(),
+        getSession: () => session,
+      }).find((tool) => tool.name === "assign_task")!;
+
+      const result = await assign.execute({
+        target: "/root/task_1",
+        message: "report now",
+      });
+
+      expect(result.isError).toBe(true);
+      expect(JSON.parse(result.content).error).toContain(
+        "already has an outstanding assignment",
+      );
+      expect(result.effectDisposition).toMatchObject({
+        disposition: "confirmed_no_effect",
+        evidenceKind: "boundary_not_crossed",
+        evidenceRef: "agents-v2-assign-refused",
+      });
+    } finally {
+      _clearAgentControlCacheForTesting(session);
+    }
+  });
+
   it("list_agents returns AgenC V2 snake_case entries only", async () => {
     const session = fakeSession();
     const control = {
@@ -4982,6 +5117,11 @@ describe("model-facing tools", () => {
       expect(JSON.parse(result.content).error).toBe(
         "root is not a spawned agent",
       );
+      expect(result.effectDisposition).toMatchObject({
+        disposition: "confirmed_no_effect",
+        evidenceKind: "boundary_not_crossed",
+        evidenceRef: "agents-v2-close-root-target",
+      });
     } finally {
       _clearAgentControlCacheForTesting(session);
     }
@@ -5000,6 +5140,30 @@ describe("model-facing tools", () => {
     expect(JSON.parse(result.content).error).toBe(
       "root is not a spawned agent",
     );
+    expect(result.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+      evidenceRef: "agents-v2-close-root-target",
+    });
+  });
+
+  it("close_agent proves no effect when its target cannot be resolved", async () => {
+    const close = createModelFacingTools({
+      workspaceRoot: process.cwd(),
+      getSession: fakeSession,
+    }).find((tool) => tool.name === "close_agent")!;
+
+    const result = await close.execute({ target: "/root/already_closed" });
+
+    expect(result.isError).toBe(true);
+    expect(JSON.parse(result.content).error).toContain(
+      "agent reference cannot be resolved",
+    );
+    expect(result.effectDisposition).toMatchObject({
+      disposition: "confirmed_no_effect",
+      evidenceKind: "boundary_not_crossed",
+      evidenceRef: "agents-v2-close-target-resolution",
+    });
   });
 
   it("close_agent emits receiver nickname and role metadata", async () => {

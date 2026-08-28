@@ -18,6 +18,7 @@ import {
 } from "./limits.js";
 import { parsePatch } from "./parser.js";
 import { applyPatchText } from "./runtime.js";
+import { ApplyPatchPreEffectError } from "./types.js";
 import { workspaceMutationCoordinators } from "../../workspace/mutation-coordinator.js";
 
 const BYTE_FIXTURES_ROOT = fileURLToPath(
@@ -217,6 +218,39 @@ describe("apply_patch byte fidelity and input boundaries", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  test("brands only payload and read-only planning failures as pre-effect", async () => {
+    const root = await temporaryRoot();
+    const target = join(root, "target.txt");
+    await writeFile(target, "alpha\n", "utf8");
+
+    const payloadFailure = await applyPatchText("not a patch", {
+      cwd: root,
+      allowedPaths: [root],
+    }).catch((error: unknown) => error);
+    const planningFailure = await applyPatchText(
+      updatePatch("target.txt", "missing", "changed"),
+      { cwd: root, allowedPaths: [root] },
+    ).catch((error: unknown) => error);
+    const admittedFailure = await applyPatchText(
+      updatePatch("target.txt", "alpha", "changed"),
+      {
+        cwd: root,
+        allowedPaths: [root],
+        __testAfterPreWriteCheck: async () => {
+          throw new Error("failure after workspace admission");
+        },
+      },
+    ).catch((error: unknown) => error);
+
+    expect(payloadFailure).toBeInstanceOf(ApplyPatchPreEffectError);
+    expect(payloadFailure).toMatchObject({ stage: "payload" });
+    expect(planningFailure).toBeInstanceOf(ApplyPatchPreEffectError);
+    expect(planningFailure).toMatchObject({ stage: "planning" });
+    expect(admittedFailure).toBeInstanceOf(Error);
+    expect(admittedFailure).not.toBeInstanceOf(ApplyPatchPreEffectError);
+    await expect(readFile(target, "utf8")).resolves.toBe("alpha\n");
   });
 
   test("routes cancellation after the first effect through verified rollback", async () => {

@@ -54,6 +54,12 @@ export type CodeModeRuntimeResponse =
       readonly contentItems: readonly FunctionCallOutputContentItem[];
       readonly storedValues: Readonly<Record<string, unknown>>;
       readonly errorText?: string;
+      /**
+       * Authoritative service observation for failed cells. `false` means the
+       * cell never dispatched a nested tool, emitted a notification, or
+       * persisted a changed stored value. Omission is intentionally unknown.
+       */
+      readonly effectBoundaryCrossed?: boolean;
       readonly durationMs: number;
     };
 
