@@ -4,9 +4,9 @@ This artifact records bounded current and historical-reference observations.
 Every row is informational: no result is a performance threshold or gate.
 Generated inputs are synthetic and created only for the benchmark process.
 
-- JSON SHA-256: `d48907cf6fe5dc2f782a46d1a46b3e91f15ad7b7e716dd188e3abc5762a3de34`
-- Source revision: `d13cf5d63005cb4ec3e77a714c0834ac83cd0e34`
-- Production tree: `runtime/src` at Git object `f48b51e34e5add53cbcf63cb9584634e79fad6ff`
+- JSON SHA-256: `954a3f8795726d061512b5845a82166c28db44fa11a0488ccffd3e719dd10a8e`
+- Source revision: `1ac4bb5c9dcba688477752ecf5eed355d7eede4f`
+- Production tree: `runtime/src` at Git object `76b632f8428270aadb1b91803081b5c4d433f285`
 - Loaded production closure: `92` module bindings across `2` cases
 - Plan SHA-256: `672538014498283c935efce76c0a5244abd280aadaeb5a03a9d835f041db2ebe`
 - Node/npm: `v26.5.0` / `11.17.0`
@@ -36,7 +36,7 @@ Run on the same pinned runtime and machine state; compare medians, MAD,
 operation counts, and relative scaling rather than one wall-clock sample.
 
 ```sh
-npm run benchmark:fnd-baseline --workspace=@tetsuo-ai/runtime -- --source-revision d13cf5d63005cb4ec3e77a714c0834ac83cd0e34 --output /tmp/agenc-fnd-baseline.v1.json --markdown-output /tmp/agenc-fnd-baseline.v1.md
+npm run benchmark:fnd-baseline --workspace=@tetsuo-ai/runtime -- --source-revision 1ac4bb5c9dcba688477752ecf5eed355d7eede4f --output /tmp/agenc-fnd-baseline.v1.json --markdown-output /tmp/agenc-fnd-baseline.v1.md
 npm run check:fnd-benchmark-baseline --workspace=@tetsuo-ai/runtime
 ```
 
