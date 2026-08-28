@@ -255,6 +255,7 @@ describe("FND benchmark harness fault contracts", () => {
         process.platform,
         ownedRoot,
       );
+      const canonicalOwnedRoot = realpathSync(ownedRoot);
       expect(workerEnvironment).not.toHaveProperty("AGENC_PRIVATE_TOKEN");
       expect(workerEnvironment).not.toHaveProperty("HOME");
       expect(workerEnvironment).not.toHaveProperty("PATH");
@@ -262,7 +263,7 @@ describe("FND benchmark harness fault contracts", () => {
         assertBenchmarkWorkerEnvironment(workerEnvironment, process.platform),
       ).toThrow(/require an owned temporary root/u);
       for (const name of ["AGENC_HOME", "TEMP", "TMP", "TMPDIR"]) {
-        expect(workerEnvironment[name]).toBe(ownedRoot);
+        expect(workerEnvironment[name]).toBe(canonicalOwnedRoot);
         expect(workerEnvironment[name]).not.toBe(ambientTemporaryRoot);
       }
       expect(() =>
@@ -523,53 +524,60 @@ describe("FND benchmark harness fault contracts", () => {
   }
 
   test("matches the minimal Windows worker allowlist case-insensitively", () => {
-    const ownedRoot = join(tmpdir(), "agenc-fnd-windows-owned-root");
-    const workerEnvironment = createBenchmarkWorkerEnvironment(
-      {
-        cOmSpEc: "C:\\Windows\\System32\\cmd.exe",
-        sYsTeMrOoT: "C:\\Windows",
-        TEMP: "C:\\shared-ambient-temp",
-        wInDiR: "C:\\Windows",
-      },
-      "win32",
-      ownedRoot,
+    const ownedRoot = mkdtempSync(
+      join(tmpdir(), "agenc-fnd-windows-owned-root-"),
     );
-    expect(workerEnvironment.SystemRoot).toBe("C:\\Windows");
-    expect(workerEnvironment).not.toHaveProperty("WINDIR");
-    expect(workerEnvironment).not.toHaveProperty("ComSpec");
+    try {
+      const canonicalOwnedRoot = realpathSync(ownedRoot);
+      const workerEnvironment = createBenchmarkWorkerEnvironment(
+        {
+          cOmSpEc: "C:\\Windows\\System32\\cmd.exe",
+          sYsTeMrOoT: "C:\\Windows",
+          TEMP: "C:\\shared-ambient-temp",
+          wInDiR: "C:\\Windows",
+        },
+        "win32",
+        ownedRoot,
+      );
+      expect(workerEnvironment.SystemRoot).toBe("C:\\Windows");
+      expect(workerEnvironment).not.toHaveProperty("WINDIR");
+      expect(workerEnvironment).not.toHaveProperty("ComSpec");
 
-    const mixedCaseEnvironment = {
-      aGeNc_HoMe: ownedRoot,
-      lAnG: "C",
-      lC_aLl: "C",
-      sYsTeMrOoT: "C:\\Windows",
-      tEmP: ownedRoot,
-      tMp: ownedRoot,
-      tMpDiR: ownedRoot,
-      tSx_DiSaBlE_CaChE: "1",
-      tZ: "UTC",
-    };
-    expect(() =>
-      assertBenchmarkWorkerEnvironment(
-        mixedCaseEnvironment,
-        "win32",
-        ownedRoot,
-      ),
-    ).not.toThrow();
-    expect(() =>
-      assertBenchmarkWorkerEnvironment(
-        { ...mixedCaseEnvironment, PaTh: "C:\\unbound" },
-        "win32",
-        ownedRoot,
-      ),
-    ).toThrow(/unexpected environment: PaTh/u);
-    expect(() =>
-      assertBenchmarkWorkerEnvironment(
-        { ...mixedCaseEnvironment, SYSTEMROOT: "C:\\duplicate" },
-        "win32",
-        ownedRoot,
-      ),
-    ).toThrow(/repeats a case-insensitive name/u);
+      const mixedCaseEnvironment = {
+        aGeNc_HoMe: canonicalOwnedRoot,
+        lAnG: "C",
+        lC_aLl: "C",
+        sYsTeMrOoT: "C:\\Windows",
+        tEmP: canonicalOwnedRoot,
+        tMp: canonicalOwnedRoot,
+        tMpDiR: canonicalOwnedRoot,
+        tSx_DiSaBlE_CaChE: "1",
+        tZ: "UTC",
+      };
+      expect(() =>
+        assertBenchmarkWorkerEnvironment(
+          mixedCaseEnvironment,
+          "win32",
+          ownedRoot,
+        ),
+      ).not.toThrow();
+      expect(() =>
+        assertBenchmarkWorkerEnvironment(
+          { ...mixedCaseEnvironment, PaTh: "C:\\unbound" },
+          "win32",
+          ownedRoot,
+        ),
+      ).toThrow(/unexpected environment: PaTh/u);
+      expect(() =>
+        assertBenchmarkWorkerEnvironment(
+          { ...mixedCaseEnvironment, SYSTEMROOT: "C:\\duplicate" },
+          "win32",
+          ownedRoot,
+        ),
+      ).toThrow(/repeats a case-insensitive name/u);
+    } finally {
+      rmSync(ownedRoot, { force: true, recursive: true });
+    }
   });
 
   test("requires empty Node execArgv", () => {
@@ -1053,6 +1061,20 @@ describe("FND benchmark harness fault contracts", () => {
         if (workerRoot !== ownedRoot) {
           expect(realpathSync(workerRoot)).not.toBe(workerRoot);
         }
+        const workerEnvironment = createBenchmarkWorkerEnvironment(
+          process.platform === "win32"
+            ? { SystemRoot: process.env.SystemRoot ?? "C:\\Windows" }
+            : {},
+          process.platform,
+          workerRoot,
+        );
+        if (workerRoot !== ownedRoot) {
+          const canonicalWorkerRoot = realpathSync(workerRoot);
+          for (const name of ["AGENC_HOME", "TEMP", "TMP", "TMPDIR"]) {
+            expect(workerEnvironment[name]).toBe(canonicalWorkerRoot);
+            expect(workerEnvironment[name]).not.toBe(workerRoot);
+          }
+        }
         const completionNonce = "a".repeat(64);
         const result = await runBoundedChild({
           args: [
@@ -1068,13 +1090,7 @@ describe("FND benchmark harness fault contracts", () => {
           ],
           command: process.execPath,
           cwd: RUNTIME_ROOT,
-          env: createBenchmarkWorkerEnvironment(
-            process.platform === "win32"
-              ? { SystemRoot: process.env.SystemRoot ?? "C:\\Windows" }
-              : {},
-            process.platform,
-            workerRoot,
-          ),
+          env: workerEnvironment,
           expectedCompletionRecord: `${BENCHMARK_WORKER_COMPLETION_PREFIX}${completionNonce}`,
           maxOutputBytes: 1_048_576,
           timeoutMs: 10_000,
