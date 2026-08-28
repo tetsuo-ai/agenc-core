@@ -604,6 +604,12 @@ export interface WorkspaceMutationCoordinatorOptions {
   readonly appendLedgerOnce?: (
     entries: readonly WorkspaceChangeLedgerEntry[],
   ) => Promise<void>;
+  /**
+   * Optional workspace-mutation directory durability seam used by
+   * fault/restart harnesses. It is invoked bottom-up for the workspace leaf,
+   * `workspace-mutations`, and the resolved AgenC home.
+   */
+  readonly syncLedgerDirectory?: (directory: string) => Promise<void>;
   /** Optional pre-write durability seam used by fault/race harnesses. */
   readonly beforePersistQuarantine?: () => Promise<void>;
 }
@@ -705,6 +711,9 @@ export class WorkspaceMutationCoordinator {
     this.#ledger = new WorkspaceChangeLedger({
       workspaceRoot: this.workspaceRoot,
       agencHome,
+      ...(options.syncLedgerDirectory !== undefined
+        ? { syncDirectory: options.syncLedgerDirectory }
+        : {}),
     });
     this.#appendLedger =
       options.appendLedger ?? ((input) => this.#ledger.append(input));
@@ -5506,27 +5515,33 @@ export class WorkspaceMutationCoordinatorRegistry {
 
 class WorkspaceChangeLedger {
   readonly #workspaceRoot: string;
+  readonly #agencHome: string;
+  readonly #workspaceMutationsDirectory: string;
   readonly #directory: string;
   readonly #ledgerPath: string;
   readonly #quarantinePath: string;
+  readonly #syncDirectory: (directory: string) => Promise<void>;
   #tail: Promise<void> = Promise.resolve();
 
   constructor(input: {
     readonly workspaceRoot: string;
     readonly agencHome: string;
+    readonly syncDirectory?: (directory: string) => Promise<void>;
   }) {
     this.#workspaceRoot = input.workspaceRoot;
+    this.#agencHome = resolve(input.agencHome);
+    this.#workspaceMutationsDirectory = join(
+      this.#agencHome,
+      "workspace-mutations",
+    );
     const key = createHash("sha256")
       .update(input.workspaceRoot)
       .digest("hex")
       .slice(0, 32);
-    this.#directory = join(
-      resolve(input.agencHome),
-      "workspace-mutations",
-      key,
-    );
+    this.#directory = join(this.#workspaceMutationsDirectory, key);
     this.#ledgerPath = join(this.#directory, "ledger-v1.jsonl");
     this.#quarantinePath = join(this.#directory, "quarantine-v1.json");
+    this.#syncDirectory = input.syncDirectory ?? fsyncDirectory;
   }
 
   append(
@@ -5544,16 +5559,21 @@ class WorkspaceChangeLedger {
     };
     return this.#serialize(async () => {
       await mkdir(this.#directory, { recursive: true, mode: 0o700 });
-      await appendFile(this.#ledgerPath, `${JSON.stringify(entry)}\n`, {
-        encoding: "utf8",
-        mode: 0o600,
-      });
-      const handle = await open(this.#ledgerPath, "r+");
+      const handle = await open(this.#ledgerPath, "a", 0o600);
       try {
+        await handle.appendFile(`${JSON.stringify(entry)}\n`, {
+          encoding: "utf8",
+        });
         await handle.sync();
       } finally {
         await handle.close();
       }
+      // The blocked/proposed admission receipt is not committed until both
+      // the ledger pathname and every newly-created ancestor inside AGENC_HOME
+      // survive a crash. A recursive mkdir can create the workspace leaf and
+      // `workspace-mutations` in one call, so syncing only the leaf is not a
+      // sufficient first-write durability boundary.
+      await this.#syncDirectoryChain();
     });
   }
 
@@ -5728,7 +5748,7 @@ class WorkspaceChangeLedger {
       } finally {
         await handle.close();
       }
-      await fsyncDirectory(this.#directory);
+      await this.#syncDirectoryChain();
     });
   }
 
@@ -5864,7 +5884,10 @@ class WorkspaceChangeLedger {
       }
       await rename(temp, this.#quarantinePath);
       try {
-        await fsyncDirectory(this.#directory);
+        // Quarantine can be the first workspace-mutation artifact too. Keep
+        // its rename boundary identical to the append-only ledger boundary so
+        // a fresh AGENC_HOME cannot lose the workspace directory hierarchy.
+        await this.#syncDirectoryChain();
       } catch (error) {
         if (options.acceptInstalledWithDurableFallback !== true) throw error;
         // The caller fsynced a conservative snapshot at this pathname before
@@ -5881,6 +5904,19 @@ class WorkspaceChangeLedger {
         if (installed !== serialized) throw error;
       }
     });
+  }
+
+  async #syncDirectoryChain(): Promise<void> {
+    // Intentionally stop at the resolved AgenC home. Persisting its own entry
+    // in an arbitrary parent is outside this coordinator's ownership and may
+    // otherwise walk an unbounded or mount-crossing filesystem hierarchy.
+    for (const directory of [
+      this.#directory,
+      this.#workspaceMutationsDirectory,
+      this.#agencHome,
+    ]) {
+      await this.#syncDirectory(directory);
+    }
   }
 
   #serializeQuarantine(

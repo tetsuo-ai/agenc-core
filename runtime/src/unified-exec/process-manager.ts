@@ -78,6 +78,48 @@ interface SpawnCommand {
   readonly argv0?: string;
 }
 
+/**
+ * A process-creation refusal raised before any OS process spawn was attempted.
+ *
+ * Keep the public `create_process` code for compatibility, but use a distinct
+ * runtime type so callers may safely settle this narrow class as no-effect.
+ * Plain `create_process` errors remain ambiguous because they can be raised
+ * after a child has already been handed off to the operating system.
+ */
+export class UnifiedExecPreSpawnRefusalError extends UnifiedExecError {
+  readonly boundary = "pre_spawn" as const;
+
+  constructor(message: string) {
+    super("create_process", message);
+    this.name = "UnifiedExecPreSpawnRefusalError";
+  }
+}
+
+/**
+ * write_stdin found the requested process, but it had already exited before
+ * any new input could be dispatched. The manager drains the final buffered
+ * output and releases the process slot before raising this typed receipt.
+ *
+ * This is deliberately distinct from a plain `unknown_process`: callers can
+ * prove that the local process-state cleanup committed and preserve the final
+ * output, while an id that was absent from the map remains a true no-effect
+ * lookup failure.
+ */
+export class UnifiedExecProcessExitedBeforeWriteError extends UnifiedExecError {
+  readonly observation: ExecCommandToolOutput;
+  readonly sessionId: number;
+
+  constructor(sessionId: number, observation: ExecCommandToolOutput) {
+    super(
+      "unknown_process",
+      `Process ${sessionId} exited before input could be written`,
+    );
+    this.name = "UnifiedExecProcessExitedBeforeWriteError";
+    this.sessionId = sessionId;
+    this.observation = observation;
+  }
+}
+
 export class ProcessOutputBuffer {
   private readonly chunks: OutputChunk[] = [];
   private consumedIndex = 0;
@@ -421,6 +463,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
   private readonly maxProcesses: number;
   private readonly sandboxManager: UnifiedExecSandboxManager;
   private nextProcessId = 1;
+  private pendingProcessSpawns = 0;
   private readonly processes = new Map<number, ProcessEntry>();
 
   constructor(options: UnifiedExecManagerOptions = {}) {
@@ -440,22 +483,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         "missing command line for unified exec request",
       );
     }
-    this.pruneExitedProcesses();
-    if (this.processes.size >= this.maxProcesses) {
-      throw new UnifiedExecError(
-        "process_limit",
-        `too many live unified exec processes (${this.processes.size}/${this.maxProcesses})`,
-      );
-    }
     const tty = request.tty === true;
     if (tty && hasCurrentWorkspaceOperationLifetime()) {
-      throw new UnifiedExecError(
-        "create_process",
+      throw new UnifiedExecPreSpawnRefusalError(
         "tty=true execution is blocked while an Editor workspace fence is active because PTY descendants cannot be contained safely",
       );
     }
 
-    const processId = this.allocateProcessId();
     const cwd = resolve(request.workdir ?? this.cwd);
     const shell = resolveShell(request.shell);
     const args = shellArgs(request.cmd, request.login);
@@ -468,37 +502,63 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         ? { runtimeSandbox: request.runtimeSandbox }
         : {}),
     });
+    // Exited entries are receipts with potentially unpolled output, not live
+    // capacity consumers. Refuse only when the live-process budget is full.
+    // In particular, do not reclaim an exited receipt before spawn: PTY/OS
+    // process creation may still fail, and that failure must leave the prior
+    // session observable to its owner.
+    const occupiedLiveSlots =
+      this.countLiveProcesses() + this.pendingProcessSpawns;
+    if (occupiedLiveSlots >= this.maxProcesses) {
+      throw new UnifiedExecError(
+        "process_limit",
+        `too many live unified exec processes (${occupiedLiveSlots}/${this.maxProcesses})`,
+      );
+    }
+
+    const processId = this.allocateProcessId();
     const startedAt = Date.now();
     const callId = request.callId ?? `exec-${processId}`;
     const ownerId =
       typeof request.ownerId === "string" && request.ownerId.trim().length > 0
         ? request.ownerId.trim()
         : undefined;
-    const entry = await this.spawnProcess({
-      processId,
-      callId,
-      command: request.cmd,
-      program: spawnCommand.program,
-      args: spawnCommand.args,
-      cwd: spawnCommand.cwd,
-      env: spawnCommand.env,
-      ...(request.runtimeSandbox !== undefined
-        ? { runtimeSandbox: request.runtimeSandbox }
-        : {}),
-      ...(spawnCommand.argv0 !== undefined
-        ? { argv0: spawnCommand.argv0 }
-        : {}),
-      ...(ownerId !== undefined ? { ownerId } : {}),
-      tty,
-      startedAt,
-      signal: request.__abortSignal,
-    });
+    this.pendingProcessSpawns += 1;
+    let entry: ProcessEntry;
+    try {
+      entry = await this.spawnProcess({
+        processId,
+        callId,
+        command: request.cmd,
+        program: spawnCommand.program,
+        args: spawnCommand.args,
+        cwd: spawnCommand.cwd,
+        env: spawnCommand.env,
+        ...(request.runtimeSandbox !== undefined
+          ? { runtimeSandbox: request.runtimeSandbox }
+          : {}),
+        ...(spawnCommand.argv0 !== undefined
+          ? { argv0: spawnCommand.argv0 }
+          : {}),
+        ...(ownerId !== undefined ? { ownerId } : {}),
+        tty,
+        startedAt,
+        signal: request.__abortSignal,
+      });
+    } finally {
+      this.pendingProcessSpawns -= 1;
+    }
     const releaseWorkspaceOperation = retainCurrentWorkspaceOperation();
     void entry.exitPromise.then(
       releaseWorkspaceOperation,
       releaseWorkspaceOperation,
     );
     this.processes.set(processId, entry);
+    // The replacement is now successfully spawned, tracked, and associated
+    // with its owner. Only at this boundary may an older exited receipt be
+    // reclaimed to restore the bounded process map. Protect the replacement
+    // explicitly: a very short-lived child can exit before this line runs.
+    this.reclaimExitedProcessesAfterSpawn(processId);
     request.observer?.onBegin?.({
       callId,
       command: request.cmd,
@@ -575,10 +635,19 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         );
       }
       if (entry.exitState !== null) {
+        const observation = await this.collect(entry, {
+          // exitPromise is already settled, so collect returns immediately and
+          // drains the final output without waiting for the requested yield.
+          // Do not invoke progress/abort callbacks on this receipt path: the
+          // complete buffered output is returned on the typed error below, and
+          // an observer exception must not erase that authoritative receipt.
+          yieldMs: 0,
+          maxOutputTokens: request.max_output_tokens,
+        });
         this.releaseProcessId(entry.processId);
-        throw new UnifiedExecError(
-          "unknown_process",
-          `Unknown process id ${request.session_id}`,
+        throw new UnifiedExecProcessExitedBeforeWriteError(
+          request.session_id,
+          observation,
         );
       }
       try {
@@ -672,21 +741,28 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     this.processes.delete(processId);
   }
 
-  private pruneExitedProcesses(): void {
-    // Reclaim slots from EXITED processes ONLY when at/over the cap, oldest first.
-    // Do NOT release an exited process just because a new exec_command ran: a
-    // background command that has exited but has not yet been polled must survive
-    // so its final buffered output + exit code can still be retrieved (the
-    // start -> do other exec work -> poll workflow). Unconditional pruning here
-    // silently dropped that output and made the poll throw "unknown_process".
-    // Drained results are already deleted at their delivery point, so this only
-    // affects still-buffered, un-polled exits — and only under slot pressure.
-    if (this.processes.size < this.maxProcesses) return;
+  private countLiveProcesses(): number {
+    let count = 0;
+    for (const entry of this.processes.values()) {
+      if (entry.exitState === null) count += 1;
+    }
+    return count;
+  }
+
+  private reclaimExitedProcessesAfterSpawn(protectedProcessId: number): void {
+    // Reclaim only after a replacement has crossed the successful spawn and
+    // tracking boundary. Until then, exited entries retain authoritative,
+    // potentially unpolled output. Oldest receipts go first; live processes and
+    // the newly tracked replacement are never candidates.
+    if (this.processes.size <= this.maxProcesses) return;
     const exitedOldestFirst = [...this.processes.entries()]
-      .filter(([, entry]) => entry.exitState !== null)
+      .filter(
+        ([processId, entry]) =>
+          processId !== protectedProcessId && entry.exitState !== null,
+      )
       .sort((a, b) => a[1].startedAt - b[1].startedAt);
     for (const [processId] of exitedOldestFirst) {
-      if (this.processes.size < this.maxProcesses) break;
+      if (this.processes.size <= this.maxProcesses) break;
       this.releaseProcessId(processId);
     }
   }
@@ -919,8 +995,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         sandbox === "none" &&
         (params.runtimeSandbox.preference ?? "require") === "require"
       ) {
-        throw new UnifiedExecError(
-          "create_process",
+        throw new UnifiedExecPreSpawnRefusalError(
           "sandbox isolation was required for exec_command but no platform sandbox is available",
         );
       }
@@ -965,8 +1040,7 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       });
       const [program, ...args] = transformed.command;
       if (program === undefined) {
-        throw new UnifiedExecError(
-          "create_process",
+        throw new UnifiedExecPreSpawnRefusalError(
           "sandbox transform returned an empty command",
         );
       }
@@ -978,9 +1052,8 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         argv0: transformed.arg0 ?? basename(program),
       };
     } catch (error) {
-      if (error instanceof UnifiedExecError) throw error;
-      throw new UnifiedExecError(
-        "create_process",
+      if (error instanceof UnifiedExecPreSpawnRefusalError) throw error;
+      throw new UnifiedExecPreSpawnRefusalError(
         error instanceof Error ? error.message : String(error),
       );
     }
@@ -1016,13 +1089,6 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     }
 
     const chunks = entry.output.drain();
-    for (const chunk of chunks) {
-      options.onProgress?.({
-        stream: chunk.stream,
-        chunk: chunk.chunk,
-        processId: entry.processId,
-      });
-    }
     const stdout = chunks
       .filter((chunk) => chunk.stream === "stdout")
       .map((chunk) => chunk.chunk)
@@ -1031,7 +1097,11 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       .filter((chunk) => chunk.stream === "stderr")
       .map((chunk) => chunk.chunk)
       .join("");
-    return createResult({
+    // Construct the authoritative observation before invoking telemetry. A
+    // progress callback often forwards into the session/event stream and is
+    // not part of process execution; if that observer throws, the output has
+    // still been consumed and must remain returnable to the caller.
+    const result = createResult({
       stdout,
       stderr,
       exitCode: entry.exitState?.exitCode ?? null,
@@ -1040,6 +1110,19 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       timedOut,
       maxOutputTokens: options.maxOutputTokens,
     });
+    for (const chunk of chunks) {
+      try {
+        options.onProgress?.({
+          stream: chunk.stream,
+          chunk: chunk.chunk,
+          processId: entry.processId,
+        });
+      } catch {
+        // Best-effort telemetry only. Continue notifying later chunks and keep
+        // the authoritative process observation intact.
+      }
+    }
+    return result;
   }
 
   private forceTerminate(entry: ProcessEntry): void {

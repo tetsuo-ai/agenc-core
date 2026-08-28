@@ -276,6 +276,313 @@ describe("Edit tool", () => {
     ]);
   });
 
+  test("loaded Editor proposal settles committed and does not poison a later Edit", async () => {
+    const agencHome = await mkdtemp(
+      join(tmpdir(), "agenc-file-edit-proposal-home-"),
+    );
+    const originalAgencHome = process.env.AGENC_HOME;
+    process.env.AGENC_HOME = agencHome;
+    workspaceMutationCoordinators.clearForTests();
+
+    try {
+      const file = join(root, "loaded-in-editor.txt");
+      const original = "alpha beta\n";
+      await writeFile(file, original, "utf8");
+      const canonicalFile = await realpath(file);
+      const fileStats = await stat(canonicalFile);
+      recordSessionRead(SESSION_ID, canonicalFile, {
+        content: original,
+        timestamp: fileStats.mtimeMs,
+        viewKind: "full",
+      });
+
+      const coordinator = workspaceMutationCoordinators.getOrCreate(root);
+      const editorInstanceId = "file-edit-proposal-editor";
+      const lease = workspaceMutationCoordinators.acquireEditor(root, {
+        workspaceRoot: root,
+        editorInstanceId,
+      });
+      coordinator.sync({
+        workspaceRoot: root,
+        editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+        sequence: 0,
+        buffers: [
+          {
+            path: canonicalFile,
+            bufferHandle: 17,
+            changedtick: 3,
+            contentSha256: createHash("sha256").update(original).digest("hex"),
+            contentBytes: Buffer.byteLength(original, "utf8"),
+            dirty: false,
+          },
+        ],
+      });
+
+      const tool = createFileEditTool({ allowedPaths: [root] });
+      const state = admittedEditHarness();
+      const firstArgs = {
+        file_path: file,
+        old_string: "alpha",
+        new_string: "omega",
+        [SESSION_ID_ARG]: SESSION_ID,
+        __callId: "call-editor-proposal",
+      };
+      const first = await runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-editor-proposal",
+        callId: "call-editor-proposal",
+        tool,
+        args: firstArgs,
+        invoke: async ({ crossEffectBoundary }) => {
+          crossEffectBoundary();
+          return tool.execute(firstArgs);
+        },
+      });
+
+      expect(first).toMatchObject({
+        isError: true,
+        content: expect.stringContaining("reviewable Editor proposal"),
+        metadata: {
+          workspaceMutation: {
+            kind: "editor_proposal",
+            path: canonicalFile,
+          },
+        },
+        effectDisposition: {
+          disposition: "confirmed_committed",
+          evidenceKind: "provider_receipt",
+        },
+      });
+      expect(first.effectDisposition?.evidenceRef).toMatch(
+        /^workspace-editor-proposal:/u,
+      );
+      expect(first.effectDisposition?.evidenceSha256).toMatch(
+        /^[0-9a-f]{64}$/u,
+      );
+      await expect(readFile(file, "utf8")).resolves.toBe(original);
+      expect(
+        state.effectEvents.filter(
+          (event) => event.msg.type === "effect_unknown_outcome",
+        ),
+      ).toHaveLength(0);
+      expect(state.effectEvents.at(-1)?.msg).toMatchObject({
+        type: "effect_result",
+        payload: {
+          outcome: "committed",
+          effectBoundary: "crossed",
+        },
+      });
+
+      // A committed proposal must close the admitted effect instead of
+      // poisoning the session. A later edit can therefore enqueue its own
+      // independent review proposal without an operator /resolve round-trip.
+      const followupArgs = {
+        file_path: file,
+        old_string: "beta",
+        new_string: "delta",
+        [SESSION_ID_ARG]: SESSION_ID,
+        __callId: "call-editor-proposal-followup",
+      };
+      const followup = await runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-editor-proposal",
+        callId: "call-editor-proposal-followup",
+        tool,
+        args: followupArgs,
+        invoke: async ({ crossEffectBoundary }) => {
+          crossEffectBoundary();
+          return tool.execute(followupArgs);
+        },
+      });
+      expect(followup.effectDisposition).toMatchObject({
+        disposition: "confirmed_committed",
+        evidenceKind: "provider_receipt",
+      });
+      expect(state.effectEvents.map((event) => event.msg.type)).toEqual([
+        "effect_intent",
+        "effect_result",
+        "effect_intent",
+        "effect_result",
+      ]);
+    } finally {
+      workspaceMutationCoordinators.clearForTests();
+      if (originalAgencHome === undefined) delete process.env.AGENC_HOME;
+      else process.env.AGENC_HOME = originalAgencHome;
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
+  test("durably blocked Editor admission settles committed without exposing file content", async () => {
+    const agencHome = await mkdtemp(
+      join(tmpdir(), "agenc-file-edit-blocked-home-"),
+    );
+    const originalAgencHome = process.env.AGENC_HOME;
+    process.env.AGENC_HOME = agencHome;
+    workspaceMutationCoordinators.clearForTests();
+
+    try {
+      const file = join(root, "editor-proposal-limit.txt");
+      const original = "alpha beta private payload\n";
+      await writeFile(file, original, "utf8");
+      const canonicalFile = await realpath(file);
+      const fileStats = await stat(canonicalFile);
+      recordSessionRead(SESSION_ID, canonicalFile, {
+        content: original,
+        timestamp: fileStats.mtimeMs,
+        viewKind: "full",
+      });
+
+      const coordinator = workspaceMutationCoordinators.getOrCreate(root);
+      const editorInstanceId = "file-edit-blocked-editor";
+      const lease = workspaceMutationCoordinators.acquireEditor(root, {
+        workspaceRoot: root,
+        editorInstanceId,
+      });
+      coordinator.sync({
+        workspaceRoot: root,
+        editorInstanceId,
+        leaseToken: lease.leaseToken,
+        epoch: lease.epoch,
+        sequence: 0,
+        buffers: [
+          {
+            path: canonicalFile,
+            bufferHandle: 23,
+            changedtick: 5,
+            contentSha256: createHash("sha256").update(original).digest("hex"),
+            contentBytes: Buffer.byteLength(original, "utf8"),
+            dirty: false,
+          },
+        ],
+      });
+
+      // Fill the coordinator's durable proposal queue so the next admission
+      // takes the blocked path after its ledger/change receipt is persisted.
+      const proposalIds: string[] = [];
+      for (let index = 0; index < 32; index += 1) {
+        const admission = await coordinator.prepareMutation({
+          path: canonicalFile,
+          source: "file_edit",
+          beforeText: original,
+          afterText: `candidate ${index}\n`,
+          sessionId: SESSION_ID,
+          toolCallId: `queue-proposal-${index}`,
+        });
+        expect(admission.decision).toBe("proposal");
+        if (admission.decision === "proposal") {
+          proposalIds.push(admission.proposal.proposalId);
+        }
+      }
+
+      const tool = createFileEditTool({ allowedPaths: [root] });
+      const state = admittedEditHarness();
+      const blockedCallId = "call-editor-proposal-limit";
+      const blockedArgs = {
+        file_path: file,
+        old_string: "alpha",
+        new_string: "omega",
+        [SESSION_ID_ARG]: SESSION_ID,
+        __callId: blockedCallId,
+      };
+      const blocked = await runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-editor-proposal-limit",
+        callId: blockedCallId,
+        tool,
+        args: blockedArgs,
+        invoke: async ({ crossEffectBoundary }) => {
+          crossEffectBoundary();
+          return tool.execute(blockedArgs);
+        },
+      });
+
+      expect(blocked).toMatchObject({
+        isError: true,
+        content: expect.stringContaining("maximum durable unresolved proposal"),
+        metadata: {
+          workspaceMutation: { kind: "blocked" },
+        },
+        effectDisposition: {
+          disposition: "confirmed_committed",
+          evidenceKind: "provider_receipt",
+          evidenceRef: `workspace-editor-blocked:EDITOR_PROPOSAL_LIMIT:${blockedCallId}`,
+        },
+      });
+      const expectedReceiptMaterial = JSON.stringify({
+        decision: "blocked",
+        code: "EDITOR_PROPOSAL_LIMIT",
+        source: "file_edit",
+        sessionId: SESSION_ID,
+        toolCallId: blockedCallId,
+      });
+      expect(blocked.effectDisposition?.evidenceSha256).toBe(
+        createHash("sha256").update(expectedReceiptMaterial).digest("hex"),
+      );
+      expect(JSON.stringify(blocked.effectDisposition)).not.toContain(original);
+      expect(JSON.stringify(blocked.effectDisposition)).not.toContain(
+        "omega beta private payload",
+      );
+      await expect(readFile(file, "utf8")).resolves.toBe(original);
+      expect(
+        state.effectEvents.filter(
+          (event) => event.msg.type === "effect_unknown_outcome",
+        ),
+      ).toHaveLength(0);
+      expect(state.effectEvents.at(-1)?.msg).toMatchObject({
+        type: "effect_result",
+        payload: {
+          outcome: "committed",
+          effectBoundary: "crossed",
+        },
+      });
+
+      // Free one queue slot. Because the blocked admission was settled as a
+      // committed effect, the same admitted session can execute another call
+      // without an operator /resolve round-trip.
+      expect(coordinator.discardProposal(proposalIds[0] ?? "")).toBe(true);
+      const followupCallId = "call-after-editor-proposal-limit";
+      const followupArgs = {
+        file_path: file,
+        old_string: "beta",
+        new_string: "delta",
+        [SESSION_ID_ARG]: SESSION_ID,
+        __callId: followupCallId,
+      };
+      const followup = await runAdmittedToolCall({
+        session: state.session,
+        turnId: "turn-editor-proposal-limit",
+        callId: followupCallId,
+        tool,
+        args: followupArgs,
+        invoke: async ({ crossEffectBoundary }) => {
+          crossEffectBoundary();
+          return tool.execute(followupArgs);
+        },
+      });
+      expect(followup).toMatchObject({
+        isError: true,
+        metadata: { workspaceMutation: { kind: "editor_proposal" } },
+        effectDisposition: {
+          disposition: "confirmed_committed",
+          evidenceKind: "provider_receipt",
+        },
+      });
+      expect(state.effectEvents.map((event) => event.msg.type)).toEqual([
+        "effect_intent",
+        "effect_result",
+        "effect_intent",
+        "effect_result",
+      ]);
+    } finally {
+      workspaceMutationCoordinators.clearForTests();
+      if (originalAgencHome === undefined) delete process.env.AGENC_HOME;
+      else process.env.AGENC_HOME = originalAgencHome;
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   test("failed in-memory MultiEdit validation does not poison a later mutation", async () => {
     const file = join(root, "multi-missing-old-string.txt");
     const original = "alpha beta\n";

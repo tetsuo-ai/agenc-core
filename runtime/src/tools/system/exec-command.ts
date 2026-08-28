@@ -5,8 +5,15 @@ import { safeStringify } from "../types.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import type { BashToolConfig } from "./types.js";
 import { UnifiedExecError } from "../../unified-exec/types.js";
-import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
-import type { UnifiedExecProcessManagerLike, UnifiedExecRuntimeSandbox } from "../../unified-exec/types.js";
+import {
+  UnifiedExecPreSpawnRefusalError,
+  UnifiedExecProcessManager,
+} from "../../unified-exec/process-manager.js";
+import type {
+  UnifiedExecObserver,
+  UnifiedExecProcessManagerLike,
+  UnifiedExecRuntimeSandbox,
+} from "../../unified-exec/types.js";
 import { processOwnerIdFromToolArgs } from "../../unified-exec/process-ownership.js";
 import type {
   NetworkSandboxPolicy,
@@ -257,7 +264,10 @@ function useLegacyLandlock(features: unknown): boolean {
   return false;
 }
 
-function errorResult(error: unknown): ToolResult {
+function errorResult(
+  error: unknown,
+  options: { readonly confirmedPreSpawn?: boolean } = {},
+): ToolResult {
   const message = error instanceof Error ? error.message : String(error);
   return {
     content: safeStringify({
@@ -265,7 +275,7 @@ function errorResult(error: unknown): ToolResult {
       ...(error instanceof UnifiedExecError ? { code: error.code } : {}),
     }),
     isError: true,
-    ...(error instanceof UnifiedExecError || error instanceof SandboxExecutionError
+    ...(options.confirmedPreSpawn === true
       ? {
           effectDisposition: confirmedNoEffectDisposition(
             "tool:system.exec-command:pre-spawn-error",
@@ -273,6 +283,47 @@ function errorResult(error: unknown): ToolResult {
           ),
         }
       : {}),
+  };
+}
+
+function isDeterministicPreSpawnRefusal(error: unknown): boolean {
+  if (error instanceof UnifiedExecPreSpawnRefusalError) return true;
+  if (!(error instanceof UnifiedExecError)) return false;
+  switch (error.code) {
+    case "missing_command":
+    case "process_limit":
+      return true;
+    default:
+      // In particular, `create_process` is intentionally excluded. It can be
+      // raised from the spawn path before onBegin is emitted, so the absence of
+      // that observer callback is not proof that no child was created.
+      return false;
+  }
+}
+
+function execObserverWithEffectBoundary(
+  observer: ExecCommandToolConfig["execObserver"],
+  markProcessStarted: () => void,
+): UnifiedExecObserver {
+  return {
+    onBegin(begin) {
+      // The process manager emits begin only after it owns a spawned process.
+      // Mark the boundary before invoking third-party telemetry: if that
+      // callback throws, the command outcome is ambiguous rather than a safe
+      // no-effect refusal.
+      markProcessStarted();
+      observer?.onBegin?.(begin);
+    },
+    onEnd(end) {
+      // onEnd is telemetry emitted after collect() has produced an
+      // authoritative process observation. Telemetry must never erase that
+      // receipt and turn a known exit/yield into an unknown effect outcome.
+      try {
+        observer?.onEnd?.(end);
+      } catch {
+        // Best-effort observer only; the process result remains authoritative.
+      }
+    },
   };
 }
 
@@ -549,11 +600,26 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
         }
       }
 
+      let runtimeSandbox: UnifiedExecRuntimeSandbox | undefined;
       try {
-        const runtimeSandbox = runtimeSandboxForExec(
+        runtimeSandbox = runtimeSandboxForExec(
           args,
           config?.cwd ?? process.cwd(),
         );
+      } catch (error) {
+        // Runtime-boundary selection happens before execCommand can spawn or
+        // otherwise invoke the requested command.
+        return errorResult(error, { confirmedPreSpawn: true });
+      }
+
+      let processStarted = false;
+      const observer = execObserverWithEffectBoundary(
+        config?.execObserver,
+        () => {
+          processStarted = true;
+        },
+      );
+      try {
         const ownerId = processOwnerIdFromToolArgs(
           args as Record<string, unknown>,
         );
@@ -577,9 +643,7 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           ...(args.__onProgress !== undefined
             ? { __onProgress: args.__onProgress }
             : {}),
-          ...(config?.execObserver !== undefined
-            ? { observer: config.execObserver }
-            : {}),
+          observer,
           ...(runtimeSandbox !== undefined ? { runtimeSandbox } : {}),
           ...(ownerId !== undefined ? { ownerId } : {}),
         });
@@ -629,7 +693,15 @@ export function createExecCommandTool(config?: ExecCommandToolConfig): Tool {
           },
         };
       } catch (error) {
-        return errorResult(error);
+        return errorResult(error, {
+          // onBegin is emitted only after the manager has acquired the spawned
+          // process, but its absence does not prove that spawning never
+          // happened: a manager can reject between spawn and observer
+          // notification. Only typed refusals whose contract is strictly
+          // pre-spawn may therefore claim the no-effect boundary.
+          confirmedPreSpawn:
+            !processStarted && isDeterministicPreSpawnRefusal(error),
+        });
       }
     },
   };

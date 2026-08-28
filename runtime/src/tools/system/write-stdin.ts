@@ -2,14 +2,19 @@ import type { Tool, ToolExecutionInjectedArgs, ToolResult } from "../types.js";
 import { safeStringify } from "../types.js";
 import { classifyShellWorkspaceWritePolicy } from "../../llm/shell-write-policy.js";
 import { UnifiedExecError } from "../../unified-exec/types.js";
-import { UnifiedExecProcessManager } from "../../unified-exec/process-manager.js";
+import {
+  UnifiedExecProcessExitedBeforeWriteError,
+  UnifiedExecProcessManager,
+} from "../../unified-exec/process-manager.js";
 import type { UnifiedExecProcessManagerLike } from "../../unified-exec/types.js";
 import { processOwnerIdFromToolArgs } from "../../unified-exec/process-ownership.js";
+import { SandboxExecutionError } from "../../sandbox/execution-broker.js";
 import {
   formatUnifiedExecToolContent,
   unifiedExecCodeModeResult,
 } from "./exec-result-format.js";
 import { buildRecoverableToolFailureMetadata } from "../result-metadata.js";
+import { createToolEffectDispositionEvidence } from "../effect-boundary.js";
 import { runtimeSandboxForExec } from "./exec-command.js";
 
 export interface WriteStdinToolConfig {
@@ -30,6 +35,39 @@ function asNumber(value: unknown): number | undefined {
     : undefined;
 }
 
+function confirmedNoEffectDisposition(
+  evidenceRef: string,
+  evidenceMaterial: string,
+) {
+  return createToolEffectDispositionEvidence({
+    disposition: "confirmed_no_effect",
+    evidenceKind: "boundary_not_crossed",
+    evidenceRef,
+    evidenceMaterial,
+  });
+}
+
+function isDeterministicPreDispatchRefusal(error: unknown): boolean {
+  if (error instanceof SandboxExecutionError) return true;
+  if (!(error instanceof UnifiedExecError)) return false;
+  switch (error.code) {
+    case "unknown_process":
+    case "stdin_closed":
+    case "owner_denied":
+      return true;
+    case "write_stdin":
+      // The manager uses the same broad code for a sandbox-profile refusal
+      // (before touching stdin) and an actual write failure (after dispatch
+      // may have started). Only the typed, stable pre-dispatch refusal is
+      // safe to settle as no-effect; the latter must remain unknown.
+      return error.message.includes(
+        "requires an existing session with a compatible sandbox profile",
+      );
+    default:
+      return false;
+  }
+}
+
 function errorResult(error: unknown): ToolResult {
   const message = error instanceof Error ? error.message : String(error);
   return {
@@ -38,6 +76,75 @@ function errorResult(error: unknown): ToolResult {
       ...(error instanceof UnifiedExecError ? { code: error.code } : {}),
     }),
     isError: true,
+    ...(isDeterministicPreDispatchRefusal(error)
+      ? {
+          effectDisposition: confirmedNoEffectDisposition(
+            "tool:system.write-stdin:pre-dispatch-refusal",
+            message,
+          ),
+        }
+      : {}),
+  };
+}
+
+function processObservationDisposition(
+  sessionId: number,
+  chars: string,
+  output: Awaited<ReturnType<UnifiedExecProcessManagerLike["writeStdin"]>>,
+  evidenceRef?: string,
+  inputAccepted: boolean | null = chars.length > 0 ? true : null,
+) {
+  const stillAlive =
+    output.exitCode === null && output.process_id !== undefined;
+  return createToolEffectDispositionEvidence({
+    disposition: "confirmed_committed",
+    evidenceKind: "provider_receipt",
+    evidenceRef:
+      evidenceRef ??
+      (stillAlive
+        ? "tool:system.write-stdin:process-yield"
+        : "tool:system.write-stdin:process-exit"),
+    evidenceMaterial: JSON.stringify({
+      sessionId,
+      inputBytes: Buffer.byteLength(chars, "utf8"),
+      inputAccepted,
+      exitCode: output.exitCode,
+      processId: output.process_id ?? null,
+      timedOut: output.timedOut,
+      durationMs: output.durationMs,
+    }),
+  });
+}
+
+function observedExitBeforeWriteResult(
+  error: UnifiedExecProcessExitedBeforeWriteError,
+  sessionId: number,
+  chars: string,
+): ToolResult {
+  const output = error.observation;
+  return {
+    content: `${formatUnifiedExecToolContent(output)}\n\n[write_stdin rejected: ${error.message}]`,
+    isError: true,
+    codeModeResult: {
+      ...unifiedExecCodeModeResult(output),
+      error: error.message,
+      code: error.code,
+    },
+    effectDisposition: processObservationDisposition(
+      sessionId,
+      chars,
+      output,
+      "tool:system.write-stdin:process-exit-before-input",
+      false,
+    ),
+    metadata: {
+      sessionId,
+      processExitedBeforeInput: true,
+      durationMs: output.durationMs,
+      timedOut: output.timedOut,
+      truncated: output.truncated,
+      originalTokenCount: output.original_token_count,
+    },
   };
 }
 export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
@@ -108,11 +215,16 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
       const args = rawArgs as Record<string, unknown> & ToolExecutionInjectedArgs;
       const sessionId = asNumber(args.session_id) ?? asNumber(args.process_id);
       if (sessionId === undefined) {
+        const message = "session_id must be a number";
         return {
           content: safeStringify({
-            error: "session_id must be a number",
+            error: message,
           }),
           isError: true,
+          effectDisposition: confirmedNoEffectDisposition(
+            "tool:system.write-stdin:input-validation",
+            message,
+          ),
         };
       }
       const chars = asString(args.chars) ?? "";
@@ -123,15 +235,18 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           workspaceRoot: config?.cwd ?? config?.allowedPaths?.[0],
         });
         if (workspaceWriteDecision.blocked) {
+          const message =
+            workspaceWriteDecision.message ??
+            "Shell workspace write policy blocked the input.";
           return {
-            content: safeStringify({
-              error:
-                workspaceWriteDecision.message ??
-                "Shell workspace write policy blocked the input.",
-            }),
+            content: safeStringify({ error: message }),
             isError: true,
             metadata: buildRecoverableToolFailureMetadata(
               "shell_workspace_write_policy",
+            ),
+            effectDisposition: confirmedNoEffectDisposition(
+              "tool:system.write-stdin:workspace-write-policy",
+              message,
             ),
           };
         }
@@ -177,6 +292,11 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           content: formatUnifiedExecToolContent(output),
           isError: isError || undefined,
           codeModeResult: unifiedExecCodeModeResult(output),
+          effectDisposition: processObservationDisposition(
+            sessionId,
+            chars,
+            output,
+          ),
           metadata: {
             sessionId,
             ...(output.process_id !== undefined
@@ -186,6 +306,9 @@ export function createWriteStdinTool(config?: WriteStdinToolConfig): Tool {
           },
         };
       } catch (error) {
+        if (error instanceof UnifiedExecProcessExitedBeforeWriteError) {
+          return observedExitBeforeWriteResult(error, sessionId, chars);
+        }
         return errorResult(error);
       }
     },

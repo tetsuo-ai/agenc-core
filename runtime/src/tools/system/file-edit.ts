@@ -95,19 +95,78 @@ function preMutationErrorResult(
   };
 }
 
-/** Attach authoritative no-effect evidence to a pre-write admission refusal. */
-function asPreMutationRefusal(
+/**
+ * A reviewable Editor proposal is itself a durable workspace effect. The
+ * coordinator fsyncs its ledger entry, commitment, and delivery change before
+ * returning the proposal, so classifying this result as no-effect would let an
+ * admitted call retry and enqueue the same edit twice.
+ */
+function asCommittedEditorProposal(
   result: ToolResult,
-  toolName: typeof FILE_EDIT_TOOL_NAME | typeof FILE_MULTI_EDIT_TOOL_NAME,
+  proposal: Extract<
+    Awaited<ReturnType<typeof prepareWorkspaceMutation>>,
+    { readonly decision: "proposal" }
+  >["proposal"],
 ): ToolResult {
-  const message = String(result.content ?? "");
   return {
     ...result,
     effectDisposition: createToolEffectDispositionEvidence({
-      disposition: "confirmed_no_effect",
-      evidenceKind: "boundary_not_crossed",
-      evidenceRef: `tool:${toolName}:admission-rejected`,
-      evidenceMaterial: message,
+      disposition: "confirmed_committed",
+      evidenceKind: "provider_receipt",
+      evidenceRef: `workspace-editor-proposal:${proposal.proposalId}`,
+      // The proposal payload can contain the full before/after file contents.
+      // Keep effect evidence minimal: the durable proposal id and its editor
+      // revision coordinates are enough to identify the committed receipt.
+      evidenceMaterial: JSON.stringify({
+        proposalId: proposal.proposalId,
+        workspaceRoot: proposal.workspaceRoot,
+        path: proposal.path,
+        source: proposal.source,
+        baseContentSha256: proposal.baseContentSha256,
+        baseChangedtick: proposal.baseChangedtick,
+        bufferHandle: proposal.bufferHandle,
+      }),
+    }),
+  };
+}
+
+/**
+ * A blocked coordinator admission is also durable: before returning it, the
+ * coordinator fsync-appends a blocked ledger entry and records the workspace
+ * change. Correlate that receipt by the admitted tool-call id without putting
+ * either the attempted file contents or the coordinator's content-bearing
+ * message into effect evidence.
+ */
+function asCommittedEditorBlock(
+  result: ToolResult,
+  admission: Extract<
+    Awaited<ReturnType<typeof prepareWorkspaceMutation>>,
+    { readonly decision: "blocked" }
+  >,
+  context: {
+    readonly source: WorkspaceMutationSource;
+    readonly sessionId?: string;
+    readonly toolCallId?: string;
+  },
+): ToolResult {
+  const evidenceMaterial = JSON.stringify({
+    decision: admission.decision,
+    code: admission.code,
+    source: context.source,
+    ...(context.sessionId !== undefined
+      ? { sessionId: context.sessionId }
+      : {}),
+    ...(context.toolCallId !== undefined
+      ? { toolCallId: context.toolCallId }
+      : {}),
+  });
+  return {
+    ...result,
+    effectDisposition: createToolEffectDispositionEvidence({
+      disposition: "confirmed_committed",
+      evidenceKind: "provider_receipt",
+      evidenceRef: `workspace-editor-blocked:${admission.code}:${context.toolCallId ?? "untracked"}`,
+      evidenceMaterial,
     }),
   };
 }
@@ -512,13 +571,21 @@ async function coordinateFileWrite(
     ...(toolCallId !== undefined ? { toolCallId } : {}),
   });
   const rejection = workspaceMutationAdmissionToolResult(admission);
-  if (rejection !== null) {
-    return asPreMutationRefusal(
-      rejection,
-      input.source === "file_multi_edit"
-        ? FILE_MULTI_EDIT_TOOL_NAME
-        : FILE_EDIT_TOOL_NAME,
-    );
+  if (admission.decision === "proposal") {
+    if (rejection === null) {
+      throw new Error("workspace Editor proposal is missing its tool result");
+    }
+    return asCommittedEditorProposal(rejection, admission.proposal);
+  }
+  if (admission.decision === "blocked") {
+    if (rejection === null) {
+      throw new Error("blocked workspace mutation is missing its tool result");
+    }
+    return asCommittedEditorBlock(rejection, admission, {
+      source: input.source,
+      ...(sessionId !== undefined ? { sessionId } : {}),
+      ...(toolCallId !== undefined ? { toolCallId } : {}),
+    });
   }
   await executeWorkspaceFileMutation({
     admission,

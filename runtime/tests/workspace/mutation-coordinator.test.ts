@@ -4,6 +4,7 @@ import {
   appendFile,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   realpath,
   rename,
@@ -1325,6 +1326,181 @@ describe("WorkspaceMutationCoordinator", () => {
     ) as { readonly version?: number; readonly auditOutbox?: unknown };
     expect(cleanedQuarantine).toMatchObject({ version: 1 });
     expect(cleanedQuarantine.auditOutbox).toBeUndefined();
+  });
+
+  it("fsyncs the first ledger hierarchy bottom-up and repairs an ancestor-sync fault after restart", async () => {
+    const workspaceRoot = await tempDirectory(
+      "agenc-blocked-ledger-durability-workspace-",
+    );
+    const agencHome = await tempDirectory(
+      "agenc-blocked-ledger-durability-home-",
+    );
+    const path = join(workspaceRoot, "stale-editor-buffer.ts");
+    const diskContent = "disk remains authoritative\n";
+    const editorContent = "unsaved editor state\n";
+    await writeFile(path, diskContent, "utf8");
+    const canonicalWorkspaceRoot = await realpath(workspaceRoot);
+    const canonicalPath = await realpath(path);
+
+    const ledgerPath = workspaceMutationStatePath(
+      canonicalWorkspaceRoot,
+      agencHome,
+      "ledger-v1.jsonl",
+    );
+    const ledgerDirectory = dirname(ledgerPath);
+    const workspaceMutationsDirectory = dirname(ledgerDirectory);
+    const expectedDirectoryOrder = [
+      ledgerDirectory,
+      workspaceMutationsDirectory,
+      agencHome,
+    ];
+    const syncDirectory = async (directory: string): Promise<void> => {
+      const handle = await open(directory, "r");
+      try {
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+    };
+    const directorySyncOrder: string[] = [];
+    let failFirstAncestorSync = false;
+    const faulted = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+      syncLedgerDirectory: async (directory) => {
+        directorySyncOrder.push(directory);
+        if (
+          failFirstAncestorSync &&
+          directory === workspaceMutationsDirectory
+        ) {
+          failFirstAncestorSync = false;
+          throw new Error("injected first-ledger ancestor fsync failure");
+        }
+        await syncDirectory(directory);
+      },
+    });
+    const lease = faulted.acquire({
+      workspaceRoot,
+      editorInstanceId: "editor-before-blocked-ledger-restart",
+    });
+    faulted.sync({
+      workspaceRoot,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+      sequence: 0,
+      buffers: [
+        {
+          path,
+          bufferHandle: 17,
+          changedtick: 4,
+          contentSha256: sha256(editorContent),
+          contentBytes: Buffer.byteLength(editorContent),
+          dirty: true,
+          content: editorContent,
+        },
+      ],
+    });
+    await faulted.flushQuarantinePersistence();
+
+    // Retain the live Editor authority but model a fresh state hierarchy. The
+    // next blocked-admission ledger append must recreate both descendants of
+    // AGENC_HOME and durably publish each new directory entry.
+    await rm(workspaceMutationsDirectory, { recursive: true });
+    directorySyncOrder.splice(0);
+    failFirstAncestorSync = true;
+    await expect(stat(ledgerPath)).rejects.toMatchObject({ code: "ENOENT" });
+    const firstBlockedInput = {
+      path,
+      source: "file_edit" as const,
+      beforeText: diskContent,
+      afterText: "candidate replacement\n",
+      sessionId: "session-first-blocked-ledger",
+      toolCallId: "call-first-blocked-ledger",
+    };
+    await expect(faulted.prepareMutation(firstBlockedInput)).rejects.toThrow(
+      "injected first-ledger ancestor fsync failure",
+    );
+    expect(directorySyncOrder).toEqual(expectedDirectoryOrder.slice(0, 2));
+    expect(directorySyncOrder).not.toContain(dirname(agencHome));
+
+    // The file append may have reached the live filesystem, but the caller did
+    // not receive a committed blocked-admission receipt. Republish the live
+    // Editor quarantine through the now-healthy chain, then model a daemon
+    // restart and retry the safe refusal.
+    expect(
+      await readWorkspaceMutationLedger(canonicalWorkspaceRoot, agencHome),
+    ).toEqual([
+      expect.objectContaining({
+        path: canonicalPath,
+        source: "file_edit",
+        status: "blocked",
+      }),
+    ]);
+    faulted.sync({
+      workspaceRoot,
+      editorInstanceId: lease.editorInstanceId,
+      leaseToken: lease.leaseToken,
+      epoch: lease.epoch,
+      sequence: 1,
+      buffers: [
+        {
+          path,
+          bufferHandle: 17,
+          changedtick: 4,
+          contentSha256: sha256(editorContent),
+          contentBytes: Buffer.byteLength(editorContent),
+          dirty: true,
+          content: editorContent,
+        },
+      ],
+    });
+    await faulted.flushQuarantinePersistence();
+    expect(directorySyncOrder.slice(2)).toEqual(expectedDirectoryOrder);
+
+    const restartDirectorySyncOrder: string[] = [];
+    const restarted = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+      syncLedgerDirectory: async (directory) => {
+        restartDirectorySyncOrder.push(directory);
+        await syncDirectory(directory);
+      },
+    });
+    expect(restarted.authorityForPath(path)).toBe("stale_dirty");
+    const retried = await restarted.prepareMutation(firstBlockedInput);
+    expect(retried).toMatchObject({
+      decision: "blocked",
+      code: "STALE_EDITOR_BUFFER",
+    });
+    expect(restartDirectorySyncOrder).toEqual(expectedDirectoryOrder);
+
+    const entries = await readWorkspaceMutationLedger(
+      canonicalWorkspaceRoot,
+      agencHome,
+    );
+    expect(entries).toHaveLength(2);
+    expect(entries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          path: canonicalPath,
+          source: "file_edit",
+          status: "blocked",
+        }),
+      ]),
+    );
+
+    // Exercise another actual reopen after the successful retry. The original
+    // unsaved-editor quarantine remains authoritative and the ledger survives
+    // independently of the injected sync seam.
+    const recovered = new WorkspaceMutationCoordinator({
+      workspaceRoot,
+      agencHome,
+    });
+    expect(recovered.authorityForPath(path)).toBe("stale_dirty");
+    expect(
+      await readWorkspaceMutationLedger(canonicalWorkspaceRoot, agencHome),
+    ).toEqual(entries);
   });
 
   it("drains a v2 audit outbox once and keeps the cleaned legacy v1 quarantine readable", async () => {
