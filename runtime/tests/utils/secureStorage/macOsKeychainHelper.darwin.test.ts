@@ -168,16 +168,17 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     const create = run("write", first);
     expect(create.error?.message ?? create.stderr).toBe("");
     expect(create.status).toBe(0);
-    const createdInPrimary = runSecuritySuccessfully([
+    // A different executable may need interactive ACL approval to read secret
+    // bytes. Use `security` only to prove the target keychain; the helper below
+    // verifies the exact bytes without weakening the item's production ACL.
+    runSecuritySuccessfully([
       "find-generic-password",
       "-a",
       account,
       "-s",
       service,
-      "-w",
       primaryKeychain,
     ]);
-    expect(createdInPrimary.stdout.trim()).toBe(first);
     expect(run("read")).toMatchObject({
       status: 0,
       stdout: first,
@@ -226,7 +227,6 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
         account,
         "-s",
         service,
-        "-w",
         keychain,
       ]);
       expect(absent.status).not.toBe(0);
@@ -309,16 +309,19 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     }
 
     expect(run("write", first)).toMatchObject({ status: 0, stderr: "" });
-    const createdInDefault = runSecuritySuccessfully([
+    runSecuritySuccessfully([
       "find-generic-password",
       "-a",
       account,
       "-s",
       service,
-      "-w",
       primaryKeychain,
     ]);
-    expect(createdInDefault.stdout.trim()).toBe(first);
+    expect(run("read")).toMatchObject({
+      status: 0,
+      stdout: first,
+      stderr: "",
+    });
     expect(run("delete")).toMatchObject({ status: 0, stderr: "" });
 
     runSecuritySuccessfully([
@@ -349,16 +352,19 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
       runSecurity(["default-keychain", "-d", "user"]),
     );
     expect(run("write", first)).toMatchObject({ status: 0, stderr: "" });
-    const createdWithoutDefault = runSecuritySuccessfully([
+    runSecuritySuccessfully([
       "find-generic-password",
       "-a",
       account,
       "-s",
       service,
-      "-w",
       primaryKeychain,
     ]);
-    expect(createdWithoutDefault.stdout.trim()).toBe(first);
+    expect(run("read")).toMatchObject({
+      status: 0,
+      stdout: first,
+      stderr: "",
+    });
     expect(run("delete")).toMatchObject({ status: 0, stderr: "" });
 
     runSecuritySuccessfully([
@@ -394,7 +400,6 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
         account,
         "-s",
         service,
-        "-w",
         keychain,
       ]);
       expect(absent.status).not.toBe(0);
