@@ -253,77 +253,139 @@ static CFMutableDictionaryRef create_query(CFStringRef service,
   return query;
 }
 
+static bool capture_unique_persistent_ref(CFTypeRef candidate,
+                                          CFDataRef *captured_out) {
+  if ((candidate == NULL) ||
+      (CFGetTypeID(candidate) != CFDataGetTypeID())) {
+    (void)fail_message(
+        "Keychain enumeration returned a non-data persistent reference");
+    return false;
+  }
+  if (*captured_out != NULL) {
+    (void)fail_message(
+        "multiple Keychain records match the exact service/account identity");
+    return false;
+  }
+
+  *captured_out = (CFDataRef)candidate;
+  CFRetain(*captured_out);
+  return true;
+}
+
 /*
- * Enumerate every item visible for one service/account identity. A mutation
- * is safe only when this returns one persistent reference; ambiguity fails
- * closed instead of letting SecItemUpdate or SecItemDelete affect all matches.
+ * SecItemCopyMatching with a multi-keychain kSecMatchSearchList can stop at the
+ * first keychain even when kSecMatchLimitAll is requested. Enumerate each
+ * captured user-search-list keychain separately, then require exactly one
+ * persistent reference across the complete list. Mutations remain bound to
+ * that reference and ambiguity fails closed.
  */
 static enum unique_match_result
 copy_unique_persistent_ref(CFDictionaryRef identity_query,
                            CFDataRef *persistent_ref_out) {
-  CFMutableDictionaryRef search = NULL;
-  CFTypeRef matches = NULL;
+  CFTypeRef search_list_value =
+      CFDictionaryGetValue(identity_query, kSecMatchSearchList);
+  CFArrayRef search_list;
   CFDataRef persistent_ref = NULL;
-  OSStatus status;
   enum unique_match_result result = UNIQUE_MATCH_ERROR;
+  CFIndex keychain_index;
 
   *persistent_ref_out = NULL;
-  search =
-      CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, identity_query);
-  if (search == NULL) {
-    (void)fail_message("cannot allocate Keychain enumeration query");
-    goto cleanup;
+  if ((search_list_value == NULL) ||
+      (CFGetTypeID(search_list_value) != CFArrayGetTypeID())) {
+    (void)fail_message("Keychain identity query has no valid search list");
+    return UNIQUE_MATCH_ERROR;
   }
-  CFDictionarySetValue(search, kSecReturnPersistentRef, kCFBooleanTrue);
-  CFDictionarySetValue(search, kSecMatchLimit, kSecMatchLimitAll);
+  search_list = (CFArrayRef)search_list_value;
 
-  status = SecItemCopyMatching(search, &matches);
-  if (status == errSecItemNotFound) {
-    result = UNIQUE_MATCH_NONE;
-    goto cleanup;
-  }
-  if (status != errSecSuccess) {
-    (void)fail_osstatus("Keychain enumeration", status);
-    goto cleanup;
-  }
+  for (keychain_index = 0; keychain_index < CFArrayGetCount(search_list);
+       ++keychain_index) {
+    CFTypeRef keychain = CFArrayGetValueAtIndex(search_list, keychain_index);
+    const void *keychain_values[] = {keychain};
+    CFArrayRef one_keychain = NULL;
+    CFMutableDictionaryRef search = NULL;
+    CFTypeRef matches = NULL;
+    OSStatus status;
 
-  if ((matches != NULL) && (CFGetTypeID(matches) == CFDataGetTypeID())) {
-    /* Be defensive if a platform returns the sole match without an array. */
-    persistent_ref = (CFDataRef)matches;
-  } else if ((matches != NULL) &&
-             (CFGetTypeID(matches) == CFArrayGetTypeID())) {
-    CFArrayRef match_array = (CFArrayRef)matches;
-    const CFIndex count = CFArrayGetCount(match_array);
-    CFTypeRef candidate;
-
-    if (count != 1) {
-      (void)fail_message(
-          "multiple Keychain records match the exact service/account identity");
+    if (keychain == NULL) {
+      (void)fail_message("Keychain search list contains a null keychain");
       goto cleanup;
     }
-    candidate = CFArrayGetValueAtIndex(match_array, 0);
-    if ((candidate == NULL) || (CFGetTypeID(candidate) != CFDataGetTypeID())) {
-      (void)fail_message(
-          "Keychain enumeration returned a non-data persistent reference");
+    one_keychain = CFArrayCreate(kCFAllocatorDefault, keychain_values, 1,
+                                 &kCFTypeArrayCallBacks);
+    search =
+        CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, identity_query);
+    if ((one_keychain == NULL) || (search == NULL)) {
+      (void)fail_message("cannot allocate Keychain enumeration query");
+      if (one_keychain != NULL) {
+        CFRelease(one_keychain);
+      }
+      if (search != NULL) {
+        CFRelease(search);
+      }
       goto cleanup;
     }
-    persistent_ref = (CFDataRef)candidate;
-  } else {
-    (void)fail_message(
-        "Keychain enumeration returned an unexpected result type");
-    goto cleanup;
-  }
+    CFDictionarySetValue(search, kSecMatchSearchList, one_keychain);
+    CFDictionarySetValue(search, kSecReturnPersistentRef, kCFBooleanTrue);
+    CFDictionarySetValue(search, kSecMatchLimit, kSecMatchLimitAll);
 
-  CFRetain(persistent_ref);
-  *persistent_ref_out = persistent_ref;
-  result = UNIQUE_MATCH_ONE;
+    status = SecItemCopyMatching(search, &matches);
+    CFRelease(search);
+    CFRelease(one_keychain);
+    if (status == errSecItemNotFound) {
+      continue;
+    }
+    if (status != errSecSuccess) {
+      (void)fail_osstatus("Keychain enumeration", status);
+      if (matches != NULL) {
+        CFRelease(matches);
+      }
+      goto cleanup;
+    }
 
-cleanup:
-  if (matches != NULL) {
+    if ((matches != NULL) && (CFGetTypeID(matches) == CFDataGetTypeID())) {
+      if (!capture_unique_persistent_ref(matches, &persistent_ref)) {
+        CFRelease(matches);
+        goto cleanup;
+      }
+    } else if ((matches != NULL) &&
+               (CFGetTypeID(matches) == CFArrayGetTypeID())) {
+      CFArrayRef match_array = (CFArrayRef)matches;
+      const CFIndex count = CFArrayGetCount(match_array);
+      CFIndex match_index;
+
+      if (count == 0) {
+        (void)fail_message("Keychain enumeration returned an empty match list");
+        CFRelease(matches);
+        goto cleanup;
+      }
+      for (match_index = 0; match_index < count; ++match_index) {
+        if (!capture_unique_persistent_ref(
+                CFArrayGetValueAtIndex(match_array, match_index),
+                &persistent_ref)) {
+          CFRelease(matches);
+          goto cleanup;
+        }
+      }
+    } else {
+      (void)fail_message(
+          "Keychain enumeration returned an unexpected result type");
+      if (matches != NULL) {
+        CFRelease(matches);
+      }
+      goto cleanup;
+    }
     CFRelease(matches);
   }
-  if (search != NULL) {
-    CFRelease(search);
+
+  if (persistent_ref == NULL) {
+    return UNIQUE_MATCH_NONE;
+  }
+  *persistent_ref_out = persistent_ref;
+  return UNIQUE_MATCH_ONE;
+
+cleanup:
+  if (persistent_ref != NULL) {
+    CFRelease(persistent_ref);
   }
   return result;
 }

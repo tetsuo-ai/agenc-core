@@ -21,7 +21,16 @@ describe("macOS Keychain native-helper contract", () => {
     expect(source).toContain("kSecMatchItemList");
     expect(source).toContain("copy_unique_persistent_ref");
     expect(source).toContain("copy_item_by_persistent_ref");
-    expect(source).toContain("count != 1");
+    expect(source).toContain(
+      "keychain_index < CFArrayGetCount(search_list)",
+    );
+    expect(source).toContain(
+      "CFArrayCreate(kCFAllocatorDefault, keychain_values, 1",
+    );
+    expect(source).toContain(
+      "CFDictionarySetValue(search, kSecMatchSearchList, one_keychain)",
+    );
+    expect(source).toContain("capture_unique_persistent_ref");
     expect(source).toContain(
       "multiple Keychain records match the exact service/account identity",
     );
