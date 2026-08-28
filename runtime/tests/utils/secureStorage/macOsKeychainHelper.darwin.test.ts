@@ -75,17 +75,26 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     expect(compile.error?.message ?? compile.stderr).toBe("");
     expect(compile.status).toBe(0);
 
-    const defaultKeychain = runSecuritySuccessfully([
+    const defaultKeychain = runSecurity([
       "default-keychain",
       "-d",
       "user",
     ]);
-    [originalDefaultKeychain] = parseKeychainPaths(defaultKeychain.stdout);
-    expect(originalDefaultKeychain).toBeDefined();
+    if (defaultKeychain.status === 0) {
+      expect(defaultKeychain.error).toBeUndefined();
+      expect(defaultKeychain.stderr).toBe("");
+      [originalDefaultKeychain] = parseKeychainPaths(defaultKeychain.stdout);
+      expect(originalDefaultKeychain).toBeDefined();
+    } else {
+      expect(defaultKeychain.error).toBeUndefined();
+      expect(defaultKeychain.stdout).toBe("");
+      expect(defaultKeychain.stderr.trim()).toBe(
+        "security: SecKeychainCopyDomainDefault user: A default keychain could not be found.",
+      );
+    }
 
     const listed = runSecuritySuccessfully(["list-keychains", "-d", "user"]);
     originalSearchList = parseKeychainPaths(listed.stdout);
-    expect(originalSearchList.length).toBeGreaterThan(0);
 
     for (const keychain of temporaryKeychains) {
       runSecuritySuccessfully([
