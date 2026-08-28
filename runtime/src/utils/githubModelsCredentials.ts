@@ -1,4 +1,3 @@
-import { isBareMode } from './envUtils.js'
 import type { HomeContext } from '../config/home.js'
 import type { SecureStorageData } from './secureStorage/index.js'
 import {
@@ -49,7 +48,6 @@ function checkGithubTokenStatus(token: string): GithubTokenStatus {
 }
 
 export function readGithubModelsToken(home: HomeContext): string | undefined {
-  if (isBareMode()) return undefined
   try {
     const data = readNativeSecureStorage(home)
     const t = data?.githubModels?.accessToken?.trim()
@@ -62,7 +60,6 @@ export function readGithubModelsToken(home: HomeContext): string | undefined {
 export async function readGithubModelsTokenAsync(
   home: HomeContext,
 ): Promise<string | undefined> {
-  if (isBareMode()) return undefined
   try {
     const data = await readNativeSecureStorageAsync(home)
     const t = data?.githubModels?.accessToken?.trim()
@@ -99,9 +96,6 @@ async function refreshGithubModelsTokenIfNeededImpl(
   home: HomeContext,
 ): Promise<boolean> {
   if (getSelectedProviderName() !== 'github') {
-    return false
-  }
-  if (isBareMode()) {
     return false
   }
 
@@ -158,9 +152,6 @@ export function saveGithubModelsToken(
   success: boolean
   warning?: string
 } {
-  if (isBareMode()) {
-    return { success: false, warning: 'Bare mode: secure storage is disabled.' }
-  }
   const trimmed = token.trim()
   if (!trimmed) {
     return { success: false, warning: 'Token is empty.' }
@@ -191,9 +182,6 @@ export function saveGithubModelsToken(
 export function clearGithubModelsToken(
   home: HomeContext,
 ): { success: boolean; warning?: string } {
-  if (isBareMode()) {
-    return { success: true }
-  }
   try {
     updateNativeSecureStorage(
       home,

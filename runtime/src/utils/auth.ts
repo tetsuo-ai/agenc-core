@@ -24,7 +24,6 @@ import {
 } from './authFileDescriptor.js'
 import { clearBetasCaches } from './betas.js'
 import {
-  isBareMode,
   isEnvTruthy,
   isRunningOnHomespace,
 } from './envUtils.js'
@@ -111,9 +110,6 @@ export function isAnthropicAuthEnabledForContext(
   context: ProviderAuthReadContext,
 ): boolean {
   const { environment } = context
-  // --bare: API-key-only, never OAuth.
-  if (isBareMode()) return false
-
   // `agenc ssh` remote: ANTHROPIC_UNIX_SOCKET tunnels API calls through a
   // local auth-injecting proxy. The launcher sets AGENC_OAUTH_TOKEN as a
   // placeholder iff the local side is a subscriber (so the remote includes the
@@ -177,11 +173,6 @@ export function getAuthTokenSourceForContext(
   context: ProviderAuthReadContext,
 ) {
   const { environment, home } = context
-  // --bare is API-key-only. OAuth env vars, FD tokens, and keychain are ignored.
-  if (isBareMode()) {
-    return { source: 'none' as const, hasToken: false }
-  }
-
   if (
     environment.ANTHROPIC_AUTH_TOKEN &&
     !isManagedOAuthContext(environment)
@@ -257,15 +248,6 @@ export function getAnthropicApiKeyWithSourceForContext(
   source: ApiKeySource
 } {
   const { environment, home } = context
-  // --bare: hermetic auth. Only ANTHROPIC_API_KEY is consulted. Never touches
-  // keychain or approval lists. 3P providers use their own credential chains.
-  if (isBareMode()) {
-    if (environment.ANTHROPIC_API_KEY) {
-      return { key: environment.ANTHROPIC_API_KEY, source: 'ANTHROPIC_API_KEY' }
-    }
-    return { key: null, source: 'none' }
-  }
-
   // On homespace, don't use ANTHROPIC_API_KEY (use Console key instead)
   // https://anthropic.slack.com/archives/C08428WSLKV/p1747331773214779
   const apiKeyEnv = isRunningOnHomespace(environment)
@@ -359,7 +341,6 @@ export function getAnthropicApiKeyWithSourceForContext(
 export function getPrimaryApiKeyFromSecureStorage(
   home: HomeContext,
 ): { key: string; source: ApiKeySource } | null {
-  if (isBareMode()) return null
   const key = readNativeSecureStorage(home).primaryApiKey?.trim()
   return key ? { key, source: '/login managed key' } : null
 }
@@ -521,9 +502,6 @@ export function getAgenCAIOAuthTokens(
   home: HomeContext,
   environment: ProviderEnvironment,
 ): OAuthTokens | null {
-  // --bare: API-key-only. No OAuth env tokens, no keychain, no credentials file.
-  if (isBareMode()) return null
-
   // Check for force-set OAuth token from environment variable
   if (environment.AGENC_OAUTH_TOKEN) {
     // Return an inference-only token (unknown refresh and expiry)
@@ -642,8 +620,6 @@ export async function getAgenCAIOAuthTokensAsync(
   home: HomeContext,
   environment: ProviderEnvironment,
 ): Promise<OAuthTokens | null> {
-  if (isBareMode()) return null
-
   // Env var and FD tokens are sync and don't hit the keychain
   if (
     environment.AGENC_OAUTH_TOKEN ||

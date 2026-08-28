@@ -23,7 +23,6 @@ import {
 } from '../services/xai/oauth.js'
 import type { XaiOauthTokens } from '../services/xai/oauth.js'
 import type { HomeContext } from '../config/home.js'
-import { isBareMode } from './envUtils.js'
 import * as lockfile from './lockfile.js'
 import type { SecureStorageData } from './secureStorage/index.js'
 import {
@@ -70,7 +69,6 @@ const readCacheByHome = new Map<
 function readXaiOauthCredentialsFresh(
   home: HomeContext,
 ): XaiOauthCredentialBlob | undefined {
-  if (isBareMode()) return undefined
   try {
     const data = readNativeSecureStorage(home) as StorageShape
     const blob = data?.xaiOauth
@@ -121,9 +119,6 @@ export function saveXaiOauthCredentials(
   home: HomeContext,
   blob: XaiOauthCredentialBlob,
 ): { success: boolean; warning?: string } {
-  if (isBareMode()) {
-    return { success: false, warning: 'Bare mode: secure storage is disabled.' }
-  }
   if (!blob.accessToken?.trim()) {
     return { success: false, warning: 'Access token is empty.' }
   }
@@ -146,9 +141,6 @@ export function saveXaiOauthCredentials(
 export function clearXaiOauthCredentials(
   home: HomeContext,
 ): { success: boolean; warning?: string } {
-  if (isBareMode()) {
-    return { success: true }
-  }
   try {
     updateNativeSecureStorage(
       home,

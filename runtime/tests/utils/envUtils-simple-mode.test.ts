@@ -48,4 +48,16 @@ describe("typed simple mode", () => {
       'parseBoolean(env, "AGENC_SIMPLE"',
     );
   });
+
+  test("keeps authentication outside bare-mode policy", () => {
+    const credentialSources = [
+      "../../src/utils/auth.ts",
+      "../../src/utils/githubModelsCredentials.ts",
+      "../../src/utils/xaiOauthCredentials.ts",
+    ]
+      .map((path) => readFileSync(new URL(path, import.meta.url), "utf8"))
+      .join("\n");
+
+    expect(credentialSources).not.toContain("isBareMode");
+  });
 });

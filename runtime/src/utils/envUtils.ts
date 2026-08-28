@@ -67,8 +67,8 @@ export function hasNodeOption(flag: string): boolean {
 
 /**
  * --bare skips hooks, LSP, plugin sync, skill dir-walk,
- * attribution, background prefetches, and ALL keychain/credential reads.
- * Auth is strictly the provider API-key environment ingress.
+ * attribution, and background prefetches. Authentication stays active so
+ * provider credentials can be read, refreshed, saved, and cleared normally.
  * Explicit CLI flags such as --plugin-dir and --add-dir remain honored.
  * ~30 gates across the codebase.
  *

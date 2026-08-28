@@ -9,8 +9,10 @@ import type { SecureStorageData } from '../../src/utils/secureStorage/index.js'
 
 const CONFIG_MODULE = '../../src/utils/config.js'
 const SECURE_STORAGE_MODULE = '../../src/utils/secureStorage/index.js'
+const ENV_UTILS_MODULE = '../../src/utils/envUtils.js'
 
 const originalHome = process.env.AGENC_HOME
+const originalNodeEnv = process.env.NODE_ENV
 let home = ''
 let secondHome = ''
 let runtimeState: Record<string, unknown>
@@ -77,14 +79,48 @@ beforeEach(() => {
 afterEach(() => {
   vi.doUnmock(CONFIG_MODULE)
   vi.doUnmock(SECURE_STORAGE_MODULE)
+  vi.doUnmock(ENV_UTILS_MODULE)
   vi.resetModules()
   if (originalHome === undefined) delete process.env.AGENC_HOME
   else process.env.AGENC_HOME = originalHome
+  if (originalNodeEnv === undefined) delete process.env.NODE_ENV
+  else process.env.NODE_ENV = originalNodeEnv
   rmSync(home, { recursive: true, force: true })
   rmSync(secondHome, { recursive: true, force: true })
 })
 
 describe('primary API-key native storage', () => {
+  test('bare mode keeps the canonical saved credential authority', async () => {
+    storedData.primaryApiKey = 'stored-bare-key'
+    vi.doMock(ENV_UTILS_MODULE, async importOriginal => {
+      const actual = await importOriginal<
+        typeof import('../../src/utils/envUtils.ts')
+      >()
+      return { ...actual, isBareMode: () => true }
+    })
+    const {
+      getAnthropicApiKeyWithSourceForContext,
+      getPrimaryApiKeyFromSecureStorage,
+    } = await loadAuthModule()
+    const boundHome = resolveHomeContext({ AGENC_HOME: home })
+
+    expect(getPrimaryApiKeyFromSecureStorage(boundHome)).toEqual({
+      key: 'stored-bare-key',
+      source: '/login managed key',
+    })
+    process.env.NODE_ENV = 'production'
+    expect(
+      getAnthropicApiKeyWithSourceForContext({
+        home: boundHome,
+        environment: {},
+        provider: 'anthropic',
+      }),
+    ).toEqual({
+      key: 'stored-bare-key',
+      source: '/login managed key',
+    })
+  })
+
   test('stores both the secret and its ambient-key approval only in the native secure storage', async () => {
     const { saveApiKey } = await loadAuthModule()
 

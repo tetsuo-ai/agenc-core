@@ -6,6 +6,7 @@ type MockStorageData = Record<string, unknown>
 
 const secureStorageModulePath = '../../src/utils/secureStorage/index.js'
 const oauthServiceModulePath = '../../src/services/xai/oauth.js'
+const envUtilsModulePath = '../../src/utils/envUtils.js'
 const originalEnv = { ...process.env }
 const originalArgv = [...process.argv]
 let storageByHome = new Map<string, MockStorageData>()
@@ -82,6 +83,7 @@ afterEach(() => {
   storageByHome = new Map()
   vi.doUnmock(secureStorageModulePath)
   vi.doUnmock(oauthServiceModulePath)
+  vi.doUnmock(envUtilsModulePath)
   vi.clearAllMocks()
   vi.resetModules()
 })
@@ -155,6 +157,40 @@ test('force refresh rotates tokens and persists them', async () => {
     tokenEndpoint: 'https://auth.x.ai/oauth2/token',
     refreshToken: 'refresh-1',
   })
+})
+
+test('bare mode preserves xAI OAuth read, refresh, login, and logout authority', async () => {
+  storageByHome.set(secureStorageKey(home), { xaiOauth: storedBlob() })
+  vi.doMock(envUtilsModulePath, async importOriginal => {
+    const actual = await importOriginal<
+      typeof import('../../src/utils/envUtils.ts')
+    >()
+    return { ...actual, isBareMode: () => true }
+  })
+  refreshMock.mockResolvedValue({
+    accessToken: 'access-2',
+    refreshToken: 'refresh-2',
+    expiresAt: Date.now() + 6 * 3600 * 1000,
+  })
+  const {
+    clearXaiOauthCredentials,
+    forceRefreshXaiOauthCredentials,
+    readXaiOauthAccessToken,
+    readXaiOauthCredentials,
+    saveXaiOauthCredentials,
+  } = await importFreshModule()
+
+  expect(readXaiOauthAccessToken(home)).toBe('access-1')
+  await expect(forceRefreshXaiOauthCredentials(home)).resolves.toMatchObject({
+    accessToken: 'access-2',
+    refreshToken: 'refresh-2',
+  })
+  expect(readXaiOauthCredentials(home)?.accessToken).toBe('access-2')
+  expect(saveXaiOauthCredentials(home, storedBlob({ accessToken: 'access-3' })))
+    .toMatchObject({ success: true })
+  expect(readXaiOauthAccessToken(home)).toBe('access-3')
+  expect(clearXaiOauthCredentials(home)).toMatchObject({ success: true })
+  expect(readXaiOauthCredentials(home)).toBeUndefined()
 })
 
 test('refresh response without a rotated token keeps the previous grant', async () => {

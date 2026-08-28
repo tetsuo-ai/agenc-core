@@ -7,6 +7,7 @@ import type { ProviderEnvironment } from '../../src/llm/provider-options.js'
 import type { SecureStorageData } from '../../src/utils/secureStorage/index.js'
 
 const SECURE_STORAGE_MODULE = '../../src/utils/secureStorage/index.js'
+const ENV_UTILS_MODULE = '../../src/utils/envUtils.js'
 const originalEnv = { ...process.env }
 const originalArgv = [...process.argv]
 const EMPTY_ENVIRONMENT: ProviderEnvironment = Object.freeze({})
@@ -85,11 +86,34 @@ afterEach(() => {
   process.env = { ...originalEnv }
   process.argv = [...originalArgv]
   vi.doUnmock(SECURE_STORAGE_MODULE)
+  vi.doUnmock(ENV_UTILS_MODULE)
   vi.clearAllMocks()
   vi.resetModules()
 })
 
 describe('AgenC AI OAuth native authority', () => {
+  test('bare mode preserves captured OAuth reads and refresh inputs', async () => {
+    vi.doMock(ENV_UTILS_MODULE, async importOriginal => {
+      const actual = await importOriginal<
+        typeof import('../../src/utils/envUtils.ts')
+      >()
+      return { ...actual, isBareMode: () => true }
+    })
+    const { getAgenCAIOAuthTokens, getAgenCAIOAuthTokensAsync } =
+      await loadAuthModule()
+
+    expect(getAgenCAIOAuthTokens(HOME_A, EMPTY_ENVIRONMENT)).toMatchObject({
+      accessToken: 'access-a',
+      refreshToken: 'refresh-a',
+    })
+    await expect(
+      getAgenCAIOAuthTokensAsync(HOME_A, EMPTY_ENVIRONMENT),
+    ).resolves.toMatchObject({
+      accessToken: 'access-a',
+      refreshToken: 'refresh-a',
+    })
+  })
+
   test('A/B session snapshots remain isolated after process environment mutation', async () => {
     const { getAgenCAIOAuthTokens, getAgenCAIOAuthTokensAsync } =
       await loadAuthModule()

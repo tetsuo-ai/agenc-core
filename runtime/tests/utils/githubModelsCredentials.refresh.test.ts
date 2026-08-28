@@ -17,6 +17,7 @@ async function importFreshModule() {
 const secureStorageModulePath = '../../src/utils/secureStorage/index.js'
 const deviceFlowModulePath = '../../src/services/github/deviceFlow.js'
 const providerModulePath = '../../src/utils/model/providers.js'
+const envUtilsModulePath = '../../src/utils/envUtils.js'
 
 describe('refreshGithubModelsTokenIfNeeded', () => {
   const orig = {
@@ -29,6 +30,7 @@ describe('refreshGithubModelsTokenIfNeeded', () => {
     vi.doUnmock(secureStorageModulePath)
     vi.doUnmock(deviceFlowModulePath)
     vi.doUnmock(providerModulePath)
+    vi.doUnmock(envUtilsModulePath)
     vi.clearAllMocks()
     vi.resetModules()
   })
@@ -37,6 +39,7 @@ describe('refreshGithubModelsTokenIfNeeded', () => {
     vi.doUnmock(secureStorageModulePath)
     vi.doUnmock(deviceFlowModulePath)
     vi.doUnmock(providerModulePath)
+    vi.doUnmock(envUtilsModulePath)
     vi.resetModules()
     for (const [k, v] of Object.entries(orig)) {
       if (v === undefined) {
@@ -93,6 +96,61 @@ describe('refreshGithubModelsTokenIfNeeded', () => {
     }
     expect(githubModels.accessToken?.startsWith('tid=fresh;exp=')).toBe(true)
     expect(githubModels.oauthAccessToken).toBe('ghu_oauth_secret')
+  })
+
+  test('bare mode preserves GitHub credential read, refresh, save, and clear authority', async () => {
+    process.env.AGENC_PROVIDER = 'github'
+    const futureExp = Math.floor(Date.now() / 1000) + 3600
+    let store: Record<string, unknown> = {
+      githubModels: {
+        accessToken: 'tid=stale;exp=1;sku=free',
+        oauthAccessToken: 'ghu_oauth_secret',
+      },
+    }
+    vi.doMock(envUtilsModulePath, async importOriginal => {
+      const actual = await importOriginal<
+        typeof import('../../src/utils/envUtils.ts')
+      >()
+      return { ...actual, isBareMode: () => true }
+    })
+    vi.doMock(secureStorageModulePath, () => ({
+      getSecureStorage: () => ({
+        read: () => store,
+        readAsync: async () => store,
+        update: (next: Record<string, unknown>) => {
+          store = next
+          return { success: true }
+        },
+      }),
+    }))
+    vi.doMock(deviceFlowModulePath, () => ({
+      DEFAULT_GITHUB_DEVICE_SCOPE: 'read:user',
+      exchangeForCopilotToken: async () => ({
+        token: `tid=fresh;exp=${futureExp};sku=free`,
+        expires_at: futureExp,
+        refresh_in: 1500,
+        endpoints: { api: 'https://api.githubcopilot.com' },
+      }),
+    }))
+
+    const {
+      clearGithubModelsToken,
+      readGithubModelsToken,
+      readGithubModelsTokenAsync,
+      refreshGithubModelsTokenIfNeeded,
+      saveGithubModelsToken,
+    } = await importFreshModule()
+
+    expect(readGithubModelsToken(HOME)).toContain('tid=stale')
+    await expect(readGithubModelsTokenAsync(HOME)).resolves.toContain(
+      'tid=stale',
+    )
+    await expect(refreshGithubModelsTokenIfNeeded(HOME)).resolves.toBe(true)
+    expect(readGithubModelsToken(HOME)).toContain('tid=fresh')
+    expect(saveGithubModelsToken(HOME, 'tid=saved;exp=9999999999'))
+      .toMatchObject({ success: true })
+    expect(clearGithubModelsToken(HOME)).toMatchObject({ success: true })
+    expect(store).not.toHaveProperty('githubModels')
   })
 
   test('does not refresh when current Copilot token is valid', async () => {
