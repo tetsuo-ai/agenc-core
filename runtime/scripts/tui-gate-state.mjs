@@ -1,10 +1,6 @@
 import { spawn, spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import {
-  mkdirSync,
-  realpathSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import {
   chmod,
   lstat,
@@ -192,9 +188,8 @@ async function makePrivateDirectories(env) {
 }
 
 async function createShortGateRoot() {
-  const parents = process.platform === "win32"
-    ? [tmpdir()]
-    : ["/tmp", tmpdir()];
+  const parents =
+    process.platform === "win32" ? [tmpdir()] : ["/tmp", tmpdir()];
   const failures = [];
   for (const parent of new Set(parents)) {
     try {
@@ -203,7 +198,10 @@ async function createShortGateRoot() {
       failures.push(error);
     }
   }
-  throw new AggregateError(failures, "could not create a private TUI gate root");
+  throw new AggregateError(
+    failures,
+    "could not create a private TUI gate root",
+  );
 }
 
 function assertShortSocketPath(agencHome) {
@@ -294,11 +292,11 @@ export function createTuiGateProject(state, { dirty = false } = {}) {
   }
   const trackedFiles = Object.keys(PROJECT_FIXTURE_FILES);
   if (dirty) {
-    writeFileSync(
-      path.join(project, "diff-fixture.txt"),
-      "baseline\n",
-      { encoding: "utf8", mode: 0o600, flag: "wx" },
-    );
+    writeFileSync(path.join(project, "diff-fixture.txt"), "baseline\n", {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
     trackedFiles.push("diff-fixture.txt");
   }
 
@@ -368,13 +366,17 @@ export async function writeTuiGateTrust(env, projectPaths) {
   const paths = await canonicalProjectPaths(projectPaths);
   await writeFile(
     trustFile,
-    `${JSON.stringify({
-      version: 1,
-      trustedProjects: paths.map((projectPath) => ({
-        path: projectPath,
-        trustedAt: TRUST_TIMESTAMP,
-      })),
-    }, null, 2)}\n`,
+    `${JSON.stringify(
+      {
+        version: 1,
+        trustedProjects: paths.map((projectPath) => ({
+          path: projectPath,
+          trustedAt: TRUST_TIMESTAMP,
+        })),
+      },
+      null,
+      2,
+    )}\n`,
     { encoding: "utf8", mode: 0o600 },
   );
   return trustFile;
@@ -400,16 +402,18 @@ export async function writeTuiGateDefaultConfig(state) {
 }
 
 function daemonCommand(binAgenc, args, env, timeout) {
-  return spawnSync(
-    process.execPath,
-    [binAgenc, "daemon", ...args],
-    { encoding: "utf8", env, timeout },
-  );
+  return spawnSync(process.execPath, [binAgenc, "daemon", ...args], {
+    encoding: "utf8",
+    env,
+    timeout,
+  });
 }
 
 async function readDaemonPid(agencHome) {
   try {
-    const raw = (await readFile(path.join(agencHome, "daemon.pid"), "utf8")).trim();
+    const raw = (
+      await readFile(path.join(agencHome, "daemon.pid"), "utf8")
+    ).trim();
     return /^\d+$/u.test(raw) ? Number.parseInt(raw, 10) : null;
   } catch {
     return null;
@@ -438,10 +442,11 @@ async function pathExists(candidate) {
 
 function isWithin(parent, candidate) {
   const relative = path.relative(parent, candidate);
-  return relative === "" || (
-    !path.isAbsolute(relative) &&
-    relative !== ".." &&
-    !relative.startsWith(`..${path.sep}`)
+  return (
+    relative === "" ||
+    (!path.isAbsolute(relative) &&
+      relative !== ".." &&
+      !relative.startsWith(`..${path.sep}`))
   );
 }
 
@@ -496,22 +501,20 @@ async function assertOwnedState(state) {
 
   for (const filename of ["daemon.pid", "daemon.sock"]) {
     const candidate = path.join(expectedAgencHome, filename);
-    if (!await pathExists(candidate)) continue;
+    if (!(await pathExists(candidate))) continue;
     const metadata = await lstat(candidate);
     if (metadata.isSymbolicLink()) {
       throw new Error(`refusing symlinked TUI gate daemon path: ${candidate}`);
     }
     if (filename === "daemon.pid" && !metadata.isFile()) {
-      throw new Error(`TUI gate daemon pid is not a regular file: ${candidate}`);
+      throw new Error(
+        `TUI gate daemon pid is not a regular file: ${candidate}`,
+      );
     }
   }
 }
 
-export async function configureTuiGateSandbox(
-  state,
-  binAgenc,
-  sandboxMode,
-) {
+export async function configureTuiGateSandbox(state, binAgenc, sandboxMode) {
   if (sandboxMode === undefined) return;
   if (sandboxMode !== "danger-full-access") {
     throw new Error(`unsupported TUI gate sandbox mode: ${sandboxMode}`);
@@ -566,8 +569,12 @@ function spawnForegroundDaemon(state, binAgenc) {
       }
     });
   });
-  child.stdout?.on("data", (chunk) => appendBoundedOutput(record, chunk, "stdout"));
-  child.stderr?.on("data", (chunk) => appendBoundedOutput(record, chunk, "stderr"));
+  child.stdout?.on("data", (chunk) =>
+    appendBoundedOutput(record, chunk, "stdout"),
+  );
+  child.stderr?.on("data", (chunk) =>
+    appendBoundedOutput(record, chunk, "stderr"),
+  );
   state.daemonPids.add(child.pid);
   state.daemonProcesses.set(child.pid, record);
   return record;
@@ -575,6 +582,7 @@ function spawnForegroundDaemon(state, binAgenc) {
 
 async function waitForDaemonReady(state, binAgenc, record) {
   const deadline = Date.now() + DAEMON_START_TIMEOUT_MS;
+  let lastStatus = null;
   while (Date.now() < deadline) {
     if (state.closing) {
       throw new Error("private TUI gate daemon start interrupted by cleanup");
@@ -592,10 +600,12 @@ async function waitForDaemonReady(state, binAgenc, record) {
     const pid = await readDaemonPid(state.agencHome);
     if (pid === record.pid) {
       const status = daemonCommand(binAgenc, ["status"], state.env, 5_000);
+      lastStatus = status;
       if (
         status.status === 0 &&
-        new RegExp(`\\bAgenC daemon running \\(pid ${record.pid}\\)`, "u")
-          .test(status.stdout)
+        new RegExp(`\\bAgenC daemon running \\(pid ${record.pid}\\)`, "u").test(
+          status.stdout,
+        )
       ) {
         return;
       }
@@ -605,6 +615,10 @@ async function waitForDaemonReady(state, binAgenc, record) {
   throw new Error(
     [
       `private TUI gate daemon readiness timed out (pid ${record.pid})`,
+      `status error: ${lastStatus?.error?.message ?? "none"}`,
+      `status exit: ${lastStatus?.signal ?? lastStatus?.status ?? "not run"}`,
+      `status stdout: ${lastStatus?.stdout ?? ""}`,
+      `status stderr: ${lastStatus?.stderr ?? ""}`,
       `stdout: ${record.stdout}`,
       `stderr: ${record.stderr}`,
     ].join("\n"),
@@ -616,8 +630,9 @@ async function performStartTuiGateDaemon(state, binAgenc) {
   if (state.closing) {
     throw new Error("private TUI gate daemon start interrupted by cleanup");
   }
-  const liveRecords = [...state.daemonProcesses.values()]
-    .filter((record) => record.exit === null && isPidAlive(record.pid));
+  const liveRecords = [...state.daemonProcesses.values()].filter(
+    (record) => record.exit === null && isPidAlive(record.pid),
+  );
   if (liveRecords.length > 0) return liveRecords[0].pid;
 
   const record = spawnForegroundDaemon(state, binAgenc);
@@ -680,19 +695,25 @@ async function terminateDaemonRecord(record, { force = false } = {}) {
     // The retained ChildProcess exit observation remains authoritative.
   }
   if (await waitForRecordExit(record, DAEMON_FORCE_KILL_GRACE_MS)) return;
-  throw new Error(`private TUI gate daemon survived SIGKILL (pid ${record.pid})`);
+  throw new Error(
+    `private TUI gate daemon survived SIGKILL (pid ${record.pid})`,
+  );
 }
 
 async function terminateOwnedDaemons(state, options = {}) {
   const results = await Promise.allSettled(
     [...state.daemonProcesses.values()].map((record) =>
-      terminateDaemonRecord(record, options)),
+      terminateDaemonRecord(record, options),
+    ),
   );
   const failures = results
     .filter((result) => result.status === "rejected")
     .map((result) => result.reason);
   if (failures.length > 0) {
-    throw new AggregateError(failures, "private TUI gate daemon cleanup failed");
+    throw new AggregateError(
+      failures,
+      "private TUI gate daemon cleanup failed",
+    );
   }
   const livePids = [...state.daemonPids].filter((pid) => {
     const record = state.daemonProcesses.get(pid);
@@ -739,12 +760,16 @@ export async function stopTuiGateDaemon(state) {
   const deadline = Date.now() + DAEMON_FORCE_KILL_GRACE_MS;
   const socketPath = path.join(state.agencHome, "daemon.sock");
   while (
-    (await pathExists(socketPath) || await readDaemonPid(state.agencHome) !== null) &&
+    ((await pathExists(socketPath)) ||
+      (await readDaemonPid(state.agencHome)) !== null) &&
     Date.now() < deadline
   ) {
     await sleep(DAEMON_POLL_MS);
   }
-  if (await pathExists(socketPath) || await readDaemonPid(state.agencHome) !== null) {
+  if (
+    (await pathExists(socketPath)) ||
+    (await readDaemonPid(state.agencHome)) !== null
+  ) {
     throw new Error("private TUI gate daemon state survived process cleanup");
   }
 }
@@ -775,7 +800,9 @@ async function performTeardown(state) {
   if (!rootPresent) {
     state.cleaned = true;
     ACTIVE_STATES_BY_HOME.delete(state.home);
-    throw new Error(`private TUI gate root disappeared before cleanup: ${state.root}`);
+    throw new Error(
+      `private TUI gate root disappeared before cleanup: ${state.root}`,
+    );
   }
 
   if (ownershipError !== null) throw ownershipError;
@@ -793,11 +820,13 @@ async function performTeardown(state) {
 
   const socketPath = path.join(state.agencHome, "daemon.sock");
   const socketDeadline = Date.now() + DAEMON_FORCE_KILL_GRACE_MS;
-  while (await pathExists(socketPath) && Date.now() < socketDeadline) {
+  while ((await pathExists(socketPath)) && Date.now() < socketDeadline) {
     await sleep(DAEMON_POLL_MS);
   }
   if (await pathExists(socketPath)) {
-    throw new Error(`private TUI gate socket survived daemon cleanup: ${socketPath}`);
+    throw new Error(
+      `private TUI gate socket survived daemon cleanup: ${socketPath}`,
+    );
   }
 
   await assertOwnedState(state);
@@ -833,7 +862,9 @@ async function loadOwnedTuiGateState(home, baseEnv) {
     await readFile(path.join(root, OWNER_FILENAME), "utf8"),
   );
   if (owner?.kind !== OWNER_KIND || owner?.root !== root || !owner?.ownerId) {
-    throw new Error(`temporary TUI gate home is not owned by this gate: ${root}`);
+    throw new Error(
+      `temporary TUI gate home is not owned by this gate: ${root}`,
+    );
   }
   const env = tuiGateEnvironment(root, baseEnv);
   return {
@@ -854,7 +885,11 @@ async function loadOwnedTuiGateState(home, baseEnv) {
   };
 }
 
-export async function teardownTuiGateHome(home, binAgenc, baseEnv = process.env) {
+export async function teardownTuiGateHome(
+  home,
+  binAgenc,
+  baseEnv = process.env,
+) {
   if (!home) return;
   const resolvedHome = path.resolve(home);
   const activeState = ACTIVE_STATES_BY_HOME.get(resolvedHome);
@@ -862,8 +897,10 @@ export async function teardownTuiGateHome(home, binAgenc, baseEnv = process.env)
     await teardownTuiGateState(activeState, binAgenc);
     return;
   }
-  if (!await pathExists(resolvedHome)) {
-    throw new Error(`temporary TUI gate home disappeared before cleanup: ${resolvedHome}`);
+  if (!(await pathExists(resolvedHome))) {
+    throw new Error(
+      `temporary TUI gate home disappeared before cleanup: ${resolvedHome}`,
+    );
   }
   const state = await loadOwnedTuiGateState(resolvedHome, baseEnv);
   await teardownTuiGateState(state, binAgenc);
@@ -885,7 +922,9 @@ export function installTuiGateSignalHandlers(cleanup) {
         .catch((error) => {
           process.stderr.write(
             `TUI gate signal cleanup failed: ${
-              error instanceof Error ? error.stack ?? error.message : String(error)
+              error instanceof Error
+                ? (error.stack ?? error.message)
+                : String(error)
             }\n`,
           );
         })

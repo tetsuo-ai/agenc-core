@@ -74,9 +74,7 @@ import {
   type AgenCBootstrapFunction,
   type AgenCEnsureAgentControlFunction,
 } from "./background-agent-runner.js";
-import {
-  createEmptyToolPermissionContext,
-} from "../permissions/types.js";
+import { createEmptyToolPermissionContext } from "../permissions/types.js";
 import { PermissionModeRegistry } from "../permissions/permission-mode.js";
 import { ConfigStore } from "../config/store.js";
 import { SandboxExecutionBroker } from "../sandbox/execution-broker.js";
@@ -289,8 +287,7 @@ function createRecoveredSession(
     },
     runtimeRestoreObservations,
     setPendingProviderSwitch: (next: PendingProviderSwitch | null) => {
-      pendingProviderSwitch =
-        next === null ? null : Object.freeze({ ...next });
+      pendingProviderSwitch = next === null ? null : Object.freeze({ ...next });
       runtimeRestoreObservations.push({
         kind: "pending-provider-switch",
         pendingProviderSwitch,
@@ -2019,6 +2016,35 @@ describe("AgenC daemon CLI", () => {
     expect(io.stdoutText()).not.toContain("AgenC daemon started");
     expect(io.stderrText()).toContain("control socket did not become ready");
 
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("includes the bounded startup phase tail for a debug readiness timeout", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    host.env.TUI_E2E_DEBUG = "1";
+    const io = createIo();
+
+    await expect(
+      runAgenCDaemonCli(
+        { kind: "command", action: "start" },
+        {
+          host,
+          io,
+          waitForDaemonReady: async () => {
+            await writeFile(
+              join(agencHome, "daemon-spawn-stderr.log"),
+              "[agenc:daemon-startup +1234ms] process identity query complete\n",
+            );
+            return false;
+          },
+        },
+      ),
+    ).resolves.toBe(1);
+
+    expect(io.stderrText()).toContain(
+      "[agenc:daemon-startup +1234ms] process identity query complete",
+    );
     await rm(agencHome, { recursive: true, force: true });
   });
 
@@ -4810,7 +4836,10 @@ snapshot_max_bytes = 64
     expect(restoreAgent).not.toHaveBeenCalled();
 
     const authCookie = (
-      await readFile(resolveAgenCDaemonCookiePath(host.env, host.userHome), "utf8")
+      await readFile(
+        resolveAgenCDaemonCookiePath(host.env, host.userHome),
+        "utf8",
+      )
     ).trim();
     const client = createAgenCJsonLineDaemonRequestClient({
       socketPath: resolveAgenCDaemonSocketPath(host.env, host.userHome),

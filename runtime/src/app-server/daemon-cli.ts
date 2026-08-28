@@ -260,6 +260,7 @@ const AGENC_DAEMON_WEBSOCKET_ALLOW_NONLOOPBACK_ENV =
 export const AGENC_DAEMON_WEBSOCKET_PORT_ENV = "AGENC_DAEMON_WEBSOCKET_PORT";
 const AGENC_DAEMON_WEBSOCKET_PATH_ENV = "AGENC_DAEMON_WEBSOCKET_PATH";
 const AGENC_DAEMON_REQUEST_TIMEOUT_MS_ENV = "AGENC_DAEMON_REQUEST_TIMEOUT_MS";
+const AGENC_DAEMON_STARTUP_DEBUG_ENV = "TUI_E2E_DEBUG";
 const DEFAULT_DAEMON_REQUEST_TIMEOUT_MS = 2_000;
 const DEFAULT_DAEMON_STOP_TIMEOUT_MS = 10_000;
 /**
@@ -680,6 +681,18 @@ export function readAgenCDaemonSpawnStderrTail(
   } catch {
     return "";
   }
+}
+
+function writeAgenCDaemonStartupDebug(
+  host: Pick<AgenCDaemonCliHost, "env">,
+  io: AgenCDaemonCliIo,
+  startedAt: number,
+  phase: string,
+): void {
+  if (host.env[AGENC_DAEMON_STARTUP_DEBUG_ENV] !== "1") return;
+  io.stderr.write(
+    `[agenc:daemon-startup +${Date.now() - startedAt}ms] ${phase}\n`,
+  );
 }
 
 export function resolveAgenCDaemonSnapshotPath(
@@ -1295,9 +1308,15 @@ async function startAgenCDaemon(
   if (!ready) {
     const wasRunning = host.isPidRunning(targetPid);
     if (wasRunning) {
+      const stderrTail =
+        host.env[AGENC_DAEMON_STARTUP_DEBUG_ENV] === "1"
+          ? readAgenCDaemonSpawnStderrTail(host.env, host.userHome)
+          : "";
       io.stderr.write(
         `agenc: daemon process active (pid ${targetPid}) but its control ` +
-          `socket did not become ready before timeout\n`,
+          `socket did not become ready before timeout` +
+          (stderrTail.length > 0 ? `: ${stderrTail}` : "") +
+          `\n`,
       );
     } else {
       if (decision.kind !== "spawned") {
@@ -2626,6 +2645,13 @@ async function runAgenCDaemonForegroundLocked(
     readonly releaseLifecycleLock: () => Promise<void>;
   },
 ): Promise<number> {
+  const startupStartedAt = Date.now();
+  writeAgenCDaemonStartupDebug(
+    host,
+    io,
+    startupStartedAt,
+    "foreground admission started",
+  );
   // A cancellation queued while this child was blocked on the lifecycle lock
   // must win before recovery, services, MCP, or either listener is created.
   if (host.startupGuardReceiver?.wasRequested() === true) return 1;
@@ -2789,10 +2815,22 @@ async function runAgenCDaemonForegroundLocked(
     );
     return 1;
   }
+  writeAgenCDaemonStartupDebug(
+    host,
+    io,
+    startupStartedAt,
+    "singleton admission complete",
+  );
   const authStartup = await tryResolveAgenCDaemonAuthStartup(host, io);
   if (authStartup === null) {
     return 1;
   }
+  writeAgenCDaemonStartupDebug(
+    host,
+    io,
+    startupStartedAt,
+    "canonical configuration and auth ready",
+  );
   if (host.startupGuardReceiver?.wasRequested() === true) return 1;
   // OOM self-diagnosis: the daemon is the longest-lived agenc process, so a
   // near-limit heap snapshot here is the difference between a diagnosable
@@ -2819,6 +2857,12 @@ async function runAgenCDaemonForegroundLocked(
   const daemonCookie = await ensureAgenCDaemonCookie(
     resolveAgenCDaemonCookiePath(host.env, host.userHome),
   );
+  writeAgenCDaemonStartupDebug(
+    host,
+    io,
+    startupStartedAt,
+    "daemon cookie ready",
+  );
   const cookieAuthenticator = new AgenCDaemonCookieAuthenticator(daemonCookie);
   const runtimeRoot = resolveRuntimePackageRootFromUrl(import.meta.url);
   const distVersion = host.readCurrentRuntimeBuild
@@ -2829,6 +2873,12 @@ async function runAgenCDaemonForegroundLocked(
   const processStart = await readAgenCDaemonProcessStart(
     host.pid,
     host.readProcessIdentity,
+  );
+  writeAgenCDaemonStartupDebug(
+    host,
+    io,
+    startupStartedAt,
+    "process identity query complete",
   );
   if (processStart === null) {
     io.stderr.write(
@@ -2854,6 +2904,12 @@ async function runAgenCDaemonForegroundLocked(
       activeConfig,
     );
     reportAgenCDaemonStartupRecovery(io, startupRecovery);
+    writeAgenCDaemonStartupDebug(
+      host,
+      io,
+      startupStartedAt,
+      "startup recovery complete",
+    );
   } catch (error) {
     io.stderr.write(
       `agenc: daemon state recovery failed: ${formatCleanupError(error)}\n`,
@@ -3510,6 +3566,12 @@ async function runAgenCDaemonForegroundLocked(
         );
       },
     });
+    writeAgenCDaemonStartupDebug(
+      host,
+      io,
+      startupStartedAt,
+      "daemon services constructed",
+    );
     cleanup.register("daemon-browser", async () => {
       await closeAllBrowserManagers();
     });
@@ -3566,6 +3628,12 @@ async function runAgenCDaemonForegroundLocked(
           activeConfig,
           io,
         );
+        writeAgenCDaemonStartupDebug(
+          host,
+          io,
+          startupStartedAt,
+          "MCP startup complete",
+        );
       } catch {
         exitCode = 1;
         return exitCode;
@@ -3575,11 +3643,23 @@ async function runAgenCDaemonForegroundLocked(
         return exitCode;
       }
       await socketServer.listen();
+      writeAgenCDaemonStartupDebug(
+        host,
+        io,
+        startupStartedAt,
+        "control socket listening",
+      );
       if (host.startupGuardReceiver?.wasRequested() === true) {
         exitCode = 1;
         return exitCode;
       }
       const webSocketAddress = await webSocketServer.listen();
+      writeAgenCDaemonStartupDebug(
+        host,
+        io,
+        startupStartedAt,
+        "websocket listening",
+      );
       if (
         webSocketListenOptions.fallbackToEphemeralPortOnAddrInUse &&
         webSocketAddress.port !== webSocketListenOptions.port
@@ -3624,6 +3704,12 @@ async function runAgenCDaemonForegroundLocked(
           await writeAgenCDaemonPid(pidPath, host.pid);
           await options.releaseLifecycleLock();
           lifecycleLockReleased = true;
+          writeAgenCDaemonStartupDebug(
+            host,
+            io,
+            startupStartedAt,
+            "readiness identity published",
+          );
         } catch (error) {
           io.stderr.write(
             `agenc: failed to persist daemon identity: ${
@@ -5315,19 +5401,39 @@ async function resolveAgenCDaemonAuthStartup(
   host: AgenCDaemonCliHost,
   io: AgenCDaemonCliIo,
 ): Promise<AgenCDaemonAuthStartup> {
+  const startupStartedAt = Date.now();
   const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
+  writeAgenCDaemonStartupDebug(
+    host,
+    io,
+    startupStartedAt,
+    "canonical configuration load started",
+  );
   const loadedConfig = await loadCanonicalConfig({
     env: host.env,
     home: daemonHome,
     onWarn: (message) => io.stderr.write(`${message}\n`),
   });
+  writeAgenCDaemonStartupDebug(
+    host,
+    io,
+    startupStartedAt,
+    "canonical configuration load complete",
+  );
+  const authBackend = createAuthBackend(loadedConfig.config, {
+    agencHome: daemonHome,
+    env: host.env,
+  });
+  writeAgenCDaemonStartupDebug(
+    host,
+    io,
+    startupStartedAt,
+    "auth backend constructed",
+  );
   return {
     daemonHome,
     config: loadedConfig.config,
-    authBackend: createAuthBackend(loadedConfig.config, {
-      agencHome: daemonHome,
-      env: host.env,
-    }),
+    authBackend,
   };
 }
 
