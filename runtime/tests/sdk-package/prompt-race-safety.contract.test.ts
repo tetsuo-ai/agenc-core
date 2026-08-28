@@ -43,6 +43,7 @@ function success<Method extends AgencDaemonMethod>(
 
 const VALID_ATTACH_RUNTIME_OPTIONS = Object.freeze({
   simpleMode: false,
+  dangerouslyBypassApprovalsAndSandbox: false,
   stdinDataMode: false,
   remoteMode: false,
   pluginStorageRoot: "/tmp/agenc-sdk-plugin-storage",

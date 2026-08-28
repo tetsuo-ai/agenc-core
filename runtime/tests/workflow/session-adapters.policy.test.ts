@@ -3,8 +3,8 @@
  *
  * A2: the frozen spec's permissionMode/unattendedAllow/unattendedDeny are
  * applied to the run's bootstrapped session exactly like the
- * background-agent runner applies them (`--permission-mode`/`--dangerously-bypass-approvals-and-sandbox`
- * bootstrap argv + unattended-policy install on the permission-mode
+ * background-agent runner applies them (`--permission-mode` bootstrap argv
+ * plus unattended-policy installation on the permission-mode
  * registry) — on start (explicit policy) AND on resume (policy re-resolved
  * from the durable intake spec).
  *
@@ -159,15 +159,17 @@ describe("A2 — spec permission policy on the run session", () => {
     await seams.close();
   });
 
-  it("bypassPermissions rides --dangerously-bypass-approvals-and-sandbox on the bootstrap argv", async () => {
+  it("keeps bypassPermissions approval-only on the bootstrap argv", async () => {
     const seams = makeSeams();
     await seams.journal.open(RUN_ID, {
       repoPath: cwd,
       policy: { permissionMode: "bypassPermissions" },
     });
     expect(bootstrapCalls).toHaveLength(1);
-    expect(bootstrapCalls[0].argv).toContain("--dangerously-bypass-approvals-and-sandbox");
-    expect(bootstrapCalls[0].argv).not.toContain("--permission-mode");
+    const argv = bootstrapCalls[0].argv;
+    const permissionModeFlag = argv.indexOf("--permission-mode");
+    expect(argv[permissionModeFlag + 1]).toBe("bypassPermissions");
+    expect(argv).not.toContain("--dangerously-bypass-approvals-and-sandbox");
     expect(bootstrapCalls[0].registry.current().mode).toBe(
       "bypassPermissions",
     );
