@@ -14,7 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
   RetiredConfigDirError,
@@ -30,6 +30,7 @@ import {
 } from "./migration.js";
 import {
   ConfigRepositoryError,
+  loadCanonicalDaemonConfig,
   loadLayeredConfig,
   readStrictConfigLayer,
   resolveMcpLayerCandidates,
@@ -138,6 +139,77 @@ describe("HomeContext", () => {
 });
 
 describe("strict layered repository", () => {
+  test("keeps daemon configuration independent from the launch workspace", async () => {
+    const root = temp("agenc-daemon-home-authority");
+    const home = join(root, "home");
+    const projectRoot = join(root, "project");
+    const cwd = join(projectRoot, "nested");
+    mkdirSync(cwd, { recursive: true });
+    write(join(projectRoot, ".git"), "");
+    write(join(home, "config.toml"), [
+      "config_version = 2",
+      'model = "grok-4.5"',
+      "",
+    ].join("\n"));
+    write(join(projectRoot, ".agenc", "config.toml"), [
+      "config_version = 2",
+      'model_provider = "openai"',
+      'model = "gpt-5"',
+      "",
+    ].join("\n"));
+    write(join(projectRoot, ".agenc", "config.local.toml"), [
+      "config_version = 2",
+      'model = "gpt-5-mini"',
+      "",
+    ].join("\n"));
+    write(join(projectRoot, ".agenc", "settings.json"), "{}\n");
+    write(join(projectRoot, ".mcp.json"), "{}\n");
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(cwd);
+
+    try {
+      const loaded = await loadCanonicalDaemonConfig({
+        env: { AGENC_HOME: home, HOME: root },
+        managedConfigPath: join(root, "missing-managed.toml"),
+        managedDropInDir: join(root, "missing-managed.d"),
+      });
+
+      expect(loaded.projectRoot).toBe(home);
+      expect(loaded.config).toMatchObject({
+        model_provider: "grok",
+        model: "grok-4.5",
+      });
+      expect(loaded.sources.map((source) => source.scope)).not.toEqual(
+        expect.arrayContaining(["project", "local", "flag", "cli"]),
+      );
+      await expect(loadLayeredConfig({
+        env: { AGENC_HOME: home, HOME: root },
+        cwd,
+        managedConfigPath: join(root, "missing-managed.toml"),
+        managedDropInDir: join(root, "missing-managed.d"),
+      })).rejects.toMatchObject({
+        code: "retired-input",
+        path: join(projectRoot, ".agenc", "settings.json"),
+      } satisfies Partial<ConfigRepositoryError>);
+    } finally {
+      cwdSpy.mockRestore();
+    }
+  });
+
+  test("keeps global retired-input rejection in the daemon loader", async () => {
+    const root = temp("agenc-daemon-retired-global-authority");
+    const home = join(root, "home");
+    write(join(home, "settings.json"), "{}\n");
+
+    await expect(loadCanonicalDaemonConfig({
+      env: { AGENC_HOME: home, HOME: root },
+      managedConfigPath: join(root, "missing-managed.toml"),
+      managedDropInDir: join(root, "missing-managed.d"),
+    })).rejects.toMatchObject({
+      code: "retired-input",
+      path: join(home, "settings.json"),
+    } satisfies Partial<ConfigRepositoryError>);
+  });
+
   test("uses explicit-config root markers before loading project config and applying a profile", async () => {
     const root = temp("agenc-explicit-root-markers");
     const home = join(root, "home");

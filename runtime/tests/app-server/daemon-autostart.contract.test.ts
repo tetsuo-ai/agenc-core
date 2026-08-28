@@ -1,4 +1,4 @@
-import { lstat, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:net";
 import { spawn } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -285,6 +285,42 @@ port = 0
     });
 
     await rm(agencHome, { recursive: true, force: true });
+  });
+
+  it("uses the captured environment without inheriting the launch workspace", async () => {
+    const root = await tempAgencHome();
+    const agencHome = join(root, "home");
+    const projectRoot = join(root, "project");
+    const cwd = join(projectRoot, "nested");
+    await mkdir(agencHome, { recursive: true });
+    await mkdir(cwd, { recursive: true });
+    await writeFile(join(projectRoot, ".git"), "");
+    await writeFile(join(agencHome, "config.toml"), `
+config_version = 2
+
+[daemon]
+autostart = false
+    `);
+    await mkdir(join(projectRoot, ".agenc"), { recursive: true });
+    await writeFile(join(projectRoot, ".agenc", "config.toml"), `
+config_version = 2
+
+[daemon]
+autostart = true
+    `);
+    const cwdSpy = vi.spyOn(process, "cwd").mockReturnValue(cwd);
+    vi.stubEnv("AGENC_PROVIDER", "not-a-provider");
+
+    try {
+      await expect(resolveAgenCDaemonAutostartConfig({
+        AGENC_HOME: agencHome,
+        AGENC_PROVIDER: "grok",
+      }, "/home/test")).resolves.toMatchObject({ daemonEnabled: false });
+    } finally {
+      vi.unstubAllEnvs();
+      cwdSpy.mockRestore();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("connects to an already-running daemon without spawning", async () => {

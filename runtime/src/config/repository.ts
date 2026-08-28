@@ -121,6 +121,17 @@ export interface LoadCanonicalConfigOptions
   readonly base?: AgenCConfig;
 }
 
+export interface LoadCanonicalDaemonConfigOptions {
+  readonly env?: EnvSnapshot;
+  readonly home?: HomeContext | string;
+  readonly managedConfigPath?: string;
+  readonly managedDropInDir?: string;
+  readonly profileName?: string;
+  readonly onWarn?: (message: string) => void;
+  /** Lowest-priority programmatic defaults used by embedders/tests. */
+  readonly base?: AgenCConfig;
+}
+
 export interface LayeredConfigRepositoryOptions {
   readonly env?: EnvSnapshot;
   readonly home?: HomeContext;
@@ -1159,6 +1170,7 @@ async function assertNoRetiredConfigInputs(options: {
   readonly cwd: string;
   readonly projectRoot: string;
   readonly managedConfigPath: string;
+  readonly includeProjectInputs?: boolean;
 }): Promise<void> {
   let retired;
   try {
@@ -1167,6 +1179,7 @@ async function assertNoRetiredConfigInputs(options: {
       cwd: options.cwd,
       projectRoot: options.projectRoot,
       managedConfigPath: options.managedConfigPath,
+      includeProjectInputs: options.includeProjectInputs,
     });
   } catch (error) {
     throw new ConfigRepositoryError(
@@ -1236,14 +1249,17 @@ function diffLayer(
   return syntheticLayer(scope, label, normalizeRawConfig(patch));
 }
 
-export async function loadLayeredConfig(
-  options: LayeredConfigRepositoryOptions = {},
+async function loadLayeredConfigInternal(
+  options: LayeredConfigRepositoryOptions,
+  includeWorkspaceLayers: boolean,
 ): Promise<ResolvedLayeredConfig> {
   const env = options.env ?? process.env;
   const home = options.home ?? resolveHomeContext(env, {
     ...(env.HOME ? { platformHome: env.HOME } : {}),
   });
-  const cwd = resolve(options.cwd ?? process.cwd());
+  const cwd = includeWorkspaceLayers
+    ? resolve(options.cwd ?? process.cwd())
+    : home.path;
   const managedPath = options.managedConfigPath ?? defaultManagedConfigPath();
   const managedDir = options.managedDropInDir ?? join(dirname(managedPath), "config.d");
   const managedLayers = await readManagedLayers(managedPath, managedDir);
@@ -1308,7 +1324,7 @@ export async function loadLayeredConfig(
   // This prevents one root from supplying configuration while a later marker
   // value authorizes a different root.
   let flag: ConfigLayerSnapshot | null = null;
-  if (options.flagConfigPath) {
+  if (includeWorkspaceLayers && options.flagConfigPath) {
     flag = await readStrictConfigLayer(
       options.flagConfigPath,
       "flag",
@@ -1324,27 +1340,34 @@ export async function loadLayeredConfig(
     registerPhysicalSource(flag);
   }
 
-  const rootMarkers = managedLayers
-    .map((layer) => layer.config.project_root_markers)
-    .findLast((markers) => markers !== undefined) ??
-    flag?.config.project_root_markers ??
-    config.project_root_markers;
-  const projectRoot = resolve(
-    options.projectRoot ??
-      findProjectRootSync(cwd, rootMarkers)?.rootDir ??
-      cwd,
-  );
+  const rootMarkers = includeWorkspaceLayers
+    ? managedLayers
+        .map((layer) => layer.config.project_root_markers)
+        .findLast((markers) => markers !== undefined) ??
+      flag?.config.project_root_markers ??
+      config.project_root_markers
+    : undefined;
+  const projectRoot = includeWorkspaceLayers
+    ? resolve(
+        options.projectRoot ??
+          findProjectRootSync(cwd, rootMarkers)?.rootDir ??
+          cwd,
+      )
+    : home.path;
   await assertNoRetiredConfigInputs({
     home,
     cwd,
     projectRoot,
     managedConfigPath: managedPath,
+    includeProjectInputs: includeWorkspaceLayers,
   });
-  const project = await readStrictConfigLayer(
-    join(projectRoot, ".agenc", "config.toml"),
-    "project",
-    "project config",
-  );
+  const project = includeWorkspaceLayers
+    ? await readStrictConfigLayer(
+        join(projectRoot, ".agenc", "config.toml"),
+        "project",
+        "project config",
+      )
+    : null;
   registerPhysicalSource(project);
   if (project) {
     const merged = mergeLayer(
@@ -1358,11 +1381,13 @@ export async function loadLayeredConfig(
     config = merged.config;
     sources.push(merged.source);
   }
-  const local = await readStrictConfigLayer(
-    join(projectRoot, ".agenc", "config.local.toml"),
-    "local",
-    "local config",
-  );
+  const local = includeWorkspaceLayers
+    ? await readStrictConfigLayer(
+        join(projectRoot, ".agenc", "config.local.toml"),
+        "local",
+        "local config",
+      )
+    : null;
   registerPhysicalSource(local);
   if (local) {
     const merged = mergeLayer(
@@ -1461,29 +1486,72 @@ export async function loadLayeredConfig(
   });
 }
 
+export async function loadLayeredConfig(
+  options: LayeredConfigRepositoryOptions = {},
+): Promise<ResolvedLayeredConfig> {
+  return loadLayeredConfigInternal(options, true);
+}
+
+function resolveCanonicalLoadHome(
+  env: EnvSnapshot,
+  home: HomeContext | string | undefined,
+): HomeContext {
+  return typeof home === "string"
+    ? resolveHomeContext({ ...env, AGENC_HOME: home }, {
+        ...(env.HOME ? { platformHome: env.HOME } : {}),
+      })
+    : home ?? resolveHomeContext(env, {
+        ...(env.HOME ? { platformHome: env.HOME } : {}),
+      });
+}
+
+function attachCanonicalUserPath(
+  loaded: ResolvedLayeredConfig,
+  home: HomeContext,
+): LoadedCanonicalConfig {
+  return Object.freeze({
+    ...loaded,
+    path: home.configTomlPath,
+    exists: loaded.sources.some((item) => item.scope === "user"),
+  });
+}
+
 /** Public strict-v2 runtime loader. Legacy inputs are migration-CLI-only. */
 export async function loadCanonicalConfig(
   options: LoadCanonicalConfigOptions = {},
 ): Promise<LoadedCanonicalConfig> {
   const env = options.env ?? process.env;
-  const home = typeof options.home === "string"
-    ? resolveHomeContext({ ...env, AGENC_HOME: options.home }, {
-        ...(env.HOME ? { platformHome: env.HOME } : {}),
-      })
-    : options.home ?? resolveHomeContext(env, {
-        ...(env.HOME ? { platformHome: env.HOME } : {}),
-      });
+  const home = resolveCanonicalLoadHome(env, options.home);
   const loaded = await loadLayeredConfig({
     ...options,
     home,
     ...(options.base !== undefined ? { pluginDefaults: options.base } : {}),
   });
-  const exists = loaded.sources.some((item) => item.scope === "user");
-  return Object.freeze({
-    ...loaded,
-    path: home.configTomlPath,
-    exists,
-  });
+  return attachCanonicalUserPath(loaded, home);
+}
+
+/**
+ * Load daemon-global configuration without consulting a launcher's project,
+ * local, explicit-file, trust, or CLI authorities.
+ */
+export async function loadCanonicalDaemonConfig(
+  options: LoadCanonicalDaemonConfigOptions = {},
+): Promise<LoadedCanonicalConfig> {
+  const env = options.env ?? process.env;
+  const home = resolveCanonicalLoadHome(env, options.home);
+  const loaded = await loadLayeredConfigInternal(
+    {
+      env,
+      home,
+      managedConfigPath: options.managedConfigPath,
+      managedDropInDir: options.managedDropInDir,
+      profileName: options.profileName,
+      onWarn: options.onWarn,
+      ...(options.base !== undefined ? { pluginDefaults: options.base } : {}),
+    },
+    false,
+  );
+  return attachCanonicalUserPath(loaded, home);
 }
 
 export class LayeredConfigRepository {

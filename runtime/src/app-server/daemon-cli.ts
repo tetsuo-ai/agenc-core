@@ -129,7 +129,7 @@ import {
   type AgenCDaemonStartupGuardReceiver,
 } from "./daemon-startup-guard.js";
 import { createPermissionAuditFileLogger } from "../permissions/permission-audit-log.js";
-import { loadCanonicalConfig } from "../config/repository.js";
+import { loadCanonicalDaemonConfig } from "../config/repository.js";
 import { resolveProviderBaseURL } from "../config/env.js";
 import {
   resolveSessionTempRootAtIngress,
@@ -1041,6 +1041,7 @@ async function startAgenCDaemon(
   io: AgenCDaemonCliIo,
   options: RunAgenCDaemonCliOptions = {},
 ): Promise<number> {
+  const startupStartedAt = Date.now();
   const pidPath = resolveAgenCDaemonPidPath(host.env, host.userHome);
   let spawnedDuringMutation: number | null = null;
   const mutate = async (): Promise<
@@ -1057,7 +1058,6 @@ async function startAgenCDaemon(
               readonly process: AgenCDaemonProcessIdentity;
             };
       }
-    | { readonly kind: "auth-failed" }
     | { readonly kind: "identity-conflict"; readonly message: string }
     | { readonly kind: "pending"; readonly pid: number }
     | { readonly kind: "spawned"; readonly pid: number }
@@ -1234,10 +1234,6 @@ async function startAgenCDaemon(
         binding: { kind: "legacy", process: untracked.process },
       };
     }
-    if ((await tryResolveAgenCDaemonAuthStartup(host, io)) === null) {
-      return { kind: "auth-failed" };
-    }
-
     const childPid = host.spawnDetachedDaemon({
       ...host.env,
       AGENC_DAEMON_RUN: "1",
@@ -1250,10 +1246,29 @@ async function startAgenCDaemon(
     await (options.writeDaemonPid ?? writeAgenCDaemonPid)(pidPath, childPid);
     return { kind: "spawned", pid: childPid };
   };
-  const release =
-    options.lifecycleLockHeld === true
-      ? null
-      : await acquireAgenCDaemonLifecycleLock(host);
+  let release: (() => Promise<void>) | null = null;
+  if (options.lifecycleLockHeld === true) {
+    writeAgenCDaemonStartupDebug(
+      host,
+      io,
+      startupStartedAt,
+      "lifecycle lock already held",
+    );
+  } else {
+    writeAgenCDaemonStartupDebug(
+      host,
+      io,
+      startupStartedAt,
+      "lifecycle lock acquisition started",
+    );
+    release = await acquireAgenCDaemonLifecycleLock(host);
+    writeAgenCDaemonStartupDebug(
+      host,
+      io,
+      startupStartedAt,
+      "lifecycle lock acquired",
+    );
+  }
   let decision: Awaited<ReturnType<typeof mutate>> | undefined;
   const mutationErrors: unknown[] = [];
   try {
@@ -1297,8 +1312,6 @@ async function startAgenCDaemon(
     io.stderr.write(`agenc: refusing daemon start: ${decision.message}\n`);
     return 1;
   }
-  if (decision.kind === "auth-failed") return 1;
-
   if (options.deferDaemonReadyWaitToCaller === true) return 0;
 
   const targetPid = decision.pid;
@@ -2593,7 +2606,20 @@ async function runAgenCDaemonForeground(
     readonly findLegacyDaemonProcesses?: RunAgenCDaemonCliOptions["findLegacyDaemonProcesses"];
   } = {},
 ): Promise<number> {
+  const startupStartedAt = Date.now();
+  writeAgenCDaemonStartupDebug(
+    host,
+    io,
+    startupStartedAt,
+    "lifecycle lock acquisition started",
+  );
   const release = await acquireAgenCDaemonLifecycleLock(host);
+  writeAgenCDaemonStartupDebug(
+    host,
+    io,
+    startupStartedAt,
+    "lifecycle lock acquired",
+  );
   let released = false;
   let foregroundCompleted = false;
   const releaseOnce = async () => {
@@ -5409,7 +5435,7 @@ async function resolveAgenCDaemonAuthStartup(
     startupStartedAt,
     "canonical configuration load started",
   );
-  const loadedConfig = await loadCanonicalConfig({
+  const loadedConfig = await loadCanonicalDaemonConfig({
     env: host.env,
     home: daemonHome,
     onWarn: (message) => io.stderr.write(`${message}\n`),

@@ -1208,6 +1208,35 @@ describe("AgenC daemon CLI", () => {
     await rm(agencHome, { recursive: true, force: true });
   });
 
+  it("leaves canonical config validation to the spawned daemon", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    const io = createIo();
+    const spawnDetachedDaemon = vi.fn(host.spawnDetachedDaemon);
+    host.spawnDetachedDaemon = spawnDetachedDaemon;
+    await writeFile(
+      join(agencHome, "config.toml"),
+      'config_version = 2\nunknown_daemon_key = "invalid"\n',
+    );
+
+    try {
+      await expect(runAgenCDaemonCli(
+        { kind: "command", action: "start" },
+        {
+          host,
+          io,
+          ...createReadyPublishedDaemonOptions(agencHome, host),
+        },
+      )).resolves.toBe(0);
+      expect(spawnDetachedDaemon).toHaveBeenCalledOnce();
+      expect(io.stderrText()).not.toContain(
+        "daemon auth backend initialization failed",
+      );
+    } finally {
+      await rm(agencHome, { recursive: true, force: true });
+    }
+  });
+
   it("status enriches the running line with health.stats over the socket", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);

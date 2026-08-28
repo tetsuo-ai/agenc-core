@@ -23,6 +23,8 @@ export interface RetiredConfigInputPreflightOptions {
   readonly cwd: string;
   readonly projectRoot: string;
   readonly managedConfigPath: string;
+  /** Inspect retired project and ancestor inputs in addition to global inputs. */
+  readonly includeProjectInputs?: boolean;
 }
 
 export interface RetiredProjectMcpJsonCandidate {
@@ -98,14 +100,6 @@ export async function detectRetiredConfigInputs(
       path: join(homePath, "gateway", "config.json"),
     },
     {
-      kind: "project-settings-json",
-      path: join(projectRoot, ".agenc", "settings.json"),
-    },
-    {
-      kind: "project-local-settings-json",
-      path: join(projectRoot, ".agenc", "settings.local.json"),
-    },
-    {
       kind: "managed-settings-json",
       path: join(managedDirectory, "managed-settings.json"),
     },
@@ -113,9 +107,21 @@ export async function detectRetiredConfigInputs(
       kind: "managed-mcp-json",
       path: join(managedDirectory, "managed-mcp.json"),
     },
-    ...retiredProjectMcpJsonCandidates(projectRoot, options.cwd).map(
-      ({ path }) => ({ kind: "project-mcp-json" as const, path }),
-    ),
+    ...(options.includeProjectInputs === false
+      ? []
+      : [
+          {
+            kind: "project-settings-json" as const,
+            path: join(projectRoot, ".agenc", "settings.json"),
+          },
+          {
+            kind: "project-local-settings-json" as const,
+            path: join(projectRoot, ".agenc", "settings.local.json"),
+          },
+          ...retiredProjectMcpJsonCandidates(projectRoot, options.cwd).map(
+            ({ path }) => ({ kind: "project-mcp-json" as const, path }),
+          ),
+        ]),
   ];
 
   const found: RetiredConfigInputMetadata[] = [];
