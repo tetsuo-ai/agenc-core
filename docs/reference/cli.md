@@ -451,8 +451,8 @@ agenc config migrate rollback <journal-id>
 
 | Command | Meaning |
 | --- | --- |
-| `show` | Effective config snapshot |
-| `get` | One effective config value |
+| `show` | Layered startup and subsystem configuration snapshot |
+| `get` | One layered configuration value |
 | `set` | Write one value to `config.toml` |
 | `unset` | Remove one value from `config.toml` |
 | `validate` | Validate `config.toml` and schema blocks |
@@ -464,6 +464,10 @@ agenc config migrate rollback <journal-id>
 
 Values parse as TOML when possible (`true`, `123`, `["a"]`, `{ enabled = true }`);
 unquoted single-line text is stored as a string.
+
+`config show` and `config get` report configuration, not the runtime selection
+of an already-running session. In the TUI, `/config` labels both the active
+session model and the configured default when they differ.
 
 ```bash
 agenc config set approval_policy never

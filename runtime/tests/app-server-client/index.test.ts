@@ -1112,7 +1112,11 @@ describe("app-server-client daemon helpers", () => {
         const menu = readConfigMenuSnapshot(commandContext);
         expect(menu.rows).toEqual(
           expect.arrayContaining([
-            expect.objectContaining({ key: "model", value: "grok-4.6" }),
+            expect.objectContaining({
+              key: "session model",
+              value: "grok-4.6",
+              status: "active",
+            }),
             expect.objectContaining({ key: "approval", value: "never" }),
             expect.objectContaining({ key: "sandbox", value: "read-only" }),
             expect.objectContaining({

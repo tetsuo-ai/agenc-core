@@ -257,4 +257,26 @@ describe("status dashboard snapshot", () => {
     expect(snapshot.rows.some(row => row.section === "tasks" && row.value === "2")).toBe(true);
     expect(snapshot.summary).toContain("attention");
   });
+
+  it("does not duplicate the canonical session model from TUI app state", () => {
+    const snapshot = createStatusDashboardSnapshot({
+      lines: [
+        { key: "Model", value: "grok-4.6" },
+        { key: "Provider", value: "grok" },
+      ],
+      git: { state: "clean", branch: "main", changedFiles: 0 },
+      appState: {
+        mainLoopModel: "stale-model",
+        mainLoopModelForSession: "another-stale-model",
+        mcp: {},
+        tasks: {},
+      },
+    });
+
+    expect(snapshot.rows.filter(row => row.section === "model")).toEqual([
+      expect.objectContaining({ key: "Model", value: "grok-4.6" }),
+      expect.objectContaining({ key: "Provider", value: "grok" }),
+    ]);
+    expect(snapshot.rows.some(row => row.value.includes("stale-model"))).toBe(false);
+  });
 });

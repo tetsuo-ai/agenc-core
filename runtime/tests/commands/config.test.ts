@@ -202,9 +202,10 @@ describe("config menu snapshot", () => {
     expect(snapshot.configPath).toBe("/home/test/.agenc/config.toml");
     expect(
       snapshot.rows.some(
-        row => row.key === "model" && row.value === "grok-4-fast",
+        row => row.key === "session model" && row.value === "grok-4-fast",
       ),
     ).toBe(true);
+    expect(snapshot.rows.filter(row => row.key.includes("model"))).toHaveLength(1);
     expect(
       snapshot.rows.some(
         row => row.key === "mcp server" && row.detail.includes("local"),
@@ -215,6 +216,48 @@ describe("config menu snapshot", () => {
         row => row.key === "profiles" && row.detail.includes("dev"),
       ),
     ).toBe(true);
+  });
+
+  it("separates a pending session selection from configured startup settings", () => {
+    const store = makeStore({
+      model: "grok-4.5",
+      model_provider: "grok",
+    });
+    const session = stubSession() as unknown as {
+      sessionConfiguration: {
+        provider: { slug: string };
+        collaborationMode: { model: string };
+      };
+    };
+    session.sessionConfiguration = {
+      provider: { slug: "grok" },
+      collaborationMode: { model: "grok-4.5" },
+    };
+    (session as unknown as StubSession).setPendingProviderSwitch({
+      provider: "grok",
+      model: "grok-4.6",
+    });
+
+    const snapshot = readConfigMenuSnapshot(stubCtx({
+      configStore: store,
+      session: session as unknown as Session,
+    }));
+    const modelRows = snapshot.rows.filter(row => row.key.includes("model"));
+
+    expect(modelRows).toEqual([
+      expect.objectContaining({
+        key: "session model",
+        value: "grok-4.6",
+        status: "active",
+        detail: expect.stringContaining("grok"),
+      }),
+      expect.objectContaining({
+        key: "configured model",
+        value: "grok-4.5",
+        status: "configured",
+        detail: expect.stringContaining("grok"),
+      }),
+    ]);
   });
 });
 

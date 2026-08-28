@@ -308,7 +308,7 @@ it as well. `[budget]`, `[heartbeat]`, `[browser]`, and
 
 | Paths | Difference |
 | --- | --- |
-| `model` and `providers.<provider>.default_model` | `model` is the active session selection; provider `default_model` is the fallback for that provider when no active model is selected. |
+| `model` and `providers.<provider>.default_model` | `model` is the configured startup selection; provider `default_model` is that provider's fallback when no model is configured or selected. A live session can select a different model with `/model`. |
 | `approval_policy` and `permissions.defaultMode` | `approval_policy` is the tool-approval baseline; `defaultMode` selects the user-facing session mode. A configured `bypassPermissions` default takes effect only when exact-workspace consent is already present. |
 | `mcp` and `mcp_servers` | `mcp.server` exposes AgenC as an MCP server; `mcp_servers.<server>` connects AgenC to external MCP servers. |
 | `plugins.plugins.<plugin>.mcp_servers` and `mcp_servers` | The former is plugin-owned and namespaced; the latter is operator-owned global MCP configuration. |
@@ -326,8 +326,8 @@ names; `[]` denotes an array entry. Open maps accept keys at the indicated
 | Path | Type / meaning |
 | --- | --- |
 | `config_version` | Required integer `2` on disk. The in-memory field is `configVersion`. |
-| `model` | Active model slug. |
-| `model_provider` | Active canonical provider slug. Strict v2 rejects the retired `xai`, `custom`, and `openai_compatible` selector spellings. |
+| `model` | Configured startup model slug. A live session selection is separate. |
+| `model_provider` | Configured startup canonical provider slug. Strict v2 rejects the retired `xai`, `custom`, and `openai_compatible` selector spellings. |
 | `approval_policy` | `untrusted`, `on-failure`, `on-request`, or `never`. |
 | `sandbox_mode` | `read-only`, `workspace-write`, or `danger-full-access`. |
 | `reasoning_effort` | `low`, `medium`, `high`, `xhigh`, or `none`. |
