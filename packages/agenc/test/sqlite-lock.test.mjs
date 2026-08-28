@@ -216,6 +216,20 @@ test("reports bounded lock acquisition phases without protected paths", async (t
     "SQLite module import started",
     "SQLite module import complete",
     "SQLite transaction acquisition started",
+    "SQLite pre-open lock validation started",
+    "SQLite pre-open lock validation complete",
+    "SQLite database open started",
+    "SQLite database open complete",
+    "SQLite connection hardening started",
+    "SQLite connection hardening complete",
+    "SQLite post-open lock validation started",
+    "SQLite post-open lock validation complete",
+    "SQLite transaction begin started",
+    "SQLite transaction begin complete",
+    "SQLite lock database inspection started",
+    "SQLite lock database inspection complete",
+    "SQLite journal mode inspection started",
+    "SQLite journal mode inspection complete",
     "SQLite transaction acquisition complete",
   ]) {
     assert.ok(phases.includes(expected), `missing progress phase: ${expected}`);
@@ -698,10 +712,18 @@ test("uncontended SQLite locks perform only the required Windows ACL validations
     2,
   );
   assert.match(acquireSource, /validateWindowsAcl: attempt > 0/u);
-  assert.match(
-    acquireSource,
-    /configureLocalSqliteLockConnection\(database\);\s+await revalidatePreparedLock\(prepared, context\);\s+beginAndValidateLock/u,
+  const configureIndex = acquireSource.indexOf(
+    "configureLocalSqliteLockConnection(database);",
   );
+  const postOpenRevalidationIndex = acquireSource.indexOf(
+    "await revalidatePreparedLock(prepared, context);",
+  );
+  const transactionIndex = acquireSource.indexOf(
+    "beginAndValidateLock(database, prepared.path, context);",
+  );
+  assert.ok(configureIndex >= 0);
+  assert.ok(configureIndex < postOpenRevalidationIndex);
+  assert.ok(postOpenRevalidationIndex < transactionIndex);
 });
 
 test("Windows ACL mutation masks cover generic and inherit-only rights", () => {

@@ -1121,18 +1121,27 @@ function busyTransitionError(path, mode) {
   );
 }
 
-function beginAndValidateLock(database, path) {
+function beginAndValidateLock(database, path, context) {
   for (let phase = 0; phase < 8; phase += 1) {
+    reportProgress(context, "SQLite transaction begin started");
     database.exec("BEGIN IMMEDIATE");
+    reportProgress(context, "SQLite transaction begin complete");
+    reportProgress(context, "SQLite lock database inspection started");
     const state = inspectLockDatabase(database, path);
+    reportProgress(context, "SQLite lock database inspection complete");
+    reportProgress(context, "SQLite journal mode inspection started");
     const journalMode = pragmaText(database, "journal_mode");
+    reportProgress(context, "SQLite journal mode inspection complete");
     if (journalMode !== "delete") {
+      reportProgress(context, "SQLite journal mode reset started");
       database.exec("ROLLBACK");
       const selected = pragmaText(database, "journal_mode=DELETE");
       if (selected !== "delete") throw busyTransitionError(path, selected);
+      reportProgress(context, "SQLite journal mode reset complete");
       continue;
     }
     if (state === "empty") {
+      reportProgress(context, "SQLite lock database initialization started");
       database.exec(`
         PRAGMA application_id = ${LOCK_APPLICATION_ID};
         CREATE TABLE agenc_local_process_lock (
@@ -1143,6 +1152,7 @@ function beginAndValidateLock(database, path) {
         VALUES (1, ${LOCK_FORMAT_VERSION});
         COMMIT;
       `);
+      reportProgress(context, "SQLite lock database initialization complete");
       continue;
     }
     return;
@@ -1188,21 +1198,29 @@ async function acquireSqliteDatabase(DatabaseSync, prepared, context) {
   let lastBusy;
   while (true) {
     throwIfExpired(context, prepared.path, lastBusy);
+    reportProgress(context, "SQLite pre-open lock validation started");
     await revalidatePreparedLock(prepared, context, {
       // The creation path already validated the complete ancestor chain and
       // the exact parent/file ACLs. Revalidate ACLs after contention because
       // another holder and an unbounded interval have crossed this attempt.
       validateWindowsAcl: attempt > 0,
     });
+    reportProgress(context, "SQLite pre-open lock validation complete");
     let database;
     try {
+      reportProgress(context, "SQLite database open started");
       database = new DatabaseSync(prepared.path, {
         allowExtension: false,
         timeout: 0,
       });
+      reportProgress(context, "SQLite database open complete");
+      reportProgress(context, "SQLite connection hardening started");
       configureLocalSqliteLockConnection(database);
+      reportProgress(context, "SQLite connection hardening complete");
+      reportProgress(context, "SQLite post-open lock validation started");
       await revalidatePreparedLock(prepared, context);
-      beginAndValidateLock(database, prepared.path);
+      reportProgress(context, "SQLite post-open lock validation complete");
+      beginAndValidateLock(database, prepared.path, context);
       throwIfExpired(context, prepared.path, lastBusy);
       return database;
     } catch (error) {
