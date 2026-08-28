@@ -554,6 +554,51 @@ test("Windows ACL validation uses bounded .NET-only PowerShell transport", async
   assert.equal(identityFromStats({ dev: 2n, ino: 3n }, "valid.sqlite"), "2:3");
 });
 
+test("uncontended SQLite locks perform only the required Windows ACL validations", () => {
+  const source = readFileSync(new URL(LOCK_MODULE_URL), "utf8");
+  const prepareStart = source.indexOf("async function prepareLockPath(");
+  const revalidateStart = source.indexOf(
+    "async function revalidatePreparedLock(",
+  );
+  const pragmaStart = source.indexOf("function pragmaValue(", revalidateStart);
+  const acquireStart = source.indexOf("async function acquireSqliteDatabase(");
+  const releaseStart = source.indexOf("function releaseAcquired(", acquireStart);
+  for (const boundary of [
+    prepareStart,
+    revalidateStart,
+    pragmaStart,
+    acquireStart,
+    releaseStart,
+  ]) {
+    assert.ok(boundary >= 0, "SQLite lock validation source boundary moved");
+  }
+
+  const prepareSource = source.slice(prepareStart, revalidateStart);
+  assert.match(prepareSource, /await assertLocalPrivateDirectory\(/u);
+  assert.equal(
+    [...prepareSource.matchAll(/await assertWindowsPathSecurity\(/gu)].length,
+    1,
+  );
+
+  const revalidateSource = source.slice(revalidateStart, pragmaStart);
+  assert.match(revalidateSource, /\{ validateWindowsAcl = false \} = \{\}/u);
+  assert.match(
+    revalidateSource,
+    /process\.platform === "win32" && validateWindowsAcl/u,
+  );
+
+  const acquireSource = source.slice(acquireStart, releaseStart);
+  assert.equal(
+    [...acquireSource.matchAll(/await revalidatePreparedLock\(/gu)].length,
+    2,
+  );
+  assert.match(acquireSource, /validateWindowsAcl: attempt > 0/u);
+  assert.match(
+    acquireSource,
+    /configureLocalSqliteLockConnection\(database\);\s+await revalidatePreparedLock\(prepared, context\);\s+beginAndValidateLock/u,
+  );
+});
+
 test("Windows ACL mutation masks cover generic and inherit-only rights", () => {
   const original = readFileSync(new URL(LOCK_MODULE_URL), "utf8");
   assert.match(

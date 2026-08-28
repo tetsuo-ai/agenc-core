@@ -967,7 +967,11 @@ async function prepareLockPath(requestedPath, context) {
   };
 }
 
-async function revalidatePreparedLock(prepared, context) {
+async function revalidatePreparedLock(
+  prepared,
+  context,
+  { validateWindowsAcl = false } = {},
+) {
   throwIfExpired(context, prepared.path);
   const parentStats = await lstat(prepared.parent, { bigint: true });
   if (!parentStats.isDirectory() || parentStats.isSymbolicLink()) {
@@ -980,7 +984,7 @@ async function revalidatePreparedLock(prepared, context) {
   if (stats.dev !== prepared.dev || stats.ino !== prepared.ino) {
     throw new Error(`agenc: lock database identity changed during acquisition: ${prepared.path}`);
   }
-  if (process.platform === "win32") {
+  if (process.platform === "win32" && validateWindowsAcl) {
     await assertWindowsPathSecurity([
       { path: prepared.parent, role: "leafDirectory" },
       { path: prepared.path, role: "file" },
@@ -1143,7 +1147,12 @@ async function acquireSqliteDatabase(DatabaseSync, prepared, context) {
   let lastBusy;
   while (true) {
     throwIfExpired(context, prepared.path, lastBusy);
-    await revalidatePreparedLock(prepared, context);
+    await revalidatePreparedLock(prepared, context, {
+      // The creation path already validated the complete ancestor chain and
+      // the exact parent/file ACLs. Revalidate ACLs after contention because
+      // another holder and an unbounded interval have crossed this attempt.
+      validateWindowsAcl: attempt > 0,
+    });
     let database;
     try {
       database = new DatabaseSync(prepared.path, {
