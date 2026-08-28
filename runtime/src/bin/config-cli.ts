@@ -25,12 +25,7 @@ import {
   assertConfigPatchAuthority,
 } from "../config/layer-authority.js";
 import { parseToml } from "../config/loader.js";
-import {
-  applyConfigV2Migration,
-  checkConfigV2Migration,
-  rollbackConfigV2Migration,
-  type ConfigV2MigrationOptions,
-} from "../config/migration.js";
+import type { ConfigV2MigrationOptions } from "../config/migration.js";
 import {
   CANONICAL_CONFIG_VERSION_KEY,
   assertNoRetiredConfigInputsForMutation,
@@ -330,6 +325,11 @@ async function runConfigMigrate(
   options: AgenCConfigCliOptions,
   io: AgenCConfigCliIo,
 ): Promise<number> {
+  const {
+    applyConfigV2Migration,
+    checkConfigV2Migration,
+    rollbackConfigV2Migration,
+  } = await import("../config/migration.js");
   const migrationOptions: ConfigV2MigrationOptions = {
     ...(options.env !== undefined ? { env: options.env } : {}),
     ...(options.agencHome !== undefined ? { home: options.agencHome } : {}),
