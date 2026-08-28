@@ -25,10 +25,18 @@ describe("macOS Keychain native-helper contract", () => {
       "multiple Keychain records match the exact service/account identity",
     );
     expect(source).toContain("SecItemUpdate(query, values)");
-    expect(source).toContain("SecKeychainCopyDefault(&target)");
+    expect(source).toContain("kSecPreferencesDomainUser");
+    expect(source).toContain("SecKeychainCopyDomainDefault(");
     expect(source).toContain("if (status == errSecNoDefaultKeychain)");
-    expect(source).toContain("SecKeychainCopySearchList(&search_list)");
+    expect(source).toContain("SecKeychainCopyDomainSearchList(");
+    expect(source.match(/SecKeychainCopyDomainSearchList/gu)).toHaveLength(1);
+    expect(source).toContain(
+      "CFDictionarySetValue(query, kSecMatchSearchList, search_list)",
+    );
     expect(source).toContain("CFArrayGetCount(search_list) != 1");
+    expect(source).toContain(
+      "CFDictionaryRemoveValue(item, kSecMatchSearchList)",
+    );
     expect(source).toContain(
       "CFDictionarySetValue(item, kSecUseKeychain, target)",
     );
@@ -44,10 +52,14 @@ describe("macOS Keychain native-helper contract", () => {
     expect(source).not.toContain("SecItemDelete(identity_query");
 
     const defaultLookupIndex = source.indexOf(
-      "SecKeychainCopyDefault(&target)",
+      "SecKeychainCopyDomainDefault(kSecPreferencesDomainUser, &target)",
     );
     const targetIndex = source.indexOf(
       "CFDictionarySetValue(item, kSecUseKeychain, target)",
+      defaultLookupIndex,
+    );
+    const removeMatchListIndex = source.indexOf(
+      "CFDictionaryRemoveValue(item, kSecMatchSearchList)",
       defaultLookupIndex,
     );
     const addIndex = source.indexOf("SecItemAdd(item, added_out)", targetIndex);
@@ -57,7 +69,9 @@ describe("macOS Keychain native-helper contract", () => {
     );
     const retryIndex = source.indexOf("continue;", duplicateIndex);
     expect(defaultLookupIndex).toBeGreaterThan(0);
+    expect(removeMatchListIndex).toBeGreaterThan(defaultLookupIndex);
     expect(targetIndex).toBeGreaterThan(defaultLookupIndex);
+    expect(targetIndex).toBeGreaterThan(removeMatchListIndex);
     expect(addIndex).toBeGreaterThan(targetIndex);
     expect(duplicateIndex).toBeGreaterThan(addIndex);
     expect(retryIndex).toBeGreaterThan(duplicateIndex);

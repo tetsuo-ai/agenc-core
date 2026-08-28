@@ -200,8 +200,22 @@ static CFStringRef create_identity(const char *value, const char *label) {
   return identity;
 }
 
+static OSStatus copy_user_keychain_search_list(CFArrayRef *search_list_out) {
+  OSStatus status;
+
+  *search_list_out = NULL;
+#pragma clang diagnostic push
+/* File-based user-domain search lists require deprecated Keychain APIs. */
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  status = SecKeychainCopyDomainSearchList(kSecPreferencesDomainUser,
+                                           search_list_out);
+#pragma clang diagnostic pop
+  return status;
+}
+
 static CFMutableDictionaryRef create_query(CFStringRef service,
-                                           CFStringRef account) {
+                                           CFStringRef account,
+                                           CFArrayRef search_list) {
   CFMutableDictionaryRef query = CFDictionaryCreateMutable(
       kCFAllocatorDefault, 0, &kCFTypeDictionaryKeyCallBacks,
       &kCFTypeDictionaryValueCallBacks);
@@ -212,6 +226,7 @@ static CFMutableDictionaryRef create_query(CFStringRef service,
   CFDictionarySetValue(query, kSecClass, kSecClassGenericPassword);
   CFDictionarySetValue(query, kSecAttrService, service);
   CFDictionarySetValue(query, kSecAttrAccount, account);
+  CFDictionarySetValue(query, kSecMatchSearchList, search_list);
   return query;
 }
 
@@ -383,8 +398,8 @@ static OSStatus delete_by_persistent_ref(CFDataRef persistent_ref) {
   return status;
 }
 
-static OSStatus copy_keychain_add_target(SecKeychainRef *target_out) {
-  CFArrayRef search_list = NULL;
+static OSStatus copy_keychain_add_target(CFArrayRef search_list,
+                                         SecKeychainRef *target_out) {
   SecKeychainRef target = NULL;
   OSStatus status;
 
@@ -392,13 +407,13 @@ static OSStatus copy_keychain_add_target(SecKeychainRef *target_out) {
 #pragma clang diagnostic push
 /* The file-based kSecUseKeychain path requires deprecated SecKeychain APIs. */
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-  status = SecKeychainCopyDefault(&target);
+  status =
+      SecKeychainCopyDomainDefault(kSecPreferencesDomainUser, &target);
   if (status == errSecNoDefaultKeychain) {
     if (target != NULL) {
       CFRelease(target);
     }
     target = NULL;
-    status = SecKeychainCopySearchList(&search_list);
   }
 #pragma clang diagnostic pop
 
@@ -427,9 +442,6 @@ cleanup:
   if (target != NULL) {
     CFRelease(target);
   }
-  if (search_list != NULL) {
-    CFRelease(search_list);
-  }
   return status;
 }
 
@@ -440,15 +452,18 @@ cleanup:
  */
 static OSStatus add_to_default_keychain(CFMutableDictionaryRef item,
                                         CFTypeRef *added_out) {
+  CFArrayRef search_list =
+      (CFArrayRef)CFDictionaryGetValue(item, kSecMatchSearchList);
   SecKeychainRef target = NULL;
   OSStatus status;
 
   *added_out = NULL;
-  status = copy_keychain_add_target(&target);
+  status = copy_keychain_add_target(search_list, &target);
   if (status != errSecSuccess) {
     return status;
   }
 
+  CFDictionaryRemoveValue(item, kSecMatchSearchList);
   CFDictionarySetValue(item, kSecUseKeychain, target);
   status = SecItemAdd(item, added_out);
   CFRelease(target);
@@ -741,7 +756,9 @@ static int delete_item(CFDictionaryRef identity_query) {
 int main(int argc, char **argv) {
   CFStringRef service = NULL;
   CFStringRef account = NULL;
+  CFArrayRef user_search_list = NULL;
   CFMutableDictionaryRef query = NULL;
+  OSStatus status;
   int result = HELPER_USAGE;
 
   if (argc != 4) {
@@ -757,7 +774,16 @@ int main(int argc, char **argv) {
     goto cleanup;
   }
 
-  query = create_query(service, account);
+  status = copy_user_keychain_search_list(&user_search_list);
+  if ((status != errSecSuccess) || (user_search_list == NULL)) {
+    if (status == errSecSuccess) {
+      status = errSecInvalidKeychain;
+    }
+    result = fail_osstatus("Keychain user search-list lookup", status);
+    goto cleanup;
+  }
+
+  query = create_query(service, account, user_search_list);
   if (query == NULL) {
     result = fail_message("cannot allocate Keychain query");
     goto cleanup;
@@ -778,6 +804,9 @@ int main(int argc, char **argv) {
 cleanup:
   if (query != NULL) {
     CFRelease(query);
+  }
+  if (user_search_list != NULL) {
+    CFRelease(user_search_list);
   }
   if (account != NULL) {
     CFRelease(account);
