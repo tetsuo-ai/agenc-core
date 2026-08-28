@@ -217,6 +217,7 @@ Common session flags:
 --output-format <text|json|stream-json>
 --input-format <stream-json>
 --no-tui
+--bare
 -c, --continue
 -r, --resume <session-id>
 --profile <name>

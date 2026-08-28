@@ -28,11 +28,13 @@ separate provider route and its paid default remains **`x-ai/grok-4.5`**.
 
 ## Single provider authority
 
-Startup provider selection is explicit and layered: `--provider` wins over
-`AGENC_PROVIDER`, which wins over `model_provider` in the selected profile or
-`config.toml`; the final fallback is `grok`. A provider-qualified `--model`
-selection is resolved as one provider/model pair. Credentials, OAuth tokens,
-base URLs, and local endpoint availability never choose a provider.
+Startup provider selection is explicit and layered. Before managed policy is
+applied, `--provider` wins over `AGENC_PROVIDER`, which wins over
+`model_provider` in the selected profile or `config.toml`; the fallback is
+`grok`. Administrator-managed configuration is the final layer and may replace
+or lock that result. A provider-qualified `--model` selection is resolved as
+one provider/model pair. Credentials, OAuth tokens, base URLs, and local
+endpoint availability never choose a provider.
 
 The client captures this selection once and binds it to a session-owned
 provider service before daemon work begins. `/provider` replaces that binding

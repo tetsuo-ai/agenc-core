@@ -114,6 +114,12 @@ accept `agentId`; use `attachAgent()` for an existing agent. The lower-level
 workspace and intends to permit command hook effects there. The field never
 permits HTTP, prompt, or agent hook effects.
 
+`dangerouslyBypassApprovalsAndSandbox` defaults to `false`. Set it to `true`
+only when the embedding application deliberately grants both approval bypass
+and unrestricted OS execution to the new session. The daemon retains that
+creation-time authority across attachment and cold resume; attaching to an
+existing session cannot add or remove it.
+
 When `initialPrompt` is present, `createSession()` submits it as the new
 agent's initial input. The method also passes `metadata` unchanged to
 `agent.create`. Without `initialPrompt`, the new agent remains idle until the
@@ -233,9 +239,11 @@ Under the hood this is
 prompt written to stdin as `{"type":"prompt","prompt":"..."}`. Exit code 2
 means the run auto-denied a tool permission and gave up (the CLI's
 non-interactive contract). `permissionMode: "bypassPermissions"` is an
-explicit session-only opt-in bound to the subprocess workspace; it does not
-persist consent or disable managed policy. Use the daemon transport when a
-client must resolve permission requests interactively.
+explicit approval-only opt-in bound to the subprocess workspace; it does not
+disable the configured OS sandbox, persist consent, or override managed
+policy. `dangerouslyBypassApprovalsAndSandbox: true` emits the separate
+combined escape flag. Use the daemon transport when a client must resolve
+permission requests interactively.
 
 The subprocess transport invokes `agenc -p`, so
 `AGENC_ALLOW_UNTRUSTED_HOOKS` in `options.env`, or in the inherited child

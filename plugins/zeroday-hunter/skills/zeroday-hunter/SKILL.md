@@ -156,7 +156,7 @@ For each candidate path, a hypothesis record containing the **mandatory walkthro
 
 ## Report contract
 
-Every finding uses [templates/finding.md](templates/finding.md): Title, Status
+Every finding uses [templates/finding.md](../../templates/finding.md): Title, Status
 (CONFIRMED | HYPOTHESIS), Summary, Entry→Sink with file:line, Attacker control per
 walkthrough step, Evidence (verifier cmd + output + run id), Impact ceiling, Severity
 rationale, Variants (with query path), Remediation + regression test. Campaign closes
