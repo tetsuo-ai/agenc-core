@@ -273,6 +273,34 @@ test("private-file progress observers are implemented and non-authoritative", as
   assert.ok(observed > 0);
 });
 
+test("rejected async progress observers are consumed", async (t) => {
+  const root = makeRoot(t, "agenc-package-async-progress-");
+  const lockPath = join(root, "operation.sqlite");
+  const filePath = join(root, "private.json");
+  writeFileSync(filePath, "{}\n", { mode: 0o600 });
+  let acquisitionObservations = 0;
+  const release = await acquireLocalSqliteLock(lockPath, {
+    timeoutMs: 5_000,
+    onProgress: async () => {
+      acquisitionObservations += 1;
+      throw new Error("async acquisition observer failed");
+    },
+  });
+  release();
+
+  let fileObservations = 0;
+  await assertLocalPrivateFile(filePath, {
+    timeoutMs: 5_000,
+    onProgress: async () => {
+      fileObservations += 1;
+      throw new Error("async file observer failed");
+    },
+  });
+  await delay(0);
+  assert.ok(acquisitionObservations > 0);
+  assert.ok(fileObservations > 0);
+});
+
 test("same-process contenders queue without blocking the event loop", async (t) => {
   const root = makeRoot(t, "agenc-package-sqlite-same-process-");
   const lockPath = join(root, "operation.sqlite");

@@ -5573,11 +5573,16 @@ async function withAgenCDaemonLifecyclePhases<T>(
 }
 
 function reportAgenCDaemonLifecycleLockProgress(
-  onProgress: ((phase: string) => void) | undefined,
+  onProgress:
+    | ((phase: string) => void | PromiseLike<void>)
+    | undefined,
   phase: string,
 ): void {
   try {
-    onProgress?.(phase);
+    const result = onProgress?.(phase);
+    if (result !== undefined) {
+      void Promise.resolve(result).catch(() => {});
+    }
   } catch {
     // Diagnostics must never change daemon lifecycle lock semantics.
   }
@@ -5585,7 +5590,7 @@ function reportAgenCDaemonLifecycleLockProgress(
 
 export async function acquireAgenCDaemonLifecycleLock(
   host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
-  onProgress?: (phase: string) => void,
+  onProgress?: (phase: string) => void | PromiseLike<void>,
 ): Promise<() => Promise<void>> {
   reportAgenCDaemonLifecycleLockProgress(
     onProgress,

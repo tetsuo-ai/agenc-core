@@ -20,7 +20,7 @@ export interface LocalSqliteLockOptions {
   /** Shared monotonic deadline for a fixed-order sequence of lock calls. */
   readonly deadline?: number;
   /** Optional phase-only diagnostics; never receives a protected path. */
-  readonly onProgress?: (phase: string) => void;
+  readonly onProgress?: (phase: string) => void | PromiseLike<void>;
   /** Permit a root/current-user-owned sticky directory as the validated leaf. */
   readonly allowTrustedStickyLeaf?: boolean;
 }

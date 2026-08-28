@@ -227,7 +227,10 @@ function throwIfExpired(context, path, cause) {
 
 function reportProgress(context, phase) {
   try {
-    context.onProgress?.(phase);
+    const result = context.onProgress?.(phase);
+    if (result !== undefined) {
+      void Promise.resolve(result).catch(() => {});
+    }
   } catch {
     // Diagnostics must never change lock acquisition or release semantics.
   }

@@ -2585,19 +2585,20 @@ describe("AgenC daemon CLI", () => {
     }
   });
 
-  it("ignores lifecycle lock diagnostic observer failures", async () => {
+  it("consumes rejected lifecycle lock diagnostic observers", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);
     let observed = 0;
-    const release = await acquireAgenCDaemonLifecycleLock(host, () => {
+    const release = await acquireAgenCDaemonLifecycleLock(host, async () => {
       observed += 1;
-      throw new Error("diagnostic observer failed");
+      throw new Error("async diagnostic observer failed");
     });
     expect(observed).toBeGreaterThan(0);
     await release();
 
     const releaseSuccessor = await acquireAgenCDaemonLifecycleLock(host);
     await releaseSuccessor();
+    await delay(0);
     await rm(agencHome, { recursive: true, force: true });
   });
 
