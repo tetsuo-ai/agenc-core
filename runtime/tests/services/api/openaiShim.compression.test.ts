@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { createOpenAiShimClient } from '../../../src/services/api/openaiShim.ts'
+import { providerConnectionFixture } from './provider-connection-fixture.ts'
 
 type FetchType = typeof globalThis.fetch
 const originalFetch = globalThis.fetch
@@ -129,9 +130,11 @@ async function captureRequestBody(
     AGENC_MODEL: model,
   })
   const client = createOpenAiShimClient({
-    selectedProvider: 'openai',
-    model,
-    providerEnvironment,
+    connection: providerConnectionFixture({
+      provider: 'openai-compatible',
+      model,
+      environment: providerEnvironment,
+    }),
   }) as OpenAiShimClient
   await client.beta.messages.create({
     model,

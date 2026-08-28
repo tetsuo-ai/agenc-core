@@ -537,7 +537,7 @@ describe("provider credential authority", () => {
     expect(missing.credential).toMatchObject({
       status: "missing",
       mode: "none",
-      missingLabel: "ANTHROPIC_API_KEY",
+      missingLabel: "ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN",
     });
 
     const explicit = providerOptions.resolveProviderCredentialAuthority(
@@ -554,6 +554,29 @@ describe("provider credential authority", () => {
       source: "explicit",
     });
     expect(explicit.factoryOptions.apiKey).toBe("explicit-anthropic-key");
+  });
+
+  test("prepares Anthropic bearer tokens without retaining an API-key fallback", async () => {
+    const { providerOptions } = await loadCredentialModules();
+
+    const resolved = providerOptions.resolveProviderCredentialAuthority(
+      "anthropic",
+      { model: "claude-opus-4-7" },
+      {
+        ANTHROPIC_AUTH_TOKEN: "prepared-anthropic-token",
+        ANTHROPIC_API_KEY: "stale-anthropic-key",
+      },
+    );
+
+    expect(resolved.credential).toMatchObject({
+      status: "ready",
+      mode: "anthropic-bearer-token",
+      source: "environment",
+    });
+    expect(resolved.factoryOptions.authToken).toBe(
+      "prepared-anthropic-token",
+    );
+    expect(resolved.factoryOptions.apiKey).toBeUndefined();
   });
 
   test("reads saved BYOK only after higher-precedence credentials are absent", async () => {

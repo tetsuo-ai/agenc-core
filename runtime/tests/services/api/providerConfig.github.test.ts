@@ -6,16 +6,6 @@ import {
   resolveProviderRequest,
 } from '../../../src/services/api/providerConfig.ts'
 
-function providerEnvironment(
-  provider: string,
-  model: string,
-): Readonly<Record<string, string>> {
-  return Object.freeze({
-    AGENC_PROVIDER: provider,
-    AGENC_MODEL: model,
-  })
-}
-
 test.each([
   ['copilot', BUILT_IN_PROVIDER_DEFAULT_MODELS.github],
   ['github:copilot', BUILT_IN_PROVIDER_DEFAULT_MODELS.github],
@@ -34,7 +24,7 @@ test('resolveProviderRequest applies GitHub normalization and transport for the 
   const r = resolveProviderRequest({
     provider: 'github',
     model: 'github:gpt-5.3-codex',
-    environment: providerEnvironment('github', 'github:gpt-5.3-codex'),
+    baseUrl: 'https://api.githubcopilot.com',
   })
   expect(r.resolvedModel).toBe('gpt-5.3-codex')
   expect(r.transport).toBe('providerCode_responses')
@@ -44,7 +34,7 @@ test('resolveProviderRequest routes GitHub GPT-5 providerCode models to response
   const r = resolveProviderRequest({
     provider: 'github',
     model: 'gpt-5.3-providerCode',
-    environment: providerEnvironment('github', 'gpt-5.3-providerCode'),
+    baseUrl: 'https://api.githubcopilot.com',
   })
   expect(r.resolvedModel).toBe('gpt-5.3-providerCode')
   expect(r.transport).toBe('providerCode_responses')
@@ -54,7 +44,7 @@ test('resolveProviderRequest keeps gpt-5-mini on chat_completions for GitHub', (
   const r = resolveProviderRequest({
     provider: 'github',
     model: 'gpt-5-mini',
-    environment: providerEnvironment('github', 'gpt-5-mini'),
+    baseUrl: 'https://api.githubcopilot.com',
   })
   expect(r.resolvedModel).toBe('gpt-5-mini')
   expect(r.transport).toBe('chat_completions')
@@ -64,7 +54,7 @@ test('resolveProviderRequest leaves model unchanged without GitHub flag', () => 
   const r = resolveProviderRequest({
     provider: 'openai',
     model: 'github:gpt-5.3-codex',
-    environment: providerEnvironment('openai', 'github:gpt-5.3-codex'),
+    baseUrl: 'https://api.openai.com/v1',
   })
   expect(r.resolvedModel).toBe('github:gpt-5.3-codex')
 })

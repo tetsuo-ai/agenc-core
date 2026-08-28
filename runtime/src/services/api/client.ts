@@ -1,28 +1,19 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import ProviderSdk, { type ClientOptions } from '@anthropic-ai/sdk'
 import { randomUUID } from 'crypto'
-import {
-  checkAndRefreshOAuthTokenIfNeeded,
-  getproviderApiKey,
-  getAgenCAIOAuthTokens,
-  isAgenCAISubscriber,
-} from 'src/utils/auth.js'
 import { getUserAgent } from 'src/utils/http.js'
-import {
-  getAPIProvider,
-  getSelectedProviderEnvironment,
-  isFirstPartyproviderBaseUrl,
-  isGithubNativeproviderMode,
-} from 'src/utils/model/providers.js'
 import { getProxyFetchOptions } from 'src/utils/proxy.js'
-import {
-  getIsNonInteractiveSession,
-  getSessionId,
-} from '../../bootstrap/state.js'
-import { getOauthConfig } from '../../constants/oauth.js'
+import { getSessionId } from '../../bootstrap/state.js'
 import { isDebugToStdErr, logForDebugging } from 'src/utils/debug.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
-import { resolveSecureStorageHome } from '../../utils/secureStorage/home.js'
+import { requireCurrentRuntimeSession } from '../../session/current-session.js'
+import {
+  projectBoundProviderConnection,
+  type BoundProviderConnection,
+} from '../../llm/registry/provider-connection.js'
+import type { ProviderEnvironment } from '../../llm/provider-options.js'
+import { stripForwardedProviderAuthHeaders } from '../../llm/provider-request.js'
+import type { ProviderBinding } from '../../session/provider-service.js'
 
 /**
  * Environment variables for different client types:
@@ -50,50 +41,38 @@ function createStderrLogger(): ClientOptions['logger'] {
   }
 }
 
-function stripForwardedAuthHeaders(
-  headers: Record<string, string>,
-): Record<string, string> {
-  const safeHeaders: Record<string, string> = {}
-  for (const [key, value] of Object.entries(headers)) {
-    const lower = key.toLowerCase()
-    if (
-      lower === 'authorization' ||
-      lower === 'x-api-key' ||
-      lower === 'api-key' ||
-      lower === 'x-goog-api-key' ||
-      lower === 'x-goog-user-project'
-    ) {
-      continue
-    }
-    safeHeaders[key] = value
-  }
-  return safeHeaders
-}
-
 export async function getproviderClient({
-  apiKey,
   maxRetries,
   model,
   fetchOverride,
   source,
+  providerBinding,
+  providerEnvironment,
 }: {
-  apiKey?: string
   maxRetries: number
   model?: string
   fetchOverride?: ClientOptions['fetch']
   source?: string
+  providerBinding?: ProviderBinding
+  providerEnvironment?: ProviderEnvironment
 }): Promise<ProviderSdk> {
-  const providerEnvironment = getSelectedProviderEnvironment()
-  const credentialHome = resolveSecureStorageHome()
-  const containerId = providerEnvironment.AGENC_CONTAINER_ID
-  const remoteSessionId = providerEnvironment.AGENC_REMOTE_SESSION_ID
-  const clientApp = providerEnvironment.AGENC_AGENT_SDK_CLIENT_APP
-  const customHeaders = getCustomHeaders(providerEnvironment)
+  const connection = resolveBoundConnection(
+    providerBinding,
+    providerEnvironment,
+  )
+  // The model parameter remains for the legacy SDK-shaped call surface. The
+  // prepared binding is authoritative and cannot be overridden here.
+  void model
+  const environment = connection.environment
+  const containerId = environment.AGENC_CONTAINER_ID
+  const remoteSessionId = environment.AGENC_REMOTE_SESSION_ID
+  const clientApp = environment.AGENC_AGENT_SDK_CLIENT_APP
+  const configuredHeaders = connection.extra.defaultHeaders ?? {}
   const defaultHeaders: { [key: string]: string } = {
     'x-app': 'cli',
     'User-Agent': getUserAgent(),
     'X-AgenC-Code-Session-Id': getSessionId(),
-    ...customHeaders,
+    ...configuredHeaders,
     ...(containerId ? { 'x-agenc-remote-container-id': containerId } : {}),
     ...(remoteSessionId
       ? { 'x-agenc-remote-session-id': remoteSessionId }
@@ -104,30 +83,32 @@ export async function getproviderClient({
 
   // Log API client configuration for HFI debugging
   logForDebugging(
-    `[API:request] Creating client, ANTHROPIC_CUSTOM_HEADERS present: ${!!providerEnvironment.ANTHROPIC_CUSTOM_HEADERS}, has Authorization header: ${!!customHeaders['Authorization']}`,
+    `[API:request] Creating bound ${connection.provider} client, has Authorization header: ${!!defaultHeaders.Authorization}`,
   )
 
   // Add additional protection header if enabled via env var
   const additionalProtectionEnabled = isEnvTruthy(
-    providerEnvironment.AGENC_ADDITIONAL_PROTECTION,
+    environment.AGENC_ADDITIONAL_PROTECTION,
   )
   if (additionalProtectionEnabled) {
     defaultHeaders['x-anthropic-additional-protection'] = 'true'
   }
 
-  const resolvedFetch = buildFetch(fetchOverride, source)
+  const resolvedFetch = buildFetch(
+    fetchOverride ?? connection.extra.fetchImpl,
+    source,
+    connection.transport === 'anthropic' &&
+      isFirstPartyAnthropicUrl(connection.baseURL),
+  )
 
   const ARGS = {
     defaultHeaders,
     maxRetries,
-    timeout: parseInt(
-      providerEnvironment.API_TIMEOUT_MS || String(600 * 1000),
-      10,
-    ),
+    timeout: connection.timeoutMs ?? 600 * 1000,
     dangerouslyAllowBrowser: true,
     fetchOptions: getProxyFetchOptions({
       forAnthropicAPI: true,
-      environment: providerEnvironment,
+      environment,
     }) as ClientOptions['fetchOptions'],
     ...(resolvedFetch && {
       fetch: resolvedFetch,
@@ -135,76 +116,59 @@ export async function getproviderClient({
   }
   // GitHub provider in native provider API mode: send requests in provider
   // format so cache_control blocks are honoured and prompt caching works.
-  // Requires the GitHub endpoint (GITHUB_BASE_URL) to support provider's
-  // messages API — set AGENC_GITHUB_ANTHROPIC_API=1 to opt in.
-  if (model !== undefined && isGithubNativeproviderMode(model)) {
-    const githubBaseUrl =
-      providerEnvironment.GITHUB_BASE_URL?.replace(/\/$/, '') ??
-      providerEnvironment.OPENAI_BASE_URL?.replace(/\/$/, '') ??
-      'https://api.githubcopilot.com'
-    const githubToken =
-      providerEnvironment.GITHUB_TOKEN ?? providerEnvironment.GH_TOKEN ?? ''
+  // The bound GitHub model and endpoint remain the only routing authority.
+  if (
+    connection.provider === 'github' &&
+    connection.transport === 'anthropic'
+  ) {
+    if (!connection.apiKey) {
+      throw new Error('bound GitHub provider has no prepared credential')
+    }
+    if (!connection.baseURL) {
+      throw new Error('bound GitHub provider has no prepared base URL')
+    }
     const nativeArgs: ConstructorParameters<typeof ProviderSdk>[0] = {
       ...ARGS,
-      baseURL: githubBaseUrl,
-      authToken: githubToken,
+      baseURL: connection.baseURL.replace(/\/$/, ''),
+      authToken: connection.apiKey,
       // No apiKey — we authenticate via Bearer token (authToken)
       apiKey: null,
     }
     return new ProviderSdk(nativeArgs)
   }
-  const apiProvider = getAPIProvider()
-  if (apiProvider !== 'firstParty') {
-    if (apiProvider === 'gemini') {
-      throw new Error(
-        'Gemini requests must use the canonical native provider transport',
-      )
-    }
+  if (connection.transport === 'openai-compatible') {
     const { createOpenAiShimClient } = await import('./openaiShim.js')
+    const shimConnection: BoundProviderConnection = Object.freeze({
+      ...connection,
+      extra: Object.freeze({
+        ...connection.extra,
+        fetchImpl: resolvedFetch,
+      }),
+    })
     return createOpenAiShimClient({
-      home: credentialHome,
-      ...(model !== undefined ? { model } : {}),
-      providerEnvironment,
-      defaultHeaders: stripForwardedAuthHeaders(defaultHeaders),
+      connection: shimConnection,
+      defaultHeaders: stripForwardedProviderAuthHeaders(defaultHeaders),
       maxRetries,
-      timeout: parseInt(providerEnvironment.API_TIMEOUT_MS || String(600 * 1000), 10),
-      selectedProvider: apiProvider,
+      timeout: connection.timeoutMs,
     }) as unknown as ProviderSdk
   }
 
-  // First-party OAuth and API-key state is irrelevant to explicitly selected
-  // external providers. Keep native secure storage access behind the first-party
-  // routing boundary so third-party requests cannot acquire a second auth
-  // authority or fail because unrelated first-party storage is unavailable.
-  logForDebugging('[API:auth] OAuth token check starting')
-  await checkAndRefreshOAuthTokenIfNeeded(
-    credentialHome,
-    providerEnvironment,
-  )
-  logForDebugging('[API:auth] OAuth token check complete')
-
-  if (!isAgenCAISubscriber(credentialHome)) {
-    await configureApiKeyHeaders(
-      defaultHeaders,
-      getIsNonInteractiveSession(),
-      providerEnvironment,
+  if (connection.transport !== 'anthropic') {
+    throw new Error(
+      `${connection.provider} requests require their canonical native provider transport`,
     )
   }
-
-  // Determine authentication method based on available tokens
+  if (!connection.apiKey && !connection.authToken) {
+    throw new Error('bound Anthropic provider has no prepared credential')
+  }
+  if (!connection.baseURL) {
+    throw new Error('bound Anthropic provider has no prepared base URL')
+  }
   const clientConfig: ConstructorParameters<typeof ProviderSdk>[0] = {
-    apiKey: isAgenCAISubscriber(credentialHome) ? null : apiKey || getproviderApiKey(),
-    authToken: isAgenCAISubscriber(credentialHome)
-      ? getAgenCAIOAuthTokens(
-          credentialHome,
-          providerEnvironment,
-        )?.accessToken
-      : undefined,
-    // Set baseURL from OAuth config when using staging OAuth
-    ...(providerEnvironment.USER_TYPE === 'ant' &&
-    isEnvTruthy(providerEnvironment.USE_STAGING_OAUTH)
-      ? { baseURL: getOauthConfig().BASE_API_URL }
-      : {}),
+    ...(connection.authToken
+      ? { authToken: connection.authToken, apiKey: null }
+      : { apiKey: connection.apiKey }),
+    baseURL: connection.baseURL,
     ...ARGS,
     ...(isDebugToStdErr() && { logger: createStderrLogger() }),
   }
@@ -212,60 +176,55 @@ export async function getproviderClient({
   return new ProviderSdk(clientConfig)
 }
 
-async function configureApiKeyHeaders(
-  headers: Record<string, string>,
-  _isNonInteractiveSession: boolean,
-  environment: Readonly<Record<string, string | undefined>>,
-): Promise<void> {
-  const token = environment.ANTHROPIC_AUTH_TOKEN
-  if (token) {
-    headers['Authorization'] = `Bearer ${token}`
+function resolveBoundConnection(
+  explicitBinding: ProviderBinding | undefined,
+  explicitEnvironment: ProviderEnvironment | undefined,
+): BoundProviderConnection {
+  if (explicitBinding !== undefined) {
+    return projectBoundProviderConnection({
+      binding: explicitBinding,
+      ...(explicitEnvironment !== undefined
+        ? { environment: explicitEnvironment }
+        : {}),
+    })
+  }
+  const session = requireCurrentRuntimeSession('provider client')
+  const providerService = session.services.providerService
+  if (providerService === undefined) {
+    throw new Error('active runtime session has no provider service')
+  }
+  return projectBoundProviderConnection({
+    binding: providerService.current(),
+    environment: providerService.environment(),
+  })
+}
+
+function isFirstPartyAnthropicUrl(baseURL: string | undefined): boolean {
+  if (baseURL === undefined) return false
+  try {
+    const hostname = new URL(baseURL).hostname.toLowerCase()
+    return (
+      hostname === 'api.anthropic.com' ||
+      hostname === 'api-staging.anthropic.com'
+    )
+  } catch {
+    return false
   }
 }
 
-function getCustomHeaders(
-  environment: Readonly<Record<string, string | undefined>>,
-): Record<string, string> {
-  const customHeaders: Record<string, string> = {}
-  const customHeadersEnv = environment.ANTHROPIC_CUSTOM_HEADERS
-
-  if (!customHeadersEnv) return customHeaders
-
-  // Split by newlines to support multiple headers
-  const headerStrings = customHeadersEnv.split(/\n|\r\n/)
-
-  for (const headerString of headerStrings) {
-    if (!headerString.trim()) continue
-
-    // Parse header in format "Name: Value" (curl style). Split on first `:`
-    // then trim — avoids regex backtracking on malformed long header lines.
-    const colonIdx = headerString.indexOf(':')
-    if (colonIdx === -1) continue
-    const name = headerString.slice(0, colonIdx).trim()
-    const value = headerString.slice(colonIdx + 1).trim()
-    if (name) {
-      customHeaders[name] = value
-    }
-  }
-
-  return customHeaders
-}
 export const CLIENT_REQUEST_ID_HEADER = 'x-client-request-id'
 function buildFetch(
   fetchOverride: ClientOptions['fetch'],
   source: string | undefined,
+  injectClientRequestId: boolean,
 ): ClientOptions['fetch'] {
   // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
   const inner = fetchOverride ?? globalThis.fetch
-  // Only send to the first-party API; unknown headers risk rejection by strict proxies.
-  const injectClientRequestId =
-    getAPIProvider() === 'firstParty' && isFirstPartyproviderBaseUrl()
   return (input, init) => {
     // eslint-disable-next-line eslint-plugin-n/no-unsupported-features/node-builtins
     const headers = new Headers(init?.headers)
-    // Generate a client-side request ID so timeouts (which return no server
-    // request ID) can still be correlated with server logs by the API team.
-    // Callers that want to track the ID themselves can pre-set the header.
+    // Generate a client-side request ID so timeouts can be correlated with
+    // server logs. Explicit compatibility endpoints never receive this header.
     if (injectClientRequestId && !headers.has(CLIENT_REQUEST_ID_HEADER)) {
       headers.set(CLIENT_REQUEST_ID_HEADER, randomUUID())
     }

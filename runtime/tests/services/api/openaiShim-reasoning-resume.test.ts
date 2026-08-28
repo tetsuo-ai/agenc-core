@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createOpenAiShimClient } from '../../../src/services/api/openaiShim.ts'
+import { providerConnectionFixture } from './provider-connection-fixture.ts'
 
 // M-LLM-5: once the thinking block closed on a reasoning->content or
 // reasoning->tool_call transition, hasEmittedThinkingStart was never reset, so a later
@@ -64,9 +65,11 @@ describe('openai shim — M-LLM-5 reasoning resumes after content', () => {
       ])) as typeof fetch
 
     const client = createOpenAiShimClient({
-      selectedProvider: 'openai',
-      model: 'kimi-thinking',
-      providerEnvironment: PROVIDER_ENVIRONMENT,
+      connection: providerConnectionFixture({
+        provider: 'openai-compatible',
+        model: 'kimi-thinking',
+        environment: PROVIDER_ENVIRONMENT,
+      }),
     }) as OpenAiShimClient
     const result = await client.beta.messages
       .create({

@@ -2440,6 +2440,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   );
   const { status: apiKeyStatus, reverify } = useApiKeyVerification(
     remoteAuthSessionContext,
+    configStore.current(),
   );
   useEffect(() => {
     void reverify();

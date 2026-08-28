@@ -10,6 +10,7 @@ import { GitHubProvider } from "../../src/llm/providers/github/index.js";
 import { normalizeGithubModelForEndpoint } from "../../src/llm/providers/github/model-routing.js";
 import type { OpenAIProviderConfig } from "../../src/llm/providers/openai/types.js";
 import {
+  BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_MODEL_CATALOG,
   providerCatalogModelId,
   providerLocalModelIdFromCatalog,
@@ -200,8 +201,7 @@ describe("GitHub model authority", () => {
       resolveProviderRequest({
         provider: "github",
         model,
-        ...(baseUrl === undefined ? {} : { baseUrl }),
-        environment: {},
+        baseUrl: baseUrl ?? BUILT_IN_PROVIDER_BASE_URLS.github,
       }),
     ).toMatchObject({
       resolvedModel: expectedModel,

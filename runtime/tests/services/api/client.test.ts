@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, mock, test } from 'bun:test'
-import { runWithStartupProviderSelection } from '../../../src/utils/model/providers.ts'
+import { providerBindingFixture } from './provider-connection-fixture.ts'
 
 type FetchType = typeof globalThis.fetch
 type GetProviderClient = typeof import('../../../src/services/api/client.ts')['getproviderClient']
@@ -33,6 +33,10 @@ const originalEnv = {
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
   OPENAI_BASE_URL: process.env.OPENAI_BASE_URL,
   OPENAI_API_BASE: process.env.OPENAI_API_BASE,
+  OPENAI_AUTH_HEADER: process.env.OPENAI_AUTH_HEADER,
+  OPENAI_AUTH_HEADER_VALUE: process.env.OPENAI_AUTH_HEADER_VALUE,
+  OPENAI_AUTH_SCHEME: process.env.OPENAI_AUTH_SCHEME,
+  OPENAI_API_FORMAT: process.env.OPENAI_API_FORMAT,
   XAI_API_KEY: process.env.XAI_API_KEY,
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
   ANTHROPIC_AUTH_TOKEN: process.env.ANTHROPIC_AUTH_TOKEN,
@@ -68,6 +72,10 @@ beforeEach(async () => {
   delete process.env.OPENAI_API_KEY
   delete process.env.OPENAI_BASE_URL
   delete process.env.OPENAI_API_BASE
+  delete process.env.OPENAI_AUTH_HEADER
+  delete process.env.OPENAI_AUTH_HEADER_VALUE
+  delete process.env.OPENAI_AUTH_SCHEME
+  delete process.env.OPENAI_API_FORMAT
   delete process.env.XAI_API_KEY
   delete process.env.ANTHROPIC_API_KEY
   delete process.env.ANTHROPIC_AUTH_TOKEN
@@ -76,15 +84,20 @@ beforeEach(async () => {
   const nonce = `${Date.now()}-${Math.random()}`
   const imported = await import(`../../../src/services/api/client.ts?client-test=${nonce}`)
   const getproviderClientImpl = imported.getproviderClient
-  getproviderClient = options =>
-    runWithStartupProviderSelection(
-      {
-        provider: process.env.AGENC_PROVIDER ?? 'gemini',
-        model: process.env.AGENC_MODEL ?? 'test-model',
-        environment: { ...process.env },
-      },
-      () => getproviderClientImpl(options),
-    )
+  getproviderClient = async options => {
+    const providerEnvironment = Object.freeze({ ...process.env })
+    const provider = process.env.AGENC_PROVIDER ?? 'gemini'
+    const model = process.env.AGENC_MODEL ?? 'test-model'
+    return await getproviderClientImpl({
+      ...options,
+      providerBinding: providerBindingFixture({
+        provider,
+        model,
+        environment: providerEnvironment,
+      }),
+      providerEnvironment,
+    })
+  }
 })
 
 afterEach(() => {
@@ -107,6 +120,10 @@ afterEach(() => {
   restoreEnv('OPENAI_API_KEY', originalEnv.OPENAI_API_KEY)
   restoreEnv('OPENAI_BASE_URL', originalEnv.OPENAI_BASE_URL)
   restoreEnv('OPENAI_API_BASE', originalEnv.OPENAI_API_BASE)
+  restoreEnv('OPENAI_AUTH_HEADER', originalEnv.OPENAI_AUTH_HEADER)
+  restoreEnv('OPENAI_AUTH_HEADER_VALUE', originalEnv.OPENAI_AUTH_HEADER_VALUE)
+  restoreEnv('OPENAI_AUTH_SCHEME', originalEnv.OPENAI_AUTH_SCHEME)
+  restoreEnv('OPENAI_API_FORMAT', originalEnv.OPENAI_API_FORMAT)
   restoreEnv('XAI_API_KEY', originalEnv.XAI_API_KEY)
   restoreEnv('ANTHROPIC_API_KEY', originalEnv.ANTHROPIC_API_KEY)
   restoreEnv('ANTHROPIC_AUTH_TOKEN', originalEnv.ANTHROPIC_AUTH_TOKEN)
@@ -127,7 +144,7 @@ test('fails closed when Gemini reaches the obsolete compatibility client', async
       model: 'gemini-2.0-flash',
     }),
   ).rejects.toThrow(
-    'Gemini requests must use the canonical native provider transport',
+    'gemini requests require their canonical native provider transport',
   )
   expect(fetchCalled).toBe(false)
 })
@@ -298,7 +315,7 @@ test.each([
       AGENC_MODEL: 'gpt-4o',
     },
     requestModel: 'gpt-4o',
-    expectedUrl: 'http://127.0.0.1:19084/v1/chat/completions',
+    expectedUrl: 'http://127.0.0.1:19084/v1/responses',
     expectedAuth: 'Bearer openai-test-key',
     expectedModel: 'gpt-4o',
   },
@@ -606,7 +623,7 @@ test.each([
       AGENC_PROVIDER: 'mistral',
       AGENC_MODEL: 'mistral-medium-latest',
     },
-    expectedMessage: 'MISTRAL_API_KEY is required for Mistral provider',
+    expectedMessage: 'mistral provider requires apiKey',
   },
   {
     name: 'NVIDIA NIM',
@@ -614,7 +631,7 @@ test.each([
       AGENC_PROVIDER: 'nvidia-nim',
       AGENC_MODEL: 'nvidia/provider-model',
     },
-    expectedMessage: 'NVIDIA_API_KEY is required for NVIDIA NIM provider',
+    expectedMessage: 'nvidia-nim provider requires apiKey',
   },
   {
     name: 'MiniMax',
@@ -622,7 +639,7 @@ test.each([
       AGENC_PROVIDER: 'minimax',
       AGENC_MODEL: 'MiniMax-provider-model',
     },
-    expectedMessage: 'MINIMAX_API_KEY is required for MiniMax provider',
+    expectedMessage: 'minimax provider requires apiKey',
   },
   {
     name: 'GitHub',
@@ -630,7 +647,7 @@ test.each([
       AGENC_PROVIDER: 'github',
       AGENC_MODEL: 'github:copilot',
     },
-    expectedMessage: 'GITHUB_TOKEN or GH_TOKEN is required for GitHub provider',
+    expectedMessage: 'github provider requires apiKey',
   },
 ] as const)(
   'fails before fetch when selected $name shim credentials are missing',
@@ -666,7 +683,7 @@ test.each([
   },
 )
 
-test('strips first-party auth headers before hosted provider shim requests', async () => {
+test('keeps stale Anthropic and OpenAI controls out of a Mistral request', async () => {
   let capturedHeaders: Headers | undefined
 
   process.env.AGENC_PROVIDER = 'mistral'
@@ -682,6 +699,10 @@ test('strips first-party auth headers before hosted provider shim requests', asy
     'x-goog-user-project: stale-google-project',
     'x-safe-header: keep-me',
   ].join('\n')
+  process.env.OPENAI_AUTH_HEADER = 'Authorization'
+  process.env.OPENAI_AUTH_HEADER_VALUE = 'stale-openai-token'
+  process.env.OPENAI_AUTH_SCHEME = 'bearer'
+  process.env.OPENAI_API_FORMAT = 'responses'
 
   globalThis.fetch = (async (_input, init) => {
     capturedHeaders = new Headers(init?.headers)
@@ -731,10 +752,10 @@ test('strips first-party auth headers before hosted provider shim requests', asy
   expect(capturedHeaders?.get('api-key')).toBeNull()
   expect(capturedHeaders?.get('x-goog-api-key')).toBeNull()
   expect(capturedHeaders?.get('x-goog-user-project')).toBeNull()
-  expect(capturedHeaders?.get('x-safe-header')).toBe('keep-me')
+  expect(capturedHeaders?.get('x-safe-header')).toBeNull()
 })
 
-test('strips provider-specific custom headers before sending provider-compatible shim requests', async () => {
+test('does not project Anthropic custom headers into provider-compatible requests', async () => {
   let capturedHeaders: Headers | undefined
 
   process.env.AGENC_PROVIDER = 'openai'
@@ -798,6 +819,6 @@ test('strips provider-specific custom headers before sending provider-compatible
   expect(capturedHeaders?.get('x-anthropic-additional-protection')).toBeNull()
   expect(capturedHeaders?.get('x-agenc-remote-session-id')).toBeNull()
   expect(capturedHeaders?.get('x-app')).toBeNull()
-  expect(capturedHeaders?.get('x-safe-header')).toBe('keep-me')
+  expect(capturedHeaders?.get('x-safe-header')).toBeNull()
   expect(capturedHeaders?.get('authorization')).toBe('Bearer openai-test-key')
 })

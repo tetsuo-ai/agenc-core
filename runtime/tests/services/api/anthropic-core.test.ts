@@ -10,7 +10,6 @@ import {
   queryModelWithStreaming,
   queryWithModel,
   updateUsage,
-  verifyApiKey,
 } from '../../../src/services/api/anthropic.ts'
 import { asSystemPrompt } from '../../../src/utils/systemPromptType.ts'
 
@@ -54,7 +53,6 @@ const harness = vi.hoisted(() => {
 
   const state: AnyRecord = {
     createCalls: [],
-    modelsListCalls: [],
     getClientCalls: [],
     streamEvents: [],
     responseHeaders: {},
@@ -86,13 +84,6 @@ const harness = vi.hoisted(() => {
   })
 
   state.client = {
-    models: {
-      list: vi.fn((params: AnyRecord) => {
-        state.modelsListCalls.push(params)
-        if (state.createError) throw state.createError
-        return Promise.resolve({ data: [] })
-      }),
-    },
     beta: {
       messages: {
         create: vi.fn((params: AnyRecord, options?: AnyRecord) => {
@@ -132,7 +123,6 @@ const harness = vi.hoisted(() => {
     state.getClientCalls.push(options)
     return state.client
   })
-
   state.withRetry = async function* (
     getClient: () => Promise<unknown>,
     operation: (
@@ -404,7 +394,6 @@ vi.mock('../../../src/utils/tokens.js', () => ({
 
 function resetHarness(): void {
   harness.createCalls.length = 0
-  harness.modelsListCalls.length = 0
   harness.getClientCalls.length = 0
   harness.streamEvents = []
   harness.responseHeaders = {}
@@ -413,7 +402,6 @@ function resetHarness(): void {
   harness.nonStreamingResponse = undefined
   harness.getproviderClient.mockClear()
   harness.client.beta.messages.create.mockClear()
-  harness.client.models.list.mockClear()
   harness.logAPIError.mockClear()
   harness.logAPISuccessAndDuration.mockClear()
   harness.logForDebugging.mockClear()
@@ -745,31 +733,6 @@ describe('provider API core helpers', () => {
 })
 
 describe('provider API requests', () => {
-  test('verifyApiKey skips network verification for non-interactive sessions', async () => {
-    await expect(verifyApiKey('test-key', true)).resolves.toBe(true)
-    expect(harness.getproviderClient).not.toHaveBeenCalled()
-  })
-
-  test('verifyApiKey uses a non-generative models probe and returns false for invalid credentials', async () => {
-    await expect(verifyApiKey('test-key', false)).resolves.toBe(true)
-
-    expect(harness.getClientCalls[0]).toMatchObject({
-      apiKey: 'test-key',
-      maxRetries: 0,
-      model: 'small-fast-model',
-      source: 'verify_api_key',
-    })
-    expect(harness.modelsListCalls).toEqual([{ limit: 1 }])
-    expect(harness.createCalls).toHaveLength(0)
-
-    resetHarness()
-    harness.createError = new Error(
-      '{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}',
-    )
-
-    await expect(verifyApiKey('bad-key', false)).resolves.toBe(false)
-  })
-
   test('queryModelWithStreaming assembles request params, yields stream events, and mutates final usage onto the assistant message', async () => {
     harness.streamEvents = textStreamEvents('hello from stream')
     harness.responseHeaders = { 'x-litellm-model-id': 'gateway-model' }

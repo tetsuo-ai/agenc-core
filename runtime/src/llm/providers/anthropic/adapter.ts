@@ -204,16 +204,27 @@ export class AnthropicProvider implements LLMProvider {
     if (apiKeyEnvLabel === undefined) {
       throw new Error("anthropic provider registry is missing API-key metadata");
     }
-    const authHeaders = buildBearerAuthHeaders({
-      apiKey: assertNonEmptyApiKey(
-        this.name,
-        config.apiKey,
-        apiKeyEnvLabel,
-      ),
-      headerName: "x-api-key",
-      prefix: "",
-    });
-    authHeaders["x-api-key"] = authHeaders["x-api-key"].trimStart();
+    const apiKey = config.apiKey?.trim();
+    const authToken = config.authToken?.trim();
+    if (apiKey && authToken) {
+      throw new Error(
+        "anthropic provider requires exactly one prepared credential: apiKey or authToken",
+      );
+    }
+    const authHeaders = authToken
+      ? buildBearerAuthHeaders({ apiKey: authToken })
+      : buildBearerAuthHeaders({
+          apiKey: assertNonEmptyApiKey(
+            this.name,
+            apiKey,
+            `${apiKeyEnvLabel} or ANTHROPIC_AUTH_TOKEN`,
+          ),
+          headerName: "x-api-key",
+          prefix: "",
+        });
+    if (authHeaders["x-api-key"] !== undefined) {
+      authHeaders["x-api-key"] = authHeaders["x-api-key"].trimStart();
+    }
     const betaHeaders = new Set(config.betaHeaders ?? []);
     if (config.contextManagement) {
       betaHeaders.add(CONTEXT_MANAGEMENT_BETA_HEADER);

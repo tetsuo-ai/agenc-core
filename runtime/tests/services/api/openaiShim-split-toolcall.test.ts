@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createOpenAiShimClient } from '../../../src/services/api/openaiShim.ts'
+import { providerConnectionFixture } from './provider-connection-fixture.ts'
 
 // M-LLM-7: a streaming tool call was registered only when a single
 // delta carried BOTH tc.id AND tc.function.name. Providers that split them across
@@ -46,9 +47,11 @@ function sse(frames: string[]): Response {
 async function collectToolUse(frames: string[]) {
   globalThis.fetch = (async () => sse(frames)) as typeof fetch
   const client = createOpenAiShimClient({
-    selectedProvider: 'openai',
-    model: 'vllm-model',
-    providerEnvironment: PROVIDER_ENVIRONMENT,
+    connection: providerConnectionFixture({
+      provider: 'openai-compatible',
+      model: 'vllm-model',
+      environment: PROVIDER_ENVIRONMENT,
+    }),
   }) as OpenAiShimClient
   const result = await client.beta.messages
     .create({

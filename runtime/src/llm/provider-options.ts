@@ -56,6 +56,7 @@ export interface ProviderCredentialCandidates {
 
 export type ProviderCredentialReadyMode =
   | "api-key"
+  | "anthropic-bearer-token"
   | "xai-oauth"
   | "openai-oauth"
   | "gemini-access-token"
@@ -369,6 +370,17 @@ function projectProviderCredentialState(params: {
       label: "no provider credential required",
     });
   }
+  const resolvedAuthToken = nonEmpty(params.factoryOptions.authToken);
+  if (params.provider === "anthropic" && resolvedAuthToken !== undefined) {
+    const requestedAuthToken = nonEmpty(params.requested.authToken);
+    return readyCredential(
+      "anthropic-bearer-token",
+      requestedAuthToken === resolvedAuthToken ? "explicit" : "environment",
+      requestedAuthToken === resolvedAuthToken
+        ? "explicit Anthropic bearer token"
+        : "ANTHROPIC_AUTH_TOKEN",
+    );
+  }
   const resolvedApiKey = nonEmpty(params.factoryOptions.apiKey);
   if (resolvedApiKey !== undefined) {
     const requestedApiKey = nonEmpty(params.requested.apiKey);
@@ -403,12 +415,14 @@ function projectProviderCredentialState(params: {
     });
   }
   const missingLabel =
-    missingProviderCredentialEnvironmentLabel(
-      params.provider,
-      params.snapshot,
-    ) ??
-    providerCredentialEnvironmentLabel(params.provider) ??
-    `${info.name} credentials`;
+    params.provider === "anthropic"
+      ? "ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN"
+      : missingProviderCredentialEnvironmentLabel(
+          params.provider,
+          params.snapshot,
+        ) ??
+        providerCredentialEnvironmentLabel(params.provider) ??
+        `${info.name} credentials`;
   return missingCredential(`${missingLabel} missing`, missingLabel);
 }
 
@@ -430,6 +444,20 @@ function resolveProviderCredentialAuthorityCore(
       "amazon-bedrock does not accept the generic apiKey factory option; pass accessKeyId in factory options extra",
     );
   }
+  if (
+    provider !== "anthropic" &&
+    nonEmpty(requested.authToken) !== undefined
+  ) {
+    throw new Error(`${provider} does not accept the authToken factory option`);
+  }
+  if (
+    nonEmpty(requested.apiKey) !== undefined &&
+    nonEmpty(requested.authToken) !== undefined
+  ) {
+    throw new Error(
+      "anthropic credential authority requires exactly one explicit credential: apiKey or authToken",
+    );
+  }
   const snapshot = snapshotProviderEnvironment(env);
   const home = requested.credentialHome;
   const credentialEnvironment =
@@ -440,6 +468,13 @@ function resolveProviderCredentialAuthorityCore(
     credentialEnvironment?.kind === "api-key"
       ? credentialEnvironment.apiKey?.value
       : undefined;
+  const explicitApiKey = nonEmpty(requested.apiKey);
+  const explicitAuthToken = nonEmpty(requested.authToken);
+  const environmentAuthToken =
+    provider === "anthropic" && explicitApiKey === undefined
+      ? nonEmpty(snapshot.ANTHROPIC_AUTH_TOKEN)
+      : undefined;
+  const authToken = explicitAuthToken ?? environmentAuthToken;
   const grokCredential =
     provider === "grok" && home !== undefined
       ? resolveGrokProviderCredential(home, requested.apiKey, snapshot)
@@ -447,9 +482,12 @@ function resolveProviderCredentialAuthorityCore(
   let apiKey =
     provider === "grok" && home !== undefined
       ? (grokCredential?.value ?? nonEmpty(candidates.savedApiKey))
-      : (nonEmpty(requested.apiKey) ??
+      : (explicitApiKey ??
         environmentApiKey ??
         nonEmpty(candidates.savedApiKey));
+  if (authToken !== undefined) {
+    apiKey = undefined;
+  }
   const requestedBaseURL = nonEmpty(requested.baseURL);
   let baseURL =
     requestedBaseURL ??
@@ -679,6 +717,7 @@ function resolveProviderCredentialAuthorityCore(
   const factoryOptions: ProviderFactoryOptions = {
     ...(home !== undefined ? { credentialHome: home } : {}),
     ...(apiKey !== undefined ? { apiKey } : {}),
+    ...(authToken !== undefined ? { authToken } : {}),
     ...(baseURL !== undefined ? { baseURL } : {}),
     ...(requested.model !== undefined ? { model: requested.model } : {}),
     ...(requested.tools !== undefined ? { tools: [...requested.tools] } : {}),

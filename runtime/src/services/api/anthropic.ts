@@ -73,7 +73,7 @@ import { isEnvTruthy } from '../../utils/envUtils.js'
 import { errorMessage } from '../../utils/errors.js'
 import { resolveSecureStorageHome } from '../../utils/secureStorage/home.js'
 import { computeFingerprintFromMessages } from '../../utils/fingerprint.js'
-import { captureAPIRequest, logError } from '../../utils/log.js'
+import { captureAPIRequest } from '../../utils/log.js'
 import { isSessionRemoteMode } from '../../session/runtime-options.js'
 
 function credentialHome() {
@@ -185,7 +185,6 @@ import {
   isFastModeEnabled,
   isFastModeSupportedByModel,
 } from 'src/utils/fastMode.js'
-import { returnValue } from 'src/utils/generators.js'
 import { isMcpInstructionsDeltaEnabled } from 'src/utils/mcpInstructionsDelta.js'
 import { calculateUSDCost } from 'src/utils/modelCost.js'
 import {
@@ -226,7 +225,10 @@ import { peekAmbientRuntimeSession } from '../../session/current-session.js'
 import { installStreamWatchdog } from '../../llm/stream-watchdog.js'
 import { isToolFromMcpServer } from '../mcp/utils.js'
 import { withStreamingVCR, withVCR } from '../vcr.js'
-import { CLIENT_REQUEST_ID_HEADER, getproviderClient } from './client.js'
+import {
+  CLIENT_REQUEST_ID_HEADER,
+  getproviderClient,
+} from './client.js'
 import {
   API_ERROR_MESSAGE_PREFIX,
   CUSTOM_OFF_SWITCH_MESSAGE,
@@ -328,9 +330,8 @@ function getPromptCachingEnabled(model: string): boolean {
   // do not understand cache_control blocks and strict backends reject or flag
   // requests that contain them.
   //
-  // Exception: when the GitHub provider is configured in native provider API // branding-scan: allow provider API terminology
-  // mode (AGENC_GITHUB_ANTHROPIC_API=1), requests are sent in provider // branding-scan: allow provider API terminology
-  // format, so cache_control blocks are supported.
+  // GitHub provider models routed through its native provider API are the one // branding-scan: allow provider API terminology
+  // exception because that format supports cache_control blocks.
   const provider = getAPIProvider()
   const isNativeGithub = isGithubNativeproviderMode(model)
   if (provider !== 'firstParty' && !isNativeGithub) {
@@ -706,59 +707,6 @@ export function getAPIMetadata() {
       account_uuid: getOauthAccountInfo(credentialHome())?.accountUuid ?? '',
       session_id: getSessionId(),
     }),
-  }
-}
-
-export async function verifyApiKey(
-  apiKey: string,
-  isNonInteractiveSession: boolean,
-): Promise<boolean> {
-  // Skip API verification if running in print mode (isNonInteractiveSession)
-  if (isNonInteractiveSession) {
-    return true
-  }
-
-  try {
-    // Authentication is a control-plane probe, not an admitted execution.
-    // Use the non-generative models endpoint so verification cannot create an
-    // unjournaled paid model turn before a Session/run identity exists.
-    const model = getSmallFastModel()
-    return await returnValue(
-      withRetry(
-        () =>
-          getproviderClient({
-            apiKey,
-            maxRetries: 0,
-            model,
-            source: 'verify_api_key',
-          }),
-        async anthropic => {
-          await (
-            anthropic as unknown as {
-              models: { list: (params: { limit: number }) => Promise<unknown> }
-            }
-          ).models.list({ limit: 1 })
-          return true
-        },
-        { maxRetries: 0, model, thinkingConfig: { type: 'disabled' } },
-      ),
-    )
-  } catch (errorFromRetry) {
-    let error = errorFromRetry
-    if (errorFromRetry instanceof CannotRetryError) {
-      error = errorFromRetry.originalError
-    }
-    logError(error)
-    // Check for authentication error
-    if (
-      error instanceof Error &&
-      error.message.includes(
-        '{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}',
-      )
-    ) {
-      return false
-    }
-    throw error
   }
 }
 

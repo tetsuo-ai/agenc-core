@@ -41,6 +41,36 @@ function completion(label: string): Response {
 }
 
 describe("SessionProviderService", () => {
+  test("deeply snapshots nested factory options in the session binding", () => {
+    const defaultHeaders = { "x-bound": "first" };
+    const openAiCompatibility = { authHeader: "X-First-Auth" };
+    const service = new SessionProviderService({
+      initialProvider: createProvider("openai-compatible", {
+        model: "bound-model",
+        baseURL: "https://bound.example/v1",
+        extra: { defaultHeaders, openAiCompatibility },
+      }),
+    });
+
+    defaultHeaders["x-bound"] = "second";
+    openAiCompatibility.authHeader = "X-Second-Auth";
+
+    expect(service.current().factoryOptions.extra?.defaultHeaders).toEqual({
+      "x-bound": "first",
+    });
+    expect(
+      service.current().factoryOptions.extra?.openAiCompatibility,
+    ).toEqual({ authHeader: "X-First-Auth" });
+    expect(
+      Object.isFrozen(service.current().factoryOptions.extra?.defaultHeaders),
+    ).toBe(true);
+    expect(
+      Object.isFrozen(
+        service.current().factoryOptions.extra?.openAiCompatibility,
+      ),
+    ).toBe(true);
+  });
+
   test("retains the explicit credential home in every provider binding", async () => {
     const home = resolveHomeContext(
       { AGENC_HOME: "/tmp/agenc-provider-home-a" },

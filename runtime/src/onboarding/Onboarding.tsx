@@ -48,6 +48,7 @@ import { isTrustedXaiOauthInferenceBaseUrl } from "../services/xai/oauth.js";
 import { LocalAuthBackend } from "../auth/backends/local.js";
 import { readLocalByokCredential } from "../auth/native-credentials.js";
 import { resolveProviderRuntimeAuthority } from "../llm/provider-options.js";
+import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
 import {
   geminiEndpointFor,
 } from "../llm/providers/gemini/endpoint-plan.js";
@@ -55,7 +56,6 @@ import {
   readGeminiRuntimeOptions,
 } from "../llm/providers/gemini/runtime-options.js";
 import {
-  geminiCredentialHeaders,
   getGeminiAuthMode,
   resolveGeminiCredentialPlan,
   type GeminiCredentialPlan,
@@ -89,10 +89,8 @@ import type { ThemeSetting } from "../utils/theme.js";
 import { TerminalSizeContext } from "../tui/ink/components/TerminalSizeContext.js";
 import { WelcomeV2 } from "./WelcomeV2.js";
 import {
-  DEFAULT_PROVIDER_VERIFY_TIMEOUT_MS,
-  isKeyRejectedStatus,
-  providerVerificationUrl,
   verifyApiKey,
+  verifyPreparedProviderConnection,
   type VerificationStatus,
 } from "./useApiKeyVerification.js";
 import {
@@ -869,19 +867,6 @@ function localModelsUrl(provider: BuiltInProviderSlug, baseURL: string): string 
   return `${trimmed}/v1/models`;
 }
 
-function remoteProviderHeaders(
-  provider: BuiltInProviderSlug,
-  apiKey: string,
-): Readonly<Record<string, string>> {
-  if (provider === "anthropic") {
-    return {
-      "anthropic-version": "2023-06-01",
-      "x-api-key": apiKey,
-    };
-  }
-  return { Authorization: `Bearer ${apiKey}` };
-}
-
 async function probeLocalProvider(params: {
   readonly provider: BuiltInProviderSlug;
   readonly baseURL: string;
@@ -998,42 +983,6 @@ function hasLocalProviderModel(
   );
 }
 
-async function probeRemoteProvider(params: {
-  readonly provider: BuiltInProviderSlug;
-  readonly baseURL: string;
-  readonly headers: Readonly<Record<string, string>>;
-  readonly fetchImpl?: typeof fetch;
-  readonly timeoutMs?: number;
-}): Promise<{ readonly ok: boolean; readonly status?: number }> {
-  const fetchImpl = params.fetchImpl ?? globalThis.fetch?.bind(globalThis);
-  if (fetchImpl === undefined) return { ok: false };
-  const controller = new AbortController();
-  const timer = setTimeout(
-    () => controller.abort(),
-    params.timeoutMs ?? DEFAULT_PROVIDER_VERIFY_TIMEOUT_MS,
-  );
-  if (typeof (timer as { unref?: () => void }).unref === "function") {
-    (timer as { unref: () => void }).unref();
-  }
-  try {
-    const response = await fetchImpl(
-      params.provider === "gemini"
-        ? `${params.baseURL.replace(/\/+$/u, "")}/models`
-        : providerVerificationUrl(params.provider, params.baseURL),
-      {
-        method: "GET",
-        headers: params.headers,
-        signal: controller.signal,
-      },
-    );
-    return { ok: response.ok, status: response.status };
-  } catch {
-    return { ok: false };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 function geminiCredentialLabel(plan: GeminiCredentialPlan): string {
   if (plan.kind === "api-key") {
     return "GEMINI_API_KEY or GOOGLE_API_KEY";
@@ -1100,22 +1049,18 @@ export async function checkOnboardingProviderConnection(
     context.agencHome,
   );
   const environment = ingress.environment;
-  const settings = resolveProviderSettings(
+  const runtimeRequest = resolveProviderRuntimeRequest({
     provider,
-    context.config,
+    model,
+    config: context.config,
     environment,
-  );
+    credentialHome: ingress.home,
+  });
   let authority: Awaited<ReturnType<typeof resolveProviderRuntimeAuthority>>;
   try {
     authority = await resolveProviderRuntimeAuthority(
       provider,
-      {
-        model,
-        credentialHome: ingress.home,
-        ...(settings?.baseURL !== undefined
-          ? { baseURL: settings.baseURL }
-          : {}),
-      },
+      runtimeRequest.requested,
       environment,
       {
         readSavedApiKey: async (candidateProvider) =>
@@ -1300,19 +1245,16 @@ export async function checkOnboardingProviderConnection(
         baseURL,
       };
     }
-    const headers = geminiCredentialHeaders(credentialPlan);
-    if (headers === undefined) {
-      throw new Error("Gemini credential headers were not resolved");
-    }
-    const remote = await probeRemoteProvider({
+    const remote = await verifyPreparedProviderConnection({
       provider,
-      baseURL,
-      headers,
-      fetchImpl: context.fetchImpl,
+      factoryOptions: authority.factoryOptions,
+      environment,
+      ...(context.fetchImpl !== undefined
+        ? { fetchImpl: context.fetchImpl }
+        : {}),
     });
-    if (!remote.ok) {
-      const authFailed = remote.status !== undefined &&
-        isKeyRejectedStatus(provider, remote.status);
+    if (remote.status !== "valid") {
+      const authFailed = remote.status === "invalid";
       return {
         provider,
         model,
@@ -1390,6 +1332,7 @@ export async function checkOnboardingProviderConnection(
   }
 
   const apiKey = authority.factoryOptions.apiKey?.trim();
+  const authToken = authority.factoryOptions.authToken?.trim();
   if (
     authority.credential.status === "ready" &&
     authority.credential.mode === "openai-oauth"
@@ -1405,7 +1348,8 @@ export async function checkOnboardingProviderConnection(
       baseURL,
     };
   }
-  if (apiKey !== undefined && apiKey.length > 0) {
+  const preparedCredential = apiKey || authToken;
+  if (preparedCredential !== undefined && preparedCredential.length > 0) {
     if (
       provider === "grok" &&
       authority.credential.status === "ready" &&
@@ -1424,15 +1368,16 @@ export async function checkOnboardingProviderConnection(
         baseURL,
       };
     }
-    const remote = await probeRemoteProvider({
+    const remote = await verifyPreparedProviderConnection({
       provider,
-      baseURL,
-      headers: remoteProviderHeaders(provider, apiKey),
-      fetchImpl: context.fetchImpl,
+      factoryOptions: authority.factoryOptions,
+      environment,
+      ...(context.fetchImpl !== undefined
+        ? { fetchImpl: context.fetchImpl }
+        : {}),
     });
-    if (!remote.ok) {
-      const authFailed =
-        remote.status !== undefined && isKeyRejectedStatus(provider, remote.status);
+    if (remote.status !== "valid") {
+      const authFailed = remote.status === "invalid";
       return {
         provider,
         model,

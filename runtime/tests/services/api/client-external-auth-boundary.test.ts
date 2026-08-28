@@ -1,5 +1,5 @@
 import { expect, mock, test } from 'bun:test'
-import { runWithStartupProviderSelection } from '../../../src/utils/model/providers.ts'
+import { providerBindingFixture } from './provider-connection-fixture.ts'
 
 const firstPartyAuthCalls = {
   refresh: 0,
@@ -48,17 +48,16 @@ test('constructs an external provider without touching first-party auth', async 
     '../../../src/services/api/client.ts?external-auth-boundary'
   )
 
-  const client = await runWithStartupProviderSelection(
-    {
+  const client = await getproviderClient({
+    maxRetries: 0,
+    model: 'mistral-medium-latest',
+    providerBinding: providerBindingFixture({
       provider: 'mistral',
       model: 'mistral-medium-latest',
       environment,
-    },
-    () => getproviderClient({
-      maxRetries: 0,
-      model: 'mistral-medium-latest',
     }),
-  )
+    providerEnvironment: environment,
+  })
 
   expect(client).toBeDefined()
   expect(firstPartyAuthCalls).toEqual({

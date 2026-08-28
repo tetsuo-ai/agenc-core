@@ -17,6 +17,7 @@ import {
 } from "../llm/provider-options.js";
 import type { LLMProvider } from "../llm/types.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
+import { snapshotProviderRuntimeExtra } from "../llm/registry/provider-connection.js";
 
 export type { ReadSavedProviderApiKey } from "../llm/provider-options.js";
 
@@ -70,14 +71,19 @@ function cloneOptions(options: ProviderFactoryOptions): ProviderFactoryOptions {
       ? { credentialHome: options.credentialHome }
       : {}),
     ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}),
+    ...(options.authToken !== undefined
+      ? { authToken: options.authToken }
+      : {}),
     ...(options.baseURL !== undefined ? { baseURL: options.baseURL } : {}),
     ...(options.model !== undefined ? { model: options.model } : {}),
-    ...(options.tools !== undefined ? { tools: [...options.tools] } : {}),
+    ...(options.tools !== undefined
+      ? { tools: Object.freeze([...options.tools]) }
+      : {}),
     ...(options.timeoutMs !== undefined
       ? { timeoutMs: options.timeoutMs }
       : {}),
     ...(options.extra !== undefined
-      ? { extra: Object.freeze({ ...options.extra }) }
+      ? { extra: snapshotProviderRuntimeExtra(options.extra) }
       : {}),
   });
 }

@@ -39,12 +39,6 @@ async function importFreshProviderConfigModule() {
   return import(`../../../src/services/api/providerConfig.ts?ts=${Date.now()}-${Math.random()}`)
 }
 
-function providerEnvironment(
-  overrides: Readonly<Record<string, string | undefined>> = {},
-): Readonly<Record<string, string | undefined>> {
-  return Object.freeze({ ...overrides })
-}
-
 describe('ProviderCode provider config', () => {
   test('resolves providerCodeplan alias to ProviderCode transport with reasoning', async () => {
     const { resolveProviderRequest } = await importFreshProviderConfigModule()
@@ -52,7 +46,7 @@ describe('ProviderCode provider config', () => {
     const resolved = resolveProviderRequest({
       provider: 'openai',
       model: 'providerCodeplan',
-      environment: providerEnvironment(),
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
     })
     expect(resolved.transport).toBe('providerCode_responses')
     expect(resolved.resolvedModel).toBe('gpt-5.5')
@@ -66,7 +60,7 @@ describe('ProviderCode provider config', () => {
     const resolved = resolveProviderRequest({
       provider: 'openai',
       model: 'providerCodespark',
-      environment: providerEnvironment(),
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
     })
     expect(resolved.transport).toBe('providerCode_responses')
     expect(resolved.resolvedModel).toBe('gpt-5.3-providerCode-spark')
@@ -79,7 +73,6 @@ describe('ProviderCode provider config', () => {
       provider: 'openai',
       model: 'providerCodeplan',
       baseUrl: 'http://127.0.0.1:8080/v1',
-      environment: providerEnvironment(),
     })
 
     expect(resolved.transport).toBe('chat_completions')
@@ -87,35 +80,12 @@ describe('ProviderCode provider config', () => {
     expect(resolved.resolvedModel).toBe('gpt-5.5')
   })
 
-  test('resolves providerCodeplan to ProviderCode transport even when OPENAI_BASE_URL is the string "undefined"', async () => {
-    const { resolveProviderRequest } = await importFreshProviderConfigModule()
-    // On Windows, env vars can leak as the literal string "undefined" instead of
-    // the JS value undefined when not properly unset (issue #336).
-    const resolved = resolveProviderRequest({
-      provider: 'openai',
-      model: 'providerCodeplan',
-      environment: providerEnvironment({ OPENAI_BASE_URL: 'undefined' }),
-    })
-    expect(resolved.transport).toBe('providerCode_responses')
-  })
-
-  test('resolves providerCodeplan to ProviderCode transport even when OPENAI_BASE_URL is an empty string', async () => {
-    const { resolveProviderRequest } = await importFreshProviderConfigModule()
-    const resolved = resolveProviderRequest({
-      provider: 'openai',
-      model: 'providerCodeplan',
-      environment: providerEnvironment({ OPENAI_BASE_URL: '' }),
-    })
-    expect(resolved.transport).toBe('providerCode_responses')
-  })
-
-  test('prefers explicit baseUrl option over env var', async () => {
+  test('uses the explicit prepared base URL', async () => {
     const { resolveProviderRequest } = await importFreshProviderConfigModule()
     const resolved = resolveProviderRequest({
       provider: 'openai',
       model: 'providerCodeplan',
       baseUrl: 'https://chatgpt.com/backend-api/codex',
-      environment: providerEnvironment({ OPENAI_BASE_URL: 'https://example.com/v1' }),
     })
     expect(resolved.transport).toBe('providerCode_responses')
     expect(resolved.baseUrl).toBe('https://chatgpt.com/backend-api/codex')
@@ -126,7 +96,7 @@ describe('ProviderCode provider config', () => {
     const resolved = resolveProviderRequest({
       provider: 'openai',
       model: 'gpt-4o',
-      environment: providerEnvironment(),
+      baseUrl: 'https://api.openai.com/v1',
     })
     expect(resolved.transport).toBe('chat_completions')
     expect(resolved.baseUrl).toBe('https://api.openai.com/v1')
@@ -139,7 +109,7 @@ describe('ProviderCode provider config', () => {
     const resolved = resolveProviderRequest({
       provider: 'openai',
       model: 'providerCodeplan',
-      environment: providerEnvironment(),
+      baseUrl: 'https://chatgpt.com/backend-api/codex',
     })
     expect(resolved.transport).toBe('providerCode_responses')
     expect(resolved.baseUrl).toBe('https://chatgpt.com/backend-api/codex')
@@ -152,9 +122,7 @@ describe('ProviderCode provider config', () => {
     const resolved = resolveProviderRequest({
       provider: 'openai',
       model: 'providerCodeplan',
-      environment: providerEnvironment({
-        OPENAI_BASE_URL: 'http://localhost:11434/v1',
-      }),
+      baseUrl: 'http://localhost:11434/v1',
     })
     expect(resolved.transport).toBe('chat_completions')
     expect(resolved.baseUrl).toBe('http://localhost:11434/v1')

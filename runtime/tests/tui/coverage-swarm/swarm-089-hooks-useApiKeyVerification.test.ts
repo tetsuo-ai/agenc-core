@@ -3,6 +3,9 @@ import { PassThrough } from 'node:stream'
 import React from 'react'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../remoteAuthSessionContext.fixture.js'
+import { defaultConfig } from '../../../src/config/schema.js'
+
+const TEST_CONFIG = defaultConfig()
 
 const authHarness = vi.hoisted(() => {
   const state = {
@@ -29,13 +32,13 @@ const authHarness = vi.hoisted(() => {
       state.remoteAuthContexts = []
       this.getAnthropicApiKeyWithSource.mockClear()
       this.verifyApiKey.mockReset()
-      this.verifyApiKey.mockResolvedValue(true)
+      this.verifyApiKey.mockResolvedValue({ status: 'valid' })
     },
-    verifyApiKey: vi.fn(async () => true),
+    verifyApiKey: vi.fn(async () => ({ status: 'valid' })),
   }
 })
 
-vi.mock('../../../src/services/api/anthropic', () => ({
+vi.mock('../../../src/onboarding/useApiKeyVerification', () => ({
   verifyApiKey: authHarness.verifyApiKey,
 }))
 
@@ -138,7 +141,10 @@ async function renderVerificationHook(): Promise<{
   const snapshots: Snapshot[] = []
 
   function Harness(): null {
-    const result = useApiKeyVerification(TEST_REMOTE_AUTH_SESSION_CONTEXT)
+    const result = useApiKeyVerification(
+      TEST_REMOTE_AUTH_SESSION_CONTEXT,
+      TEST_CONFIG,
+    )
     latest = result
 
     React.useEffect(() => {
@@ -237,14 +243,14 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
   })
 
   test.each([
-    { expectedStatus: 'valid' as const, verifierResult: true },
-    { expectedStatus: 'invalid' as const, verifierResult: false },
+    { expectedStatus: 'valid' as const, verifierStatus: 'valid' as const },
+    { expectedStatus: 'invalid' as const, verifierStatus: 'invalid' as const },
   ])(
     'sets $expectedStatus after rechecking an existing key',
-    async ({ expectedStatus, verifierResult }) => {
+    async ({ expectedStatus, verifierStatus }) => {
       authHarness.state.key = 'sk-ant-test'
       authHarness.state.source = 'environment'
-      authHarness.verifyApiKey.mockResolvedValueOnce(verifierResult)
+      authHarness.verifyApiKey.mockResolvedValueOnce({ status: verifierStatus })
       const rendered = await renderVerificationHook()
 
       try {
@@ -268,8 +274,12 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
           TEST_REMOTE_AUTH_SESSION_CONTEXT,
         )
         expect(authHarness.verifyApiKey).toHaveBeenCalledWith(
-          'sk-ant-test',
-          false,
+          {
+            provider: 'anthropic',
+            apiKey: 'sk-ant-test',
+            config: TEST_CONFIG,
+            env: TEST_REMOTE_AUTH_SESSION_CONTEXT.environment,
+          },
         )
         expect(rendered.getLatest().error).toBeNull()
       } finally {
@@ -352,8 +362,8 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
   test('keeps the newest verifier result when rechecks resolve out of order', async () => {
     authHarness.state.key = 'sk-ant-test'
     authHarness.state.source = 'environment'
-    const stale = deferred<boolean>()
-    const latest = deferred<boolean>()
+    const stale = deferred<{ status: 'invalid' }>()
+    const latest = deferred<{ status: 'valid' }>()
     authHarness.verifyApiKey
       .mockReturnValueOnce(stale.promise)
       .mockReturnValueOnce(latest.promise)
@@ -376,14 +386,14 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
         'Timed out waiting for second verifier call',
       )
 
-      latest.resolve(true)
+      latest.resolve({ status: 'valid' })
       await latestRun
       await waitForCondition(
         () => rendered.getLatest().status === 'valid',
         'Timed out waiting for latest verifier status',
       )
 
-      stale.resolve(false)
+      stale.resolve({ status: 'invalid' })
       await staleRun
       await sleep()
 
@@ -414,7 +424,7 @@ describe('useApiKeyVerification coverage swarm row 089', () => {
         'Timed out waiting for verifier error status',
       )
 
-      authHarness.verifyApiKey.mockResolvedValueOnce(true)
+      authHarness.verifyApiKey.mockResolvedValueOnce({ status: 'valid' })
       await rendered.getLatest().reverify()
 
       await waitForCondition(

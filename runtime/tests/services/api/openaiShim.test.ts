@@ -1,9 +1,21 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 import { createOpenAiShimClient as createOpenAiShimClientImpl } from '../../../src/services/api/openaiShim.ts'
+import {
+  providerConnectionFixture,
+} from './provider-connection-fixture.ts'
 
 type FetchType = typeof globalThis.fetch
 
-type ShimOptions = Parameters<typeof createOpenAiShimClientImpl>[0]
+type ShimOptions = Omit<
+  Parameters<typeof createOpenAiShimClientImpl>[0],
+  'connection'
+> & {
+  connection?: Parameters<typeof createOpenAiShimClientImpl>[0]['connection']
+  selectedProvider?: string
+  model?: string
+  providerEnvironment?: Readonly<Record<string, string | undefined>>
+  home?: typeof TEST_HOME
+}
 
 const TEST_HOME = Object.freeze({
   path: '/tmp/agenc-openai-shim-test-home',
@@ -19,26 +31,35 @@ const TEST_HOME = Object.freeze({
 })
 
 function createOpenAiShimClient(options: ShimOptions): unknown {
+  if (options.connection !== undefined) {
+    return createOpenAiShimClientImpl({
+      ...options,
+      connection: options.connection,
+    })
+  }
   const providerEnvironment = Object.freeze({
     ...(options.providerEnvironment ?? process.env),
+    OPENAI_COMPATIBLE_API_KEY: undefined,
   })
   const selectedProvider =
     options.selectedProvider ??
-    (providerEnvironment.AGENC_PROVIDER === 'github'
-      ? 'github'
-      : providerEnvironment.AGENC_PROVIDER === 'gemini'
-        ? 'gemini'
-        : 'openai')
+    providerEnvironment.AGENC_PROVIDER ??
+    'openai-compatible'
   const model =
     options.model ??
     providerEnvironment.AGENC_MODEL ??
     'gpt-4o'
   return createOpenAiShimClientImpl({
-    ...options,
-    selectedProvider,
-    model,
-    providerEnvironment,
-    home: options.home ?? TEST_HOME,
+    defaultHeaders: options.defaultHeaders,
+    maxRetries: options.maxRetries,
+    timeout: options.timeout,
+    reasoningEffort: options.reasoningEffort,
+    connection: providerConnectionFixture({
+      provider: selectedProvider,
+      model,
+      environment: providerEnvironment,
+      ...(options.home !== undefined ? { home: options.home } : {}),
+    }),
   })
 }
 
@@ -103,6 +124,28 @@ function makeSseResponse(lines: string[]): Response {
       },
     },
   )
+}
+
+function makeCompletedResponsesResponse(model: string): Response {
+  return makeSseResponse([
+    'event: response.completed\n',
+    `data: ${JSON.stringify({
+      type: 'response.completed',
+      response: {
+        id: 'resp_bound',
+        status: 'completed',
+        model,
+        output: [
+          {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'ok' }],
+          },
+        ],
+        usage: { input_tokens: 2, output_tokens: 1 },
+      },
+    })}\n\n`,
+  ])
 }
 
 function makeStreamChunks(chunks: unknown[]): string[] {
@@ -254,7 +297,10 @@ test('uses provider-compatible responses endpoint when OPENAI_API_FORMAT=respons
     )
   }) as FetchType
 
-  const client = createOpenAiShimClient({ defaultHeaders: {} }) as OpenAiShimClient
+  const client = createOpenAiShimClient({
+    defaultHeaders: {},
+    model: 'gpt-5.4',
+  }) as OpenAiShimClient
 
   await client.beta.messages.create({
     model: 'gpt-5.4',
@@ -490,7 +536,17 @@ test('ignores custom auth header value when no custom header is configured', asy
     )
   }) as FetchType
 
-  const client = createOpenAiShimClient({ defaultHeaders: {} }) as OpenAiShimClient
+  const client = createOpenAiShimClient({
+    defaultHeaders: {},
+    connection: providerConnectionFixture({
+      provider: 'ollama',
+      model: 'gpt-4o',
+      factoryOptions: { baseURL: 'http://example.test/v1' },
+      environment: {
+        OPENAI_AUTH_HEADER_VALUE: 'gateway-header-value',
+      },
+    }),
+  }) as OpenAiShimClient
 
   await client.beta.messages.create({
     model: 'gpt-4o',
@@ -971,7 +1027,19 @@ test('does not infer Gemini mode from OPENAI_BASE_URL path substrings', async ()
     )
   }) as FetchType
 
-  const client = createOpenAiShimClient({}) as OpenAiShimClient
+  const client = createOpenAiShimClient({
+    connection: providerConnectionFixture({
+      provider: 'ollama',
+      model: 'fake-model',
+      factoryOptions: {
+        baseURL:
+          'https://evil.example/generativelanguage.googleapis.com/v1beta',
+      },
+      environment: {
+        GEMINI_API_KEY: 'gemini-secret',
+      },
+    }),
+  }) as OpenAiShimClient
 
   await client.beta.messages.create({
     model: 'fake-model',
@@ -1196,13 +1264,17 @@ test('fails closed for Gemini without selecting shim credentials or endpoints', 
 
   expect(() =>
     createOpenAiShimClientImpl({
-      selectedProvider: 'gemini',
-      model: 'gemini-2.0-flash',
-      providerEnvironment,
-      home: TEST_HOME,
+      connection: {
+        provider: 'gemini',
+        transport: 'native',
+        model: 'gemini-2.0-flash',
+        baseURL: 'https://generativelanguage.googleapis.com',
+        extra: Object.freeze({}),
+        environment: providerEnvironment,
+      },
     }),
   ).toThrow(
-    'Gemini requests require the canonical native Gemini provider',
+    'gemini cannot use the OpenAI-compatible shim with native transport',
   )
   expect(authorityReads).toEqual([])
 })
@@ -4310,4 +4382,164 @@ test('Z.AI: thinking mode enabled when requested', async () => {
   expect((requestBody?.thinking as Record<string, string>)?.type).toBe('enabled')
   expect(requestBody?.max_completion_tokens).toBeUndefined()
   expect(requestBody?.max_tokens).toBe(1024)
+})
+
+test('uses the fetch implementation captured in the prepared binding', async () => {
+  globalThis.fetch = (async () => {
+    throw new Error('ambient fetch must not be used')
+  }) as FetchType
+  let preparedFetchCalls = 0
+  const client = createOpenAiShimClient({
+    connection: providerConnectionFixture({
+      provider: 'openai-compatible',
+      model: 'bound-model',
+      factoryOptions: {
+        apiKey: 'bound-key',
+        baseURL: 'https://bound.example/v1',
+        extra: {
+          fetchImpl: (async () => {
+            preparedFetchCalls += 1
+            return new Response(
+              JSON.stringify({
+                id: 'chatcmpl-bound',
+                choices: [
+                  {
+                    message: { role: 'assistant', content: 'ok' },
+                    finish_reason: 'stop',
+                  },
+                ],
+              }),
+              { headers: { 'Content-Type': 'application/json' } },
+            )
+          }) as FetchType,
+        },
+      },
+    }),
+  }) as OpenAiShimClient
+
+  await client.beta.messages.create({
+    model: 'stale-model',
+    messages: [{ role: 'user', content: 'hello' }],
+    max_tokens: 64,
+    stream: false,
+  })
+
+  expect(preparedFetchCalls).toBe(1)
+})
+
+test('enforces the timeout captured in the prepared binding', async () => {
+  const startedAt = Date.now()
+  const client = createOpenAiShimClient({
+    connection: providerConnectionFixture({
+      provider: 'openai-compatible',
+      model: 'bound-model',
+      factoryOptions: {
+        apiKey: 'bound-key',
+        baseURL: 'https://bound.example/v1',
+        timeoutMs: 20,
+        extra: {
+          fetchImpl: (async (_input, init) => {
+            await new Promise((_resolve, reject) => {
+              init?.signal?.addEventListener(
+                'abort',
+                () => reject(init.signal?.reason),
+                { once: true },
+              )
+            })
+            return new Response('{}')
+          }) as FetchType,
+        },
+      },
+    }),
+  }) as OpenAiShimClient
+
+  await expect(
+    client.beta.messages.create({
+      model: 'stale-model',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 64,
+      stream: false,
+    }),
+  ).rejects.toBeDefined()
+  expect(Date.now() - startedAt).toBeLessThan(1_000)
+})
+
+test('uses prepared fetch authority for GitHub Copilot Responses requests', async () => {
+  globalThis.fetch = (async () => {
+    throw new Error('ambient fetch must not be used')
+  }) as FetchType
+  let capturedUrl = ''
+  const client = createOpenAiShimClient({
+    connection: providerConnectionFixture({
+      provider: 'github',
+      model: 'gpt-5.3-codex',
+      environment: { GITHUB_TOKEN: 'github-copilot-token' },
+      factoryOptions: {
+        extra: {
+          fetchImpl: (async input => {
+            capturedUrl = String(input)
+            return makeCompletedResponsesResponse('gpt-5.3-codex')
+          }) as FetchType,
+        },
+      },
+    }),
+  }) as OpenAiShimClient
+
+  await client.beta.messages.create({
+    model: 'stale-model',
+    messages: [{ role: 'user', content: 'hello' }],
+    max_tokens: 64,
+    stream: false,
+  })
+
+  expect(capturedUrl).toBe('https://api.githubcopilot.com/responses')
+})
+
+test('enforces prepared fetch and timeout for OpenAI subscription Responses requests', async () => {
+  globalThis.fetch = (async () => {
+    throw new Error('ambient fetch must not be used')
+  }) as FetchType
+  const startedAt = Date.now()
+  let preparedFetchCalls = 0
+  const client = createOpenAiShimClient({
+    connection: providerConnectionFixture({
+      provider: 'openai',
+      model: 'gpt-5.4',
+      factoryOptions: {
+        apiKey: 'prepared-subscription-token',
+        baseURL: 'https://chatgpt.com/backend-api/codex',
+        timeoutMs: 20,
+        extra: {
+          useResponsesApi: true,
+          fetchImpl: (async (_input, init) => {
+            preparedFetchCalls += 1
+            await new Promise((_resolve, reject) => {
+              if (init?.signal?.aborted) {
+                reject(init.signal.reason)
+                return
+              }
+              init?.signal?.addEventListener(
+                'abort',
+                () => reject(init.signal?.reason),
+                { once: true },
+              )
+            })
+            return makeCompletedResponsesResponse('gpt-5.4')
+          }) as FetchType,
+        },
+      },
+    }),
+  }) as OpenAiShimClient
+
+  await expect(
+    client.beta.messages.create({
+      model: 'stale-model',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 64,
+      stream: false,
+    }),
+  ).rejects.toBeDefined()
+
+  expect(preparedFetchCalls).toBe(1)
+  expect(Date.now() - startedAt).toBeLessThan(1_000)
 })

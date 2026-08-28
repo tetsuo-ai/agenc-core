@@ -13,6 +13,7 @@ import {
 } from "../llm/registry/provider-info.js";
 import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 import { saveXaiOauthCredentials } from "../utils/xaiOauthCredentials.js";
+import { getProxyFetchOptions } from "../utils/proxy.js";
 import { MAX_ONBOARDING_INPUT_LENGTH } from "./inputPaste.js";
 import { hashPastedText, retrievePastedText } from "./pasteStore.js";
 
@@ -832,6 +833,72 @@ describe("first-run onboarding wizard", () => {
         ? "a Gemini API key, GEMINI_ACCESS_TOKEN, or Google ADC credentials"
         : providerCredentialEnvironmentLabel(provider),
     });
+  });
+
+  test("accepts the prepared Anthropic bearer-token path", async () => {
+    let capturedHeaders: Headers | undefined;
+    const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+      async (_input, init) => {
+        capturedHeaders = new Headers(init?.headers);
+        return new Response(JSON.stringify({ data: [] }), { status: 200 });
+      },
+    );
+
+    await expect(
+      checkOnboardingProviderConnection(
+        {
+          config: defaultConfig(),
+          env: { ANTHROPIC_AUTH_TOKEN: "prepared-anthropic-token" },
+          fetchImpl,
+        },
+        "anthropic",
+        "claude-opus-4-7",
+      ),
+    ).resolves.toMatchObject({ ok: true, status: "ready" });
+    expect(capturedHeaders?.get("authorization")).toBe(
+      "Bearer prepared-anthropic-token",
+    );
+    expect(capturedHeaders?.has("x-api-key")).toBe(false);
+  });
+
+  test("uses the canonical Anthropic gateway and proxy transport for readiness", async () => {
+    const environment = {
+      ANTHROPIC_API_KEY: "prepared-anthropic-key",
+      ANTHROPIC_BASE_URL: "https://anthropic-gateway.example/v1",
+      ANTHROPIC_CUSTOM_HEADERS: "X-Gateway: prepared-header",
+      HTTPS_PROXY: "http://proxy.example:8080",
+    };
+    let capturedUrl = "";
+    let capturedInit: RequestInit | undefined;
+
+    await expect(
+      checkOnboardingProviderConnection(
+        {
+          config: defaultConfig(),
+          env: environment,
+          fetchImpl: async (input, init) => {
+            capturedUrl = String(input);
+            capturedInit = init;
+            return new Response(JSON.stringify({ data: [] }), { status: 200 });
+          },
+        },
+        "anthropic",
+        "claude-opus-4-7",
+      ),
+    ).resolves.toMatchObject({ ok: true, status: "ready" });
+
+    expect(capturedUrl).toBe(
+      "https://anthropic-gateway.example/v1/models",
+    );
+    const headers = new Headers(capturedInit?.headers);
+    expect(headers.get("x-gateway")).toBe("prepared-header");
+    expect(headers.get("x-api-key")).toBe("prepared-anthropic-key");
+    expect(capturedInit).toMatchObject(
+      getProxyFetchOptions({
+        forAnthropicAPI: true,
+        environment,
+      }) as RequestInit,
+    );
   });
 
   test.each([

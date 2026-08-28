@@ -1,10 +1,8 @@
 import {
   getAPIProvider,
-  getSelectedProviderEnvironment,
 } from 'src/utils/model/providers.js'
 import type { PermissionResult } from 'src/utils/permissions/PermissionResult.js'
 import { z } from 'zod/v4'
-import { resolveProviderRequest } from '../../services/api/providerConfig.js'
 import { buildTool, type ToolDef } from '../Tool.js'
 import { lazySchema } from '../../utils/lazySchema.js'
 import { getMainLoopModel } from '../../utils/model/model.js'
@@ -102,21 +100,9 @@ function formatProviderOutput(po: ProviderOutput, query: string): Output {
 }
 
 // ---------------------------------------------------------------------------
-// Legacy provider detection and response parsing. Direct model-backed search
-// execution is disabled below until it can use the session admission boundary.
+// Legacy response parsing retained for transcript compatibility. Direct
+// model-backed search is disabled until it uses the session admission boundary.
 // ---------------------------------------------------------------------------
-
-function isProviderCodeResponsesWebSearchEnabled(): boolean {
-  if (getAPIProvider() !== 'openai') {
-    return false
-  }
-
-  const request = resolveProviderRequest({
-    model: getMainLoopModel(),
-    baseUrl: getSelectedProviderEnvironment().OPENAI_BASE_URL,
-  })
-  return request.transport === 'providerCode_responses'
-}
 
 function pushProviderCodeTextResult(results: (SearchResult | string)[], value: unknown): void {
   if (typeof value !== 'string') return
@@ -296,7 +282,7 @@ function isTransientError(err: unknown): boolean {
 /**
  * Returns true when we should use the adapter-based provider system.
  *
- * In auto mode: native/first-party/ProviderCode paths take precedence.
+ * In auto mode, the admitted native path takes precedence.
  *   → Only falls back to adapter if no native path is available.
  * In explicit adapter modes (tavily, ddg, custom, etc.): always true.
  * In native mode: never true.
@@ -306,8 +292,7 @@ function shouldUseAdapterProvider(): boolean {
   if (mode === 'native') return false
   if (mode !== 'auto') return true // explicit adapter mode (tavily, ddg, custom, etc.)
 
-  // Auto mode: native/first-party/ProviderCode take precedence over adapter
-  if (isProviderCodeResponsesWebSearchEnabled()) return false
+  // Auto mode: the admitted native path takes precedence over adapters.
   // Widened to string: 'vertex'/'foundry' are not in the APIProvider union
   // (latent bug — see notedBugs), so these comparisons are always false today.
   const provider: string = getAPIProvider()
@@ -326,7 +311,6 @@ function shouldUseAdapterProvider(): boolean {
  * path silently produces "Did 0 searches".
  */
 function hasNativeSearchFallback(): boolean {
-  if (isProviderCodeResponsesWebSearchEnabled()) return true
   // Widened to string: 'vertex'/'foundry' are not in the APIProvider union
   // (latent bug — see notedBugs), so those comparisons are always false today.
   const provider: string = getAPIProvider()
@@ -363,7 +347,6 @@ export const WebSearchTool = buildTool({
 
     // Auto/native mode: check all paths
     if (getAvailableProviders().length > 0) return true
-    if (isProviderCodeResponsesWebSearchEnabled()) return true
 
     // Widened to string: 'vertex'/'foundry' are not in the APIProvider union
     // (latent bug — see notedBugs), so those branches are dead today.
@@ -432,7 +415,7 @@ export const WebSearchTool = buildTool({
   },
   async prompt() {
     // Strip "US only" when using non-native backends
-    if (shouldUseAdapterProvider() || isProviderCodeResponsesWebSearchEnabled()) {
+    if (shouldUseAdapterProvider()) {
       return getWebSearchPrompt().replace(/\n\s*-\s*Web search is only available in the US/, '')
     }
     return getWebSearchPrompt()
@@ -506,11 +489,6 @@ export const WebSearchTool = buildTool({
         }
         console.error(`[web-search] Adapter failed, falling through to native: ${err}`)
       }
-    }
-
-    // --- ProviderCode / OpenAi Responses path ---
-    if (isProviderCodeResponsesWebSearchEnabled()) {
-      throw new AdmissionDeniedError('legacy_web_search_model_path_disabled')
     }
 
     // --- Native provider path (firstParty / vertex / foundry) ---

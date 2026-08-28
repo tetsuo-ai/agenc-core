@@ -1364,6 +1364,20 @@ describe("createProvider", () => {
     expect(isFactoryProvider(provider)).toBe(true);
   });
 
+  test("preserves Anthropic bearer-token authentication in factory state", () => {
+    const provider = createProvider("anthropic", {
+      authToken: "anthropic-bearer-token",
+      model: "claude-sonnet-4.5",
+    });
+
+    expect(provider).toBeInstanceOf(AnthropicProvider);
+    expect(readProviderFactoryOptions(provider)).toMatchObject({
+      authToken: "anthropic-bearer-token",
+      model: "claude-sonnet-4.5",
+    });
+    expect(readProviderFactoryOptions(provider).apiKey).toBeUndefined();
+  });
+
   test("routes 'amazon-bedrock' to BedrockProvider with AWS SigV4 config", () => {
     const provider = withEnv(
       {

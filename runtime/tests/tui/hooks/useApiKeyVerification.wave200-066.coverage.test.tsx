@@ -3,6 +3,9 @@ import { PassThrough } from 'node:stream'
 import React from 'react'
 import { beforeEach, describe, expect, test, vi } from 'vitest'
 import { TEST_REMOTE_AUTH_SESSION_CONTEXT } from '../remoteAuthSessionContext.fixture.js'
+import { defaultConfig } from '../../config/schema.js'
+
+const TEST_CONFIG = defaultConfig()
 
 const authHarness = vi.hoisted(() => {
   const state = {
@@ -30,11 +33,11 @@ const authHarness = vi.hoisted(() => {
       this.getAnthropicApiKeyWithSource.mockClear()
       this.verifyApiKey.mockClear()
     },
-    verifyApiKey: vi.fn(async () => true),
+    verifyApiKey: vi.fn(async () => ({ status: 'valid' })),
   }
 })
 
-vi.mock('../../services/api/anthropic', () => ({
+vi.mock('../../onboarding/useApiKeyVerification', () => ({
   verifyApiKey: authHarness.verifyApiKey,
 }))
 
@@ -117,7 +120,10 @@ describe('useApiKeyVerification api key helper coverage', () => {
     let latest: HookResult | null = null
 
     function Harness(): null {
-      const result = useApiKeyVerification(TEST_REMOTE_AUTH_SESSION_CONTEXT)
+      const result = useApiKeyVerification(
+        TEST_REMOTE_AUTH_SESSION_CONTEXT,
+        TEST_CONFIG,
+      )
       latest = result
 
       React.useEffect(() => {
@@ -195,7 +201,10 @@ describe('useApiKeyVerification api key helper coverage', () => {
     let latest: HookResult | null = null
 
     function Harness(): null {
-      const result = useApiKeyVerification(TEST_REMOTE_AUTH_SESSION_CONTEXT)
+      const result = useApiKeyVerification(
+        TEST_REMOTE_AUTH_SESSION_CONTEXT,
+        TEST_CONFIG,
+      )
       latest = result
 
       React.useEffect(() => {

@@ -83,6 +83,8 @@ export interface ProviderFactoryOptions {
   /** Home-bound native credential authority captured at provider ingress. */
   readonly credentialHome?: HomeContext;
   readonly apiKey?: string;
+  /** Prepared bearer-token credential. Currently supported by Anthropic. */
+  readonly authToken?: string;
   readonly baseURL?: string;
   readonly model?: string;
   readonly tools?: ReadonlyArray<LLMTool>;
@@ -122,6 +124,12 @@ export type ProviderRuntimeExtra = Partial<
   readonly chatgptBackend?: boolean;
   readonly authMode?: "api_key" | "oauth";
   readonly oauth?: Record<string, unknown>;
+  readonly openAiCompatibility?: {
+    readonly authHeader?: string;
+    readonly authHeaderValue?: string;
+    readonly authScheme?: "bearer" | "raw";
+    readonly azureApiVersion?: string;
+  };
   readonly gemini?: GeminiRuntimeOptions;
   readonly grokAcp?: {
     readonly binaryPath?: string;
@@ -177,6 +185,7 @@ const PROVIDER_RUNTIME_EXTRA_KEYS = [
   "chatgptBackend",
   "authMode",
   "oauth",
+  "openAiCompatibility",
   "gemini",
   "grokAcp",
   "defaultHeaders",
@@ -646,7 +655,7 @@ function hasConcreteProviderCredentialInput(
     ? ["accessKeyId", "secretAccessKey", "sessionToken"].some(
         (field) => firstNonEmpty(readString(opts.extra, field)) !== undefined,
       )
-    : firstNonEmpty(opts.apiKey) !== undefined;
+    : firstNonEmpty(opts.apiKey, opts.authToken) !== undefined;
 }
 
 function stripConcreteProviderAuthExtra(
@@ -675,6 +684,7 @@ function stripConcreteProviderAuthOptions(
       ? { credentialHome: opts.credentialHome }
       : {}),
     ...(opts.apiKey !== undefined ? { apiKey: opts.apiKey } : {}),
+    ...(opts.authToken !== undefined ? { authToken: opts.authToken } : {}),
     ...(opts.baseURL !== undefined ? { baseURL: opts.baseURL } : {}),
     ...(opts.model !== undefined ? { model: opts.model } : {}),
     ...(opts.tools ? { tools: [...opts.tools] } : {}),
@@ -885,6 +895,9 @@ function cloneProviderFactoryOptions(
       ? { credentialHome: options.credentialHome }
       : {}),
     ...(options.apiKey !== undefined ? { apiKey: options.apiKey } : {}),
+    ...(options.authToken !== undefined
+      ? { authToken: options.authToken }
+      : {}),
     ...(options.baseURL !== undefined ? { baseURL: options.baseURL } : {}),
     ...(options.model !== undefined ? { model: options.model } : {}),
     ...(options.tools ? { tools: [...options.tools] } : {}),
@@ -1031,6 +1044,7 @@ function readRuntimeExtra(
   const providerFallback = readProviderFallback(extra);
   const gemini = readGeminiRuntimeOptions(extra);
   const grokAcp = readGrokAcpRuntimeExtra(extra?.grokAcp);
+  const openAiCompatibility = readRecord(extra, "openAiCompatibility");
   return {
     ...(readString(extra, "systemPrompt") !== undefined
       ? { systemPrompt: readString(extra, "systemPrompt") }
@@ -1078,6 +1092,7 @@ function readRuntimeExtra(
     ...(readRecord(extra, "oauth")
       ? { oauth: readRecord(extra, "oauth") }
       : {}),
+    ...(openAiCompatibility !== undefined ? { openAiCompatibility } : {}),
     ...(gemini !== undefined ? { gemini } : {}),
     ...(grokAcp !== undefined ? { grokAcp } : {}),
     ...(readStringRecord(extra, "defaultHeaders")
@@ -1334,6 +1349,9 @@ function buildOpenAICompatibleProvider(
   const ProviderCtor = input.providerCtor ?? OpenAIProvider;
   const providerExtra = readProviderRuntimeExtra({
     ...(cfg as unknown as Record<string, unknown>),
+    ...(extra.openAiCompatibility !== undefined
+      ? { openAiCompatibility: extra.openAiCompatibility }
+      : {}),
     ...(extra.managedCredential === true ? { managedCredential: true } : {}),
   });
   return markFactoryProvider(new ProviderCtor(cfg), {
@@ -1419,6 +1437,11 @@ export function createProvider(
   if (name === "amazon-bedrock" && firstNonEmpty(opts.apiKey) !== undefined) {
     throw new Error(
       "amazon-bedrock does not accept the generic apiKey factory option; pass accessKeyId in factory options extra",
+    );
+  }
+  if (name !== "anthropic" && firstNonEmpty(opts.authToken) !== undefined) {
+    throw new Error(
+      `${name} provider does not accept the authToken factory option`,
     );
   }
   const authVendedProvider = createAuthVendedProviderIfNeeded(name, opts);
@@ -1715,7 +1738,18 @@ export function createProvider(
       });
     }
     case "anthropic": {
-      const apiKey = requireFactoryApiKey("anthropic", opts);
+      const apiKey = resolveFactoryApiKey(opts);
+      const authToken = firstNonEmpty(opts.authToken);
+      if (apiKey !== undefined && authToken !== undefined) {
+        throw new Error(
+          "anthropic provider requires exactly one prepared credential: apiKey or authToken",
+        );
+      }
+      if (apiKey === undefined && authToken === undefined) {
+        throw new Error(
+          "anthropic provider requires apiKey or authToken in factory options",
+        );
+      }
       const model = requireModel(
         "anthropic",
         opts.model,
@@ -1723,7 +1757,8 @@ export function createProvider(
       );
       const cfg: AnthropicProviderConfig = {
         ...buildCommonConfig(extra),
-        apiKey,
+        ...(apiKey !== undefined ? { apiKey } : {}),
+        ...(authToken !== undefined ? { authToken } : {}),
         model,
         tools: opts.tools ? [...opts.tools] : undefined,
         baseURL:
@@ -1747,7 +1782,8 @@ export function createProvider(
           ...(opts.credentialHome !== undefined
             ? { credentialHome: opts.credentialHome }
             : {}),
-          apiKey,
+          ...(apiKey !== undefined ? { apiKey } : {}),
+          ...(authToken !== undefined ? { authToken } : {}),
           ...(cfg.baseURL !== undefined ? { baseURL: cfg.baseURL } : {}),
           model,
           ...(cfg.timeoutMs !== undefined ? { timeoutMs: cfg.timeoutMs } : {}),

@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 
-import { resolveProviderSettings } from "../config/resolve-provider.js";
 import type { AgenCConfig } from "../config/schema.js";
+import type { ProviderFactoryOptions } from "../llm/provider.js";
 import { resolveProviderCredentialAuthority } from "../llm/provider-options.js";
+import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
 import { geminiEndpointFor } from "../llm/providers/gemini/endpoint-plan.js";
 import { readGeminiRuntimeOptions } from "../llm/providers/gemini/runtime-options.js";
 import {
@@ -15,6 +16,7 @@ import {
   materializeGeminiCredentialPlan,
 } from "../utils/geminiAuth.js";
 import type { OnboardingEnv } from "./projectOnboardingState.js";
+import { getProxyFetchOptions } from "../utils/proxy.js";
 
 export type VerificationStatus =
   | "loading"
@@ -41,6 +43,14 @@ export interface UseApiKeyVerificationOptions extends VerifyApiKeyParams {
   readonly enabled?: boolean;
 }
 
+export interface VerifyPreparedProviderConnectionParams {
+  readonly provider: BuiltInProviderSlug;
+  readonly factoryOptions: ProviderFactoryOptions;
+  readonly environment?: OnboardingEnv;
+  readonly fetchImpl?: typeof fetch;
+  readonly timeoutMs?: number;
+}
+
 type GenericApiKeyVerificationProvider = Exclude<
   BuiltInProviderSlug,
   "gemini"
@@ -62,6 +72,18 @@ const PROVIDERS_WITHOUT_API_KEY_VERIFICATION = new Set<BuiltInProviderSlug>([
  * perfectly good keys.
  */
 export const DEFAULT_PROVIDER_VERIFY_TIMEOUT_MS = 5_000;
+
+function preparedDefaultHeaders(
+  value: unknown,
+): Readonly<Record<string, string>> {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return {};
+  }
+  const entries = Object.entries(value);
+  return entries.some(([, entry]) => typeof entry !== "string")
+    ? {}
+    : (Object.fromEntries(entries) as Readonly<Record<string, string>>);
+}
 
 /**
  * Providers that reject bad API keys with HTTP 400 instead of 401/403 on
@@ -115,25 +137,22 @@ export async function verifyApiKey(
   if (PROVIDERS_WITHOUT_API_KEY_VERIFICATION.has(provider)) {
     return { status: "valid" };
   }
-  const fetchImpl = params.fetchImpl ?? globalThis.fetch?.bind(globalThis);
-  if (fetchImpl === undefined) {
-    return { status: "error", error: "No fetch implementation is available." };
-  }
-  const settings = resolveProviderSettings(
+  const environment = params.env ?? {};
+  const runtimeRequest = resolveProviderRuntimeRequest({
     provider,
-    params.config,
-    params.env,
-  );
+    model: providerInfo.defaultModel,
+    config: params.config,
+    environment,
+  });
   let authority: ReturnType<typeof resolveProviderCredentialAuthority>;
   try {
     authority = resolveProviderCredentialAuthority(
       provider,
       {
+        ...runtimeRequest.requested,
         apiKey,
-        baseURL: settings?.baseURL,
-        model: settings?.defaultModel ?? providerInfo.defaultModel,
       },
-      params.env ?? process.env,
+      environment,
     );
   } catch (error) {
     return {
@@ -143,7 +162,34 @@ export async function verifyApiKey(
         : "Provider verification configuration is invalid.",
     };
   }
-  const factoryOptions = authority.factoryOptions;
+  if (provider === "gemini") {
+    const runtime = readGeminiRuntimeOptions(authority.factoryOptions.extra);
+    if (runtime?.credentialPlan.kind !== "api-key") {
+      return {
+        status: "error",
+        error:
+          "Gemini API-key verification is blocked by the configured non-API-key auth mode.",
+      };
+    }
+  }
+  return verifyPreparedProviderConnection({
+    provider,
+    factoryOptions: authority.factoryOptions,
+    environment,
+    ...(params.fetchImpl !== undefined ? { fetchImpl: params.fetchImpl } : {}),
+    ...(params.timeoutMs !== undefined ? { timeoutMs: params.timeoutMs } : {}),
+  });
+}
+
+export async function verifyPreparedProviderConnection(
+  params: VerifyPreparedProviderConnectionParams,
+): Promise<ApiKeyVerificationResult> {
+  const fetchImpl = params.fetchImpl ?? globalThis.fetch?.bind(globalThis);
+  if (fetchImpl === undefined) {
+    return { status: "error", error: "No fetch implementation is available." };
+  }
+  const { provider, factoryOptions } = params;
+  const environment = params.environment ?? {};
   let verificationURL: string;
   let headers: Readonly<Record<string, string>>;
   if (provider === "gemini") {
@@ -152,13 +198,6 @@ export async function verifyApiKey(
       return {
         status: "error",
         error: "Gemini verification requires canonical runtime options.",
-      };
-    }
-    if (runtime.credentialPlan.kind !== "api-key") {
-      return {
-        status: "error",
-        error:
-          "Gemini API-key verification is blocked by the configured non-API-key auth mode.",
       };
     }
     const credential = await materializeGeminiCredentialPlan(
@@ -176,16 +215,34 @@ export async function verifyApiKey(
     verificationURL = `${nativeBaseURL}/models`;
     headers = canonicalHeaders;
   } else {
+    const apiKey = factoryOptions.apiKey?.trim();
+    const authToken = factoryOptions.authToken?.trim();
+    if (apiKey === undefined && authToken === undefined) {
+      return {
+        status: "missing",
+        error: "Provider verification requires a prepared credential.",
+      };
+    }
     verificationURL = providerVerificationUrl(
       provider,
       factoryOptions.baseURL ?? BUILT_IN_PROVIDER_BASE_URLS[provider],
     );
-    headers = apiKeyHeaders(provider, factoryOptions.apiKey ?? apiKey);
+    headers = {
+      ...preparedDefaultHeaders(factoryOptions.extra?.defaultHeaders),
+      ...(provider === "anthropic" && authToken !== undefined
+        ? {
+            "anthropic-version": "2023-06-01",
+            Authorization: `Bearer ${authToken}`,
+          }
+        : apiKeyHeaders(provider, apiKey ?? "")),
+    };
   }
   const controller = new AbortController();
   const timer = setTimeout(
     () => controller.abort(),
-    params.timeoutMs ?? DEFAULT_PROVIDER_VERIFY_TIMEOUT_MS,
+    params.timeoutMs ??
+      factoryOptions.timeoutMs ??
+      DEFAULT_PROVIDER_VERIFY_TIMEOUT_MS,
   );
   if (typeof (timer as { unref?: () => void }).unref === "function") {
     (timer as { unref: () => void }).unref();
@@ -195,6 +252,10 @@ export async function verifyApiKey(
       method: "GET",
       headers,
       signal: controller.signal,
+      ...(getProxyFetchOptions({
+        environment,
+        forAnthropicAPI: provider === "anthropic",
+      }) as RequestInit),
     });
     if (response.ok) return { status: "valid" };
     if (isKeyRejectedStatus(provider, response.status)) {

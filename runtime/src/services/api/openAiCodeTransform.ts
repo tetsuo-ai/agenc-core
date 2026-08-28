@@ -526,6 +526,7 @@ export async function performProviderCodeRequest(options: {
   environment: ProviderEnvironment
   params: ShimCreateParams
   defaultHeaders: Record<string, string>
+  fetchImpl?: typeof fetch
   signal?: AbortSignal
 }): Promise<Response> {
   const compressedMessages = compressToolHistory(
@@ -616,7 +617,12 @@ export async function performProviderCodeRequest(options: {
       body: stableStringify(body),
       signal: options.signal,
     },
-    { environment: options.environment },
+    {
+      environment: options.environment,
+      ...(options.fetchImpl !== undefined
+        ? { fetchImpl: options.fetchImpl }
+        : {}),
+    },
   )
 
   if (!response.ok) {

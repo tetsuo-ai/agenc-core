@@ -1,7 +1,8 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { hasRemoteAuthSessionSync } from '../../auth/session-state.js'
-import { verifyApiKey } from '../../services/api/anthropic.js' // branding-scan: allow upstream mirror import path pending purge
+import { verifyApiKey as verifyProviderApiKey } from '../../onboarding/useApiKeyVerification.js'
+import type { AgenCConfig } from '../../config/schema.js'
 import {
   getAnthropicApiKeyWithSourceForContext,
   isAnthropicAuthEnabledForContext,
@@ -57,6 +58,7 @@ function getInitialVerificationStatus(
 
 export function useApiKeyVerification(
   context: ProviderAuthReadContext,
+  config: AgenCConfig,
 ): ApiKeyVerificationResult {
   const [status, setStatus] = useState<VerificationStatus>(
     () => getInitialVerificationStatus(context),
@@ -112,7 +114,18 @@ export function useApiKeyVerification(
     }
 
     try {
-      const isValid = await verifyApiKey(apiKey, false)
+      const verification = await verifyProviderApiKey({
+        provider: 'anthropic',
+        apiKey,
+        config,
+        env: context.environment,
+      })
+      if (verification.status === 'error') {
+        throw new Error(
+          verification.error ?? 'Anthropic API-key verification failed',
+        )
+      }
+      const isValid = verification.status === 'valid'
       if (!isCurrentRequest()) {
         return
       }
@@ -134,7 +147,7 @@ export function useApiKeyVerification(
       setStatus(newStatus)
       return
     }
-  }, [context])
+  }, [config, context])
 
   return {
     status,

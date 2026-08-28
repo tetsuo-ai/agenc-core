@@ -1,18 +1,16 @@
 // Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
 import { isIP } from 'node:net'
 
-import { logForDebugging } from 'src/utils/debug.js'
 import {
-  getSelectedProviderEnvironment,
-  getSelectedProviderModel,
-  getSelectedProviderName,
-} from '../../utils/model/providers.js'
-import type { ProviderEnvironment } from '../../llm/provider-options.js'
+  parseOpenAiCompatibleApiFormat,
+  type OpenAiCompatibleApiFormat,
+} from '../../llm/provider-request.js'
+export {
+  parseOpenAiCompatibleApiFormat,
+  type OpenAiCompatibleApiFormat,
+} from '../../llm/provider-request.js'
 import {
   CHATGPT_BACKEND_BASE_URL,
-  resolveChatGptSubscriptionCredentials,
-  type ChatGptSubscriptionCredentialInput,
-  type ResolvedChatGptSubscriptionCredentials,
 } from '../../llm/providers/openai/chatgpt-backend.js'
 import { BUILT_IN_PROVIDER_BASE_URLS } from '../../llm/registry/provider-info.js'
 import {
@@ -21,9 +19,7 @@ import {
   shouldUseGithubCopilotResponsesApi,
 } from '../../llm/providers/github/model-routing.js'
 
-export const DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1'
-const DEFAULT_MISTRAL_BASE_URL = 'https://api.mistral.ai/v1'
-const warnedUndefinedEnvNames = new Set<string>()
+export const DEFAULT_OPENAI_BASE_URL = BUILT_IN_PROVIDER_BASE_URLS.openai
 
 const PROVIDER_CODE_ALIAS_MODELS: Record<
   string,
@@ -82,11 +78,7 @@ const PROVIDER_CODE_ALIAS_MODELS: Record<
 type ProviderCodeAlias = keyof typeof PROVIDER_CODE_ALIAS_MODELS
 type ReasoningEffort = 'low' | 'medium' | 'high' | 'xhigh'
 
-const OPENAI_PROVIDER_CODE_SHORTCUT_ALIASES = new Set(['providercodeplan', 'providercodespark'])
-
 export type ProviderTransport = 'chat_completions' | 'responses' | 'providerCode_responses'
-export type OpenAiCompatibleApiFormat = 'chat_completions' | 'responses'
-
 export type ResolvedProviderRequest = {
   transport: ProviderTransport
   requestedModel: string
@@ -143,58 +135,11 @@ function asEnvUrl(value: string | undefined): string | undefined {
   return trimmed
 }
 
-function asNamedEnvUrl(
-  value: string | undefined,
-  envName: string,
-): string | undefined {
-  if (!value) return undefined
-
-  const trimmed = value.trim()
-  if (!trimmed) return undefined
-
-  if (trimmed === 'undefined') {
-    if (!warnedUndefinedEnvNames.has(envName)) {
-      warnedUndefinedEnvNames.add(envName)
-      logForDebugging(
-        `[provider-config] Environment variable ${envName} is the literal string "undefined"; ignoring it.`,
-        { level: 'warn' },
-      )
-    }
-    return undefined
-  }
-
-  return trimmed
-}
-
 function parseReasoningEffort(value: string | undefined): ReasoningEffort | undefined {
   if (!value) return undefined
   const normalized = value.trim().toLowerCase()
   if (normalized === 'low' || normalized === 'medium' || normalized === 'high' || normalized === 'xhigh') {
     return normalized
-  }
-  return undefined
-}
-
-export function parseOpenAiCompatibleApiFormat(
-  value: string | undefined,
-): OpenAiCompatibleApiFormat | undefined {
-  if (!value) return undefined
-  const normalized = value.trim().toLowerCase().replace(/[- ]+/g, '_')
-  if (
-    normalized === 'responses' ||
-    normalized === 'response' ||
-    normalized === 'responses_api'
-  ) {
-    return 'responses'
-  }
-  if (
-    normalized === 'chat_completions' ||
-    normalized === 'chat_completion' ||
-    normalized === 'completions' ||
-    normalized === 'completion' ||
-    normalized === 'chat'
-  ) {
-    return 'chat_completions'
   }
   return undefined
 }
@@ -242,12 +187,6 @@ function isProviderCodeAlias(model: string): boolean {
   const normalized = model.trim().toLowerCase()
   const base = normalized.split('?', 1)[0] ?? normalized
   return base in PROVIDER_CODE_ALIAS_MODELS
-}
-
-function isOpenAiProviderCodeShortcutAlias(model: string): boolean {
-  const normalized = model.trim().toLowerCase()
-  const base = normalized.split('?', 1)[0] ?? normalized
-  return OPENAI_PROVIDER_CODE_SHORTCUT_ALIASES.has(base)
 }
 
 export function shouldUseProviderCodeTransport(
@@ -408,80 +347,44 @@ export function isChatGptSubscriptionBaseUrl(
   }
 }
 
-export function resolveProviderRequest(options?: {
-  provider?: string
-  model?: string
-  environment?: ProviderEnvironment
-  baseUrl?: string
+export function resolveProviderRequest(options: {
+  provider: string
+  model: string
+  baseUrl: string
   reasoningEffortOverride?: ReasoningEffort
   apiFormat?: OpenAiCompatibleApiFormat | string
 }): ResolvedProviderRequest {
-  const environment = options?.environment ?? getSelectedProviderEnvironment()
-  const selectedProvider =
-    options?.provider?.trim().toLowerCase() ||
-    getSelectedProviderName()
+  const selectedProvider = options.provider.trim().toLowerCase()
+  if (!selectedProvider) {
+    throw new Error('provider request requires a prepared provider identity')
+  }
   const isGithubMode = selectedProvider === 'github'
-  const isMistralMode = selectedProvider === 'mistral'
   if (selectedProvider === 'gemini') {
     throw new Error(
       'Gemini request configuration is owned by the canonical native Gemini provider',
     )
   }
-  const requestedModel =
-    options?.model?.trim() ||
-    getSelectedProviderModel().trim()
+  const requestedModel = options.model.trim()
+  if (!requestedModel) {
+    throw new Error('provider request requires a prepared model')
+  }
   const descriptor = parseModelDescriptor(requestedModel)
-  const explicitBaseUrl = asEnvUrl(options?.baseUrl)
-
-  const normalizedMistralEnvBaseUrl = asNamedEnvUrl(
-    environment.MISTRAL_BASE_URL,
-    'MISTRAL_BASE_URL',
-  )
-
-  const primaryEnvBaseUrl = isMistralMode
-    ? normalizedMistralEnvBaseUrl
-    : asNamedEnvUrl(environment.OPENAI_BASE_URL, 'OPENAI_BASE_URL')
-
-  // In Mistral mode, a literal "undefined" MISTRAL_BASE_URL is treated as
-  // misconfiguration and falls back to OPENAI_API_BASE, then
-  // DEFAULT_MISTRAL_BASE_URL for a safe default endpoint.
-  const fallbackEnvBaseUrl = isMistralMode
-    ? (primaryEnvBaseUrl === undefined
-      ? asNamedEnvUrl(environment.OPENAI_API_BASE, 'OPENAI_API_BASE') ?? DEFAULT_MISTRAL_BASE_URL
-      : undefined)
-    : (primaryEnvBaseUrl === undefined
-      ? asNamedEnvUrl(environment.OPENAI_API_BASE, 'OPENAI_API_BASE')
-      : undefined)
-
-  const envBaseUrlRaw =
-    explicitBaseUrl ??
-    primaryEnvBaseUrl ??
-    fallbackEnvBaseUrl
-
-  const rawBaseUrl = explicitBaseUrl ?? envBaseUrlRaw
-
-  const isProviderCodeAliasModel =
-    isOpenAiProviderCodeShortcutAlias(requestedModel)
-  const hasUserSetBaseUrl = rawBaseUrl && rawBaseUrl !== DEFAULT_OPENAI_BASE_URL
-  const finalBaseUrl =
-    !isGithubMode && isProviderCodeAliasModel && !hasUserSetBaseUrl
-      ? CHATGPT_BACKEND_BASE_URL
-      : rawBaseUrl
+  const rawBaseUrl = asEnvUrl(options.baseUrl)
+  if (rawBaseUrl === undefined) {
+    throw new Error('provider request requires a prepared base URL')
+  }
 
   const githubEndpointType = isGithubMode
     ? getGithubEndpointType(rawBaseUrl)
     : 'custom'
-  const isGithubCopilot = isGithubMode && githubEndpointType === 'copilot'
-
   const requestedApiFormat =
-    parseOpenAiCompatibleApiFormat(options?.apiFormat) ??
-    parseOpenAiCompatibleApiFormat(environment.OPENAI_API_FORMAT)
+    parseOpenAiCompatibleApiFormat(options.apiFormat)
   const transport: ProviderTransport =
     isGithubMode
       ? shouldUseGithubCopilotResponsesApi(requestedModel, rawBaseUrl)
         ? 'providerCode_responses'
         : 'chat_completions'
-      : shouldUseProviderCodeTransport(requestedModel, finalBaseUrl)
+      : shouldUseProviderCodeTransport(requestedModel, rawBaseUrl)
         ? 'providerCode_responses'
         : requestedApiFormat === 'responses'
           ? 'responses'
@@ -504,32 +407,9 @@ export function resolveProviderRequest(options?: {
     requestedModel,
     resolvedModel,
     baseUrl:
-      (finalBaseUrl ??
-        (isGithubCopilot && transport === 'providerCode_responses'
-          ? BUILT_IN_PROVIDER_BASE_URLS.github
-          : (isGithubMode
-            ? BUILT_IN_PROVIDER_BASE_URLS.github
-            : DEFAULT_OPENAI_BASE_URL))
-      ).replace(/\/+$/, ''),
+      rawBaseUrl.replace(/\/+$/, ''),
     reasoning,
   }
-}
-
-/**
- * Resolve ChatGPT subscription authentication from already captured inputs.
- * Secure-storage reads stay at ingress; this pure resolver cannot fall back to
- * ambient process state or a second credential store.
- */
-export function resolveRuntimeChatGptSubscriptionCredentials(options: {
-  readonly environment: ProviderEnvironment
-  readonly storedCredentials?: ChatGptSubscriptionCredentialInput
-}): ResolvedChatGptSubscriptionCredentials {
-  return resolveChatGptSubscriptionCredentials({
-    environment: options.environment,
-    ...(options.storedCredentials === undefined
-      ? {}
-      : { stored: options.storedCredentials }),
-  })
 }
 
 function getReasoningEffortForModel(model: string): ReasoningEffort | undefined {

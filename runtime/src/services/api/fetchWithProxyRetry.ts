@@ -18,16 +18,18 @@ export async function fetchWithProxyRetry(
   init: RequestInit | undefined,
   options: {
     environment: Readonly<Record<string, string | undefined>>
+    fetchImpl?: typeof fetch
     forproviderAPI?: boolean
     maxAttempts?: number
   },
 ): Promise<Response> {
   const maxAttempts = Math.max(1, options?.maxAttempts ?? 2)
+  const fetchImpl = options.fetchImpl ?? globalThis.fetch
   let lastError: unknown
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      return await fetch(input, {
+      return await fetchImpl(input, {
         ...init,
         ...getProxyFetchOptions({
           environment: options.environment,

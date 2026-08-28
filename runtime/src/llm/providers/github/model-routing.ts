@@ -1,7 +1,12 @@
 import {
+  BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_DEFAULT_MODELS,
   providerLocalModelIdFromCatalog,
 } from "../../registry/provider-info.js";
+
+const GITHUB_COPILOT_HOSTNAME = new URL(
+  BUILT_IN_PROVIDER_BASE_URLS.github,
+).hostname.toLowerCase();
 
 export type GithubEndpointType = "copilot" | "models" | "custom";
 
@@ -11,7 +16,7 @@ export function getGithubEndpointType(
   if (!baseURL) return "copilot";
   try {
     const hostname = new URL(baseURL).hostname.toLowerCase();
-    if (hostname === "api.githubcopilot.com") {
+    if (hostname === GITHUB_COPILOT_HOSTNAME) {
       return "copilot";
     }
     if (hostname === "models.github.ai" || hostname.endsWith(".github.ai")) {

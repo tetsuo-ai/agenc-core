@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from 'bun:test'
 import { createOpenAiShimClient } from '../../../src/services/api/openaiShim.ts'
+import { providerConnectionFixture } from './provider-connection-fixture.ts'
 
 // openaiShim minor: _convertNonStreamingResponse dereferenced
 // tc.function.name/.arguments without a shape check, so a malformed provider response
@@ -43,9 +44,11 @@ describe('openai shim — malformed non-streaming tool_call', () => {
       )) as typeof fetch
 
     const client = createOpenAiShimClient({
-      selectedProvider: 'openai',
-      model: 'some-model',
-      providerEnvironment: PROVIDER_ENVIRONMENT,
+      connection: providerConnectionFixture({
+        provider: 'openai-compatible',
+        model: 'some-model',
+        environment: PROVIDER_ENVIRONMENT,
+      }),
     }) as OpenAiShimClient
     let result: unknown
     await expect(

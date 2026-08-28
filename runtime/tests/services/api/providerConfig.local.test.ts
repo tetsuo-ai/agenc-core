@@ -6,7 +6,6 @@ import {
   resolveProviderRequest,
   shouldAttemptLocalToollessRetry,
 } from '../../../src/services/api/providerConfig.ts'
-import { runWithStartupProviderSelection } from '../../../src/utils/model/providers.ts'
 
 function providerSelection(
   model: string,
@@ -14,11 +13,10 @@ function providerSelection(
 ) {
   return {
     model,
-    environment: Object.freeze({
-      AGENC_PROVIDER: 'openai-compatible',
-      AGENC_MODEL: model,
-      ...overrides,
-    }),
+    baseUrl: overrides.OPENAI_BASE_URL ?? '',
+    ...(overrides.OPENAI_API_FORMAT !== undefined
+      ? { apiFormat: overrides.OPENAI_API_FORMAT }
+      : {}),
   }
 }
 
@@ -71,7 +69,7 @@ test('normalizes collision-safe GitHub Copilot catalog models for requests', () 
   expect(resolveProviderRequest({
     provider: 'github',
     model: 'github:copilot:gpt-5.3-codex',
-    environment: {},
+    baseUrl: 'https://api.githubcopilot.com',
   })).toMatchObject({
     requestedModel: 'github:copilot:gpt-5.3-codex',
     resolvedModel: 'gpt-5.3-codex',
@@ -106,10 +104,7 @@ test('keeps ProviderCode backend on ProviderCode responses transport even when A
   })
 })
 
-test('uses the captured provider environment after ambient selection mutates', () => {
-  const captured = providerSelection('captured-model', {
-    OPENAI_BASE_URL: 'http://127.0.0.1:8080/v1',
-  }).environment
+test('uses only explicit request inputs after ambient selection mutates', () => {
   const originalProvider = process.env.AGENC_PROVIDER
   const originalModel = process.env.AGENC_MODEL
   const originalBaseUrl = process.env.OPENAI_BASE_URL
@@ -122,7 +117,7 @@ test('uses the captured provider environment after ambient selection mutates', (
     expect(resolveProviderRequest({
       provider: 'openai-compatible',
       model: 'captured-model',
-      environment: captured,
+      baseUrl: 'http://127.0.0.1:8080/v1',
     })).toMatchObject({
       requestedModel: 'captured-model',
       resolvedModel: 'captured-model',
@@ -138,48 +133,28 @@ test('uses the captured provider environment after ambient selection mutates', (
   }
 })
 
-test('uses the bound provider and model instead of stale selector fields in its environment', () => {
-  const environment = Object.freeze({
-    AGENC_PROVIDER: 'github',
-    AGENC_MODEL: 'github:copilot',
-  })
-
-  const resolved = runWithStartupProviderSelection(
-    {
-      provider: 'openai',
+test('requires provider, model, and base URL instead of falling back to ambient state', () => {
+  expect(() =>
+    resolveProviderRequest({
+      provider: '',
       model: 'gpt-4.1',
-      environment,
-    },
-    () => resolveProviderRequest(),
-  )
-
-  expect(resolved).toMatchObject({
-    requestedModel: 'gpt-4.1',
-    resolvedModel: 'gpt-4.1',
-    baseUrl: 'https://api.openai.com/v1',
-  })
-})
-
-test('does not accept selector fields in an environment snapshot as provider and model authority', () => {
-  const resolved = runWithStartupProviderSelection(
-    {
-      provider: 'openai',
-      model: 'gpt-4.1',
-      environment: {},
-    },
-    () => resolveProviderRequest({
-      environment: Object.freeze({
-        AGENC_PROVIDER: 'github',
-        AGENC_MODEL: 'github:copilot',
-      }),
+      baseUrl: 'https://api.openai.com/v1',
     }),
-  )
-
-  expect(resolved).toMatchObject({
-    requestedModel: 'gpt-4.1',
-    resolvedModel: 'gpt-4.1',
-    baseUrl: 'https://api.openai.com/v1',
-  })
+  ).toThrow('prepared provider identity')
+  expect(() =>
+    resolveProviderRequest({
+      provider: 'openai',
+      model: '',
+      baseUrl: 'https://api.openai.com/v1',
+    }),
+  ).toThrow('prepared model')
+  expect(() =>
+    resolveProviderRequest({
+      provider: 'openai',
+      model: 'gpt-4.1',
+      baseUrl: '',
+    }),
+  ).toThrow('prepared base URL')
 })
 
 test('derives local retry base URLs with /v1 and loopback fallback candidates', () => {

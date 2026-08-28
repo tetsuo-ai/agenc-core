@@ -7,7 +7,8 @@
 import type { LLMProviderConfig } from "../../types.js";
 
 export interface AnthropicProviderConfig extends LLMProviderConfig {
-  readonly apiKey: string;
+  readonly apiKey?: string;
+  readonly authToken?: string;
   readonly baseURL?: string;
   readonly anthropicVersion?: string;
   readonly betaHeaders?: readonly string[];

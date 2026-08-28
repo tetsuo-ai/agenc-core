@@ -1,4 +1,5 @@
 import { afterEach, expect, mock, test } from 'bun:test'
+import { providerConnectionFixture } from './provider-connection-fixture.ts'
 
 const originalFetch = globalThis.fetch
 
@@ -37,9 +38,11 @@ test('logs classified transport diagnostics with category and code', async () =>
   }) as typeof globalThis.fetch
 
   const client = createOpenAiShimClient({
-    selectedProvider: 'openai',
-    model: 'qwen2.5-coder:7b',
-    providerEnvironment: providerEnvironment('http://localhost:11434/v1', 'ollama'),
+    connection: providerConnectionFixture({
+      provider: 'openai-compatible',
+      model: 'qwen2.5-coder:7b',
+      environment: providerEnvironment('http://localhost:11434/v1', 'ollama'),
+    }),
   }) as {
     beta: {
       messages: {
@@ -67,6 +70,60 @@ test('logs classified transport diagnostics with category and code', async () =>
   expect(transportLog?.[1]).toEqual({ level: 'warn' })
 })
 
+test('logs the bound provider identity instead of inferring it from the URL', async () => {
+  const debugSpy = mock(() => {})
+  mock.module('src/utils/debug.js', () => ({
+    logForDebugging: debugSpy,
+  }))
+
+  const nonce = `${Date.now()}-${Math.random()}`
+  const { createOpenAiShimClient } = await import(`../../../src/services/api/openaiShim.ts?provider-identity=${nonce}`)
+
+  globalThis.fetch = mock(async () => {
+    throw Object.assign(new TypeError('fetch failed'), {
+      code: 'ECONNREFUSED',
+    })
+  }) as typeof globalThis.fetch
+
+  const client = createOpenAiShimClient({
+    connection: providerConnectionFixture({
+      provider: 'openrouter',
+      model: 'x-ai/grok-4.6',
+      environment: {
+        OPENROUTER_API_KEY: 'openrouter-key',
+        OPENROUTER_BASE_URL: 'http://gateway.example/v1',
+      },
+    }),
+  }) as {
+    beta: {
+      messages: {
+        create: (params: Record<string, unknown>) => Promise<unknown>
+      }
+    }
+  }
+
+  await expect(
+    client.beta.messages.create({
+      model: 'x-ai/grok-4.6',
+      messages: [{ role: 'user', content: 'hello' }],
+      max_tokens: 64,
+      stream: false,
+    }),
+  ).rejects.toThrow('openai_category=connection_refused')
+
+  const startLog = debugSpy.mock.calls
+    .map(call => call?.[0])
+    .find(value =>
+      typeof value === 'string' && value.includes('"type":"api_call_start"'),
+    )
+  expect(startLog).toBeDefined()
+  expect(JSON.parse(String(startLog))).toMatchObject({
+    type: 'api_call_start',
+    provider: 'openrouter',
+    model: 'x-ai/grok-4.6',
+  })
+})
+
 test('redacts credentials in transport diagnostic URL logs', async () => {
   const debugSpy = mock(() => {})
   mock.module('src/utils/debug.js', () => ({
@@ -85,12 +142,14 @@ test('redacts credentials in transport diagnostic URL logs', async () => {
   }) as typeof globalThis.fetch
 
   const client = createOpenAiShimClient({
-    selectedProvider: 'openai',
-    model: 'qwen2.5-coder:7b',
-    providerEnvironment: providerEnvironment(
-      'http://user:supersecret@localhost:11434/v1',
-      'supersecret',
-    ),
+    connection: providerConnectionFixture({
+      provider: 'openai-compatible',
+      model: 'qwen2.5-coder:7b',
+      environment: providerEnvironment(
+        'http://user:supersecret@localhost:11434/v1',
+        'supersecret',
+      ),
+    }),
   }) as {
     beta: {
       messages: {
@@ -164,12 +223,14 @@ test('logs self-heal localhost fallback with redacted from/to URLs', async () =>
   }) as typeof globalThis.fetch
 
   const client = createOpenAiShimClient({
-    selectedProvider: 'openai',
-    model: 'qwen2.5-coder:7b',
-    providerEnvironment: providerEnvironment(
-      'http://user:supersecret@localhost:11434/v1',
-      'supersecret',
-    ),
+    connection: providerConnectionFixture({
+      provider: 'openai-compatible',
+      model: 'qwen2.5-coder:7b',
+      environment: providerEnvironment(
+        'http://user:supersecret@localhost:11434/v1',
+        'supersecret',
+      ),
+    }),
   }) as {
     beta: {
       messages: {
@@ -249,9 +310,11 @@ test('logs self-heal toolless retry for local tool-call incompatibility', async 
   }) as typeof globalThis.fetch
 
   const client = createOpenAiShimClient({
-    selectedProvider: 'openai',
-    model: 'qwen2.5-coder:7b',
-    providerEnvironment: providerEnvironment('http://localhost:11434/v1', 'ollama'),
+    connection: providerConnectionFixture({
+      provider: 'openai-compatible',
+      model: 'qwen2.5-coder:7b',
+      environment: providerEnvironment('http://localhost:11434/v1', 'ollama'),
+    }),
   }) as {
     beta: {
       messages: {

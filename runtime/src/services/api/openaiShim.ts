@@ -8,30 +8,13 @@
  * Supports: OpenAi, Azure OpenAi, Ollama, LM Studio, OpenRouter,
  * Together, Groq, Fireworks, DeepSeek, Mistral, and any provider-compatible API.
  *
- * Provider and model selection come from the bound runtime session. The
- * captured environment below supplies transport and authentication inputs;
- * it is not a second selection authority.
- *
- * Environment variables:
- *   OPENAI_API_KEY=sk-...             — API key (optional for local models)
- *   OPENAI_AUTH_HEADER=api-key        — optional custom auth header name
- *   OPENAI_AUTH_HEADER_VALUE=...      — optional custom auth header value
- *   OPENAI_AUTH_SCHEME=bearer|raw     — auth scheme for Authorization/custom header handling
- *   OPENAI_API_FORMAT=chat_completions|responses — request format for compatible APIs
- *   OPENAI_BASE_URL=http://...        — base URL (default: https://api.openai.com/v1)
- *   PROVIDER_CODE_API_KEY or native secure storage OAuth — ProviderCode auth for providerCodeplan/providerCodespark
- *
- * GitHub Copilot API (api.githubcopilot.com), provider-compatible:
- *   GITHUB_TOKEN or GH_TOKEN         — Copilot API token (mapped to Bearer auth)
+ * Provider identity and every connection input come from one immutable
+ * session binding. This compatibility layer does not read provider settings,
+ * environment credentials, or native credential storage.
  */
 import { APIError } from '@anthropic-ai/sdk'
-import {
-  readOpenAiOauthCredentialsAsync,
-  refreshOpenAiSubscriptionIfNeeded,
-} from '../../utils/openAiOauthCredentials.js'
 import { logForDebugging } from 'src/utils/debug.js'
-import { isBareMode, isEnvTruthy } from '../../utils/envUtils.js'
-import { readGithubModelsToken } from '../../utils/githubModelsCredentials.js'
+import { isEnvTruthy } from '../../utils/envUtils.js'
 import {
   createThinkTagFilter,
   stripThinkTags,
@@ -54,7 +37,6 @@ import { getGithubEndpointType } from '../../llm/providers/github/model-routing.
 import {
   getLocalProviderRetryBaseUrls,
   isLocalProviderUrl,
-  resolveRuntimeChatGptSubscriptionCredentials,
   resolveProviderRequest,
   shouldAttemptLocalToollessRetry,
 } from './providerConfig.js'
@@ -66,6 +48,7 @@ import {
 import { sanitizeSchemaForOpenAiCompat } from '../../utils/schemaSanitizer.js'
 import { normalizeToolParamSchema } from '../../utils/toolParamSchema.js'
 import { redactSecretValueForDisplay } from '../../utils/providerSecrets.js'
+import type { SecretValueSource } from '../../utils/providerSecrets.js'
 import { isZaiBaseUrl } from '../../utils/zaiProvider.js'
 import {
   normalizeToolArguments,
@@ -79,35 +62,16 @@ import {
 } from '../../utils/streamingOptimizer.js'
 import { stableStringify } from '../../utils/stableStringify.js'
 import {
-  getSelectedProviderEnvironment,
-  getSelectedProviderModel,
-  getSelectedProviderName,
-} from '../../utils/model/providers.js'
-import type { HomeContext } from '../../config/home.js'
+  type BoundProviderConnection,
+} from '../../llm/registry/provider-connection.js'
+import {
+  retryWithOAuthRefresh,
+  type OAuthRefreshCallbacks,
+  type OAuthRefreshState,
+} from '../../llm/oauth/refresh-loop.js'
 import type { ProviderEnvironment } from '../../llm/provider-options.js'
+import { stripForwardedProviderAuthHeaders } from '../../llm/provider-request.js'
 
-type SecretValueSource = Partial<{
-  OPENAI_API_KEY: string
-  OPENAI_AUTH_HEADER_VALUE: string
-  PROVIDER_CODE_API_KEY: string
-  MISTRAL_API_KEY: string
-}>
-
-type SelectedShimProvider =
-  | 'firstParty'
-  | 'openai'
-  | 'github'
-  | 'agenc'
-  | 'nvidia-nim'
-  | 'minimax'
-  | 'mistral'
-  | 'xai'
-
-const GITHUB_COPILOT_BASE = 'https://api.githubcopilot.com'
-const DEFAULT_MISTRAL_MODEL = 'mistral-medium-latest'
-const DEFAULT_NVIDIA_PROVIDER_MODEL = 'nvidia/llama-3.1-nemotron-70b-instruct'
-const DEFAULT_MINIMAX_MODEL = 'MiniMax-M2.5'
-const DEFAULT_GITHUB_MODEL = 'gpt-4o'
 const GITHUB_429_MAX_RETRIES = 3
 const GITHUB_429_BASE_DELAY_SEC = 1
 const GITHUB_429_MAX_DELAY_SEC = 32
@@ -165,133 +129,8 @@ function malformedJsonResponseError(response: Response): APIError {
   )
 }
 
-function selectedProviderName(): string {
-  return getSelectedProviderName()
-}
-
 function isGithubModelsMode(provider: string): boolean {
   return provider === 'github'
-}
-
-function firstProviderEnvString(value: string | undefined): string | undefined {
-  if (typeof value !== 'string') return undefined
-  const trimmed = value.trim()
-  return trimmed.length > 0 ? trimmed : undefined
-}
-
-function requireSelectedProviderApiKey(
-  providerName: string,
-  envLabel: string,
-  apiKey: string | undefined,
-): string {
-  if (apiKey) return apiKey
-  throw new Error(`${envLabel} is required for ${providerName} provider`)
-}
-
-interface ResolvedShimConnection {
-  readonly model: string
-  readonly baseURL: string
-  readonly apiKey: string
-}
-
-function buildMistralProviderOverride(
-  environment: ProviderEnvironment,
-  selectedModel: string,
-): ResolvedShimConnection {
-  return {
-    model:
-      firstProviderEnvString(selectedModel) ?? DEFAULT_MISTRAL_MODEL,
-    baseURL:
-      firstProviderEnvString(environment.MISTRAL_BASE_URL) ??
-      'https://api.mistral.ai/v1',
-    apiKey: requireSelectedProviderApiKey(
-      'Mistral',
-      'MISTRAL_API_KEY',
-      firstProviderEnvString(environment.MISTRAL_API_KEY),
-    ),
-  }
-}
-
-function buildNvidiaNimProviderOverride(
-  environment: ProviderEnvironment,
-  selectedModel: string,
-): ResolvedShimConnection {
-  return {
-    model:
-      firstProviderEnvString(selectedModel) ?? DEFAULT_NVIDIA_PROVIDER_MODEL,
-    baseURL:
-      firstProviderEnvString(environment.NVIDIA_BASE_URL) ??
-      'https://integrate.api.nvidia.com/v1',
-    apiKey: requireSelectedProviderApiKey(
-      'NVIDIA NIM',
-      'NVIDIA_API_KEY',
-      firstProviderEnvString(environment.NVIDIA_API_KEY),
-    ),
-  }
-}
-
-function buildMiniMaxProviderOverride(
-  environment: ProviderEnvironment,
-  selectedModel: string,
-): ResolvedShimConnection {
-  return {
-    model:
-      firstProviderEnvString(selectedModel) ?? DEFAULT_MINIMAX_MODEL,
-    baseURL:
-      firstProviderEnvString(environment.MINIMAX_BASE_URL) ??
-      'https://api.minimax.io/v1',
-    apiKey: requireSelectedProviderApiKey(
-      'MiniMax',
-      'MINIMAX_API_KEY',
-      firstProviderEnvString(environment.MINIMAX_API_KEY),
-    ),
-  }
-}
-
-function buildGithubProviderOverride(
-  home: HomeContext,
-  environment: ProviderEnvironment,
-  selectedModel: string,
-): ResolvedShimConnection {
-  return {
-    model:
-      firstProviderEnvString(selectedModel) ?? DEFAULT_GITHUB_MODEL,
-    baseURL:
-      firstProviderEnvString(environment.GITHUB_BASE_URL) ??
-      GITHUB_COPILOT_BASE,
-    apiKey:
-      requireSelectedProviderApiKey(
-        'GitHub',
-        'GITHUB_TOKEN or GH_TOKEN',
-        firstProviderEnvString(environment.GITHUB_TOKEN) ??
-          firstProviderEnvString(environment.GH_TOKEN) ??
-          readGithubModelsToken(home),
-      ),
-  }
-}
-
-function resolveSelectedProviderOverride(
-  selectedProvider: string,
-  home: HomeContext,
-  environment: ProviderEnvironment,
-  selectedModel: string,
-): ResolvedShimConnection | undefined {
-  switch (selectedProvider) {
-    case 'gemini':
-      throw new Error(
-        'Gemini requests require the canonical native Gemini provider; the OpenAI-compatible shim is not an authentication or endpoint authority',
-      )
-    case 'mistral':
-      return buildMistralProviderOverride(environment, selectedModel)
-    case 'nvidia-nim':
-      return buildNvidiaNimProviderOverride(environment, selectedModel)
-    case 'minimax':
-      return buildMiniMaxProviderOverride(environment, selectedModel)
-    case 'github':
-      return buildGithubProviderOverride(home, environment, selectedModel)
-    default:
-      return undefined
-  }
 }
 
 function isMistralMode(provider: string): boolean {
@@ -304,19 +143,16 @@ function filterproviderHeaders(
   if (!headers) return {}
 
   const filtered: Record<string, string> = {}
-  for (const [key, value] of Object.entries(headers)) {
+  for (const [key, value] of Object.entries(
+    stripForwardedProviderAuthHeaders(headers),
+  )) {
     const lower = key.toLowerCase()
     if (
       lower.startsWith('x-anthropic') ||
       lower.startsWith('anthropic-') ||
       lower.startsWith('x-agenc') ||
       lower === 'x-app' ||
-      lower === 'x-client-app' ||
-      lower === 'authorization' ||
-      lower === 'x-api-key' ||
-      lower === 'api-key' ||
-      lower === 'x-goog-api-key' ||
-      lower === 'x-goog-user-project'
+      lower === 'x-client-app'
     ) {
       continue
     }
@@ -1483,6 +1319,47 @@ async function* openaiStreamToprovider(
 // The shim client — duck-types as provider SDK
 // ---------------------------------------------------------------------------
 
+interface OpenAiCompatibilityOptions {
+  readonly authHeader?: string
+  readonly authHeaderValue?: string
+  readonly authScheme?: 'bearer' | 'raw'
+  readonly azureApiVersion?: string
+}
+
+function readOpenAiCompatibilityOptions(
+  connection: BoundProviderConnection,
+): OpenAiCompatibilityOptions {
+  const value = (
+    connection.extra as Readonly<Record<string, unknown>>
+  ).openAiCompatibility
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return {}
+  }
+  const record = value as Readonly<Record<string, unknown>>
+  const authHeader =
+    typeof record.authHeader === 'string' && record.authHeader.trim()
+      ? record.authHeader.trim()
+      : undefined
+  const authHeaderValue =
+    typeof record.authHeaderValue === 'string' && record.authHeaderValue.trim()
+      ? record.authHeaderValue.trim()
+      : undefined
+  const authScheme =
+    record.authScheme === 'bearer' || record.authScheme === 'raw'
+      ? record.authScheme
+      : undefined
+  const azureApiVersion =
+    typeof record.azureApiVersion === 'string' && record.azureApiVersion.trim()
+      ? record.azureApiVersion.trim()
+      : undefined
+  return {
+    ...(authHeader !== undefined ? { authHeader } : {}),
+    ...(authHeaderValue !== undefined ? { authHeaderValue } : {}),
+    ...(authScheme !== undefined ? { authScheme } : {}),
+    ...(azureApiVersion !== undefined ? { azureApiVersion } : {}),
+  }
+}
+
 class OpenAiShimStream {
   private generator: AsyncGenerator<providerStreamEvent>
   // The controller property is checked by anthropic.ts to distinguish streams from error messages
@@ -1500,18 +1377,46 @@ class OpenAiShimStream {
 class OpenAiShimMessages {
   private defaultHeaders: Record<string, string>
   private reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
-  private connection?: ResolvedShimConnection
+  private connection: BoundProviderConnection
   private selectedProvider: string
-  private home: HomeContext
   private environment: ProviderEnvironment
+  private oauthState?: OAuthRefreshState
+  private oauthCallbacks?: OAuthRefreshCallbacks
 
-  constructor(defaultHeaders: Record<string, string>, selectedProvider: string, home: HomeContext, environment: ProviderEnvironment, reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh', connection?: ResolvedShimConnection) {
-    this.defaultHeaders = filterproviderHeaders(defaultHeaders)
-    this.selectedProvider = selectedProvider
-    this.home = home
-    this.environment = environment
+  constructor(
+    defaultHeaders: Record<string, string>,
+    connection: BoundProviderConnection,
+    reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh',
+  ) {
+    this.defaultHeaders = filterproviderHeaders({
+      ...(connection.extra.defaultHeaders ?? {}),
+      ...defaultHeaders,
+    })
+    this.selectedProvider = connection.provider
+    this.environment = connection.environment
     this.reasoningEffort = reasoningEffort
     this.connection = connection
+    const oauth = connection.extra.oauth as
+      | (OAuthRefreshCallbacks & {
+          readonly accessToken?: string
+          readonly refreshToken?: string
+        })
+      | undefined
+    const accessToken = oauth?.accessToken?.trim()
+    if (
+      connection.extra.authMode === 'oauth' &&
+      accessToken &&
+      typeof oauth?.refreshAccessToken === 'function'
+    ) {
+      this.oauthState = {
+        accessToken,
+        ...(oauth.refreshToken !== undefined
+          ? { refreshToken: oauth.refreshToken }
+          : {}),
+        consecutiveAuthFailures: 0,
+      }
+      this.oauthCallbacks = oauth
+    }
   }
 
   create(
@@ -1523,7 +1428,22 @@ class OpenAiShimMessages {
     let httpResponse: Response | undefined
 
     const promise = (async () => {
-      const request = resolveProviderRequest({ provider: self.selectedProvider, model: self.connection?.model ?? params.model, baseUrl: self.connection?.baseURL, reasoningEffortOverride: self.reasoningEffort, environment: self.environment })
+      const baseUrl = self.connection.baseURL
+      if (baseUrl === undefined) {
+        throw new Error(
+          `${self.connection.provider} compatibility binding has no prepared base URL`,
+        )
+      }
+      const request = resolveProviderRequest({
+        provider: self.connection.provider,
+        model: self.connection.model,
+        baseUrl,
+        reasoningEffortOverride: self.reasoningEffort,
+        apiFormat:
+          self.connection.extra.useResponsesApi === true
+            ? 'responses'
+            : 'chat_completions',
+      })
       const response = await self._doRequest(request, params, options)
       httpResponse = response
 
@@ -1609,6 +1529,15 @@ class OpenAiShimMessages {
     params: ShimCreateParams,
     options?: { signal?: AbortSignal; headers?: Record<string, string> },
   ): Promise<Response> {
+    const timeoutMs = this.connection.timeoutMs
+    const timeoutSignal =
+      timeoutMs !== undefined && timeoutMs > 0
+        ? AbortSignal.timeout(timeoutMs)
+        : undefined
+    const requestSignal =
+      options?.signal !== undefined && timeoutSignal !== undefined
+        ? AbortSignal.any([options.signal, timeoutSignal])
+        : options?.signal ?? timeoutSignal
     const isGithubMode = isGithubModelsMode(this.selectedProvider)
     const isGithubWithProviderCodeTransport = isGithubMode && request.transport === 'providerCode_responses'
     if (
@@ -1622,7 +1551,7 @@ class OpenAiShimMessages {
     }
 
     if (isGithubWithProviderCodeTransport) {
-      const apiKey = this.connection?.apiKey ?? this.environment.OPENAI_API_KEY ?? ''
+      const apiKey = this.connection.apiKey ?? ''
       if (!apiKey) {
         throw new Error(
           'GitHub Copilot auth is required. Set GITHUB_TOKEN/GH_TOKEN or configure the github provider from /provider.',
@@ -1642,56 +1571,58 @@ class OpenAiShimMessages {
           ...filterproviderHeaders(options?.headers),
           ...COPILOT_HEADERS,
         },
-        signal: options?.signal,
+        ...(this.connection.extra.fetchImpl !== undefined
+          ? { fetchImpl: this.connection.extra.fetchImpl }
+          : {}),
+        ...(requestSignal !== undefined ? { signal: requestSignal } : {}),
       })
     }
 
     if (request.transport === 'providerCode_responses' && !isGithubMode) {
-      const refreshResult = await refreshOpenAiSubscriptionIfNeeded(
-        this.home,
-        this.environment,
-      ).catch(
-        async error => {
-          logForDebugging(
-            `[providerCode] access token refresh failed before request: ${error instanceof Error ? error.message : String(error)}`,
-            { level: 'warn' },
-          )
-          return {
-            refreshed: false,
-            credentials: await readOpenAiOauthCredentialsAsync(this.home),
-          }
-        },
-      )
-      const credentials = resolveRuntimeChatGptSubscriptionCredentials({
-        environment: this.environment,
-        storedCredentials: refreshResult.credentials,
-      })
-      if (!credentials.bearerToken) {
-        const oauthHint = isBareMode() ? '' : ', run /openai-login'
+      const accountId = Object.entries(this.defaultHeaders).find(
+        ([name]) => name.toLowerCase() === 'chatgpt-account-id',
+      )?.[1]
+      const perform = (
+        bearerToken: string,
+        source: 'environment' | 'native-secure-storage',
+      ) =>
+        performProviderCodeRequest({
+          request,
+          credentials: {
+            bearerToken,
+            ...(accountId ? { accountId } : {}),
+            source,
+          },
+          environment: this.environment,
+          params,
+          defaultHeaders: {
+            ...this.defaultHeaders,
+            ...filterproviderHeaders(options?.headers),
+          },
+          ...(this.connection.extra.fetchImpl !== undefined
+            ? { fetchImpl: this.connection.extra.fetchImpl }
+            : {}),
+          ...(requestSignal !== undefined ? { signal: requestSignal } : {}),
+        })
+      if (this.oauthState && this.oauthCallbacks) {
+        const result = await retryWithOAuthRefresh(
+          this.oauthState,
+          bearerToken => perform(bearerToken, 'native-secure-storage'),
+          this.oauthCallbacks,
+        )
+        this.oauthState = result.state
+        return result.value
+      }
+      const bearerToken = this.connection.apiKey?.trim()
+      if (!bearerToken) {
         const safeModel =
           redactSecretValueForDisplay(request.requestedModel, this.environment as SecretValueSource) ??
           'the requested model'
         throw new Error(
-          `ChatGPT subscription auth is required for ${safeModel}. Set PROVIDER_CODE_API_KEY${oauthHint}.`,
+          `The bound OpenAI provider has no prepared subscription credential for ${safeModel}.`,
         )
       }
-      if (!credentials.accountId) {
-        throw new Error(
-          'ChatGPT subscription auth is missing chatgpt_account_id. Run /openai-login again or set CHATGPT_ACCOUNT_ID/PROVIDER_CODE_ACCOUNT_ID.',
-        )
-      }
-
-      return performProviderCodeRequest({
-        request,
-        credentials,
-        environment: this.environment,
-        params,
-        defaultHeaders: {
-          ...this.defaultHeaders,
-          ...filterproviderHeaders(options?.headers),
-        },
-        signal: options?.signal,
-      })
+      return perform(bearerToken, 'environment')
     }
 
     return this._doOpenAiRequest(request, params, options)
@@ -1702,6 +1633,15 @@ class OpenAiShimMessages {
     params: ShimCreateParams,
     options?: { signal?: AbortSignal; headers?: Record<string, string> },
   ): Promise<Response> {
+    const timeoutMs = this.connection.timeoutMs
+    const timeoutSignal =
+      timeoutMs !== undefined && timeoutMs > 0
+        ? AbortSignal.timeout(timeoutMs)
+        : undefined
+    const requestSignal =
+      options?.signal !== undefined && timeoutSignal !== undefined
+        ? AbortSignal.any([options.signal, timeoutSignal])
+        : options?.signal ?? timeoutSignal
     const compressedMessages = compressToolHistory(
       params.messages as Array<{
         role: string
@@ -1912,9 +1852,10 @@ class OpenAiShimMessages {
       ...filterproviderHeaders(options?.headers),
     }
 
-    const apiKey = this.connection?.apiKey ?? this.environment.OPENAI_API_KEY ?? ''
-    const configuredAuthHeaderValue = this.environment.OPENAI_AUTH_HEADER_VALUE?.trim()
-    const customAuthHeader = this.environment.OPENAI_AUTH_HEADER?.trim()
+    const apiKey = this.connection.apiKey ?? ''
+    const compatibility = readOpenAiCompatibilityOptions(this.connection)
+    const configuredAuthHeaderValue = compatibility.authHeaderValue
+    const customAuthHeader = compatibility.authHeader
     const hasCustomAuthHeader = Boolean(
       customAuthHeader &&
       /^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/.test(customAuthHeader),
@@ -1941,9 +1882,9 @@ class OpenAiShimMessages {
         const defaultCustomAuthScheme =
           customAuthHeader.toLowerCase() === 'authorization' ? 'bearer' : 'raw'
         const customAuthScheme =
-          this.environment.OPENAI_AUTH_SCHEME === 'raw' ||
-          this.environment.OPENAI_AUTH_SCHEME === 'bearer'
-            ? this.environment.OPENAI_AUTH_SCHEME
+          compatibility.authScheme === 'raw' ||
+          compatibility.authScheme === 'bearer'
+            ? compatibility.authScheme
             : defaultCustomAuthScheme
         headers[customAuthHeader] =
           customAuthScheme === 'bearer'
@@ -1971,7 +1912,7 @@ class OpenAiShimMessages {
       // Azure Cognitive Services / Azure OpenAi require a deployment-specific
       // path and an api-version query parameter.
       if (isAzure) {
-        const apiVersion = this.environment.AZURE_OPENAI_API_VERSION ?? '2024-12-01-preview'
+        const apiVersion = compatibility.azureApiVersion ?? '2024-12-01-preview'
         const deployment = request.resolvedModel || 'gpt-4o'
 
         // If base URL already contains /deployments/, use it as-is with api-version.
@@ -2048,7 +1989,7 @@ class OpenAiShimMessages {
       method: 'POST' as const,
       headers,
       body: serializedBody,
-      signal: options?.signal,
+      signal: requestSignal,
     })
 
     const maxSelfHealAttempts = isLocal
@@ -2127,22 +2068,25 @@ class OpenAiShimMessages {
     }
 
     let response: Response | undefined
-    const provider = request.baseUrl.includes('nvidia') ? 'nvidia-nim'
-      : request.baseUrl.includes('minimax') ? 'minimax'
-      : request.baseUrl.includes('localhost:11434') || request.baseUrl.includes('localhost:11435') ? 'ollama'
-      : request.baseUrl.includes('anthropic') ? 'anthropic'
-      : 'openai'
-    const { correlationId, startTime } = logApiCallStart(provider, request.resolvedModel)
+    const { correlationId, startTime } = logApiCallStart(
+      this.connection.provider,
+      request.resolvedModel,
+    )
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         response = await fetchWithProxyRetry(
           requestUrl,
           buildFetchInit(),
-          { environment: this.environment },
+          {
+            environment: this.environment,
+            ...(this.connection.extra.fetchImpl !== undefined
+              ? { fetchImpl: this.connection.extra.fetchImpl }
+              : {}),
+          },
         )
       } catch (error) {
         const isAbortError =
-          options?.signal?.aborted === true ||
+          requestSignal?.aborted === true ||
           (typeof DOMException !== 'undefined' &&
             error instanceof DOMException &&
             error.name === 'AbortError') ||
@@ -2222,8 +2166,13 @@ class OpenAiShimMessages {
               method: 'POST',
               headers,
               body: stableStringify(responsesBody),
-              signal: options?.signal,
-            }, { environment: this.environment })
+              signal: requestSignal,
+            }, {
+              environment: this.environment,
+              ...(this.connection.extra.fetchImpl !== undefined
+                ? { fetchImpl: this.connection.extra.fetchImpl }
+                : {}),
+            })
           } catch (error) {
             // `throw` is for CFA narrowing only — throwClassifiedTransportError
             // returns `never` and always throws first, so responsesResponse is
@@ -2441,39 +2390,41 @@ class OpenAiShimBeta {
   messages: OpenAiShimMessages
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
 
-  constructor(defaultHeaders: Record<string, string>, selectedProvider: string, home: HomeContext, environment: ProviderEnvironment, reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh', connection?: ResolvedShimConnection) {
-    this.messages = new OpenAiShimMessages(defaultHeaders, selectedProvider, home, environment, reasoningEffort, connection)
+  constructor(
+    defaultHeaders: Record<string, string>,
+    connection: BoundProviderConnection,
+    reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh',
+  ) {
+    this.messages = new OpenAiShimMessages(
+      defaultHeaders,
+      connection,
+      reasoningEffort,
+    )
     this.reasoningEffort = reasoningEffort
   }
 }
 
 export function createOpenAiShimClient(options: {
+  connection: BoundProviderConnection
   defaultHeaders?: Record<string, string>
   maxRetries?: number
   timeout?: number
   reasoningEffort?: 'low' | 'medium' | 'high' | 'xhigh'
-  selectedProvider?: SelectedShimProvider
-  model?: string
-  providerEnvironment?: ProviderEnvironment
-  home: HomeContext
 }): unknown {
-  const selectedProvider =
-    options.selectedProvider ??
-    selectedProviderName()
-  const environment =
-    options.providerEnvironment ?? getSelectedProviderEnvironment()
-  const selectedModel = options.model ?? getSelectedProviderModel()
-  const home = options.home
-  const connection = resolveSelectedProviderOverride(
-    selectedProvider,
-    home,
-    environment,
-    selectedModel,
-  )
+  if (options.connection.transport !== 'openai-compatible') {
+    throw new Error(
+      `${options.connection.provider} cannot use the OpenAI-compatible shim with ${options.connection.transport} transport`,
+    )
+  }
+  if (!options.connection.baseURL) {
+    throw new Error(
+      `${options.connection.provider} compatibility binding has no prepared base URL`,
+    )
+  }
 
   const beta = new OpenAiShimBeta({
     ...(options.defaultHeaders ?? {}),
-  }, selectedProvider, home, environment, options.reasoningEffort, connection)
+  }, options.connection, options.reasoningEffort)
   return {
     beta,
     messages: beta.messages,
