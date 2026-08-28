@@ -29,6 +29,7 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
   const keychainPassword = `fixture-${randomUUID()}`;
   let originalSearchList: string[] | undefined;
   let originalDefaultKeychain: string | undefined;
+  let originalDefaultCaptured = false;
   const run = (operation: "read" | "write" | "delete", input?: string) =>
     spawnSync(helper, [operation, service, account], {
       encoding: "utf8",
@@ -90,6 +91,7 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     } else {
       expectMissingUserDefault(defaultKeychain);
     }
+    originalDefaultCaptured = true;
 
     const listed = runSecuritySuccessfully(["list-keychains", "-d", "user"]);
     originalSearchList = parseKeychainPaths(listed.stdout);
@@ -108,15 +110,13 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
         keychain,
       ]);
     }
-    if (originalDefaultKeychain !== undefined) {
-      runSecuritySuccessfully([
-        "default-keychain",
-        "-d",
-        "user",
-        "-s",
-        primaryKeychain,
-      ]);
-    }
+    runSecuritySuccessfully([
+      "default-keychain",
+      "-d",
+      "user",
+      "-s",
+      primaryKeychain,
+    ]);
     runSecuritySuccessfully([
       "list-keychains",
       "-d",
@@ -138,20 +138,14 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     expect(parseKeychainPaths(configuredSearchList.stdout)).toEqual([
       primaryKeychain,
     ]);
-    const configuredDefaultKeychain = runSecurity([
+    const configuredDefaultKeychain = runSecuritySuccessfully([
       "default-keychain",
       "-d",
       "user",
     ]);
-    if (configuredDefaultKeychain.status === 0) {
-      expect(configuredDefaultKeychain.error).toBeUndefined();
-      expect(configuredDefaultKeychain.stderr).toBe("");
-      expect(parseKeychainPaths(configuredDefaultKeychain.stdout)).toEqual([
-        primaryKeychain,
-      ]);
-    } else {
-      expectMissingUserDefault(configuredDefaultKeychain);
-    }
+    expect(parseKeychainPaths(configuredDefaultKeychain.stdout)).toEqual([
+      primaryKeychain,
+    ]);
 
     const initiallyMissing = run("read");
     expect(initiallyMissing.status).toBe(2);
@@ -194,53 +188,51 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     expect(missingAgain.stdout).toBe("");
     expect(missingAgain.stderr).toBe("");
 
-    if (configuredDefaultKeychain.status === 0) {
-      runSecuritySuccessfully([
-        "default-keychain",
-        "-d",
-        "user",
+    runSecuritySuccessfully([
+      "default-keychain",
+      "-d",
+      "user",
+      "-s",
+      secondKeychain,
+    ]);
+    runSecuritySuccessfully([
+      "list-keychains",
+      "-d",
+      "user",
+      "-s",
+      primaryKeychain,
+    ]);
+    const outsideSearchAuthority = run("write", first);
+    expect(outsideSearchAuthority.status).toBe(1);
+    expect(outsideSearchAuthority.stderr).toContain("Keychain add failed");
+    expect(outsideSearchAuthority.stderr).toContain("OSStatus -25295");
+    for (const keychain of [primaryKeychain, secondKeychain]) {
+      const absent = runSecurity([
+        "find-generic-password",
+        "-a",
+        account,
         "-s",
-        secondKeychain,
+        service,
+        "-w",
+        keychain,
       ]);
-      runSecuritySuccessfully([
-        "list-keychains",
-        "-d",
-        "user",
-        "-s",
-        primaryKeychain,
-      ]);
-      const outsideSearchAuthority = run("write", first);
-      expect(outsideSearchAuthority.status).toBe(1);
-      expect(outsideSearchAuthority.stderr).toContain("Keychain add failed");
-      expect(outsideSearchAuthority.stderr).toContain("OSStatus -25295");
-      for (const keychain of [primaryKeychain, secondKeychain]) {
-        const absent = runSecurity([
-          "find-generic-password",
-          "-a",
-          account,
-          "-s",
-          service,
-          "-w",
-          keychain,
-        ]);
-        expect(absent.status).not.toBe(0);
-        expect(absent.stdout).toBe("");
-      }
-      runSecuritySuccessfully([
-        "default-keychain",
-        "-d",
-        "user",
-        "-s",
-        primaryKeychain,
-      ]);
-      runSecuritySuccessfully([
-        "list-keychains",
-        "-d",
-        "user",
-        "-s",
-        primaryKeychain,
-      ]);
+      expect(absent.status).not.toBe(0);
+      expect(absent.stdout).toBe("");
     }
+    runSecuritySuccessfully([
+      "default-keychain",
+      "-d",
+      "user",
+      "-s",
+      primaryKeychain,
+    ]);
+    runSecuritySuccessfully([
+      "list-keychains",
+      "-d",
+      "user",
+      "-s",
+      primaryKeychain,
+    ]);
 
     const ambiguousService = `AgenC-native-helper-duplicate-${randomUUID()}`;
     const ambiguousAccount = `duplicate-account-${process.pid}`;
@@ -303,54 +295,105 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
       expect(unchanged.stdout.trim()).toBe(value);
     }
 
-    if (configuredDefaultKeychain.status === 0) {
-      expect(run("write", first)).toMatchObject({ status: 0, stderr: "" });
-      const createdInDefault = runSecuritySuccessfully([
+    expect(run("write", first)).toMatchObject({ status: 0, stderr: "" });
+    const createdInDefault = runSecuritySuccessfully([
+      "find-generic-password",
+      "-a",
+      account,
+      "-s",
+      service,
+      "-w",
+      primaryKeychain,
+    ]);
+    expect(createdInDefault.stdout.trim()).toBe(first);
+    expect(run("delete")).toMatchObject({ status: 0, stderr: "" });
+
+    runSecuritySuccessfully([
+      "default-keychain",
+      "-d",
+      "user",
+      "-s",
+    ]);
+    expectMissingUserDefault(
+      runSecurity(["default-keychain", "-d", "user"]),
+    );
+    runSecuritySuccessfully([
+      "list-keychains",
+      "-d",
+      "user",
+      "-s",
+      primaryKeychain,
+    ]);
+    const soleSearchList = runSecuritySuccessfully([
+      "list-keychains",
+      "-d",
+      "user",
+    ]);
+    expect(parseKeychainPaths(soleSearchList.stdout)).toEqual([
+      primaryKeychain,
+    ]);
+    expectMissingUserDefault(
+      runSecurity(["default-keychain", "-d", "user"]),
+    );
+    expect(run("write", first)).toMatchObject({ status: 0, stderr: "" });
+    const createdWithoutDefault = runSecuritySuccessfully([
+      "find-generic-password",
+      "-a",
+      account,
+      "-s",
+      service,
+      "-w",
+      primaryKeychain,
+    ]);
+    expect(createdWithoutDefault.stdout.trim()).toBe(first);
+    expect(run("delete")).toMatchObject({ status: 0, stderr: "" });
+
+    runSecuritySuccessfully([
+      "list-keychains",
+      "-d",
+      "user",
+      "-s",
+      firstKeychain,
+      secondKeychain,
+      primaryKeychain,
+    ]);
+    const ambiguousSearchList = runSecuritySuccessfully([
+      "list-keychains",
+      "-d",
+      "user",
+    ]);
+    expect(parseKeychainPaths(ambiguousSearchList.stdout)).toEqual([
+      firstKeychain,
+      secondKeychain,
+      primaryKeychain,
+    ]);
+    expectMissingUserDefault(
+      runSecurity(["default-keychain", "-d", "user"]),
+    );
+    const ambiguousCreateTarget = run("write", first);
+    expect(ambiguousCreateTarget.status).toBe(1);
+    expect(ambiguousCreateTarget.stderr).toContain("Keychain add failed");
+    expect(ambiguousCreateTarget.stderr).toContain("OSStatus -25307");
+    for (const keychain of temporaryKeychains) {
+      const absent = runSecurity([
         "find-generic-password",
         "-a",
         account,
         "-s",
         service,
         "-w",
-        primaryKeychain,
+        keychain,
       ]);
-      expect(createdInDefault.stdout.trim()).toBe(first);
-      expect(run("delete")).toMatchObject({ status: 0, stderr: "" });
-    } else {
-      const ambiguousCreateTarget = run("write", first);
-      expect(ambiguousCreateTarget.status).toBe(1);
-      expect(ambiguousCreateTarget.stderr).toContain("Keychain add failed");
-      expect(ambiguousCreateTarget.stderr).toContain("OSStatus -25307");
-      for (const keychain of temporaryKeychains) {
-        const absent = runSecurity([
-          "find-generic-password",
-          "-a",
-          account,
-          "-s",
-          service,
-          "-w",
-          keychain,
-        ]);
-        expect(absent.status).not.toBe(0);
-        expect(absent.stdout).toBe("");
-      }
-      expect(run("read")).toMatchObject({
-        status: 2,
-        stdout: "",
-        stderr: "",
-      });
+      expect(absent.status).not.toBe(0);
+      expect(absent.stdout).toBe("");
     }
+    expect(run("read")).toMatchObject({
+      status: 2,
+      stdout: "",
+      stderr: "",
+    });
   } finally {
     void run("delete");
-    if (originalDefaultKeychain !== undefined) {
-      void runSecurity([
-        "default-keychain",
-        "-d",
-        "user",
-        "-s",
-        originalDefaultKeychain,
-      ]);
-    }
     if (originalSearchList !== undefined) {
       void runSecurity([
         "list-keychains",
@@ -358,6 +401,17 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
         "user",
         "-s",
         ...originalSearchList,
+      ]);
+    }
+    if (originalDefaultCaptured) {
+      void runSecurity([
+        "default-keychain",
+        "-d",
+        "user",
+        "-s",
+        ...(originalDefaultKeychain === undefined
+          ? []
+          : [originalDefaultKeychain]),
       ]);
     }
     for (const keychain of temporaryKeychains) {
