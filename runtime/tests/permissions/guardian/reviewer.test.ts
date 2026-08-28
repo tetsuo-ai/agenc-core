@@ -23,6 +23,7 @@ import {
   type SessionOpts,
   type SessionServices,
 } from "../../session/session.js";
+import { resolveAgentRuntimeOptions } from "../../session/runtime-options.js";
 import {
   newDefaultTurnWithSubId,
   type Config,
@@ -166,6 +167,7 @@ function mkSession(opts: {
   const events: Event[] = [];
   const breaker = opts.breaker ?? createGuardianRejectionCircuitBreaker();
   const models = opts.models ?? [mkModelInfo()];
+  const configStore = createTestConfigStore({ cwd: "/tmp" });
   const services = {
     admissionRequired: false,
     mcpConnectionManager: {
@@ -180,7 +182,10 @@ function mkSession(opts: {
     permissionModeRegistry: new PermissionModeRegistry(
       createEmptyToolPermissionContext(),
     ),
-    configStore: createTestConfigStore({ cwd: "/tmp" }),
+    configStore,
+    runtimeOptions: resolveAgentRuntimeOptions({
+      AGENC_HOME: configStore.homeContext.path,
+    }),
     provider: opts.provider,
     registry: {
       tools: [],
