@@ -8,7 +8,10 @@ import { expect, test } from "vitest";
 import { connect as connectSdk } from "../../../packages/agenc-sdk/src/socket.js";
 import { assertWindowsPrivatePathSecurity } from "../../src/agents/workflow-private-path.js";
 import { createAgenCJsonLineDaemonClient } from "../../src/app-server/agent-cli.js";
-import { resolveAgenCDaemonSocketPath } from "../../src/app-server/daemon-cli.js";
+import {
+  readAgenCDaemonSpawnStderrTail,
+  resolveAgenCDaemonSocketPath,
+} from "../../src/app-server/daemon-cli.js";
 import {
   AGENC_DAEMON_PROTOCOL_VERSION,
   JSON_RPC_VERSION,
@@ -275,9 +278,11 @@ function runBuiltDaemonCli(
     windowsHide: true,
   });
   if (result.error !== undefined) {
+    const daemonSpawnStderr = readAgenCDaemonSpawnStderrTail(env);
     throw new Error(
       `built daemon CLI ${args.join(" ")} failed: ${result.error.message}\n` +
-        `stdout: ${result.stdout}\nstderr: ${result.stderr}`,
+        `stdout: ${result.stdout}\nstderr: ${result.stderr}\n` +
+        `daemon spawn stderr: ${daemonSpawnStderr || "(empty)"}`,
       { cause: result.error },
     );
   }
