@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { randomUUID } from "node:crypto";
@@ -118,6 +118,11 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
         keychain,
       ]);
     }
+    const [
+      canonicalPrimaryKeychain,
+      canonicalFirstKeychain,
+      canonicalSecondKeychain,
+    ] = temporaryKeychains.map((keychain) => realpathSync(keychain));
     runSecuritySuccessfully([
       "default-keychain",
       "-d",
@@ -144,7 +149,7 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
       "user",
     ]);
     expect(parseKeychainPaths(configuredSearchList.stdout)).toEqual([
-      primaryKeychain,
+      canonicalPrimaryKeychain,
     ]);
     const configuredDefaultKeychain = runSecuritySuccessfully([
       "default-keychain",
@@ -152,7 +157,7 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
       "user",
     ]);
     expect(parseKeychainPaths(configuredDefaultKeychain.stdout)).toEqual([
-      primaryKeychain,
+      canonicalPrimaryKeychain,
     ]);
 
     const initiallyMissing = run("read");
@@ -338,7 +343,7 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
       "user",
     ]);
     expect(parseKeychainPaths(soleSearchList.stdout)).toEqual([
-      primaryKeychain,
+      canonicalPrimaryKeychain,
     ]);
     expectMissingUserDefault(
       runSecurity(["default-keychain", "-d", "user"]),
@@ -371,9 +376,9 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
       "user",
     ]);
     expect(parseKeychainPaths(ambiguousSearchList.stdout)).toEqual([
-      firstKeychain,
-      secondKeychain,
-      primaryKeychain,
+      canonicalFirstKeychain,
+      canonicalSecondKeychain,
+      canonicalPrimaryKeychain,
     ]);
     expectMissingUserDefault(
       runSecurity(["default-keychain", "-d", "user"]),
