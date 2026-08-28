@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -13,7 +13,7 @@ import {
   type SandboxManager,
   type SandboxTransformRequest,
 } from "../sandbox/engine/index.js";
-import { UnifiedExecError } from "./types.js";
+import { type ExecCommandToolOutput, UnifiedExecError } from "./types.js";
 import {
   UnifiedExecPreSpawnRefusalError,
   UnifiedExecProcessExitedBeforeWriteError,
@@ -351,6 +351,189 @@ describe("UnifiedExecProcessManager", () => {
     expect(result.exitCode).toBe(0);
     expect(result.stdout).toBe("agenc-runtime");
     expect(result.process_id).toBeUndefined();
+  });
+
+  test("resolves a relative workdir against the manager workspace root", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-exec-relative-cwd-"));
+    const childDirectory = join(root, "flowforge");
+    await mkdir(childDirectory);
+    const manager = new UnifiedExecProcessManager({ cwd: root });
+
+    try {
+      const result = await manager.execCommand({
+        cmd: `${JSON.stringify(process.execPath)} -e ${JSON.stringify("process.stdout.write(process.cwd())")}`,
+        workdir: "flowforge",
+        yield_time_ms: 250,
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout).toBe(await realpath(childDirectory));
+    } finally {
+      await manager.closeAll("test cleanup");
+    }
+  });
+
+  test("contains an invalid-cwd spawn failure and remains usable", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-exec-invalid-cwd-"));
+    const manager = new UnifiedExecProcessManager({ cwd: root });
+
+    try {
+      await expect(
+        manager.execCommand({
+          cmd: "printf must-not-run",
+          workdir: "missing-directory",
+          yield_time_ms: 250,
+        }),
+      ).rejects.toMatchObject({
+        name: "UnifiedExecPreSpawnRefusalError",
+        code: "create_process",
+        boundary: "pre_spawn",
+        message: expect.stringMatching(/working directory is unavailable/iu),
+      } satisfies Partial<UnifiedExecPreSpawnRefusalError>);
+
+      const followUp = await manager.execCommand({
+        cmd: "printf manager-still-alive",
+        yield_time_ms: 250,
+      });
+      expect(followUp).toMatchObject({
+        exitCode: 0,
+        stdout: "manager-still-alive",
+      });
+    } finally {
+      await manager.closeAll("test cleanup");
+    }
+  });
+
+  test("contains a sandbox-transformed invalid cwd and remains usable", async () => {
+    const root = await mkdtemp(
+      join(tmpdir(), "agenc-exec-sandbox-invalid-cwd-"),
+    );
+    const missingSandboxCwd = join(root, "sandbox-missing-directory");
+    const manager = new UnifiedExecProcessManager({
+      cwd: root,
+      sandboxManager: {
+        selectInitial: () => "linux_seccomp",
+        transform: (request): SandboxExecRequest => ({
+          command: [request.command.program, ...request.command.args],
+          cwd: missingSandboxCwd,
+          env: request.command.env,
+          sandbox: request.sandbox,
+          windowsSandboxLevel: request.windowsSandboxLevel,
+          windowsSandboxPrivateDesktop:
+            request.windowsSandboxPrivateDesktop,
+          permissionProfile: request.permissions,
+          fileSystemSandboxPolicy: request.permissions.fileSystem,
+          networkSandboxPolicy: request.permissions.network,
+          arg0: "agenc-invalid-cwd-test",
+        }),
+      },
+    });
+    const permissionProfile = permissionProfileFromRuntimePermissions(
+      unrestrictedFileSystemPolicy(),
+      "disabled",
+    );
+
+    try {
+      await expect(
+        manager.execCommand({
+          cmd: "printf must-not-run",
+          runtimeSandbox: {
+            permissionProfile,
+            sandboxPolicyCwd: root,
+            preference: "require",
+          },
+          yield_time_ms: 250,
+        }),
+      ).rejects.toMatchObject({
+        name: "UnifiedExecPreSpawnRefusalError",
+        code: "create_process",
+        boundary: "pre_spawn",
+        message: expect.stringContaining(missingSandboxCwd),
+      } satisfies Partial<UnifiedExecPreSpawnRefusalError>);
+
+      const followUp = await manager.execCommand({
+        cmd: "printf manager-still-alive-after-sandbox-refusal",
+        yield_time_ms: 250,
+      });
+      expect(followUp).toMatchObject({
+        exitCode: 0,
+        stdout: "manager-still-alive-after-sandbox-refusal",
+      });
+    } finally {
+      await manager.closeAll("test cleanup");
+    }
+  });
+
+  test("settles a post-spawn stdin EPIPE once and remains usable", async () => {
+    const root = await mkdtemp(join(tmpdir(), "agenc-exec-stdin-epipe-"));
+    const manager = new UnifiedExecProcessManager({ cwd: root });
+
+    try {
+      const started = await manager.execCommand({
+        cmd: `${JSON.stringify(process.execPath)} -e ${JSON.stringify("setInterval(() => {}, 1000)")}`,
+        yield_time_ms: 250,
+      });
+      const sessionId = started.process_id!;
+      const entry = (
+        manager as unknown as {
+          readonly processes: ReadonlyMap<
+            number,
+            {
+              readonly stored:
+                | {
+                    readonly kind: "pipe";
+                    readonly process: {
+                      readonly stdin: {
+                        emit(event: "error", error: Error): boolean;
+                      };
+                    };
+                  }
+                | { readonly kind: "pty" };
+            }
+          >;
+        }
+      ).processes.get(sessionId);
+      expect(entry?.stored.kind).toBe("pipe");
+      if (entry?.stored.kind !== "pipe") {
+        throw new Error("expected a pipe-backed process");
+      }
+      const pipeError = Object.assign(new Error("synthetic stdin EPIPE"), {
+        code: "EPIPE",
+      });
+      // Duplicate delivery models stdin + child error racing. Settlement must
+      // stay idempotent and neither event may escape as an uncaught exception.
+      entry.stored.process.stdin.emit("error", pipeError);
+      entry.stored.process.stdin.emit("error", pipeError);
+      await delay(300);
+
+      let observation: ExecCommandToolOutput | undefined;
+      try {
+        observation = await manager.writeStdin({
+          session_id: sessionId,
+          chars: "",
+          yield_time_ms: 250,
+        });
+      } catch (error) {
+        expect(error).toBeInstanceOf(UnifiedExecProcessExitedBeforeWriteError);
+        observation = (error as UnifiedExecProcessExitedBeforeWriteError)
+          .observation;
+      }
+      expect(observation).toMatchObject({
+        exitCode: 1,
+        stderr: expect.stringContaining("synthetic stdin EPIPE"),
+      });
+
+      const followUp = await manager.execCommand({
+        cmd: "printf manager-still-alive-after-epipe",
+        yield_time_ms: 250,
+      });
+      expect(followUp).toMatchObject({
+        exitCode: 0,
+        stdout: "manager-still-alive-after-epipe",
+      });
+    } finally {
+      await manager.closeAll("test cleanup");
+    }
   });
 
   test("preserves initial exec output when progress telemetry throws", async () => {

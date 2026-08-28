@@ -1,4 +1,5 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import treeKill from "tree-kill";
@@ -381,6 +382,20 @@ function resolveShell(shell: string | undefined): string {
   );
 }
 
+function assertExecWorkingDirectory(cwd: string): void {
+  try {
+    if (!statSync(cwd).isDirectory()) {
+      throw new Error("not a directory");
+    }
+  } catch (error) {
+    throw new UnifiedExecPreSpawnRefusalError(
+      `exec_command working directory is unavailable: ${cwd} (${
+        error instanceof Error ? error.message : String(error)
+      })`,
+    );
+  }
+}
+
 function shellArgs(command: string, login: boolean | undefined): string[] {
   if (process.platform === "win32") return ["/d", "/s", "/c", command];
   return [login === true ? "-lc" : "-c", command];
@@ -490,7 +505,13 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       );
     }
 
-    const cwd = resolve(request.workdir ?? this.cwd);
+    // A model-facing workdir is workspace-relative.  `path.resolve(relative)`
+    // uses the daemon's process.cwd(), which is unrelated to the session
+    // workspace (the desktop daemon is commonly launched from the user's
+    // home).  Resolve against the manager root explicitly; absolute paths keep
+    // their normal path.resolve semantics.
+    const cwd = resolve(this.cwd, request.workdir ?? ".");
+    assertExecWorkingDirectory(cwd);
     const shell = resolveShell(request.shell);
     const args = shellArgs(request.cmd, request.login);
     const spawnCommand = this.buildSpawnCommand({
@@ -502,6 +523,11 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
         ? { runtimeSandbox: request.runtimeSandbox }
         : {}),
     });
+    // A sandbox transform may replace cwd after the request-level preflight.
+    // Validate that final spawn boundary too: passing an invalid cwd to
+    // child_process.spawn creates a partially initialized child whose private
+    // pipes can emit EPIPE while process creation is failing.
+    assertExecWorkingDirectory(spawnCommand.cwd);
     // Exited entries are receipts with potentially unpolled output, not live
     // capacity consumers. Refuse only when the live-process budget is full.
     // In particular, do not reclaim an exited receipt before spawn: PTY/OS
@@ -892,13 +918,6 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
       env: params.env,
       argv0: params.argv0 ?? basename(params.program),
     });
-    child.stdin.end();
-    child.stdout.on("data", (data: Buffer) =>
-      notifyData("stdout", data.toString("utf8")),
-    );
-    child.stderr.on("data", (data: Buffer) =>
-      notifyData("stderr", data.toString("utf8")),
-    );
     const entry: ProcessEntry = {
       ...entryBase,
       stored: { kind: "pipe", process: child },
@@ -943,7 +962,23 @@ export class UnifiedExecProcessManager implements UnifiedExecProcessManagerLike 
     child.on("error", (error) => {
       settleContainedProcess({ exitCode: 1 }, error);
     });
+    // A failed spawn (for example an invalid cwd) can reject the stdin pipe
+    // with EPIPE independently of the ChildProcess `error` event.  Ending stdin
+    // before this listener existed let that ordinary process-creation failure
+    // escape as an uncaught daemon exception.  Install every child/stream
+    // listener first and route stdin failures through the same idempotent
+    // settlement path.
+    child.stdin.on("error", (error) => {
+      settleContainedProcess({ exitCode: 1 }, error);
+    });
+    child.stdout.on("data", (data: Buffer) =>
+      notifyData("stdout", data.toString("utf8")),
+    );
+    child.stderr.on("data", (data: Buffer) =>
+      notifyData("stderr", data.toString("utf8")),
+    );
     this.attachAbortTermination(entry);
+    child.stdin.end();
     child.unref();
     return entry;
   }
