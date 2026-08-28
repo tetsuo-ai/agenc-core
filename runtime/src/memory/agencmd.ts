@@ -7,8 +7,8 @@
  *
  * Files are loaded in the following order:
  *
- * 1. Managed memory (eg. /etc/agenc-code/AGENC.md) - Global instructions for all users
- * 2. User memory (~/.agenc/AGENC.md) - Private global instructions for all projects
+ * 1. Managed memory (for example, /etc/agenc/AGENC.md on Linux) - Global instructions for all users
+ * 2. User memory ($AGENC_HOME/AGENC.md) - Private global instructions for all projects
  * 3. Project memory (AGENC.md, with AGENTS.md fallback, plus .agenc/AGENC.md and .agenc/rules/*.md in project roots) - Instructions checked into the codebase
  * 4. Local memory (AGENC.local.md in project roots) - Private project-specific instructions
  *

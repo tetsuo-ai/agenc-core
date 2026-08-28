@@ -70,12 +70,21 @@ const retiredProviderSelector = new RegExp(
   "u",
 );
 
+const retiredManagedInstructionRoot = new RegExp(
+  "(?:/etc/agenc-" +
+    "code|/Library/Application Support/AgenC" +
+    "Code|C:\\\\Program Files\\\\AgenC" +
+    "Code)",
+  "u",
+);
+
 const retiredDocumentationTerms = new Map<string, RegExp>([
   [
     "retired operator JSON path",
     /(?:~\/\.agenc\.json|\.agenc\/(?:\.config|config|settings(?:\.local)?)\.json)/iu,
   ],
   ["retired managed JSON path", /managed-settings(?:\.json|\.d)?/iu],
+  ["retired managed instruction root", retiredManagedInstructionRoot],
   ["retired --settings flag", /(?:^|\s)--settings(?:\s|$|[=`])/mu],
   ["retired apiKeyHelper config", /\bapiKeyHelper\b/u],
   ["retired home alias", /\bAGENC_CONFIG_DIR\b/u],
@@ -267,6 +276,7 @@ describe("configuration authority residue", () => {
         "parallel config-loader claim",
         /\b(?:multiple|two) config(?:uration)? (?:loaders?|surfaces)\b/iu,
       ],
+      ["retired managed instruction root", retiredManagedInstructionRoot],
     ]);
     const explicitMigrationBoundary = new Set([
       "config/migration.ts",

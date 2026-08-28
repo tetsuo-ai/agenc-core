@@ -47,8 +47,8 @@ canonical git root is found.
 Resolved for every coding-agent/review turn at the shared session boundary in
 priority order (later wins only within workspace guidance):
 
-1. **Managed** — `$AGENC_MANAGED_INSTRUCTIONS` or `/etc/agenc/AGENC.md` plus `/etc/agenc/rules/*.md`. The donor picker also looks at `/etc/agenc-code/AGENC.md` (platform variants). Those two managed roots are not the same.
-2. **User** — `$configHome/AGENC.md` plus `$configHome/rules/*.md`
+1. **Managed** — `$AGENC_MANAGED_INSTRUCTIONS` or the platform managed `AGENC.md`: `/etc/agenc/AGENC.md` on Linux, `/Library/Application Support/AgenC/AGENC.md` on macOS, and `%ProgramData%\AgenC\AGENC.md` on Windows. Rules load from the `rules/*.md` directory beside that file.
+2. **User** — `$AGENC_HOME/AGENC.md` plus `$AGENC_HOME/rules/*.md`
 3. **Project** — walk from cwd: `AGENC.override.md`, `AGENC.md`, **`AGENTS.md` fallback** (`CLAUDE.md` is not a fallback), `.agenc/AGENC.md`, `.agenc/rules/**/*.md`
 4. **Local** — `<projectRoot>/AGENC.local.md` only (not every ancestor)
 
