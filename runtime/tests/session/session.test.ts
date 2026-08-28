@@ -120,9 +120,9 @@ function mkFeatures(): ManagedFeatures {
   return {};
 }
 
-function mkConfig(): Config {
+function mkConfig(model = "test-model"): Config {
   return {
-    model: "test-model",
+    model,
     cwd: "/tmp",
     features: mkFeatures(),
     multiAgentV2: {
@@ -143,9 +143,9 @@ function mkConfig(): Config {
   };
 }
 
-function mkModelInfo(): ModelInfo {
+function mkModelInfo(model = "test-model"): ModelInfo {
   return {
-    slug: "test-model",
+    slug: model,
     effectiveContextWindowPercent: 100,
     contextWindow: 131_072,
     supportedReasoningLevels: [],
@@ -155,7 +155,7 @@ function mkModelInfo(): ModelInfo {
   };
 }
 
-function mkSessionConfiguration(): SessionConfiguration {
+function mkSessionConfiguration(model = "test-model"): SessionConfiguration {
   return {
     cwd: "/tmp",
     approvalPolicy: { value: "never" },
@@ -172,7 +172,7 @@ function mkSessionConfiguration(): SessionConfiguration {
       allowManagedDomainsOnly: false,
     },
     windowsSandboxLevel: "none",
-    collaborationMode: { model: "test-model" },
+    collaborationMode: { model },
     dynamicTools: [],
     sessionSource: "cli_main",
   };
@@ -180,7 +180,7 @@ function mkSessionConfiguration(): SessionConfiguration {
 
 function mkProvider(): LLMProvider {
   return {
-    name: "stub-provider",
+    name: "openai-compatible",
     chat: async () => ({
       content: "",
       toolCalls: [],
@@ -239,9 +239,10 @@ function buildSession(
     readSavedApiKey?: (provider: string) => Promise<string | undefined>;
   } = {},
 ): Session {
-  const config = overrides.config ?? mkConfig();
-  const initialSessionConfiguration =
-    overrides.sessionConfiguration ?? mkSessionConfiguration();
+  const initialProvider = overrides.services?.provider ?? mkProvider();
+  const initialProviderModel =
+    readProviderFactoryOptions(initialProvider).model ?? "test-model";
+  const config = overrides.config ?? mkConfig(initialProviderModel);
   const suppliedConfigStore = overrides.services?.configStore;
   const configStore =
     suppliedConfigStore instanceof ConfigStore
@@ -278,7 +279,7 @@ function buildSession(
     permissionModeRegistry: new PermissionModeRegistry(
       ctxWithPermissionMode("default"),
     ),
-    provider: mkProvider(),
+    provider: initialProvider,
     providerEnvironment: {
       OPENAI_API_KEY: "test-key",
       XAI_API_KEY: "test-key",
@@ -291,6 +292,9 @@ function buildSession(
     ...(overrides.services ?? {}),
     configStore,
   } as unknown as SessionServices;
+  const initialSessionConfiguration =
+    overrides.sessionConfiguration ??
+    mkSessionConfiguration(initialProviderModel);
   const providerEnvironment = services.providerEnvironment ?? {};
   const providerService =
     services.providerService ??
@@ -360,7 +364,7 @@ function buildSession(
       : {}),
     jsRepl: { id: "repl-test" },
     config,
-    modelInfo: overrides.modelInfo ?? mkModelInfo(),
+    modelInfo: overrides.modelInfo ?? mkModelInfo(initialProviderModel),
     ...(overrides.eventQueue === null
       ? {}
       : { eventQueue: overrides.eventQueue ?? new AsyncQueue<Event>() }),
@@ -1065,10 +1069,10 @@ describe("Session.consumePendingProviderSwitch", () => {
       expect(applied.reason).toMatch(/OPENAI_API_KEY|apiKey/i);
       expect(state.sessionConfiguration.provider).toBeUndefined();
       expect(state.sessionConfiguration.collaborationMode.model).toBe(
-        "test-model",
+        "grok-4",
       );
-      expect(session.config.model).toBe("test-model");
-      expect(session.modelInfo.slug).toBe("test-model");
+      expect(session.config.model).toBe("grok-4");
+      expect(session.modelInfo.slug).toBe("grok-4");
       expect(session.services.provider).toBe(startingProvider);
       expect(session.pendingProviderSwitch).toBeNull();
       expect(emitted).toMatchObject({

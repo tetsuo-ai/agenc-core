@@ -63,6 +63,57 @@ describe("SessionProviderService", () => {
     );
   });
 
+  test("rejects an initial provider identity that contradicts its factory", () => {
+    const provider = initialProvider("factory-model");
+
+    expect(() =>
+      new SessionProviderService({
+        initialProvider: provider,
+        initialProviderName: "github",
+      })
+    ).toThrow(
+      'provider binding identity conflict: factory is "openai-compatible" but explicit provider is "github"',
+    );
+  });
+
+  test("rejects an initial model that contradicts its factory", () => {
+    const provider = initialProvider("factory-model");
+    expect(() =>
+      new SessionProviderService({
+        initialProvider: provider,
+        initialModel: "explicit-model",
+      })
+    ).toThrow(
+      'openai-compatible provider binding model conflict: factory is "factory-model" but explicit model is "explicit-model"',
+    );
+  });
+
+  test("rejects an unknown initial provider identity", () => {
+    const unknown = Object.freeze({
+      name: "unknown-provider",
+      config: { model: "unknown-model" },
+    });
+    expect(() =>
+      new SessionProviderService({
+        initialProvider: unknown as never,
+      })
+    ).toThrow('unknown bound provider "unknown-provider"');
+  });
+
+  test("keeps explicit provider identity separate from an unmarked transport", () => {
+    const transport = Object.freeze({
+      name: "openai",
+      config: { model: "transport-model" },
+    });
+
+    expect(
+      bindingFromProvider({
+        provider: transport as never,
+        providerName: "github",
+      }).provider,
+    ).toBe("github");
+  });
+
   test("deeply snapshots nested factory options in the session binding", () => {
     const defaultHeaders = { "x-bound": "first" };
     const openAiCompatibility = { authHeader: "X-First-Auth" };
@@ -473,5 +524,27 @@ describe("SessionProviderService", () => {
     service.commit(first);
     expect(() => service.commit(stale)).toThrow(/changed while.*prepared/i);
     expect(service.current().model).toBe("first");
+  });
+
+  test("does not mutate the current binding when commit validation fails", async () => {
+    const service = new SessionProviderService({
+      initialProvider: initialProvider("initial"),
+    });
+    const before = service.current();
+    const prepared = await service.prepare(
+      { provider: "openai-compatible", model: "replacement" },
+      {},
+    );
+
+    expect(() =>
+      service.commit({
+        ...prepared,
+        binding: {
+          ...prepared.binding,
+          provider: "unknown-provider",
+        },
+      })
+    ).toThrow('unknown bound provider "unknown-provider"');
+    expect(service.current()).toBe(before);
   });
 });

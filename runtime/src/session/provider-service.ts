@@ -2,6 +2,7 @@
 
 import {
   createProvider,
+  isFactoryProvider,
   resolveBuiltInProviderSlug,
   readProviderFactoryOptions,
   readProviderIdentity,
@@ -126,15 +127,44 @@ export function bindingFromProvider(params: {
   readonly revision?: number;
 }): ProviderBinding {
   const options = readProviderFactoryOptions(params.provider);
+  const explicitProviderName = firstNonEmpty(params.providerName);
+  const explicitProviderIdentity = explicitProviderName === undefined
+    ? undefined
+    : resolveBuiltInProviderSlug(explicitProviderName);
+  const factoryProviderIdentity = isFactoryProvider(params.provider)
+    ? readProviderIdentity(params.provider)
+    : null;
+  if (factoryProviderIdentity !== null && explicitProviderName !== undefined) {
+    if (explicitProviderIdentity === undefined) {
+      throw new Error(`unknown bound provider "${explicitProviderName}"`);
+    }
+    if (factoryProviderIdentity !== explicitProviderIdentity) {
+      throw new Error(
+        `provider binding identity conflict: factory is "${factoryProviderIdentity}" but explicit provider is "${explicitProviderIdentity}"`,
+      );
+    }
+  }
   const providerName =
-    readProviderIdentity(params.provider, params.providerName) ??
-    firstNonEmpty(params.providerName, params.provider.name);
+    factoryProviderIdentity ??
+    explicitProviderIdentity ??
+    explicitProviderName ??
+    readProviderIdentity(params.provider) ??
+    firstNonEmpty(params.provider.name);
   if (providerName === undefined) {
     throw new Error("provider binding requires an explicit provider identity");
   }
-  const model =
-    firstNonEmpty(options.model, params.model) ??
-    firstNonEmpty((params.provider as { config?: { model?: string } }).config?.model);
+  const factoryModel = firstNonEmpty(options.model);
+  const explicitModel = firstNonEmpty(params.model);
+  if (
+    factoryModel !== undefined &&
+    explicitModel !== undefined &&
+    factoryModel !== explicitModel
+  ) {
+    throw new Error(
+      `${providerName} provider binding model conflict: factory is "${factoryModel}" but explicit model is "${explicitModel}"`,
+    );
+  }
+  const model = factoryModel ?? explicitModel;
   if (model === undefined) {
     throw new Error(`${providerName} provider binding requires an explicit model`);
   }
@@ -176,7 +206,7 @@ export class SessionProviderService {
     readonly resolvePreparationRequest?: ResolveProviderPreparationRequest;
   }) {
     this.#environment = snapshotProviderEnvironment(params.environment ?? {});
-    this.#binding = bindingFromProvider({
+    const initialBinding = bindingFromProvider({
       provider: params.initialProvider,
       ...(params.initialProviderName !== undefined
         ? { providerName: params.initialProviderName }
@@ -185,7 +215,9 @@ export class SessionProviderService {
         ? { model: params.initialModel }
         : {}),
     });
-    this.#credentialHome = this.#binding.factoryOptions.credentialHome;
+    assertBuiltInProviderBinding(initialBinding);
+    this.#binding = initialBinding;
+    this.#credentialHome = initialBinding.factoryOptions.credentialHome;
     this.#readSavedApiKey = params.readSavedApiKey;
     this.#authBackend = params.authBackend;
     this.#sessionId = params.sessionId;
@@ -275,8 +307,8 @@ export class SessionProviderService {
         "provider switch rejected because the session provider changed while the switch was being prepared",
       );
     }
+    assertBuiltInProviderBinding(prepared.binding);
     this.#binding = prepared.binding;
-    assertBuiltInProviderBinding(this.#binding);
     return this.#binding;
   }
 }

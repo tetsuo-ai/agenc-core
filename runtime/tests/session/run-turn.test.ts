@@ -534,7 +534,7 @@ function mkSession(opts: {
   } = {
     sessionConfiguration: mkSessionConfiguration({
       provider: {
-        slug: "stub-provider",
+        slug: "openai-compatible",
       } as unknown as SessionConfiguration["provider"],
       collaborationMode: { model: "stub-model" },
       ...(opts.sessionConfiguration as
@@ -6569,7 +6569,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
       provider: primaryProvider,
       registry: mkRegistry(),
       sessionConfiguration: {
-        provider: { slug: "primary-provider" },
+        provider: { slug: "openai-compatible" },
         collaborationMode: { model: "test-model" },
       },
     });
@@ -6606,7 +6606,7 @@ describe("runTurn — I-13 pendingProviderSwitch consumer", () => {
     expect(session.pendingProviderSwitch).toBeNull();
     expect(session.services.provider).toBe(primaryProvider);
     expect(getState().sessionConfiguration.provider?.slug).toBe(
-      "primary-provider",
+      "openai-compatible",
     );
     expect(getState().sessionConfiguration.collaborationMode?.model).toBe(
       "test-model",
