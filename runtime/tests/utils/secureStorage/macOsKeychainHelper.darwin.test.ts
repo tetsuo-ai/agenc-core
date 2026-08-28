@@ -75,11 +75,7 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     expect(compile.error?.message ?? compile.stderr).toBe("");
     expect(compile.status).toBe(0);
 
-    const defaultKeychain = runSecurity([
-      "default-keychain",
-      "-d",
-      "user",
-    ]);
+    const defaultKeychain = runSecurity(["default-keychain"]);
     if (defaultKeychain.status === 0) {
       expect(defaultKeychain.error).toBeUndefined();
       expect(defaultKeychain.stderr).toBe("");
@@ -89,11 +85,11 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
       expect(defaultKeychain.error).toBeUndefined();
       expect(defaultKeychain.stdout).toBe("");
       expect(defaultKeychain.stderr.trim()).toBe(
-        "security: SecKeychainCopyDomainDefault user: A default keychain could not be found.",
+        "security: SecKeychainCopyDefault: A default keychain could not be found.",
       );
     }
 
-    const listed = runSecuritySuccessfully(["list-keychains", "-d", "user"]);
+    const listed = runSecuritySuccessfully(["list-keychains"]);
     originalSearchList = parseKeychainPaths(listed.stdout);
 
     for (const keychain of temporaryKeychains) {
@@ -112,15 +108,11 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     }
     runSecuritySuccessfully([
       "default-keychain",
-      "-d",
-      "user",
       "-s",
       primaryKeychain,
     ]);
     runSecuritySuccessfully([
       "list-keychains",
-      "-d",
-      "user",
       "-s",
       primaryKeychain,
     ]);
@@ -182,8 +174,6 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     }
     runSecuritySuccessfully([
       "list-keychains",
-      "-d",
-      "user",
       "-s",
       firstKeychain,
       secondKeychain,
@@ -227,8 +217,6 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     if (originalDefaultKeychain !== undefined) {
       void runSecurity([
         "default-keychain",
-        "-d",
-        "user",
         "-s",
         originalDefaultKeychain,
       ]);
@@ -236,8 +224,6 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     if (originalSearchList !== undefined) {
       void runSecurity([
         "list-keychains",
-        "-d",
-        "user",
         "-s",
         ...originalSearchList,
       ]);
