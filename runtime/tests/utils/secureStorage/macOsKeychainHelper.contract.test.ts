@@ -25,9 +25,12 @@ describe("macOS Keychain native-helper contract", () => {
       "multiple Keychain records match the exact service/account identity",
     );
     expect(source).toContain("SecItemUpdate(query, values)");
-    expect(source).toContain("SecKeychainCopyDefault(&default_keychain)");
+    expect(source).toContain("SecKeychainCopyDefault(&target)");
+    expect(source).toContain("if (status == errSecNoDefaultKeychain)");
+    expect(source).toContain("SecKeychainCopySearchList(&search_list)");
+    expect(source).toContain("CFArrayGetCount(search_list) != 1");
     expect(source).toContain(
-      "CFDictionarySetValue(item, kSecUseKeychain, default_keychain)",
+      "CFDictionarySetValue(item, kSecUseKeychain, target)",
     );
     expect(source).toContain("SecItemAdd(item, added_out)");
     expect(source).toContain("SecItemDelete(query)");
@@ -41,10 +44,10 @@ describe("macOS Keychain native-helper contract", () => {
     expect(source).not.toContain("SecItemDelete(identity_query");
 
     const defaultLookupIndex = source.indexOf(
-      "SecKeychainCopyDefault(&default_keychain)",
+      "SecKeychainCopyDefault(&target)",
     );
     const targetIndex = source.indexOf(
-      "CFDictionarySetValue(item, kSecUseKeychain, default_keychain)",
+      "CFDictionarySetValue(item, kSecUseKeychain, target)",
       defaultLookupIndex,
     );
     const addIndex = source.indexOf("SecItemAdd(item, added_out)", targetIndex);

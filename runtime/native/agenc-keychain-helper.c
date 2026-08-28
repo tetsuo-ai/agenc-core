@@ -383,29 +383,75 @@ static OSStatus delete_by_persistent_ref(CFDataRef persistent_ref) {
   return status;
 }
 
+static OSStatus copy_keychain_add_target(SecKeychainRef *target_out) {
+  CFArrayRef search_list = NULL;
+  SecKeychainRef target = NULL;
+  OSStatus status;
+
+  *target_out = NULL;
+#pragma clang diagnostic push
+/* The file-based kSecUseKeychain path requires deprecated SecKeychain APIs. */
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+  status = SecKeychainCopyDefault(&target);
+  if (status == errSecNoDefaultKeychain) {
+    if (target != NULL) {
+      CFRelease(target);
+    }
+    target = NULL;
+    status = SecKeychainCopySearchList(&search_list);
+  }
+#pragma clang diagnostic pop
+
+  if (status != errSecSuccess) {
+    goto cleanup;
+  }
+  if (target == NULL) {
+    if ((search_list == NULL) || (CFArrayGetCount(search_list) != 1)) {
+      status = errSecNoDefaultKeychain;
+      goto cleanup;
+    }
+
+    target = (SecKeychainRef)CFArrayGetValueAtIndex(search_list, 0);
+    if (target == NULL) {
+      status = errSecInvalidKeychain;
+      goto cleanup;
+    }
+    CFRetain(target);
+  }
+
+  *target_out = target;
+  target = NULL;
+  status = errSecSuccess;
+
+cleanup:
+  if (target != NULL) {
+    CFRelease(target);
+  }
+  if (search_list != NULL) {
+    CFRelease(search_list);
+  }
+  return status;
+}
+
 /*
- * SecItemAdd routes a NULL kSecUseKeychain through defaultKeychainUI. Resolve
- * the configured default explicitly so this command-line helper never opens
- * an authorization or keychain-selection UI merely to choose the destination.
+ * SecItemAdd routes a NULL kSecUseKeychain through defaultKeychainUI. Bind an
+ * explicit, unambiguous target so this command-line helper never opens a
+ * keychain-selection UI merely to choose the destination.
  */
 static OSStatus add_to_default_keychain(CFMutableDictionaryRef item,
                                         CFTypeRef *added_out) {
-  SecKeychainRef default_keychain = NULL;
+  SecKeychainRef target = NULL;
   OSStatus status;
 
   *added_out = NULL;
-#pragma clang diagnostic push
-/* kSecUseKeychain requires the deprecated file-based SecKeychainRef API. */
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-  status = SecKeychainCopyDefault(&default_keychain);
-#pragma clang diagnostic pop
+  status = copy_keychain_add_target(&target);
   if (status != errSecSuccess) {
     return status;
   }
 
-  CFDictionarySetValue(item, kSecUseKeychain, default_keychain);
+  CFDictionarySetValue(item, kSecUseKeychain, target);
   status = SecItemAdd(item, added_out);
-  CFRelease(default_keychain);
+  CFRelease(target);
   return status;
 }
 

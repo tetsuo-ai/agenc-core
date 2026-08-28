@@ -122,6 +122,24 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
       keychainPassword,
       primaryKeychain,
     ]);
+    const configuredSearchList = runSecuritySuccessfully(["list-keychains"]);
+    expect(parseKeychainPaths(configuredSearchList.stdout)).toEqual([
+      primaryKeychain,
+    ]);
+    const configuredDefaultKeychain = runSecurity(["default-keychain"]);
+    if (configuredDefaultKeychain.status === 0) {
+      expect(configuredDefaultKeychain.error).toBeUndefined();
+      expect(configuredDefaultKeychain.stderr).toBe("");
+      expect(parseKeychainPaths(configuredDefaultKeychain.stdout)).toEqual([
+        primaryKeychain,
+      ]);
+    } else {
+      expect(configuredDefaultKeychain.error).toBeUndefined();
+      expect(configuredDefaultKeychain.stdout).toBe("");
+      expect(configuredDefaultKeychain.stderr.trim()).toBe(
+        "security: SecKeychainCopyDefault: A default keychain could not be found.",
+      );
+    }
 
     const initiallyMissing = run("read");
     expect(initiallyMissing.status).toBe(2);
@@ -131,6 +149,16 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     const create = run("write", first);
     expect(create.error?.message ?? create.stderr).toBe("");
     expect(create.status).toBe(0);
+    const createdInPrimary = runSecuritySuccessfully([
+      "find-generic-password",
+      "-a",
+      account,
+      "-s",
+      service,
+      "-w",
+      primaryKeychain,
+    ]);
+    expect(createdInPrimary.stdout.trim()).toBe(first);
     expect(run("read")).toMatchObject({
       status: 0,
       stdout: first,
@@ -211,6 +239,45 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
         keychain,
       ]);
       expect(unchanged.stdout.trim()).toBe(value);
+    }
+
+    if (configuredDefaultKeychain.status === 0) {
+      expect(run("write", first)).toMatchObject({ status: 0, stderr: "" });
+      const createdInDefault = runSecuritySuccessfully([
+        "find-generic-password",
+        "-a",
+        account,
+        "-s",
+        service,
+        "-w",
+        primaryKeychain,
+      ]);
+      expect(createdInDefault.stdout.trim()).toBe(first);
+      expect(run("delete")).toMatchObject({ status: 0, stderr: "" });
+    } else {
+      const ambiguousCreateTarget = run("write", first);
+      expect(ambiguousCreateTarget.status).toBe(1);
+      expect(ambiguousCreateTarget.stderr).toMatch(
+        /A default keychain could not be found/u,
+      );
+      for (const keychain of temporaryKeychains) {
+        const absent = runSecurity([
+          "find-generic-password",
+          "-a",
+          account,
+          "-s",
+          service,
+          "-w",
+          keychain,
+        ]);
+        expect(absent.status).not.toBe(0);
+        expect(absent.stdout).toBe("");
+      }
+      expect(run("read")).toMatchObject({
+        status: 2,
+        stdout: "",
+        stderr: "",
+      });
     }
   } finally {
     void run("delete");
