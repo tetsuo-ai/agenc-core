@@ -75,24 +75,37 @@ export function permissionContextUsesBypassAuthority(
 
 /**
  * Resolve one effective execution authority from the configured baseline and
- * the canonical permission context. Bypass is an override; every other mode
- * restores the exact configured least-privilege snapshot.
+ * the canonical permission context. Permission bypass suppresses approval
+ * prompts but never widens the configured OS sandbox. The immutable combined
+ * dangerous authority is supplied separately from captured runtime options.
  */
 export function executionAuthorityForPermissionContext(
   configured: SessionExecutionAuthority,
   context: Pick<ToolPermissionContext, "mode" | "prePlanMode">,
+  dangerouslyBypassApprovalsAndSandbox = false,
 ): SessionExecutionAuthority {
-  if (!permissionContextUsesBypassAuthority(context)) return configured;
+  const bypassApprovals = permissionContextUsesBypassAuthority(context);
+  if (!bypassApprovals && !dangerouslyBypassApprovalsAndSandbox) {
+    return configured;
+  }
   return Object.freeze({
     ...configured,
-    approvalPolicy: Object.freeze({ value: "never" as const }),
-    sandboxPolicy: Object.freeze({ value: "danger_full_access" as const }),
-    fileSystemSandboxPolicy: Object.freeze({
-      allowWrite: Object.freeze([]),
-      denyWrite: Object.freeze([]),
-      allowRead: Object.freeze([]),
-      denyRead: Object.freeze([]),
-    }),
+    ...(bypassApprovals
+      ? { approvalPolicy: Object.freeze({ value: "never" as const }) }
+      : {}),
+    ...(dangerouslyBypassApprovalsAndSandbox
+      ? {
+          sandboxPolicy: Object.freeze({
+            value: "danger_full_access" as const,
+          }),
+          fileSystemSandboxPolicy: Object.freeze({
+            allowWrite: Object.freeze([]),
+            denyWrite: Object.freeze([]),
+            allowRead: Object.freeze([]),
+            denyRead: Object.freeze([]),
+          }),
+        }
+      : {}),
   });
 }
 
@@ -184,7 +197,6 @@ export function sessionConfigurationFromAgenCConfig(params: {
   readonly model: string;
   readonly provider?: string;
   readonly projectTrust?: "trusted" | "untrusted";
-  readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
 }): SessionConfiguration {
   const configPolicy = approvalPolicyValueFromAgenCConfig(
     params.config.approval_policy,
@@ -256,14 +268,5 @@ export function sessionConfigurationFromAgenCConfig(params: {
       : {}),
   };
 
-  if (params.dangerouslyBypassApprovalsAndSandbox !== true) {
-    return configured;
-  }
-  return {
-    ...configured,
-    ...executionAuthorityForPermissionContext(
-      sessionExecutionAuthorityFromConfiguration(configured),
-      { mode: "bypassPermissions" },
-    ),
-  };
+  return configured;
 }

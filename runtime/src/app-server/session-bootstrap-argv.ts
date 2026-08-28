@@ -1,5 +1,3 @@
-import { DANGEROUS_BYPASS_FLAG } from "../bin/startup-flags.js";
-
 export interface StructuredSessionBootstrapSelection {
   readonly provider?: string;
   readonly model?: string;
@@ -38,9 +36,7 @@ export function buildStructuredSessionBootstrapArgv(
   appendFlag(argv, "--model", selection.model);
   appendFlag(argv, "--profile", selection.profile);
   appendFlag(argv, "--config", selection.configPath);
-  if (selection.permissionMode === "bypassPermissions") {
-    argv.push(DANGEROUS_BYPASS_FLAG);
-  } else if (selection.permissionMode !== undefined) {
+  if (selection.permissionMode !== undefined) {
     argv.push("--permission-mode", selection.permissionMode);
   }
   return argv;

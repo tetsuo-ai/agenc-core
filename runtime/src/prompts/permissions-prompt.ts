@@ -5,25 +5,24 @@
  *
  * The approval-policy and sandbox-mode text blocks are kept as exported
  * string constants with whitespace, casing, and leading spaces preserved. A
- * small selector combines the right pair into a single dynamic system-prompt
- * section based on the current AgenC permission mode.
+ * small selector combines the active approval guidance with the effective
+ * sandbox authority captured for the current turn.
  *
- * AgenC's permission model has four user-addressable modes that don't
- * map 1:1 onto the two-axis approval/sandbox model. Mapping:
+ * AgenC's permission model and execution sandbox are independent axes. The
+ * permission mode selects approval guidance while the turn context supplies
+ * the sandbox and network text. In particular, `bypassPermissions` suppresses
+ * approvals without claiming that the OS sandbox was also disabled.
  *
- *   AgenC `"plan"`              → approval `unless_trusted` + sandbox `read_only`
- *   AgenC `"default"`           → approval `on_request`     + sandbox `workspace_write`
- *   AgenC `"acceptEdits"`       → approval `on_failure`     + sandbox `workspace_write`
- *   AgenC `"bypassPermissions"` → approval `never`          + sandbox `danger_full_access`
- *   AgenC `"unattended"`             → background-agent allow/deny/pause
- *                                      policy, rendered separately.
+ *   AgenC `"plan"`              → approval `unless_trusted`
+ *   AgenC `"default"`           → approval `on_request`
+ *   AgenC `"acceptEdits"`       → approval `on_failure`
+ *   AgenC `"bypassPermissions"` → approval `never`
+ *   AgenC `"unattended"`        → background-agent allow/deny/pause policy
  *
  * Sandbox-mode text includes a `{{network_access}}` template placeholder that
- * resolves to either `enabled` or `restricted` at render time. AgenC mirrors
- * that here: for `bypassPermissions` /
- * `danger_full_access` we substitute `enabled`; for everything else we
- * substitute `restricted`. The constants themselves keep the placeholder
- * literal so tests can compare exact text.
+ * resolves to either `enabled` or `restricted` from the current turn's
+ * network policy. The constants themselves keep the placeholder literal so
+ * tests can compare exact text.
  *
  * @module
  */
@@ -32,6 +31,10 @@ import type {
   PermissionMode,
   ToolPermissionContext,
 } from "../permissions/types.js";
+import type {
+  NetworkSandboxPolicy,
+  SandboxPolicy,
+} from "../session/turn-context.js";
 import { unattendedPolicyForContext } from "../permissions/unattended-policy.js";
 
 // ─────────────────────────────────────────────────────────────────────
@@ -193,6 +196,10 @@ export const SANDBOX_MODE_WORKSPACE_WRITE =
 export const SANDBOX_MODE_READ_ONLY =
   "Filesystem sandboxing defines which files can be read or written. `sandbox_mode` is `read-only`: The sandbox only permits reading files. Network access is {{network_access}}.\n";
 
+/** Sandbox mode: externally managed. */
+export const SANDBOX_MODE_EXTERNAL =
+  "Filesystem sandboxing is controlled by an external authority. `sandbox_mode` is `external-sandbox`: AgenC does not widen or replace that sandbox. Network access is {{network_access}}.\n";
+
 // ─────────────────────────────────────────────────────────────────────
 // Selector
 // ─────────────────────────────────────────────────────────────────────
@@ -205,9 +212,6 @@ export const SANDBOX_MODE_READ_ONLY =
  */
 interface ModeBinding {
   readonly approvalText: string;
-  readonly sandboxTemplate: string;
-  /** Substituted into `{{network_access}}` in the sandbox template. */
-  readonly networkAccess: "enabled" | "restricted";
   /** Human-readable label for the section heading. */
   readonly label: string;
   /** Optional extra guidance appended after the approval text (bypass only). */
@@ -217,30 +221,40 @@ interface ModeBinding {
 const MODE_BINDINGS: Partial<Record<PermissionMode, ModeBinding>> = {
   plan: {
     approvalText: APPROVAL_POLICY_UNLESS_TRUSTED,
-    sandboxTemplate: SANDBOX_MODE_READ_ONLY,
-    networkAccess: "restricted",
     label: "plan",
   },
   default: {
     approvalText: APPROVAL_POLICY_ON_REQUEST,
-    sandboxTemplate: SANDBOX_MODE_WORKSPACE_WRITE,
-    networkAccess: "restricted",
     label: "default",
   },
   acceptEdits: {
     approvalText: APPROVAL_POLICY_ON_FAILURE,
-    sandboxTemplate: SANDBOX_MODE_WORKSPACE_WRITE,
-    networkAccess: "restricted",
     label: "acceptEdits",
   },
   bypassPermissions: {
     approvalText: APPROVAL_POLICY_NEVER,
-    sandboxTemplate: SANDBOX_MODE_DANGER_FULL_ACCESS,
-    networkAccess: "enabled",
     label: "bypassPermissions",
     autonomyNote: BYPASS_AUTONOMY_NOTE,
   },
 };
+
+export interface PermissionPromptExecutionAuthority {
+  readonly sandboxPolicy: SandboxPolicy;
+  readonly networkSandboxPolicy: Pick<NetworkSandboxPolicy, "enabled">;
+}
+
+function sandboxTemplateForPolicy(policy: SandboxPolicy): string {
+  switch (policy) {
+    case "danger_full_access":
+      return SANDBOX_MODE_DANGER_FULL_ACCESS;
+    case "workspace_write":
+      return SANDBOX_MODE_WORKSPACE_WRITE;
+    case "read_only":
+      return SANDBOX_MODE_READ_ONLY;
+    case "external_sandbox":
+      return SANDBOX_MODE_EXTERNAL;
+  }
+}
 
 /**
  * Render a sandbox-mode template by substituting the `{{network_access}}`
@@ -268,6 +282,7 @@ function renderSandbox(
  */
 export function getPermissionsSection(
   ctx: ToolPermissionContext | null,
+  authority: PermissionPromptExecutionAuthority,
 ): string | null {
   if (ctx === null) return null;
   if (ctx.mode === "unattended") {
@@ -288,7 +303,10 @@ export function getPermissionsSection(
   const binding = MODE_BINDINGS[ctx.mode];
   if (binding === undefined) return null;
 
-  const sandboxText = renderSandbox(binding.sandboxTemplate, binding.networkAccess);
+  const sandboxText = renderSandbox(
+    sandboxTemplateForPolicy(authority.sandboxPolicy),
+    authority.networkSandboxPolicy.enabled === true ? "enabled" : "restricted",
+  );
   // Approval text constants keep their trailing `\n` from the upstream
   // file. Strip it so the outer joiner controls spacing.
   const approvalText = binding.approvalText.replace(/\n+$/, "");

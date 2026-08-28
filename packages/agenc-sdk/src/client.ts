@@ -66,9 +66,13 @@ import type {
   CsvJobReviewShowResult,
 } from "./csv-jobs.js";
 
-function safeSdkRuntimeOptions(pluginStorageRoot: string) {
+function safeSdkRuntimeOptions(
+  pluginStorageRoot: string,
+  dangerouslyBypassApprovalsAndSandbox: boolean,
+) {
   return Object.freeze({
     simpleMode: false,
+    dangerouslyBypassApprovalsAndSandbox,
     stdinDataMode: false,
     remoteMode: false,
     pluginStorageRoot,
@@ -254,6 +258,11 @@ export interface AgencCreateSessionParams extends SessionCreateParams {
   readonly agentId?: never;
   /** Exact plugin storage root captured by the embedding ingress. */
   readonly pluginStorageRoot: string;
+  /**
+   * Disable approval prompts and the OS sandbox for this new session.
+   * Existing sessions retain the authority captured when they were created.
+   */
+  readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
 }
 
 export interface AgencPromptOptions {
@@ -953,6 +962,7 @@ export class AgencClient {
   async createSession(params: AgencCreateSessionParams): Promise<AgencSession> {
     const {
       pluginStorageRoot: requestedPluginStorageRoot,
+      dangerouslyBypassApprovalsAndSandbox = false,
       initialPrompt,
       metadata,
       ...sessionParams
@@ -993,7 +1003,10 @@ export class AgencClient {
       cwd,
       initialContent: initialPrompt === undefined ? [] : initialPrompt,
       ...(metadata !== undefined ? { metadata } : {}),
-      runtimeOptions: safeSdkRuntimeOptions(pluginStorageRoot),
+      runtimeOptions: safeSdkRuntimeOptions(
+        pluginStorageRoot,
+        dangerouslyBypassApprovalsAndSandbox,
+      ),
     } as AgentCreateParams);
     try {
       const attached = await this.attachAgent(agent.agentId);
@@ -1798,6 +1811,15 @@ function assertValidAgentAttachRuntimeAuthority(
         response,
       );
     }
+  }
+  if (
+    runtimeOptions.dangerouslyBypassApprovalsAndSandbox !== undefined &&
+    typeof runtimeOptions.dangerouslyBypassApprovalsAndSandbox !== "boolean"
+  ) {
+    throw new AgencMalformedResponseError(
+      "AgenC agent.attach runtimeOptions.dangerouslyBypassApprovalsAndSandbox must be boolean",
+      response,
+    );
   }
   for (const key of [
     "remoteMemoryRoot",

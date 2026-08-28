@@ -798,10 +798,11 @@ export async function bootstrapLocalRuntimeSession(
   const cli = readStartupCliFlags(argv);
   const parsedRuntimeOptions =
     options.runtimeOptions ??
-    resolveAgentRuntimeOptions(
-      env,
-      cli.simpleMode === true ? { simpleMode: true } : {},
-    );
+    resolveAgentRuntimeOptions(env, {
+      simpleMode: cli.simpleMode === true,
+      dangerouslyBypassApprovalsAndSandbox:
+        cli.dangerouslyBypassApprovalsAndSandbox === true,
+    });
   const commandShellPath = await findSuitableShell(parsedRuntimeOptions, env);
   const commandExecutionAuthority = resolveCommandExecutionAuthority(
     parsedRuntimeOptions,
@@ -1034,7 +1035,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     },
     providerEnvironment,
     ...(cli.permissionMode ? { permissionMode: cli.permissionMode } : {}),
-    ...(cli.dangerouslyBypassApprovalsAndSandbox
+    ...(runtimeOptions.dangerouslyBypassApprovalsAndSandbox
       ? { allowDangerouslySkipPermissions: true }
       : {}),
     projectTrust,
@@ -1054,6 +1055,7 @@ async function bootstrapLocalRuntimeSessionScoped(
       executionAuthorityForPermissionContext(
         configuredExecutionAuthority,
         toolPermissionContext,
+        runtimeOptions.dangerouslyBypassApprovalsAndSandbox,
       ),
       workspaceRoot,
     );
@@ -1426,6 +1428,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     executionAuthorityForPermissionContext(
       configuredExecutionAuthority,
       toolPermissionContext,
+      runtimeOptions.dangerouslyBypassApprovalsAndSandbox,
     ),
   );
   let initialState: SessionState = {

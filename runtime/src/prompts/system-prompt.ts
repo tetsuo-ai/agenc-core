@@ -793,7 +793,11 @@ export async function assembleSystemPrompt(
     ),
     DANGEROUS_uncachedSystemPromptSection(
       "permissions",
-      () => getPermissionsSection(opts.permissionContext ?? null),
+      () =>
+        getPermissionsSection(opts.permissionContext ?? null, {
+          sandboxPolicy: opts.ctx.sandboxPolicy.value,
+          networkSandboxPolicy: opts.ctx.networkSandboxPolicy,
+        }),
       "permission mode can change mid-session via /mode and bypass toggles",
     ),
     DANGEROUS_uncachedSystemPromptSection(

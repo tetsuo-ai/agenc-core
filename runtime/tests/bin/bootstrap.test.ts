@@ -3849,9 +3849,10 @@ required = true
     }
   });
 
-  it("boots in the requested mode when started with --permission-mode", async () => {
+  it("keeps the configured sandbox for ordinary --permission-mode bypassPermissions", async () => {
     const home = await mkdtemp(join(tmpdir(), "agenc-bootstrap-home-"));
     const workspace = await mkdtemp(join(tmpdir(), "agenc-bootstrap-ws-"));
+    trustWorkspaceForTest(home, workspace);
 
     const providerMod = await import("../llm/provider.js");
     vi.spyOn(providerMod, "createProvider").mockImplementation(
@@ -3881,11 +3882,19 @@ required = true
           AGENC_WORKSPACE: workspace,
           HOME: home,
         },
-        argv: ["node", "agenc", "--permission-mode", "plan"],
+        argv: ["node", "agenc", "--permission-mode", "bypassPermissions"],
       });
       shutdown = boot.shutdown;
 
-      expect(boot.session.permissionModeRegistry.current().mode).toBe("plan");
+      expect(boot.session.permissionModeRegistry.current().mode).toBe(
+        "bypassPermissions",
+      );
+      expect(boot.initialState.sessionConfiguration.approvalPolicy.value).toBe(
+        "never",
+      );
+      expect(boot.initialState.sessionConfiguration.sandboxPolicy.value).toBe(
+        "workspace_write",
+      );
     } finally {
       await shutdown?.().catch(() => {
         /* best effort */

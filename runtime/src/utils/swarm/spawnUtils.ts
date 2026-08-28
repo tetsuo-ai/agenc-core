@@ -17,7 +17,6 @@ import {
 } from '../../session/runtime-options.js'
 import { getAgenCHomeDir } from '../envUtils.js'
 import { getSelectedProviderSelection } from '../model/providers.js'
-import { DANGEROUS_BYPASS_FLAG } from '../../bin/startup-flags.js'
 import { requireCurrentRuntimeSession } from '../../session/current-session.js'
 import { canonicalSessionEnvironmentKeys } from '../../session/environment.js'
 
@@ -109,7 +108,7 @@ export function buildInheritedCliFlags(options?: {
   if (planModeRequired) {
     // Don't inherit bypass permissions when plan mode is required
   } else if (permissionMode === 'bypassPermissions') {
-    flags.push(DANGEROUS_BYPASS_FLAG)
+    flags.push('--permission-mode bypassPermissions')
   } else if (permissionMode === 'acceptEdits') {
     flags.push('--permission-mode acceptEdits')
   } else if (permissionMode === 'auto') {

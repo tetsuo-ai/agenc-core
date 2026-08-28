@@ -28,9 +28,16 @@ describe("workflowSessionArgv", () => {
   });
 
   it("keeps the permission mode it already carried", () => {
-    expect(
-      workflowSessionArgv({ permissionMode: "bypassPermissions" }, BASE),
-    ).toContain("--dangerously-bypass-approvals-and-sandbox");
+    const bypass = workflowSessionArgv(
+      { permissionMode: "bypassPermissions" },
+      BASE,
+    );
+    expect(bypass[bypass.indexOf("--permission-mode") + 1]).toBe(
+      "bypassPermissions",
+    );
+    expect(bypass).not.toContain(
+      "--dangerously-bypass-approvals-and-sandbox",
+    );
     const planning = workflowSessionArgv({ permissionMode: "plan" }, BASE);
     expect(planning[planning.indexOf("--permission-mode") + 1]).toBe("plan");
   });

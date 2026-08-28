@@ -513,7 +513,7 @@ describe("app-server-client daemon helpers", () => {
     }
   });
 
-  it("seeds daemon-only TUI context with typed simple mode and bypass permissions", async () => {
+  it("seeds ordinary bypass without widening the configured sandbox", async () => {
     const agencHome = mkdtempSync(join(tmpdir(), "agenc-bypass-tui-context-"));
     const workspace = mkdtempSync(join(tmpdir(), "agenc-bypass-tui-workspace-"));
     let context: Awaited<
@@ -534,7 +534,7 @@ describe("app-server-client daemon helpers", () => {
       expect(permissionContext.mode).toBe("bypassPermissions");
       expect(permissionContext.isBypassPermissionsModeAvailable).toBe(true);
       expect(context.baseSession.services.sandboxExecutionBroker?.mode).toBe(
-        "danger_full_access",
+        "workspace_write",
       );
     } finally {
       await context?.close();
@@ -611,10 +611,10 @@ describe("app-server-client daemon helpers", () => {
         },
         modelVerbosity: "low",
         serviceTier: "flex",
-        sandboxPolicy: { value: "danger_full_access" },
+        sandboxPolicy: { value: "workspace_write" },
       });
       expect(context.baseSession.services.sandboxExecutionBroker?.mode).toBe(
-        "danger_full_access",
+        "workspace_write",
       );
     } finally {
       await context?.close();
@@ -730,7 +730,7 @@ describe("app-server-client daemon helpers", () => {
     }
   });
 
-  it("keeps client processes quiesced until each live bypass authority is complete", async () => {
+  it("keeps immutable dangerous sandbox authority across live permission changes", async () => {
     const agencHome = mkdtempSync(
       join(tmpdir(), "agenc-live-bypass-exit-home-"),
     );
@@ -751,6 +751,9 @@ describe("app-server-client daemon helpers", () => {
         env: { ...process.env, AGENC_HOME: agencHome, HOME: agencHome },
         cwd: workspace,
         conversationId: "agenc-live-bypass-exit",
+        runtimeOptions: resolveAgentRuntimeOptions({}, {
+          dangerouslyBypassApprovalsAndSandbox: true,
+        }),
         runtimeSettings: {
           permissionMode: "bypassPermissions",
           prePlanMode: null,
@@ -832,19 +835,19 @@ describe("app-server-client daemon helpers", () => {
       );
 
       expect(context.baseSession.services.sandboxExecutionBroker).toBe(broker);
-      expect(broker?.mode).toBe("read_only");
+      expect(broker?.mode).toBe("danger_full_access");
       expect(context.baseSession.sessionConfiguration.sandboxPolicy.value).toBe(
-        "read_only",
+        "danger_full_access",
       );
       expect(lifecycle).toEqual([
         "quiesce:danger_full_access",
-        "resume:read_only",
+        "resume:danger_full_access",
       ]);
       expect(resumedAuthorities).toEqual([
         {
-          brokerMode: "read_only",
+          brokerMode: "danger_full_access",
           permissionMode: "default",
-          sandboxPolicy: "read_only",
+          sandboxPolicy: "danger_full_access",
           hooksDisabled: false,
         },
       ]);
@@ -872,14 +875,14 @@ describe("app-server-client daemon helpers", () => {
 
       expect(lifecycle).toEqual([
         "quiesce:danger_full_access",
-        "resume:read_only",
-        "quiesce:read_only",
-        "resume:read_only",
+        "resume:danger_full_access",
+        "quiesce:danger_full_access",
+        "resume:danger_full_access",
       ]);
       expect(resumedAuthorities.at(-1)).toEqual({
-        brokerMode: "read_only",
+        brokerMode: "danger_full_access",
         permissionMode: "acceptEdits",
-        sandboxPolicy: "read_only",
+        sandboxPolicy: "danger_full_access",
         hooksDisabled: true,
       });
 
@@ -906,10 +909,10 @@ describe("app-server-client daemon helpers", () => {
 
       expect(lifecycle).toEqual([
         "quiesce:danger_full_access",
-        "resume:read_only",
-        "quiesce:read_only",
-        "resume:read_only",
-        "quiesce:read_only",
+        "resume:danger_full_access",
+        "quiesce:danger_full_access",
+        "resume:danger_full_access",
+        "quiesce:danger_full_access",
         "resume:danger_full_access",
       ]);
       expect(resumedAuthorities.at(-1)).toEqual({

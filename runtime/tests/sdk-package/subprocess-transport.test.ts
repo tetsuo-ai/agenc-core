@@ -100,6 +100,31 @@ function eventLine(event: unknown): unknown {
 }
 
 describe("agenc-sdk subprocess transport", () => {
+  it("uses the combined dangerous flag only when explicitly requested", async () => {
+    const { spawn, capture } = createFakeSpawn({
+      stdoutLines: [
+        {
+          type: "result",
+          sessionId,
+          agentId,
+          exitCode: 0,
+          finalMessage: "done",
+          deniedPermissionRequestIds: [],
+        },
+      ],
+      exitCode: 0,
+    });
+
+    const run = promptViaSubprocess("do it", {
+      spawn,
+      permissionMode: "default",
+      dangerouslyBypassApprovalsAndSandbox: true,
+    });
+    expect(capture.args).toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(capture.args).toContain("--permission-mode");
+    await expect(run.result()).resolves.toMatchObject({ exitCode: 0 });
+  });
+
   it("spawns the headless CLI with the stream-json contract and adapts events", async () => {
     const { spawn, capture } = createFakeSpawn({
       stdoutLines: [

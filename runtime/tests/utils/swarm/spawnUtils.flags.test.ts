@@ -6,6 +6,7 @@ type SpawnFlagState = {
   readonly settingsPath?: string
   readonly teammateMode?: string
   readonly simpleMode?: boolean
+  readonly dangerouslyBypassApprovalsAndSandbox?: boolean
   readonly selectedModel?: string
 }
 
@@ -42,6 +43,8 @@ async function loadSpawnUtils(state: SpawnFlagState = {}) {
   )
   const runtimeOptions = Object.freeze({
     simpleMode: state.simpleMode ?? false,
+    dangerouslyBypassApprovalsAndSandbox:
+      state.dangerouslyBypassApprovalsAndSandbox ?? false,
     stdinDataMode: false,
     remoteMode: false,
     sessionTempRoot: '/tmp/agenc-spawn-flags-temp',
@@ -68,15 +71,15 @@ async function loadSpawnUtils(state: SpawnFlagState = {}) {
 }
 
 describe('buildInheritedCliFlags', () => {
-  test('uses the canonical bypass flag from the explicit permission mode', async () => {
+  test('propagates approval bypass without inventing sandbox bypass', async () => {
     const { buildInheritedCliFlags } = await loadSpawnUtils()
 
     const flags = buildInheritedCliFlags({
       permissionMode: 'bypassPermissions',
     })
 
-    expect(flags).toContain('--dangerously-bypass-approvals-and-sandbox')
-    expect(flags).not.toContain('--dangerously-skip-permissions')
+    expect(flags).toContain('--permission-mode bypassPermissions')
+    expect(flags).not.toContain('--dangerously-bypass-approvals-and-sandbox')
   })
 
   test('does not invent bypass authority for a non-bypass mode', async () => {

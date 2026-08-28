@@ -59,6 +59,7 @@ describe("agent runtime options", () => {
 
     expect(result).toEqual({
       simpleMode: true,
+      dangerouslyBypassApprovalsAndSandbox: false,
       stdinDataMode: true,
       remoteMode: false,
       posixShellPath: "/bin/zsh",
@@ -230,12 +231,35 @@ describe("agent runtime options", () => {
     });
     expect(validated).toMatchObject({
       simpleMode: false,
+      dangerouslyBypassApprovalsAndSandbox: false,
       stdinDataMode: false,
       remoteMode: false,
       pluginStorageRoot,
       allowUntrustedHooks: true,
       sessionTempRoot: resolveAgentRuntimeOptions({}).sessionTempRoot,
     });
+    expect(
+      validateAgentRuntimeOptions({
+        simpleMode: false,
+        dangerouslyBypassApprovalsAndSandbox: true,
+        stdinDataMode: false,
+        remoteMode: false,
+        pluginStorageRoot,
+        allowUntrustedHooks: false,
+      }).dangerouslyBypassApprovalsAndSandbox,
+    ).toBe(true);
+    expect(() =>
+      validateAgentRuntimeOptions({
+        simpleMode: false,
+        dangerouslyBypassApprovalsAndSandbox: "yes",
+        stdinDataMode: false,
+        remoteMode: false,
+        pluginStorageRoot,
+        allowUntrustedHooks: false,
+      }),
+    ).toThrow(
+      "runtimeOptions.dangerouslyBypassApprovalsAndSandbox must be boolean",
+    );
 
     expect(() =>
       validateAgentRuntimeOptions({

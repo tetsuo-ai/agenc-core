@@ -30,6 +30,14 @@ import { normalizeExactAbsolutePath } from "../utils/path-authority.js";
 export interface AgentRuntimeOptions {
   readonly [key: string]: boolean | string | readonly string[] | undefined;
   readonly simpleMode: boolean;
+  /**
+   * Immutable startup authority selected only by
+   * `--dangerously-bypass-approvals-and-sandbox`.
+   *
+   * Ordinary `bypassPermissions` changes approval behavior without widening
+   * the configured OS sandbox.
+   */
+  readonly dangerouslyBypassApprovalsAndSandbox: boolean;
   readonly stdinDataMode: boolean;
   readonly remoteMode: boolean;
   readonly remoteMemoryRoot?: string;
@@ -340,6 +348,8 @@ function resolveAgentRuntimeOptionsAtIngress(
       : undefined;
   const resolved: AgentRuntimeOptions = {
     simpleMode: overrides.simpleMode ?? false,
+    dangerouslyBypassApprovalsAndSandbox:
+      overrides.dangerouslyBypassApprovalsAndSandbox ?? false,
     stdinDataMode:
       overrides.stdinDataMode ??
       parseBoolean(env, "AGENC_USE_DATA_STDIN", false),
@@ -486,6 +496,7 @@ export function validateAgentRuntimeOptions(
   const input = value as Record<string, unknown>;
   const allowed = new Set([
     "simpleMode",
+    "dangerouslyBypassApprovalsAndSandbox",
     "stdinDataMode",
     "remoteMode",
     "remoteMemoryRoot",
@@ -512,6 +523,14 @@ export function validateAgentRuntimeOptions(
   if (typeof input.simpleMode !== "boolean") {
     throw new AgentRuntimeOptionsError(
       "runtimeOptions.simpleMode is required and must be boolean",
+    );
+  }
+  if (
+    input.dangerouslyBypassApprovalsAndSandbox !== undefined &&
+    typeof input.dangerouslyBypassApprovalsAndSandbox !== "boolean"
+  ) {
+    throw new AgentRuntimeOptionsError(
+      "runtimeOptions.dangerouslyBypassApprovalsAndSandbox must be boolean",
     );
   }
   if (typeof input.stdinDataMode !== "boolean") {

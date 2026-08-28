@@ -7606,6 +7606,8 @@ function installDaemonPermissionAuthorityCoordinator(
         stagedConfiguredAuthority?.authority ??
           bootstrap.configuredExecutionAuthority,
         next,
+        session.services.runtimeOptions
+          ?.dangerouslyBypassApprovalsAndSandbox === true,
       );
       let previousConfiguration: Session["sessionConfiguration"] | undefined;
       let configurationWriteStarted = false;

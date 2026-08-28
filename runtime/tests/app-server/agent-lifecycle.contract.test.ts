@@ -2952,6 +2952,9 @@ describe("AgenC background agent lifecycle", () => {
       hooksDisabled: true,
     });
     const restoreRuntime = vi.fn(async () => true);
+    const retainedRuntimeOptions = resolveAgentRuntimeOptions({}, {
+      dangerouslyBypassApprovalsAndSandbox: true,
+    });
     const agents = new AgenCDaemonAgentManager({
       runner: {
         startAgent: vi.fn(async () => ({
@@ -2976,6 +2979,7 @@ describe("AgenC background agent lifecycle", () => {
         provider: "stale-provider",
         profile: "stale-profile",
         permissionMode: "default",
+        runtimeOptions: retainedRuntimeOptions,
       },
     });
 
@@ -3000,6 +3004,7 @@ describe("AgenC background agent lifecycle", () => {
         provider: "grok",
         profile: "deep-work",
         permissionMode: "plan",
+        runtimeOptions: retainedRuntimeOptions,
         runtimeSettings: expectedSettings,
       }),
     );

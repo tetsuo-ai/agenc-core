@@ -838,7 +838,23 @@ export class AgenCDaemonAgentManager {
         params.unattendedDeny,
         metadataStringList(retainedMetadata, "unattendedDeny") ?? [],
       );
-      const runtimeOptions = validateAgentRuntimeOptions(params.runtimeOptions);
+      const requestedRuntimeOptions = validateAgentRuntimeOptions(
+        params.runtimeOptions,
+      );
+      const retainedRuntimeOptions =
+        resumeSessionId !== undefined &&
+        retainedMetadata?.runtimeOptions !== undefined
+          ? validateAgentRuntimeOptions(retainedMetadata.runtimeOptions)
+          : undefined;
+      const runtimeOptions = Object.freeze({
+        ...requestedRuntimeOptions,
+        // A cold attach may supply fresh shell/temp/plugin inputs, but it must
+        // not silently drop the original session's explicit sandbox escape.
+        // Omitting the new field in historical metadata normalizes to false.
+        dangerouslyBypassApprovalsAndSandbox:
+          requestedRuntimeOptions.dangerouslyBypassApprovalsAndSandbox ||
+          retainedRuntimeOptions?.dangerouslyBypassApprovalsAndSandbox === true,
+      });
       const metadata: JsonObject = {
         ...(retainedMetadata ?? {}),
         ...(resumeSessionId === undefined ? (params.metadata ?? {}) : {}),

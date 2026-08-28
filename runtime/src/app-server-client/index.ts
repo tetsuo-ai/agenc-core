@@ -495,29 +495,29 @@ function daemonTuiSessionConfiguration(
   runtimeSettings: RunRuntimeSettingsSnapshot | undefined,
   sandboxAuthority?: DaemonTuiSandboxAuthority,
   bypassActive = runtimeSettings?.permissionMode === "bypassPermissions",
+  dangerouslyBypassApprovalsAndSandbox = false,
 ): DaemonTuiSessionConfiguration {
-  const sandboxProjection =
+  const executionProjection =
     sandboxAuthority === undefined
       ? {}
-      : bypassActive
-        ? {
-            approvalPolicy: { value: "never" as const },
-            sandboxPolicy: { value: "danger_full_access" as const },
-            fileSystemSandboxPolicy: {
-              allowWrite: [],
-              denyWrite: [],
-              allowRead: [],
-              denyRead: [],
-            },
-          }
-        : {
-            approvalPolicy: sandboxAuthority.configuredApprovalPolicy,
-            sandboxPolicy: sandboxAuthority.configuredSandboxPolicy,
-            fileSystemSandboxPolicy:
-              sandboxAuthority.configuredFileSystemPolicy,
-          };
+      : {
+          approvalPolicy: bypassActive
+            ? { value: "never" as const }
+            : sandboxAuthority.configuredApprovalPolicy,
+          sandboxPolicy: dangerouslyBypassApprovalsAndSandbox
+            ? { value: "danger_full_access" as const }
+            : sandboxAuthority.configuredSandboxPolicy,
+          fileSystemSandboxPolicy: dangerouslyBypassApprovalsAndSandbox
+            ? {
+                allowWrite: [],
+                denyWrite: [],
+                allowRead: [],
+                denyRead: [],
+              }
+            : sandboxAuthority.configuredFileSystemPolicy,
+        };
   if (runtimeSettings === undefined) {
-    return { ...configured, ...sandboxProjection };
+    return { ...configured, ...executionProjection };
   }
   const {
     modelVerbosity: _configuredModelVerbosity,
@@ -534,7 +534,7 @@ function daemonTuiSessionConfiguration(
   } = configuredCollaborationMode;
   return {
     ...base,
-    ...sandboxProjection,
+    ...executionProjection,
     provider: { slug: runtimeSettings.provider },
     collaborationMode: {
       ...collaborationModeBase,
@@ -585,10 +585,12 @@ export async function applyDaemonTuiRuntimeSettingsAuthority(
     daemonTuiSandboxAuthorities.set(session, sandboxAuthority);
   }
   const broker = sandboxAuthority.broker;
-  const nextMode =
-    permissionContext.mode === "bypassPermissions"
-      ? "danger_full_access"
-      : sandboxAuthority.configuredMode;
+  const dangerouslyBypassApprovalsAndSandbox =
+    session.services.runtimeOptions?.dangerouslyBypassApprovalsAndSandbox ===
+    true;
+  const nextMode = dangerouslyBypassApprovalsAndSandbox
+    ? "danger_full_access"
+    : sandboxAuthority.configuredMode;
   const previousContext = registry.current();
   const previousHooksDisabled = sandboxAuthority.hooksDisabled;
   const hooksRuntime = (
@@ -601,6 +603,7 @@ export async function applyDaemonTuiRuntimeSettingsAuthority(
     settings,
     sandboxAuthority,
     permissionContext.mode === "bypassPermissions",
+    dangerouslyBypassApprovalsAndSandbox,
   );
   const commit = async (): Promise<void> => {
     replaceDaemonTuiSessionConfiguration(
@@ -804,10 +807,9 @@ async function createBoundAgenCDaemonOnlyTuiContext(
     const configuredSandboxMode =
       configuredSessionConfiguration.sandboxPolicy.value;
     sandboxExecutionBroker = new SandboxExecutionBroker({
-      mode:
-        permissionContext.mode === "bypassPermissions"
-          ? "danger_full_access"
-          : configuredSandboxMode,
+      mode: runtimeOptions.dangerouslyBypassApprovalsAndSandbox
+        ? "danger_full_access"
+        : configuredSandboxMode,
       // Role authority remains anchored to the canonical checkout, while
       // execution policy must follow the attached worktree/session cwd.
       cwd: options.cwd,
@@ -832,6 +834,7 @@ async function createBoundAgenCDaemonOnlyTuiContext(
       runtimeSettings,
       sandboxAuthority,
       permissionContext.mode === "bypassPermissions",
+      runtimeOptions.dangerouslyBypassApprovalsAndSandbox,
     );
     const session: AgenCDaemonOnlyTuiSession = {
       conversationId: options.conversationId,

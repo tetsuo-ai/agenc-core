@@ -172,6 +172,8 @@ export type MessageContent = string | readonly MessageContentBlock[];
 
 export interface AgentRuntimeOptionsParams extends JsonObject {
   readonly simpleMode: boolean;
+  /** Omission by an older peer is normalized to false. */
+  readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
   readonly stdinDataMode: boolean;
   readonly remoteMode: boolean;
   readonly remoteMemoryRoot?: string;

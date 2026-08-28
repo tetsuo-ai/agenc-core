@@ -4878,7 +4878,7 @@ describe("AgenC delegate background-agent runner", () => {
     );
   });
 
-  it("forwards only the canonical dangerous-bypass startup flag", async () => {
+  it("keeps ordinary bypass out of the combined dangerous startup flag", async () => {
     const { runner, bootstrap } = makeTopLevelRunner({
       conversationId: "canonical-bypass-bootstrap-session",
     });
@@ -4892,9 +4892,42 @@ describe("AgenC delegate background-agent runner", () => {
     });
 
     const argv = vi.mocked(bootstrap).mock.calls[0]?.[0].argv ?? [];
-    expect(argv).toContain("--dangerously-bypass-approvals-and-sandbox");
+    expect(argv.slice(-2)).toEqual([
+      "--permission-mode",
+      "bypassPermissions",
+    ]);
+    expect(argv).not.toContain("--dangerously-bypass-approvals-and-sandbox");
     expect(argv).not.toContain("--yolo");
     expect(argv).not.toContain("--allow-dangerously-skip-permissions");
+  });
+
+  it("forwards combined dangerous authority only through runtime options", async () => {
+    const { runner, bootstrap } = makeTopLevelRunner({
+      conversationId: "dangerous-runtime-options-bootstrap-session",
+    });
+    const runtimeOptions = resolveAgentRuntimeOptions({}, {
+      dangerouslyBypassApprovalsAndSandbox: true,
+    });
+
+    await runner.startAgent({
+      objective: "compile with explicit sandbox escape",
+      permissionMode: "bypassPermissions",
+      unattendedAllow: [],
+      unattendedDeny: [],
+      runtimeOptions,
+    });
+
+    expect(bootstrap).toHaveBeenCalledWith(
+      expect.objectContaining({
+        argv: expect.arrayContaining([
+          "--permission-mode",
+          "bypassPermissions",
+        ]),
+        runtimeOptions,
+      }),
+    );
+    const argv = vi.mocked(bootstrap).mock.calls[0]?.[0].argv ?? [];
+    expect(argv).not.toContain("--dangerously-bypass-approvals-and-sandbox");
   });
 
   it("passes the sole budget authority into session execution admission", async () => {

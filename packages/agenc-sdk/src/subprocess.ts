@@ -81,6 +81,8 @@ export interface AgencSubprocessOptions {
     | "plan"
     | "acceptEdits"
     | "bypassPermissions";
+  /** Disable both approval prompts and the OS sandbox for this subprocess. */
+  readonly dangerouslyBypassApprovalsAndSandbox?: boolean;
   /** Extra argv appended verbatim after the built-in flags. */
   readonly extraArgs?: readonly string[];
   readonly signal?: AbortSignal;
@@ -123,6 +125,9 @@ export function promptViaSubprocess(
       : []),
     ...(options.permissionMode !== undefined
       ? ["--permission-mode", options.permissionMode]
+      : []),
+    ...(options.dangerouslyBypassApprovalsAndSandbox === true
+      ? ["--dangerously-bypass-approvals-and-sandbox"]
       : []),
     ...(options.extraArgs ?? []),
   ];

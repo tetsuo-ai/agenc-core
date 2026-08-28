@@ -2006,6 +2006,8 @@ export async function oneShotCLI(
     const sessionEnv = process.env;
     const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
       simpleMode: startupCliFlags.simpleMode === true,
+      dangerouslyBypassApprovalsAndSandbox:
+        startupCliFlags.dangerouslyBypassApprovalsAndSandbox === true,
     });
     validateAgencHome();
     throwIfAborted("validateAgencHome");
@@ -4445,6 +4447,8 @@ async function resumeColdDaemonSession(params: {
   const sessionEnv = process.env;
   const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
     simpleMode: startupFlags.simpleMode === true,
+    dangerouslyBypassApprovalsAndSandbox:
+      startupFlags.dangerouslyBypassApprovalsAndSandbox === true,
   });
   const startupLayers = startupConfigLayerOptions({
     cli: startupFlags,
@@ -4503,6 +4507,8 @@ export async function bootTUIEntry(
   const sessionEnv = process.env;
   const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
     simpleMode: startupCliFlags.simpleMode === true,
+    dangerouslyBypassApprovalsAndSandbox:
+      startupCliFlags.dangerouslyBypassApprovalsAndSandbox === true,
   });
   return runWithAgentRuntimeOptions(runtimeOptions, async () => {
     setIsRemoteMode(runtimeOptions.remoteMode);
@@ -4812,7 +4818,16 @@ export async function attachAgentTuiEntry(
         : validateAgentRuntimeOptions(args.runtimeOptions);
     if (
       expectedRuntimeOptions !== undefined &&
-      !isDeepStrictEqual(expectedRuntimeOptions, runtimeOptions)
+      (!isDeepStrictEqual(
+        {
+          ...expectedRuntimeOptions,
+          dangerouslyBypassApprovalsAndSandbox:
+            runtimeOptions.dangerouslyBypassApprovalsAndSandbox,
+        },
+        runtimeOptions,
+      ) ||
+        (expectedRuntimeOptions.dangerouslyBypassApprovalsAndSandbox &&
+          !runtimeOptions.dangerouslyBypassApprovalsAndSandbox))
     ) {
       throw new Error(
         `daemon agent runtime options disagree with the attaching client: ${args.agentId}`,

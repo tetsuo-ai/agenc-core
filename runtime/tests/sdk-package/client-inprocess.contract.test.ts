@@ -49,6 +49,7 @@ interface FakeDaemon {
   readonly transport: AgenCInProcessDaemonTransport;
   readonly multiplexer: AgenCDaemonClientMultiplexer;
   readonly calls: {
+    created: JsonObject[];
     streamed: JsonObject[];
     approved: JsonObject[];
     denied: JsonObject[];
@@ -87,7 +88,12 @@ async function createFakeDaemon(
   const multiplexer = new AgenCDaemonClientMultiplexer({
     sessionManager,
   });
-  const calls: FakeDaemon["calls"] = { streamed: [], approved: [], denied: [] };
+  const calls: FakeDaemon["calls"] = {
+    created: [],
+    streamed: [],
+    approved: [],
+    denied: [],
+  };
   const pluginStorageRoot = await workspaces.create();
 
   let daemon!: FakeDaemon;
@@ -95,6 +101,7 @@ async function createFakeDaemon(
     agentManager: {
       // todo-133: createSession prefers agent.create + attach for a live agent
       createAgent: async (params: JsonObject) => {
+        calls.created.push(params);
         const agentId = "agent_1";
         const session = await sessionManager.createSession({
           agentId,
@@ -139,7 +146,7 @@ async function createFakeDaemon(
           agentId,
           attachmentId: attachment.attachmentId,
           sessionIds: [sessionId],
-          runtimeOptions: {
+          runtimeOptions: calls.created.at(-1)?.runtimeOptions ?? {
             simpleMode: false,
             stdinDataMode: false,
             remoteMode: false,
@@ -353,15 +360,20 @@ describe("agenc-sdk client over the in-process transport", () => {
     const session = await daemon.client.createSession({
       cwd,
       pluginStorageRoot: daemon.pluginStorageRoot,
+      dangerouslyBypassApprovalsAndSandbox: true,
       metadata: { source: "sdk-inprocess-test" },
+    });
+    expect(daemon.calls.created.at(-1)?.runtimeOptions).toMatchObject({
+      dangerouslyBypassApprovalsAndSandbox: true,
     });
     expect(session.sessionId).toBe("session_1");
     await expect(
       daemon.multiplexer.attachedClientIds("session_1"),
     ).resolves.toEqual(["agenc-sdk-test-client"]);
     const reattached = await daemon.client.attachAgent("agent_1");
-    expect(reattached.attach.runtimeOptions).toEqual({
+    expect(reattached.attach.runtimeOptions).toMatchObject({
       simpleMode: false,
+      dangerouslyBypassApprovalsAndSandbox: true,
       stdinDataMode: false,
       remoteMode: false,
       pluginStorageRoot: daemon.pluginStorageRoot,

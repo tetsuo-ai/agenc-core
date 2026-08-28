@@ -697,6 +697,65 @@ describe("PowerShell dangerous permission parity", () => {
 });
 
 describe("PermissionModeRegistry", () => {
+  it("projects approval bypass and sandbox bypass as independent axes", () => {
+    const configured: SessionExecutionAuthority = {
+      approvalPolicy: { value: "on_request" },
+      sandboxPolicy: { value: "workspace_write" },
+      fileSystemSandboxPolicy: {
+        allowWrite: ["/workspace"],
+        denyWrite: [],
+        allowRead: [],
+        denyRead: [],
+      },
+      networkSandboxPolicy: {
+        allowlist: [],
+        denylist: [],
+        allowManagedDomainsOnly: false,
+      },
+      windowsSandboxLevel: "none",
+      sandboxAllowGpu: false,
+    };
+    const rows = [
+      {
+        context: baseCtx({ mode: "default" }),
+        dangerous: false,
+        approval: "on_request",
+        sandbox: "workspace_write",
+      },
+      {
+        context: baseCtx({ mode: "bypassPermissions" }),
+        dangerous: false,
+        approval: "never",
+        sandbox: "workspace_write",
+      },
+      {
+        context: baseCtx({ mode: "default" }),
+        dangerous: true,
+        approval: "on_request",
+        sandbox: "danger_full_access",
+      },
+      {
+        context: baseCtx({ mode: "bypassPermissions" }),
+        dangerous: true,
+        approval: "never",
+        sandbox: "danger_full_access",
+      },
+    ] as const;
+
+    for (const row of rows) {
+      const projected = executionAuthorityForPermissionContext(
+        configured,
+        row.context,
+        row.dangerous,
+      );
+      expect(projected.approvalPolicy.value).toBe(row.approval);
+      expect(projected.sandboxPolicy.value).toBe(row.sandbox);
+      expect(projected.fileSystemSandboxPolicy.allowWrite).toEqual(
+        row.dangerous ? [] : ["/workspace"],
+      );
+    }
+  });
+
   it("subscribeToModeChange fires once per mode change", async () => {
     const reg = new PermissionModeRegistry(baseCtx({ mode: "default" }));
     const seen: Array<[PermissionMode, PermissionMode]> = [];
