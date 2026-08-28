@@ -387,8 +387,7 @@ export async function getInstallationPath(
 
     // If we can't find it, check common locations
     const platformHome =
-      nonEmptyEnvironmentValue(environment.HOME) ??
-      nonEmptyEnvironmentValue(environment.USERPROFILE) ??
+      getCapturedPlatformHome(environment) ??
       (options.environment === undefined ? homedir() : undefined)
     if (platformHome !== undefined) {
       try {
@@ -419,6 +418,15 @@ export async function getInstallationPath(
 function nonEmptyEnvironmentValue(value: string | undefined): string | undefined {
   const normalized = value?.trim()
   return normalized ? normalized : undefined
+}
+
+function getCapturedPlatformHome(
+  environment: NodeJS.ProcessEnv,
+): string | undefined {
+  return (
+    nonEmptyEnvironmentValue(environment.HOME) ??
+    nonEmptyEnvironmentValue(environment.USERPROFILE)
+  )
 }
 
 async function findExecutableOnCapturedPath(
@@ -497,16 +505,17 @@ export function retainOnlyMultipleInstallations(
   return result.length > 1 ? result : []
 }
 
-async function detectMultipleInstallations(
+export async function detectMultipleInstallations(
   activeGeneratedWrapper: GeneratedWrapper | null,
   stateRepository: RuntimeStateRepository,
   environment: NodeJS.ProcessEnv,
+  configHomeDir: string,
 ): Promise<Array<{ type: string; path: string }>> {
   const fs = getFsImplementation()
   const installations: Array<{ type: string; path: string }> = []
 
   // Check for local installation
-  const localPath = await getDetectedLocalInstallDir()
+  const localPath = await getDetectedLocalInstallDir({ configHomeDir })
   if (localPath) {
     installations.push({ type: 'npm-local', path: localPath })
   }
@@ -594,18 +603,20 @@ async function detectMultipleInstallations(
   }
 
   // Check common native installation paths
-  const platformHome = environment.HOME || homedir()
-  const nativeBinPath = join(platformHome, '.local', 'bin', getCliBinaryName())
-  try {
-    await fs.stat(nativeBinPath)
-    installations.push({ type: 'native', path: nativeBinPath })
-  } catch {
-    // Not found
+  const platformHome = getCapturedPlatformHome(environment)
+  if (platformHome !== undefined) {
+    const nativeBinPath = join(platformHome, '.local', 'bin', getCliBinaryName())
+    try {
+      await fs.stat(nativeBinPath)
+      installations.push({ type: 'native', path: nativeBinPath })
+    } catch {
+      // Not found
+    }
   }
 
   // Also check if config indicates native installation
   const config = getRuntimeState(stateRepository)
-  if (config.installMethod === 'native') {
+  if (config.installMethod === 'native' && platformHome !== undefined) {
     const nativeDataPath = join(
       platformHome,
       '.local',
@@ -625,10 +636,12 @@ async function detectMultipleInstallations(
   return retainOnlyMultipleInstallations(installations)
 }
 
-async function detectConfigurationIssues(
+export async function detectConfigurationIssues(
   type: InstallationType,
   stateRepository: RuntimeStateRepository,
   environment: NodeJS.ProcessEnv,
+  cwd: string,
+  configHomeDir: string,
 ): Promise<Array<{ issue: string; fix: string }>> {
   const warnings: Array<{ issue: string; fix: string }> = []
 
@@ -639,11 +652,11 @@ async function detectConfigurationIssues(
   }
 
   // Check if ~/.local/bin is in PATH for native installations
-  if (type === 'native') {
+  const platformHome = getCapturedPlatformHome(environment)
+  if (type === 'native' && platformHome !== undefined) {
     const path = environment.PATH || ''
     const pathDirectories = path.split(delimiter)
-    const homeDir = environment.HOME || homedir()
-    const localBinPath = join(homeDir, '.local', 'bin')
+    const localBinPath = join(platformHome, '.local', 'bin')
 
     // On Windows, convert backslashes to forward slashes for consistent path matching
     let normalizedLocalBinPath = localBinPath
@@ -684,11 +697,11 @@ async function detectConfigurationIssues(
         const shellType = getShellType(environment)
         const configPaths = getShellConfigPaths({
           env: environment,
-          homedir: homeDir,
+          homedir: platformHome,
         })
         const configFile = configPaths[shellType as keyof typeof configPaths]
         const displayPath = configFile
-          ? configFile.replace(homeDir, '~')
+          ? configFile.replace(platformHome, '~')
           : 'your shell config file'
 
         warnings.push({
@@ -723,21 +736,40 @@ async function detectConfigurationIssues(
     }
   }
 
-  if (type === 'npm-global' && (await localInstallationExists())) {
+  if (
+    type === 'npm-global' &&
+    (await localInstallationExists({ configHomeDir }))
+  ) {
     warnings.push({
       issue: 'Local installation exists but not being used',
       fix: `Consider using native installation: ${getCliBinaryName()} install`,
     })
   }
 
-  const existingAlias = await findAgenCAlias()
-  const validAlias = await findValidAgenCAlias()
+  const shellConfigOptions = platformHome === undefined
+    ? null
+    : { env: environment, homedir: platformHome }
+  const existingAlias = shellConfigOptions === null
+    ? null
+    : await findAgenCAlias(shellConfigOptions)
+  const validAlias = shellConfigOptions === null
+    ? null
+    : await findValidAgenCAlias(shellConfigOptions)
 
   // Check if running local installation but it's not in PATH
   if (type === 'npm-local') {
     // Check if agenc is already accessible via PATH
-    const whichResult = await which(getCliBinaryName())
-    const agencInPath = !!whichResult
+    const agencInPath =
+      (await findExecutableOnCapturedPath(
+        getCliBinaryName(),
+        environment,
+        cwd,
+      )) !== null
+    const localAliasTarget = join(
+      configHomeDir,
+      'local',
+      getCliBinaryName(),
+    )
 
     // Only show warning if agenc is NOT in PATH AND no valid alias exists
     if (!agencInPath && !validAlias) {
@@ -745,13 +777,13 @@ async function detectConfigurationIssues(
         // Alias exists but points to invalid target
         warnings.push({
           issue: 'Local installation not accessible',
-          fix: `Alias exists but points to invalid target: ${existingAlias}. Update alias: alias ${getCliBinaryName()}="~/.agenc/local/${getCliBinaryName()}"`,
+          fix: `Alias exists but points to invalid target: ${existingAlias}. Update alias: alias ${getCliBinaryName()}="${localAliasTarget}"`,
         })
       } else {
         // No alias exists and not in PATH
         warnings.push({
           issue: 'Local installation not accessible',
-          fix: `Create alias: alias ${getCliBinaryName()}="~/.agenc/local/${getCliBinaryName()}"`,
+          fix: `Create alias: alias ${getCliBinaryName()}="${localAliasTarget}"`,
         })
       }
     }
@@ -1073,11 +1105,14 @@ export async function getDoctorDiagnostic(
     activeGeneratedWrapper,
     authority.stateRepository,
     ingress.environment,
+    authority.homeContext.path,
   )
   const warnings = await detectConfigurationIssues(
     installationType,
     authority.stateRepository,
     ingress.environment,
+    ingress.cwd,
+    authority.homeContext.path,
   )
 
   // Add glob pattern warnings for Linux sandboxing

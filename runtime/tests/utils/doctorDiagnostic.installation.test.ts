@@ -8,9 +8,13 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { resolveHomeContext } from "../../src/config/home.js";
+import { RuntimeStateRepository } from "../../src/config/runtime-state-repository.js";
 import {
+  detectConfigurationIssues,
+  detectMultipleInstallations,
   findActiveGeneratedWrapper,
   getCurrentInstallationType,
   getInstallationPath,
@@ -24,8 +28,10 @@ import {
 
 const roots: string[] = [];
 const originalExecPath = process.execPath;
+const originalAgencHome = process.env.AGENC_HOME;
 const originalPath = process.env.PATH;
 const originalHome = process.env.HOME;
+const originalUserProfile = process.env.USERPROFILE;
 const hadBun = Reflect.has(globalThis, "Bun");
 const originalBun = Reflect.get(globalThis, "Bun");
 const hadMacro = Reflect.has(globalThis, "MACRO");
@@ -33,6 +39,11 @@ const originalMacro = Reflect.get(globalThis, "MACRO");
 
 function restoreEnvironment(): void {
   process.execPath = originalExecPath;
+  if (originalAgencHome === undefined) {
+    delete process.env.AGENC_HOME;
+  } else {
+    process.env.AGENC_HOME = originalAgencHome;
+  }
   if (originalPath === undefined) {
     delete process.env.PATH;
   } else {
@@ -42,6 +53,11 @@ function restoreEnvironment(): void {
     delete process.env.HOME;
   } else {
     process.env.HOME = originalHome;
+  }
+  if (originalUserProfile === undefined) {
+    delete process.env.USERPROFILE;
+  } else {
+    process.env.USERPROFILE = originalUserProfile;
   }
   if (hadBun) {
     Reflect.set(globalThis, "Bun", originalBun);
@@ -114,6 +130,13 @@ function fixture(): {
     },
   };
 }
+
+beforeEach(() => {
+  Reflect.set(globalThis, "MACRO", {
+    PACKAGE_URL: "@tetsuo-ai/runtime",
+    VERSION: "test",
+  });
+});
 
 afterEach(() => {
   restoreEnvironment();
@@ -247,6 +270,175 @@ describe("Doctor installation detection", () => {
       ).resolves.toBe(capturedExecutable);
     },
   );
+
+  it("finds managed installs only under the captured AgenC home", async () => {
+    const { root, wrapper } = fixture();
+    const capturedAgencHome = join(root, "captured-agenc-home");
+    const ambientAgencHome = join(root, "ambient-agenc-home");
+    const capturedLocalBinary = join(
+      capturedAgencHome,
+      "local",
+      "node_modules",
+      ".bin",
+      "agenc",
+    );
+    const ambientLocalBinary = join(
+      ambientAgencHome,
+      "local",
+      "node_modules",
+      ".bin",
+      "agenc",
+    );
+    writeExecutable(capturedLocalBinary);
+    writeExecutable(ambientLocalBinary);
+    process.env.AGENC_HOME = ambientAgencHome;
+
+    const emptyBin = join(root, "empty-bin");
+    const capturedProfile = join(root, "captured-profile");
+    mkdirSync(emptyBin);
+    mkdirSync(capturedProfile);
+    const home = resolveHomeContext(
+      { AGENC_HOME: capturedAgencHome },
+      { platformHome: capturedProfile },
+    );
+    const stateRepository = new RuntimeStateRepository(home, {
+      storage: "memory",
+    });
+    try {
+      await expect(
+        detectMultipleInstallations(
+          wrapper,
+          stateRepository,
+          {
+            AGENC_HOME: capturedAgencHome,
+            HOME: capturedProfile,
+            PATH: emptyBin,
+          },
+          capturedAgencHome,
+        ),
+      ).resolves.toEqual([
+        {
+          type: "npm-local",
+          path: join(capturedAgencHome, "local"),
+        },
+        { type: "native", path: wrapper.path },
+      ]);
+    } finally {
+      stateRepository.close();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "uses captured USERPROFILE for native PATH warnings",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "agenc-doctor-profile-"));
+      roots.push(root);
+      const capturedProfile = join(root, "captured-profile");
+      const ambientProfile = join(root, "ambient-profile");
+      const agencHome = join(root, "agenc-home");
+      mkdirSync(capturedProfile);
+      mkdirSync(ambientProfile);
+      mkdirSync(agencHome);
+      process.env.HOME = ambientProfile;
+
+      const home = resolveHomeContext(
+        { AGENC_HOME: agencHome },
+        { platformHome: capturedProfile },
+      );
+      const stateRepository = new RuntimeStateRepository(home, {
+        storage: "memory",
+      });
+      try {
+        const capturedLocalBin = join(capturedProfile, ".local", "bin");
+        const ambientLocalBin = join(ambientProfile, ".local", "bin");
+        const baseEnvironment = {
+          AGENC_HOME: agencHome,
+          USERPROFILE: capturedProfile,
+          SHELL: "/bin/zsh",
+          DISABLE_INSTALLATION_CHECKS: "1",
+        };
+        const clean = await detectConfigurationIssues(
+          "native",
+          stateRepository,
+          { ...baseEnvironment, PATH: capturedLocalBin },
+          root,
+          agencHome,
+        );
+        const warned = await detectConfigurationIssues(
+          "native",
+          stateRepository,
+          { ...baseEnvironment, PATH: ambientLocalBin },
+          root,
+          agencHome,
+        );
+
+        expect(
+          clean.some(({ issue }) => issue.includes("not in your PATH")),
+        ).toBe(false);
+        expect(
+          warned.some(({ issue }) => issue.includes("not in your PATH")),
+        ).toBe(true);
+      } finally {
+        stateRepository.close();
+      }
+    },
+  );
+
+  it("checks local accessibility against captured PATH", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-doctor-local-path-"));
+    roots.push(root);
+    const capturedProfile = join(root, "captured-profile");
+    const ambientBin = join(root, "ambient-bin");
+    const capturedBin = join(root, "captured-bin");
+    const agencHome = join(root, "agenc-home");
+    mkdirSync(capturedProfile);
+    mkdirSync(ambientBin);
+    mkdirSync(capturedBin);
+    mkdirSync(agencHome);
+    writeExecutable(join(ambientBin, executableName()));
+    writeExecutable(join(capturedBin, executableName()));
+    process.env.PATH = ambientBin;
+
+    const home = resolveHomeContext(
+      { AGENC_HOME: agencHome },
+      { platformHome: capturedProfile },
+    );
+    const stateRepository = new RuntimeStateRepository(home, {
+      storage: "memory",
+    });
+    try {
+      const baseEnvironment = {
+        AGENC_HOME: agencHome,
+        HOME: capturedProfile,
+        SHELL: "/bin/zsh",
+        DISABLE_INSTALLATION_CHECKS: "1",
+      };
+      const warned = await detectConfigurationIssues(
+        "npm-local",
+        stateRepository,
+        { ...baseEnvironment, PATH: join(root, "empty-bin") },
+        root,
+        agencHome,
+      );
+      const clean = await detectConfigurationIssues(
+        "npm-local",
+        stateRepository,
+        { ...baseEnvironment, PATH: capturedBin },
+        root,
+        agencHome,
+      );
+
+      expect(warned).toContainEqual({
+        issue: "Local installation not accessible",
+        fix: `Create alias: alias agenc="${join(agencHome, "local", "agenc")}"`,
+      });
+      expect(
+        clean.some(({ issue }) => issue === "Local installation not accessible"),
+      ).toBe(false);
+    } finally {
+      stateRepository.close();
+    }
+  });
 
   it("does not call one detected installation multiple", () => {
     expect(

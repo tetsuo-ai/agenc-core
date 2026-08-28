@@ -18,9 +18,13 @@ function getLocalInstallDir(): string {
   return join(getAgenCHomeDir(), 'local')
 }
 
-export function getCandidateLocalInstallDirs(options?: {
-  configHomeDir?: string
-}): string[] {
+export type LocalInstallationProbeOptions = {
+  readonly configHomeDir?: string
+}
+
+export function getCandidateLocalInstallDirs(
+  options?: LocalInstallationProbeOptions,
+): string[] {
   const configHomeDir = options?.configHomeDir ?? getAgenCHomeDir()
   return [join(configHomeDir, 'local')]
 }
@@ -160,8 +164,10 @@ export async function installOrUpdateAgenCPackage(
  * Check if local installation exists.
  * Pure existence probe — callers use this to choose update path / UI hints.
  */
-export async function localInstallationExists(): Promise<boolean> {
-  for (const localInstallDir of getCandidateLocalInstallDirs()) {
+export async function localInstallationExists(
+  options?: LocalInstallationProbeOptions,
+): Promise<boolean> {
+  for (const localInstallDir of getCandidateLocalInstallDirs(options)) {
     for (const binaryPath of getCandidateLocalBinaryPaths(localInstallDir)) {
       try {
         await access(binaryPath)
@@ -174,8 +180,10 @@ export async function localInstallationExists(): Promise<boolean> {
   return false
 }
 
-export async function getDetectedLocalInstallDir(): Promise<string | null> {
-  for (const localInstallDir of getCandidateLocalInstallDirs()) {
+export async function getDetectedLocalInstallDir(
+  options?: LocalInstallationProbeOptions,
+): Promise<string | null> {
+  for (const localInstallDir of getCandidateLocalInstallDirs(options)) {
     for (const binaryPath of getCandidateLocalBinaryPaths(localInstallDir)) {
       try {
         await access(binaryPath)
