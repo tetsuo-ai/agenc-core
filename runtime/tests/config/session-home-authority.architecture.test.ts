@@ -168,7 +168,7 @@ describe("session home authority architecture", () => {
     expect(attribution).toContain("isSessionRemoteMode()")
     expect(attribution).toContain("environment.AGENC_REMOTE_SESSION_ID")
     expect(attribution).toContain("environment.SESSION_INGRESS_URL")
-    expect(apiClient).toContain("providerEnvironment.AGENC_REMOTE_SESSION_ID")
+    expect(apiClient).toContain("environment.AGENC_REMOTE_SESSION_ID")
 
     for (const name of [
       "context.ts",

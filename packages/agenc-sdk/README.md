@@ -71,7 +71,7 @@ await client.close();
 - Plugin storage: `createSession()` requires an exact absolute `pluginStorageRoot` of at most 4096 UTF-8 bytes, with no surrounding whitespace. `AgencClient` does not reread `AGENC_PLUGIN_CACHE_DIR`, derive a root from `AGENC_HOME`, or accept `agentId`; use `attachAgent()` for an existing agent.
 - Autostart: runs `agenc daemon start` when the socket is down (disable with `autostart: false`)
 - Hook authority: `createSession()` sends `allowUntrustedHooks: false`. A caller using `spawnAgent()` must send complete runtime options and may set the field to `true` only after vetting the workspace. It permits command effects only and cannot override `simpleMode` hook suppression.
-- Home authority: `AGENC_HOME` must be absolute and is canonicalized before daemon paths are derived. `AGENC_CONFIG_DIR` is retired and rejected, including when `connect()` receives explicit socket and cookie paths.
+- Home authority: `AGENC_HOME` must be absolute and is canonicalized before daemon paths are derived. Explicit socket and cookie paths do not bypass home-authority validation.
 
 `promptViaSubprocess()` invokes `agenc -p`. The child captures
 `AGENC_ALLOW_UNTRUSTED_HOOKS` from `options.env`, or from its inherited

@@ -67,6 +67,8 @@ describe('Gemini credential authority', () => {
   test('keeps Gemini out of the compatibility shim and preserves wrapped factory state', () => {
     const authSource = source('utils/geminiAuth.ts')
     const shimSource = source('services/api/openaiShim.ts')
+    const clientSource = source('services/api/client.ts')
+    const connectionSource = source('llm/registry/provider-connection.ts')
     const agentSource = source('agents/run-agent.ts')
     const compatSource = source('session/turn-compat.ts')
     const endpointSource = source('llm/providers/gemini/endpoint-plan.ts')
@@ -75,8 +77,11 @@ describe('Gemini credential authority', () => {
     const verificationSource = source('onboarding/useApiKeyVerification.ts')
 
     expect(authSource).not.toContain('export function resolveGeminiCredential(')
+    expect(connectionSource).toContain('case "gemini":')
+    expect(connectionSource).toContain('return "native";')
+    expect(clientSource).toContain("connection.transport === 'openai-compatible'")
     expect(shimSource).toContain(
-      'Gemini requests require the canonical native Gemini provider',
+      "options.connection.transport !== 'openai-compatible'",
     )
     expect(shimSource).not.toContain('materializeGeminiCredentialPlan')
     expect(shimSource).not.toContain('geminiCredentialHeaders')
@@ -140,13 +145,18 @@ describe('Gemini credential authority', () => {
     }
   })
 
-  test('routes external providers before first-party OAuth storage access', () => {
+  test('routes the bound transport without request-time OAuth storage access', () => {
     const clientSource = source('services/api/client.ts')
-    const externalRoute = clientSource.indexOf("if (apiProvider !== 'firstParty')")
-    const oauthRead = clientSource.indexOf(
-      'await checkAndRefreshOAuthTokenIfNeeded',
+    const boundConnection = clientSource.indexOf(
+      'const connection = resolveBoundConnection(',
     )
-    expect(externalRoute).toBeGreaterThan(-1)
-    expect(oauthRead).toBeGreaterThan(externalRoute)
+    const compatibilityRoute = clientSource.indexOf(
+      "if (connection.transport === 'openai-compatible')",
+    )
+    expect(boundConnection).toBeGreaterThan(-1)
+    expect(compatibilityRoute).toBeGreaterThan(boundConnection)
+    expect(clientSource).not.toContain('checkAndRefreshOAuthTokenIfNeeded')
+    expect(clientSource).not.toContain('resolveSecureStorageHome')
+    expect(clientSource).not.toContain('getAPIProvider')
   })
 })

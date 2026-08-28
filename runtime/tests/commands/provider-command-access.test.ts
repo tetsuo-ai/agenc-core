@@ -451,7 +451,7 @@ describe("provider command access", () => {
       directCredential: {
         status: "missing",
         reason: "absent",
-        missingLabel: "ANTHROPIC_API_KEY",
+        missingLabel: "ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN",
       },
     });
 

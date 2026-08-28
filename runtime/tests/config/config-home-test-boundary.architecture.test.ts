@@ -10,6 +10,7 @@ const EXPLICIT_OBSOLETE_ALIAS_FIXTURES = new Set([
   "config/canonical-repository.test.ts",
   "config/plaintext-credential-migration.test.ts",
   "hermetic-test-discovery.test.ts",
+  "sdk-package/protocol-drift.contract.test.ts",
   "tui-e2e-harness-env.test.ts",
   "utils/agencPaths.test.ts",
   "utils/env.test.ts",

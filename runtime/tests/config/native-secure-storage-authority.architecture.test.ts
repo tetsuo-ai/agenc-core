@@ -127,7 +127,7 @@ describe("native secure storage authority", () => {
     expect(providerConfig).not.toContain("homedir");
   });
 
-  test("ProviderCode OAuth writes use explicit-home serialized native RMW", () => {
+  test("ProviderCode OAuth writes use bound callbacks backed by explicit-home native RMW", () => {
     const credentials = readFileSync(
       join(ROOT, "utils", "openAiOauthCredentials.ts"),
       "utf8",
@@ -142,7 +142,9 @@ describe("native secure storage authority", () => {
     expect(credentials).toContain("readNativeSecureStorageAsync(home)");
     expect(credentials).not.toContain("getSecureStorage(");
     expect(credentials).not.toContain("resolveSecureStorageHome");
-    expect(shim).toContain("home: HomeContext");
+    expect(shim).toContain("connection.extra.oauth");
+    expect(shim).toContain("this.oauthCallbacks = oauth");
+    expect(shim).not.toContain("HomeContext");
     expect(shim).not.toContain("resolveSecureStorageHome");
   });
 

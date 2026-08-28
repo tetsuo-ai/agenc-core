@@ -100,8 +100,8 @@ Key `AgencClient` methods:
 
 The daemon transport validates its home authority before it reads a cookie or
 opens a socket. `AGENC_HOME` must be absolute and is canonicalized through its
-deepest existing ancestor. `AGENC_CONFIG_DIR` is retired and rejected even
-when `connect()` receives explicit `socketPath` and `cookiePath` overrides.
+deepest existing ancestor. Explicit `socketPath` and `cookiePath` overrides do
+not bypass home-authority validation.
 
 `createSession()` sends safe runtime options with
 `allowUntrustedHooks: false` and the exact `pluginStorageRoot` passed to that
