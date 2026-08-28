@@ -6,7 +6,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -23,6 +23,59 @@ import {
 } from "../../src/utils/generated-wrapper.js";
 
 const roots: string[] = [];
+const originalExecPath = process.execPath;
+const originalPath = process.env.PATH;
+const originalHome = process.env.HOME;
+const hadBun = Reflect.has(globalThis, "Bun");
+const originalBun = Reflect.get(globalThis, "Bun");
+const hadMacro = Reflect.has(globalThis, "MACRO");
+const originalMacro = Reflect.get(globalThis, "MACRO");
+
+function restoreEnvironment(): void {
+  process.execPath = originalExecPath;
+  if (originalPath === undefined) {
+    delete process.env.PATH;
+  } else {
+    process.env.PATH = originalPath;
+  }
+  if (originalHome === undefined) {
+    delete process.env.HOME;
+  } else {
+    process.env.HOME = originalHome;
+  }
+  if (hadBun) {
+    Reflect.set(globalThis, "Bun", originalBun);
+  } else {
+    Reflect.deleteProperty(globalThis, "Bun");
+  }
+  if (hadMacro) {
+    Reflect.set(globalThis, "MACRO", originalMacro);
+  } else {
+    Reflect.deleteProperty(globalThis, "MACRO");
+  }
+}
+
+function executableName(): string {
+  return process.platform === "win32" ? "agenc.exe" : "agenc";
+}
+
+function writeExecutable(path: string): void {
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(
+    path,
+    process.platform === "win32" ? "test executable\n" : "#!/bin/sh\n",
+  );
+  if (process.platform !== "win32") chmodSync(path, 0o755);
+}
+
+function forceBundledFallback(root: string): void {
+  process.execPath = join(root, "missing-runtime");
+  Reflect.set(globalThis, "Bun", { embeddedFiles: ["test"] });
+  Reflect.set(globalThis, "MACRO", {
+    PACKAGE_URL: "@tetsuo-ai/runtime",
+    VERSION: "test",
+  });
+}
 
 function fixture(): {
   root: string;
@@ -63,6 +116,7 @@ function fixture(): {
 }
 
 afterEach(() => {
+  restoreEnvironment();
   while (roots.length > 0) {
     rmSync(roots.pop()!, { recursive: true, force: true });
   }
@@ -133,6 +187,66 @@ describe("Doctor installation detection", () => {
       }),
     ).resolves.toBe(wrapper.path);
   });
+
+  it("locates a bundled fallback only through the captured PATH", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agenc-doctor-captured-path-"));
+    roots.push(root);
+    const capturedBin = join(root, "captured-bin");
+    const ambientBin = join(root, "ambient-bin");
+    const capturedExecutable = join(capturedBin, executableName());
+    const ambientExecutable = join(ambientBin, executableName());
+    writeExecutable(capturedExecutable);
+    writeExecutable(ambientExecutable);
+    forceBundledFallback(root);
+    process.env.PATH = [ambientBin, originalPath]
+      .filter((entry): entry is string => entry !== undefined && entry.length > 0)
+      .join(delimiter);
+
+    await expect(
+      getInstallationPath({
+        installationType: "native",
+        activeGeneratedWrapper: null,
+        environment: {
+          ...process.env,
+          PATH: capturedBin,
+          HOME: join(root, "captured-home"),
+        },
+      }),
+    ).resolves.toBe(capturedExecutable);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "uses captured HOME for the bundled native fallback",
+    async () => {
+      const root = mkdtempSync(join(tmpdir(), "agenc-doctor-captured-home-"));
+      roots.push(root);
+      const emptyBin = join(root, "empty-bin");
+      const capturedHome = join(root, "captured-home");
+      const ambientHome = join(root, "ambient-home");
+      mkdirSync(emptyBin);
+      const capturedExecutable = join(
+        capturedHome,
+        ".local",
+        "bin",
+        executableName(),
+      );
+      writeExecutable(capturedExecutable);
+      writeExecutable(
+        join(ambientHome, ".local", "bin", executableName()),
+      );
+      forceBundledFallback(root);
+      process.env.PATH = emptyBin;
+      process.env.HOME = ambientHome;
+
+      await expect(
+        getInstallationPath({
+          installationType: "native",
+          activeGeneratedWrapper: null,
+          environment: { PATH: emptyBin, HOME: capturedHome },
+        }),
+      ).resolves.toBe(capturedExecutable);
+    },
+  );
 
   it("does not call one detected installation multiple", () => {
     expect(

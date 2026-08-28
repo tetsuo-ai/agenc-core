@@ -1,7 +1,17 @@
 import { execa } from 'execa'
 import { realpath } from 'fs/promises'
 import { homedir } from 'os'
-import { delimiter, dirname, join, normalize, posix, resolve, win32 } from 'path'
+import {
+  delimiter,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  normalize,
+  posix,
+  resolve,
+  win32,
+} from 'path'
 import { checkGlobalInstallPermissions } from './autoUpdater.js'
 import { isInBundledMode } from './bundledMode.js'
 import {
@@ -328,11 +338,13 @@ export async function getInstallationPath(
     readonly installationType?: InstallationType
     readonly activeGeneratedWrapper?: GeneratedWrapper | null
     readonly environment?: NodeJS.ProcessEnv
+    readonly cwd?: string
   } = {},
 ): Promise<string> {
   const environment = options.environment ?? process.env
+  const cwd = options.cwd ?? getCwd() ?? process.cwd()
   if (environment.NODE_ENV === 'development') {
-    return getCwd()
+    return cwd
   }
 
   const activeGeneratedWrapper = Object.hasOwn(
@@ -361,7 +373,11 @@ export async function getInstallationPath(
     }
 
     try {
-      const path = await which(getCliBinaryName())
+      const path = await findExecutableOnCapturedPath(
+        getCliBinaryName(),
+        environment,
+        cwd,
+      )
       if (path) {
         return path
       }
@@ -370,17 +386,23 @@ export async function getInstallationPath(
     }
 
     // If we can't find it, check common locations
-    try {
-      const nativeBinaryPath = join(
-        homedir(),
-        '.local',
-        'bin',
-        getCliBinaryName(),
-      )
-      await getFsImplementation().stat(nativeBinaryPath)
-      return nativeBinaryPath
-    } catch {
-      // Not found
+    const platformHome =
+      nonEmptyEnvironmentValue(environment.HOME) ??
+      nonEmptyEnvironmentValue(environment.USERPROFILE) ??
+      (options.environment === undefined ? homedir() : undefined)
+    if (platformHome !== undefined) {
+      try {
+        const nativeBinaryPath = join(
+          platformHome,
+          '.local',
+          'bin',
+          getCliBinaryName(),
+        )
+        await getFsImplementation().stat(nativeBinaryPath)
+        return nativeBinaryPath
+      } catch {
+        // Not found
+      }
     }
     return 'native'
   }
@@ -392,6 +414,58 @@ export async function getInstallationPath(
   } catch {
     return 'unknown'
   }
+}
+
+function nonEmptyEnvironmentValue(value: string | undefined): string | undefined {
+  const normalized = value?.trim()
+  return normalized ? normalized : undefined
+}
+
+async function findExecutableOnCapturedPath(
+  command: string,
+  environment: NodeJS.ProcessEnv,
+  cwd: string,
+): Promise<string | null> {
+  const searchPath =
+    nonEmptyEnvironmentValue(environment.PATH) ??
+    nonEmptyEnvironmentValue(environment.Path)
+  if (searchPath === undefined) return null
+
+  const windows = getPlatform() === 'windows'
+  const extensions =
+    windows && extname(command).length === 0
+      ? (nonEmptyEnvironmentValue(environment.PATHEXT) ?? '.COM;.EXE;.BAT;.CMD')
+          .split(';')
+          .map(extension => extension.trim())
+          .filter(Boolean)
+      : ['']
+  for (const rawDirectory of searchPath.split(delimiter)) {
+    const unquoted = rawDirectory.length >= 2 &&
+      rawDirectory.startsWith('"') &&
+      rawDirectory.endsWith('"')
+      ? rawDirectory.slice(1, -1)
+      : rawDirectory
+    const directory = unquoted.length === 0
+      ? cwd
+      : isAbsolute(unquoted)
+        ? unquoted
+        : resolve(cwd, unquoted)
+    for (const extension of extensions) {
+      const candidate = join(directory, `${command}${extension}`)
+      try {
+        const stat = await getFsImplementation().stat(candidate)
+        if (
+          stat.isFile() &&
+          (windows || (stat.mode & 0o111) !== 0)
+        ) {
+          return candidate
+        }
+      } catch {
+        // Continue to the next captured PATH candidate.
+      }
+    }
+  }
+  return null
 }
 
 export function getInvokedBinary(): string {
@@ -992,6 +1066,7 @@ export async function getDoctorDiagnostic(
     installationType,
     activeGeneratedWrapper,
     environment: ingress.environment,
+    cwd: ingress.cwd,
   })
   const invokedBinary = getInvokedBinary()
   const multipleInstallations = await detectMultipleInstallations(
