@@ -1,4 +1,12 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -922,7 +930,7 @@ describe("explicit plaintext credential migration", () => {
 
     const plan = await checkConfigV2Migration(options(home, "same-content-target-swap"));
     native.afterUpdate = () => {
-      rmSync(config);
+      renameSync(config, `${config}.before-swap`);
       writeFileSync(config, configBytes, { mode: 0o600 });
     };
 
@@ -945,7 +953,7 @@ describe("explicit plaintext credential migration", () => {
 
     const plan = await checkConfigV2Migration(options(home, "same-content-secret-swap"));
     native.afterUpdate = () => {
-      rmSync(source);
+      renameSync(source, `${source}.before-swap`);
       writeFileSync(source, legacy, { mode: 0o600 });
     };
 
