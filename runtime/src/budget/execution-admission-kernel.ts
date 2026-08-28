@@ -43,7 +43,10 @@ import {
 } from "../state/sqlite-driver.js";
 import { AsyncLock } from "../utils/async-lock.js";
 import { hitM4DurabilityFailpoint } from "../durability/failpoints.js";
-import { recoverExecutionAdmissionCanonicalJournals } from "../state/execution-admission-canonical-recovery.js";
+import {
+  recoverExecutionAdmissionCanonicalJournals,
+  recoverExecutionAdmissionEffectSettlements,
+} from "../state/execution-admission-canonical-recovery.js";
 
 const DEFAULT_QUEUE_AGING_MS = 30_000;
 const JOURNAL_PAGE_SIZE = 1_000;
@@ -251,6 +254,10 @@ export class ExecutionAdmissionKernel {
     for (const paths of discoverStateDatabasePaths(this.#agencHome)) {
       try {
         const binding = this.#registerPaths(paths, paths.projectDir, false);
+        recoverExecutionAdmissionEffectSettlements(
+          binding.driver,
+          binding.repository,
+        );
         const report = binding.repository.recover({
           now: this.#timestamp(),
           activeOwnerIds: new Set(),
@@ -885,33 +892,45 @@ export class ExecutionAdmissionKernel {
     };
     this.#byStatePath.set(paths.stateDbPath, binding);
     for (const alias of binding.aliases) this.#byWorkspace.set(alias, binding);
-    for (const runId of binding.repository.listBoundRunIds()) {
-      // Hydration replays persisted rows; it does not admit anything. A run id
-      // already owned by another workspace here is stale data — the same
-      // conversation opened once under a different cwd leaves its id in two
-      // project databases — and throwing would exclude this whole workspace
-      // from admission for the life of the daemon. The user sees only
-      // "Message not sent: execution admission deny:
-      // admission_run_workspace_conflict" on every turn, with no way back
-      // short of deleting state. Skip the row; live binds still throw.
-      if (!this.#tryBindRunWorkspace(runId, binding, false)) {
-        this.#staleRunBindingSkips += 1;
+    try {
+      for (const runId of binding.repository.listBoundRunIds()) {
+        // Hydration replays persisted rows; it does not admit anything. A run id
+        // already owned by another workspace here is stale data — the same
+        // conversation opened once under a different cwd leaves its id in two
+        // project databases — and throwing would exclude this whole workspace
+        // from admission for the life of the daemon. The user sees only
+        // "Message not sent: execution admission deny:
+        // admission_run_workspace_conflict" on every turn, with no way back
+        // short of deleting state. Skip the row; live binds still throw.
+        if (!this.#tryBindRunWorkspace(runId, binding, false)) {
+          this.#staleRunBindingSkips += 1;
+        }
       }
+      if (recover) {
+        // A newly discovered workspace is recovered before its first admission.
+        recoverExecutionAdmissionEffectSettlements(
+          binding.driver,
+          binding.repository,
+        );
+        binding.repository.recover({
+          now: this.#timestamp(),
+          activeOwnerIds: new Set([this.#ownerId]),
+        });
+        recoverExecutionAdmissionCanonicalJournals(
+          binding.driver,
+          binding.repository,
+        );
+        this.#hydrateQueued(binding);
+        this.#publishNewJournal(binding);
+      }
+      return binding;
+    } catch (error) {
+      // A dynamic bind must never publish a partially recovered workspace.
+      // Unregistering also closes the failed driver, so the next bind opens the
+      // database afresh and re-runs the same canonical validation.
+      this.#unregisterBinding(binding);
+      throw error;
     }
-    if (recover) {
-      // A newly discovered workspace is recovered before its first admission.
-      binding.repository.recover({
-        now: this.#timestamp(),
-        activeOwnerIds: new Set([this.#ownerId]),
-      });
-      recoverExecutionAdmissionCanonicalJournals(
-        binding.driver,
-        binding.repository,
-      );
-      this.#hydrateQueued(binding);
-      this.#publishNewJournal(binding);
-    }
-    return binding;
   }
 
   #unregisterBinding(binding: WorkspaceBinding): void {

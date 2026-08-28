@@ -6,11 +6,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { AdmissionLease } from "../../src/budget/admission-types.js";
 import type { ExecutionAdmissionClient } from "../../src/budget/admission-client.js";
+import { runAdmittedToolCall } from "../../src/budget/admitted-tool-call.js";
 import { ExecutionAdmissionKernel } from "../../src/budget/execution-admission-kernel.js";
+import { EventLog, type Event } from "../../src/session/event-log.js";
+import { serializeRolloutItem } from "../../src/session/rollout-item.js";
+import type { Session } from "../../src/session/session.js";
 import { upsertAgentRun } from "../../src/state/agent-runs.js";
 import { ExecutionAdmissionRepository } from "../../src/state/execution-admission.js";
 import { StateRunDurabilityRepository } from "../../src/state/run-durability.js";
 import { ThreadSpawnEdgeRepository } from "../../src/state/spawn-edges.js";
+import type { Tool } from "../../src/tools/types.js";
 import {
   STATE_DATABASE_FILENAME,
   openStateDatabases,
@@ -156,7 +161,243 @@ function waitForAbort(signal: AbortSignal): Promise<unknown> {
   });
 }
 
+function seedCorruptEffectSettlement(runId: string): void {
+  const stepId = "tool:turn-1:corrupt-call";
+  const recordedAt = "2026-08-28T00:00:00.000Z";
+  const driver = openStateDatabases({ cwd, agencHome: home });
+  const admissions = new ExecutionAdmissionRepository(driver, {
+    now: () => new Date(recordedAt),
+    ownerId: "crashed-corrupt-owner",
+    ownerPid: 42,
+  });
+  admissions.enqueue({
+    step: { runId, stepId },
+    kind: "tool_exec",
+    estimate: {
+      maxInputTokens: 10,
+      maxOutputTokens: 10,
+      maxCostUsd: 1,
+    },
+    workspaceId: cwd,
+    sessionId: runId,
+    parentScopeId: "turn-1",
+    autonomous: false,
+  });
+  const claimed = admissions.claim();
+  if (claimed.kind !== "claimed") throw new Error("expected claimed effect");
+  const reservationId = claimed.lease.reservation.reservationId;
+  admissions.markDispatched(reservationId, { boundary: "tool_effect" });
+
+  const events: Event[] = [
+    {
+      eventId: "corrupt-effect-intent",
+      id: "corrupt-effect-intent",
+      seq: 1,
+      msg: {
+        type: "effect_intent",
+        payload: {
+          formatVersion: 2,
+          minimumReaderRuntime: "0.14.0",
+          runId,
+          stepId,
+          callId: "corrupt-call",
+          toolName: "metered.tool",
+          recoveryCategory: "side-effecting",
+          intentDigest: "corrupt-intent-digest",
+          attempt: 1,
+          recordedAt,
+        },
+      },
+    },
+    {
+      eventId: "corrupt-effect-result",
+      id: "corrupt-effect-result",
+      seq: 2,
+      msg: {
+        type: "effect_result",
+        payload: {
+          formatVersion: 2,
+          minimumReaderRuntime: "0.14.0",
+          runId,
+          stepId,
+          callId: "corrupt-call",
+          toolName: "metered.tool",
+          recoveryCategory: "side-effecting",
+          intentEventSeq: 1,
+          outcome: "committed",
+          effectBoundary: "crossed",
+          admissionSettlement: {
+            reservationId: `${reservationId}-wrong`,
+            decision: "reconcile",
+            usage: { inputTokens: 3, outputTokens: 4, costUsd: 0.25 },
+          },
+          recordedAt: "2026-08-28T00:00:01.000Z",
+        },
+      },
+    },
+  ];
+  const sessionsDir = join(driver.projectDir, "sessions", runId);
+  mkdirSync(sessionsDir, { recursive: true });
+  const sourcePath = join(sessionsDir, `rollout-${runId}.jsonl`);
+  writeFileSync(
+    sourcePath,
+    events
+      .map((event) =>
+        serializeRolloutItem({ type: "event_msg", payload: event }),
+      )
+      .join(""),
+    { mode: 0o600 },
+  );
+  const durability = new StateRunDurabilityRepository(driver);
+  durability.ensureInitialEpoch({ runId, openedAt: recordedAt });
+  durability.bindJournalSource({
+    runId,
+    epoch: 1,
+    childRunId: runId,
+    sessionId: runId,
+    sourcePath,
+    boundAt: recordedAt,
+  });
+  driver.close();
+}
+
 describe("ExecutionAdmissionKernel recovery", () => {
+  it("applies durable effect usage before generic startup recovery", () => {
+    const runId = "durable-effect-startup-run";
+    const stepId = "tool:turn-1:call-1";
+    const recordedAt = "2026-08-28T00:00:00.000Z";
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    const admissions = new ExecutionAdmissionRepository(driver, {
+      now: () => new Date(recordedAt),
+      ownerId: "crashed-effect-owner",
+      ownerPid: 42,
+    });
+    admissions.enqueue({
+      step: { runId, stepId },
+      kind: "tool_exec",
+      estimate: {
+        maxInputTokens: 10,
+        maxOutputTokens: 10,
+        maxCostUsd: 1,
+      },
+      workspaceId: cwd,
+      sessionId: runId,
+      parentScopeId: "turn-1",
+      autonomous: false,
+    });
+    const claimed = admissions.claim();
+    if (claimed.kind !== "claimed") throw new Error("expected claimed effect");
+    const reservationId = claimed.lease.reservation.reservationId;
+    admissions.markDispatched(reservationId, { boundary: "tool_effect" });
+
+    const events: Event[] = [
+      {
+        eventId: "startup-effect-intent",
+        id: "startup-effect-intent",
+        seq: 1,
+        msg: {
+          type: "effect_intent",
+          payload: {
+            formatVersion: 2,
+            minimumReaderRuntime: "0.14.0",
+            runId,
+            stepId,
+            callId: "call-1",
+            toolName: "metered.tool",
+            recoveryCategory: "side-effecting",
+            intentDigest: "intent-digest",
+            attempt: 1,
+            recordedAt,
+          },
+        },
+      },
+      {
+        eventId: "startup-effect-result",
+        id: "startup-effect-result",
+        seq: 2,
+        msg: {
+          type: "effect_result",
+          payload: {
+            formatVersion: 2,
+            minimumReaderRuntime: "0.14.0",
+            runId,
+            stepId,
+            callId: "call-1",
+            toolName: "metered.tool",
+            recoveryCategory: "side-effecting",
+            intentEventSeq: 1,
+            outcome: "committed",
+            effectBoundary: "crossed",
+            admissionSettlement: {
+              reservationId,
+              decision: "reconcile",
+              usage: {
+                inputTokens: 3,
+                outputTokens: 4,
+                costUsd: 0.25,
+              },
+            },
+            recordedAt: "2026-08-28T00:00:01.000Z",
+          },
+        },
+      },
+    ];
+    const sessionsDir = join(driver.projectDir, "sessions", runId);
+    mkdirSync(sessionsDir, { recursive: true });
+    const sourcePath = join(sessionsDir, `rollout-${runId}.jsonl`);
+    writeFileSync(
+      sourcePath,
+      events
+        .map((event) =>
+          serializeRolloutItem({ type: "event_msg", payload: event }),
+        )
+        .join(""),
+      { mode: 0o600 },
+    );
+    const durability = new StateRunDurabilityRepository(driver);
+    durability.ensureInitialEpoch({ runId, openedAt: recordedAt });
+    durability.bindJournalSource({
+      runId,
+      epoch: 1,
+      childRunId: runId,
+      sessionId: runId,
+      sourcePath,
+      boundAt: recordedAt,
+    });
+    driver.close();
+
+    const restarted = kernel("durable-effect-restart");
+    expect(restarted.initializeExistingState()).toMatchObject({
+      databases: 1,
+      heldUnknown: 0,
+      failures: [],
+    });
+    const auditDriver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      const recovered = new ExecutionAdmissionRepository(auditDriver, {
+        ownerId: "durable-effect-audit",
+        ownerPid: process.pid,
+      }).getReservation(reservationId);
+      expect(recovered).toMatchObject({
+        status: "reconciled",
+        actualInputTokens: 3,
+        actualOutputTokens: 4,
+        actualCostUsd: 0.25,
+      });
+    } finally {
+      auditDriver.close();
+    }
+  });
+
+  it("retries dynamic recovery instead of caching a corrupt workspace", () => {
+    const runId = "corrupt-dynamic-recovery-run";
+    seedCorruptEffectSettlement(runId);
+    const value = kernel("corrupt-dynamic-recovery");
+
+    expect(() => bind(value, runId)).toThrow(/unknown reservation/u);
+    expect(() => bind(value, runId)).toThrow(/unknown reservation/u);
+  });
+
   it("stops admission work when canonical journal projection fails and retries the same evidence", async () => {
     const value = kernel("critical-projection");
     const client = bind(value, "critical-run");
@@ -699,7 +940,11 @@ describe("ExecutionAdmissionKernel recovery", () => {
       expect(() =>
         value.bindClient({
           cwd: otherCwd,
-          scope: { runId: "live-run", sessionId: "live-run", autonomous: false },
+          scope: {
+            runId: "live-run",
+            sessionId: "live-run",
+            autonomous: false,
+          },
         }),
       ).toThrowError(/admission_run_workspace_conflict/);
     } finally {
@@ -709,6 +954,89 @@ describe("ExecutionAdmissionKernel recovery", () => {
 });
 
 describe("ExecutionAdmissionKernel active cancellation", () => {
+  it("keeps a pre-effect abort and its durable settlement in the same void class", async () => {
+    const value = kernel("pre-effect-abort");
+    const client = bind(value, "pre-effect-abort-run");
+    const effectEvents: Event[] = [];
+    const eventLog = new EventLog();
+    eventLog.subscribe((event) => effectEvents.push(event));
+    const session = {
+      conversationId: "pre-effect-abort-run",
+      eventLog,
+      rolloutStore: { assertToolAdmissionAllowed: vi.fn() },
+      emit: (event: Event) => eventLog.emit(event),
+      services: {
+        executionAdmission: client,
+        admissionRequired: true,
+      },
+    } as unknown as Session;
+    const tool = {
+      name: "pre-effect.abort-ignoring",
+      recoveryCategory: "side-effecting",
+      admissionEstimate: () => ({
+        maxInputTokens: 10,
+        maxOutputTokens: 10,
+        maxCostUsd: 1,
+      }),
+    } as unknown as Tool;
+    const invoked = Promise.withResolvers<void>();
+    const physical = Promise.withResolvers<{
+      content: string;
+      admissionUsage: {
+        inputTokens: number;
+        outputTokens: number;
+        costUsd: number;
+      };
+    }>();
+    const running = runAdmittedToolCall({
+      session,
+      turnId: "turn-1",
+      callId: "call-pre-effect-abort",
+      tool,
+      args: {},
+      invoke: async () => {
+        invoked.resolve();
+        return physical.promise;
+      },
+    });
+    await invoked.promise;
+    client.cancelRun("operator_cancelled");
+    physical.resolve({
+      content: "ignored abort without crossing",
+      admissionUsage: { inputTokens: 3, outputTokens: 4, costUsd: 0.25 },
+    });
+
+    await expect(running).rejects.toMatchObject({
+      name: "AdmissionDeniedError",
+      reason: "operator_cancelled",
+    });
+    expect(effectEvents.at(-1)?.msg).toMatchObject({
+      type: "effect_result",
+      payload: {
+        effectBoundary: "not_crossed",
+        admissionSettlement: {
+          decision: "void",
+          reason: "tool_returned_before_dispatch",
+        },
+      },
+    });
+    const reservationId = value
+      .listJournal({ cwd, runId: "pre-effect-abort-run" })
+      .find((event) => event.event === "allowed")?.reservationId;
+    expect(reservationId).toBeDefined();
+    const driver = openStateDatabases({ cwd, agencHome: home });
+    try {
+      expect(
+        new ExecutionAdmissionRepository(driver).getReservation(reservationId!),
+      ).toMatchObject({
+        status: "voided",
+        resolutionReason: "cancelled_before_dispatch:operator_cancelled",
+      });
+    } finally {
+      driver.close();
+    }
+  });
+
   it("enforces a direct scope hard cap across sibling reservations", async () => {
     const siblingLimits = {
       global: 2,

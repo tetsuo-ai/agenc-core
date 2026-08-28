@@ -767,6 +767,36 @@ describe("strict canonical journal contract", () => {
     ).toBe(false);
   });
 
+  it.each([
+    {
+      inputTokens: Number.MAX_SAFE_INTEGER,
+      outputTokens: 1,
+      costUsd: 0,
+    },
+    { inputTokens: 1, outputTokens: 1, costUsd: 1e20 },
+  ])("rejects effect usage outside the durable admission domain", (usage) => {
+    expect(
+      isCanonicalEventPayload("effect_result", {
+        formatVersion: 2,
+        minimumReaderRuntime: "0.14.0",
+        runId: "run-1",
+        stepId: "tool:turn-1:call-1",
+        callId: "call-1",
+        toolName: "metered.tool",
+        recoveryCategory: "side-effecting",
+        intentEventSeq: 1,
+        outcome: "committed",
+        effectBoundary: "crossed",
+        admissionSettlement: {
+          reservationId: "reservation-1",
+          decision: "reconcile",
+          usage,
+        },
+        recordedAt: "2026-08-02T00:00:00.000Z",
+      }),
+    ).toBe(false);
+  });
+
   it("keeps an exhaustive fail-closed schema for every rollout discriminant", () => {
     expect(CANONICAL_ROLLOUT_SCHEMA_TYPES).toEqual([
       "compacted",

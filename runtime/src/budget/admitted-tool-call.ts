@@ -16,6 +16,7 @@ import {
 } from "../durability/failpoints.js";
 import type {
   EffectIntentEvent,
+  EffectAdmissionSettlement,
   EffectReviewResolvedEvent,
   EffectResultEvent,
   EffectUnknownOutcomeEvent,
@@ -25,6 +26,7 @@ import type {
 import type { Session } from "../session/session.js";
 import type { Tool, ToolRecoveryCategory } from "../tools/types.js";
 import type { ToolDispatchResult } from "../tool-registry.js";
+import { usdToNanos } from "../state/execution-admission.js";
 import {
   readEffectBoundaryNotCrossed,
   validateToolEffectDispositionEvidence,
@@ -136,15 +138,24 @@ function isZeroBound(estimate: {
 function validUsage(
   usage: ToolDispatchResult["admissionUsage"],
 ): usage is NonNullable<ToolDispatchResult["admissionUsage"]> {
-  return (
+  if (
     usage !== undefined &&
     Number.isSafeInteger(usage.inputTokens) &&
     usage.inputTokens >= 0 &&
     Number.isSafeInteger(usage.outputTokens) &&
     usage.outputTokens >= 0 &&
+    Number.isSafeInteger(usage.inputTokens + usage.outputTokens) &&
     Number.isFinite(usage.costUsd) &&
     usage.costUsd >= 0
-  );
+  ) {
+    try {
+      usdToNanos(usage.costUsd);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  return false;
 }
 
 function cancellationAfterDispatch(signal: AbortSignal): Error | undefined {
@@ -362,6 +373,7 @@ function appendEffectResult(
     readonly effectBoundary?: EffectBoundary;
     readonly noEffectEvidence?: EffectNoEffectProof;
     readonly result?: ToolDispatchResult;
+    readonly admissionSettlement?: EffectAdmissionSettlement;
     readonly evidence?: Readonly<Record<string, unknown>>;
   },
 ): EffectEventCommit {
@@ -391,6 +403,9 @@ function appendEffectResult(
             admissionUsage: options.result.admissionUsage ?? null,
           }),
         }
+      : {}),
+    ...(options.admissionSettlement !== undefined
+      ? { admissionSettlement: options.admissionSettlement }
       : {}),
     ...(options.evidence !== undefined ? { evidence: options.evidence } : {}),
     recordedAt: new Date().toISOString(),
@@ -489,12 +504,14 @@ function appendEffectReview(
   session: Session,
   context: EffectJournalContext,
   resolution: EffectReviewResolution,
+  admissionSettlement?: EffectAdmissionSettlement,
 ): EffectEventCommit {
   const payload: EffectReviewResolvedEvent = {
     runId: context.runId,
     stepId: context.stepId,
     callId: context.callId,
     resolution,
+    ...(admissionSettlement !== undefined ? { admissionSettlement } : {}),
   };
   return appendEffectEvent(session, {
     type: "effect_review_resolved",
@@ -662,8 +679,7 @@ function settlementResolution(
   };
 }
 
-function reconcileToolUsage(
-  client: ExecutionAdmissionClient | undefined,
+function planToolAdmissionSettlement(
   reservationId: string,
   estimate: {
     readonly maxInputTokens: number;
@@ -671,36 +687,31 @@ function reconcileToolUsage(
     readonly maxCostUsd: number | null;
   },
   result: ToolDispatchResult | undefined,
-  session: Session,
   missingUsageReason = "missing_tool_usage",
-): "provider_overrun" | undefined {
-  if (client === undefined) return undefined;
+): EffectAdmissionSettlement {
   if (
     result?.admissionUsage !== undefined &&
     !validUsage(result.admissionUsage)
   ) {
-    client.holdUnknown(reservationId, "invalid_tool_usage");
-    incrementEffectSettlementMetric(session, "heldAccounting");
-    return undefined;
+    return {
+      reservationId,
+      decision: "hold_unknown",
+      reason: "invalid_tool_usage",
+    };
   }
   if (validUsage(result?.admissionUsage)) {
-    const outcome = client.reconcile(reservationId, result.admissionUsage);
-    if (outcome.outcome === "provider_overrun") {
-      session.abortTerminal("provider_overrun");
-      void session.services?.agentControl.shutdownAgentTree?.(
-        session.conversationId,
-      );
-      return "provider_overrun";
-    }
-    return undefined;
+    return {
+      reservationId,
+      decision: "reconcile",
+      usage: result.admissionUsage,
+    };
   }
   if (isZeroBound(estimate)) {
-    client.reconcile(reservationId, {
-      inputTokens: 0,
-      outputTokens: 0,
-      costUsd: 0,
-    });
-    return undefined;
+    return {
+      reservationId,
+      decision: "reconcile",
+      usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+    };
   }
   /*
    * A reservation that cannot cost anything did not cost anything by
@@ -720,15 +731,46 @@ function reconcileToolUsage(
    * its way out.
    */
   if (estimate.maxCostUsd === 0 && result?.isError !== true) {
-    client.reconcile(reservationId, {
-      inputTokens: 0,
-      outputTokens: 0,
-      costUsd: 0,
-    });
+    return {
+      reservationId,
+      decision: "reconcile",
+      usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
+    };
+  }
+  return {
+    reservationId,
+    decision: "hold_unknown",
+    reason: missingUsageReason,
+  };
+}
+
+function applyToolAdmissionSettlement(
+  client: ExecutionAdmissionClient | undefined,
+  settlement: EffectAdmissionSettlement,
+  session: Session,
+): "provider_overrun" | undefined {
+  if (client === undefined) return undefined;
+  if (settlement.decision === "void") {
+    client.void(settlement.reservationId, settlement.reason);
     return undefined;
   }
-  client.holdUnknown(reservationId, missingUsageReason);
-  incrementEffectSettlementMetric(session, "heldAccounting");
+  if (settlement.decision === "hold_unknown") {
+    client.holdUnknown(settlement.reservationId, settlement.reason);
+    incrementEffectSettlementMetric(session, "heldAccounting");
+    return undefined;
+  }
+  const outcome = client.reconcile(settlement.reservationId, settlement.usage);
+  if (
+    outcome.outcome === "provider_overrun" ||
+    (outcome.outcome === "duplicate" &&
+      outcome.existingStatus === "provider_overrun")
+  ) {
+    session.abortTerminal("provider_overrun");
+    void session.services?.agentControl.shutdownAgentTree?.(
+      session.conversationId,
+    );
+    return "provider_overrun";
+  }
   return undefined;
 }
 
@@ -921,23 +963,44 @@ export async function runAdmittedToolCall(
 
   let effectClosed = false;
   let admissionSettled = false;
+  let committedAdmissionSettlement: EffectAdmissionSettlement | undefined;
   let observerOwnsPhysical = false;
   let crashInjected = false;
+  const appendSettledResult = (
+    options: Parameters<typeof appendEffectResult>[2],
+  ): EffectEventCommit => {
+    const commit = appendEffectResult(params.session, journal, options);
+    committedAdmissionSettlement = options.admissionSettlement;
+    return commit;
+  };
   try {
     const cancelledBeforeDispatch = cancellationAfterDispatch(
       dispatch.context.signal,
     );
     if (cancelledBeforeDispatch !== undefined) {
       const observedAt = new Date().toISOString();
-      const commit = appendEffectResult(params.session, journal, {
+      const admissionSettlement =
+        reservationId === undefined
+          ? undefined
+          : {
+              reservationId,
+              decision: "void" as const,
+              reason: "tool_cancelled_before_dispatch",
+            };
+      const commit = appendSettledResult({
         outcome: "cancelled",
         effectBoundary: "not_crossed",
         noEffectEvidence: noEffectProof(journal, observedAt),
+        ...(admissionSettlement !== undefined ? { admissionSettlement } : {}),
         evidence: { reason: "cancelled_before_dispatch" },
       });
       effectClosed = true;
-      if (reservationId !== undefined) {
-        client?.void(reservationId, "tool_cancelled_before_dispatch");
+      if (admissionSettlement !== undefined) {
+        applyToolAdmissionSettlement(
+          client,
+          admissionSettlement,
+          params.session,
+        );
         admissionSettled = true;
       }
       requireEffectProjection(commit);
@@ -954,13 +1017,23 @@ export async function runAdmittedToolCall(
       result.effectDisposition,
     );
     let commit: EffectEventCommit;
+    let admissionSettlement: EffectAdmissionSettlement | undefined;
 
     if (!boundaryCrossed) {
-      commit = appendEffectResult(params.session, journal, {
+      admissionSettlement =
+        reservationId === undefined
+          ? undefined
+          : {
+              reservationId,
+              decision: "void",
+              reason: "tool_returned_before_dispatch",
+            };
+      commit = appendSettledResult({
         outcome: result.isError === true ? "failed" : "cancelled",
         effectBoundary: "not_crossed",
         noEffectEvidence: noEffectProof(journal, recordedAt),
         result,
+        ...(admissionSettlement !== undefined ? { admissionSettlement } : {}),
         evidence: { reason: "dispatch_returned_before_effect_boundary" },
       });
     } else if (
@@ -971,6 +1044,14 @@ export async function runAdmittedToolCall(
           disposition?.disposition !== "confirmed_no_effect"))
     ) {
       poisonLiveEffect(params.session, liveIdentity(journal));
+      admissionSettlement =
+        reservationId === undefined
+          ? undefined
+          : {
+              reservationId,
+              decision: "hold_unknown",
+              reason: "effect_outcome_unknown",
+            };
       commit = appendEffectUnknownOutcome(params.session, journal, {
         reason:
           disposition?.disposition === "remains_unknown"
@@ -979,7 +1060,11 @@ export async function runAdmittedToolCall(
         ...(reservationId !== undefined ? { reservationId } : {}),
       });
     } else {
-      commit = appendEffectResult(params.session, journal, {
+      admissionSettlement =
+        reservationId === undefined
+          ? undefined
+          : planToolAdmissionSettlement(reservationId, estimate, result);
+      commit = appendSettledResult({
         outcome:
           disposition?.disposition === "confirmed_no_effect"
             ? "failed"
@@ -999,17 +1084,16 @@ export async function runAdmittedToolCall(
             }
           : {}),
         result,
+        ...(admissionSettlement !== undefined ? { admissionSettlement } : {}),
         ...(reservationId !== undefined ? { evidence: { reservationId } } : {}),
       });
     }
     effectClosed = true;
 
-    if (reservationId !== undefined) {
-      const accounting = reconcileToolUsage(
+    if (admissionSettlement !== undefined) {
+      const accounting = applyToolAdmissionSettlement(
         client,
-        reservationId,
-        estimate,
-        result,
+        admissionSettlement,
         params.session,
       );
       admissionSettled = true;
@@ -1071,10 +1155,21 @@ export async function runAdmittedToolCall(
           effectClosed = true;
         } else {
           const observedAt = new Date().toISOString();
-          const commit = appendEffectResult(params.session, journal, {
+          const admissionSettlement =
+            reservationId === undefined
+              ? undefined
+              : {
+                  reservationId,
+                  decision: "void" as const,
+                  reason: `tool_${pending.callerStop}_before_dispatch`,
+                };
+          const commit = appendSettledResult({
             outcome: "cancelled",
             effectBoundary: "not_crossed",
             noEffectEvidence: noEffectProof(journal, observedAt, error),
+            ...(admissionSettlement !== undefined
+              ? { admissionSettlement }
+              : {}),
             evidence: {
               reason: `${pending.callerStop}_before_effect_boundary`,
               callerStop: pending.callerStop,
@@ -1088,9 +1183,14 @@ export async function runAdmittedToolCall(
           effectClosed = true;
         }
         if (reservationId !== undefined && !admissionSettled) {
-          client?.void(
-            reservationId,
-            `tool_${pending.callerStop}_before_dispatch`,
+          applyToolAdmissionSettlement(
+            client,
+            {
+              reservationId,
+              decision: "void",
+              reason: `tool_${pending.callerStop}_before_dispatch`,
+            },
+            params.session,
           );
           admissionSettled = true;
         }
@@ -1129,52 +1229,66 @@ export async function runAdmittedToolCall(
         onSettled: async (settlement) => {
           const settleAdmission = (): void => {
             if (reservationId === undefined || admissionSettled) return;
-            const rejectionWithoutNoEffectProof =
-              settlement.kind === "rejected" &&
-              category !== "idempotent" &&
-              boundaryCrossed &&
-              readEffectBoundaryNotCrossed(
-                settlement.reason,
-                new Date().toISOString(),
-              ) === undefined;
-            if (rejectionWithoutNoEffectProof) {
-              client?.holdUnknown(
+            const admissionSettlement =
+              committedAdmissionSettlement ??
+              ({
                 reservationId,
-                pending.callerStop === "abort"
-                  ? "tool_cancelled_after_dispatch"
-                  : "tool_timeout_after_dispatch",
-              );
-              incrementEffectSettlementMetric(params.session, "heldAccounting");
-            } else {
-              reconcileToolUsage(
-                client,
-                reservationId,
-                estimate,
-                settlement.kind === "fulfilled" ? settlement.value : undefined,
-                params.session,
-              );
-            }
+                decision: "hold_unknown",
+                reason:
+                  pending.callerStop === "abort"
+                    ? "tool_cancelled_after_dispatch"
+                    : "tool_timeout_after_dispatch",
+              } satisfies EffectAdmissionSettlement);
+            applyToolAdmissionSettlement(
+              client,
+              admissionSettlement,
+              params.session,
+            );
             admissionSettled = true;
           };
           try {
             if (category !== "idempotent" && boundaryCrossed) {
               ensureUnknownRecorded();
               if (!liveEffectWasExternallyResolved(params.session, identity)) {
-                const resolution = settlementResolution(
-                  journal,
+                const result =
                   settlement.kind === "fulfilled"
                     ? settlement.value
-                    : undefined,
+                    : undefined;
+                const resolution = settlementResolution(
+                  journal,
+                  result,
                   settlement.kind === "rejected"
                     ? settlement.reason
                     : undefined,
                   new Date().toISOString(),
                 );
+                const admissionSettlement =
+                  reservationId === undefined
+                    ? undefined
+                    : resolution.workflowStatus === "pending"
+                      ? {
+                          reservationId,
+                          decision: "hold_unknown" as const,
+                          reason:
+                            pending.callerStop === "abort"
+                              ? "tool_cancelled_after_dispatch"
+                              : "tool_timeout_after_dispatch",
+                        }
+                      : planToolAdmissionSettlement(
+                          reservationId,
+                          estimate,
+                          result,
+                          pending.callerStop === "abort"
+                            ? "tool_cancelled_after_dispatch"
+                            : "tool_timeout_after_dispatch",
+                        );
                 const commit = appendEffectReview(
                   params.session,
                   journal,
                   resolution,
+                  admissionSettlement,
                 );
+                committedAdmissionSettlement = admissionSettlement;
                 requireEffectProjection(commit);
                 if (resolution.workflowStatus !== "pending") {
                   clearLiveEffectPoison(params.session, identity);
@@ -1187,11 +1301,22 @@ export async function runAdmittedToolCall(
             } else if (category === "idempotent" && !effectClosed) {
               const result =
                 settlement.kind === "fulfilled" ? settlement.value : undefined;
+              const durableAdmissionSettlement =
+                reservationId === undefined
+                  ? undefined
+                  : planToolAdmissionSettlement(
+                      reservationId,
+                      estimate,
+                      result,
+                      pending.callerStop === "abort"
+                        ? "tool_cancelled_after_dispatch"
+                        : "tool_timeout_after_dispatch",
+                    );
               const disposition = validateToolEffectDispositionEvidence(
                 result?.effectDisposition,
               );
               const settledAt = new Date().toISOString();
-              const commit = appendEffectResult(params.session, journal, {
+              const commit = appendSettledResult({
                 outcome:
                   disposition?.disposition === "confirmed_no_effect"
                     ? "failed"
@@ -1212,6 +1337,9 @@ export async function runAdmittedToolCall(
                     }
                   : {}),
                 ...(result !== undefined ? { result } : {}),
+                ...(durableAdmissionSettlement !== undefined
+                  ? { admissionSettlement: durableAdmissionSettlement }
+                  : {}),
                 evidence:
                   settlement.kind === "rejected"
                     ? errorEvidence(settlement.reason)
@@ -1273,26 +1401,35 @@ export async function runAdmittedToolCall(
       observedAt,
     );
     if (!boundaryCrossed || authoritativeNoEffect !== undefined) {
-      const commit = appendEffectResult(params.session, journal, {
+      const admissionSettlement =
+        reservationId === undefined
+          ? undefined
+          : !boundaryCrossed
+            ? {
+                reservationId,
+                decision: "void" as const,
+                reason: "tool_failed_before_dispatch",
+              }
+            : planToolAdmissionSettlement(
+                reservationId,
+                estimate,
+                undefined,
+                "no_effect_usage_unavailable",
+              );
+      const commit = appendSettledResult({
         outcome: dispatch.context.signal.aborted ? "cancelled" : "failed",
         effectBoundary: boundaryCrossed ? "crossed" : "not_crossed",
         noEffectEvidence:
           authoritativeNoEffect ?? noEffectProof(journal, observedAt, error),
+        ...(admissionSettlement !== undefined ? { admissionSettlement } : {}),
         evidence: errorEvidence(error),
       });
-      if (reservationId !== undefined) {
-        if (boundaryCrossed) {
-          reconcileToolUsage(
-            client,
-            reservationId,
-            estimate,
-            undefined,
-            params.session,
-            "no_effect_usage_unavailable",
-          );
-        } else {
-          client?.void(reservationId, "tool_failed_before_dispatch");
-        }
+      if (admissionSettlement !== undefined) {
+        applyToolAdmissionSettlement(
+          client,
+          admissionSettlement,
+          params.session,
+        );
         admissionSettled = true;
       }
       effectClosed = true;
@@ -1306,32 +1443,40 @@ export async function runAdmittedToolCall(
         ...(reservationId !== undefined ? { reservationId } : {}),
       });
       if (reservationId !== undefined) {
-        reconcileToolUsage(
+        applyToolAdmissionSettlement(
           client,
-          reservationId,
-          estimate,
-          undefined,
+          {
+            reservationId,
+            decision: "hold_unknown",
+            reason: "tool_failed_after_effect_boundary",
+          },
           params.session,
-          "tool_failed_after_effect_boundary",
         );
         admissionSettled = true;
       }
       effectClosed = true;
       requireEffectProjection(commit);
     } else {
-      const commit = appendEffectResult(params.session, journal, {
+      const admissionSettlement =
+        reservationId === undefined
+          ? undefined
+          : planToolAdmissionSettlement(
+              reservationId,
+              estimate,
+              undefined,
+              "tool_failed_after_effect_boundary",
+            );
+      const commit = appendSettledResult({
         outcome: dispatch.context.signal.aborted ? "cancelled" : "failed",
         effectBoundary: "crossed",
+        ...(admissionSettlement !== undefined ? { admissionSettlement } : {}),
         evidence: errorEvidence(error),
       });
-      if (reservationId !== undefined) {
-        reconcileToolUsage(
+      if (admissionSettlement !== undefined) {
+        applyToolAdmissionSettlement(
           client,
-          reservationId,
-          estimate,
-          undefined,
+          admissionSettlement,
           params.session,
-          "tool_failed_after_effect_boundary",
         );
         admissionSettled = true;
       }
@@ -1342,15 +1487,22 @@ export async function runAdmittedToolCall(
   } finally {
     if (!observerOwnsPhysical && !crashInjected) {
       if (reservationId !== undefined && !admissionSettled) {
-        if (boundaryCrossed) {
-          client?.holdUnknown(
-            reservationId,
-            "effect_completion_processing_failed",
-          );
-          incrementEffectSettlementMetric(params.session, "heldAccounting");
-        } else {
-          client?.void(reservationId, "tool_failed_before_dispatch");
-        }
+        applyToolAdmissionSettlement(
+          client,
+          committedAdmissionSettlement ??
+            (boundaryCrossed
+              ? {
+                  reservationId,
+                  decision: "hold_unknown",
+                  reason: "effect_completion_processing_failed",
+                }
+              : {
+                  reservationId,
+                  decision: "void",
+                  reason: "tool_failed_before_dispatch",
+                }),
+          params.session,
+        );
         admissionSettled = true;
       }
       if (reservationId !== undefined) {

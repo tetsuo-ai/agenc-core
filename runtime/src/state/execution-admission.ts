@@ -957,6 +957,33 @@ export class ExecutionAdmissionRepository {
     return this.#resolveReservationLocked(reservationId, input, at, operation);
   }
 
+  /**
+   * Finalize canonical recovery accounting before a provider-overrun cascade.
+   * The caller must hold an outer writer transaction and run the corresponding
+   * run/admission cancellation before committing. Deferral prevents an earlier
+   * recovered overrun from voiding another reservation whose later canonical
+   * settlement is part of the same validated recovery batch.
+   */
+  reconcileBeforeDeferredProviderOverrunCancellation(
+    reservationId: string,
+    input: AdmissionReconcileInput,
+    options: ReconcileAdmissionOptions = {},
+  ): AdmissionReconcileResult {
+    requireNonEmpty(reservationId, "reservationId");
+    if (!this.#driver.state.inTransaction) {
+      throw new ExecutionAdmissionStateError(
+        "deferred provider-overrun reconciliation requires an outer transaction",
+      );
+    }
+    const at = normalizeTimestamp(
+      options.at ?? this.#timestamp(),
+      "reconcile.at",
+    );
+    return this.#driver.transactionImmediate(() =>
+      this.#resolveReservationLocked(reservationId, input, at, undefined, true),
+    );
+  }
+
   void(
     reservationId: string,
     reason: string,
@@ -1855,6 +1882,7 @@ export class ExecutionAdmissionRepository {
     rawInput: AdmissionReconcileInput,
     at: string,
     operation?: CancellationOperation,
+    deferProviderOverrunCancellation = false,
   ): AdmissionReconcileResult {
     const reservation = this.#requireReservationLocked(reservationId);
     const requestedProviderRequestId =
@@ -2046,17 +2074,19 @@ export class ExecutionAdmissionRepository {
     });
 
     if (overrun) {
-      if (operation === undefined) {
-        throw new ExecutionAdmissionStateError(
-          "provider overrun cancellation is missing an operation context",
+      if (!deferProviderOverrunCancellation) {
+        if (operation === undefined) {
+          throw new ExecutionAdmissionStateError(
+            "provider overrun cancellation is missing an operation context",
+          );
+        }
+        this.#cancelRunLocked(
+          reservation.run_id,
+          "provider_overrun",
+          at,
+          operation,
         );
       }
-      this.#cancelRunLocked(
-        reservation.run_id,
-        "provider_overrun",
-        at,
-        operation,
-      );
       return {
         applied: true,
         outcome: "provider_overrun",

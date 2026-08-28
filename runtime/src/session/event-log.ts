@@ -459,6 +459,34 @@ export interface EffectIntentEvent {
 }
 
 /**
+ * The exact admission mutation chosen before an effect acknowledgement is
+ * fsync-committed.  Keeping this beside the physical result closes the crash
+ * window between the canonical acknowledgement and SQLite reconciliation:
+ * startup can replay the same mutation instead of conservatively converting
+ * a proven result into `held_unknown`.
+ */
+export type EffectAdmissionSettlement =
+  | {
+      readonly reservationId: string;
+      readonly decision: "reconcile";
+      readonly usage: {
+        readonly inputTokens: number;
+        readonly outputTokens: number;
+        readonly costUsd: number;
+      };
+    }
+  | {
+      readonly reservationId: string;
+      readonly decision: "void";
+      readonly reason: string;
+    }
+  | {
+      readonly reservationId: string;
+      readonly decision: "hold_unknown";
+      readonly reason: string;
+    };
+
+/**
  * Fsync-durable acknowledgement of a proven effect outcome. Unknown physical
  * outcomes use {@link EffectUnknownOutcomeEvent} and may not be overwritten by
  * a late result without explicit review.
@@ -478,6 +506,8 @@ export interface EffectResultEvent {
   readonly effectBoundary?: EffectBoundary;
   readonly noEffectEvidence?: EffectNoEffectProof;
   readonly resultDigest?: string;
+  /** Present for every admitted result written by current runtimes. */
+  readonly admissionSettlement?: EffectAdmissionSettlement;
   readonly evidence?: Readonly<Record<string, unknown>>;
   readonly recordedAt: string;
 }
@@ -514,6 +544,8 @@ export interface EffectReviewResolutionEvent {
   readonly stepId: string;
   readonly callId: string;
   readonly resolution: EffectReviewResolution;
+  /** Exact accounting decision committed with an automatic physical review. */
+  readonly admissionSettlement?: EffectAdmissionSettlement;
 }
 
 /** Legacy v1 review shape. Readers preserve it but never treat it as proof. */

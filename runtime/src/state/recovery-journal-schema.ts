@@ -13,6 +13,7 @@ import {
   readCompactionRolloutPayload,
   type CompactionRolloutType,
 } from "../session/compaction-event-reader.js";
+import { usdToNanos } from "./execution-admission.js";
 
 type KnownRolloutItem = Exclude<RolloutItem, { readonly type: "unknown" }>;
 type KnownRolloutType = KnownRolloutItem["type"];
@@ -157,10 +158,56 @@ const isNonNegativeInteger: Validator<number> = (value): value is number =>
   Number.isSafeInteger(value) && (value as number) >= 0;
 const isPositiveInteger: Validator<number> = (value): value is number =>
   Number.isSafeInteger(value) && (value as number) > 0;
+const isNonNegativeNumber: Validator<number> = (value): value is number =>
+  typeof value === "number" && Number.isFinite(value) && value >= 0;
 const isRecord: Validator<Record<string, unknown>> = isPlainRecord;
 const isUnknown: Validator<unknown> = (_value): _value is unknown => true;
 const isNullableString = nullable(isString);
 const isStringArray = arrayOf(isString);
+
+const isEffectAdmissionUsage: Validator<{
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly costUsd: number;
+}> = (
+  value,
+): value is {
+  readonly inputTokens: number;
+  readonly outputTokens: number;
+  readonly costUsd: number;
+} => {
+  if (!isPlainRecord(value)) return false;
+  const inputTokens = value.inputTokens;
+  const outputTokens = value.outputTokens;
+  const costUsd = value.costUsd;
+  if (
+    !isNonNegativeInteger(inputTokens) ||
+    !isNonNegativeInteger(outputTokens) ||
+    !Number.isSafeInteger(inputTokens + outputTokens) ||
+    !isNonNegativeNumber(costUsd)
+  ) {
+    return false;
+  }
+  try {
+    usdToNanos(costUsd);
+    return Reflect.ownKeys(value).length === 3;
+  } catch {
+    return false;
+  }
+};
+
+const isEffectAdmissionSettlement = either(
+  objectShape({
+    reservationId: isString,
+    decision: literal("reconcile"),
+    usage: isEffectAdmissionUsage,
+  }),
+  objectShape({
+    reservationId: isString,
+    decision: oneOf("void", "hold_unknown"),
+    reason: isString,
+  }),
+);
 
 type UserMessageContent = EventPayload<"user_message">["message"];
 const isLlmTextPart = objectShape({ type: literal("text"), text: isString });
@@ -562,12 +609,15 @@ const isEffectReviewResolution = objectShape(
   },
 );
 const isEffectReviewResolvedPayload = either(
-  objectShape({
-    runId: isString,
-    stepId: isString,
-    callId: isString,
-    resolution: isEffectReviewResolution,
-  }),
+  objectShape(
+    {
+      runId: isString,
+      stepId: isString,
+      callId: isString,
+      resolution: isEffectReviewResolution,
+    },
+    { admissionSettlement: isEffectAdmissionSettlement },
+  ),
   objectShape({
     runId: isString,
     stepId: isString,
@@ -952,6 +1002,7 @@ const EVENT_PAYLOAD_VALIDATORS = defineEventPayloadValidators({
       effectBoundary: oneOf("not_crossed", "crossed"),
       noEffectEvidence: isEffectNoEffectProof,
       resultDigest: isString,
+      admissionSettlement: isEffectAdmissionSettlement,
       evidence: isRecord,
     },
   ),

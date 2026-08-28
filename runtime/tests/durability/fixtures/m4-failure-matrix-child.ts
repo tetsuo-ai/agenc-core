@@ -123,7 +123,11 @@ async function openRolloutSession(
   paths: FixturePaths,
   options: { readonly resume?: boolean; readonly observeLive?: boolean } = {},
 ) {
-  const [{ EventLog, isDurableEvent }, { RolloutStore }, { hitM4DurabilityFailpoint }] = await Promise.all([
+  const [
+    { EventLog, isDurableEvent },
+    { RolloutStore },
+    { hitM4DurabilityFailpoint },
+  ] = await Promise.all([
     import("../../../src/session/event-log.js"),
     import("../../../src/session/rollout-store.js"),
     import("../../../src/durability/failpoints.js"),
@@ -218,12 +222,15 @@ async function openRolloutSession(
 }
 
 async function crashReservation(paths: FixturePaths): Promise<never> {
-  const [rollout, { ExecutionAdmissionKernel }, { bindExecutionAdmissionJournal }] =
-    await Promise.all([
-      openRolloutSession(paths),
-      import("../../../src/budget/execution-admission-kernel.js"),
-      import("../../../src/session/execution-admission-journal.js"),
-    ]);
+  const [
+    rollout,
+    { ExecutionAdmissionKernel },
+    { bindExecutionAdmissionJournal },
+  ] = await Promise.all([
+    openRolloutSession(paths),
+    import("../../../src/budget/execution-admission-kernel.js"),
+    import("../../../src/session/execution-admission-journal.js"),
+  ]);
   const kernel = new ExecutionAdmissionKernel({
     agencHome: paths.home,
     ownerId: `failure-matrix:${process.pid}`,
@@ -252,13 +259,12 @@ async function crashModel(paths: FixturePaths): Promise<never> {
     { runAdmittedModelCall },
     { ExecutionAdmissionKernel },
     { bindExecutionAdmissionJournal },
-  ] =
-    await Promise.all([
-      openRolloutSession(paths),
-      import("../../../src/budget/admitted-model-call.js"),
-      import("../../../src/budget/execution-admission-kernel.js"),
-      import("../../../src/session/execution-admission-journal.js"),
-    ]);
+  ] = await Promise.all([
+    openRolloutSession(paths),
+    import("../../../src/budget/admitted-model-call.js"),
+    import("../../../src/budget/execution-admission-kernel.js"),
+    import("../../../src/session/execution-admission-journal.js"),
+  ]);
   const kernel = new ExecutionAdmissionKernel({
     agencHome: paths.home,
     ownerId: `failure-matrix:${process.pid}`,
@@ -333,7 +339,8 @@ async function createEffectProjection(paths: FixturePaths) {
     repository,
     recordEffectEvent(event: Event): void {
       const sequence = event.seq;
-      if (sequence === undefined) throw new Error("effect event lacks sequence");
+      if (sequence === undefined)
+        throw new Error("effect event lacks sequence");
       if (event.msg.type === "effect_intent") {
         const payload = event.msg.payload;
         if (event.eventId === undefined) {
@@ -405,13 +412,12 @@ async function crashTool(paths: FixturePaths): Promise<never> {
     { runAdmittedToolCall },
     { ExecutionAdmissionKernel },
     { bindExecutionAdmissionJournal },
-  ] =
-    await Promise.all([
-      openRolloutSession(paths),
-      import("../../../src/budget/admitted-tool-call.js"),
-      import("../../../src/budget/execution-admission-kernel.js"),
-      import("../../../src/session/execution-admission-journal.js"),
-    ]);
+  ] = await Promise.all([
+    openRolloutSession(paths),
+    import("../../../src/budget/admitted-tool-call.js"),
+    import("../../../src/budget/execution-admission-kernel.js"),
+    import("../../../src/session/execution-admission-journal.js"),
+  ]);
   const kernel = new ExecutionAdmissionKernel({
     agencHome: paths.home,
     ownerId: `failure-matrix:${process.pid}`,
@@ -499,11 +505,13 @@ async function crashEventPublish(paths: FixturePaths): Promise<never> {
 }
 
 async function crashTerminal(paths: FixturePaths): Promise<never> {
-  const [projection, rollout, { hitM4DurabilityFailpoint }] = await Promise.all([
-    createEffectProjection(paths),
-    openRolloutSession(paths),
-    import("../../../src/durability/failpoints.js"),
-  ]);
+  const [projection, rollout, { hitM4DurabilityFailpoint }] = await Promise.all(
+    [
+      createEffectProjection(paths),
+      openRolloutSession(paths),
+      import("../../../src/durability/failpoints.js"),
+    ],
+  );
   const event = rollout.session.emit({
     eventId: "run-terminal-1",
     id: "run-terminal-1",
@@ -582,11 +590,15 @@ async function recoverAdmissionAndEffects(
   failpoint: M4DurabilityFailpoint,
   paths: FixturePaths,
 ) {
-  const [{ openStateDatabases }, { ExecutionAdmissionRepository }] =
-    await Promise.all([
-      import("../../../src/state/sqlite-driver.js"),
-      import("../../../src/state/execution-admission.js"),
-    ]);
+  const [
+    { openStateDatabases },
+    { ExecutionAdmissionRepository },
+    { recoverExecutionAdmissionEffectSettlements },
+  ] = await Promise.all([
+    import("../../../src/state/sqlite-driver.js"),
+    import("../../../src/state/execution-admission.js"),
+    import("../../../src/state/execution-admission-canonical-recovery.js"),
+  ]);
   let effectRecovery = "not_applicable";
   if (failpoint.includes("tool_")) {
     // Production RolloutStore recovery is the sole authority for classifying a
@@ -604,20 +616,20 @@ async function recoverAdmissionAndEffects(
       ownerId: "failure-matrix-pre-recovery",
       ownerPid: process.pid,
     });
-    const reservation = audit.listReservations({ runId: RUN_ID, limit: 2 })[0];
     if (effect?.outcome === "cancelled") {
       effectRecovery = "cancelled_before_dispatch";
     } else if (effect?.outcome === "unknown_outcome") {
       effectRecovery = "review_locked_unknown_outcome";
-    } else if (
-      effect?.outcome === "committed" &&
-      reservation?.status === "dispatched"
-    ) {
-      audit.reconcile(reservation.reservationId, {
-        kind: "reported",
-        usage: { inputTokens: 0, outputTokens: 0, costUsd: 0 },
-        reason: "durable_effect_result_recovered",
-      });
+    } else if (effect?.outcome === "committed") {
+      const recovery = recoverExecutionAdmissionEffectSettlements(
+        auditDriver,
+        audit,
+      );
+      if (recovery.settlementsApplied !== 1) {
+        throw new Error(
+          `expected one production effect settlement, got ${recovery.settlementsApplied}`,
+        );
+      }
       effectRecovery = "acknowledged_from_durable_result";
     } else {
       effectRecovery = effect?.outcome ?? "no_effect";
@@ -633,7 +645,10 @@ async function recoverAdmissionAndEffects(
   });
   const firstRecovery = repository.recover({ activeOwnerIds: new Set() });
   const secondRecovery = repository.recover({ activeOwnerIds: new Set() });
-  const reservations = repository.listReservations({ runId: RUN_ID, limit: 10 });
+  const reservations = repository.listReservations({
+    runId: RUN_ID,
+    limit: 10,
+  });
   const jobs = repository.list({ runId: RUN_ID, limit: 10 });
   const journal = repository.listJournal({ runId: RUN_ID, limit: 100 });
   driver.close();
@@ -643,7 +658,8 @@ async function recoverAdmissionAndEffects(
   if (failpoint.includes("tool_")) {
     const projection = await createEffectProjection(paths);
     effect = projection.repository.getEffect(RUN_ID, TOOL_STEP_ID);
-    pendingEffectReviews = projection.repository.listPendingEffectReviews(RUN_ID).length;
+    pendingEffectReviews =
+      projection.repository.listPendingEffectReviews(RUN_ID).length;
     projection.driver.close();
   }
   return {
@@ -692,7 +708,9 @@ async function recoverArtifact(paths: FixturePaths) {
     ).length,
     intentSequences: intents.map((event) => event.seq),
     committedOutcomes: committed.flatMap((event) =>
-      event.msg.type === "artifact_committed" ? [event.msg.payload.outcome] : [],
+      event.msg.type === "artifact_committed"
+        ? [event.msg.payload.outcome]
+        : [],
     ),
     committedIntentSequences: committed.flatMap((event) =>
       event.msg.type === "artifact_committed"
@@ -743,7 +761,9 @@ async function recoverTerminal(paths: FixturePaths) {
     (event) => event.msg.type === "run_terminal",
   );
   if (events.length !== 1 || events[0]!.msg.type !== "run_terminal") {
-    throw new Error(`expected one canonical terminal event, got ${events.length}`);
+    throw new Error(
+      `expected one canonical terminal event, got ${events.length}`,
+    );
   }
   const event = events[0]!;
   const payload = event.msg.payload;
