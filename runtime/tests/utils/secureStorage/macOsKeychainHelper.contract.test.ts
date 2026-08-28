@@ -25,7 +25,11 @@ describe("macOS Keychain native-helper contract", () => {
       "multiple Keychain records match the exact service/account identity",
     );
     expect(source).toContain("SecItemUpdate(query, values)");
-    expect(source).toContain("SecItemAdd(item, &added)");
+    expect(source).toContain("SecKeychainCopyDefault(&default_keychain)");
+    expect(source).toContain(
+      "CFDictionarySetValue(item, kSecUseKeychain, default_keychain)",
+    );
+    expect(source).toContain("SecItemAdd(item, added_out)");
     expect(source).toContain("SecItemDelete(query)");
     expect(source).toContain("status == errSecDuplicateItem");
     expect(source).toContain("status == errSecItemNotFound");
@@ -36,13 +40,22 @@ describe("macOS Keychain native-helper contract", () => {
     expect(source).not.toContain("SecItemUpdate(identity_query");
     expect(source).not.toContain("SecItemDelete(identity_query");
 
-    const addIndex = source.indexOf("SecItemAdd(item, &added)");
+    const defaultLookupIndex = source.indexOf(
+      "SecKeychainCopyDefault(&default_keychain)",
+    );
+    const targetIndex = source.indexOf(
+      "CFDictionarySetValue(item, kSecUseKeychain, default_keychain)",
+      defaultLookupIndex,
+    );
+    const addIndex = source.indexOf("SecItemAdd(item, added_out)", targetIndex);
     const duplicateIndex = source.indexOf(
       "status == errSecDuplicateItem",
       addIndex,
     );
     const retryIndex = source.indexOf("continue;", duplicateIndex);
-    expect(addIndex).toBeGreaterThan(0);
+    expect(defaultLookupIndex).toBeGreaterThan(0);
+    expect(targetIndex).toBeGreaterThan(defaultLookupIndex);
+    expect(addIndex).toBeGreaterThan(targetIndex);
     expect(duplicateIndex).toBeGreaterThan(addIndex);
     expect(retryIndex).toBeGreaterThan(duplicateIndex);
   });

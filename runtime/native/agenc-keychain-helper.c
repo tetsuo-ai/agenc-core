@@ -383,6 +383,28 @@ static OSStatus delete_by_persistent_ref(CFDataRef persistent_ref) {
   return status;
 }
 
+/*
+ * SecItemAdd routes a NULL kSecUseKeychain through defaultKeychainUI. Resolve
+ * the configured default explicitly so this command-line helper never opens
+ * an authorization or keychain-selection UI merely to choose the destination.
+ */
+static OSStatus add_to_default_keychain(CFMutableDictionaryRef item,
+                                        CFTypeRef *added_out) {
+  SecKeychainRef default_keychain = NULL;
+  OSStatus status;
+
+  *added_out = NULL;
+  status = SecKeychainCopyDefault(&default_keychain);
+  if (status != errSecSuccess) {
+    return status;
+  }
+
+  CFDictionarySetValue(item, kSecUseKeychain, default_keychain);
+  status = SecItemAdd(item, added_out);
+  CFRelease(default_keychain);
+  return status;
+}
+
 static bool verify_data_by_persistent_ref(CFDataRef persistent_ref,
                                           CFDataRef expected) {
   CFDataRef observed = NULL;
@@ -572,7 +594,7 @@ static int write_item(CFDictionaryRef identity_query) {
       }
       CFDictionarySetValue(item, kSecValueData, secret_data);
       CFDictionarySetValue(item, kSecReturnPersistentRef, kCFBooleanTrue);
-      status = SecItemAdd(item, &added);
+      status = add_to_default_keychain(item, &added);
       CFRelease(item);
 
       if (status == errSecDuplicateItem) {
