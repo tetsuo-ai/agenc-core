@@ -7,6 +7,8 @@
  * `agenc mcp doctor`.
  */
 import { renderAgenCAppArmorProfile } from "../sandbox/apparmor.js";
+import { ConfigStore } from "../config/store.js";
+import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import {
   findActiveGeneratedWrapper,
   getDoctorDiagnostic,
@@ -99,7 +101,7 @@ export function formatDiagnosticText(
     );
   }
   lines.push(
-    `  Configured rg (TUI/legacy): ${
+    `  Configured rg:        ${
       info.ripgrepStatus.working ? "ok" : "NOT WORKING"
     } ` +
       `(${info.ripgrepStatus.mode}${
@@ -202,13 +204,33 @@ export async function runAgenCDoctorCli(
       return 0;
     }
     case "doctor": {
-      const info = await getDoctorDiagnostic();
-      if (command.json) {
-        process.stdout.write(`${JSON.stringify(info, null, 2)}\n`);
-      } else {
-        process.stdout.write(`${formatDiagnosticText(info)}\n`);
+      const environment = Object.freeze({ ...process.env });
+      const cwd = process.cwd();
+      const configStore = new ConfigStore({
+        env: environment,
+        cwd,
+        onWarn: () => {},
+      });
+      try {
+        return await runWithCanonicalSettingsAuthority(
+          configStore,
+          async () => {
+            await configStore.reload();
+            const info = await getDoctorDiagnostic(configStore, {
+              environment,
+              cwd,
+            });
+            if (command.json) {
+              process.stdout.write(`${JSON.stringify(info, null, 2)}\n`);
+            } else {
+              process.stdout.write(`${formatDiagnosticText(info)}\n`);
+            }
+            return info.warnings.length > 0 ? 1 : 0;
+          },
+        );
+      } finally {
+        configStore.stateRepository.close();
       }
-      return info.warnings.length > 0 ? 1 : 0;
     }
   }
 }

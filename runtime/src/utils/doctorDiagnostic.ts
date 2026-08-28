@@ -14,6 +14,8 @@ import {
   loadCanonicalConfig,
   type ConfigScope,
 } from '../config/repository.js'
+import type { ConfigStoreAuthority } from '../config/store.js'
+import type { RuntimeStateRepository } from '../config/runtime-state-repository.js'
 import type { TransactionGuardConfig } from '../config/schema.js'
 import {
   resolveTransactionGuardPolicy,
@@ -200,6 +202,7 @@ export async function findActiveGeneratedWrapper(
 
 export type InstallationDetectionOptions = ActiveGeneratedWrapperOptions & {
   readonly activeGeneratedWrapper?: GeneratedWrapper | null
+  readonly environment?: NodeJS.ProcessEnv
 }
 
 export type PrivateNodeRuntimeDetectionOptions = {
@@ -245,7 +248,8 @@ export function isRunningFromPrivateNodeRuntime(
 export async function getCurrentInstallationType(
   options: InstallationDetectionOptions = {},
 ): Promise<InstallationType> {
-  if (process.env.NODE_ENV === 'development') {
+  const environment = options.environment ?? process.env
+  if (environment.NODE_ENV === 'development') {
     return 'development'
   }
 
@@ -306,6 +310,7 @@ export async function getCurrentInstallationType(
   const npmConfigResult = await execa('npm config get prefix', {
     shell: true,
     reject: false,
+    env: environment,
   })
   const globalPrefix =
     npmConfigResult.exitCode === 0 ? npmConfigResult.stdout.trim() : null
@@ -322,9 +327,11 @@ export async function getInstallationPath(
   options: {
     readonly installationType?: InstallationType
     readonly activeGeneratedWrapper?: GeneratedWrapper | null
+    readonly environment?: NodeJS.ProcessEnv
   } = {},
 ): Promise<string> {
-  if (process.env.NODE_ENV === 'development') {
+  const environment = options.environment ?? process.env
+  if (environment.NODE_ENV === 'development') {
     return getCwd()
   }
 
@@ -336,7 +343,10 @@ export async function getInstallationPath(
     : await findActiveGeneratedWrapper()
   const installationType =
     options.installationType ??
-    (await getCurrentInstallationType({ activeGeneratedWrapper }))
+    (await getCurrentInstallationType({
+      activeGeneratedWrapper,
+      environment,
+    }))
   if (installationType === 'native' && activeGeneratedWrapper !== null) {
     return activeGeneratedWrapper.path
   }
@@ -415,6 +425,8 @@ export function retainOnlyMultipleInstallations(
 
 async function detectMultipleInstallations(
   activeGeneratedWrapper: GeneratedWrapper | null,
+  stateRepository: RuntimeStateRepository,
+  environment: NodeJS.ProcessEnv,
 ): Promise<Array<{ type: string; path: string }>> {
   const fs = getFsImplementation()
   const installations: Array<{ type: string; path: string }> = []
@@ -435,7 +447,7 @@ async function detectMultipleInstallations(
     'config',
     'get',
     'prefix',
-  ])
+  ], { env: environment })
   if (npmResult.code === 0 && npmResult.stdout) {
     const npmPrefix = npmResult.stdout.trim()
     const isWindows = getPlatform() === 'windows'
@@ -508,7 +520,8 @@ async function detectMultipleInstallations(
   }
 
   // Check common native installation paths
-  const nativeBinPath = join(homedir(), '.local', 'bin', getCliBinaryName())
+  const platformHome = environment.HOME || homedir()
+  const nativeBinPath = join(platformHome, '.local', 'bin', getCliBinaryName())
   try {
     await fs.stat(nativeBinPath)
     installations.push({ type: 'native', path: nativeBinPath })
@@ -517,10 +530,10 @@ async function detectMultipleInstallations(
   }
 
   // Also check if config indicates native installation
-  const config = getRuntimeState()
+  const config = getRuntimeState(stateRepository)
   if (config.installMethod === 'native') {
     const nativeDataPath = join(
-      homedir(),
+      platformHome,
       '.local',
       'share',
       getNativeDataDirName(),
@@ -540,10 +553,12 @@ async function detectMultipleInstallations(
 
 async function detectConfigurationIssues(
   type: InstallationType,
+  stateRepository: RuntimeStateRepository,
+  environment: NodeJS.ProcessEnv,
 ): Promise<Array<{ issue: string; fix: string }>> {
   const warnings: Array<{ issue: string; fix: string }> = []
 
-  const config = getRuntimeState()
+  const config = getRuntimeState(stateRepository)
   // Skip most warnings for development mode
   if (type === 'development') {
     return warnings
@@ -551,9 +566,9 @@ async function detectConfigurationIssues(
 
   // Check if ~/.local/bin is in PATH for native installations
   if (type === 'native') {
-    const path = process.env.PATH || ''
+    const path = environment.PATH || ''
     const pathDirectories = path.split(delimiter)
-    const homeDir = homedir()
+    const homeDir = environment.HOME || homedir()
     const localBinPath = join(homeDir, '.local', 'bin')
 
     // On Windows, convert backslashes to forward slashes for consistent path matching
@@ -592,11 +607,14 @@ async function detectConfigurationIssues(
         })
       } else {
         // Unix-style PATH instructions
-        const shellType = getShellType()
-        const configPaths = getShellConfigPaths()
+        const shellType = getShellType(environment)
+        const configPaths = getShellConfigPaths({
+          env: environment,
+          homedir: homeDir,
+        })
         const configFile = configPaths[shellType as keyof typeof configPaths]
         const displayPath = configFile
-          ? configFile.replace(homedir(), '~')
+          ? configFile.replace(homeDir, '~')
           : 'your shell config file'
 
         warnings.push({
@@ -610,7 +628,7 @@ async function detectConfigurationIssues(
 
   // Check for configuration mismatches
   // Skip these checks if DISABLE_INSTALLATION_CHECKS is set (e.g., in HFI)
-  if (!isEnvTruthy(process.env.DISABLE_INSTALLATION_CHECKS)) {
+  if (!isEnvTruthy(environment.DISABLE_INSTALLATION_CHECKS)) {
     if (type === 'npm-local' && config.installMethod !== 'local') {
       warnings.push({
         issue: `Running from local installation but config install method is '${config.installMethod}'`,
@@ -695,7 +713,7 @@ export function detectLinuxGlobPatternWarnings(): Array<{
   return warnings
 }
 
-/** Build the configured-ripgrep warning used by TUI and legacy runtime search. */
+/** Build the configured-ripgrep warning used by the interactive runtime. */
 export function buildRipgrepWarning(
   status: { working: boolean; mode: 'system' | 'builtin' | 'embedded' },
   platform: NodeJS.Platform = process.platform,
@@ -705,7 +723,7 @@ export function buildRipgrepWarning(
   }
   return {
     issue:
-      'configured ripgrep (rg) could not be started — TUI and legacy runtime search require this configured search runtime',
+      'configured ripgrep (rg) could not be started — interactive search requires this configured search runtime',
     fix: getRipgrepInstallHint(platform),
   }
 }
@@ -951,12 +969,18 @@ export function buildLandlockFallbackWarning(
   }
 }
 
-export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
-  const operatorConfigLoaded = await loadCanonicalConfig({ onWarn: () => {} })
-  const operatorConfig = operatorConfigLoaded.config
+export async function getDoctorDiagnostic(
+  authority: ConfigStoreAuthority,
+  ingress: {
+    readonly environment: NodeJS.ProcessEnv
+    readonly cwd: string
+  },
+): Promise<DiagnosticInfo> {
+  const operatorConfig = authority.current()
   const activeGeneratedWrapper = await findActiveGeneratedWrapper()
   const installationType = await getCurrentInstallationType({
     activeGeneratedWrapper,
+    environment: ingress.environment,
   })
   // The bundler substitutes `MACRO.VERSION` (property access) with a string
   // literal at build time, but never defines the bare `MACRO` identifier — so a
@@ -967,12 +991,19 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
   const installationPath = await getInstallationPath({
     installationType,
     activeGeneratedWrapper,
+    environment: ingress.environment,
   })
   const invokedBinary = getInvokedBinary()
   const multipleInstallations = await detectMultipleInstallations(
     activeGeneratedWrapper,
+    authority.stateRepository,
+    ingress.environment,
   )
-  const warnings = await detectConfigurationIssues(installationType)
+  const warnings = await detectConfigurationIssues(
+    installationType,
+    authority.stateRepository,
+    ingress.environment,
+  )
 
   // Add glob pattern warnings for Linux sandboxing
   warnings.push(...detectLinuxGlobPatternWarnings())
@@ -1019,7 +1050,7 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
     }
   }
 
-  const config = getRuntimeState()
+  const config = getRuntimeState(authority.stateRepository)
 
   // Get config values for display
   const configInstallMethod = config.installMethod || 'not set'
@@ -1066,15 +1097,20 @@ export async function getDoctorDiagnostic(): Promise<DiagnosticInfo> {
   // endpoint probe when enabled. Unreachable-but-enabled gets a warning.
   const transactionGuard = await getTransactionGuardDoctorStatus({
     config: operatorConfig.transaction_guard ?? null,
+    env: ingress.environment,
     source:
-      operatorConfigLoaded.provenance['transaction_guard.enabled']?.scope ??
+      authority.provenance('transaction_guard.enabled')?.scope ??
       'default',
   })
   const transactionGuardWarning = buildTransactionGuardWarning(transactionGuard)
   if (transactionGuardWarning) {
     warnings.push(transactionGuardWarning)
   }
-  const sandbox = await getSandboxDoctorStatus()
+  const sandbox = await getSandboxDoctorStatus({
+    config: operatorConfig,
+    env: ingress.environment,
+    cwd: ingress.cwd,
+  })
   const sandboxWarning = buildSandboxWarning(sandbox)
   if (sandboxWarning) {
     warnings.push(sandboxWarning)

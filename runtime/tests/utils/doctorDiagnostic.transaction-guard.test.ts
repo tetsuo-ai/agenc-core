@@ -117,7 +117,7 @@ describe("formatDiagnosticText ripgrep probes", () => {
 
       const text = formatDiagnosticText(fixture);
 
-      expect(text).toContain(`Configured rg (TUI/legacy): ${configuredText}`);
+      expect(text).toContain(`Configured rg:        ${configuredText}`);
       expect(text).toContain(
         `Packaged rg (Grep/Glob/Orient): ${packagedText}`,
       );

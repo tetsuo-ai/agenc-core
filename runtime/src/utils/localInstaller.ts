@@ -191,8 +191,10 @@ export async function getDetectedLocalInstallDir(): Promise<string | null> {
 /**
  * Get shell type to determine appropriate path setup
  */
-export function getShellType(): string {
-  const shellPath = process.env.SHELL || ''
+export function getShellType(
+  environment: NodeJS.ProcessEnv = process.env,
+): string {
+  const shellPath = environment.SHELL || ''
   if (shellPath.includes('zsh')) return 'zsh'
   if (shellPath.includes('bash')) return 'bash'
   if (shellPath.includes('fish')) return 'fish'
