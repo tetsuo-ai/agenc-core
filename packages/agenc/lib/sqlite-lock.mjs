@@ -226,7 +226,11 @@ function throwIfExpired(context, path, cause) {
 }
 
 function reportProgress(context, phase) {
-  context.onProgress?.(phase);
+  try {
+    context.onProgress?.(phase);
+  } catch {
+    // Diagnostics must never change lock acquisition or release semantics.
+  }
 }
 
 function processLockRegistry() {
@@ -734,6 +738,7 @@ export async function assertLocalPrivateDirectory(
     timeoutMs,
     onProgress,
   };
+  reportProgress(context, "private directory validation started");
   const absolute = resolve(requestedPath);
   throwIfExpired(context, absolute);
   const canonical = await realpath(absolute);
@@ -805,6 +810,7 @@ export async function assertLocalPrivateDirectory(
       throw new Error(`agenc: protected directory identity changed during validation: ${path}`);
     }
   }
+  reportProgress(context, "private directory validation complete");
   return canonical;
 }
 
@@ -851,6 +857,7 @@ export async function assertLocalPrivateFile(
     timeoutMs = 60_000,
     label = "AgenC operation",
     deadline: suppliedDeadline,
+    onProgress,
   } = {},
 ) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
@@ -859,6 +866,9 @@ export async function assertLocalPrivateFile(
   if (suppliedDeadline !== undefined && !Number.isFinite(suppliedDeadline)) {
     throw new TypeError("lock deadline must be finite");
   }
+  if (onProgress !== undefined && typeof onProgress !== "function") {
+    throw new TypeError("lock onProgress must be a function");
+  }
   const context = {
     deadline: Math.min(
       suppliedDeadline ?? Number.POSITIVE_INFINITY,
@@ -866,13 +876,16 @@ export async function assertLocalPrivateFile(
     ),
     label,
     timeoutMs,
+    onProgress,
   };
+  reportProgress(context, "private file validation started");
   const absolute = resolve(requestedPath);
   const parent = dirname(absolute);
   const canonicalParent = await assertLocalPrivateDirectory(parent, {
     timeoutMs,
     label,
     deadline: context.deadline,
+    ...(onProgress === undefined ? {} : { onProgress }),
   });
   if (canonicalParent !== parent) {
     throw new Error(`agenc: protected file parent must use its canonical path: ${parent}`);
@@ -897,7 +910,9 @@ export async function assertLocalPrivateFile(
     throw new Error(`agenc: protected file must use its canonical path: ${absolute}`);
   }
   if (process.platform === "win32") {
+    reportProgress(context, "Windows file ACL validation started");
     await assertWindowsPathSecurity([{ path: canonical, role: "file" }], context);
+    reportProgress(context, "Windows file ACL validation complete");
   } else if (process.platform === "darwin") {
     await assertDarwinPathSecurity(canonical, "file", context);
   }
@@ -909,6 +924,7 @@ export async function assertLocalPrivateFile(
   ) {
     throw new Error(`agenc: protected file identity changed during validation: ${canonical}`);
   }
+  reportProgress(context, "private file validation complete");
   return canonical;
 }
 

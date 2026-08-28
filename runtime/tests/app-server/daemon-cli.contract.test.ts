@@ -2585,6 +2585,22 @@ describe("AgenC daemon CLI", () => {
     }
   });
 
+  it("ignores lifecycle lock diagnostic observer failures", async () => {
+    const agencHome = await tempAgencHome();
+    const host = createHost(agencHome);
+    let observed = 0;
+    const release = await acquireAgenCDaemonLifecycleLock(host, () => {
+      observed += 1;
+      throw new Error("diagnostic observer failed");
+    });
+    expect(observed).toBeGreaterThan(0);
+    await release();
+
+    const releaseSuccessor = await acquireAgenCDaemonLifecycleLock(host);
+    await releaseSuccessor();
+    await rm(agencHome, { recursive: true, force: true });
+  });
+
   it("serializes a direct foreground launch against autostart", async () => {
     const agencHome = await tempAgencHome();
     const host = createHost(agencHome);

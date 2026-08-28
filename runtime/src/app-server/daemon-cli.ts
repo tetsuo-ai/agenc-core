@@ -5572,15 +5572,35 @@ async function withAgenCDaemonLifecyclePhases<T>(
   return result as T;
 }
 
+function reportAgenCDaemonLifecycleLockProgress(
+  onProgress: ((phase: string) => void) | undefined,
+  phase: string,
+): void {
+  try {
+    onProgress?.(phase);
+  } catch {
+    // Diagnostics must never change daemon lifecycle lock semantics.
+  }
+}
+
 export async function acquireAgenCDaemonLifecycleLock(
   host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
   onProgress?: (phase: string) => void,
 ): Promise<() => Promise<void>> {
-  onProgress?.("daemon home resolution started");
+  reportAgenCDaemonLifecycleLockProgress(
+    onProgress,
+    "daemon home resolution started",
+  );
   const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
-  onProgress?.("daemon home resolution complete");
+  reportAgenCDaemonLifecycleLockProgress(
+    onProgress,
+    "daemon home resolution complete",
+  );
   await mkdir(daemonHome, { recursive: true, mode: 0o700 });
-  onProgress?.("daemon home creation complete");
+  reportAgenCDaemonLifecycleLockProgress(
+    onProgress,
+    "daemon home creation complete",
+  );
   const release = await acquireLocalSqliteLock(
     join(daemonHome, "daemon-lifecycle.lock.sqlite"),
     {

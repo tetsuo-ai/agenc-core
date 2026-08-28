@@ -22,6 +22,7 @@ import test from "node:test";
 import {
   acquireLocalSqliteLock,
   acquireLocalSqliteLocks,
+  assertLocalPrivateFile,
   configureLocalSqliteLockConnection,
   isSqliteBusyError,
   LocalSqliteLockTimeoutError,
@@ -235,6 +236,41 @@ test("rejects a non-function lock progress callback", async (t) => {
     }),
     /lock onProgress must be a function/,
   );
+});
+
+test("a throwing progress observer cannot change lock semantics", async (t) => {
+  const root = makeRoot(t, "agenc-package-sqlite-throwing-progress-");
+  const lockPath = join(root, "operation.sqlite");
+  let observed = 0;
+  const release = await acquireLocalSqliteLock(lockPath, {
+    timeoutMs: 5_000,
+    onProgress: () => {
+      observed += 1;
+      throw new Error("diagnostic observer failed");
+    },
+  });
+  assert.ok(observed > 0);
+  release();
+
+  const releaseSuccessor = await acquireLocalSqliteLock(lockPath, {
+    timeoutMs: 5_000,
+  });
+  releaseSuccessor();
+});
+
+test("private-file progress observers are implemented and non-authoritative", async (t) => {
+  const root = makeRoot(t, "agenc-package-private-file-progress-");
+  const filePath = join(root, "private.json");
+  writeFileSync(filePath, "{}\n", { mode: 0o600 });
+  let observed = 0;
+  await assertLocalPrivateFile(filePath, {
+    timeoutMs: 5_000,
+    onProgress: () => {
+      observed += 1;
+      throw new Error("diagnostic observer failed");
+    },
+  });
+  assert.ok(observed > 0);
 });
 
 test("same-process contenders queue without blocking the event loop", async (t) => {
