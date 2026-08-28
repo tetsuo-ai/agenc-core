@@ -115,7 +115,12 @@ import {
   formatAgenCDaemonCliHelpText,
   parseAgenCDaemonCliArgs,
   runAgenCDaemonCli,
+  type AgenCDaemonCliAction,
 } from "../app-server/daemon-cli.js";
+import {
+  AGENC_DAEMON_STARTUP_GUARD_ENV,
+  isAgenCDaemonStartupGuardToken,
+} from "../app-server/daemon-startup-guard.js";
 import {
   captureRemoteCliRuntimeContext,
   formatAgenCRemoteCliHelpText,
@@ -5407,6 +5412,29 @@ export function shouldLoadMcpCliConfig(argv: readonly string[]): boolean {
 // ─────────────────────────────────────────────────────────────────────
 
 /**
+ * The operator-facing process owns the advisory startup audit. A detached
+ * daemon re-enters this dispatcher as `start --foreground`, but repeating the
+ * audit there would duplicate config and native-vault reads before the child
+ * can publish readiness. Direct foreground launches still run the audit.
+ */
+export function shouldRunDaemonStartupSecurityAudit(
+  action: AgenCDaemonCliAction,
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  hasParentIpc = typeof process.send === "function",
+): boolean {
+  if (action !== "start" && action !== "run" && action !== "restart") {
+    return false;
+  }
+  const startupGuardToken = env[AGENC_DAEMON_STARTUP_GUARD_ENV];
+  const isDetachedChild =
+    action === "run" &&
+    env.AGENC_DAEMON_RUN === "1" &&
+    hasParentIpc &&
+    isAgenCDaemonStartupGuardToken(startupGuardToken);
+  return !isDetachedChild;
+}
+
+/**
  * Top-level dispatcher. Branches between the full Ink TUI and the
  * daemon-backed one-shot CLI based on argv + stdio state. See `./route.ts`
  * for the routing table.
@@ -5430,9 +5458,7 @@ export async function main(): Promise<number> {
   if (daemonCommand !== null) {
     if (
       daemonCommand.kind === "command" &&
-      (daemonCommand.action === "start" ||
-        daemonCommand.action === "run" ||
-        daemonCommand.action === "restart")
+      shouldRunDaemonStartupSecurityAudit(daemonCommand.action, process.env)
     ) {
       // Warn (never block) when starting the daemon with critical audit
       // findings — exposure misconfigurations matter most at startup.

@@ -4,6 +4,7 @@ import {
   AGENC_DAEMON_STARTUP_GUARD_ENV,
   createAgenCDaemonStartupGuardController,
   createAgenCDaemonStartupGuardReceiver,
+  isAgenCDaemonStartupGuardToken,
   takeAgenCDaemonStartupGuardToken,
   type AgenCDaemonStartupGuardChannel,
 } from "./daemon-startup-guard.js";
@@ -67,6 +68,14 @@ const TOKEN_A = "a".repeat(64);
 const TOKEN_B = "b".repeat(64);
 
 describe("daemon startup cancellation guard", () => {
+  it("owns the startup capability token bounds", () => {
+    expect(isAgenCDaemonStartupGuardToken("a".repeat(31))).toBe(false);
+    expect(isAgenCDaemonStartupGuardToken("a".repeat(32))).toBe(true);
+    expect(isAgenCDaemonStartupGuardToken("a".repeat(1_024))).toBe(true);
+    expect(isAgenCDaemonStartupGuardToken("a".repeat(1_025))).toBe(false);
+    expect(isAgenCDaemonStartupGuardToken(undefined)).toBe(false);
+  });
+
   it("acknowledges exact-child cancellation only after cleanup", async () => {
     const [parentChannel, childChannel] = channelPair();
     const parent = createAgenCDaemonStartupGuardController(
