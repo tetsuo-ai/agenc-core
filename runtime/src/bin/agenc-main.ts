@@ -5463,7 +5463,10 @@ export async function main(): Promise<number> {
       // Warn (never block) when starting the daemon with critical audit
       // findings — exposure misconfigurations matter most at startup.
       try {
-        const audit = await buildSecurityAuditReport({ env: process.env });
+        const audit = await buildSecurityAuditReport({
+          env: process.env,
+          inspectNativeCredentials: false,
+        });
         if (audit.criticalCount > 0) {
           process.stderr.write(
             `agenc: WARNING — ${formatSecurityAuditSummaryLine(audit)}\n`,

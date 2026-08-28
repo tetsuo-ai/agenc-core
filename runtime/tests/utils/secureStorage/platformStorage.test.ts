@@ -371,6 +371,10 @@ describe("Secure Storage Platform Implementations", () => {
 
       expect(result).toBeNull();
       expect(mockExecaSync).toHaveBeenCalledTimes(1);
+      const script = getPowerShellScript(0);
+      expect(script.indexOf("Test-Path -LiteralPath")).toBeLessThan(
+        script.indexOf("Add-Type -AssemblyName System.Security"),
+      );
     });
 
     test("read() never classifies an exit-2 backend error as absence", () => {

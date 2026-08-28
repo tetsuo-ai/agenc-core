@@ -8,6 +8,7 @@ import { resolveHomeContext } from "../../src/config/home.js";
 import {
   mergeGatewayCredentialEnvironment,
   readGatewayCredentialEnvironment,
+  readGatewayCredentialSnapshot,
   readGatewayGeneratedToken,
   resolveGatewayGeneratedToken,
   updateGatewayCredentialEnvironment,
@@ -88,6 +89,24 @@ describe("gateway native credential authority", () => {
     expect(resolveGatewayGeneratedToken(second, "hooks", undefined)).not.toBe(
       firstToken,
     );
+  });
+
+  test("returns one immutable snapshot for both gateway credential namespaces", () => {
+    const context = home();
+    updateGatewayCredentialEnvironment(context, {
+      AGENC_HOOKS_TOKEN: "environment-hooks-token",
+    });
+    const generated = resolveGatewayGeneratedToken(context, "hooks", undefined);
+
+    const snapshot = readGatewayCredentialSnapshot(context);
+
+    expect(snapshot).toEqual({
+      environment: { AGENC_HOOKS_TOKEN: "environment-hooks-token" },
+      generatedTokens: { hooks: generated },
+    });
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(Object.isFrozen(snapshot.environment)).toBe(true);
+    expect(Object.isFrozen(snapshot.generatedTokens)).toBe(true);
   });
 
   test("rejects persistent non-secret settings and empty credentials", () => {

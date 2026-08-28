@@ -117,11 +117,12 @@ export function createWindowsCredentialStorage(
       const script = `
       $ErrorActionPreference = 'Stop'
       try {
-        Add-Type -AssemblyName System.Security
         $path = '${filePath}'
         if (!(Test-Path -LiteralPath $path -PathType Leaf -ErrorAction Stop)) {
           exit 2
         }
+
+        Add-Type -AssemblyName System.Security
 
         $protectedBase64 = [System.IO.File]::ReadAllText(
           $path,

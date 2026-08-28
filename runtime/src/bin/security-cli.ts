@@ -25,10 +25,7 @@ import { join } from "node:path";
 
 import { loadCanonicalConfig } from "../config/repository.js";
 import type { GatewayConfig } from "../config/schema.js";
-import {
-  readGatewayCredentialEnvironment,
-  readGatewayGeneratedToken,
-} from "../gateway/credentials.js";
+import { readGatewayCredentialSnapshot } from "../gateway/credentials.js";
 import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 
 export type SecuritySeverity = "ok" | "warn" | "critical";
@@ -51,7 +48,7 @@ export interface SecurityAuditContext {
   readonly configParseError?: string;
   readonly defaultPermissionMode?: string;
   readonly gatewayConfig?: GatewayConfig;
-  readonly gatewayHooksTokenPresent?: boolean;
+  readonly gatewayHooksTokenStatus: "present" | "missing" | "not-inspected";
   readonly applyFixes: boolean;
 }
 
@@ -300,7 +297,7 @@ const checkHooksExposure: SecurityCheck = (ctx) => {
 
   const findings: SecurityFinding[] = [];
   const envToken = ctx.env.AGENC_HOOKS_TOKEN?.trim() ?? "";
-  if (envToken.length < 16 && ctx.gatewayHooksTokenPresent !== true) {
+  if (envToken.length < 16 && ctx.gatewayHooksTokenStatus === "missing") {
     findings.push({
       id: "hooks-exposure",
       title: "Inbound webhooks enabled without a bearer token",
@@ -309,6 +306,18 @@ const checkHooksExposure: SecurityCheck = (ctx) => {
         "[gateway.hooks] enables the /hooks/agent endpoint but neither AGENC_HOOKS_TOKEN nor the native secure storage provides a token (>=16 chars). Until callers hold a token this configuration expresses unauthenticated-automation intent.",
       remediation:
         "Set AGENC_HOOKS_TOKEN or start `agenc gateway run` once to mint the home-bound native secure storage token, then configure callers with it.",
+      fixable: false,
+    });
+  } else if (
+    envToken.length < 16 &&
+    ctx.gatewayHooksTokenStatus === "not-inspected"
+  ) {
+    findings.push({
+      id: "hooks-exposure:credential-inspection",
+      title: "Native webhook credential not inspected during daemon startup",
+      severity: "warn",
+      detail:
+        "The daemon startup audit does not open the native credential store. Run `agenc security audit` for the complete webhook credential check.",
       fixable: false,
     });
   }
@@ -364,6 +373,8 @@ export interface SecurityAuditReport {
 export interface SecurityAuditOptions {
   readonly env?: Readonly<Record<string, string | undefined>>;
   readonly applyFixes?: boolean;
+  /** Startup uses config/filesystem checks only so credential prompts cannot block it. */
+  readonly inspectNativeCredentials?: boolean;
 }
 
 export async function buildSecurityAuditReport(
@@ -385,16 +396,31 @@ export async function buildSecurityAuditReport(
   } catch (error) {
     configParseError = error instanceof Error ? error.message : String(error);
   }
-  let gatewayHooksTokenPresent = false;
-  try {
-    const environmentToken = readGatewayCredentialEnvironment(home)
-      .AGENC_HOOKS_TOKEN?.trim();
-    const generatedToken = readGatewayGeneratedToken(home, "hooks")?.trim();
-    gatewayHooksTokenPresent =
-      (environmentToken?.length ?? 0) >= 16 ||
-      (generatedToken?.length ?? 0) >= 16;
-  } catch {
-    // An unavailable native secure storage is reported as missing credential below.
+  const hooksEnabled = loaded?.config.gateway?.hooks?.enabled === true;
+  const explicitHooksTokenPresent =
+    (env.AGENC_HOOKS_TOKEN?.trim().length ?? 0) >= 16;
+  let gatewayHooksTokenStatus: SecurityAuditContext["gatewayHooksTokenStatus"] =
+    options.inspectNativeCredentials === false
+      ? "not-inspected"
+      : "missing";
+  if (
+    hooksEnabled &&
+    !explicitHooksTokenPresent &&
+    options.inspectNativeCredentials !== false
+  ) {
+    try {
+      const gatewayCredentials = readGatewayCredentialSnapshot(home);
+      const environmentToken =
+        gatewayCredentials.environment.AGENC_HOOKS_TOKEN?.trim();
+      const generatedToken = gatewayCredentials.generatedTokens.hooks?.trim();
+      gatewayHooksTokenStatus =
+        (environmentToken?.length ?? 0) >= 16 ||
+        (generatedToken?.length ?? 0) >= 16
+          ? "present"
+          : "missing";
+    } catch {
+      // An unavailable native secure storage is reported as missing credential below.
+    }
   }
   const ctx: SecurityAuditContext = {
     env,
@@ -414,7 +440,7 @@ export async function buildSecurityAuditReport(
     ...(loaded?.config.gateway !== undefined
       ? { gatewayConfig: loaded.config.gateway }
       : {}),
-    ...(gatewayHooksTokenPresent ? { gatewayHooksTokenPresent: true } : {}),
+    gatewayHooksTokenStatus,
     applyFixes: options.applyFixes === true,
   };
   const findings = runSecurityChecks(ctx);

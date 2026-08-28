@@ -26,6 +26,13 @@ const GATEWAY_CREDENTIAL_ENV_NAME_SET: ReadonlySet<string> = new Set(
 
 export type GatewayGeneratedTokenName = "hooks" | "webchat";
 
+export interface GatewayCredentialSnapshot {
+  readonly environment: Readonly<Record<string, string>>;
+  readonly generatedTokens: Readonly<
+    Partial<Record<GatewayGeneratedTokenName, string>>
+  >;
+}
+
 function nonEmpty(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   return trimmed && trimmed.length > 0 ? trimmed : undefined;
@@ -34,8 +41,17 @@ function nonEmpty(value: string | undefined): string | undefined {
 export function readGatewayCredentialEnvironment(
   home: HomeContext,
 ): Readonly<Record<string, string>> {
+  return readGatewayCredentialSnapshot(home).environment;
+}
+
+/** Read both gateway credential namespaces from one canonical vault snapshot. */
+export function readGatewayCredentialSnapshot(
+  home: HomeContext,
+): GatewayCredentialSnapshot {
+  const gateway = readNativeSecureStorage(home).gateway;
   return Object.freeze({
-    ...(readNativeSecureStorage(home).gateway?.environment ?? {}),
+    environment: Object.freeze({ ...(gateway?.environment ?? {}) }),
+    generatedTokens: Object.freeze({ ...(gateway?.generatedTokens ?? {}) }),
   });
 }
 
@@ -83,7 +99,7 @@ export function readGatewayGeneratedToken(
   home: HomeContext,
   name: GatewayGeneratedTokenName,
 ): string | undefined {
-  return nonEmpty(readNativeSecureStorage(home).gateway?.generatedTokens?.[name]);
+  return nonEmpty(readGatewayCredentialSnapshot(home).generatedTokens[name]);
 }
 
 export function resolveGatewayGeneratedToken(

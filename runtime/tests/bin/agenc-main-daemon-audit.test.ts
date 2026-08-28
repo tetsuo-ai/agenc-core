@@ -127,6 +127,10 @@ describe("daemon startup security audit ownership", () => {
     await expect(main()).resolves.toBe(0);
 
     expect(securityMocks.buildAudit).toHaveBeenCalledTimes(1);
+    expect(securityMocks.buildAudit).toHaveBeenCalledWith({
+      env: process.env,
+      inspectNativeCredentials: false,
+    });
     expect(daemonMocks.run).toHaveBeenCalledTimes(1);
   });
 });
