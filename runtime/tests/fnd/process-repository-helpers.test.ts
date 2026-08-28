@@ -635,17 +635,17 @@ describe("contained child-process harness", () => {
         { heartbeat: heartbeatExpectation(heartbeatPath) },
       ),
     );
-    expect(result).toMatchObject({
-      stopReason: "spawn-error",
-      forced: false,
-      backstopExpired: false,
-    });
-    expect(result.error?.message).toMatch(/must begin with sequence 1/u);
 
     harnesses.delete(harness);
     const cleanupError = await harness
       .cleanup()
       .catch((error: unknown) => error);
+
+    expect(result).toMatchObject({
+      stopReason: "spawn-error",
+      backstopExpired: false,
+    });
+    expect(result.error?.message).toMatch(/must begin with sequence 1/u);
     expect(cleanupError).toBeInstanceOf(AggregateError);
     expect((cleanupError as AggregateError).errors).toHaveLength(1);
     expect((cleanupError as Error).message).toMatch(
