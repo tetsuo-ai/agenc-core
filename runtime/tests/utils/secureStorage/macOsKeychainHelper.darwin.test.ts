@@ -22,10 +22,13 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
   const first = JSON.stringify({ primaryApiKey: `first-${randomUUID()}` });
   const second = JSON.stringify({ primaryApiKey: `second-${randomUUID()}` });
   const securityPath = "/usr/bin/security";
+  const primaryKeychain = join(work, "primary.keychain-db");
   const firstKeychain = join(work, "duplicate-first.keychain-db");
   const secondKeychain = join(work, "duplicate-second.keychain-db");
+  const temporaryKeychains = [primaryKeychain, firstKeychain, secondKeychain];
   const keychainPassword = `fixture-${randomUUID()}`;
   let originalSearchList: string[] | undefined;
+  let originalDefaultKeychain: string | undefined;
   const run = (operation: "read" | "write" | "delete", input?: string) =>
     spawnSync(helper, [operation, service, account], {
       encoding: "utf8",
@@ -37,6 +40,16 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
       encoding: "utf8",
       timeout: 10_000,
     });
+  const runSecuritySuccessfully = (args: string[]) => {
+    const result = runSecurity(args);
+    expect(result.error?.message ?? result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    return result;
+  };
+  const parseKeychainPaths = (stdout: string) =>
+    [...stdout.matchAll(/"([^"\r\n]+)"/gu)].map((match) =>
+      match[1].replaceAll('\\"', '"').replaceAll("\\\\", "\\"),
+    );
 
   try {
     const compile = spawnSync(
@@ -62,14 +75,55 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     expect(compile.error?.message ?? compile.stderr).toBe("");
     expect(compile.status).toBe(0);
 
+    const defaultKeychain = runSecuritySuccessfully([
+      "default-keychain",
+      "-d",
+      "user",
+    ]);
+    [originalDefaultKeychain] = parseKeychainPaths(defaultKeychain.stdout);
+    expect(originalDefaultKeychain).toBeDefined();
+
+    const listed = runSecuritySuccessfully(["list-keychains", "-d", "user"]);
+    originalSearchList = parseKeychainPaths(listed.stdout);
+    expect(originalSearchList.length).toBeGreaterThan(0);
+
+    for (const keychain of temporaryKeychains) {
+      runSecuritySuccessfully([
+        "create-keychain",
+        "-p",
+        keychainPassword,
+        keychain,
+      ]);
+      runSecuritySuccessfully([
+        "unlock-keychain",
+        "-p",
+        keychainPassword,
+        keychain,
+      ]);
+    }
+    runSecuritySuccessfully([
+      "default-keychain",
+      "-d",
+      "user",
+      "-s",
+      primaryKeychain,
+    ]);
+    runSecuritySuccessfully([
+      "list-keychains",
+      "-d",
+      "user",
+      "-s",
+      primaryKeychain,
+    ]);
+
     const initiallyMissing = run("read");
     expect(initiallyMissing.status).toBe(2);
     expect(initiallyMissing.stdout).toBe("");
     expect(initiallyMissing.stderr).toBe("");
 
     const create = run("write", first);
+    expect(create.error?.message ?? create.stderr).toBe("");
     expect(create.status).toBe(0);
-    expect(create.stderr).toBe("");
     expect(run("read")).toMatchObject({
       status: 0,
       stdout: first,
@@ -93,54 +147,33 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     expect(missingAgain.stdout).toBe("");
     expect(missingAgain.stderr).toBe("");
 
-    const listed = runSecurity(["list-keychains", "-d", "user"]);
-    expect(listed.status).toBe(0);
-    originalSearchList = [...listed.stdout.matchAll(/"([^"\r\n]+)"/gu)].map(
-      (match) => match[1].replaceAll('\\"', '"').replaceAll("\\\\", "\\"),
-    );
-    expect(originalSearchList.length).toBeGreaterThan(0);
-    for (const keychain of [firstKeychain, secondKeychain]) {
-      expect(
-        runSecurity(["create-keychain", "-p", keychainPassword, keychain])
-          .status,
-      ).toBe(0);
-      expect(
-        runSecurity(["unlock-keychain", "-p", keychainPassword, keychain])
-          .status,
-      ).toBe(0);
-    }
-
     const ambiguousService = `AgenC-native-helper-duplicate-${randomUUID()}`;
     const ambiguousAccount = `duplicate-account-${process.pid}`;
     for (const [keychain, value] of [
       [firstKeychain, "first-record"],
       [secondKeychain, "second-record"],
     ] as const) {
-      expect(
-        runSecurity([
-          "add-generic-password",
-          "-A",
-          "-a",
-          ambiguousAccount,
-          "-s",
-          ambiguousService,
-          "-w",
-          value,
-          keychain,
-        ]).status,
-      ).toBe(0);
-    }
-    expect(
-      runSecurity([
-        "list-keychains",
-        "-d",
-        "user",
+      runSecuritySuccessfully([
+        "add-generic-password",
+        "-A",
+        "-a",
+        ambiguousAccount,
         "-s",
-        firstKeychain,
-        secondKeychain,
-        ...originalSearchList,
-      ]).status,
-    ).toBe(0);
+        ambiguousService,
+        "-w",
+        value,
+        keychain,
+      ]);
+    }
+    runSecuritySuccessfully([
+      "list-keychains",
+      "-d",
+      "user",
+      "-s",
+      firstKeychain,
+      secondKeychain,
+      primaryKeychain,
+    ]);
 
     const ambiguousRun = (
       operation: "read" | "write" | "delete",
@@ -163,7 +196,7 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
       [firstKeychain, "first-record"],
       [secondKeychain, "second-record"],
     ] as const) {
-      const unchanged = runSecurity([
+      const unchanged = runSecuritySuccessfully([
         "find-generic-password",
         "-a",
         ambiguousAccount,
@@ -172,11 +205,19 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
         "-w",
         keychain,
       ]);
-      expect(unchanged.status).toBe(0);
       expect(unchanged.stdout.trim()).toBe(value);
     }
   } finally {
     void run("delete");
+    if (originalDefaultKeychain !== undefined) {
+      void runSecurity([
+        "default-keychain",
+        "-d",
+        "user",
+        "-s",
+        originalDefaultKeychain,
+      ]);
+    }
     if (originalSearchList !== undefined) {
       void runSecurity([
         "list-keychains",
@@ -186,8 +227,9 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
         ...originalSearchList,
       ]);
     }
-    void runSecurity(["delete-keychain", firstKeychain]);
-    void runSecurity(["delete-keychain", secondKeychain]);
+    for (const keychain of temporaryKeychains) {
+      void runSecurity(["delete-keychain", keychain]);
+    }
     rmSync(work, { recursive: true, force: true });
   }
 }, 90_000);
