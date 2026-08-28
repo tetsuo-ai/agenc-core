@@ -2664,11 +2664,27 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       },
       { durable: true },
     );
-    await active.dispatchChain;
-
+    const shellTurnId = `shell-${eventKey}`;
     let startedTool:
       | { readonly name: string; readonly turnId: string }
       | undefined;
+    const emitToolStart = (toolName: string): void => {
+      session.emit(
+        {
+          eventId: `shell-tool-start:${eventKey}`,
+          id: params.commandId,
+          msg: {
+            type: "tool_call_started",
+            payload: {
+              callId: params.commandId,
+              toolName,
+              args: JSON.stringify({ command: params.command }),
+            },
+          },
+        },
+        { durable: true },
+      );
+    };
     const emitToolCompletion = (
       toolName: string,
       completion: {
@@ -2710,12 +2726,13 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       readonly turnId: string;
     };
     try {
+      await active.dispatchChain;
       dispatch = await runWithCurrentRuntimeSession(session, () =>
         runWithCanonicalSettingsAuthority(
           active.bootstrap.configStore,
           async () => {
             throwIfShellRequestAborted(executionSignal);
-            const turn = session.newDefaultTurnWithSubId(`shell-${eventKey}`);
+            const turn = session.newDefaultTurnWithSubId(shellTurnId);
             const workspaceRoot = runtimeWorkspaceRoot(active.bootstrap);
             if (
               turn.cwd !== workspaceRoot ||
@@ -2739,21 +2756,7 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
               );
             }
             startedTool = { name: toolName, turnId: turn.subId };
-            session.emit(
-              {
-                eventId: `shell-tool-start:${eventKey}`,
-                id: params.commandId,
-                msg: {
-                  type: "tool_call_started",
-                  payload: {
-                    callId: params.commandId,
-                    toolName,
-                    args: JSON.stringify({ command: params.command }),
-                  },
-                },
-              },
-              { durable: true },
-            );
+            emitToolStart(toolName);
             await active.dispatchChain;
             const router = routerFromRegistry(session.services.registry);
             const result = await router.dispatchModelToolCall(
@@ -2772,15 +2775,30 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         ),
       );
     } catch (error) {
-      if (startedTool !== undefined) {
-        const failure = error instanceof Error ? error.message : String(error);
-        emitToolCompletion(startedTool.name, {
-          turnId: startedTool.turnId,
-          result: failure,
-          isError: true,
-        });
-        await active.dispatchChain;
+      if (startedTool === undefined) {
+        let toolName = "system.bash";
+        try {
+          toolName = runWithCurrentRuntimeSession(session, () =>
+            runWithCanonicalSettingsAuthority(
+              active.bootstrap.configStore,
+              () => resolveDefaultShell() === "powershell"
+                ? "PowerShell"
+                : "system.bash",
+            ),
+          );
+        } catch {
+          // The fallback name is used only to durably close a failed request.
+        }
+        startedTool = { name: toolName, turnId: shellTurnId };
+        emitToolStart(startedTool.name);
       }
+      const failure = error instanceof Error ? error.message : String(error);
+      emitToolCompletion(startedTool.name, {
+        turnId: startedTool.turnId,
+        result: failure,
+        isError: true,
+      });
+      await active.dispatchChain;
       throw error;
     }
     const result = normalizeSessionShellResult(

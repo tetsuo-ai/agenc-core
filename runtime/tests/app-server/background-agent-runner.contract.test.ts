@@ -1497,6 +1497,74 @@ describe("AgenC delegate background-agent runner", () => {
     expect(shell.bashExecute).not.toHaveBeenCalled();
   });
 
+  it("[managed-thread] durably closes direct shell state when validation fails before dispatch", async () => {
+    const agentId = "session-direct-shell-prestart-rejection";
+    const harness = makeTopLevelRunner({
+      conversationId: agentId,
+      threadInitialStatus: { status: "pending_init" } as AgentStatus,
+    });
+    const shell = configureSessionShellHarness(harness);
+    await harness.runner.startAgent({
+      objective: "deferred direct shell",
+      deferInitialTurn: true,
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    harness.forcePermissionContextForTesting(
+      createEmptyToolPermissionContext({
+        mode: "bypassPermissions",
+        isBypassPermissionsModeAvailable: true,
+      }),
+    );
+    Object.defineProperty(shell.registry, "tools", {
+      configurable: true,
+      get: () => [],
+    });
+
+    await expect(
+      harness.runner.executeAgentShell(agentId, {
+        sessionId: agentId,
+        commandId: "shell-prestart-rejection-1",
+        command: "printf never-started",
+      }),
+    ).rejects.toThrow("Configured shell system.bash is not available");
+
+    const lifecycle = harness.rolloutItems.flatMap((item) => {
+      const message = (item as {
+        readonly payload?: {
+          readonly msg?: {
+            readonly type?: unknown;
+            readonly payload?: Readonly<Record<string, unknown>>;
+          };
+        };
+      }).payload?.msg;
+      return message?.payload?.callId === "shell-prestart-rejection-1" &&
+        (message.type === "tool_call_started" ||
+          message.type === "tool_call_completed")
+        ? [message]
+        : [];
+    });
+    expect(lifecycle).toEqual([
+      expect.objectContaining({
+        type: "tool_call_started",
+        payload: expect.objectContaining({
+          callId: "shell-prestart-rejection-1",
+          toolName: "system.bash",
+        }),
+      }),
+      expect.objectContaining({
+        type: "tool_call_completed",
+        payload: expect.objectContaining({
+          callId: "shell-prestart-rejection-1",
+          toolName: "system.bash",
+          result: expect.stringContaining("is not available"),
+          isError: true,
+        }),
+      }),
+    ]);
+    expect(shell.bashExecute).not.toHaveBeenCalled();
+  });
+
   it("[managed-thread] denies direct shell while Editor owns the workspace", async () => {
     const workspaceRoot = mkdtempSync(
       join(tmpdir(), "agenc-direct-shell-editor-owned-workspace-"),
