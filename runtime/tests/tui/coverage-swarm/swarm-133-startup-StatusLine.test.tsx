@@ -30,7 +30,6 @@ const harness = vi.hoisted(() => ({
   isRemoteMode: false,
   logForDebugging: vi.fn(),
   mainLoopModel: 'gpt-5',
-  rawUtilization: {} as Record<string, unknown>,
   sessionTitle: undefined as string | undefined,
   settings: {
     statusLine: { command: 'statusline', padding: 0 },
@@ -50,10 +49,6 @@ const harness = vi.hoisted(() => ({
 
 vi.mock('bun:bundle', () => ({
   feature: harness.feature,
-}))
-
-vi.mock('../../../src/tui/rate-limits/agenc-ai-limits.js', () => ({
-  getRawUtilization: () => harness.rawUtilization,
 }))
 
 vi.mock('../../../src/bootstrap/state.js', () => ({
@@ -244,7 +239,6 @@ function resetHarness(): void {
   harness.isRemoteMode = false
   harness.logForDebugging.mockClear()
   harness.mainLoopModel = 'gpt-5'
-  harness.rawUtilization = {}
   harness.sessionTitle = undefined
   harness.settings = {
     statusLine: { command: 'statusline', padding: 0 },

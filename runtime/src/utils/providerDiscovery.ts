@@ -1,5 +1,5 @@
 import type { OllamaModelDescriptor } from './providerRecommendation.ts'
-import { DEFAULT_OPENAI_BASE_URL } from '../services/api/providerConfig.js'
+import { BUILT_IN_PROVIDER_BASE_URLS } from '../llm/registry/provider-info.js'
 import { asRecord } from './record.js'
 import { nonEmptyString } from './stringUtils.js'
 import { isZaiBaseUrl } from './zaiProvider.js'
@@ -207,7 +207,7 @@ export function getOpenAICompatibleModelsBaseUrl(
   return (
     baseUrl ||
     requestEnvironment.OPENAI_BASE_URL ||
-    DEFAULT_OPENAI_BASE_URL
+    BUILT_IN_PROVIDER_BASE_URLS.openai
   ).replace(/\/+$/, '')
 }
 

@@ -17,7 +17,7 @@ async function importFreshModelModule() {
   if (!provider) throw new Error('test provider must be selected before import')
   const selectedModel = process.env.AGENC_MODEL ?? 'test-model'
   const store = new ConfigStore({
-    home: '/tmp/agenc-model-openai-shim',
+    home: '/tmp/agenc-model-provider-defaults',
     env: {},
     base: {},
   })
@@ -131,10 +131,9 @@ test('github provider reads the canonical startup model', async () => {
 })
 
 // ---------------------------------------------------------------------------
-// Default model helpers — must not fall through to claude-haiku-4-5 etc. for
-// openai-shim providers whose endpoints don't speak provider model names.
-// Hitting that fallthrough caused WebFetch to hang for 60s on MiniMax/Agenc
-// because queryHaiku() shipped an unknown model id to the shim endpoint.
+// Default model helpers must preserve the canonical model selected for each
+// provider. A provider-specific fallback can send an invalid model identifier
+// and stall an otherwise healthy request.
 // ---------------------------------------------------------------------------
 
 test('getSmallFastModel returns the canonical MiniMax model (regression: WebFetch hang)', async () => {
@@ -191,9 +190,9 @@ test('getDefaultHaikuModel returns the canonical MiniMax model', async () => {
   expect(getDefaultHaikuModel()).toBe('MiniMax-M2.5-highspeed')
 })
 
-test('default helpers do not leak agenc-* names to shim providers', async () => {
-  // Umbrella guard: for each openai-shim provider, none of the default-model
-  // helpers may return an provider-branded model name. That was the source
+test('default helpers do not leak agenc-* names to other providers', async () => {
+  // Umbrella guard: provider-default helpers must not return a model name
+  // belonging to a different provider. That was the source
   // of the WebFetch 60s hang — MiniMax received "claude-haiku-4-5" and sat
   // on the connection.
   process.env.AGENC_PROVIDER = 'minimax'

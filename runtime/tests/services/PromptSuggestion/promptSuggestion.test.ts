@@ -23,7 +23,6 @@ import {
   shouldEnablePromptSuggestion,
   shouldFilterSuggestion,
 } from "./promptSuggestion.js";
-import { setPromptSuggestionLimitsForTests } from "./limits.js";
 import {
   getIsNonInteractiveSession as getBootstrapIsNonInteractiveSession,
   resetStateForTests,
@@ -47,7 +46,6 @@ describe("PromptSuggestion service", () => {
     delete process.env.USER_TYPE;
     clearDynamicTeamContext();
     resetStateForTests();
-    setPromptSuggestionLimitsForTests(null);
   });
 
   it("uses the canonical setting as its sole enablement authority", () => {
@@ -141,9 +139,6 @@ describe("PromptSuggestion service", () => {
       }),
     ).toBe("plan_mode");
 
-    process.env.USER_TYPE = "external";
-    setPromptSuggestionLimitsForTests({ status: "rejected" });
-    expect(getSuggestionSuppressReason(baseState)).toBe("rate_limit");
   });
 
   it("filters meta, assistant-voice, and malformed suggestions", () => {

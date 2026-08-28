@@ -5,7 +5,6 @@ import { getCanonicalName } from './model/model.js'
 import { resolveAntModel } from './model/antModels.js'
 import { getModelCapability } from './model/modelCapabilities.js'
 import {
-  CAPPED_DEFAULT_MAX_OUTPUT_TOKENS,
   ESCALATED_MAX_OUTPUT_TOKENS,
   getOpenAICompatibleContextWindow,
   getOpenAICompatibleMaxOutputTokens,
@@ -36,9 +35,6 @@ function openAiFallbackContextWindow(environment: ProviderEnvironment): number {
     : OPENAI_COMPATIBLE_FALLBACK_CONTEXT_WINDOW
 }
 
-// Maximum output tokens for compact operations
-export const COMPACT_MAX_OUTPUT_TOKENS = 20_000
-
 // Default max output tokens
 const MAX_OUTPUT_TOKENS_DEFAULT = 32_000
 const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 64_000
@@ -49,7 +45,6 @@ const MAX_OUTPUT_TOKENS_UPPER_LIMIT = 64_000
 // (see query.ts max_output_tokens_escalate). Cap is applied in
 // agenc.ts:getMaxOutputTokensForModel to avoid the growthbook→betas→context
 // import cycle.
-export const CAPPED_DEFAULT_MAX_TOKENS = CAPPED_DEFAULT_MAX_OUTPUT_TOKENS
 export const ESCALATED_MAX_TOKENS = ESCALATED_MAX_OUTPUT_TOKENS
 
 function usesOpenAICompatibleModelLimits(provider: string): boolean {

@@ -1,15 +1,9 @@
 import { feature } from 'bun:bundle'
-import type { BetaMessageStreamParams } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { Dirent } from 'fs'
 import { readdir, readFile, stat } from 'fs/promises'
 import memoize from 'lodash-es/memoize.js'
 import { join } from 'path'
-import type { QuerySource } from 'src/constants/querySource.js'
 import { tokenizeCliOptionRegion } from '../bin/cli-option-region.js'
-import {
-  setLastAPIRequest,
-  setLastAPIRequestMessages,
-} from '../bootstrap/state.js'
 import { TICK_TAG } from '../constants/xml.js'
 import {
   type LogOption,
@@ -345,32 +339,6 @@ export function logMCPDebug(serverName: string, message: string): void {
   } catch {
     // Silently fail
   }
-}
-
-/**
- * Captures the last API request for inclusion in bug reports.
- */
-export function captureAPIRequest(
-  params: BetaMessageStreamParams,
-  querySource?: QuerySource,
-): void {
-  // startsWith, not exact match — users with non-default output styles get
-  // variants like 'repl_main_thread:outputStyle:Explanatory' (querySource.ts).
-  if (!querySource || !querySource.startsWith('repl_main_thread')) {
-    return
-  }
-
-  // Store params WITHOUT messages to avoid retaining the entire conversation
-  // for all users. Messages are already persisted to the transcript file and
-  // available via React state.
-  const { messages, ...paramsWithoutMessages } = params
-  setLastAPIRequest(paramsWithoutMessages)
-  // For ant users only: also keep a reference to the final messages array so
-  // /share's serialized_conversation.json captures the exact post-compaction,
-  // AGENC.md-injected payload the API received. Overwritten each turn;
-  // dumpPrompts.ts already holds 5 full request bodies for ants, so this is
-  // not a new retention class.
-  setLastAPIRequestMessages(process.env.USER_TYPE === 'ant' ? messages : null)
 }
 
 /**

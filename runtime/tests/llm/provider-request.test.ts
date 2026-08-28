@@ -6,7 +6,6 @@ import {
 import { resolveProviderCredentialAuthority } from '../../src/llm/provider-options.ts'
 import { createProvider } from '../../src/llm/provider.ts'
 import { bindingFromProvider } from '../../src/session/provider-service.ts'
-import { projectBoundProviderConnection } from '../../src/llm/registry/provider-connection.ts'
 
 describe('provider runtime request', () => {
   test('prepares compatibility transport inputs at provider ingress', () => {
@@ -47,21 +46,17 @@ describe('provider runtime request', () => {
       'openai-compatible',
       authority.factoryOptions,
     )
-    const connection = projectBoundProviderConnection({
-      binding: bindingFromProvider({
-        provider,
-        providerName: 'openai-compatible',
-        model: 'bound-model',
-      }),
-      environment: {
-        OPENAI_AUTH_HEADER: 'stale-header',
-        API_TIMEOUT_MS: '99999',
-      },
+    const binding = bindingFromProvider({
+      provider,
+      providerName: 'openai-compatible',
+      model: 'bound-model',
     })
 
-    expect(connection.timeoutMs).toBe(42_000)
-    expect(connection.apiKey).toBe('prepared-key')
-    expect(connection.extra).toMatchObject({
+    expect(binding.provider).toBe('openai-compatible')
+    expect(binding.model).toBe('bound-model')
+    expect(binding.factoryOptions.timeoutMs).toBe(42_000)
+    expect(binding.factoryOptions.apiKey).toBe('prepared-key')
+    expect(binding.factoryOptions.extra).toMatchObject({
       useResponsesApi: true,
       openAiCompatibility: {
         authHeader: 'X-Custom-Authorization',

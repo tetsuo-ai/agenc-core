@@ -231,9 +231,6 @@ Its retry behavior is:
 - Session backoff base is **200 ms**.
 - After budget admission, model calls set `singleWireAttempt: true`: **no HTTP
   retry** on that lease. A retry needs a new reservation.
-- `AGENC_MAX_RETRIES` (default 10) applies only to the separate Anthropic helper
-  in `services/api/withRetry.ts`. It does **not** drive `llm/` providers.
-
 Grok uses an SDK transport with a distinct retry contract: its default budget
 is **2**, `maxRetries` can override it, and the SDK owns retry eligibility and
 backoff. A `singleWireAttempt` still forces that SDK budget to **0**. Those are

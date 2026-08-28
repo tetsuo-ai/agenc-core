@@ -1,6 +1,5 @@
 import { afterEach, beforeEach, expect, test } from 'bun:test'
 
-import { getMaxOutputTokensForModel } from '../../src/services/api/anthropic.ts'
 import {
   getContextWindowForModel,
   getModelMaxOutputTokens,
@@ -55,15 +54,6 @@ providerTest('deepseek-v4-flash uses provider-specific context and output caps',
     default: 262_144,
     upperLimit: 262_144,
   })
-  expect(getMaxOutputTokensForModel('deepseek-v4-flash')).toBe(262_144)
-})
-
-providerTest('deepseek-v4-flash clamps oversized max output overrides to the provider limit', () => {
-  process.env.AGENC_PROVIDER = 'openai'
-  process.env.AGENC_MAX_OUTPUT_TOKENS = '500000'
-  delete process.env.OPENAI_MODEL
-
-  expect(getMaxOutputTokensForModel('deepseek-v4-flash')).toBe(262_144)
 })
 
 providerTest('gpt-4o uses provider-specific context and output caps', () => {
@@ -76,15 +66,6 @@ providerTest('gpt-4o uses provider-specific context and output caps', () => {
     default: 16_384,
     upperLimit: 16_384,
   })
-  expect(getMaxOutputTokensForModel('gpt-4o')).toBe(16_384)
-})
-
-providerTest('gpt-4o clamps oversized max output overrides to the provider limit', () => {
-  process.env.AGENC_PROVIDER = 'openai'
-  process.env.AGENC_MAX_OUTPUT_TOKENS = '32000'
-  delete process.env.OPENAI_MODEL
-
-  expect(getMaxOutputTokensForModel('gpt-4o')).toBe(16_384)
 })
 
 providerTest('gpt-5.4 family uses provider-specific context and output caps', () => {
@@ -111,15 +92,6 @@ providerTest('gpt-5.4 family uses provider-specific context and output caps', ()
   })
 })
 
-providerTest('gpt-5.4 family keeps large max output overrides within provider limits', () => {
-  process.env.AGENC_PROVIDER = 'openai'
-  process.env.AGENC_MAX_OUTPUT_TOKENS = '200000'
-
-  expect(getMaxOutputTokensForModel('gpt-5.4')).toBe(128_000)
-  expect(getMaxOutputTokensForModel('gpt-5.4-mini')).toBe(128_000)
-  expect(getMaxOutputTokensForModel('gpt-5.4-nano')).toBe(128_000)
-})
-
 providerTest('MiniMax-M2.7 uses explicit provider-specific context and output caps', () => {
   process.env.AGENC_PROVIDER = 'openai'
   delete process.env.AGENC_MAX_OUTPUT_TOKENS
@@ -130,7 +102,6 @@ providerTest('MiniMax-M2.7 uses explicit provider-specific context and output ca
     default: 131_072,
     upperLimit: 131_072,
   })
-  expect(getMaxOutputTokensForModel('MiniMax-M2.7')).toBe(131_072)
 })
 
 providerTest('unknown openai-compatible models use the 128k fallback window (not 8k, see #635)', () => {
@@ -165,7 +136,6 @@ providerTest('DashScope qwen3.6-plus uses provider-specific context and output c
     default: 65_536,
     upperLimit: 65_536,
   })
-  expect(getMaxOutputTokensForModel('qwen3.6-plus')).toBe(65_536)
 })
 
 providerTest('DashScope qwen3.5-plus uses provider-specific context and output caps', () => {
@@ -177,7 +147,6 @@ providerTest('DashScope qwen3.5-plus uses provider-specific context and output c
     default: 65_536,
     upperLimit: 65_536,
   })
-  expect(getMaxOutputTokensForModel('qwen3.5-plus')).toBe(65_536)
 })
 
 providerTest('DashScope qwen3-coder-plus uses provider-specific context and output caps', () => {
@@ -303,17 +272,4 @@ providerTest('lowercase GLM aliases keep conservative output caps', () => {
     default: 16_384,
     upperLimit: 16_384,
   })
-})
-
-providerTest('DashScope models clamp oversized max output overrides to the provider limit', () => {
-  process.env.AGENC_PROVIDER = 'openai'
-  process.env.AGENC_MAX_OUTPUT_TOKENS = '100000'
-
-  expect(getMaxOutputTokensForModel('qwen3.6-plus')).toBe(65_536)
-  expect(getMaxOutputTokensForModel('qwen3.5-plus')).toBe(65_536)
-  expect(getMaxOutputTokensForModel('qwen3-coder-next')).toBe(65_536)
-  expect(getMaxOutputTokensForModel('qwen3-max')).toBe(32_768)
-  expect(getMaxOutputTokensForModel('kimi-k2.5')).toBe(32_768)
-  expect(getMaxOutputTokensForModel('glm-5')).toBe(16_384)
-  expect(getMaxOutputTokensForModel('glm-5.1')).toBe(16_384)
 })

@@ -442,112 +442,6 @@ export function isToolReferenceBlock(obj: unknown): boolean {
   )
 }
 
-/**
- * Type guard for tool_reference block with tool_name.
- */
-function isToolReferenceWithName(
-  obj: unknown,
-): obj is { type: 'tool_reference'; tool_name: string } {
-  return (
-    isToolReferenceBlock(obj) &&
-    'tool_name' in (obj as object) &&
-    typeof (obj as { tool_name: unknown }).tool_name === 'string'
-  )
-}
-
-/**
- * Type representing a tool_result block with array content.
- * Used for extracting tool_reference blocks from ToolSearchTool results.
- */
-type ToolResultBlock = {
-  type: 'tool_result'
-  content: unknown[]
-}
-
-/**
- * Type guard for tool_result blocks with array content.
- */
-function isToolResultBlockWithContent(obj: unknown): obj is ToolResultBlock {
-  return (
-    typeof obj === 'object' &&
-    obj !== null &&
-    'type' in obj &&
-    (obj as { type: unknown }).type === 'tool_result' &&
-    'content' in obj &&
-    Array.isArray((obj as { content: unknown }).content)
-  )
-}
-
-/**
- * Extract tool names from tool_reference blocks in message history.
- *
- * When dynamic tool loading is enabled, MCP tools are not predeclared in the
- * tools array. Instead, they are discovered via ToolSearchTool which returns
- * tool_reference blocks. This function scans the message history to find all
- * tool names that have been referenced, so we can include only those tools
- * in subsequent API requests.
- *
- * This approach:
- * - Eliminates the need to predeclare all MCP tools upfront
- * - Removes limits on total quantity of MCP tools
- *
- * Compaction replaces tool_reference-bearing messages with a summary, so it
- * snapshots the discovered set onto compactMetadata.preCompactDiscoveredTools
- * on the boundary marker; this scan reads it back. Snip instead protects the
- * tool_reference-carrying messages from removal.
- *
- * @param messages Array of messages that may contain tool_result blocks with tool_reference content
- * @returns Set of tool names that have been discovered via tool_reference blocks
- */
-export function extractDiscoveredToolNames(messages: Message[]): Set<string> {
-  const discoveredTools = new Set<string>()
-  let carriedFromBoundary = 0
-
-  for (const msg of messages) {
-    // Compact boundary carries the pre-compact discovered set. Inline type
-    // check rather than isCompactBoundaryMessage — utils/messages.ts imports
-    // from this file, so importing back would be circular.
-    if (msg.type === 'system' && msg.subtype === 'compact_boundary') {
-      const carried = msg.compactMetadata?.preCompactDiscoveredTools
-      if (carried) {
-        for (const name of carried) discoveredTools.add(name)
-        carriedFromBoundary += carried.length
-      }
-      continue
-    }
-
-    // Only user messages contain tool_result blocks (responses to tool_use)
-    if (msg.type !== 'user') continue
-
-    const content = msg.message?.content
-    if (!Array.isArray(content)) continue
-
-    for (const block of content) {
-      // tool_reference blocks only appear inside tool_result content, specifically
-      // in results from ToolSearchTool. The API expands these references into full
-      // tool definitions in the model's context.
-      if (isToolResultBlockWithContent(block)) {
-        for (const item of block.content) {
-          if (isToolReferenceWithName(item)) {
-            discoveredTools.add(item.tool_name)
-          }
-        }
-      }
-    }
-  }
-
-  if (discoveredTools.size > 0) {
-    logForDebugging(
-      `Dynamic tool loading: found ${discoveredTools.size} discovered tools in message history` +
-        (carriedFromBoundary > 0
-          ? ` (${carriedFromBoundary} carried from compact boundary)`
-          : ''),
-    )
-  }
-
-  return discoveredTools
-}
-
 export type DeferredToolsDelta = {
   addedNames: string[]
   /** Rendered lines for addedNames; the scan reconstructs from names. */
@@ -555,19 +449,6 @@ export type DeferredToolsDelta = {
   removedNames: string[]
 }
 
-/**
- * Call-site discriminator for the tengu_deferred_tools_pool_change event.
- * The scan runs from several sites with different expected-prior semantics
- * (inc-4747):
- *   - attachments_main: main-thread getAttachments → prior=0 is a BUG on fire-2+
- *   - attachments_subagent: subagent getAttachments → prior=0 is EXPECTED
- *     (fresh conversation, initialMessages has no DTD)
- *   - compact_full: compact.ts passes [] → prior=0 is EXPECTED
- *   - compact_partial: compact.ts passes messagesToKeep → depends on what survived
- *   - reactive_compact: reactiveCompact.ts passes preservedMessages → same
- * Without this the 96%-prior=0 stat is dominated by EXPECTED buckets and
- * the real main-thread cross-turn bug (if any) is invisible in BQ.
- */
 export type DeferredToolsDeltaScanContext = {
   callSite:
     | 'attachments_main'
@@ -578,11 +459,6 @@ export type DeferredToolsDeltaScanContext = {
   querySource?: string
 }
 
-/**
- * True → announce deferred tools via persisted delta attachments.
- * False → agenc.ts keeps its per-call <available-deferred-tools>
- * header prepend (the attachment does not fire).
- */
 export function isDeferredToolsDeltaEnabled(): boolean {
   return getSelectedProviderEnvironment().USER_TYPE === 'ant' || false
 }

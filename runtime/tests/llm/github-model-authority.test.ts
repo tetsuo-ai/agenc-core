@@ -10,13 +10,11 @@ import { GitHubProvider } from "../../src/llm/providers/github/index.js";
 import { normalizeGithubModelForEndpoint } from "../../src/llm/providers/github/model-routing.js";
 import type { OpenAIProviderConfig } from "../../src/llm/providers/openai/types.js";
 import {
-  BUILT_IN_PROVIDER_BASE_URLS,
   BUILT_IN_PROVIDER_MODEL_CATALOG,
   providerCatalogModelId,
   providerLocalModelIdFromCatalog,
   providerModelCatalogIdentifiers,
 } from "../../src/llm/registry/provider-info.js";
-import { resolveProviderRequest } from "../../src/services/api/providerConfig.js";
 import { isModelAllowed } from "../../src/utils/model/modelAllowlist.js";
 
 const GITHUB_CATALOG = [
@@ -132,81 +130,6 @@ describe("GitHub model authority", () => {
     ]));
     expect(slugs).not.toContain("default-private-model");
     expect(slugs).not.toContain("selected-private-model");
-  });
-
-  test.each([
-    {
-      name: "Copilot GPT-5",
-      model: "github:copilot:gpt-5.4",
-      baseUrl: undefined,
-      expectedModel: "gpt-5.4",
-      expectedTransport: "providerCode_responses",
-    },
-    {
-      name: "Copilot default",
-      model: "github:copilot",
-      baseUrl: undefined,
-      expectedModel: "gpt-5.3-codex",
-      expectedTransport: "providerCode_responses",
-    },
-    {
-      name: "Copilot mini",
-      model: "github:copilot:gpt-5.4-mini",
-      baseUrl: undefined,
-      expectedModel: "gpt-5.4-mini",
-      expectedTransport: "chat_completions",
-    },
-    {
-      name: "Copilot GPT-5 mini",
-      model: "github:copilot:gpt-5-mini",
-      baseUrl: undefined,
-      expectedModel: "gpt-5-mini",
-      expectedTransport: "chat_completions",
-    },
-    {
-      name: "Copilot GPT-5.4 nano",
-      model: "github:copilot:gpt-5.4-nano",
-      baseUrl: undefined,
-      expectedModel: "gpt-5.4-nano",
-      expectedTransport: "providerCode_responses",
-    },
-    {
-      name: "Copilot GPT-5.6",
-      model: "github:copilot:gpt-5.6-sol",
-      baseUrl: undefined,
-      expectedModel: "gpt-5.6-sol",
-      expectedTransport: "providerCode_responses",
-    },
-    {
-      name: "GitHub Models",
-      model: "github:copilot:openai/gpt-5.4",
-      baseUrl: "https://models.github.ai/inference",
-      expectedModel: "openai/gpt-5.4",
-      expectedTransport: "chat_completions",
-    },
-    {
-      name: "custom endpoint",
-      model: "github:copilot:openai/gpt-5.4",
-      baseUrl: "https://github-proxy.example/v1",
-      expectedModel: "openai/gpt-5.4",
-      expectedTransport: "chat_completions",
-    },
-  ] as const)("resolves $name through one model and transport decision", ({
-    model,
-    baseUrl,
-    expectedModel,
-    expectedTransport,
-  }) => {
-    expect(
-      resolveProviderRequest({
-        provider: "github",
-        model,
-        baseUrl: baseUrl ?? BUILT_IN_PROVIDER_BASE_URLS.github,
-      }),
-    ).toMatchObject({
-      resolvedModel: expectedModel,
-      transport: expectedTransport,
-    });
   });
 
   test("preserves GitHub Models vendor qualification after catalog projection", () => {

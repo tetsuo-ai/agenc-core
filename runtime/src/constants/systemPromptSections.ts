@@ -1,5 +1,4 @@
 import {
-  clearBetaHeaderLatches,
   clearSystemPromptSectionState,
   getSystemPromptSectionCache,
   setSystemPromptSectionCacheEntry,
@@ -59,10 +58,7 @@ export async function resolveSystemPromptSections(
 
 /**
  * Clear all system prompt section state. Called on /clear and /compact.
- * Also resets beta header latches so a fresh conversation gets fresh
- * evaluation of AFK/fast-mode/cache-editing headers.
  */
 export function clearSystemPromptSections(): void {
   clearSystemPromptSectionState()
-  clearBetaHeaderLatches()
 }

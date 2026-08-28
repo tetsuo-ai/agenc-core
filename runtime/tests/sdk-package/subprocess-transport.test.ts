@@ -161,7 +161,6 @@ describe("agenc-sdk subprocess transport", () => {
             totalTokens: 8,
             costUsd: 0.001,
           },
-          cacheStats: { requestCount: 1 },
         },
       ],
       exitCode: 0,
@@ -213,7 +212,6 @@ describe("agenc-sdk subprocess transport", () => {
       finalMessage: "The answer is 42",
       deniedPermissionRequestIds: [],
       usage: { totalTokens: 8 },
-      cacheStats: { requestCount: 1 },
     });
   });
 

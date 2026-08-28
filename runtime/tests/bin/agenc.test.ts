@@ -376,13 +376,6 @@ function installDaemonCliDepsForTest(
             totalTokens: 13,
             costUsd: 0.001,
           },
-          cacheStats: {
-            requestCount: 1,
-            cacheReadInputTokens: 0,
-            cacheCreationInputTokens: 0,
-            cacheTotalInputTokens: 0,
-            hitRate: null,
-          },
         };
       }
       if (method === "agent.stop") {
@@ -2411,7 +2404,6 @@ describe("main() smoke", () => {
         finalMessage: string;
         deniedPermissionRequestIds: unknown[];
         tokenUsage: unknown;
-        cacheStats: unknown;
         events: unknown[];
       };
       expect(result).toMatchObject({
@@ -2427,10 +2419,6 @@ describe("main() smoke", () => {
         outputTokens: 3,
         totalTokens: 13,
         costUsd: 0.001,
-      });
-      expect(result.cacheStats).toMatchObject({
-        requestCount: 1,
-        hitRate: null,
       });
       expect(result.events).toHaveLength(2);
     } finally {
@@ -2536,10 +2524,6 @@ describe("main() smoke", () => {
           outputTokens: 3,
           totalTokens: 13,
           costUsd: 0.001,
-        },
-        cacheStats: {
-          requestCount: 1,
-          hitRate: null,
         },
       });
     } finally {

@@ -40,19 +40,6 @@ vi.mock('../../constants/outputStyles.js', () => ({
   DEFAULT_OUTPUT_STYLE_NAME: 'default-style',
 }))
 
-vi.mock('../rate-limits/agenc-ai-limits.js', () => ({
-  getRawUtilization: () => ({
-    five_hour: {
-      utilization: 0.42,
-      resets_at: 1710000000,
-    },
-    seven_day: {
-      utilization: 0.7,
-      resets_at: 1710500000,
-    },
-  }),
-}))
-
 vi.mock('../../bootstrap/state.js', () => ({
   flushInteractionTime: () => {},
   getActiveTimeCounter: () => 0,
@@ -325,16 +312,6 @@ describe('StatusLine wave200-093 coverage', () => {
         remaining_percentage: 98,
       },
       exceeds_200k_tokens: true,
-      rate_limits: {
-        five_hour: {
-          used_percentage: 42,
-          resets_at: 1710000000,
-        },
-        seven_day: {
-          used_percentage: 70,
-          resets_at: 1710500000,
-        },
-      },
       vim: {
         mode: 'NORMAL',
       },

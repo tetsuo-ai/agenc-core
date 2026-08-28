@@ -2,9 +2,6 @@ import { afterEach, describe, expect, test } from "vitest";
 
 import { createAttachmentMessage } from "../../src/utils/attachments.js";
 import { getImageTooLargeErrorMessage } from "../../src/services/api/errors.js";
-import { CanonicalFileWriteTool } from "../../src/tools/canonicalToolSurface.js";
-import { MCPTool } from "../../src/tools/MCPTool/MCPTool.js";
-import { TodoWriteTool } from "../../src/tools/TodoWriteTool/TodoWriteTool.js";
 import {
   AUTO_REJECT_MESSAGE,
   buildMessageLookups,
@@ -81,7 +78,6 @@ import {
   mergeUserMessages,
   mergeUserMessagesAndToolResults,
   normalizeAttachmentForAPI,
-  normalizeContentFromAPI,
   normalizeMessagesForAPI,
   normalizeMessages,
   prepareUserContent,
@@ -89,8 +85,6 @@ import {
   reorderAttachmentsForAPI,
   reorderMessagesInUI,
   shouldShowUserMessage,
-  stripAdvisorBlocks,
-  stripCallerFieldFromAssistantMessage,
   stripPromptXMLTags,
   stripSignatureBlocks,
   stripToolReferenceBlocksFromUserMessage,
@@ -661,20 +655,6 @@ describe("message utility constructors and predicates", () => {
       ),
     ).toContain("tools no longer available");
 
-    const callerMessage = createAssistantMessage({
-      content: [
-        { ...toolUseBlock("tu_caller"), caller: { tool_use_id: "parent" } },
-        textBlock("keep"),
-      ] as never,
-    });
-    const strippedCaller = stripCallerFieldFromAssistantMessage(callerMessage);
-    expect("caller" in (strippedCaller.message.content[0] as object)).toBe(false);
-    expect(strippedCaller.message.content[1]).toEqual(textBlock("keep"));
-    const noCallerMessage = createAssistantMessage({
-      content: [toolUseBlock("tu_no_caller")] as never,
-    });
-    expect(stripCallerFieldFromAssistantMessage(noCallerMessage))
-      .toBe(noCallerMessage);
   });
 
   test("merges and sanitizes API-bound message content", () => {
@@ -710,122 +690,6 @@ describe("message utility constructors and predicates", () => {
     expect(mergeUserContentBlocks([textBlock("first")] as never, [textBlock("second")] as never))
       .toEqual([textBlock("first"), textBlock("second")]);
 
-    expect(normalizeContentFromAPI(undefined as never, [] as never)).toEqual([]);
-    const normalizedApiContent = normalizeContentFromAPI(
-      [
-        {
-          type: "tool_use",
-          id: "tu_api",
-          name: "Bash",
-          input: "{\"command\":\"pwd\"}",
-        },
-        {
-          type: "server_tool_use",
-          id: "srv_1",
-          name: "web_search",
-          input: "{\"query\":\"docs\"}",
-        },
-        textBlock("keep"),
-      ] as never,
-      [] as never,
-    );
-    expect(normalizedApiContent[0]).toMatchObject({
-      type: "tool_use",
-      input: { command: "pwd" },
-    });
-    expect(normalizedApiContent[1]).toMatchObject({
-      type: "server_tool_use",
-      input: { query: "docs" },
-    });
-
-    const normalizedNestedApiContent = normalizeContentFromAPI(
-      [
-        {
-          type: "tool_use",
-          id: "tu_todo",
-          name: "TodoWrite",
-          input: JSON.stringify({
-            todos: JSON.stringify([
-              {
-                content: "Guard nested JSON normalization",
-                status: "pending",
-                activeForm: "Guarding nested JSON normalization",
-              },
-            ]),
-          }),
-        },
-      ] as never,
-      [TodoWriteTool] as never,
-    );
-    expect(normalizedNestedApiContent[0]).toMatchObject({
-      type: "tool_use",
-      input: {
-        todos: [
-          {
-            content: "Guard nested JSON normalization",
-            status: "pending",
-            activeForm: "Guarding nested JSON normalization",
-          },
-        ],
-      },
-    });
-
-    const normalizedWriteContent = normalizeContentFromAPI(
-      [
-        {
-          type: "tool_use",
-          id: "tu_write",
-          name: "Write",
-          input: JSON.stringify({
-            file_path: "/tmp/data.json",
-            content: JSON.stringify({ keep: true }),
-          }),
-        },
-      ] as never,
-      [CanonicalFileWriteTool] as never,
-    );
-    expect(normalizedWriteContent[0]).toMatchObject({
-      type: "tool_use",
-      input: {
-        file_path: "/tmp/data.json",
-        content: "{\"keep\":true}",
-      },
-    });
-
-    const mcpArrayTool = Object.assign(Object.create(MCPTool), {
-      name: "mcp__demo__list",
-      inputJSONSchema: {
-        type: "object",
-        properties: {
-          items: { type: "array", items: { type: "string" } },
-        },
-        required: ["items"],
-        additionalProperties: false,
-      },
-    });
-    const normalizedSchemaOnlyContent = normalizeContentFromAPI(
-      [
-        {
-          type: "tool_use",
-          id: "tu_mcp",
-          name: "mcp__demo__list",
-          input: JSON.stringify({ items: JSON.stringify(["alpha", "beta"]) }),
-        },
-      ] as never,
-      [mcpArrayTool] as never,
-    );
-    expect(normalizedSchemaOnlyContent[0]).toMatchObject({
-      type: "tool_use",
-      input: { items: ["alpha", "beta"] },
-    });
-
-    expect(() =>
-      normalizeContentFromAPI(
-        [{ type: "tool_use", id: "bad", name: "Bash", input: 3 }] as never,
-        [] as never,
-      ),
-    ).toThrow("Tool use input must be a string or object");
-
     const whitespace = createAssistantMessage({ content: [textBlock("  \n")] });
     const filteredWhitespace = filterWhitespaceOnlyAssistantMessages([
       createUserMessage({ content: "first" }),
@@ -859,23 +723,6 @@ describe("message utility constructors and predicates", () => {
     ]);
     expect(repaired).toHaveLength(2);
     expect(JSON.stringify(repaired[1])).toContain("Tool result missing");
-
-    expect(
-      stripAdvisorBlocks([
-        createAssistantMessage({
-          content: [
-            {
-              type: "server_tool_use",
-              id: "advisor_1",
-              name: "advisor",
-              input: {},
-            },
-          ] as never,
-        }),
-      ] as never)[0],
-    ).toMatchObject({
-      message: { content: [{ type: "text", text: "[Advisor response]" }] },
-    });
 
     const summary = createToolUseSummaryMessage("ran tools", ["tu_merge"]);
     expect(summary).toMatchObject({
@@ -2551,22 +2398,5 @@ describe("message utility constructors and predicates", () => {
       .toEqual([emptyAssistant]);
     const noSignatureInput = [plainAssistant];
     expect(stripSignatureBlocks(noSignatureInput as never)).toBe(noSignatureInput);
-    const advisorUserMessage = createUserMessage({ content: "user" });
-    expect(stripAdvisorBlocks([advisorUserMessage] as never))
-      .toEqual([advisorUserMessage]);
-    const advisorWithText = createAssistantMessage({
-      content: [
-        {
-          type: "server_tool_use",
-          id: "advisor_keep_text",
-          name: "advisor",
-          input: {},
-        },
-        textBlock("kept advisor text"),
-      ] as never,
-    });
-    expect(stripAdvisorBlocks([advisorWithText] as never)[0]).toMatchObject({
-      message: { content: [textBlock("kept advisor text")] },
-    });
   });
 });

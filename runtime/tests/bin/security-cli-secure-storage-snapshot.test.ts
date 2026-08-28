@@ -29,7 +29,7 @@ afterEach(() => {
   readGatewayCredentialSnapshotMock.mockClear();
 });
 
-describe("security audit native-vault ownership", () => {
+describe("security audit native secure-storage ownership", () => {
   test("reads one canonical gateway snapshot per report", async () => {
     const home = mkdtempSync(join(tmpdir(), "agenc-security-snapshot-"));
     roots.push(home);
@@ -49,7 +49,7 @@ describe("security audit native-vault ownership", () => {
     });
   });
 
-  test("leaves the native vault unopened during the daemon startup audit", async () => {
+  test("leaves native secure storage unopened during the daemon startup audit", async () => {
     const home = mkdtempSync(join(tmpdir(), "agenc-security-startup-"));
     roots.push(home);
     writeFileSync(

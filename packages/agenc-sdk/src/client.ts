@@ -1247,7 +1247,7 @@ export class AgencClient {
       unsubscribe();
       removeAbortListener();
       releaseReservation();
-      let usageFields: Pick<AgencPromptResult, "usage" | "cacheStats"> = {};
+      let usageFields: Pick<AgencPromptResult, "usage"> = {};
       if (options.includeUsage !== false) {
         try {
           const snapshot = await this.request("session.snapshot", {
@@ -1255,7 +1255,6 @@ export class AgencClient {
           });
           usageFields = {
             usage: snapshot.tokenUsage,
-            cacheStats: snapshot.cacheStats,
           };
         } catch {
           /* usage is best-effort */

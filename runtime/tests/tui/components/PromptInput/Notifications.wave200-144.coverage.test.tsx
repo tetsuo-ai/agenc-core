@@ -31,7 +31,6 @@ const harness = vi.hoisted(() => ({
   removeNotification: vi.fn(),
   subscriptionType: "pro" as "enterprise" | "pro" | "team",
   tokenUsage: 1776,
-  usingOverage: undefined as boolean | undefined,
 }));
 
 vi.mock("bun:bundle", () => ({
@@ -102,10 +101,6 @@ vi.mock("../../hooks/useIdeConnectionStatus.js", () => ({
 
 vi.mock("../../hooks/useMainLoopModel.js", () => ({
   useMainLoopModel: () => harness.model,
-}));
-
-vi.mock("../../rate-limits/agenc-ai-limits.js", () => ({
-  useAgenCAiLimits: () => ({ isUsingOverage: harness.usingOverage }),
 }));
 
 vi.mock("../../state/AppState.js", () => ({
@@ -234,7 +229,6 @@ function resetHarness() {
   harness.removeNotification.mockClear();
   harness.subscriptionType = "pro";
   harness.tokenUsage = 1776;
-  harness.usingOverage = undefined;
 }
 
 function baseProps(): NotificationsProps {

@@ -46,6 +46,7 @@ function buildSession(mailboxLimits?: SessionOpts["mailboxLimits"]): Session {
     },
     provider: {
       name: "idle-input-test",
+      config: { model: "idle-input-test-model" },
       chat: async () => {
         throw new Error("idle-input test provider must not be called");
       },

@@ -309,21 +309,18 @@ function logStripOnce(stripped: string[]): void {
  * Behavior depends on feature flags and options:
  *
  * 1. MCP tools present (skipGlobalCacheForSystemPrompt=true):
- *    Returns up to 3 blocks with org-level caching (no global cache on system prompt):
- *    - Attribution header (cacheScope=null)
+ *    Returns up to 2 blocks with org-level caching (no global cache on system prompt):
  *    - System prompt prefix (cacheScope='org')
  *    - Everything else concatenated (cacheScope='org')
  *
  * 2. Global cache mode with boundary marker (1P only, boundary found):
- *    Returns up to 4 blocks:
- *    - Attribution header (cacheScope=null)
+ *    Returns up to 3 blocks:
  *    - System prompt prefix (cacheScope=null)
  *    - Static content before boundary (cacheScope='global')
  *    - Dynamic content after boundary (cacheScope=null)
  *
  * 3. Default mode (3P providers, or boundary missing):
- *    Returns up to 3 blocks with org-level caching:
- *    - Attribution header (cacheScope=null)
+ *    Returns up to 2 blocks with org-level caching:
  *    - System prompt prefix (cacheScope='org')
  *    - Everything else concatenated (cacheScope='org')
  */
@@ -334,16 +331,13 @@ export function splitSysPromptPrefix(
   const useGlobalCacheFeature = shouldUseGlobalCacheScope()
   if (useGlobalCacheFeature && options?.skipGlobalCacheForSystemPrompt) {
     // Filter out boundary marker, return blocks without global scope
-    let attributionHeader: string | undefined
     let systemPromptPrefix: string | undefined
     const rest: string[] = []
 
     for (const prompt of systemPrompt) {
       if (!prompt) continue
       if (prompt === SYSTEM_PROMPT_DYNAMIC_BOUNDARY) continue // Skip boundary
-      if (prompt.startsWith('x-anthropic-billing-header')) {
-        attributionHeader = prompt
-      } else if (CLI_SYSPROMPT_PREFIXES.has(prompt)) {
+      if (CLI_SYSPROMPT_PREFIXES.has(prompt)) {
         systemPromptPrefix = prompt
       } else {
         rest.push(prompt)
@@ -351,9 +345,6 @@ export function splitSysPromptPrefix(
     }
 
     const result: SystemPromptBlock[] = []
-    if (attributionHeader) {
-      result.push({ text: attributionHeader, cacheScope: null })
-    }
     if (systemPromptPrefix) {
       result.push({ text: systemPromptPrefix, cacheScope: 'org' })
     }
@@ -369,7 +360,6 @@ export function splitSysPromptPrefix(
       s => s === SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
     )
     if (boundaryIndex !== -1) {
-      let attributionHeader: string | undefined
       let systemPromptPrefix: string | undefined
       const staticBlocks: string[] = []
       const dynamicBlocks: string[] = []
@@ -378,9 +368,7 @@ export function splitSysPromptPrefix(
         const block = systemPrompt[i]
         if (!block || block === SYSTEM_PROMPT_DYNAMIC_BOUNDARY) continue
 
-        if (block.startsWith('x-anthropic-billing-header')) {
-          attributionHeader = block
-        } else if (CLI_SYSPROMPT_PREFIXES.has(block)) {
+        if (CLI_SYSPROMPT_PREFIXES.has(block)) {
           systemPromptPrefix = block
         } else if (i < boundaryIndex) {
           staticBlocks.push(block)
@@ -390,8 +378,6 @@ export function splitSysPromptPrefix(
       }
 
       const result: SystemPromptBlock[] = []
-      if (attributionHeader)
-        result.push({ text: attributionHeader, cacheScope: null })
       if (systemPromptPrefix)
         result.push({ text: systemPromptPrefix, cacheScope: null })
       const staticJoined = staticBlocks.join('\n\n')
@@ -403,16 +389,13 @@ export function splitSysPromptPrefix(
       return result
     }
   }
-  let attributionHeader: string | undefined
   let systemPromptPrefix: string | undefined
   const rest: string[] = []
 
   for (const block of systemPrompt) {
     if (!block) continue
 
-    if (block.startsWith('x-anthropic-billing-header')) {
-      attributionHeader = block
-    } else if (CLI_SYSPROMPT_PREFIXES.has(block)) {
+    if (CLI_SYSPROMPT_PREFIXES.has(block)) {
       systemPromptPrefix = block
     } else {
       rest.push(block)
@@ -420,8 +403,6 @@ export function splitSysPromptPrefix(
   }
 
   const result: SystemPromptBlock[] = []
-  if (attributionHeader)
-    result.push({ text: attributionHeader, cacheScope: null })
   if (systemPromptPrefix)
     result.push({ text: systemPromptPrefix, cacheScope: 'org' })
   const restJoined = rest.join('\n\n')

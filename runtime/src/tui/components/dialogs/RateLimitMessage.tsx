@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react'
 
 import { getIsNonInteractiveSession } from '../../../bootstrap/state.js'
-import { shouldProcessMockLimits } from '../../../services/rateLimitMocking.js'
+import { shouldProcessMockLimits } from '../../../services/mockRateLimits.js'
 import {
   getRateLimitTier,
   getSubscriptionType,
@@ -11,7 +11,6 @@ import {
 import { hasAgenCAiBillingAccess } from '../../../utils/billing.js'
 import { isEnvTruthy } from '../../../utils/envUtils.js'
 import { Box, Text } from '../../ink.js'
-import { useAgenCAiLimits } from '../../rate-limits/agenc-ai-limits.js'
 import { MessageResponse } from '../MessageResponse.js'
 import { resolveSecureStorageHome } from '../../../utils/secureStorage/home.js'
 import { getSelectedProviderEnvironment } from '../../../utils/model/providers.js'
@@ -93,15 +92,9 @@ export function RateLimitMessage({
   const canSeeRateLimitOptionsUpsell = shouldShowUpsell && !isMax20x
   const [hasOpenedInteractiveMenu, setHasOpenedInteractiveMenu] =
     useState(false)
-  const agencAiLimits = useAgenCAiLimits()
-  const isCurrentlyRateLimited =
-    agencAiLimits.status === 'rejected' &&
-    agencAiLimits.resetsAt !== undefined &&
-    !agencAiLimits.isUsingOverage
   const shouldAutoOpenRateLimitOptionsMenu =
     canSeeRateLimitOptionsUpsell &&
     !hasOpenedInteractiveMenu &&
-    isCurrentlyRateLimited &&
     onOpenRateLimitOptions !== undefined
 
   useEffect(() => {

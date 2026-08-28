@@ -106,34 +106,9 @@ describe("native secure storage authority", () => {
     }
   });
 
-  test("ProviderCode runtime auth is env-or-native and never reads auth.json", () => {
-    const providerConfig = readFileSync(
-      join(ROOT, "services", "api", "providerConfig.ts"),
-      "utf8",
-    );
-    const shim = readFileSync(
-      join(ROOT, "services", "api", "openaiShim.ts"),
-      "utf8",
-    );
-
-    for (const source of [providerConfig, shim]) {
-      expect(source).not.toContain("PROVIDER_CODE_AUTH_JSON_PATH");
-      expect(source).not.toContain("PROVIDER_CODE_HOME");
-      expect(source).not.toContain(".providerCode/auth.json");
-      expect(source).not.toContain("source: 'auth.json'");
-      expect(source).not.toContain("authPath");
-    }
-    expect(providerConfig).not.toContain("readFileSync");
-    expect(providerConfig).not.toContain("homedir");
-  });
-
-  test("ProviderCode OAuth writes use bound callbacks backed by explicit-home native RMW", () => {
+  test("ProviderCode OAuth writes use explicit-home native RMW", () => {
     const credentials = readFileSync(
       join(ROOT, "utils", "openAiOauthCredentials.ts"),
-      "utf8",
-    );
-    const shim = readFileSync(
-      join(ROOT, "services", "api", "openaiShim.ts"),
       "utf8",
     );
 
@@ -142,10 +117,6 @@ describe("native secure storage authority", () => {
     expect(credentials).toContain("readNativeSecureStorageAsync(home)");
     expect(credentials).not.toContain("getSecureStorage(");
     expect(credentials).not.toContain("resolveSecureStorageHome");
-    expect(shim).toContain("connection.extra.oauth");
-    expect(shim).toContain("this.oauthCallbacks = oauth");
-    expect(shim).not.toContain("HomeContext");
-    expect(shim).not.toContain("resolveSecureStorageHome");
   });
 
   test("provider credential authorities use explicit-home native reads and serialized RMW", () => {

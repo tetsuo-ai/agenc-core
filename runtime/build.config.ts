@@ -810,7 +810,6 @@ const external = [
   '@anthropic-ai/bedrock-sdk',
   '@aws-sdk/client-bedrock',
   '@aws-sdk/client-bedrock-runtime',
-  '@aws-sdk/client-sts',
   '@smithy/core',
   '@smithy/node-http-handler',
   'axios',

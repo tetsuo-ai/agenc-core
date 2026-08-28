@@ -24,7 +24,6 @@ import {
   runForkedAgent,
   toError,
 } from './runtime.js'
-import { getPromptSuggestionLimits } from './limits.js'
 import { isSpeculationEnabled, startSpeculation } from './speculation.js'
 
 let currentAbortController: AbortController | null = null
@@ -76,11 +75,6 @@ export function getSuggestionSuppressReason(
     return 'pending_permission'
   if (appState.elicitation.queue.length > 0) return 'elicitation_active'
   if (appState.toolPermissionContext.mode === 'plan') return 'plan_mode'
-  if (
-    process.env.USER_TYPE === 'external' &&
-    getPromptSuggestionLimits().status !== 'allowed'
-  )
-    return 'rate_limit'
   return null
 }
 

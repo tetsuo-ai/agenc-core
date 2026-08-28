@@ -12,7 +12,7 @@ function runtimeRel(file: string | null): string | null {
 
 describe('Z-PURGEC build resolution boundaries', () => {
   it('does not classify migrated files from ts-nocheck comments alone', () => {
-    const importer = resolve(repoRuntimeRoot, 'src/services/api/client.ts')
+    const importer = resolve(repoRuntimeRoot, 'src/llm/provider.ts')
 
     expect(__agencBuildConfigTest.shouldUseAgenCResolution(importer)).toBe(false)
     expect(

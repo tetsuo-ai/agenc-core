@@ -3,7 +3,6 @@ import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { memo, useCallback, useEffect, useRef } from 'react';
 import type { ProviderAuthReadContext } from '../../utils/auth.js';
-import { getRawUtilization } from '../rate-limits/agenc-ai-limits.js';
 import { getIsRemoteMode, getKairosActive, getMainThreadAgentType, getOriginalCwd, getSdkBetas, getSessionId } from '../../bootstrap/state.js';
 import { DEFAULT_OUTPUT_STYLE_NAME } from '../../constants/outputStyles.js';
 import { useFullscreenMode } from '../context/fullscreenModeContext.js';
@@ -43,21 +42,6 @@ function buildStatusLineCommandInput(exceeds200kTokens: boolean, settings: Reado
   const contextPercentages = calculateContextPercentages(currentUsage, contextWindowSize);
   const sessionId = getSessionId();
   const sessionName = getCurrentSessionTitle(sessionId);
-  const rawUtil = getRawUtilization();
-  const rateLimits: StatusLineCommandInput['rate_limits'] = {
-    ...(rawUtil.five_hour && {
-      five_hour: {
-        used_percentage: rawUtil.five_hour.utilization * 100,
-        resets_at: rawUtil.five_hour.resets_at
-      }
-    }),
-    ...(rawUtil.seven_day && {
-      seven_day: {
-        used_percentage: rawUtil.seven_day.utilization * 100,
-        resets_at: rawUtil.seven_day.resets_at
-      }
-    })
-  };
   return {
     ...createBaseHookInput(),
     ...(sessionName && {
@@ -92,9 +76,6 @@ function buildStatusLineCommandInput(exceeds200kTokens: boolean, settings: Reado
       remaining_percentage: contextPercentages.remaining
     },
     exceeds_200k_tokens: exceeds200kTokens,
-    ...((rateLimits.five_hour || rateLimits.seven_day) && {
-      rate_limits: rateLimits
-    }),
     ...(isVimModeEnabled() && {
       vim: {
         mode: vimMode ?? 'INSERT'

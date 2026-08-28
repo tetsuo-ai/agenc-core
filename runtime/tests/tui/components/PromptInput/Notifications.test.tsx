@@ -46,7 +46,6 @@ const harness = vi.hoisted(() => ({
   tokenUsage: 1234,
   tokenWarningEnvironments: [] as unknown[],
   usesAnthropicAccountFlow: true,
-  usingOverage: false,
 }))
 
 vi.mock('bun:bundle', () => ({
@@ -156,10 +155,6 @@ vi.mock('../../hooks/useIdeConnectionStatus.js', () => ({
 
 vi.mock('../../hooks/useMainLoopModel.js', () => ({
   useMainLoopModel: () => harness.model,
-}))
-
-vi.mock('../../rate-limits/agenc-ai-limits.js', () => ({
-  useAgenCAiLimits: () => ({ isUsingOverage: harness.usingOverage }),
 }))
 
 vi.mock('../../state/AppState.js', () => ({
@@ -294,7 +289,6 @@ function resetHarness() {
   harness.tokenUsage = 1234
   harness.tokenWarningEnvironments = []
   harness.usesAnthropicAccountFlow = true
-  harness.usingOverage = false
 }
 
 function baseProps(): NotificationsProps {
@@ -457,7 +451,6 @@ describe('Notifications', () => {
       key: 'plain',
       text: 'Plain notice',
     }
-    harness.usingOverage = true
     const rendered = await renderNotifications({
       debug: true,
       mcpClients: [{ name: 'server-a' }] as never,
@@ -467,7 +460,6 @@ describe('Notifications', () => {
     try {
       expect(rendered.output()).toContain('IDE:none:1')
       expect(rendered.output()).toContain('Plain notice')
-      expect(rendered.output()).toContain('Now using extra usage')
       expect(rendered.output()).toContain('Debug mode')
       expect(rendered.output()).toContain('1234 tokens')
       expect(rendered.output()).toContain('TokenWarning:1234:gpt-5.4')
@@ -604,11 +596,9 @@ describe('Notifications', () => {
     harness.appState.isBriefOnly = true
     harness.features.add('KAIROS')
     harness.subscriptionType = 'team'
-    harness.usingOverage = true
     const rendered = await renderNotifications()
 
     try {
-      expect(rendered.output()).not.toContain('Now using extra usage')
       expect(rendered.output()).not.toContain('TokenWarning:')
     } finally {
       await rendered.dispose()

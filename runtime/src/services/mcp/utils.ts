@@ -3,27 +3,12 @@ import { join } from 'path'
 import { getProjectMcpServerApprovalStatusSync } from '../../permissions/trust/project-trust.js'
 import type { CanonicalSettingsAuthority } from '../../utils/settings/canonicalAuthority.js'
 import { validateMcpHeaders } from './headerValidation.js'
-import { mcpInfoFromString } from './mcpStringUtils.js'
 import { normalizeNameForMCP } from './normalization.js'
 import {
   type ConfigScope,
   ConfigScopeSchema,
   type ScopedMcpServerConfig,
 } from './types.js'
-
-/**
- * Checks if a tool name belongs to a specific MCP server
- * @param toolName The tool name to check
- * @param serverName The server name to match against
- * @returns True if the tool belongs to the specified server
- */
-export function isToolFromMcpServer(
-  toolName: string,
-  serverName: string,
-): boolean {
-  const info = mcpInfoFromString(toolName)
-  return info?.serverName === serverName
-}
 
 /**
  * Describe the file path for a given MCP config scope.

@@ -267,9 +267,8 @@ function handleRemoteAuthFailure(
  * Fetch wrapper for agenc.tech proxy connections. Attaches the OAuth bearer
  * token and retries once on 401 via handleOAuth401Error (force-refresh).
  *
- * The provider API path has this retry (withRetry.ts, grove.ts) to handle
- * memoize-cache staleness and clock drift. Without the same here, a single
- * stale token can put every agenc.tech connector into needs-auth state.
+ * Retrying once handles memoized-token staleness and clock drift. Without it,
+ * a single stale token can put every agenc.tech connector into needs-auth state.
  */
 function createAgenCAiProxyFetch(
   home: HomeContext,

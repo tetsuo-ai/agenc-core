@@ -174,13 +174,6 @@ export interface AgenCBridgeSession extends AgenCCompactProgressControls {
       readonly totalTokens: number;
       readonly costUsd: number;
     };
-    readonly cacheStats: {
-      readonly requestCount: number;
-      readonly cacheReadInputTokens: number;
-      readonly cacheCreationInputTokens: number;
-      readonly cacheTotalInputTokens: number;
-      readonly hitRate: number | null;
-    };
   }>;
   partialCompactFromMessage?(params: {
     readonly messageOrdinal: number;

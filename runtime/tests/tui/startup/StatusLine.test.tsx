@@ -30,10 +30,6 @@ vi.mock('src/utils/debug.js', () => ({
   logForDebugging: () => {},
 }))
 
-vi.mock('../rate-limits/agenc-ai-limits.js', () => ({
-  getRawUtilization: () => ({}),
-}))
-
 vi.mock('../../bootstrap/state.js', () => ({
   flushInteractionTime: () => {},
   getIsRemoteMode: () => false,

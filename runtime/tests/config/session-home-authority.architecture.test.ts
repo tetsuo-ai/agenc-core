@@ -171,7 +171,6 @@ describe("session home authority architecture", () => {
     const environment = source("session/environment.ts");
     const runtimeOptions = source("session/runtime-options.ts");
     const attribution = source("utils/attribution.ts");
-    const apiClient = source("services/api/client.ts");
 
     expect(environment).not.toMatch(/["']AGENC_REMOTE["']/u);
     expect(environment).toContain('"AGENC_REMOTE_SESSION_ID"');
@@ -180,13 +179,10 @@ describe("session home authority architecture", () => {
     expect(attribution).toContain("isSessionRemoteMode()")
     expect(attribution).toContain("environment.AGENC_REMOTE_SESSION_ID")
     expect(attribution).toContain("environment.SESSION_INGRESS_URL")
-    expect(apiClient).toContain("environment.AGENC_REMOTE_SESSION_ID")
 
     for (const name of [
       "context.ts",
       "services/api/errors.ts",
-      "services/api/anthropic.ts",
-      "services/api/withRetry.ts",
       "memory/session/sessionMemoryUtils.ts",
       "services/extractMemories/memory-paths.ts",
       "services/voice.ts",

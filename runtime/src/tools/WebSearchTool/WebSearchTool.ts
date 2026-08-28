@@ -304,8 +304,8 @@ function shouldUseAdapterProvider(): boolean {
 }
 
 /**
- * Returns true when the current provider has a working native or ProviderCode
- * web-search fallback after an adapter failure. OpenAi shim providers
+ * Returns true when the current provider has a working native web-search
+ * fallback after an adapter failure. OpenAI-compatible providers
  * (moonshot, minimax, nvidia-nim, openai, github, etc.) do NOT support
  * provider's web_search_20250305 tool, so falling through to the native
  * path silently produces "Did 0 searches".

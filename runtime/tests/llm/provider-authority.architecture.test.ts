@@ -474,21 +474,12 @@ describe("provider authority architecture", () => {
       "utils/model/model.ts",
       "utils/model/openaiContextWindows.ts",
       "commands/status.ts",
-      "services/api/providerConfig.ts",
-      "services/api/openaiShim.ts",
     ]) {
       const source = readFileSync(`${SRC}/${path}`, "utf8");
       expect(source).not.toMatch(
         /process\.env\.(?:OPENAI|OPENAI_COMPATIBLE|GITHUB|GEMINI|MISTRAL|NVIDIA|MINIMAX|AWS_BEDROCK|ANTHROPIC).*MODEL/u,
       );
     }
-    const providerConfigSource = readFileSync(
-      `${SRC}/services/api/providerConfig.ts`,
-      "utf8",
-    );
-    expect(providerConfigSource).not.toMatch(
-      /environment\.AGENC_(?:PROVIDER|MODEL)/u,
-    );
     expect(existsSync(`${SRC}/utils/status.tsx`)).toBe(false);
     expect(
       readFileSync(`${SRC}/tui/startup/StatusNotices.tsx`, "utf8"),
@@ -799,9 +790,6 @@ describe("provider authority architecture", () => {
     ]) {
       expect(existsSync(`${SRC}/${retiredCatalog}`), retiredCatalog).toBe(false);
     }
-    expect(
-      readFileSync(`${SRC}/services/api/providerConfig.ts`, "utf8"),
-    ).not.toContain("getAdditionalModelOptionsCacheScope");
     expect(
       readFileSync(`${SRC}/commands/config-context.ts`, "utf8"),
     ).not.toContain("providerNameFromCommandContext");

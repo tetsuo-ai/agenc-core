@@ -35,7 +35,6 @@ const serviceTestContractExportFiles = [
   "src/services/AgentSummary/agentSummary.ts",
   "src/services/MagicDocs/magicDocs.ts",
   "src/services/MagicDocs/prompts.ts",
-  "src/services/PromptSuggestion/limits.ts",
   "src/services/PromptSuggestion/speculation.ts",
   "src/services/autoDream/autoDream.ts",
   "src/services/autoFix/autoFixConfig.ts",
@@ -64,17 +63,10 @@ const servicePublicContractExportFiles = [
   // optional provider paths, or external/manual harnesses outside the
   // production-only Knip graph.
   "src/services/agencAiLimits.ts",
-  "src/services/api/anthropic.ts",
-  "src/services/api/cacheMetrics.ts",
-  "src/services/api/compressToolHistory.ts",
   "src/services/api/errorUtils.ts",
   "src/services/api/errors.ts",
-  "src/services/api/fetchWithProxyRetry.ts",
   "src/services/api/openAiCodeOAuthShared.ts",
-  "src/services/api/openaiErrorClassification.ts",
-  "src/services/api/providerConfig.ts",
   "src/services/api/sessionIngress.ts",
-  "src/services/api/withRetry.ts",
   "src/services/github/deviceFlow.ts",
   "src/services/mcp/auth.ts",
   "src/services/mcp/client.ts",
@@ -83,7 +75,6 @@ const servicePublicContractExportFiles = [
   "src/services/mcp/elicitationHandler.ts",
   "src/services/rateLimitMessages.ts",
   "src/services/tokenEstimation.ts",
-  "src/services/vcr.ts",
 ];
 const intentionalServiceIssueIgnores = {
   ...Object.fromEntries(

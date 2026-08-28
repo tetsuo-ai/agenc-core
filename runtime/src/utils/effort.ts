@@ -12,7 +12,6 @@ import {
   resolveAntModel,
 } from './model/antModels.js'
 import { get3PModelCapabilityOverride } from './model/modelSupportOverrides.js'
-import { supportsProviderCodeReasoningEffort } from '../services/api/providerConfig.js'
 import { resolveRegisteredModelCatalogEntry } from '../llm/registry/model-catalog.js'
 import type { EffortLevel } from 'src/entrypoints/sdk/runtimeTypes.js'
 import { resolveSecureStorageHome } from './secureStorage/home.js'
@@ -40,6 +39,15 @@ export const OPENAI_EFFORT_LEVELS = [
 export type OpenAIEffortLevel = typeof OPENAI_EFFORT_LEVELS[number]
 export type AvailableEffortLevel = EffortLevel | OpenAIEffortLevel
 export type EffortValue = AvailableEffortLevel | number
+
+function supportsOpenAiReasoningEffort(model: string): boolean {
+  const normalized = model.trim().toLowerCase()
+  const base = normalized.split('?', 1)[0] ?? normalized
+  if (base === 'gpt-5.3-providercode-spark' || base === 'providercodespark') {
+    return false
+  }
+  return /^gpt-5(?:[.-]|$)/.test(base)
+}
 
 function getRegisteredGrokEffortLevels(
   model: string,
@@ -72,7 +80,7 @@ function modelSupportsEffortForOptionalContext(
   }
   if (
     modelUsesOpenAIEffortForOptionalContext(model, context) &&
-    supportsProviderCodeReasoningEffort(model)
+    supportsOpenAiReasoningEffort(model)
   ) {
     return true
   }

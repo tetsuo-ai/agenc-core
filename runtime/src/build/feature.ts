@@ -25,7 +25,6 @@ const copiedTreeFeatureFlags: Readonly<Record<string, boolean>> = {
   EXTRACT_MEMORIES: true,
   FORK_SUBAGENT: false,
   VERIFICATION_AGENT: true,
-  PROMPT_CACHE_BREAK_DETECTION: true,
 };
 
 export function feature(flag: string): boolean {

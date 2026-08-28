@@ -38,23 +38,6 @@ describe("repository licensing", () => {
 });
 
 describe("runtime manifest dependencies", () => {
-  test("declares optional AWS auth modules imported by aws.ts", () => {
-    const awsSource = readRepoFile("runtime/src/utils/aws.ts");
-    const runtimePkg = JSON.parse(readRepoFile("runtime/package.json")) as {
-      optionalDependencies?: Record<string, string>;
-    };
-    const optionalDependencies = runtimePkg.optionalDependencies ?? {};
-    const awsAuthModules = [
-      "@aws-sdk/client-sts",
-      "@aws-sdk/credential-providers",
-    ];
-
-    for (const moduleName of awsAuthModules) {
-      expect(awsSource).toContain(`'${moduleName}'`);
-      expect(optionalDependencies[moduleName]).toMatch(/^\^3\.\d+\.\d+$/);
-    }
-  });
-
   test("declares optional Google auth module imported by GCP auth helpers", () => {
     const geminiAuthSource = readRepoFile("runtime/src/utils/geminiAuth.ts");
     const runtimePkg = JSON.parse(readRepoFile("runtime/package.json")) as {

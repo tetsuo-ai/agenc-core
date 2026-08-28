@@ -1472,7 +1472,6 @@ type OneShotJsonResult = {
   readonly finalMessage: string;
   readonly deniedPermissionRequestIds: readonly string[];
   readonly tokenUsage?: unknown;
-  readonly cacheStats?: unknown;
   readonly events?: readonly unknown[];
 };
 
@@ -1531,14 +1530,11 @@ function writeOneShotJsonLine(value: unknown): void {
 
 function oneShotSnapshotFields(
   snapshot: unknown,
-): Pick<OneShotJsonResult, "tokenUsage" | "cacheStats"> {
+): Pick<OneShotJsonResult, "tokenUsage"> {
   if (!isJsonRecord(snapshot)) return {};
   return {
     ...(isJsonRecord(snapshot.tokenUsage)
       ? { tokenUsage: snapshot.tokenUsage }
-      : {}),
-    ...(isJsonRecord(snapshot.cacheStats)
-      ? { cacheStats: snapshot.cacheStats }
       : {}),
   };
 }
@@ -1789,7 +1785,7 @@ async function runDaemonOneShotPrompt(params: {
         return;
       }
       const snapshotFieldsForStructuredOutput = async (): Promise<
-        Pick<OneShotJsonResult, "tokenUsage" | "cacheStats">
+        Pick<OneShotJsonResult, "tokenUsage">
       > => {
         if (outputFormat === "text") return {};
         try {
@@ -3743,8 +3739,8 @@ async function createDeferredDaemonPromptTuiSession(params: {
         await abortAllTasks.call(base, "interrupted");
       }
     },
-    // Same forwarder pattern as clearDaemonSession: /status, /usage,
-    // and /cache-stats all call `session.getDaemonSessionSnapshot()`
+    // Same forwarder pattern as clearDaemonSession: /status and /usage
+    // call `session.getDaemonSessionSnapshot()`
     // via App.tsx's slash dispatcher, which routes through this
     // outer deferred wrapper. Without forwarding to liveSession, the
     // snapshot is undefined and bridge-session counters stay at zero
@@ -5414,7 +5410,7 @@ export function shouldLoadMcpCliConfig(argv: readonly string[]): boolean {
 /**
  * The operator-facing process owns the advisory startup audit. A detached
  * daemon re-enters this dispatcher as `start --foreground`, but repeating the
- * audit there would duplicate config and native-vault reads before the child
+ * audit there would duplicate config and native secure-storage reads before the child
  * can publish readiness. Direct foreground launches still run the audit.
  */
 export function shouldRunDaemonStartupSecurityAudit(

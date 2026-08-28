@@ -5,21 +5,10 @@ import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest'
 const originalDisableExtraUsageCommand =
   process.env.DISABLE_EXTRA_USAGE_COMMAND
 
-type LimitSnapshot = {
-  readonly status: string
-  readonly resetsAt?: number
-  readonly isUsingOverage: boolean
-}
-
 const harness = vi.hoisted(() => ({
   hasBillingAccess: false,
   isAgenCAISubscriber: vi.fn(() => true),
   isNonInteractive: false,
-  limits: {
-    status: 'accepted',
-    resetsAt: undefined,
-    isUsingOverage: false,
-  } as LimitSnapshot,
   overageAllowed: true,
   rateLimitTier: null as string | null,
   shouldProcessMockLimits: false,
@@ -36,12 +25,8 @@ vi.mock('../../../src/bootstrap/state.js', async importOriginal => {
   }
 })
 
-vi.mock('../../../src/services/rateLimitMocking.js', () => ({
+vi.mock('../../../src/services/mockRateLimits.js', () => ({
   shouldProcessMockLimits: () => harness.shouldProcessMockLimits,
-}))
-
-vi.mock('../../../src/tui/rate-limits/agenc-ai-limits.js', () => ({
-  useAgenCAiLimits: () => harness.limits,
 }))
 
 vi.mock('../../../src/utils/auth.js', () => ({
@@ -96,11 +81,6 @@ describe('RateLimitMessage coverage swarm row 214', () => {
     harness.isAgenCAISubscriber.mockReset()
     harness.isAgenCAISubscriber.mockReturnValue(true)
     harness.isNonInteractive = false
-    harness.limits = {
-      status: 'accepted',
-      resetsAt: undefined,
-      isUsingOverage: false,
-    }
     harness.overageAllowed = true
     harness.rateLimitTier = null
     harness.shouldProcessMockLimits = false
@@ -156,34 +136,4 @@ describe('RateLimitMessage coverage swarm row 214', () => {
     expect(nonInteractiveOutput).not.toContain('/extra-usage')
   })
 
-  test('does not auto-open options without a reset time or while already using overage', async () => {
-    const onOpenRateLimitOptions = vi.fn()
-    harness.limits = {
-      status: 'rejected',
-      resetsAt: undefined,
-      isUsingOverage: false,
-    }
-
-    const missingResetOutput = await renderRateLimitMessage({
-      onOpenRateLimitOptions,
-    })
-
-    expect(missingResetOutput).toContain('/upgrade or /extra-usage')
-    expect(missingResetOutput).not.toContain('Opening your options')
-    expect(onOpenRateLimitOptions).not.toHaveBeenCalled()
-
-    harness.limits = {
-      status: 'rejected',
-      resetsAt: Date.now() + 60_000,
-      isUsingOverage: true,
-    }
-
-    const overageOutput = await renderRateLimitMessage({
-      onOpenRateLimitOptions,
-    })
-
-    expect(overageOutput).toContain('/upgrade or /extra-usage')
-    expect(overageOutput).not.toContain('Opening your options')
-    expect(onOpenRateLimitOptions).not.toHaveBeenCalled()
-  })
 })

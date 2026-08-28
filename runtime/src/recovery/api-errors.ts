@@ -1,9 +1,6 @@
 /**
  * API-error classification primitives used by the recovery ladder.
  *
- * Port of agenc `services/api/errors.ts` subset + the
- * `FallbackTriggeredError` from `services/api/withRetry.ts`.
- *
  * Every classifier here is a pure predicate — no I/O. The recovery
  * ladder uses them to decide which strategy branch applies to the
  * last assistant message.
@@ -29,7 +26,7 @@ import {
 const PROMPT_TOO_LONG_ERROR_MESSAGE = "Prompt is too long";
 
 // ─────────────────────────────────────────────────────────────────────
-// FallbackTriggeredError — port of withRetry.ts:169
+// FallbackTriggeredError
 // ─────────────────────────────────────────────────────────────────────
 
 /**

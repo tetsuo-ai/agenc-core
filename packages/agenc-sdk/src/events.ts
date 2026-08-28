@@ -112,7 +112,6 @@ export interface AgencPromptResult {
   /** Permission requests that were auto- or callback-denied during the turn. */
   readonly deniedPermissionRequestIds: readonly string[];
   readonly usage?: JsonObject;
-  readonly cacheStats?: JsonObject;
 }
 
 export interface AgencTerminalStatus {

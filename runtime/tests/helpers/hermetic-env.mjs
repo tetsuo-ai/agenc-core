@@ -203,8 +203,6 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   // ambient authorization/profile switches must not weaken a default worker
   'AGENC_ALLOW_UNTRUSTED_HOOKS',
   'AGENC_DISABLE_COMMAND_INJECTION_CHECK',
-  'AGENC_DISABLE_STRICT_TOOLS',
-  'AGENC_ADDITIONAL_PROTECTION',
   'AGENC_SUBPROCESS_ENV_NO_SCRUB',
   'USER_TYPE',
   // endpoints and subprocess/service activation
@@ -217,8 +215,6 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_INTERNAL_ARTIFACTORY_REGISTRY_URL',
   'VERTEX_BASE_URL',
   'AGENC_AUTO_BACKGROUND_TASKS',
-  'FORCE_VCR',
-  'VCR_RECORD',
   // host-managed provider and cloud-auth toggles
   'AGENC_PROVIDER_MANAGED_BY_HOST',
   'AGENC_SKIP_VERTEX_AUTH',

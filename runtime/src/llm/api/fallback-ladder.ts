@@ -1,15 +1,6 @@
 /**
- * Ports upstream `src/services/api/withRetry.ts` fallback signaling and
- * `src/services/api/providerConfig.ts` fallback-model selection onto
- * AgenC's provider-neutral model/provider fallback ladder.
- *
- * Why this lives here / shape difference from upstream:
- *   - Upstream gates fallback on a product-specific model family and emits
- *     reporting. AgenC keeps the ladder explicit and config-driven so any
- *     provider can declare ordered fallback targets.
- *
- * Cross-cuts deliberately NOT carried:
- *   - Subscriber gates, internal-user reporting, and fast-mode cooldowns.
+ * Provider-neutral model/provider fallback signaling. The ladder is explicit
+ * and config-driven so any provider can declare ordered fallback targets.
  */
 
 import { FallbackTriggeredError } from "../../recovery/api-errors.js";

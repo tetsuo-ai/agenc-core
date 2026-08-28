@@ -5,9 +5,7 @@
 // for this 5486-line file is deferred to a dedicated typecheck-foundation
 // item.
 import { feature } from 'bun:bundle'
-import { Ajv } from 'ajv'
 import { getAPIProvider } from './model/providers.js'
-import { isRecord as isRecordValue } from './record.js'
 import type { BetaUsage as Usage } from '@anthropic-ai/sdk/resources/beta/messages/messages.mjs'
 import type { StreamingToolUse } from '../llm/types.js'
 import type {
@@ -23,9 +21,7 @@ import type {
   ToolUseBlockParam,
 } from '@anthropic-ai/sdk/resources/index.mjs'
 import { randomUUID, type UUID } from 'crypto'
-import isObject from 'lodash-es/isObject.js'
 import last from 'lodash-es/last.js'
-import type { AgentId } from 'src/types/ids.js'
 import { projectSnippedView } from '../services/compact/snipProjection.js'
 import { renderHookAdditionalContextSection } from '../prompts/hook-context-framing.js'
 import { renderMcpInstructionsDeltaSection } from '../prompts/mcp-instructions-framing.js'
@@ -82,7 +78,6 @@ import type {
   ToolUseSummaryMessage,
   UserMessage,
 } from '../types/message.js'
-import { isAdvisorBlock } from './advisor.js'
 import { isAgentSwarmsEnabled } from './agentSwarmsEnabled.js'
 import { count } from './array.js'
 import { isEnvTruthy } from './envUtils.js'
@@ -238,7 +233,6 @@ import type { APIError } from '@anthropic-ai/sdk'
 import type {
   BetaContentBlock,
   BetaContentBlockParam,
-  BetaMessage,
   BetaRedactedThinkingBlock,
   BetaThinkingBlock,
   BetaToolUseBlock,
@@ -267,7 +261,6 @@ import {
 } from '../constants/xml.js'
 import { DiagnosticTrackingService } from '../services/diagnosticTracking.js'
 import {
-  findToolByName,
   type Tool,
   type Tools,
   toolMatchesName,
@@ -284,13 +277,12 @@ import { TASK_OUTPUT_TOOL_NAME } from '../tools/TaskOutputTool/constants.js'
 import { TASK_STOP_TOOL_NAME } from '../tools/TaskStopTool/prompt.js'
 import { TASK_UPDATE_TOOL_NAME } from '../tools/TaskUpdateTool/constants.js'
 import type { PermissionMode } from '../types/permissions.js'
-import { normalizeToolInput, normalizeToolInputForAPI } from './api.js'
+import { normalizeToolInputForAPI } from './api.js'
 import { logAntError, logForDebugging } from 'src/utils/debug.js'
 import { stripIdeContextTags } from './displayTags.js'
 import { hasEmbeddedSearchTools } from './embeddedTools.js'
 import { formatFileSize } from './format.js'
 import { validateImagesForAPI } from './imageValidation.js'
-import { safeParseJSON } from './json.js'
 import { logError } from './log.js'
 import {
   getPlanModeV2AgentCount,
@@ -1934,43 +1926,6 @@ export function stripToolReferenceBlocksFromUserMessage(
  * This is intentional: this helper is used for model-specific post-processing
  * AFTER normalizeMessagesForAPI has already run, so inputs are already normalized.
  */
-export function stripCallerFieldFromAssistantMessage(
-  message: AssistantMessage,
-): AssistantMessage {
-  const hasCallerField = message.message.content.some(
-    (block: ContentBlockParam) =>
-      block.type === 'tool_use' && 'caller' in block && block.caller !== null,
-  )
-
-  if (!hasCallerField) {
-    return message
-  }
-
-  return {
-    ...message,
-    message: {
-      ...message.message,
-      content: message.message.content.map((block: ContentBlockParam) => {
-        if (block.type !== 'tool_use') {
-          return block
-        }
-        // Explicitly construct with only standard API fields
-        return {
-          type: 'tool_use' as const,
-          id: block.id,
-          name: block.name,
-          input: block.input,
-          ...(getAPIProvider() === 'gemini' && (block as any).extra_content ? { extra_content: (block as any).extra_content } : {})
-        }
-      }),
-    },
-  }
-}
-
-/**
- * Does the content array have a tool_result block whose inner content
- * contains tool_reference (ToolSearch loaded tools)?
- */
 function contentHasToolReference(
   content: ReadonlyArray<ContentBlockParam>,
 ): boolean {
@@ -2941,231 +2896,6 @@ export function mergeUserContentBlocks(
   }
 
   return [...a.slice(0, -1), smooshed, ...toolResults]
-}
-
-let nestedToolInputAjv: Ajv | null = null
-const nestedToolInputValidators = new WeakMap<object, (value: unknown) => boolean>()
-
-function isJsonSchemaObject(value: unknown): value is object {
-  return typeof value === 'object' && value !== null
-}
-
-function getNestedToolInputValidator(
-  schema: object,
-): ((value: unknown) => boolean) | null {
-  const cached = nestedToolInputValidators.get(schema)
-  if (cached) {
-    return cached
-  }
-
-  try {
-    const ajv = (nestedToolInputAjv ??= new Ajv({ strict: false }))
-    const validator = ajv.compile(schema)
-    const validate = (value: unknown): boolean => validator(value) === true
-    nestedToolInputValidators.set(schema, validate)
-    return validate
-  } catch {
-    return null
-  }
-}
-
-function toolInputMatchesSchema(tool: Tool, input: unknown): boolean {
-  if (isJsonSchemaObject(tool.inputJSONSchema)) {
-    const validate = getNestedToolInputValidator(tool.inputJSONSchema)
-    if (validate) {
-      return validate(input)
-    }
-  }
-
-  const schema = tool.inputSchema as {
-    safeParse?: (value: unknown) => { success: boolean }
-    parse?: (value: unknown) => unknown
-  }
-
-  if (typeof schema.safeParse === 'function') {
-    try {
-      return schema.safeParse(input).success === true
-    } catch {
-      return false
-    }
-  }
-
-  if (typeof schema.parse === 'function') {
-    try {
-      schema.parse(input)
-      return true
-    } catch {
-      return false
-    }
-  }
-
-  return false
-}
-
-function parseJsonStructuredString(value: string): unknown {
-  let current: unknown = value
-
-  for (let depth = 0; depth < 8; depth++) {
-    if (typeof current !== 'string') {
-      break
-    }
-
-    const trimmed = current.trim()
-    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
-      break
-    }
-
-    try {
-      const parsed = JSON.parse(trimmed)
-      if (
-        typeof parsed === 'string' ||
-        Array.isArray(parsed) ||
-        isRecordValue(parsed)
-      ) {
-        current = parsed
-        continue
-      }
-      break
-    } catch {
-      break
-    }
-  }
-
-  return current
-}
-
-function decodeNestedJsonStrings(value: unknown, depth = 0): unknown {
-  if (depth > 32) {
-    return value
-  }
-
-  if (typeof value === 'string') {
-    const parsed = parseJsonStructuredString(value)
-    return parsed === value ? value : decodeNestedJsonStrings(parsed, depth + 1)
-  }
-
-  if (Array.isArray(value)) {
-    return value.map(item => decodeNestedJsonStrings(item, depth + 1))
-  }
-
-  if (isRecordValue(value)) {
-    return Object.fromEntries(
-      Object.entries(value).map(([key, entry]) => [
-        key,
-        decodeNestedJsonStrings(entry, depth + 1),
-      ]),
-    )
-  }
-
-  return value
-}
-
-function normalizeNestedToolInput(tool: Tool, input: unknown): unknown {
-  const decoded = decodeNestedJsonStrings(input)
-  if (decoded === input || toolInputMatchesSchema(tool, input)) {
-    return input
-  }
-  return toolInputMatchesSchema(tool, decoded) ? decoded : input
-}
-
-// Sometimes the API returns empty messages (eg. "\n\n"). We need to filter these out,
-// otherwise they will give an API error when we send them to the API next time we call query().
-export function normalizeContentFromAPI(
-  contentBlocks: BetaMessage['content'],
-  tools: Tools,
-  agentId?: AgentId,
-): BetaMessage['content'] {
-  if (!contentBlocks) {
-    return []
-  }
-  return contentBlocks.map(contentBlock => {
-    switch (contentBlock.type) {
-      case 'tool_use': {
-        if (
-          typeof contentBlock.input !== 'string' &&
-          !isObject(contentBlock.input)
-        ) {
-          // we stream tool use inputs as strings, but when we fall back, they're objects
-          throw new Error('Tool use input must be a string or object')
-        }
-
-        // With fine-grained streaming on, we are getting stringified JSON back from the API.
-        // The API has strange behaviour, where it returns nested stringified JSONs, and so
-        // we need to recursively parse these. If the top-level value returned from the API is
-        // an empty string, this should become an empty object (nested values should be empty string).
-        // Nested object/array fields are decoded after tool lookup so the tool schema can
-        // prove that the decoded shape is preferable to the original string shape.
-        let normalizedInput: unknown
-        if (typeof contentBlock.input === 'string') {
-          const parsed = safeParseJSON(contentBlock.input)
-          if (parsed === null && contentBlock.input.length > 0) {
-            // TET/FC-v3 diagnostic: the streamed tool input JSON failed to
-            // parse. We fall back to {} which means downstream validation
-            // sees empty input. The raw prefix goes to debug log only — no
-            // PII-tagged proto column exists for it yet.
-            if (process.env.USER_TYPE === 'ant') {
-              logForDebugging(
-                `tool input JSON parse fail: ${contentBlock.input.slice(0, 200)}`,
-                { level: 'warn' },
-              )
-            }
-          }
-          normalizedInput = parsed ?? {}
-        } else {
-          normalizedInput = contentBlock.input
-        }
-
-        const tool = findToolByName(tools, contentBlock.name)
-        if (tool) {
-          normalizedInput = normalizeNestedToolInput(tool, normalizedInput)
-        }
-
-        // Then apply tool-specific corrections
-        if (typeof normalizedInput === 'object' && normalizedInput !== null) {
-          if (tool) {
-            try {
-              normalizedInput = normalizeToolInput(
-                tool,
-                normalizedInput as { [key: string]: unknown },
-                agentId,
-              )
-            } catch (error) {
-              logError(new Error('Error normalizing tool input: ' + error))
-              // Keep the original input if normalization fails
-            }
-          }
-        }
-
-        return {
-          ...contentBlock,
-          input: normalizedInput,
-        }
-      }
-      case 'text':
-        // Return the block as-is to preserve exact content for prompt caching.
-        // Empty text blocks are handled at the display layer and must not be
-        // altered here.
-        return contentBlock
-      case 'code_execution_tool_result':
-      case 'mcp_tool_use':
-      case 'mcp_tool_result':
-      case 'container_upload':
-        // Beta-specific content blocks - pass through as-is
-        return contentBlock
-      case 'server_tool_use':
-        if (typeof contentBlock.input === 'string') {
-          return {
-            ...contentBlock,
-            input: (safeParseJSON(contentBlock.input) ?? {}) as {
-              [key: string]: unknown
-            },
-          }
-        }
-        return contentBlock
-      default:
-        return contentBlock
-    }
-  })
 }
 
 export function isEmptyMessageText(text: string): boolean {
@@ -6314,38 +6044,6 @@ export function ensureToolResultPairing(
  * Strip advisor blocks from messages. The API rejects server_tool_use blocks
  * with name "advisor" unless the advisor beta header is present.
  */
-export function stripAdvisorBlocks(
-  messages: (UserMessage | AssistantMessage)[],
-): (UserMessage | AssistantMessage)[] {
-  let changed = false
-  const result = messages.map(msg => {
-    if (msg.type !== 'assistant') return msg
-    const content = msg.message.content
-    const filtered = content.filter(
-      (b: ContentBlock | ContentBlockParam) => !isAdvisorBlock(b),
-    )
-    if (filtered.length === content.length) return msg
-    changed = true
-    if (
-      filtered.length === 0 ||
-      filtered.every(
-        (b: ContentBlock | ContentBlockParam) =>
-          b.type === 'thinking' ||
-          b.type === 'redacted_thinking' ||
-          (b.type === 'text' && (!b.text || !b.text.trim())),
-      )
-    ) {
-      filtered.push({
-        type: 'text' as const,
-        text: '[Advisor response]',
-        citations: [],
-      })
-    }
-    return { ...msg, message: { ...msg.message, content: filtered } }
-  })
-  return changed ? result : messages
-}
-
 export function wrapCommandText(
   raw: string,
   origin: MessageOrigin | undefined,

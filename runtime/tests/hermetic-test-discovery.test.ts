@@ -504,9 +504,7 @@ describe("hermetic test discovery", () => {
     Object.assign(pollutedEnv, {
       AGENC_BUBBLEWRAP: "/ambient/bwrap",
       AGENC_DISABLE_NONESSENTIAL_TRAFFIC: "1",
-      AGENC_EXTRA_BODY: '{"ambient":true}',
       AGENC_OVERRIDE_DATE: "1900-01-01",
-      AGENC_TEST_FIXTURES_ROOT: "/ambient/fixtures",
       AGENC_TMPDIR: "/ambient/tmp",
       CI: "ambient-ci",
       GITHUB_DEVICE_FLOW_CLIENT_ID: "ambient-client",

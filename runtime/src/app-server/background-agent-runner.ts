@@ -3113,7 +3113,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // when tool-use rounds split a single turn into multiple history
     // items, but it's a closer signal than the raw item count.
     const turnCount = Math.max(0, Math.floor(historyLength / 2));
-    const cache = await this.#sessionCacheStatsSnapshot(active);
     return {
       sessionId: params.sessionId,
       turnCount,
@@ -3123,7 +3122,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         totalTokens: finiteNumber(usage.totalTokens),
         costUsd: finiteNumber(usage.costUsd),
       },
-      cacheStats: cache,
     };
   }
 
@@ -3232,50 +3230,6 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     } finally {
       driver.close();
     }
-  }
-
-  // Read the global session-level cache stats tracker (lives in the
-  // daemon process, fed by the upstream SDK call sites). Provider
-  // flows that bypass the tracker (lmstudio / xAI / chat-completions)
-  // legitimately return zeros — that's accurate, not a bug.
-  async #sessionCacheStatsSnapshot(
-    _active: ActiveBackgroundAgent,
-  ): Promise<SessionSnapshotResult["cacheStats"]> {
-    const mod = await import("../services/api/cacheStatsTracker.js").catch(
-      () => null,
-    );
-    if (mod === null) {
-      return {
-        requestCount: 0,
-        cacheReadInputTokens: 0,
-        cacheCreationInputTokens: 0,
-        cacheTotalInputTokens: 0,
-        hitRate: null,
-      };
-    }
-    const metrics = (
-      mod as {
-        getSessionCacheMetrics?: () => {
-          readonly requestCount?: number;
-          readonly cacheReadInputTokens?: number;
-          readonly cacheCreationInputTokens?: number;
-          readonly cacheTotalInputTokens?: number;
-          readonly hitRate?: number | null;
-        };
-      }
-    ).getSessionCacheMetrics?.();
-    return {
-      requestCount: finiteNumber(metrics?.requestCount ?? 0),
-      cacheReadInputTokens: finiteNumber(metrics?.cacheReadInputTokens ?? 0),
-      cacheCreationInputTokens: finiteNumber(
-        metrics?.cacheCreationInputTokens ?? 0,
-      ),
-      cacheTotalInputTokens: finiteNumber(metrics?.cacheTotalInputTokens ?? 0),
-      hitRate:
-        metrics?.hitRate === null || metrics?.hitRate === undefined
-          ? null
-          : finiteNumber(metrics.hitRate),
-    };
   }
 
   async partialCompactFromMessage(

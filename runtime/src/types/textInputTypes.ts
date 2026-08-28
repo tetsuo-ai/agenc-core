@@ -377,14 +377,6 @@ export type QueuedCommand = {
    */
   origin?: MessageOrigin;
   /**
-   * Workload tag threaded through to cc_workload= in the billing-header
-   * attribution block. The queue is the async boundary between the cron
-   * scheduler firing and the turn actually running — a user prompt can slip
-   * in between — so the tag rides on the QueuedCommand itself and is only
-   * hoisted into bootstrap state when THIS command is dequeued.
-   */
-  workload?: string;
-  /**
    * Agent that should receive this notification. Undefined = main thread.
    * Subagents run in-process and share the module-level command queue; the
    * drain gate in query.ts filters by this field so a subagent's background

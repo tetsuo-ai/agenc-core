@@ -199,7 +199,7 @@ untrusted issue text. This lane is therefore NOT part of 2a. It requires:
   verifies at start (`ldd` probe) with `infrastructure_error` on mismatch.
 - **Invocation:** `agenc -p --output-format json` with `AGENC_WORKSPACE` set
   to the repo checkout, an isolated in-container `AGENC_HOME`, and the
-  daemon autostarted inside the container. `tokenUsage`/`cacheStats` from the
+  daemon autostarted inside the container. `tokenUsage` from the
   JSON result feed `RunRecordDocument.usage`; exit codes 0/1/2/130 map onto
   `FinalOutcome`.
 - **Network:** default-deny egress; a loopback proxy inside the container

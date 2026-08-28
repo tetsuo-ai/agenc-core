@@ -21,15 +21,12 @@ function sourceFiles(directory: string): string[] {
 
 describe("retired profiler surfaces", () => {
   test("does not retain the orphaned headless profiler", () => {
-    const anthropicSource = readFileSync(
-      resolve(sourceRoot, "services/api/anthropic.ts"),
-      "utf8",
-    );
-
     expect(
       existsSync(resolve(sourceRoot, "utils/headlessProfiler.ts")),
     ).toBe(false);
-    expect(anthropicSource).not.toContain("headlessProfiler");
+    expect(
+      existsSync(resolve(sourceRoot, "services/api/anthropic.ts")),
+    ).toBe(false);
   });
 
   test("does not retain the orphaned query profiler or its environment switch", () => {

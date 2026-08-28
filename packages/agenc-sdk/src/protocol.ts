@@ -1178,19 +1178,10 @@ export interface TokenUsage extends JsonObject {
   readonly costUsd: number;
 }
 
-export interface CacheStats extends JsonObject {
-  readonly requestCount: number;
-  readonly cacheReadInputTokens: number;
-  readonly cacheCreationInputTokens: number;
-  readonly cacheTotalInputTokens: number;
-  readonly hitRate: number | null;
-}
-
 export interface SessionSnapshotResult extends JsonObject {
   readonly sessionId: string;
   readonly turnCount: number;
   readonly tokenUsage: TokenUsage;
-  readonly cacheStats: CacheStats;
 }
 
 export interface SessionTranscriptMessage extends JsonObject {

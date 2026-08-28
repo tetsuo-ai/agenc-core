@@ -17,7 +17,6 @@ import {
 } from "../llm/provider-options.js";
 import type { LLMProvider } from "../llm/types.js";
 import type { AuthBackend, AuthSubscriptionTier } from "../auth/backend.js";
-import { snapshotProviderRuntimeExtra } from "../llm/registry/provider-connection.js";
 
 export type { ReadSavedProviderApiKey } from "../llm/provider-options.js";
 
@@ -65,6 +64,38 @@ function firstNonEmpty(
   return undefined;
 }
 
+function snapshotPreparedValue(
+  value: unknown,
+  seen: WeakMap<object, unknown>,
+): unknown {
+  if (value === null || typeof value !== "object") return value;
+  const prior = seen.get(value);
+  if (prior !== undefined) return prior;
+  if (Array.isArray(value)) {
+    const snapshot: unknown[] = [];
+    seen.set(value, snapshot);
+    snapshot.push(...value.map((entry) => snapshotPreparedValue(entry, seen)));
+    return Object.freeze(snapshot);
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return value;
+  const snapshot: Record<string, unknown> = Object.create(prototype);
+  seen.set(value, snapshot);
+  for (const [key, entry] of Object.entries(value)) {
+    snapshot[key] = snapshotPreparedValue(entry, seen);
+  }
+  return Object.freeze(snapshot);
+}
+
+function snapshotProviderRuntimeExtra(
+  extra: Readonly<Record<string, unknown>> | undefined,
+): ProviderFactoryOptions["extra"] {
+  return snapshotPreparedValue(
+    extra ?? {},
+    new WeakMap<object, unknown>(),
+  ) as ProviderFactoryOptions["extra"];
+}
+
 function cloneOptions(options: ProviderFactoryOptions): ProviderFactoryOptions {
   return Object.freeze({
     ...(options.credentialHome !== undefined
@@ -97,14 +128,16 @@ export function bindingFromProvider(params: {
   const options = readProviderFactoryOptions(params.provider);
   const providerName =
     readProviderIdentity(params.provider, params.providerName) ??
-    firstNonEmpty(params.providerName, params.provider.name) ??
-    "unknown";
+    firstNonEmpty(params.providerName, params.provider.name);
+  if (providerName === undefined) {
+    throw new Error("provider binding requires an explicit provider identity");
+  }
   const model =
     firstNonEmpty(options.model, params.model) ??
-    firstNonEmpty(
-      (params.provider as { config?: { model?: string } }).config?.model,
-    ) ??
-    "unknown";
+    firstNonEmpty((params.provider as { config?: { model?: string } }).config?.model);
+  if (model === undefined) {
+    throw new Error(`${providerName} provider binding requires an explicit model`);
+  }
   return Object.freeze({
     provider: providerName,
     model,

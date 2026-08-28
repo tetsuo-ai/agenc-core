@@ -245,13 +245,6 @@ async function createFakeDaemon(
           totalTokens: 18,
           costUsd: 0.0042,
         },
-        cacheStats: {
-          requestCount: 1,
-          cacheReadInputTokens: 0,
-          cacheCreationInputTokens: 0,
-          cacheTotalInputTokens: 0,
-          hitRate: null,
-        },
       }),
     } as never,
     sessionManager,
@@ -423,7 +416,6 @@ describe("agenc-sdk client over the in-process transport", () => {
     expect(result.deniedPermissionRequestIds).toEqual([]);
     // includeUsage default: usage came from session.snapshot via the fake.
     expect(result.usage).toMatchObject({ totalTokens: 18, costUsd: 0.0042 });
-    expect(result.cacheStats).toMatchObject({ requestCount: 1 });
 
     await daemon.close();
   });

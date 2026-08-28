@@ -16,11 +16,6 @@ const rateLimitMock = vi.hoisted(() => ({
   hasBillingAccess: false,
   shouldProcessMockLimits: false,
   extraUsageEnabled: false,
-  limits: {
-    status: 'accepted',
-    resetsAt: undefined as number | undefined,
-    isUsingOverage: false,
-  },
 }))
 
 vi.mock('bun:bundle', () => ({
@@ -68,12 +63,8 @@ vi.mock('../../../commands/extra-usage/index.js', () => ({
   },
 }))
 
-vi.mock('../../../services/rateLimitMocking.js', () => ({
+vi.mock('../../../services/mockRateLimits.js', () => ({
   shouldProcessMockLimits: () => rateLimitMock.shouldProcessMockLimits,
-}))
-
-vi.mock('../../rate-limits/agenc-ai-limits.js', () => ({
-  useAgenCAiLimits: () => rateLimitMock.limits,
 }))
 
 vi.mock('../../../utils/auth.js', () => ({
@@ -100,11 +91,6 @@ describe('cost and limit dialogs', () => {
     rateLimitMock.hasBillingAccess = false
     rateLimitMock.shouldProcessMockLimits = false
     rateLimitMock.extraUsageEnabled = false
-    rateLimitMock.limits = {
-      status: 'accepted',
-      resetsAt: undefined,
-      isUsingOverage: false,
-    }
   })
 
   test('renders the cost threshold dialog with provider label and AgenC docs link', async () => {
@@ -209,11 +195,6 @@ describe('cost and limit dialogs', () => {
 
   test('opens the interactive rate-limit options once when currently limited', async () => {
     rateLimitMock.isSubscriber = true
-    rateLimitMock.limits = {
-      status: 'rejected',
-      resetsAt: Date.now() + 60_000,
-      isUsingOverage: false,
-    }
     const onOpenRateLimitOptions = vi.fn()
 
     const output = await renderToString(

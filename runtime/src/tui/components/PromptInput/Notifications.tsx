@@ -14,15 +14,11 @@ import { useIdeConnectionStatus } from '../../hooks/useIdeConnectionStatus.js';
 import type { IDESelection } from '../../hooks/useIdeSelection.js';
 import { useMainLoopModel } from '../../hooks/useMainLoopModel.js';
 import { Box, Text } from '../../ink.js';
-import { useAgenCAiLimits } from "../../rate-limits/agenc-ai-limits.js";
 import { calculateTokenWarningStateForEnvironment } from '../../../services/compact/autoCompact.js';
 import type { ProviderEnvironment } from '../../../llm/provider-options.js';
 import type { MCPServerConnection } from '../../../services/mcp/types.js';
 import type { Message } from '../../../types/message.js';
-import {
-  getSubscriptionTypeForContext,
-  type ProviderAuthReadContext,
-} from '../../../utils/auth.js';
+import type { ProviderAuthReadContext } from '../../../utils/auth.js';
 import type { AutoUpdaterResult } from '../../../utils/autoUpdater.js';
 import { getExternalEditor } from '../../../utils/editor.js';
 import { getIsRemoteMode } from '../../../bootstrap/state.js';
@@ -108,7 +104,6 @@ export function Notifications(t0: Props) {
     addNotification,
     removeNotification
   } = useNotifications();
-  const agencAiLimits = useAgenCAiLimits();
   let t5;
   let t6;
   if ($[5] !== addNotification) {
@@ -135,9 +130,6 @@ export function Notifications(t0: Props) {
   useEffect(t5, t6);
   const shouldShowIdeSelection = ideStatus === "connected" && (ideSelection?.filePath || ideSelection?.text && ideSelection.lineCount > 0);
   const shouldShowAutoUpdater = !shouldShowIdeSelection || isAutoUpdating || autoUpdaterResult?.status !== "success";
-  const isInOverageMode = agencAiLimits.isUsingOverage;
-  const subscriptionType = getSubscriptionTypeForContext(remoteAuthSessionContext);
-  const isTeamOrEnterprise = subscriptionType === "team" || subscriptionType === "enterprise";
   const hasRemoteAuthSession = hasRemoteAuthSessionSync(remoteAuthSessionContext);
   const remoteSubscriptionTier = remoteAuthSessionSubscriptionTierSync(remoteAuthSessionContext);
   const hasRemoteManagedKeys = hasEntitledRemoteAuthSessionSync(remoteAuthSessionContext);
@@ -179,8 +171,7 @@ export function Notifications(t0: Props) {
   }
   useEffect(t9, t10);
   const t11 = isNarrow ? "flex-start" : "flex-end";
-  const t12 = isInOverageMode ?? false;
-  const t13 = <NotificationContent ideSelection={ideSelection} mcpClients={mcpClients} notifications={notifications} isInOverageMode={t12} isTeamOrEnterprise={isTeamOrEnterprise} apiKeyStatus={apiKeyStatus} debug={debug} verbose={verbose} tokenUsage={tokenUsage} mainLoopModel={mainLoopModel} providerEnvironment={remoteAuthSessionContext.environment} shouldShowAutoUpdater={shouldShowAutoUpdater} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} isShowingCompactMessage={isShowingCompactMessage} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} hasRemoteAuthSession={hasRemoteAuthSession} remoteSubscriptionTier={remoteSubscriptionTier} hasRemoteManagedKeys={hasRemoteManagedKeys} shouldShowRemoteAuthPlan={shouldShowRemoteAuthPlan} usesAccountFlow={usesAccountFlow} />;
+  const t13 = <NotificationContent ideSelection={ideSelection} mcpClients={mcpClients} notifications={notifications} apiKeyStatus={apiKeyStatus} debug={debug} verbose={verbose} tokenUsage={tokenUsage} mainLoopModel={mainLoopModel} providerEnvironment={remoteAuthSessionContext.environment} shouldShowAutoUpdater={shouldShowAutoUpdater} autoUpdaterResult={autoUpdaterResult} isAutoUpdating={isAutoUpdating} isShowingCompactMessage={isShowingCompactMessage} onAutoUpdaterResult={onAutoUpdaterResult} onChangeIsUpdating={onChangeIsUpdating} hasRemoteAuthSession={hasRemoteAuthSession} remoteSubscriptionTier={remoteSubscriptionTier} hasRemoteManagedKeys={hasRemoteManagedKeys} shouldShowRemoteAuthPlan={shouldShowRemoteAuthPlan} usesAccountFlow={usesAccountFlow} />;
   let t14;
   if ($[31] !== t11 || $[32] !== t13) {
     t14 = <TuiErrorBoundary><Box flexDirection="column" alignItems={t11} flexShrink={0} overflowX="hidden">{t13}</Box></TuiErrorBoundary>;
@@ -202,8 +193,6 @@ function NotificationContent({
   ideSelection,
   mcpClients,
   notifications,
-  isInOverageMode,
-  isTeamOrEnterprise,
   apiKeyStatus,
   debug,
   verbose,
@@ -228,8 +217,6 @@ function NotificationContent({
     current: Notification | null;
     queue: Notification[];
   };
-  isInOverageMode: boolean;
-  isTeamOrEnterprise: boolean;
   apiKeyStatus: VerificationStatus;
   debug: boolean;
   verbose: boolean;
@@ -259,11 +246,6 @@ function NotificationContent({
           </Text> : <Text color={notifications.current.color} dimColor={!notifications.current.color} wrap={notifications.current.wrap === true ? "wrap" : "truncate"}>
             {notifications.current.text}
           </Text>)}
-      {isInOverageMode && !isTeamOrEnterprise && <Box>
-          <Text dimColor wrap="truncate">
-            Now using extra usage
-          </Text>
-        </Box>}
       {usesAccountFlow && !isRegistryOwnedNonAnthropicModel(mainLoopModel) && !hasRemoteAuthSession && (apiKeyStatus === 'invalid' || apiKeyStatus === 'missing') && <Box>
           <Text color="error" wrap="truncate">
             {getIsRemoteMode() ? 'Authentication error · Try again' : 'Not logged in · Run /login'}

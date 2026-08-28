@@ -1,4 +1,3 @@
-import type { OverageDisabledReason } from 'src/services/agencAiLimits.js'
 import { isAgenCAISubscriber } from '../auth.js'
 import { getRuntimeState } from '../config.js'
 import { is1mContextDisabled } from '../context.js'
@@ -24,7 +23,7 @@ function isExtraUsageEnabled(): boolean {
     return true
   }
   // Check which disabled reasons still mean "provisioned"
-  switch (reason as OverageDisabledReason) {
+  switch (reason) {
     // Provisioned but credits depleted — still counts as enabled
     case 'out_of_credits':
       return true

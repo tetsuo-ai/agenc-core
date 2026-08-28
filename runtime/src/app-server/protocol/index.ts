@@ -422,7 +422,7 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description:
-      "Read live counters (turn count, token usage, cache stats) for a daemon-owned session so the TUI's /status, /usage, /cache-stats can surface real numbers.",
+      "Read live turn and token-usage counters for a daemon-owned session.",
   },
   "session.transcript": {
     method: "session.transcript",
@@ -2977,13 +2977,7 @@ export interface SessionResolveToolCallResult extends JsonObject {
   readonly remaining: number;
 }
 
-/**
- * Counters from the daemon-owned in-process session. The TUI bridge
- * cannot read these directly because it only holds a thin client-side
- * `AgenCBridgeSession`; the daemon ships the values over the wire
- * via `session.snapshot` so commands like `/status`, `/usage`, and
- * `/cache-stats` can surface meaningful numbers instead of zeros.
- */
+/** Counters from the daemon-owned in-process session. */
 export interface SessionSnapshotResult extends JsonObject {
   readonly sessionId: string;
   /** Number of completed turns recorded in the session's history. */
@@ -2993,14 +2987,6 @@ export interface SessionSnapshotResult extends JsonObject {
     readonly outputTokens: number;
     readonly totalTokens: number;
     readonly costUsd: number;
-  };
-  /** Cumulative cache metrics across API calls this session. */
-  readonly cacheStats: {
-    readonly requestCount: number;
-    readonly cacheReadInputTokens: number;
-    readonly cacheCreationInputTokens: number;
-    readonly cacheTotalInputTokens: number;
-    readonly hitRate: number | null;
   };
 }
 

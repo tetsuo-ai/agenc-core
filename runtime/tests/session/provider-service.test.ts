@@ -7,7 +7,10 @@ import {
   runWithCurrentRuntimeSession,
   setCurrentRuntimeSession,
 } from "../../src/session/current-session.js";
-import { SessionProviderService } from "../../src/session/provider-service.js";
+import {
+  SessionProviderService,
+  bindingFromProvider,
+} from "../../src/session/provider-service.js";
 import type { Session } from "../../src/session/session.js";
 import {
   getAPIProvider,
@@ -41,6 +44,25 @@ function completion(label: string): Response {
 }
 
 describe("SessionProviderService", () => {
+  test("fails closed when a provider has no identity or prepared model", () => {
+    const anonymous = Object.freeze({ name: "" });
+    expect(() =>
+      bindingFromProvider({
+        provider: anonymous as never,
+        model: "model-a",
+      })
+    ).toThrow("provider binding requires an explicit provider identity");
+
+    const modelLess = Object.freeze({ name: "openai-compatible" });
+    expect(() =>
+      bindingFromProvider({
+        provider: modelLess as never,
+      })
+    ).toThrow(
+      "openai-compatible provider binding requires an explicit model",
+    );
+  });
+
   test("deeply snapshots nested factory options in the session binding", () => {
     const defaultHeaders = { "x-bound": "first" };
     const openAiCompatibility = { authHeader: "X-First-Auth" };

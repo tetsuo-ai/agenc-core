@@ -12,7 +12,7 @@
  *   - stdout: `{"type":"event","sessionId","agentId","event":<daemon
  *     notification>}` lines while the turn runs, then one final
  *     `{"type":"result","exitCode","finalMessage","deniedPermissionRequestIds",
- *     "tokenUsage"?,"cacheStats"?}` line.
+ *     "tokenUsage"?}` line.
  *
  * Limitations (inherent to `agenc -p`): the run is one-shot and
  * non-interactive — the CLI auto-DENIES permission requests, so permission
@@ -256,9 +256,6 @@ export function promptViaSubprocess(
           typeof line.finalMessage === "string" ? line.finalMessage : "",
         deniedPermissionRequestIds: denied,
         ...(isJsonObject(line.tokenUsage) ? { usage: line.tokenUsage } : {}),
-        ...(isJsonObject(line.cacheStats)
-          ? { cacheStats: line.cacheStats }
-          : {}),
       });
       return;
     }

@@ -44,7 +44,7 @@ export function readGatewayCredentialEnvironment(
   return readGatewayCredentialSnapshot(home).environment;
 }
 
-/** Read both gateway credential namespaces from one canonical vault snapshot. */
+/** Read both gateway credential namespaces from one secure-storage snapshot. */
 export function readGatewayCredentialSnapshot(
   home: HomeContext,
 ): GatewayCredentialSnapshot {

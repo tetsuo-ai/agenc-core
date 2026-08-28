@@ -181,9 +181,7 @@ describe("suite-level hermetic env (vitest.setup.ts)", () => {
     for (const name of [
       "AGENC_BUBBLEWRAP",
       "AGENC_DISABLE_NONESSENTIAL_TRAFFIC",
-      "AGENC_EXTRA_BODY",
       "AGENC_OVERRIDE_DATE",
-      "AGENC_TEST_FIXTURES_ROOT",
       "AGENC_TMPDIR",
       "CI",
       "GITHUB_DEVICE_FLOW_CLIENT_ID",

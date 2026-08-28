@@ -10,7 +10,6 @@ describe('Gemini credential authority', () => {
     expect(
       existsSync(new URL('../../src/utils/geminiCredentials.ts', import.meta.url)),
     ).toBe(false)
-    expect(source('services/api/openaiShim.ts')).not.toContain('geminiCredentials')
     expect(source('utils/secureStorage/index.ts')).not.toMatch(/\bgemini\?\s*:/u)
     expect(source('config/migration.ts')).not.toContain('parsed.gemini')
   })
@@ -64,11 +63,8 @@ describe('Gemini credential authority', () => {
     )
   })
 
-  test('keeps Gemini out of the compatibility shim and preserves wrapped factory state', () => {
+  test('keeps Gemini on its native provider and preserves wrapped factory state', () => {
     const authSource = source('utils/geminiAuth.ts')
-    const shimSource = source('services/api/openaiShim.ts')
-    const clientSource = source('services/api/client.ts')
-    const connectionSource = source('llm/registry/provider-connection.ts')
     const agentSource = source('agents/run-agent.ts')
     const compatSource = source('session/turn-compat.ts')
     const endpointSource = source('llm/providers/gemini/endpoint-plan.ts')
@@ -77,18 +73,6 @@ describe('Gemini credential authority', () => {
     const verificationSource = source('onboarding/useApiKeyVerification.ts')
 
     expect(authSource).not.toContain('export function resolveGeminiCredential(')
-    expect(connectionSource).toContain('case "gemini":')
-    expect(connectionSource).toContain('return "native";')
-    expect(clientSource).toContain("connection.transport === 'openai-compatible'")
-    expect(shimSource).toContain(
-      "options.connection.transport !== 'openai-compatible'",
-    )
-    expect(shimSource).not.toContain('materializeGeminiCredentialPlan')
-    expect(shimSource).not.toContain('geminiCredentialHeaders')
-    expect(shimSource).not.toContain('resolveGeminiCredential(')
-    expect(shimSource).not.toMatch(
-      /environment\.(?:GEMINI_API_KEY|GOOGLE_API_KEY|GEMINI_ACCESS_TOKEN)/u,
-    )
     expect(agentSource).toContain('preserveProviderFactoryState')
     expect(agentSource).not.toContain('buildAgentProviderOverride')
     expect(agentSource).not.toMatch(
@@ -114,9 +98,6 @@ describe('Gemini credential authority', () => {
 
     for (const path of [
       'agents/run-agent.ts',
-      'services/api/anthropic.ts',
-      'services/api/client.ts',
-      'services/api/openaiShim.ts',
       'tools/Tool.ts',
     ]) {
       const runtimeSource = source(path)
@@ -145,18 +126,4 @@ describe('Gemini credential authority', () => {
     }
   })
 
-  test('routes the bound transport without request-time OAuth storage access', () => {
-    const clientSource = source('services/api/client.ts')
-    const boundConnection = clientSource.indexOf(
-      'const connection = resolveBoundConnection(',
-    )
-    const compatibilityRoute = clientSource.indexOf(
-      "if (connection.transport === 'openai-compatible')",
-    )
-    expect(boundConnection).toBeGreaterThan(-1)
-    expect(compatibilityRoute).toBeGreaterThan(boundConnection)
-    expect(clientSource).not.toContain('checkAndRefreshOAuthTokenIfNeeded')
-    expect(clientSource).not.toContain('resolveSecureStorageHome')
-    expect(clientSource).not.toContain('getAPIProvider')
-  })
 })
