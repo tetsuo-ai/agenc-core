@@ -561,6 +561,21 @@ describe("durable run inspection", () => {
     );
   });
 
+  it("does not mistake an initial lifecycle epoch for an explicit reopen", () => {
+    seedDurableRuns();
+    new StateRunDurabilityRepository(driver).ensureInitialEpoch({
+      runId: "run-complete",
+      openedAt: NOW,
+    });
+
+    expect(service.status({ runId: "run-complete" })).toMatchObject({
+      status: "completed",
+      terminal: true,
+      statusSource: "agent_run",
+      durableRun: { status: "completed" },
+    });
+  });
+
   it("does not expose an earlier epoch terminal after an explicit reopen", () => {
     seedDurableRuns();
     const durability = new StateRunDurabilityRepository(driver);
