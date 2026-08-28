@@ -35,6 +35,12 @@ enum helper_exit {
   HELPER_USAGE = 64
 };
 
+enum helper_operation {
+  HELPER_OPERATION_READ,
+  HELPER_OPERATION_WRITE,
+  HELPER_OPERATION_DELETE
+};
+
 enum unique_match_result {
   UNIQUE_MATCH_ERROR = -1,
   UNIQUE_MATCH_NONE = 0,
@@ -83,6 +89,23 @@ static int fail_osstatus(const char *operation, OSStatus status) {
     CFRelease(detail);
   }
   return HELPER_ERROR;
+}
+
+static bool parse_operation(const char *value,
+                            enum helper_operation *operation_out) {
+  if (strcmp(value, "read") == 0) {
+    *operation_out = HELPER_OPERATION_READ;
+    return true;
+  }
+  if (strcmp(value, "write") == 0) {
+    *operation_out = HELPER_OPERATION_WRITE;
+    return true;
+  }
+  if (strcmp(value, "delete") == 0) {
+    *operation_out = HELPER_OPERATION_DELETE;
+    return true;
+  }
+  return false;
 }
 
 /* Apple libc guarantees that memset_s calls are not removed by optimization. */
@@ -432,6 +455,12 @@ static OSStatus copy_keychain_add_target(CFArrayRef search_list,
       goto cleanup;
     }
     CFRetain(target);
+  } else if ((search_list == NULL) ||
+             !CFArrayContainsValue(
+                 search_list, CFRangeMake(0, CFArrayGetCount(search_list)),
+                 target)) {
+    status = errSecInvalidKeychain;
+    goto cleanup;
   }
 
   *target_out = target;
@@ -758,10 +787,11 @@ int main(int argc, char **argv) {
   CFStringRef account = NULL;
   CFArrayRef user_search_list = NULL;
   CFMutableDictionaryRef query = NULL;
+  enum helper_operation operation;
   OSStatus status;
   int result = HELPER_USAGE;
 
-  if (argc != 4) {
+  if ((argc != 4) || !parse_operation(argv[1], &operation)) {
     (void)fprintf(stderr, "usage: agenc-keychain-helper "
                           "read|write|delete <service> <account>\n");
     return HELPER_USAGE;
@@ -789,16 +819,19 @@ int main(int argc, char **argv) {
     goto cleanup;
   }
 
-  if (strcmp(argv[1], "read") == 0) {
+  switch (operation) {
+  case HELPER_OPERATION_READ:
     result = read_item(query);
-  } else if (strcmp(argv[1], "write") == 0) {
+    break;
+  case HELPER_OPERATION_WRITE:
     result = write_item(query);
-  } else if (strcmp(argv[1], "delete") == 0) {
+    break;
+  case HELPER_OPERATION_DELETE:
     result = delete_item(query);
-  } else {
-    (void)fprintf(stderr, "usage: agenc-keychain-helper "
-                          "read|write|delete <service> <account>\n");
+    break;
+  default:
     result = HELPER_USAGE;
+    break;
   }
 
 cleanup:

@@ -50,6 +50,12 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     [...stdout.matchAll(/"([^"\r\n]+)"/gu)].map((match) =>
       match[1].replaceAll('\\"', '"').replaceAll("\\\\", "\\"),
     );
+  const expectMissingUserDefault = (result: ReturnType<typeof runSecurity>) => {
+    expect(result.error).toBeUndefined();
+    expect(result.status).not.toBe(0);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toContain("SecKeychainCopyDomainDefault user:");
+  };
 
   try {
     const compile = spawnSync(
@@ -82,11 +88,7 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
       [originalDefaultKeychain] = parseKeychainPaths(defaultKeychain.stdout);
       expect(originalDefaultKeychain).toBeDefined();
     } else {
-      expect(defaultKeychain.error).toBeUndefined();
-      expect(defaultKeychain.stdout).toBe("");
-      expect(defaultKeychain.stderr.trim()).toBe(
-        "security: SecKeychainCopyDomainDefault user: A default keychain could not be found.",
-      );
+      expectMissingUserDefault(defaultKeychain);
     }
 
     const listed = runSecuritySuccessfully(["list-keychains", "-d", "user"]);
@@ -148,11 +150,7 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
         primaryKeychain,
       ]);
     } else {
-      expect(configuredDefaultKeychain.error).toBeUndefined();
-      expect(configuredDefaultKeychain.stdout).toBe("");
-      expect(configuredDefaultKeychain.stderr.trim()).toBe(
-        "security: SecKeychainCopyDomainDefault user: A default keychain could not be found.",
-      );
+      expectMissingUserDefault(configuredDefaultKeychain);
     }
 
     const initiallyMissing = run("read");
@@ -195,6 +193,54 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     expect(missingAgain.status).toBe(2);
     expect(missingAgain.stdout).toBe("");
     expect(missingAgain.stderr).toBe("");
+
+    if (configuredDefaultKeychain.status === 0) {
+      runSecuritySuccessfully([
+        "default-keychain",
+        "-d",
+        "user",
+        "-s",
+        secondKeychain,
+      ]);
+      runSecuritySuccessfully([
+        "list-keychains",
+        "-d",
+        "user",
+        "-s",
+        primaryKeychain,
+      ]);
+      const outsideSearchAuthority = run("write", first);
+      expect(outsideSearchAuthority.status).toBe(1);
+      expect(outsideSearchAuthority.stderr).toContain("Keychain add failed");
+      expect(outsideSearchAuthority.stderr).toContain("OSStatus -25295");
+      for (const keychain of [primaryKeychain, secondKeychain]) {
+        const absent = runSecurity([
+          "find-generic-password",
+          "-a",
+          account,
+          "-s",
+          service,
+          "-w",
+          keychain,
+        ]);
+        expect(absent.status).not.toBe(0);
+        expect(absent.stdout).toBe("");
+      }
+      runSecuritySuccessfully([
+        "default-keychain",
+        "-d",
+        "user",
+        "-s",
+        primaryKeychain,
+      ]);
+      runSecuritySuccessfully([
+        "list-keychains",
+        "-d",
+        "user",
+        "-s",
+        primaryKeychain,
+      ]);
+    }
 
     const ambiguousService = `AgenC-native-helper-duplicate-${randomUUID()}`;
     const ambiguousAccount = `duplicate-account-${process.pid}`;
@@ -273,9 +319,8 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     } else {
       const ambiguousCreateTarget = run("write", first);
       expect(ambiguousCreateTarget.status).toBe(1);
-      expect(ambiguousCreateTarget.stderr).toMatch(
-        /A default keychain could not be found/u,
-      );
+      expect(ambiguousCreateTarget.stderr).toContain("Keychain add failed");
+      expect(ambiguousCreateTarget.stderr).toContain("OSStatus -25307");
       for (const keychain of temporaryKeychains) {
         const absent = runSecurity([
           "find-generic-password",

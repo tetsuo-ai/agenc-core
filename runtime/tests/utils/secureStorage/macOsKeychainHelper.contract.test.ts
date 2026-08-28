@@ -34,6 +34,7 @@ describe("macOS Keychain native-helper contract", () => {
       "CFDictionarySetValue(query, kSecMatchSearchList, search_list)",
     );
     expect(source).toContain("CFArrayGetCount(search_list) != 1");
+    expect(source).toContain("CFArrayContainsValue(");
     expect(source).toContain(
       "CFDictionaryRemoveValue(item, kSecMatchSearchList)",
     );
@@ -75,6 +76,15 @@ describe("macOS Keychain native-helper contract", () => {
     expect(addIndex).toBeGreaterThan(targetIndex);
     expect(duplicateIndex).toBeGreaterThan(addIndex);
     expect(retryIndex).toBeGreaterThan(duplicateIndex);
+
+    const operationIndex = source.indexOf(
+      "parse_operation(argv[1], &operation)",
+    );
+    const searchListIndex = source.indexOf(
+      "copy_user_keychain_search_list(&user_search_list)",
+    );
+    expect(operationIndex).toBeGreaterThan(0);
+    expect(searchListIndex).toBeGreaterThan(operationIndex);
   });
 
   test("verifies exact bytes and unique identity after every successful write", () => {
