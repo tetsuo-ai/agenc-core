@@ -124,6 +124,12 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
       "-s",
       primaryKeychain,
     ]);
+    runSecuritySuccessfully([
+      "unlock-keychain",
+      "-p",
+      keychainPassword,
+      primaryKeychain,
+    ]);
 
     const initiallyMissing = run("read");
     expect(initiallyMissing.status).toBe(2);

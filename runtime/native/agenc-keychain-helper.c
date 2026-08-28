@@ -394,7 +394,11 @@ static OSStatus add_to_default_keychain(CFMutableDictionaryRef item,
   OSStatus status;
 
   *added_out = NULL;
+#pragma clang diagnostic push
+/* kSecUseKeychain requires the deprecated file-based SecKeychainRef API. */
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
   status = SecKeychainCopyDefault(&default_keychain);
+#pragma clang diagnostic pop
   if (status != errSecSuccess) {
     return status;
   }
