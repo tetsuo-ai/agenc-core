@@ -290,9 +290,10 @@ function createAgenCAiProxyFetch(
       // Return the exact token that was sent. Reading getAgenCAIOAuthTokens()
       // again after the request is wrong under concurrent 401s: another
       // connector's handleOAuth401Error clears the memoize cache, so we'd read
-      // the NEW token from keychain, pass it to handleOAuth401Error, which
-      // finds same-as-keychain → returns false → skips retry. Same pattern as
-      // bridgeApi.ts withOAuthRetry (token passed as fn param).
+      // the new token from native secure storage, pass it to
+      // handleOAuth401Error, and incorrectly skip the retry because it matches
+      // the stored token. bridgeApi.ts withOAuthRetry also passes the sent
+      // token as a function parameter.
       return { response, sentToken: currentTokens.accessToken }
     }
 
@@ -301,9 +302,10 @@ function createAgenCAiProxyFetch(
       return response
     }
     // handleOAuth401Error returns true only if the token actually changed
-    // (keychain had a newer one, or force-refresh succeeded). Gate retry on
-    // that — otherwise we double round-trip time for every connector whose
-    // downstream service genuinely needs auth (the common case: 30+ servers
+    // (native secure storage held a newer one, or force-refresh succeeded).
+    // Gate retry on that result. Otherwise, we double the round-trip time for
+    // every connector whose downstream service genuinely needs auth (the
+    // common case: 30+ servers
     // with "MCP server requires authentication but no OAuth token configured").
     const tokenChanged = await handleOAuth401Error(
       home,

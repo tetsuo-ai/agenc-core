@@ -123,13 +123,13 @@ function getMetadataPath(cacheDir: string, source: string): string {
 }
 
 /**
- * Compose the secureStorage key for a per-server secret bucket.
- * `pluginSecrets` is a flat map — per-server secrets share it with top-level
+ * Compose the native secure storage key for a per-server secret bucket.
+ * `pluginSecrets` is a flat map. Per-server secrets share it with top-level
  * plugin options (pluginOptionsStorage.ts) using a `${pluginId}/${server}`
  * composite key. `/` can't appear in plugin IDs (`name@marketplace`) or
- * server names (MCP identifier constraints), so it's unambiguous. Keeps the
- * SecureStorageData schema unchanged and the single-keychain-entry size
- * budget (~2KB stdin-safe, see INC-3028) shared across all plugin secrets.
+ * server names (MCP identifier constraints), so the key is unambiguous. This
+ * keeps the SecureStorageData schema unchanged and shares the existing
+ * credential record with top-level plugin secrets.
  */
 function serverSecretsKey(pluginId: string, serverName: string): string {
   return `${pluginId}/${serverName}`
@@ -214,26 +214,23 @@ export async function saveMcpServerUserConfig(
       }
     }
 
-    // Scrub ONLY keys we're writing in this call. Covers both directions
-    // across schema-version flips:
-    //  - sensitive→SecureStorage ⇒ remove stale plaintext from config.toml
-    //  - nonSensitive→config.toml ⇒ remove stale entry from SecureStorage
-    //    (otherwise loadMcpServerUserConfig's {...nonSensitive, ...sensitive}
-    //    would let the stale secureStorage value win on next read)
-    // Partial `config` (user only re-enters one field) leaves other fields
-    // untouched in BOTH stores — defense-in-depth against future callers.
+    // Scrub only keys written in this call. When a key becomes sensitive,
+    // remove its old plaintext config.toml value. When a key becomes
+    // non-sensitive, remove its old native-storage value. A partial `config`
+    // leaves other fields untouched in both stores.
     const sensitiveKeysInThisSave = new Set(Object.keys(sensitive))
     const nonSensitiveKeysInThisSave = new Set(Object.keys(nonSensitive))
 
-    // Sensitive → secureStorage FIRST. If this fails (keychain locked or
-    // native credential-store permissions), throw before touching config.toml.
+    // Write sensitive values to native secure storage first. If this fails,
+    // including from a locked macOS Keychain or native storage permissions,
+    // throw before touching config.toml.
     // Any old plaintext remains rejected until reconfiguration completes; it
     // never becomes a live fallback.
     //
-    // Also scrub non-sensitive keys from secureStorage — schema flipped
-    // sensitive→false and they're being written to config.toml now. Without
-    // this, loadMcpServerUserConfig's merge would let the stale secureStorage
-    // value win on next read.
+    // Also scrub non-sensitive keys from native secure storage when the schema
+    // changes and the values are written to config.toml. Without
+    // this, loadMcpServerUserConfig's merge would let the stale native-storage
+    // value win on the next read.
     const k = serverSecretsKey(pluginId, serverName)
     const secureTransaction =
       Object.keys(sensitive).length > 0 || nonSensitiveKeysInThisSave.size > 0
@@ -260,8 +257,8 @@ export async function saveMcpServerUserConfig(
     // Non-sensitive → config.toml. Write whenever there are new non-sensitive
     // values OR existing plaintext sensitive values to scrub — so reconfiguring
     // a sensitive-only schema still cleans up old config.toml plaintext. Runs
-    // AFTER the secureStorage write succeeded, so the scrub can't leave you
-    // with zero copies of the secret.
+    // after the native secure storage write succeeds, so the scrub cannot
+    // leave zero copies of the secret.
     //
     // updateSettingsForSource does mergeWith(diskSettings, ourSettings, ...)
     // which PRESERVES destination keys absent from source — so simply omitting

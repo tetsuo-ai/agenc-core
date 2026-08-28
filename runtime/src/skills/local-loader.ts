@@ -1496,7 +1496,7 @@ The managed installer checks \`@ledgerhq/wallet-cli@latest\` on every approved i
 - Device examples: \`account discover <network>\`, \`receive <label>\`, \`genuine-check\`, \`send ...\`, \`swap execute ...\`, \`earn deposit ...\`, \`earn withdraw ...\`, and \`ring ...\`.
 - Run device commands sequentially. Do not impose a timeout while wallet-cli is waiting for physical confirmation.
 - Before send, swap execution, deposit, withdrawal, or destructive key-ring work, make the destination, account, asset, amount, network, and fees unambiguous. The agent proposes; the human approves on the Ledger.
-- Never place a Ledger password or seed phrase in a command, transcript, environment assignment, or prompt. Ask the user to store passwords in the OS keychain and reference the keychain command only.
+- Never place a Ledger password or seed phrase in a command, transcript, environment assignment, or prompt. Ask the user to load passwords from their OS credential store outside AgenC. Do not request, construct, or run credential-store commands.
 - Do not claim a submitted transaction is confirmed on-chain.
 
 ## User request

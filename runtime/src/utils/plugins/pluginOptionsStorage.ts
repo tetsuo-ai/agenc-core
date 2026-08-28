@@ -75,11 +75,9 @@ export function loadPluginOptions(
 }
 
 /**
- * Save option values, splitting by `schema[key].sensitive`. Non-sensitive go
- * to userSettings; sensitive go to secureStorage. Writes are skipped if nothing
- * in that category is present.
- *
- * Clears the load cache on success so the next `loadPluginOptions` sees fresh.
+ * Save option values, splitting by `schema[key].sensitive`. Non-sensitive
+ * values go to config.toml; sensitive values go to native secure storage.
+ * Writes are skipped when that category has no values.
  */
 export async function savePluginOptions(
   pluginId: string,
@@ -109,9 +107,9 @@ export async function savePluginOptions(
   const sensitiveKeysInThisSave = new Set(Object.keys(sensitive))
   const nonSensitiveKeysInThisSave = new Set(Object.keys(nonSensitive))
 
-  // Secure storage FIRST — if the native secure storage fails, throw before touching
-  // config.toml. Any old plaintext remains rejected until reconfiguration can
-  // complete safely; it never becomes a runtime fallback.
+  // Write native secure storage first. If that write fails, throw before
+  // touching config.toml. Any old plaintext remains rejected until
+  // reconfiguration can complete safely; it never becomes a runtime fallback.
   const secureTransaction =
     Object.keys(sensitive).length > 0 || nonSensitiveKeysInThisSave.size > 0
       ? updateNativeSecureStorage(
@@ -134,8 +132,8 @@ export async function savePluginOptions(
         )
       : null
 
-  // config.toml AFTER secureStorage — scrub sensitive keys via explicit
-  // undefined (mergeWith deletion pattern).
+  // Write config.toml after native secure storage. Scrub sensitive keys via
+  // explicit undefined (mergeWith deletion pattern).
   //
   try {
     const settings = getSettingsForSource('userSettings', authority) ?? {}
@@ -188,17 +186,17 @@ export async function savePluginOptions(
 }
 
 /**
- * Delete all stored option values for a plugin — both the non-sensitive
+ * Delete all stored option values for a plugin: both the non-sensitive
  * `settings.pluginConfigs[pluginId]` entry and the sensitive
- * `secureStorage.pluginSecrets[pluginId]` entry.
+ * `pluginSecrets[pluginId]` entry in native secure storage.
  *
  * Call this when the LAST installation of a plugin is uninstalled (i.e.,
  * alongside `markPluginVersionOrphaned`). Don't call on every uninstall —
  * a plugin can be installed in multiple scopes and the user's config should
  * survive removing it from one scope while it remains in another.
  *
- * Best-effort: keychain write failure is logged but doesn't throw, since
- * the uninstall itself succeeded and we don't want to surface a confusing
+ * Best-effort: a native secure storage write failure is logged but doesn't
+ * throw. The uninstall itself succeeded, so we don't want to surface a confusing
  * "uninstall failed" message for a cleanup side-effect.
  */
 export async function deletePluginOptions(pluginId: string): Promise<void> {
@@ -257,7 +255,7 @@ export async function deletePluginOptions(pluginId: string): Promise<void> {
     )
   } catch (error) {
     logForDebugging(
-      `deletePluginOptions: failed to clear pluginSecrets for ${pluginId} from keychain: ${error instanceof Error ? error.message : String(error)}`,
+      `deletePluginOptions: failed to clear pluginSecrets for ${pluginId} from native secure storage: ${error instanceof Error ? error.message : String(error)}`,
       { level: 'warn' },
     )
   }

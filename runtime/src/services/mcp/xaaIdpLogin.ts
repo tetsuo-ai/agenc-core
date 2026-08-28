@@ -3,7 +3,7 @@
  * standard authorization_code + PKCE flow, then caches it by IdP issuer.
  *
  * This is the "one browser pop" in the XAA value prop: one IdP login → N silent
- * MCP server auths. The id_token is cached in the keychain and reused until expiry.
+ * MCP server auths. Native secure storage holds the id_token until it expires.
  */
 import {
   exchangeAuthorization,
@@ -79,7 +79,8 @@ export type IdpLoginOptions = {
  * Normalize an IdP issuer URL for use as a cache key: strip trailing slashes,
  * lowercase host. Issuers from config and from OIDC discovery may differ
  * cosmetically but should hit the same cache slot. Exported so the setup
- * command can compare issuers using the same normalization as keychain ops.
+ * command can compare issuers using the same normalization as secure-storage
+ * operations.
  */
 export function issuerKey(issuer: string): string {
   try {
@@ -170,7 +171,7 @@ export function clearIdpIdToken(
  * Save an IdP client secret to secure storage, keyed by IdP issuer.
  * Separate from MCP server AS secrets — different trust domain.
  * Returns the storage update result so callers can surface native secure storage
- * failures (for example, a locked Keychain) instead of
+ * failures, including a locked macOS Keychain, instead of
  * silently dropping the secret and failing later with invalid_client.
  */
 export function saveIdpClientSecret(

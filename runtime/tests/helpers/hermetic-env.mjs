@@ -49,7 +49,7 @@ const HERMETIC_RUNTIME_MARKER_VERSION =
  *     contaminate rejection tests
  *   - SECRET_ENV_KEYS (src/utils/providerSecrets.ts): OPENAI_AUTH_HEADER_VALUE,
  *     AGENC_API_KEY, GOOGLE_API_KEY, BNKR_API_KEY, ...
- *   - the subprocess scrub precedent (src/utils/subprocessEnv.ts):
+ *   - the child-process denylist (src/utils/secretEnv.ts):
  *     ANTHROPIC_AUTH_TOKEN, GEMINI_ACCESS_TOKEN, GH_TOKEN, AWS session creds, ...
  *
  * An ambient value for ANY of these adds a legitimate BYOK provider row to
@@ -219,7 +219,7 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_AUTO_BACKGROUND_TASKS',
   'FORCE_VCR',
   'VCR_RECORD',
-  // provider-family toggles (providerValidation.ts / provider profiles)
+  // host-managed provider and cloud-auth toggles
   'AGENC_PROVIDER_MANAGED_BY_HOST',
   'AGENC_SKIP_VERTEX_AUTH',
   'AGENC_SKIP_FOUNDRY_AUTH',
@@ -246,7 +246,7 @@ export const HERMETIC_AGENC_STATE_ENV_VARS = Object.freeze([
   'AGENC_TRANSACTION_GUARD_DEVNET_RPC',
   'AGENC_TRANSACTION_GUARD_DEVNET_RPC_ALLOWED_HOSTS',
   'AGENC_TRANSACTION_GUARD_DEVNET_KEYPAIR',
-  // provider profile, model, account, and cloud-routing overrides
+  // retired provider-specific model, account, and cloud-routing inputs
   'OPENAI_MODEL',
   'OPENAI_API_FORMAT',
   'OPENAI_AUTH_HEADER',

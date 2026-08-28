@@ -629,10 +629,10 @@ export class AgenCAuthProvider implements OAuthClientProvider {
   }
 
   async tokens(): Promise<OAuthTokens | undefined> {
-    // Cross-process token changes (another AgenC instance refreshed or invalidated)
-    // are picked up via the keychain cache TTL (see macOsKeychainStorage.ts).
-    // In-process writes already invalidate the native storage cache.
-    // We do NOT clearKeychainCache() here — tokens() is called by the MCP SDK's
+    // On macOS, the Keychain cache TTL picks up token changes made by another
+    // AgenC process. Linux and Windows do not use that in-process record cache.
+    // In-process writes invalidate the macOS cache.
+    // We do not call clearKeychainCache() here. tokens() is called by the MCP SDK's
     // _commonHeaders on every request, and forcing a cache miss would trigger
     // a blocking spawnSync(`security find-generic-password`) 30-40x/sec.
     // See CPU profile: spawnSync was 7.2% of total CPU after PR #19436.
@@ -662,11 +662,12 @@ export class AgenCAuthProvider implements OAuthClientProvider {
     // auto-auth branch, the *first* tokens() call — before auth() writes
     // anything — fires xaaRefresh. If id_token is cached, SDK short-circuits
     // there and never reaches the write. If id_token isn't cached, xaaRefresh
-    // returns undefined in ~1 keychain read, auth() proceeds, writes the
-    // marker, calls tokens() again, xaaRefresh fails again identically.
+    // returns undefined when no usable cached id_token is available. auth()
+    // proceeds, writes the marker, calls tokens() again, and xaaRefresh fails
+    // again identically.
     // Harmless redundancy, not a wasted exchange. And guarding on `!==''`
     // permanently bricks auto-auth when a *prior* session left that marker
-    // in keychain — real bug seen with xaa.dev.
+    // in native secure storage. This caused a real bug with xaa.dev.
     //
     // xaaRefresh() internally short-circuits to undefined when the id_token
     // isn't cached (or canonical xaa_idp is gone) → we fall through to the
@@ -832,7 +833,8 @@ export class AgenCAuthProvider implements OAuthClientProvider {
    *
    * Uses the same per-server cross-process refresh lock as normal OAuth
    * refresh. `_refreshInProgress` dedupes within one process; the lock
-   * closes the keychain write race across concurrent AgenC processes.
+   * closes the native secure storage write race across concurrent AgenC
+   * processes.
    */
   private async xaaRefresh(): Promise<OAuthTokens | undefined> {
     const idp = getXaaIdpConfig()

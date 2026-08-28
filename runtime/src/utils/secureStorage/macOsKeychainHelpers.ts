@@ -5,8 +5,8 @@ import { userInfo } from 'os'
 import type { HomeContext } from '../../config/home.js'
 import type { SecureStorageData } from './index.js'
 
-// Suffix identifying the canonical credentials keychain entry.
-// DO NOT change this value — it's part of the keychain lookup key and would
+// Suffix identifying the canonical credentials entry in the macOS Keychain.
+// Do not change this value. It is part of the macOS Keychain lookup key and would
 // orphan existing stored credentials.
 export const CREDENTIALS_SERVICE_SUFFIX = '-credentials'
 
@@ -80,7 +80,7 @@ export function getUsername(
 
 // --
 
-// Cache for keychain reads to avoid repeated expensive security CLI calls.
+// Cache for macOS Keychain reads to avoid repeated expensive security CLI calls.
 // TTL bounds staleness for cross-process scenarios (another AgenC instance
 // refreshing/invalidating tokens) without forcing a blocking spawnSync on
 // every read. In-process writes invalidate via clearKeychainCache() directly.
@@ -110,7 +110,7 @@ export interface KeychainCacheState {
 const keychainCacheStates = new Map<string, KeychainCacheState>()
 
 /**
- * Return the cache owned by one concrete keychain entry. The service/account
+ * Return the cache owned by one concrete macOS Keychain entry. The service/account
  * identity is captured when the storage adapter is constructed, so changing
  * ambient environment variables cannot redirect a read or share cached bytes
  * with another AgenC home.
@@ -137,7 +137,7 @@ export function clearKeychainCacheState(state: KeychainCacheState): void {
   state.readInFlight = null
 }
 
-/** Clear every bound keychain cache after a global authentication reset. */
+/** Clear every bound macOS Keychain cache after a global authentication reset. */
 export function clearKeychainCache(): void {
   for (const state of keychainCacheStates.values()) {
     clearKeychainCacheState(state)

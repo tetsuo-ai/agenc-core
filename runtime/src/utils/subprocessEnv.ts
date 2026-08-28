@@ -49,12 +49,13 @@ export function withChildTempAuthority(
  * model-run command (e.g. `printenv`, or shell expansion like
  * `${ANTHROPIC_API_KEY}`) cannot exfiltrate provider keys or CI credentials.
  *
- * Provider/API calls happen IN-PROCESS — the parent agenc process re-reads
- * these per-request (lazy credential reads), so children never need them.
+ * Provider calls run in-process through each session's prepared provider
+ * binding. Spawned children receive a scrubbed child environment and do not
+ * need provider credential variables.
  *
- * Derived as the union of the curated base list above and SECRET_ENV_KEYS (the
- * single source of provider-secret env names assigned to process.env by
- * provider profiles), so a newly-added provider key is scrubbed automatically.
+ * SUBPROCESS_SECRET_ENV is the canonical denylist from secretEnv.ts. It combines
+ * curated CI, cloud, and OAuth names with provider credential ingress names
+ * derived from the built-in provider registry.
  *
  * This is the DEFAULT behavior (no flag required). Set
  * AGENC_SUBPROCESS_ENV_NO_SCRUB to a truthy value to opt out (e.g. for a trusted

@@ -93,7 +93,7 @@ export function readNativeSecureStorageFresh(
   )
 }
 
-/** Async native secure storage read for request paths that must not block on keychain I/O. */
+/** Native secure-storage read exposed through the async adapter contract. */
 export async function readNativeSecureStorageAsync(
   home: HomeContext,
 ): Promise<SecureStorageData> {

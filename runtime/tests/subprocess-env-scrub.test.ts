@@ -7,10 +7,10 @@ import { SECRET_ENV_KEYS } from 'src/utils/providerSecrets.js'
 
 // Security regression: the env handed to every Bash / MCP-stdio / hook /
 // shell-snapshot / LSP child goes through subprocessEnv(). By default the
-// agent's provider keys and CI/cloud
-// credentials must NOT reach those children — provider calls happen in-process,
-// so a model-run or prompt-injected `printenv` must not be able to exfiltrate
-// them. Benign vars (PATH) must still pass through so subprocesses can run.
+// session's provider keys and CI/cloud credentials must not reach those
+// children. Provider calls use the session's prepared provider binding, so a
+// model-run or prompt-injected `printenv` must not be able to exfiltrate them.
+// Benign vars such as PATH must still pass through so subprocesses can run.
 
 const SECRETS: Record<string, string> = {
   ANTHROPIC_API_KEY: 'sk-ant-secret',
@@ -75,7 +75,7 @@ describe('subprocessEnv default scrub', () => {
     expect(childEnv.PATH).toBe(process.env.PATH)
   })
 
-  it('does not mutate the parent process.env (in-process API calls keep keys)', () => {
+  it('does not mutate the parent process.env', () => {
     subprocessEnv()
     expect(process.env.ANTHROPIC_API_KEY).toBe('sk-ant-secret')
     expect(process.env.XAI_API_KEY).toBe('xai-secret')
@@ -146,10 +146,9 @@ describe('subprocessEnv default scrub', () => {
     }
   })
 
-  // STRUCTURAL guard (the one that catches the original gap): every provider
-  // secret env name the codebase assigns to process.env — the single source
-  // SECRET_ENV_KEYS — MUST be in the subprocess denylist. If a new provider key
-  // is added to SECRET_ENV_KEYS but not scrubbed, this fails.
+  // Structural guard: every registry-derived provider credential ingress name
+  // in SECRET_ENV_KEYS must be in the subprocess denylist. If a new provider
+  // key is added to SECRET_ENV_KEYS but not scrubbed, this fails.
   it('SUBPROCESS_SECRET_ENV is a superset of providerSecrets.SECRET_ENV_KEYS', () => {
     const denylist = new Set<string>(SUBPROCESS_SECRET_ENV)
     const missing = SECRET_ENV_KEYS.filter((key) => !denylist.has(key))

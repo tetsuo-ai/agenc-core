@@ -88,8 +88,6 @@ export function getAuthHeaders(
       },
     }
   }
-  // Follow-up: this will fail if the API key is being set to an LLM Gateway key
-  // should we try to query keychain / credentials for a valid provider key?
   const apiKey = getAnthropicApiKey()
   if (!apiKey) {
     return {

@@ -156,7 +156,7 @@ describe("local skills loader", () => {
         scope: "bundled",
       }),
       content: expect.stringMatching(
-        /ledger_wallet_cli_status[\s\S]*install_ledger_wallet_cli[\s\S]*@ledgerhq\/wallet-cli@latest[\s\S]*show my balances/u,
+        /ledger_wallet_cli_status[\s\S]*install_ledger_wallet_cli[\s\S]*@ledgerhq\/wallet-cli@latest[\s\S]*OS credential store[\s\S]*show my balances/u,
       ),
     });
   });

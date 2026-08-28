@@ -547,11 +547,12 @@ export function clearOAuthTokenCache(home: HomeContext): void {
   clearKeychainCache()
 }
 
-// In-flight dedup: when N AgenC cloud proxy connectors hit 401 with the same
-// token simultaneously (common at startup — #20930), only one should clear
-// caches and re-read the keychain. Without this, each call's clearOAuthTokenCache()
-// nukes readInFlight in macOsKeychainStorage and triggers a fresh spawn —
-// sync spawns stacked to 800ms+ of blocked render frames.
+// In-flight deduplication: when N AgenC cloud proxy connectors hit 401 with
+// the same token simultaneously (common at startup, #20930), only one should
+// clear caches and reread native secure storage. Otherwise, each call to
+// clearOAuthTokenCache() invalidates readInFlight in macOsKeychainStorage and
+// starts another synchronous child process. Stacked child processes blocked
+// rendering for more than 800ms.
 const pending401Handlers = new Map<string, Promise<boolean>>()
 
 /**
@@ -561,10 +562,10 @@ const pending401Handlers = new Map<string, Promise<boolean>>()
  * even if our local expiration check disagrees (which can happen due to clock
  * issues when the token was issued).
  *
- * Safety: We compare the failed token with what's in keychain. If another tab
- * already refreshed (different token in keychain), we use that instead of
+ * Safety: We compare the failed token with native secure storage. If another
+ * process already refreshed and stored a different token, we use that instead of
  * refreshing again. Concurrent calls with the same failedAccessToken are
- * deduplicated to a single keychain read.
+ * deduplicated to a single native secure storage read.
  *
  * @param failedAccessToken - The access token that was rejected with 401
  * @returns true if we now have a valid token, false otherwise
@@ -594,7 +595,8 @@ async function handleOAuth401ErrorImpl(
   failedAccessToken: string,
   environment: ProviderEnvironment,
 ): Promise<boolean> {
-  // Clear caches and re-read from keychain (async — sync read blocks ~100ms/call)
+  // Clear caches and reread native secure storage asynchronously. A synchronous
+  // read blocks for about 100ms per call.
   clearOAuthTokenCache(home)
   const currentTokens = await getAgenCAIOAuthTokensAsync(home, environment)
 
@@ -602,7 +604,7 @@ async function handleOAuth401ErrorImpl(
     return false
   }
 
-  // If keychain has a different token, another tab already refreshed - use it
+  // If native secure storage has a different token, another process refreshed it.
   if (currentTokens.accessToken !== failedAccessToken) {
     return true
   }
@@ -612,15 +614,16 @@ async function handleOAuth401ErrorImpl(
 }
 
 /**
- * Reads OAuth tokens asynchronously, avoiding blocking keychain reads.
+ * Reads OAuth tokens asynchronously, avoiding blocking native storage reads.
  * Delegates to the sync memoized version for env var / file descriptor tokens
- * (which don't hit the keychain), and only uses async for storage reads.
+ * (which do not read native secure storage), and only uses async for storage reads.
  */
 export async function getAgenCAIOAuthTokensAsync(
   home: HomeContext,
   environment: ProviderEnvironment,
 ): Promise<OAuthTokens | null> {
-  // Env var and FD tokens are sync and don't hit the keychain
+  // Env var and file-descriptor tokens are synchronous and do not read native
+  // secure storage.
   if (
     environment.AGENC_OAUTH_TOKEN ||
     getOAuthTokenFromFileDescriptor(home, environment)
@@ -1134,7 +1137,7 @@ export async function validateForceLoginOrg(
   }
 
   // Always fetch the authoritative org UUID from the profile endpoint.
-  // Even keychain-sourced tokens verify server-side: the cached org UUID
+  // Even native-storage-sourced tokens verify server-side: the cached org UUID
   // in local runtime state is user-writable and cannot be trusted.
   const { source } = getAuthTokenSource(home)
   const isEnvVarToken =
