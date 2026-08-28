@@ -3812,7 +3812,7 @@ describe("AgenC background agent lifecycle", () => {
     expect(restoreAgent).not.toHaveBeenCalled();
   });
 
-  it("rejects concurrent duplicate canonical resume attempts", async () => {
+  it("coalesces identical concurrent canonical resume attempts", async () => {
     const fixture = createResumeFixture("conv-concurrent1");
     const restored = createDeferred<boolean>();
     const restoreAgent = vi.fn(() => restored.promise);
@@ -3836,16 +3836,24 @@ describe("AgenC background agent lifecycle", () => {
 
     const first = createTestAgent(agents, params);
     await vi.waitFor(() => expect(restoreAgent).toHaveBeenCalledOnce());
-    await expect(createTestAgent(agents, params)).rejects.toThrow(
-      "canonical session conv-concurrent1 is already being resumed",
-    );
+    const repeated = createTestAgent(agents, params);
+    await expect(
+      createTestAgent(agents, { ...params, provider: "openai" }),
+    ).rejects.toThrow("already being resumed with different authority");
     expect(restoreAgent).toHaveBeenCalledOnce();
 
     restored.resolve(true);
-    await expect(first).resolves.toMatchObject({
-      agentId: "conv-concurrent1",
-      status: "running",
-    });
+    await expect(Promise.all([first, repeated])).resolves.toEqual([
+      expect.objectContaining({
+        agentId: "conv-concurrent1",
+        status: "running",
+      }),
+      expect.objectContaining({
+        agentId: "conv-concurrent1",
+        status: "running",
+      }),
+    ]);
+    expect(restoreAgent).toHaveBeenCalledOnce();
   });
 
   it.each([

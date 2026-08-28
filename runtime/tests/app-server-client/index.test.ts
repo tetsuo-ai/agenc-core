@@ -132,6 +132,31 @@ describe("app-server-client daemon helpers", () => {
     ).rejects.toThrow("matches multiple agents");
   });
 
+  it("prefers the exact canonical agent id over a session alias", async () => {
+    const client = createListClient([
+      {
+        agents: [
+          {
+            agentId: "agent_alias_owner",
+            status: "running",
+            createdAt: "2026-05-06T00:00:00.000Z",
+            activeSessionIds: ["conv-canonical1"],
+          },
+          {
+            agentId: "conv-canonical1",
+            status: "running",
+            createdAt: "2026-05-06T00:00:01.000Z",
+            activeSessionIds: ["session_runtime"],
+          },
+        ],
+      },
+    ]);
+
+    await expect(
+      findAgenCDaemonAgentBySessionId(client as never, "conv-canonical1"),
+    ).resolves.toMatchObject({ agentId: "conv-canonical1" });
+  });
+
   it("rolls back the skills watcher when daemon-only setup fails", async () => {
     vi.resetModules();
     const watcherStart = vi.fn().mockResolvedValue(undefined);

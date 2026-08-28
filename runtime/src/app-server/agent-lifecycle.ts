@@ -26,6 +26,7 @@ import {
   resolve,
 } from "node:path";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import type { RunRuntimeSettingsSnapshot } from "../contracts/run-contracts.js";
 import { cloneFrozenRuntimeSettingsSnapshot } from "../state/runtime-settings-snapshot.js";
 
@@ -504,7 +505,13 @@ export class AgenCDaemonAgentManager {
   #shutdownDisposition: "cancel" | "suspend_idle" = "cancel";
   #activeCreates = 0;
   readonly #createWaiters = new Set<() => void>();
-  readonly #pendingResumeCreates = new Set<string>();
+  readonly #pendingResumeCreates = new Map<
+    string,
+    {
+      readonly params: AgentCreateParams;
+      readonly result: Promise<AgentCreateResult>;
+    }
+  >();
   readonly #pendingRunnerTerminations = new Map<
     string,
     PendingRunnerTermination
@@ -541,9 +548,49 @@ export class AgenCDaemonAgentManager {
     this.#voidBudgetHoldsForAgents = options.voidBudgetHoldsForAgents;
   }
 
-  async createAgent(params: AgentCreateParams): Promise<AgentCreateResult> {
+  createAgent(params: AgentCreateParams): Promise<AgentCreateResult> {
+    const resumeSessionId = normalizeNonEmpty(params.resumeSessionId);
+    if (resumeSessionId === undefined) {
+      return this.#createAgentOnce(params);
+    }
+    const pending = this.#pendingResumeCreates.get(resumeSessionId);
+    if (pending !== undefined) {
+      if (!isDeepStrictEqual(pending.params, params)) {
+        return Promise.reject(
+          new AgenCDaemonAgentLifecycleError(
+            "INVALID_ARGUMENT",
+            `canonical session ${resumeSessionId} is already being resumed with different authority`,
+          ),
+        );
+      }
+      return pending.result;
+    }
+
+    const result = this.#createAgentOnce(params);
+    const reservation = {
+      params: structuredClone(params),
+      result,
+    };
+    this.#pendingResumeCreates.set(resumeSessionId, reservation);
+    void result.then(
+      () => {
+        if (this.#pendingResumeCreates.get(resumeSessionId) === reservation) {
+          this.#pendingResumeCreates.delete(resumeSessionId);
+        }
+      },
+      () => {
+        if (this.#pendingResumeCreates.get(resumeSessionId) === reservation) {
+          this.#pendingResumeCreates.delete(resumeSessionId);
+        }
+      },
+    );
+    return result;
+  }
+
+  async #createAgentOnce(
+    params: AgentCreateParams,
+  ): Promise<AgentCreateResult> {
     const finishCreate = this.#beginCreate();
-    let reservedResumeSessionId: string | undefined;
     let resumeProof: ResumeSourceProof | undefined;
     let primaryFailure: unknown;
     let createFailed = false;
@@ -614,14 +661,6 @@ export class AgenCDaemonAgentManager {
         );
       }
       if (resumeSessionId !== undefined) {
-        if (this.#pendingResumeCreates.has(resumeSessionId)) {
-          throw new AgenCDaemonAgentLifecycleError(
-            "INVALID_ARGUMENT",
-            `canonical session ${resumeSessionId} is already being resumed`,
-          );
-        }
-        this.#pendingResumeCreates.add(resumeSessionId);
-        reservedResumeSessionId = resumeSessionId;
         const existing = await this.#state.with(
           (state) =>
             state.agents.get(resumeSessionId) ??
@@ -1111,13 +1150,7 @@ export class AgenCDaemonAgentManager {
           }
         }
       } finally {
-        try {
-          if (reservedResumeSessionId !== undefined) {
-            this.#pendingResumeCreates.delete(reservedResumeSessionId);
-          }
-        } finally {
-          finishCreate();
-        }
+        finishCreate();
       }
       if (cleanupErrors.length > 0) {
         if (createFailed) {

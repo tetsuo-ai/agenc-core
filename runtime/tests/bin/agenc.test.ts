@@ -3015,6 +3015,77 @@ describe("main() smoke", () => {
     }
   });
 
+  it("resumeTUIEntry attaches a matching live agent that wins the cold-resume race", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-raced-resume-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-raced-resume-cwd-"));
+    const prevEnv = { ...process.env };
+    const conversationId = "conv-racedresume1";
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    const rolloutPath = await writeResumeRolloutForTest(
+      tmpCwd,
+      conversationId,
+      tmpHome,
+    );
+    const rolloutIdentity = await lstat(rolloutPath, { bigint: true });
+    const daemon = installDaemonCliDepsForTest({
+      agentId: conversationId,
+      sessionId: conversationId,
+      cwd: tmpCwd,
+      liveAgent: false,
+      resumePromptAgentError: new Error(
+        `canonical session ${conversationId} already has a live daemon agent`,
+      ),
+    });
+    daemon.findAgentBySessionId
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        agentId: conversationId,
+        agentPath: "/root",
+        objective: "retained prompt",
+        status: "running",
+        createdAt: "2026-08-19T00:00:00.000Z",
+        cwd: tmpCwd,
+        activeSessionIds: [conversationId],
+        metadata: {
+          agentPath: "/root",
+          canonicalRolloutPath: rolloutPath,
+          canonicalRolloutDev: rolloutIdentity.dev.toString(10),
+          canonicalRolloutIno: rolloutIdentity.ino.toString(10),
+        },
+      });
+    const waitUntilExit = vi.fn().mockResolvedValue(undefined);
+    vi.doMock("../tui/main.js", () => ({
+      bootTUI: vi.fn(async () => ({
+        unmount: vi.fn(),
+        waitUntilExit,
+      })),
+    }));
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      await expect(resumeTUIEntry({ resumeId: conversationId })).resolves.toBe(
+        0,
+      );
+      expect(daemon.resumePromptAgent).toHaveBeenCalledOnce();
+      expect(daemon.findAgentBySessionId).toHaveBeenCalledTimes(2);
+      expect(daemon.requests).toContainEqual({
+        method: "agent.attach",
+        params: expect.objectContaining({ agentId: conversationId }),
+      });
+      expect(waitUntilExit).toHaveBeenCalledOnce();
+    } finally {
+      vi.doUnmock("../tui/main.js");
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
   it("attach binds local TUI work to the daemon session runtime options", async () => {
     const tmpHome = await mkdtemp(join(tmpdir(), "agenc-bare-attach-home-"));
     const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-bare-attach-cwd-"));

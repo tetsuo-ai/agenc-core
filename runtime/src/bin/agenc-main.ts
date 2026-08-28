@@ -5235,11 +5235,20 @@ async function resumeResolvedTUIEntry(
             options.agencHome,
           );
           assertResumeCwdProof(authoritative.cwd, cwdProof);
-          agent = await resumeColdDaemonSession({
-            deps,
-            descriptor: authoritative,
-            startupCliFlags,
-          });
+          try {
+            agent = await resumeColdDaemonSession({
+              deps,
+              descriptor: authoritative,
+              startupCliFlags,
+            });
+          } catch (resumeError) {
+            const raced = await deps.findAgentBySessionId(
+              daemonClient,
+              authoritative.sessionId,
+            );
+            if (raced === null) throw resumeError;
+            agent = raced;
+          }
         } else {
           agent = live;
         }

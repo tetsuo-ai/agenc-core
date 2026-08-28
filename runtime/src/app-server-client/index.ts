@@ -291,17 +291,24 @@ export async function findAgenCDaemonAgentBySessionId(
   sessionId: string,
 ): Promise<AgentSummary | null> {
   const agents = await listAgenCDaemonAgents(client);
-  const matches = agents.filter(
+  const live = agents.filter(
     (agent) =>
-      (agent.agentId === sessionId ||
-        agent.activeSessionIds?.includes(sessionId) === true) &&
       (agent.status === "running" || agent.status === "idle") &&
       !isPersistedAgentWithoutRuntime(agent),
   );
-  if (matches.length > 1) {
+  const exact = live.filter((agent) => agent.agentId === sessionId);
+  if (exact.length > 1) {
     throw new Error(`daemon session matches multiple agents: ${sessionId}`);
   }
-  return matches[0] ?? null;
+  if (exact[0] !== undefined) return exact[0];
+
+  const aliases = live.filter(
+    (agent) => agent.activeSessionIds?.includes(sessionId) === true,
+  );
+  if (aliases.length > 1) {
+    throw new Error(`daemon session matches multiple agents: ${sessionId}`);
+  }
+  return aliases[0] ?? null;
 }
 
 function isPersistedAgentWithoutRuntime(agent: AgentSummary): boolean {
