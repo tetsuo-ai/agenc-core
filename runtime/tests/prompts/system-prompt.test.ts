@@ -672,7 +672,7 @@ describe("assembleSystemPrompt", () => {
     expect(text).toContain("isolated context");
   });
 
-  test("permissions section is injected when a permissionContext is supplied", async () => {
+  test("permissions use the independent effective sandbox authority", async () => {
     const { createEmptyToolPermissionContext } = await import(
       "../permissions/types.js"
     );
@@ -685,8 +685,8 @@ describe("assembleSystemPrompt", () => {
 
     // Section header is present and lives in the dynamic tail.
     expect(text).toContain("# Permission Mode: plan");
-    // AgenC implementationed sandbox + approval prose lands in the prompt.
-    expect(text).toContain("`sandbox_mode` is `read-only`");
+    // Effective sandbox and approval authorities stay on separate axes.
+    expect(text).toContain("`sandbox_mode` is `workspace-write`");
     expect(text).toContain("`approval_policy` is `unless-trusted`");
     // Network-access placeholder is fully resolved.
     expect(text).not.toContain("{{network_access}}");

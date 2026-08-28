@@ -699,6 +699,13 @@ describe.sequential("git process sandbox boundaries", () => {
           cwd: root,
           config: { model: "grok-4.5" },
           configSnapshot: { model: "grok-4.5" },
+          sandboxPolicy: { value: "workspace_write" },
+          networkSandboxPolicy: {
+            allowlist: [],
+            denylist: [],
+            allowManagedDomainsOnly: false,
+            enabled: false,
+          },
         } as never,
         simpleMode: false,
       }),

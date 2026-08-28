@@ -38,6 +38,13 @@ function fakeCtx(cwd: string): TurnContext {
     config: cfg as unknown,
     configSnapshot: cfg as unknown,
     cwd,
+    sandboxPolicy: { value: "workspace_write" },
+    networkSandboxPolicy: {
+      allowlist: [],
+      denylist: [],
+      allowManagedDomainsOnly: false,
+      enabled: false,
+    },
   } as unknown as TurnContext;
 }
 

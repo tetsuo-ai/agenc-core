@@ -1083,6 +1083,13 @@ describe("I-47: maybeReloadConfigBetweenTurns", () => {
         configSnapshot: base,
         cwd: "/tmp",
         modelInfo: { slug: "grok-4.3" },
+        sandboxPolicy: { value: "workspace_write" },
+        networkSandboxPolicy: {
+          allowlist: [],
+          denylist: [],
+          allowManagedDomainsOnly: false,
+          enabled: false,
+        },
       } as never,
     });
     expect(__systemPromptSectionCacheSize()).toBeGreaterThan(0);
@@ -1362,6 +1369,13 @@ describe("system-prompt assembly: project instructions + memory", () => {
         configSnapshot: cfg,
         cwd: "/tmp",
         modelInfo: { slug: "grok-4.3" },
+        sandboxPolicy: { value: "workspace_write" },
+        networkSandboxPolicy: {
+          allowlist: [],
+          denylist: [],
+          allowManagedDomainsOnly: false,
+          enabled: false,
+        },
       } as never,
       projectInstructions: "## project\n\nFollow repo AGENC.md guidance.",
       memoryPrompt: "# Memory\n\nCurrent memory guidance.",
@@ -1589,6 +1603,13 @@ describe("runSingleTurn seam (R1 multi-turn future-proofing)", () => {
       configSnapshot: cfg,
       cwd: "/tmp",
       modelInfo: { slug: cfg.model },
+      sandboxPolicy: { value: "workspace_write" },
+      networkSandboxPolicy: {
+        allowlist: [],
+        denylist: [],
+        allowManagedDomainsOnly: false,
+        enabled: false,
+      },
     } as never;
 
     await withRunSingleTurnRuntime(async () => {

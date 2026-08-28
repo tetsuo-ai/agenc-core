@@ -616,6 +616,13 @@ describe("AnthropicProvider", () => {
           configSnapshot: config,
           cwd,
           modelInfo: { slug: "claude-3-7-sonnet" },
+          sandboxPolicy: { value: "workspace_write" },
+          networkSandboxPolicy: {
+            allowlist: [],
+            denylist: [],
+            allowManagedDomainsOnly: false,
+            enabled: false,
+          },
         } as never,
         projectInstructions: projectInstructions?.content,
         provider: "anthropic",
