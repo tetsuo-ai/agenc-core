@@ -193,21 +193,15 @@ describe("hook authority regressions", () => {
     }
   });
 
-  test("automation hook authority has one parser and three explicit ingresses", () => {
-    const automationResolverSites = productionSources(SOURCE_ROOT)
+  test("hook authority has one runtime-option parser", () => {
+    const duplicateResolverSites = productionSources(SOURCE_ROOT)
       .filter((path) =>
-        /\bresolveAutomationAgentRuntimeOptions\s*\(/u.test(
+        /\bresolveAutomationAgentRuntimeOptions\b/u.test(
           readFileSync(path, "utf8"),
         ),
       )
-      .map((path) => relative(SOURCE_ROOT, path).replaceAll("\\", "/"))
-      .sort();
-    expect(automationResolverSites).toEqual([
-      "app-server/agent-cli.ts",
-      "app-server/workflow/session-adapters.ts",
-      "bin/agenc-main.ts",
-      "session/runtime-options.ts",
-    ]);
+      .map((path) => relative(SOURCE_ROOT, path).replaceAll("\\", "/"));
+    expect(duplicateResolverSites).toEqual([]);
 
     const environmentReaderSites = productionSources(SOURCE_ROOT)
       .filter((path) =>

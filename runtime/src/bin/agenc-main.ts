@@ -67,7 +67,6 @@ import {
 } from "../session/autonomous-mode.js";
 import type { TurnContext } from "../session/turn-context.js";
 import {
-  resolveAutomationAgentRuntimeOptions,
   resolveAgentRuntimeOptions,
   runWithAgentRuntimeOptions,
   validateAgentRuntimeOptions,
@@ -2005,7 +2004,7 @@ export async function oneShotCLI(
     const startupCliFlags =
       parsedStartupCliFlags ?? readStartupCliFlags(process.argv);
     const sessionEnv = process.env;
-    const runtimeOptions = resolveAutomationAgentRuntimeOptions(sessionEnv, {
+    const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
       simpleMode: startupCliFlags.simpleMode === true,
     });
     validateAgencHome();

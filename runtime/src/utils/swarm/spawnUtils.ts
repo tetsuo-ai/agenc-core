@@ -11,10 +11,68 @@ import { isInBundledMode } from '../bundledMode.js'
 import type { PermissionMode } from '../permissions/PermissionMode.js'
 import { getTeammateModeFromSnapshot } from './backends/teammateModeSnapshot.js'
 import { TEAMMATE_COMMAND_ENV_VAR } from './constants.js'
-import { getActiveAgentRuntimeOptions } from '../../session/runtime-options.js'
+import {
+  getActiveAgentRuntimeOptions,
+  projectAgentRuntimeOptionsEnvironment,
+} from '../../session/runtime-options.js'
 import { getAgenCHomeDir } from '../envUtils.js'
 import { getSelectedProviderSelection } from '../model/providers.js'
 import { DANGEROUS_BYPASS_FLAG } from '../../bin/startup-flags.js'
+import { requireCurrentRuntimeSession } from '../../session/current-session.js'
+import { canonicalSessionEnvironmentKeys } from '../../session/environment.js'
+
+const PORTABLE_ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/u
+const ENVIRONMENT_CONTROL_CHARACTERS = /[\u0000-\u001f\u007f]/u
+const DERIVED_CHILD_ENVIRONMENT_KEYS = new Set([
+  'PWD',
+  'OLDPWD',
+  'INIT_CWD',
+  'SHLVL',
+  '_',
+])
+
+function requireTeammateRuntimeOptions() {
+  const options = getActiveAgentRuntimeOptions()
+  if (options === undefined) {
+    throw new Error(
+      'Teammate spawn requires captured parent runtime-options authority',
+    )
+  }
+  return options
+}
+
+function isSafeChildBaseEnvironmentEntry(
+  entry: readonly [string, string | undefined],
+): entry is [string, string] {
+  const [key, value] = entry
+  return (
+    typeof value === 'string' &&
+    PORTABLE_ENVIRONMENT_NAME.test(key) &&
+    !ENVIRONMENT_CONTROL_CHARACTERS.test(value) &&
+    !key.startsWith('AGENC_') &&
+    key !== 'AGENCCODE' &&
+    !DERIVED_CHILD_ENVIRONMENT_KEYS.has(key)
+  )
+}
+
+function assertSafeAuthoritativeEnvironmentEntry(
+  key: string,
+  value: string,
+): void {
+  if (!PORTABLE_ENVIRONMENT_NAME.test(key)) {
+    throw new Error(`Cannot inherit non-portable environment name: ${key}`)
+  }
+  if (ENVIRONMENT_CONTROL_CHARACTERS.test(value)) {
+    throw new Error(
+      `Cannot inherit ${key}: environment values must not contain control characters`,
+    )
+  }
+}
+
+function quoteEnvironmentAssignment(key: string, value: string): string {
+  assertSafeAuthoritativeEnvironmentEntry(key, value)
+  return quote([`${key}=${value}`])
+}
 
 /**
  * Gets the command to use for spawning teammate processes.
@@ -44,6 +102,7 @@ export function buildInheritedCliFlags(options?: {
 }): string {
   const flags: string[] = []
   const { planModeRequired, permissionMode, model } = options || {}
+  const runtimeOptions = requireTeammateRuntimeOptions()
 
   // Propagate permission mode to teammates, but NOT if plan mode is required
   // Plan mode takes precedence over bypass permissions for safety
@@ -59,8 +118,11 @@ export function buildInheritedCliFlags(options?: {
     flags.push('--permission-mode auto')
   }
 
-  if (model) {
-    flags.push(`--model ${quote([model])}`)
+  const childModel = model ?? getSelectedProviderSelection().model
+  flags.push(`--model ${quote([childModel])}`)
+
+  if (runtimeOptions.simpleMode) {
+    flags.push('--bare')
   }
 
   // Propagate --plugin-dir for each inline plugin
@@ -85,84 +147,55 @@ export function buildInheritedCliFlags(options?: {
 }
 
 /**
- * Captured session-environment variables that must be explicitly forwarded to
- * tmux-spawned teammates. Tmux may start a new login shell that doesn't inherit
- * the client's environment, so these values come from the session-owned
- * provider authority rather than the daemon process environment.
- */
-const TEAMMATE_ENV_VARS = [
-  'GITHUB_TOKEN',
-  'GH_TOKEN',
-  'OPENAI_API_KEY',
-  'OPENAI_BASE_URL',
-  'GEMINI_API_KEY',
-  'GEMINI_BASE_URL',
-  'GOOGLE_API_KEY',
-  'MISTRAL_API_KEY',
-  'MISTRAL_BASE_URL',
-  // Custom API endpoint
-  'ANTHROPIC_BASE_URL',
-  // Upstream proxy — the parent's MITM relay is reachable from teammates
-  // (same container network). Forward the proxy vars so teammates route
-  // customer-configured upstream traffic through the relay for credential
-  // injection. Without these, teammates bypass the proxy entirely.
-  'HTTPS_PROXY',
-  'https_proxy',
-  'HTTP_PROXY',
-  'http_proxy',
-  'NO_PROXY',
-  'no_proxy',
-  'SSL_CERT_FILE',
-  'NODE_EXTRA_CA_CERTS',
-  'REQUESTS_CA_BUNDLE',
-  'CURL_CA_BUNDLE',
-  // Source builds may rely on user shell PATH for rg/node/bun and other tools.
-  // Forward it so teammates resolve the same toolchain as the parent session.
-  'PATH',
-] as const
-
-/**
- * Builds the `env KEY=VALUE ...` string for teammate spawn commands.
+ * Builds the `env -i -- KEY=VALUE ...` arguments for teammate spawn commands.
  * Always includes AGENCCODE=1 and AGENC_EXPERIMENTAL_AGENT_TEAMS=1,
  * plus the provider, home, and subprocess inputs captured for this session.
  */
-export function buildInheritedEnvVars(): string {
+export function buildInheritedEnvVars(
+  explicitBaseEnvironment?: Readonly<Record<string, string | undefined>>,
+): string {
   const selection = getSelectedProviderSelection()
-  const environment = selection.environment
-  const envVars = [
-    'AGENCCODE=1',
-    'AGENC_EXPERIMENTAL_AGENT_TEAMS=1',
-    // Teammates should inherit the leader-selected provider route instead of
-    // replaying persisted config provider defaults.
-    'AGENC_PROVIDER_MANAGED_BY_HOST=1',
-    `AGENC_PROVIDER=${quote([selection.provider])}`,
-    `AGENC_HOME=${quote([getAgenCHomeDir()])}`,
-  ]
-
-  const runtimeOptions = getActiveAgentRuntimeOptions()
-  if (runtimeOptions?.remoteMode) envVars.push('AGENC_REMOTE=1')
-  if (runtimeOptions?.remoteMemoryRoot !== undefined) {
-    envVars.push(
-      `AGENC_REMOTE_MEMORY_DIR=${quote([runtimeOptions.remoteMemoryRoot])}`,
-    )
+  const runtimeOptions = requireTeammateRuntimeOptions()
+  const baseEnvironment =
+    explicitBaseEnvironment ??
+    requireCurrentRuntimeSession('teammate child environment').services
+      .userShell.childEnvironment
+  const capturedEnvironment: Record<string, string> = Object.fromEntries(
+    Object.entries(baseEnvironment).filter(isSafeChildBaseEnvironmentEntry),
+  )
+  for (const key of canonicalSessionEnvironmentKeys(
+    baseEnvironment,
+    selection.environment,
+  )) {
+    delete capturedEnvironment[key]
   }
-  if (runtimeOptions?.coworkMemoryPathOverride !== undefined) {
-    envVars.push(
-      `AGENC_COWORK_MEMORY_PATH_OVERRIDE=${quote([runtimeOptions.coworkMemoryPathOverride])}`,
-    )
-  }
-  if (runtimeOptions?.coworkMemoryExtraGuidelines !== undefined) {
-    envVars.push(
-      `AGENC_COWORK_MEMORY_EXTRA_GUIDELINES=${quote([runtimeOptions.coworkMemoryExtraGuidelines])}`,
-    )
-  }
-
-  for (const key of TEAMMATE_ENV_VARS) {
-    const value = environment[key]
+  for (const [key, value] of Object.entries(selection.environment)) {
+    // The child model is always an explicit CLI selector. Do not carry a stale
+    // lower-precedence AGENC_MODEL captured before an in-session model switch.
+    if (key === 'AGENC_MODEL') continue
     if (value !== undefined && value !== '') {
-      envVars.push(`${key}=${quote([value])}`)
+      assertSafeAuthoritativeEnvironmentEntry(key, value)
+      capturedEnvironment[key] = value
     }
   }
-
-  return envVars.join(' ')
+  const environment = {
+    ...projectAgentRuntimeOptionsEnvironment(
+      runtimeOptions,
+      capturedEnvironment,
+    ),
+    AGENCCODE: '1',
+    AGENC_EXPERIMENTAL_AGENT_TEAMS: '1',
+    // Teammates inherit the resolved provider route instead of replaying a
+    // persisted default that may belong to another daemon client.
+    AGENC_PROVIDER_MANAGED_BY_HOST: '1',
+    AGENC_PROVIDER: selection.provider,
+    AGENC_HOME: getAgenCHomeDir(),
+  }
+  return [
+    '-i',
+    '--',
+    ...Object.entries(environment).map(([key, value]) =>
+      quoteEnvironmentAssignment(key, value),
+    ),
+  ].join(' ')
 }

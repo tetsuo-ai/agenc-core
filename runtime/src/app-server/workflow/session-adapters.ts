@@ -88,7 +88,7 @@ import type {
 } from "./verified-change-controller.js";
 import type { RunUsageTotals } from "../../contracts/run-contracts.js";
 import {
-  resolveAutomationAgentRuntimeOptions,
+  resolveAgentRuntimeOptions,
 } from "../../session/runtime-options.js";
 import { boundedWorkflowDiagnostic } from "../../workflow/diagnostics.js";
 import {
@@ -599,7 +599,7 @@ export function createWorkflowSessionSeams(
     ...options.env,
     AGENC_HOME: options.agencHome,
   });
-  const runtimeOptions = resolveAutomationAgentRuntimeOptions(environment);
+  const runtimeOptions = resolveAgentRuntimeOptions(environment);
   const entries = new Map<string, Promise<RunSessionEntry>>();
   const worktreeRunIds = new Map<string, string>();
 

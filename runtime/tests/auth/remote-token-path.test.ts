@@ -151,8 +151,23 @@ describe("remote descriptor credential storage", () => {
     process.env.AGENC_REMOTE_TOKEN_DIR = "/remote/tokens";
 
     const { buildInheritedEnvVars } = await loadSpawnUtils();
+    const { runWithAgentRuntimeOptions } = await import(
+      "../session/runtime-options.js"
+    );
+    const runtimeOptions = Object.freeze({
+      simpleMode: false,
+      stdinDataMode: false,
+      remoteMode: false,
+      sessionTempRoot: "/tmp/agenc-remote-token-test-temp",
+      pluginStorageRoot: "/tmp/agenc-remote-token-test-plugins",
+      allowUntrustedHooks: false,
+    });
 
-    expect(buildInheritedEnvVars()).not.toContain("AGENC_REMOTE_TOKEN_DIR");
+    expect(
+      runWithAgentRuntimeOptions(runtimeOptions, () =>
+        buildInheritedEnvVars({ HOME: "/tmp", PATH: "/usr/bin:/bin" }),
+      ),
+    ).not.toContain("AGENC_REMOTE_TOKEN_DIR");
   });
 
   it("isolates one-shot descriptor caches by explicit home and environment", async () => {

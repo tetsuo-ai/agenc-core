@@ -106,7 +106,7 @@ sandbox startup fail open, add sandbox exceptions, or install
 `tui.keybindings` (including command-bearing mappings). Plugin defaults also
 cannot install keybindings. Suppressed values are reported as ignored. Before
 the project is trusted, only restrictive `permissions`, `sandbox_mode`, and
-`sandbox` values are active. An automation session that captured
+`sandbox` values are active. A session that captured
 `runtimeOptions.allowUntrustedHooks` may also retain the project and local
 `[hooks]` command maps for the session hook policy to evaluate. This exception
 does not retain any other repository executable setting. Project and local

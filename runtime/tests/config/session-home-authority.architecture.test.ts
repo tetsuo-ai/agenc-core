@@ -201,8 +201,10 @@ describe("session home authority architecture", () => {
 
     expect(spawnUtils).toContain("getSelectedProviderSelection()")
     expect(spawnUtils).toContain("getAgenCHomeDir()")
-    expect(spawnUtils).toContain("const value = environment[key]")
-    expect(spawnUtils).not.toContain("const value = process.env[key]")
+    expect(spawnUtils).toContain("Object.entries(selection.environment)")
+    expect(spawnUtils).toContain("requireCurrentRuntimeSession(")
+    expect(spawnUtils).toContain("'-i'")
+    expect(spawnUtils).not.toContain("process.env[key]")
   });
 
   test("does not retain dead process-global activity or subprocess proxy registries", () => {

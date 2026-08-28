@@ -5,6 +5,8 @@ type SpawnFlagState = {
   readonly inlinePlugins?: readonly string[]
   readonly settingsPath?: string
   readonly teammateMode?: string
+  readonly simpleMode?: boolean
+  readonly selectedModel?: string
 }
 
 afterEach(() => {
@@ -31,7 +33,38 @@ async function loadSpawnUtils(state: SpawnFlagState = {}) {
     }),
   )
 
-  return import('../../../src/utils/swarm/spawnUtils.js')
+  const spawnUtils = await import('../../../src/utils/swarm/spawnUtils.js')
+  const { runWithAgentRuntimeOptions } = await import(
+    '../../../src/session/runtime-options.js'
+  )
+  const { runWithStartupProviderSelection } = await import(
+    '../../../src/utils/model/providers.js'
+  )
+  const runtimeOptions = Object.freeze({
+    simpleMode: state.simpleMode ?? false,
+    stdinDataMode: false,
+    remoteMode: false,
+    sessionTempRoot: '/tmp/agenc-spawn-flags-temp',
+    pluginStorageRoot: '/tmp/agenc-spawn-flags-plugins',
+    allowUntrustedHooks: false,
+  })
+  return {
+    ...spawnUtils,
+    buildInheritedCliFlags: (
+      options?: Parameters<typeof spawnUtils.buildInheritedCliFlags>[0],
+    ) =>
+      runWithStartupProviderSelection(
+        {
+          provider: 'grok',
+          model: state.selectedModel ?? 'leader-model',
+          environment: {},
+        },
+        () =>
+          runWithAgentRuntimeOptions(runtimeOptions, () =>
+            spawnUtils.buildInheritedCliFlags(options),
+          ),
+      ),
+  }
 }
 
 describe('buildInheritedCliFlags', () => {
@@ -50,7 +83,7 @@ describe('buildInheritedCliFlags', () => {
     const { buildInheritedCliFlags } = await loadSpawnUtils()
 
     expect(buildInheritedCliFlags({ permissionMode: 'default' })).toBe(
-      '--teammate-mode default',
+      '--model leader-model --teammate-mode default',
     )
   })
 
@@ -60,7 +93,7 @@ describe('buildInheritedCliFlags', () => {
     })
 
     expect(buildInheritedCliFlags({ permissionMode: 'auto' })).toBe(
-      '--permission-mode auto --teammate-mode tmux',
+      '--permission-mode auto --model leader-model --teammate-mode tmux',
     )
   })
 
@@ -77,9 +110,21 @@ describe('buildInheritedCliFlags', () => {
     )
   })
 
-  test('does not infer a model when the caller omits the resolved model', async () => {
-    const { buildInheritedCliFlags } = await loadSpawnUtils()
+  test('uses the bound leader model when the caller omits an override', async () => {
+    const { buildInheritedCliFlags } = await loadSpawnUtils({
+      selectedModel: 'bound-leader-model',
+    })
 
-    expect(buildInheritedCliFlags()).toBe('--teammate-mode default')
+    expect(buildInheritedCliFlags()).toBe(
+      '--model bound-leader-model --teammate-mode default',
+    )
+  })
+
+  test('propagates immutable bare mode from the parent runtime', async () => {
+    const { buildInheritedCliFlags } = await loadSpawnUtils({ simpleMode: true })
+
+    const flags = buildInheritedCliFlags()
+
+    expect(flags).toBe('--model leader-model --bare --teammate-mode default')
   })
 })

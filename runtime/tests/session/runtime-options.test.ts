@@ -17,7 +17,7 @@ import {
   getSessionCoworkMemoryPathOverride,
   getSessionRemoteMemoryRoot,
   isSessionRemoteMode,
-  resolveAutomationAgentRuntimeOptions,
+  projectAgentRuntimeOptionsEnvironment,
   resolveAgentRuntimeOptions,
   resolveCommandExecutionAuthority,
   resolveSessionTempRoot,
@@ -111,27 +111,14 @@ describe("agent runtime options", () => {
     expect(Object.isFrozen(authority.childEnvironment)).toBe(true);
   });
 
-  test("generic ingress ignores automation hook authority in the environment", () => {
+  test("captures hook authority once and preserves typed overrides", () => {
     expect(
       resolveAgentRuntimeOptions({
-        AGENC_ALLOW_UNTRUSTED_HOOKS: "true",
-      }).allowUntrustedHooks,
-    ).toBe(false);
-    expect(() =>
-      resolveAgentRuntimeOptions({
-        AGENC_ALLOW_UNTRUSTED_HOOKS: "not-a-boolean",
-      }),
-    ).not.toThrow();
-  });
-
-  test("automation ingress captures hook authority and preserves overrides", () => {
-    expect(
-      resolveAutomationAgentRuntimeOptions({
         AGENC_ALLOW_UNTRUSTED_HOOKS: "true",
       }).allowUntrustedHooks,
     ).toBe(true);
     expect(
-      resolveAutomationAgentRuntimeOptions(
+      resolveAgentRuntimeOptions(
         {
           AGENC_ALLOW_UNTRUSTED_HOOKS: "true",
         },
@@ -147,10 +134,46 @@ describe("agent runtime options", () => {
       allowUntrustedHooks: false,
     });
     expect(() =>
-      resolveAutomationAgentRuntimeOptions({
+      resolveAgentRuntimeOptions({
         AGENC_ALLOW_UNTRUSTED_HOOKS: "not-a-boolean",
       }),
     ).toThrow("AGENC_ALLOW_UNTRUSTED_HOOKS must be one of");
+  });
+
+  test("round-trips child runtime authority through one environment projection", () => {
+    const sessionTempRoot = join(makeTemporaryDirectory(), "child-temp");
+    const pluginStorageRoot = join(makeTemporaryDirectory(), "child-plugins");
+    const parent = resolveAgentRuntimeOptions(
+      {},
+      {
+        simpleMode: true,
+        remoteMode: true,
+        remoteMemoryRoot: "/tmp/agenc-remote-memory",
+        coworkMemoryPathOverride: "/tmp/agenc-cowork-memory",
+        coworkMemoryExtraGuidelines: "Keep child memory scoped.",
+        posixShellPath: "/bin/bash",
+        commandWrapperArgv: ["env", "BOUND=1", "/bin/bash", "-c"],
+        sessionTempRoot,
+        pluginStorageRoot,
+        allowUntrustedHooks: true,
+      },
+    );
+
+    const projected = projectAgentRuntimeOptionsEnvironment(parent);
+    const child = resolveAgentRuntimeOptions(projected, {
+      simpleMode: parent.simpleMode,
+    });
+
+    expect(child).toEqual(parent);
+    expect(projected).toMatchObject({
+      AGENC_REMOTE: "1",
+      AGENC_SHELL: "/bin/bash",
+      AGENC_TMPDIR: sessionTempRoot,
+      AGENC_PLUGIN_CACHE_DIR: pluginStorageRoot,
+      AGENC_ALLOW_UNTRUSTED_HOOKS: "1",
+    });
+    expect(projected.AGENC_SHELL_PREFIX).toContain("BOUND\\=1");
+    expect(Object.isFrozen(projected)).toBe(true);
   });
 
   test.each([

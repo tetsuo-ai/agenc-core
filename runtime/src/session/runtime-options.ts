@@ -9,7 +9,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, normalize } from "node:path";
-import { parse as parseShellWords, type ParseEntry } from "shell-quote";
+import {
+  parse as parseShellWords,
+  quote as quoteShellWords,
+  type ParseEntry,
+} from "shell-quote";
 import { resolveHomeContext } from "../config/home.js";
 import { isSupportedPosixShellPath } from "../utils/shell/posixShellPath.js";
 import {
@@ -317,29 +321,17 @@ export function assertNoRetiredAgentRuntimeEnvironment(
   );
 }
 
-/**
- * Parse session runtime options without granting automation-only authority from
- * the ambient environment. Explicit typed overrides remain authoritative.
- */
+/** Parse and freeze the complete runtime authority at an ingress boundary. */
 export function resolveAgentRuntimeOptions(
   env: NodeJS.ProcessEnv,
   overrides: Partial<AgentRuntimeOptions> = {},
 ): AgentRuntimeOptions {
-  return resolveAgentRuntimeOptionsAtIngress(env, overrides, false);
-}
-
-/** Parse session runtime options at an explicit automation boundary. */
-export function resolveAutomationAgentRuntimeOptions(
-  env: NodeJS.ProcessEnv,
-  overrides: Partial<AgentRuntimeOptions> = {},
-): AgentRuntimeOptions {
-  return resolveAgentRuntimeOptionsAtIngress(env, overrides, true);
+  return resolveAgentRuntimeOptionsAtIngress(env, overrides);
 }
 
 function resolveAgentRuntimeOptionsAtIngress(
   env: NodeJS.ProcessEnv,
   overrides: Partial<AgentRuntimeOptions>,
-  allowUntrustedHooksFromEnvironment: boolean,
 ): AgentRuntimeOptions {
   assertNoRetiredAgentRuntimeEnvironment(env);
   const parsedWrapper =
@@ -421,11 +413,67 @@ function resolveAgentRuntimeOptionsAtIngress(
     ),
     allowUntrustedHooks:
       overrides.allowUntrustedHooks ??
-      (allowUntrustedHooksFromEnvironment
-        ? parseBoolean(env, "AGENC_ALLOW_UNTRUSTED_HOOKS", false)
-        : false),
+      parseBoolean(env, "AGENC_ALLOW_UNTRUSTED_HOOKS", false),
   };
   return Object.freeze(resolved);
+}
+
+/**
+ * Project a captured runtime authority into the public environment names that
+ * a child AgenC process resolves at its own ingress. `simpleMode` remains the
+ * `--bare` CLI flag; stdin data mode belongs to the parent transport and is not
+ * inherited by interactive teammates.
+ */
+export function projectAgentRuntimeOptionsEnvironment(
+  options: AgentRuntimeOptions,
+  baseEnvironment: Readonly<Record<string, string | undefined>> = {},
+): Readonly<Record<string, string>> {
+  const runtimeEnvironmentKeys = new Set([
+    "AGENC_REMOTE",
+    "AGENC_REMOTE_MEMORY_DIR",
+    "AGENC_COWORK_MEMORY_PATH_OVERRIDE",
+    "AGENC_COWORK_MEMORY_EXTRA_GUIDELINES",
+    "AGENC_SHELL",
+    "AGENC_SHELL_PREFIX",
+    "AGENC_TMPDIR",
+    "AGENC_PLUGIN_CACHE_DIR",
+    "AGENC_ALLOW_UNTRUSTED_HOOKS",
+    // Stdin framing belongs to the parent transport and is deliberately not
+    // projected to an interactive child.
+    "AGENC_USE_DATA_STDIN",
+  ]);
+  const environment: Record<string, string> = Object.fromEntries(
+    Object.entries(baseEnvironment).filter(
+      (entry): entry is [string, string] =>
+        typeof entry[1] === "string" && !runtimeEnvironmentKeys.has(entry[0]),
+    ),
+  );
+  Object.assign(environment, {
+    AGENC_REMOTE: options.remoteMode ? "1" : "0",
+    AGENC_TMPDIR: options.sessionTempRoot,
+    AGENC_PLUGIN_CACHE_DIR: options.pluginStorageRoot,
+    AGENC_ALLOW_UNTRUSTED_HOOKS: options.allowUntrustedHooks ? "1" : "0",
+  });
+  if (options.remoteMemoryRoot !== undefined) {
+    environment.AGENC_REMOTE_MEMORY_DIR = options.remoteMemoryRoot;
+  }
+  if (options.coworkMemoryPathOverride !== undefined) {
+    environment.AGENC_COWORK_MEMORY_PATH_OVERRIDE =
+      options.coworkMemoryPathOverride;
+  }
+  if (options.coworkMemoryExtraGuidelines !== undefined) {
+    environment.AGENC_COWORK_MEMORY_EXTRA_GUIDELINES =
+      options.coworkMemoryExtraGuidelines;
+  }
+  if (options.posixShellPath !== undefined) {
+    environment.AGENC_SHELL = options.posixShellPath;
+  }
+  if (options.commandWrapperArgv !== undefined) {
+    environment.AGENC_SHELL_PREFIX = quoteShellWords([
+      ...options.commandWrapperArgv,
+    ]);
+  }
+  return Object.freeze(environment);
 }
 
 /** Validate and freeze an untrusted daemon wire value. */

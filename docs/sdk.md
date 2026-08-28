@@ -240,8 +240,8 @@ client must resolve permission requests interactively.
 The subprocess transport invokes `agenc -p`, so
 `AGENC_ALLOW_UNTRUSTED_HOOKS` in `options.env`, or in the inherited child
 environment when `options.env` is omitted, is captured as automation startup
-authority. The child does not forward that variable into daemon environment
-state.
+authority. The child sends the captured typed value to the daemon; it does not
+install the variable as mutable daemon environment state.
 
 ## Runnable example
 

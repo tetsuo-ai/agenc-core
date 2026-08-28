@@ -329,7 +329,7 @@ describe("app-server-client daemon helpers", () => {
           permissionMode: "acceptEdits",
           runtimeOptions: expect.objectContaining({
             simpleMode: false,
-            allowUntrustedHooks: false,
+            allowUntrustedHooks: true,
           }),
         }),
       );
@@ -411,7 +411,7 @@ describe("app-server-client daemon helpers", () => {
           instructions: "describe this",
           cwd: "/workspace",
           runtimeOptions: expect.objectContaining({
-            allowUntrustedHooks: false,
+            allowUntrustedHooks: true,
           }),
           provider: "grok",
           model: "grok-4.3",

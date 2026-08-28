@@ -180,7 +180,7 @@ path = "./plugins/my-plugin"
 
 All plugin enablement entries use `plugins.plugins`; there is no parallel
 enablement map. External plugin and skill command, HTTP, prompt, and agent hook
-effects require workspace trust. An explicit automation capability can permit
+effects require workspace trust. An explicit operator capability can permit
 command effects in an untrusted workspace, but it does not permit the other
 external effect types. See [hooks.md](hooks.md).
 

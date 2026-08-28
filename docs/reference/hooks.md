@@ -91,17 +91,17 @@ runtime options, project trust, and hook effect before anything runs.
 - Internal callback and function hooks use code already loaded by AgenC. They
   do not require workspace trust.
 - Command, HTTP, prompt, and agent hook effects require a trusted workspace.
-- An explicit automation session may set `AGENC_ALLOW_UNTRUSTED_HOOKS=1` at
-  startup to permit command effects in an untrusted workspace. The capability
-  also covers command-backed `statusLine`, `fileSuggestion`, and `autoFix`.
-  It never permits HTTP, prompt, or agent effects.
-- `agenc -p`, `agenc agent start`, and verified-run workflow startup capture
-  the variable once as `runtimeOptions.allowUntrustedHooks`. TUI startup, cold
-  TUI resume, `createSession()` in the SDK, and generic daemon client helpers
-  ignore the variable. A daemon client using `spawnAgent()` can send the typed
-  capability explicitly after it has vetted the workspace.
-- AgenC does not forward the variable into the daemon environment. Changing a
-  process environment after session creation cannot change the captured value.
+- An operator may set `AGENC_ALLOW_UNTRUSTED_HOOKS=1` at startup to permit
+  command effects in an untrusted workspace. AgenC captures the value once as
+  `runtimeOptions.allowUntrustedHooks`. The capability also covers
+  command-backed `statusLine`, `fileSuggestion`, and `autoFix`. It never
+  permits HTTP, prompt, or agent effects.
+- Pane teammates inherit the captured boolean through the same child runtime
+  projection as shell, temporary-directory, and plugin-storage authority.
+  AgenC does not install it as mutable shared daemon state, so later process
+  environment changes cannot alter a running session.
+- SDK embedders pass the typed capability explicitly after vetting the
+  workspace.
 - AgenC redacts secrets from configured-hook diagnostics where that path is
   wired (`configured-hooks.ts`).
 
