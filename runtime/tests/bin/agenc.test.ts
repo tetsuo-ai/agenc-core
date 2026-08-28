@@ -1798,6 +1798,175 @@ describe("main() smoke", () => {
     }
   });
 
+  it("oneShotCLI ignores a marked recoverable nested tool error and waits for the turn terminal", async () => {
+    const tmpHome = await mkdtemp(join(tmpdir(), "agenc-tool-error-home-"));
+    const tmpCwd = await mkdtemp(join(tmpdir(), "agenc-tool-error-cwd-"));
+    const prevEnv = { ...process.env };
+
+    process.env.AGENC_HOME = tmpHome;
+    process.env.AGENC_WORKSPACE = tmpCwd;
+    process.env.AGENC_PROVIDER = "openai";
+    process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
+    process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+    const agentId = "agent_recoverable_tool_error";
+    const sessionId = "session_recoverable_tool_error";
+    installDaemonCliDepsForTest({
+      agentId,
+      sessionId,
+      cwd: tmpCwd,
+      oneShotEvents: [
+        {
+          method: "event.session_event",
+          params: {
+            sessionId,
+            eventId: "recoverable_tool_error",
+            agentId,
+            event: {
+              id: "call_recoverable",
+              type: "error",
+              recoverableToolError: true,
+              payload: {
+                cause: "tool_dispatch_failed",
+                message: "recoverable tool failure",
+              },
+            },
+          },
+        },
+        {
+          method: "event.message_chunk",
+          params: {
+            sessionId,
+            eventId: "delta_after_recovery",
+            agentId,
+            delta: "continued after recovery",
+          },
+        },
+        {
+          method: "event.agent_status",
+          params: {
+            sessionId,
+            eventId: "complete_after_recovery",
+            agentId,
+            status: "idle",
+            runStatus: "completed",
+          },
+        },
+      ],
+    });
+    const stdoutSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+    const stderrSpy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation(() => true);
+
+    try {
+      trustWorkspaceForTest(tmpHome, tmpCwd);
+      await expect(oneShotCLI("recover and continue")).resolves.toBe(0);
+      expect(
+        stdoutSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
+      ).toBe("continued after recovery\n");
+      expect(stderrSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining("recoverable tool failure"),
+      );
+    } finally {
+      stdoutSpy.mockRestore();
+      stderrSpy.mockRestore();
+      for (const key of Object.keys(process.env)) {
+        if (!(key in prevEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, prevEnv);
+      await rm(tmpHome, { recursive: true, force: true });
+      await rm(tmpCwd, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    {
+      label: "an unmarked nested error",
+      terminalEvent: (sessionId: string, agentId: string) => ({
+        method: "event.session_event",
+        params: {
+          sessionId,
+          eventId: "unmarked_nested_error",
+          agentId,
+          event: {
+            id: "call_unmarked",
+            type: "error",
+            payload: {
+              cause: "terminal_failure",
+              message: "unmarked nested failure",
+            },
+          },
+        },
+      }),
+      expectedMessage: "unmarked nested failure",
+    },
+    {
+      label: "event.agent_status error",
+      terminalEvent: (sessionId: string, agentId: string) => ({
+        method: "event.agent_status",
+        params: {
+          sessionId,
+          eventId: "terminal_agent_status",
+          agentId,
+          status: "error",
+          runStatus: "errored",
+          message: "terminal agent status failure",
+        },
+      }),
+      expectedMessage: "terminal agent status failure",
+    },
+  ])(
+    "oneShotCLI still terminalizes $label",
+    async ({ terminalEvent, expectedMessage }) => {
+      const tmpHome = await mkdtemp(
+        join(tmpdir(), "agenc-terminal-error-home-"),
+      );
+      const tmpCwd = await mkdtemp(
+        join(tmpdir(), "agenc-terminal-error-cwd-"),
+      );
+      const prevEnv = { ...process.env };
+
+      process.env.AGENC_HOME = tmpHome;
+      process.env.AGENC_WORKSPACE = tmpCwd;
+      process.env.AGENC_PROVIDER = "openai";
+      process.env.OPENAI_API_KEY = "stub-openai-key-for-test";
+      process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+      const agentId = "agent_terminal_error";
+      const sessionId = "session_terminal_error";
+      installDaemonCliDepsForTest({
+        agentId,
+        sessionId,
+        cwd: tmpCwd,
+        oneShotEvents: [terminalEvent(sessionId, agentId)],
+      });
+      const stdoutSpy = vi
+        .spyOn(process.stdout, "write")
+        .mockImplementation(() => true);
+      const stderrSpy = vi
+        .spyOn(process.stderr, "write")
+        .mockImplementation(() => true);
+
+      try {
+        trustWorkspaceForTest(tmpHome, tmpCwd);
+        await expect(oneShotCLI("fail terminally")).resolves.toBe(1);
+        expect(
+          stderrSpy.mock.calls.map(([chunk]) => String(chunk)).join(""),
+        ).toContain(expectedMessage);
+      } finally {
+        stdoutSpy.mockRestore();
+        stderrSpy.mockRestore();
+        for (const key of Object.keys(process.env)) {
+          if (!(key in prevEnv)) delete process.env[key];
+        }
+        Object.assign(process.env, prevEnv);
+        await rm(tmpHome, { recursive: true, force: true });
+        await rm(tmpCwd, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("oneShotCLI DENIES an unanswerable permission request and terminates instead of hanging", async () => {
     // Regression for the non-interactive one-shot deadlock: the daemon forces
     // --autonomous, so any tool the model invokes that is not on the (empty by

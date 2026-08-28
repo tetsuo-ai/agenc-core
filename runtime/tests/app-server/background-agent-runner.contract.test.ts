@@ -3328,6 +3328,603 @@ describe("AgenC delegate background-agent runner", () => {
     });
   });
 
+  it("[managed-thread] keeps a live tool-scoped error recoverable until the turn terminal", async () => {
+    const { runner, control, session, rolloutItems } = makeTopLevelRunner({
+      conversationId: "session-recoverable-tool-error",
+    });
+    const emitted: JsonObject[] = [];
+    await runner.startAgent({
+      objective: "hi",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    control.sendInput.mockImplementationOnce(async () => {
+      session.emit({
+        id: "turn-recoverable-tool-error",
+        msg: {
+          type: "turn_started",
+          payload: { turnId: "turn-recoverable-tool-error" },
+        },
+      });
+      session.emit({
+        id: "tool-start-recoverable",
+        msg: {
+          type: "tool_call_started",
+          payload: {
+            callId: "call_recoverable",
+            toolName: "file_edit",
+            args: "{}",
+          },
+        },
+      });
+      session.emit({
+        id: "call_recoverable",
+        msg: {
+          type: "error",
+          payload: {
+            cause: "tool_dispatch_failed",
+            message: "edit rejected before mutation",
+          },
+        },
+      });
+      session.emit({
+        id: "tool-complete-recoverable",
+        msg: {
+          type: "tool_call_completed",
+          payload: {
+            callId: "call_recoverable",
+            result: "edit rejected before mutation",
+            isError: true,
+          },
+        },
+      });
+      session.emit({
+        id: "assistant-recovered",
+        msg: {
+          type: "agent_message",
+          payload: { message: "I recovered and continued." },
+        },
+      });
+      session.emit({
+        id: "complete-recovered",
+        msg: {
+          type: "turn_complete",
+          payload: {
+            turnId: "turn-recoverable-tool-error",
+            lastAgentMessage: "I recovered and continued.",
+          },
+        },
+      });
+    });
+
+    await expect(
+      runner.submitAgentMessage("session-recoverable-tool-error", {
+        sessionId: "session_1",
+        content: "make the edit",
+        originalContent: "make the edit",
+        messageId: "message-recoverable-tool-error",
+        streamId: "stream-recoverable-tool-error",
+        acceptedAt: "2026-08-28T00:00:00.000Z",
+      }),
+    ).resolves.toMatchObject({
+      disposition: "started",
+      turnId: "turn-recoverable-tool-error",
+      terminal: { code: 0, message: "I recovered and continued." },
+    });
+    await expect(
+      runner.getAgentSnapshot("session-recoverable-tool-error"),
+    ).resolves.toMatchObject({ status: "idle" });
+    await runner.attachAgentSessionEvents("session-recoverable-tool-error", {
+      sessionId: "session_1",
+      emit: (notification) => emitted.push(notification),
+    });
+
+    const errorNotification = emitted.find((notification) => {
+      const params = notification.params as JsonObject | undefined;
+      const event = params?.event as JsonObject | undefined;
+      return event?.id === "call_recoverable";
+    });
+    expect(errorNotification).toMatchObject({
+      method: "event.session_event",
+      params: {
+        event: {
+          id: "call_recoverable",
+          type: "error",
+          recoverableToolError: true,
+          payload: {
+            cause: "tool_dispatch_failed",
+            message: "edit rejected before mutation",
+          },
+        },
+      },
+    });
+    const canonicalError = rolloutItems.find(
+      (item) =>
+        (item as { payload?: { id?: unknown } }).payload?.id ===
+        "call_recoverable",
+    ) as { payload?: { msg?: { payload?: Record<string, unknown> } } } | undefined;
+    expect(canonicalError?.payload?.msg?.payload).not.toHaveProperty(
+      "recoverableToolError",
+    );
+    expect(emitted).not.toContainEqual(
+      expect.objectContaining({
+        method: "event.agent_status",
+        params: expect.objectContaining({
+          status: "error",
+          message: "edit rejected before mutation",
+        }),
+      }),
+    );
+  });
+
+  it("[managed-thread] keeps parallel tool errors scoped to their independently active calls", async () => {
+    const { runner, control, session } = makeTopLevelRunner({
+      conversationId: "session-parallel-tool-errors",
+    });
+    const emitted: JsonObject[] = [];
+    await runner.startAgent({
+      objective: "hi",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-parallel-tool-errors", {
+      sessionId: "session_1",
+      emit: (notification) => emitted.push(notification),
+    });
+    emitted.length = 0;
+
+    control.sendInput.mockImplementationOnce(async () => {
+      session.emit({
+        id: "turn-parallel-tool-errors",
+        msg: {
+          type: "turn_started",
+          payload: { turnId: "turn-parallel-tool-errors" },
+        },
+      });
+      for (const callId of ["call_parallel_a", "call_parallel_b"]) {
+        session.emit({
+          id: `start-${callId}`,
+          msg: {
+            type: "tool_call_started",
+            payload: { callId, toolName: "file_edit", args: "{}" },
+          },
+        });
+      }
+      for (const callId of ["call_parallel_a", "call_parallel_b"]) {
+        session.emit({
+          id: callId,
+          msg: {
+            type: "error",
+            payload: {
+              cause: "tool_dispatch_failed",
+              message: `${callId} failed recoverably`,
+            },
+          },
+        });
+        session.emit({
+          id: `complete-${callId}`,
+          msg: {
+            type: "tool_call_completed",
+            payload: {
+              callId,
+              result: `${callId} failed recoverably`,
+              isError: true,
+            },
+          },
+        });
+      }
+      session.emit({
+        id: "complete-parallel-turn",
+        msg: {
+          type: "turn_complete",
+          payload: {
+            turnId: "turn-parallel-tool-errors",
+            lastAgentMessage: "continued after both failures",
+          },
+        },
+      });
+    });
+
+    await expect(
+      runner.submitAgentMessage("session-parallel-tool-errors", {
+        sessionId: "session_1",
+        content: "run both edits",
+        originalContent: "run both edits",
+        messageId: "message-parallel-tool-errors",
+        streamId: "stream-parallel-tool-errors",
+        acceptedAt: "2026-08-28T00:00:30.000Z",
+      }),
+    ).resolves.toMatchObject({
+      terminal: { code: 0, message: "continued after both failures" },
+    });
+    for (const callId of ["call_parallel_a", "call_parallel_b"]) {
+      expect(emitted).toContainEqual(
+        expect.objectContaining({
+          method: "event.session_event",
+          params: expect.objectContaining({
+            event: expect.objectContaining({ id: callId, type: "error" }),
+          }),
+        }),
+      );
+    }
+    expect(emitted).not.toContainEqual(
+      expect.objectContaining({
+        method: "event.agent_status",
+        params: expect.objectContaining({ status: "error" }),
+      }),
+    );
+  });
+
+  it("[managed-thread] terminalizes a same-id error emitted after its tool completion", async () => {
+    const { runner, control, session } = makeTopLevelRunner({
+      conversationId: "session-late-tool-error",
+    });
+    const emitted: JsonObject[] = [];
+    await runner.startAgent({
+      objective: "hi",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-late-tool-error", {
+      sessionId: "session_1",
+      emit: (notification) => emitted.push(notification),
+    });
+    emitted.length = 0;
+
+    control.sendInput.mockImplementationOnce(async () => {
+      session.emit({
+        id: "turn-late-tool-error",
+        msg: {
+          type: "turn_started",
+          payload: { turnId: "turn-late-tool-error" },
+        },
+      });
+      session.emit({
+        id: "start-late-tool-error",
+        msg: {
+          type: "tool_call_started",
+          payload: {
+            callId: "call_late_error",
+            toolName: "file_edit",
+            args: "{}",
+          },
+        },
+      });
+      session.emit({
+        id: "complete-late-tool-error",
+        msg: {
+          type: "tool_call_completed",
+          payload: {
+            callId: "call_late_error",
+            result: "completed",
+            isError: false,
+          },
+        },
+      });
+      session.emit({
+        id: "call_late_error",
+        msg: {
+          type: "error",
+          payload: {
+            cause: "late_failure",
+            message: "failure arrived after tool completion",
+          },
+        },
+      });
+    });
+
+    await expect(
+      runner.submitAgentMessage("session-late-tool-error", {
+        sessionId: "session_1",
+        content: "run edit",
+        originalContent: "run edit",
+        messageId: "message-late-tool-error",
+        streamId: "stream-late-tool-error",
+        acceptedAt: "2026-08-28T00:00:45.000Z",
+      }),
+    ).resolves.toMatchObject({
+      terminal: {
+        code: 1,
+        message: "failure arrived after tool completion",
+      },
+    });
+    await expect(
+      runner.getAgentSnapshot("session-late-tool-error"),
+    ).resolves.toMatchObject({ status: "error" });
+    expect(emitted).toContainEqual(
+      expect.objectContaining({
+        method: "event.agent_status",
+        params: expect.objectContaining({
+          status: "error",
+          message: "failure arrived after tool completion",
+        }),
+      }),
+    );
+  });
+
+  it.each([
+    {
+      label: "completion",
+      boundary: {
+        id: "complete-clears-active-tools",
+        msg: {
+          type: "turn_complete" as const,
+          payload: {
+            turnId: "turn-clears-active-tools",
+            lastAgentMessage: "first turn complete",
+          },
+        },
+      },
+      firstTerminal: { code: 0, message: "first turn complete" },
+    },
+    {
+      label: "interruption",
+      boundary: {
+        id: "abort-clears-active-tools",
+        msg: {
+          type: "turn_aborted" as const,
+          payload: {
+            turnId: "turn-clears-active-tools",
+            reason: "cancelled",
+          },
+        },
+      },
+      firstTerminal: { code: 130, message: "cancelled" },
+    },
+  ])(
+    "[managed-thread] $label clears active tool ids before a later turn",
+    async ({ boundary, firstTerminal }) => {
+      const { runner, control, session } = makeTopLevelRunner({
+        conversationId: `session-${boundary.id}`,
+      });
+      await runner.startAgent({
+        objective: "hi",
+        unattendedAllow: [],
+        unattendedDeny: [],
+      });
+
+      control.sendInput.mockImplementationOnce(async () => {
+        session.emit({
+          id: "turn-clears-active-tools",
+          msg: {
+            type: "turn_started",
+            payload: { turnId: "turn-clears-active-tools" },
+          },
+        });
+        session.emit({
+          id: "start-stale-tool",
+          msg: {
+            type: "tool_call_started",
+            payload: {
+              callId: "call_stale_from_prior_turn",
+              toolName: "file_edit",
+              args: "{}",
+            },
+          },
+        });
+        session.emit(boundary);
+      });
+      await expect(
+        runner.submitAgentMessage(`session-${boundary.id}`, {
+          sessionId: "session_1",
+          content: "first turn",
+          originalContent: "first turn",
+          messageId: `message-first-${boundary.id}`,
+          streamId: `stream-first-${boundary.id}`,
+          acceptedAt: "2026-08-28T00:00:50.000Z",
+        }),
+      ).resolves.toMatchObject({ terminal: firstTerminal });
+
+      control.sendInput.mockImplementationOnce(async () => {
+        session.emit({
+          id: "turn-after-cleared-tools",
+          msg: {
+            type: "turn_started",
+            payload: { turnId: "turn-after-cleared-tools" },
+          },
+        });
+        session.emit({
+          id: "call_stale_from_prior_turn",
+          msg: {
+            type: "error",
+            payload: {
+              cause: "late_prior_turn_error",
+              message: "stale call id is no longer active",
+            },
+          },
+        });
+      });
+      await expect(
+        runner.submitAgentMessage(`session-${boundary.id}`, {
+          sessionId: "session_1",
+          content: "second turn",
+          originalContent: "second turn",
+          messageId: `message-second-${boundary.id}`,
+          streamId: `stream-second-${boundary.id}`,
+          acceptedAt: "2026-08-28T00:00:55.000Z",
+        }),
+      ).resolves.toMatchObject({
+        terminal: { code: 1, message: "stale call id is no longer active" },
+      });
+      await expect(
+        runner.getAgentSnapshot(`session-${boundary.id}`),
+      ).resolves.toMatchObject({ status: "error" });
+    },
+  );
+
+  it("[managed-thread] keeps a turn-correlated error terminal even when a tool is active", async () => {
+    const { runner, control, session } = makeTopLevelRunner({
+      conversationId: "session-terminal-turn-error",
+    });
+    const emitted: JsonObject[] = [];
+    await runner.startAgent({
+      objective: "hi",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+    await runner.attachAgentSessionEvents("session-terminal-turn-error", {
+      sessionId: "session_1",
+      emit: (notification) => emitted.push(notification),
+    });
+    emitted.length = 0;
+
+    control.sendInput.mockImplementationOnce(async () => {
+      session.emit({
+        id: "turn-terminal-error",
+        msg: {
+          type: "turn_started",
+          payload: { turnId: "turn-terminal-error" },
+        },
+      });
+      session.emit({
+        id: "tool-start-terminal",
+        msg: {
+          type: "tool_call_started",
+          payload: {
+            callId: "call_terminal",
+            toolName: "file_edit",
+            args: "{}",
+          },
+        },
+      });
+      session.emit({
+        id: "call_terminal",
+        msg: {
+          type: "error",
+          payload: {
+            cause: "turn_failed",
+            message: "terminal turn failure",
+            turnId: "turn-terminal-error",
+          },
+        },
+      });
+    });
+
+    await expect(
+      runner.submitAgentMessage("session-terminal-turn-error", {
+        sessionId: "session_1",
+        content: "run",
+        originalContent: "run",
+        messageId: "message-terminal-turn-error",
+        streamId: "stream-terminal-turn-error",
+        acceptedAt: "2026-08-28T00:01:00.000Z",
+      }),
+    ).resolves.toMatchObject({
+      disposition: "started",
+      turnId: "turn-terminal-error",
+      terminal: { code: 1, message: "terminal turn failure" },
+    });
+    await expect(
+      runner.getAgentSnapshot("session-terminal-turn-error"),
+    ).resolves.toMatchObject({ status: "error" });
+    expect(emitted).toContainEqual(
+      expect.objectContaining({
+        method: "event.agent_status",
+        params: expect.objectContaining({
+          turnId: "turn-terminal-error",
+          status: "error",
+          runStatus: "errored",
+        }),
+      }),
+    );
+  });
+
+  it("[managed-thread] replays a tool-scoped error as nonterminal and preserves turn correlation", async () => {
+    const event = (id: string, seq: number, msg: Record<string, unknown>) => ({
+      type: "event_msg",
+      payload: { id, eventId: id, seq, msg },
+    });
+    const rolloutItems = [
+      event("user-replay-tool-error", 1, {
+        type: "user_message",
+        payload: {
+          message: "make the edit",
+          messageId: "message-replay-tool-error",
+          acceptedAt: "2026-08-28T00:02:00.000Z",
+        },
+      }),
+      event("turn-replay-tool-error", 2, {
+        type: "turn_started",
+        payload: { turnId: "turn-replay-tool-error" },
+      }),
+      event("tool-start-replay", 3, {
+        type: "tool_call_started",
+        payload: {
+          callId: "call_replay_tool_error",
+          toolName: "file_edit",
+          args: "{}",
+        },
+      }),
+      event("call_replay_tool_error", 4, {
+        type: "error",
+        payload: {
+          cause: "tool_dispatch_failed",
+          message: "recoverable edit failure",
+        },
+      }),
+      event("tool-complete-replay", 5, {
+        type: "tool_call_completed",
+        payload: {
+          callId: "call_replay_tool_error",
+          result: "recoverable edit failure",
+          isError: true,
+        },
+      }),
+      event("assistant-replay-tool-error", 6, {
+        type: "agent_message",
+        payload: { message: "continued after tool failure" },
+      }),
+      event("complete-replay-tool-error", 7, {
+        type: "turn_complete",
+        payload: {
+          turnId: "turn-replay-tool-error",
+          lastAgentMessage: "continued after tool failure",
+        },
+      }),
+    ];
+    const { runner, control } = makeTopLevelRunner({
+      conversationId: "session-replay-tool-error",
+      rolloutItems,
+    });
+    await runner.startAgent({
+      objective: "restored",
+      unattendedAllow: [],
+      unattendedDeny: [],
+    });
+
+    await expect(
+      runner.submitAgentMessage("session-replay-tool-error", {
+        sessionId: "session_1",
+        content: "make the edit",
+        originalContent: "make the edit",
+        messageId: "message-replay-tool-error",
+        streamId: "stream-replay-tool-error",
+        acceptedAt: "2026-08-28T00:03:00.000Z",
+      }),
+    ).resolves.toMatchObject({
+      disposition: "duplicate",
+      duplicateState: "completed",
+      turnId: "turn-replay-tool-error",
+      terminal: { code: 0, message: "continued after tool failure" },
+    });
+    expect(control.sendInput).not.toHaveBeenCalled();
+    await expect(
+      runner.getAgentSessionTranscriptV2("session-replay-tool-error", {
+        sessionId: "session_1",
+      }),
+    ).resolves.toMatchObject({
+      messages: expect.arrayContaining([
+        expect.objectContaining({
+          role: "assistant",
+          text: "continued after tool failure",
+          turnId: "turn-replay-tool-error",
+          clientMessageId: "message-replay-tool-error",
+        }),
+      ]),
+    });
+  });
+
   it("[managed-thread] gives an uncorrelated committed message the same live and snapshot id", async () => {
     const { runner, session } = makeTopLevelRunner({
       conversationId: "session-background-commit-id",

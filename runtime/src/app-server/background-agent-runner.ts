@@ -801,6 +801,13 @@ interface BackgroundAgentDaemonEvent {
   readonly historyEpoch?: string;
   readonly turnId?: string;
   readonly clientMessageId?: string;
+  /**
+   * Internal lifecycle classification for an `error` emitted by a tool while
+   * that exact call is still active. The canonical event remains visible to
+   * clients, but it is not a turn/run terminal boundary: the paired
+   * `tool_call_completed` carries the recoverable tool result.
+   */
+  readonly recoverableToolError?: true;
 }
 
 interface ActiveAgentBudget {
@@ -3878,7 +3885,10 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     return eventLog.subscribe((event) => {
       const uncorrelated = daemonEventFromUnboundSessionEvent(event);
       if (uncorrelated === null) return;
-      const daemonEvent = correlateDaemonEvent(active, uncorrelated);
+      const daemonEvent = correlateDaemonEvent(
+        active,
+        classifyRecoverableToolError(active, uncorrelated),
+      );
       active.lastActiveAt = this.#now();
       this.#applyCanonicalEventBookkeeping(active, daemonEvent);
       void this.#emitOrBufferEvent(active, daemonEvent);
@@ -3916,12 +3926,14 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         return;
       case "turn_complete":
         active.status = "idle";
+        active.activeToolCallIds.clear();
         return;
       case "turn_aborted":
         active.status = "idle";
         active.activeToolCallIds.clear();
         return;
       case "error":
+        if (event.recoverableToolError === true) return;
         active.status = "error";
         active.activeToolCallIds.clear();
         return;
@@ -5010,6 +5022,36 @@ function isClearInFlight(active: ActiveBackgroundAgent): boolean {
   return status.status === "running" || status.status === "pending_init";
 }
 
+function classifyRecoverableToolError(
+  active: ActiveBackgroundAgent,
+  event: BackgroundAgentDaemonEvent,
+): BackgroundAgentDaemonEvent {
+  if (
+    !isRecoverableActiveToolError(
+      event.id,
+      event.type,
+      event.payload?.turnId,
+      active.activeToolCallIds,
+    )
+  ) {
+    return event;
+  }
+  return { ...event, recoverableToolError: true };
+}
+
+function isRecoverableActiveToolError(
+  eventId: string,
+  eventType: string,
+  turnId: unknown,
+  activeToolCallIds: ReadonlySet<string>,
+): boolean {
+  return (
+    eventType === "error" &&
+    typeof turnId !== "string" &&
+    activeToolCallIds.has(eventId)
+  );
+}
+
 function correlateDaemonEvent(
   active: ActiveBackgroundAgent,
   event: BackgroundAgentDaemonEvent,
@@ -5133,6 +5175,7 @@ function messageTerminalFromDaemonEvent(
     };
   }
   if (event.type === "error") {
+    if (event.recoverableToolError === true) return undefined;
     return {
       code: 1,
       ...(typeof event.payload?.message === "string"
@@ -5241,6 +5284,7 @@ function findPersistedMessageSubmission(
   clientMessageId: string,
 ): PersistedMessageSubmission | undefined {
   let match: PersistedMessageSubmission | undefined;
+  const activeToolCallIds = new Set<string>();
   for (const item of items) {
     if (item.type !== "event_msg") continue;
     const event = item.payload;
@@ -5274,10 +5318,23 @@ function findPersistedMessageSubmission(
     }
     if (event.msg.type === "turn_started" && match.turnId === undefined) {
       match = { ...match, turnId: event.msg.payload.turnId };
+      activeToolCallIds.clear();
       continue;
     }
     if (match.turnId === undefined) continue;
-    const terminal = messageTerminalFromEvent(event.msg, match.turnId);
+    if (event.msg.type === "tool_call_started") {
+      activeToolCallIds.add(event.msg.payload.callId);
+      continue;
+    }
+    if (event.msg.type === "tool_call_completed") {
+      activeToolCallIds.delete(event.msg.payload.callId);
+      continue;
+    }
+    const terminal = messageTerminalFromEvent(
+      event,
+      match.turnId,
+      activeToolCallIds,
+    );
     if (terminal !== undefined) {
       return { ...match, terminal };
     }
@@ -5286,42 +5343,53 @@ function findPersistedMessageSubmission(
 }
 
 function messageTerminalFromEvent(
-  event: Event["msg"],
+  event: Event,
   expectedTurnId: string | undefined,
+  activeToolCallIds: ReadonlySet<string>,
 ): AgenCBackgroundAgentMessageTerminal | undefined {
-  if (event.type === "turn_complete") {
+  if (event.msg.type === "turn_complete") {
     if (
       expectedTurnId !== undefined &&
-      event.payload.turnId !== expectedTurnId
+      event.msg.payload.turnId !== expectedTurnId
     ) {
       return undefined;
     }
     return {
       code: 0,
-      ...(event.payload.lastAgentMessage !== undefined
-        ? { message: event.payload.lastAgentMessage }
+      ...(event.msg.payload.lastAgentMessage !== undefined
+        ? { message: event.msg.payload.lastAgentMessage }
         : {}),
     };
   }
-  if (event.type === "turn_aborted") {
+  if (event.msg.type === "turn_aborted") {
     if (
       expectedTurnId !== undefined &&
-      event.payload.turnId !== undefined &&
-      event.payload.turnId !== expectedTurnId
+      event.msg.payload.turnId !== undefined &&
+      event.msg.payload.turnId !== expectedTurnId
     ) {
       return undefined;
     }
-    return { code: 130, message: event.payload.reason };
+    return { code: 130, message: event.msg.payload.reason };
   }
-  if (event.type === "error") {
+  if (event.msg.type === "error") {
     if (
       expectedTurnId !== undefined &&
-      event.payload.turnId !== undefined &&
-      event.payload.turnId !== expectedTurnId
+      event.msg.payload.turnId !== undefined &&
+      event.msg.payload.turnId !== expectedTurnId
     ) {
       return undefined;
     }
-    return { code: 1, message: event.payload.message };
+    if (
+      isRecoverableActiveToolError(
+        event.id,
+        event.msg.type,
+        event.msg.payload.turnId,
+        activeToolCallIds,
+      )
+    ) {
+      return undefined;
+    }
+    return { code: 1, message: event.msg.payload.message };
   }
   return undefined;
 }
@@ -5395,6 +5463,7 @@ export function sessionTranscriptV2FromRollout(
   let pendingUserIndex: number | undefined;
   let pendingClientMessageId: string | undefined;
   const assistantOrdinals = new Map<string, number>();
+  const activeToolCallIds = new Set<string>();
 
   if (boundary?.kind === "replaced") {
     const replacement = reconstructFromRollout(
@@ -5488,12 +5557,21 @@ export function sessionTranscriptV2FromRollout(
     }
     if (event.msg.type === "turn_started") {
       currentTurnId = event.msg.payload.turnId;
+      activeToolCallIds.clear();
       if (pendingUserIndex !== undefined) {
         messages[pendingUserIndex]!.turnId = currentTurnId;
         pendingUserIndex = undefined;
       }
       currentClientMessageId = pendingClientMessageId;
       pendingClientMessageId = undefined;
+      continue;
+    }
+    if (event.msg.type === "tool_call_started") {
+      activeToolCallIds.add(event.msg.payload.callId);
+      continue;
+    }
+    if (event.msg.type === "tool_call_completed") {
+      activeToolCallIds.delete(event.msg.payload.callId);
       continue;
     }
     if (event.msg.type === "agent_message") {
@@ -5526,6 +5604,16 @@ export function sessionTranscriptV2FromRollout(
       event.msg.type === "turn_aborted" ||
       event.msg.type === "error"
     ) {
+      if (
+        isRecoverableActiveToolError(
+          event.id,
+          event.msg.type,
+          event.msg.payload.turnId,
+          activeToolCallIds,
+        )
+      ) {
+        continue;
+      }
       const terminalTurnId =
         "turnId" in event.msg.payload &&
         typeof event.msg.payload.turnId === "string"
@@ -5541,6 +5629,7 @@ export function sessionTranscriptV2FromRollout(
       }
       currentTurnId = undefined;
       currentClientMessageId = undefined;
+      activeToolCallIds.clear();
     }
   }
 
@@ -5807,7 +5896,7 @@ export function notificationFromDaemonEvent(
     (event.type === "turn_started" ||
       event.type === "turn_complete" ||
       event.type === "turn_aborted" ||
-      event.type === "error") &&
+      (event.type === "error" && event.recoverableToolError !== true)) &&
     isJsonObject(payload)
   ) {
     return {
@@ -5845,6 +5934,9 @@ export function notificationFromDaemonEvent(
       event: {
         id: event.id,
         type: event.type,
+        ...(event.recoverableToolError === true
+          ? { recoverableToolError: true }
+          : {}),
         ...(event.messageId !== undefined
           ? { messageId: event.messageId }
           : {}),

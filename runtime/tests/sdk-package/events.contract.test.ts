@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 
-import { promptEventFromNotification } from "../../../packages/agenc-sdk/src/events";
+import {
+  promptEventFromNotification,
+  terminalStatusFromNotification,
+} from "../../../packages/agenc-sdk/src/events";
 
 describe("agenc-sdk prompt event mapping", () => {
   it("maps ordinary user-input requests without private extensions", () => {
@@ -109,5 +112,63 @@ describe("agenc-sdk prompt event mapping", () => {
       eventId: "legacy_epoch",
       historyEpoch: "history:run_1:legacy_epoch",
     });
+  });
+});
+
+describe("agenc-sdk terminal status mapping", () => {
+  it("ignores a marked recoverable nested tool error", () => {
+    expect(
+      terminalStatusFromNotification({
+        jsonrpc: "2.0",
+        method: "event.session_event",
+        params: {
+          sessionId: "session_1",
+          eventId: "recoverable_tool_error",
+          event: {
+            id: "call_recoverable",
+            type: "error",
+            recoverableToolError: true,
+            payload: {
+              cause: "tool_dispatch_failed",
+              message: "recoverable tool failure",
+            },
+          },
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it("still terminalizes an unmarked nested error", () => {
+    expect(
+      terminalStatusFromNotification({
+        jsonrpc: "2.0",
+        method: "event.session_event",
+        params: {
+          sessionId: "session_1",
+          eventId: "terminal_nested_error",
+          event: {
+            id: "call_terminal",
+            type: "error",
+            payload: { message: "terminal nested failure" },
+          },
+        },
+      }),
+    ).toEqual({ code: 1, message: "terminal nested failure" });
+  });
+
+  it("still terminalizes event.agent_status error", () => {
+    expect(
+      terminalStatusFromNotification({
+        jsonrpc: "2.0",
+        method: "event.agent_status",
+        params: {
+          sessionId: "session_1",
+          eventId: "terminal_agent_status",
+          status: "error",
+          runStatus: "errored",
+          message: "terminal agent status failure",
+        },
+      }),
+    ).toEqual({ code: 1, message: "terminal agent status failure" });
   });
 });

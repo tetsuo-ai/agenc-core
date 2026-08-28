@@ -2073,6 +2073,7 @@ function daemonOneShotFinalStatus(
     return { code: 0, ...(message !== undefined ? { message } : {}) };
   }
   if (transcriptEvent.type === "error") {
+    if (transcriptEvent.recoverableToolError === true) return null;
     const message =
       payload !== null && typeof payload.message === "string"
         ? payload.message

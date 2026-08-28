@@ -212,6 +212,7 @@ export function terminalStatusFromNotification(
     };
   }
   if (transcriptEvent.type === "error") {
+    if (transcriptEvent.recoverableToolError === true) return null;
     const errorMessage =
       payload !== null && typeof payload.message === "string"
         ? payload.message
