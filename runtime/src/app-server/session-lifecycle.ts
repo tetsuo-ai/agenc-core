@@ -254,7 +254,17 @@ export class AgenCDaemonSessionManager {
         .filter(
           (session) => agentId === undefined || session.agentId === agentId,
         )
-        .map(toSessionSummary),
+        .map(toSessionSummary)
+        // Most-recent-first. Map order is load order, and a daemon that
+        // restored hundreds of historical sessions at startup put every one
+        // of them ahead of anything created since — a client reading the
+        // first page saw only ancient sessions, so "resume yesterday's chat"
+        // listed nothing from today.
+        .sort((left, right) =>
+          (right.lastActiveAt ?? right.createdAt).localeCompare(
+            left.lastActiveAt ?? left.createdAt,
+          ),
+        ),
       knownSessionIds: new Set(state.sessions.keys()),
     }));
 
