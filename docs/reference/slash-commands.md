@@ -53,7 +53,7 @@ Order matches `buildDefaultRegistry`.
 | `/rewind` | | Restore the code and/or conversation to a previous point |
 | `/init` | | Analyze this repository and write `.agenc/config.toml` plus `AGENC.md` |
 | `/output-style` | `style` | Switch the active output style |
-| `/output-style:new` | | Author a new **user** output style under `$home/output-styles/` |
+| `/output-style:new` | | Author a new **user** output style under `$AGENC_HOME/output-styles/` (default `~/.agenc/output-styles/`) |
 | `/clear` | `reset`, `new` | Clear session history and caches |
 | `/compact` | | Compact the current conversation |
 | `/compact-rollback` | | Restore a committed compaction source history (`<attempt-id> [--branch <session-id>]`) |

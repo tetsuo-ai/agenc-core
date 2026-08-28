@@ -262,19 +262,19 @@ Load paths (`runtime/src/outputStyles/loadOutputStylesDir.ts`):
 | Source | Path |
 | --- | --- |
 | Managed | `<getManagedFilePath()>/.agenc/output-styles/*.md` |
-| User | `$configHome/output-styles/*.md` |
-| Project | `<ancestor>/.agenc/output-styles/*.md` |
+| User | `$AGENC_HOME/output-styles/*.md` |
+| Project | `<ancestor>/.agenc/output-styles/*.md` (discovered as untrusted content; excluded from style authority) |
 | Plugin | `<plugin>/output-styles/` plus manifest `outputStyles` |
 
 Built-ins (`runtime/src/constants/outputStyles.ts`): `default`, `Explanatory`,
-`Learning`. Project files override user files of the same style name. The
-filename stem is the style name unless frontmatter sets `name`. Frontmatter
-may also set `description` and `keep-coding-instructions`. Plugin-only:
-`force-for-plugin`.
+`Learning`. Repository files cannot override user, managed, built-in, or plugin
+styles. The filename stem is the style name unless frontmatter sets `name`.
+Frontmatter may also set `description` and `keep-coding-instructions`.
+Plugin-only: `force-for-plugin`.
 
 TUI: `/output-style`, `/output-style list`, `/output-style <name>` (alias
-`/style`). `/output-style:new` writes a **user** file
-`$home/output-styles/<name>.md`, not a project file.
+`/style`). `/output-style:new` asks the agent to create a **user** file under
+`$AGENC_HOME/output-styles/<name>.md`, not a project file.
 
 ## Related
 

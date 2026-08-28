@@ -45,13 +45,16 @@ function stubCtx(
   cwd: string,
   argsRaw = "",
   appState?: SlashCommandContext["appState"],
+  configStore?: ConfigStore,
 ): SlashCommandContext {
   return {
     session: stubSession(),
     argsRaw,
     cwd,
-    home: join(cwd, "agenc-home"),
+    home: join(cwd, "platform-home"),
+    agencHome: join(cwd, "agenc-home"),
     ...(appState !== undefined ? { appState } : {}),
+    ...(configStore !== undefined ? { configStore } : {}),
   };
 }
 
@@ -298,20 +301,75 @@ describe("output-style commands", () => {
     expect(globallyReloadedB["sample:forced"]?.prompt).toBe("Updated prompt.");
   });
 
-  it("turns /output-style:new into an agent-authored user style prompt", async () => {
+  it("routes both authoring spellings through the ConfigStore home and reloads the result", async () => {
     const cwd = tempProject();
+    const agencHome = join(cwd, "relocated-agenc-home");
+    const configStore = new ConfigStore({
+      home: agencHome,
+      env: {},
+      cwd,
+      projectRoot: cwd,
+      projectTrusted: false,
+    });
+    await configStore.reload();
+    const directContext = {
+      ...stubCtx(cwd, "terse Short replies", undefined, configStore),
+      home: "",
+    };
 
-    const result = await outputStyleNewCommand.execute(
-      stubCtx(cwd, "terse Short replies"),
-    );
+    const [directResult, nestedResult] = await Promise.all([
+      outputStyleNewCommand.execute(directContext),
+      outputStyleCommand.execute(
+        stubCtx(cwd, "new terse Short replies", undefined, configStore),
+      ),
+    ]);
 
-    expect(result.kind).toBe("prompt");
-    if (result.kind !== "prompt") throw new Error("expected prompt");
-    expect(result.content).toContain(
-      `Create a new user-owned output style at ${join(cwd, "agenc-home", "output-styles", "terse.md")}`,
+    const expectedPath = join(agencHome, "output-styles", "terse.md");
+    for (const result of [directResult, nestedResult]) {
+      expect(result.kind).toBe("prompt");
+      if (result.kind !== "prompt") throw new Error("expected prompt");
+      expect(result.content).toContain(
+        `Create a new user-owned output style at ${expectedPath}`,
+      );
+      expect(result.content).toContain("name: terse");
+      expect(result.content).toContain("description: Short replies");
+    }
+
+    mkdirSync(join(agencHome, "output-styles"), { recursive: true });
+    writeFileSync(
+      expectedPath,
+      [
+        "---",
+        "name: terse",
+        "description: Short replies",
+        "keep-coding-instructions: true",
+        "---",
+        "",
+        "Keep every response terse.",
+        "",
+      ].join("\n"),
+      "utf8",
     );
-    expect(result.content).toContain("name: terse");
-    expect(result.content).toContain("description: Short replies");
+    clearAllOutputStylesCache();
+    const styles = await runWithCanonicalSettingsAuthority(
+      configStore,
+      () => withOutputStyleRuntime(cwd, () => getAllOutputStyles(cwd)),
+    );
+    expect(styles.terse).toMatchObject({
+      name: "terse",
+      prompt: "Keep every response terse.",
+      source: "userSettings",
+    });
+  });
+
+  it("refuses to invent an output-style home without ConfigStore authority", async () => {
+    const cwd = tempProject();
+    await expect(
+      outputStyleNewCommand.execute(stubCtx(cwd, "terse")),
+    ).resolves.toEqual({
+      kind: "error",
+      message: "Slash command requires the canonical ConfigStore authority",
+    });
   });
 });
 

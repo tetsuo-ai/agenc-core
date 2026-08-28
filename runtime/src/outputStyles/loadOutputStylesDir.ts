@@ -9,15 +9,16 @@ import {
 } from '../utils/markdownConfigLoader.js'
 
 /**
- * Loads markdown files from .agenc/output-styles directories throughout the project
- * and from ~/.agenc/output-styles directory and converts them to output styles.
+ * Loads managed, user, and repository output-style Markdown sources.
  *
  * Each filename becomes a style name, and the file content becomes the style prompt.
  * The frontmatter provides name and description.
  *
  * Structure:
- * - Project .agenc/output-styles/*.md -> project styles
- * - User ~/.agenc/output-styles/*.md -> user styles (overridden by project styles)
+ * - Managed <managed root>/.agenc/output-styles/*.md -> managed styles
+ * - User $AGENC_HOME/output-styles/*.md -> user styles
+ * - Repository <ancestor>/.agenc/output-styles/*.md -> untrusted content;
+ *   getAllOutputStyles excludes it from system-prompt authority
  *
  * @param cwd Current working directory for project directory traversal
  */
