@@ -1261,7 +1261,9 @@ async function startAgenCDaemon(
       startupStartedAt,
       "lifecycle lock acquisition started",
     );
-    release = await acquireAgenCDaemonLifecycleLock(host);
+    release = await acquireAgenCDaemonLifecycleLock(host, (phase) => {
+      writeAgenCDaemonStartupDebug(host, io, startupStartedAt, phase);
+    });
     writeAgenCDaemonStartupDebug(
       host,
       io,
@@ -2613,7 +2615,9 @@ async function runAgenCDaemonForeground(
     startupStartedAt,
     "lifecycle lock acquisition started",
   );
-  const release = await acquireAgenCDaemonLifecycleLock(host);
+  const release = await acquireAgenCDaemonLifecycleLock(host, (phase) => {
+    writeAgenCDaemonStartupDebug(host, io, startupStartedAt, phase);
+  });
   writeAgenCDaemonStartupDebug(
     host,
     io,
@@ -5570,14 +5574,19 @@ async function withAgenCDaemonLifecyclePhases<T>(
 
 export async function acquireAgenCDaemonLifecycleLock(
   host: Pick<AgenCDaemonCliHost, "env" | "userHome">,
+  onProgress?: (phase: string) => void,
 ): Promise<() => Promise<void>> {
+  onProgress?.("daemon home resolution started");
   const daemonHome = resolveAgenCDaemonHome(host.env, host.userHome);
+  onProgress?.("daemon home resolution complete");
   await mkdir(daemonHome, { recursive: true, mode: 0o700 });
+  onProgress?.("daemon home creation complete");
   const release = await acquireLocalSqliteLock(
     join(daemonHome, "daemon-lifecycle.lock.sqlite"),
     {
       label: "AgenC daemon lifecycle",
       timeoutMs: 120_000,
+      ...(onProgress === undefined ? {} : { onProgress }),
     },
   );
   return async () => {

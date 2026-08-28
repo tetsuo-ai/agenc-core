@@ -196,6 +196,47 @@ function createDatabase(path, sql) {
   if (process.platform !== "win32") chmodSync(path, 0o600);
 }
 
+test("reports bounded lock acquisition phases without protected paths", async (t) => {
+  const root = makeRoot(t, "agenc-package-sqlite-progress-");
+  const lockPath = join(root, "operation.sqlite");
+  const phases = [];
+  const release = await acquireLocalSqliteLock(lockPath, {
+    timeoutMs: 5_000,
+    onProgress: (phase) => phases.push(phase),
+  });
+  release();
+
+  for (const expected of [
+    "lock path preparation started",
+    "lock parent security validation started",
+    "lock parent security validation complete",
+    "lock path preparation complete",
+    "in-process lock acquisition complete",
+    "SQLite module import started",
+    "SQLite module import complete",
+    "SQLite transaction acquisition started",
+    "SQLite transaction acquisition complete",
+  ]) {
+    assert.ok(phases.includes(expected), `missing progress phase: ${expected}`);
+  }
+  assert.ok(
+    phases.indexOf("lock path preparation started") <
+      phases.indexOf("SQLite transaction acquisition complete"),
+  );
+  assert.equal(phases.some((phase) => phase.includes(root)), false);
+  assert.equal(phases.some((phase) => phase.includes(lockPath)), false);
+});
+
+test("rejects a non-function lock progress callback", async (t) => {
+  const root = makeRoot(t, "agenc-package-sqlite-invalid-progress-");
+  await assert.rejects(
+    acquireLocalSqliteLock(join(root, "operation.sqlite"), {
+      onProgress: "invalid",
+    }),
+    /lock onProgress must be a function/,
+  );
+});
+
 test("same-process contenders queue without blocking the event loop", async (t) => {
   const root = makeRoot(t, "agenc-package-sqlite-same-process-");
   const lockPath = join(root, "operation.sqlite");

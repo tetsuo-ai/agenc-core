@@ -2072,6 +2072,12 @@ describe("AgenC daemon CLI", () => {
     ).resolves.toBe(1);
 
     expect(io.stderrText()).toContain(
+      "lock parent security validation started",
+    );
+    expect(io.stderrText()).toContain(
+      "SQLite transaction acquisition complete",
+    );
+    expect(io.stderrText()).toContain(
       "[agenc:daemon-startup +1234ms] process identity query complete",
     );
     await rm(agencHome, { recursive: true, force: true });

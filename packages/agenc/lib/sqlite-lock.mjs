@@ -225,6 +225,10 @@ function throwIfExpired(context, path, cause) {
   }
 }
 
+function reportProgress(context, phase) {
+  context.onProgress?.(phase);
+}
+
 function processLockRegistry() {
   const current = process[REGISTRY_SYMBOL];
   if (current !== undefined) {
@@ -706,6 +710,7 @@ export async function assertLocalPrivateDirectory(
     label = "AgenC operation",
     deadline: suppliedDeadline,
     allowTrustedStickyLeaf = false,
+    onProgress,
   } = {},
 ) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
@@ -717,6 +722,9 @@ export async function assertLocalPrivateDirectory(
   if (typeof allowTrustedStickyLeaf !== "boolean") {
     throw new TypeError("allowTrustedStickyLeaf must be boolean");
   }
+  if (onProgress !== undefined && typeof onProgress !== "function") {
+    throw new TypeError("lock onProgress must be a function");
+  }
   const context = {
     deadline: Math.min(
       suppliedDeadline ?? Number.POSITIVE_INFINITY,
@@ -724,6 +732,7 @@ export async function assertLocalPrivateDirectory(
     ),
     label,
     timeoutMs,
+    onProgress,
   };
   const absolute = resolve(requestedPath);
   throwIfExpired(context, absolute);
@@ -764,6 +773,7 @@ export async function assertLocalPrivateDirectory(
     identityFromStats(stats, path);
   }
   if (process.platform === "win32") {
+    reportProgress(context, "Windows ancestor ACL validation started");
     await assertWindowsPathSecurity(
       ancestors.map((path, index) => ({
         path,
@@ -771,6 +781,7 @@ export async function assertLocalPrivateDirectory(
       })),
       context,
     );
+    reportProgress(context, "Windows ancestor ACL validation complete");
   } else {
     await assertLocalFilesystem(canonical, context);
     if (process.platform === "darwin") {
@@ -903,16 +914,24 @@ export async function assertLocalPrivateFile(
 
 async function prepareLockPath(requestedPath, context) {
   const absolute = resolve(requestedPath);
+  reportProgress(context, "lock path preparation started");
   throwIfExpired(context, absolute);
   await mkdir(dirname(absolute), { recursive: true, mode: 0o700 });
+  reportProgress(context, "lock parent creation complete");
   throwIfExpired(context, absolute);
   const parent = await realpath(dirname(absolute));
+  reportProgress(context, "lock parent canonicalization complete");
   throwIfExpired(context, absolute);
+  reportProgress(context, "lock parent security validation started");
   const validatedParent = await assertLocalPrivateDirectory(parent, {
     timeoutMs: context.timeoutMs,
     label: context.label,
     deadline: context.deadline,
+    ...(context.onProgress === undefined
+      ? {}
+      : { onProgress: context.onProgress }),
   });
+  reportProgress(context, "lock parent security validation complete");
   if (validatedParent !== parent) {
     throw new Error(`agenc: lock database parent must use its canonical path: ${parent}`);
   }
@@ -935,6 +954,7 @@ async function prepareLockPath(requestedPath, context) {
   } catch (error) {
     if (error?.code !== "EEXIST") throw error;
   }
+  reportProgress(context, "lock database file creation complete");
   throwIfExpired(context, path);
   const pathStats = await lstat(path, { bigint: true });
   assertRegularSingleLink(pathStats, path);
@@ -949,10 +969,12 @@ async function prepareLockPath(requestedPath, context) {
       await assertDarwinPathSecurity(canonical, "lock database file", context);
     }
   } else {
+    reportProgress(context, "lock database ACL validation started");
     await assertWindowsPathSecurity([
       { path: parent, role: "leafDirectory" },
       { path: canonical, role: "file" },
     ], context);
+    reportProgress(context, "lock database ACL validation complete");
   }
   throwIfExpired(context, canonical);
   const securedStats = await lstat(canonical, { bigint: true });
@@ -1216,6 +1238,7 @@ export async function acquireLocalSqliteLocks(
     timeoutMs = 60_000,
     label = "AgenC operation",
     deadline: suppliedDeadline,
+    onProgress,
   } = {},
 ) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0) {
@@ -1227,6 +1250,9 @@ export async function acquireLocalSqliteLocks(
   if (!Array.isArray(requestedPaths)) {
     throw new TypeError("lock paths must be an array");
   }
+  if (onProgress !== undefined && typeof onProgress !== "function") {
+    throw new TypeError("lock onProgress must be a function");
+  }
   if (requestedPaths.length === 0) return () => {};
 
   const startedAt = performance.now();
@@ -1237,6 +1263,7 @@ export async function acquireLocalSqliteLocks(
     ),
     label,
     timeoutMs,
+    onProgress,
   };
   const firstDisplayPath = resolve(requestedPaths[0]);
   throwIfExpired(context, firstDisplayPath);
@@ -1247,6 +1274,7 @@ export async function acquireLocalSqliteLocks(
     const prepared = await prepareLockPath(requestedPath, context);
     preparedByIdentity.set(prepared.identityKey, prepared);
   }
+  reportProgress(context, "lock path preparation complete");
   const preparedLocks = [...preparedByIdentity.values()].sort((left, right) =>
     left.identityKey < right.identityKey ? -1 : left.identityKey > right.identityKey ? 1 : 0);
   const pendingLocal = [];
@@ -1258,8 +1286,11 @@ export async function acquireLocalSqliteLocks(
       const release = await acquireInProcessLock(prepared, context);
       pendingLocal.push({ prepared, release });
     }
+    reportProgress(context, "in-process lock acquisition complete");
     throwIfExpired(context, currentPath);
+    reportProgress(context, "SQLite module import started");
     const { DatabaseSync } = await import("node:sqlite");
+    reportProgress(context, "SQLite module import complete");
     throwIfExpired(context, currentPath);
     for (const { prepared, release } of pendingLocal) {
       currentPath = prepared.path;
@@ -1269,7 +1300,9 @@ export async function acquireLocalSqliteLocks(
         inProcessReleased: false,
       };
       acquired.push(item);
+      reportProgress(context, "SQLite transaction acquisition started");
       item.database = await acquireSqliteDatabase(DatabaseSync, prepared, context);
+      reportProgress(context, "SQLite transaction acquisition complete");
     }
   } catch (error) {
     const cleanupErrors = [];
