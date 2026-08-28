@@ -39,10 +39,19 @@ function customAgent(
   }
 }
 
-function enterTestAuthority(cwd: string, home: string): void {
+function enterTestAuthority(
+  cwd: string,
+  home: string,
+  managedHome: string = join(cwd, 'managed-home'),
+): void {
   const environment = Object.freeze({ ...process.env, AGENC_HOME: home })
   enterCanonicalSettingsAuthority(
-    new ConfigStore({ cwd, env: environment, home }),
+    new ConfigStore({
+      cwd,
+      env: environment,
+      home,
+      managedConfigPath: join(managedHome, 'config.toml'),
+    }),
   )
 }
 
@@ -57,8 +66,7 @@ describe('agentFileUtils coverage swarm row 108', () => {
     const managedHome = join(cwd, 'managed-home')
     const roleWorkspace = createAgentRoleWorkspace(cwd)
 
-    vi.stubEnv('AGENC_TEST_MANAGED_CONFIG_PATH', managedHome)
-    enterTestAuthority(cwd, configHome)
+    enterTestAuthority(cwd, configHome, managedHome)
 
     try {
       await runWithCwdOverride(cwd, async () => {

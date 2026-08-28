@@ -592,10 +592,6 @@ export const HERMETIC_STRIPPED_ENV_VARS = Object.freeze([
 /** Marker proving the hermetic setup ran in this process. */
 export const HERMETIC_MARKER_ENV_VAR = 'AGENC_TEST_HERMETIC_ENV'
 
-/** Test-only managed-policy root, honored only by a marked Vitest worker. */
-export const HERMETIC_MANAGED_CONFIG_ENV_VAR =
-  'AGENC_TEST_MANAGED_CONFIG_PATH'
-
 /** Mint once per worker; never reuse an environment-provided path. */
 function lockedHermeticRuntimeMarker() {
   const markerDescriptor = Object.getOwnPropertyDescriptor(
@@ -684,10 +680,6 @@ export function sanitizeHermeticEnv(env, agencHome, options = {}) {
   }
   env.AGENC_HOME = agencHome
   env.AGENC_MANAGED_HOME = join(agencHome, 'managed-home')
-  env[HERMETIC_MANAGED_CONFIG_ENV_VAR] = join(
-    agencHome,
-    'managed-policy',
-  )
   env.AGENC_AUTH_BACKEND = 'local'
   env.HOME = agencHome
   env.USERPROFILE = agencHome

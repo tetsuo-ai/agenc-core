@@ -299,7 +299,7 @@ async function loadMarkdownFilesForSubdirUncached(
   authority: CanonicalSettingsAuthority,
 ): Promise<MarkdownFile[]> {
     const userDir = join(authority.homeContext.path, subdir)
-    const managedDir = join(getManagedFilePath(), '.agenc', subdir)
+    const managedDir = join(getManagedFilePath(authority), '.agenc', subdir)
     const projectDirs = getProjectDirsUpToHome(subdir, cwd)
 
     // For git worktrees where the worktree does NOT have .agenc/<subdir> checked

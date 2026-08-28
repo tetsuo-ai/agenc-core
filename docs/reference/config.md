@@ -91,6 +91,13 @@ Later layers win:
 9. CLI overrides
 10. Administrator-managed base file and lexically sorted drop-ins
 
+The platform-managed root is `/etc/agenc` on Linux,
+`/Library/Application Support/AgenC` on macOS, and `%ProgramData%\AgenC` on
+Windows. The managed base file is `config.toml`; drop-ins are under `config.d/`.
+Managed Markdown assets use `.agenc/` below that same captured root. The
+`AGENC_MANAGED_INSTRUCTIONS` override selects the managed instruction file;
+its `rules/` directory is always beside that file.
+
 Plain objects deep-merge. Arrays replace the lower-priority array; they do not
 concatenate. The resolved snapshot and its nested values are frozen.
 

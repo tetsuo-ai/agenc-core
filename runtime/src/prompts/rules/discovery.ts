@@ -4,7 +4,7 @@
  * Uses stricter path handling and a small frontmatter grammar.
  *
  * Rule files live under:
- *   - `/etc/agenc/rules/*.md` for managed rules
+ *   - `<managed-instruction-directory>/rules/*.md` for managed rules
  *   - `~/.agenc/rules/*.md` for user rules
  *   - `<project-dir>/.agenc/rules/*.md` for project-scoped rules
  *
@@ -38,7 +38,6 @@ import {
 
 const RULES_DIRNAME = ".agenc";
 const RULES_SUBDIR = "rules";
-export const DEFAULT_MANAGED_RULES_DIR = "/etc/agenc/rules";
 const MAX_RULE_FILES = 200;
 const MAX_RULE_DEPTH = 3;
 const MAX_RULE_BYTES = 512 * 1024;

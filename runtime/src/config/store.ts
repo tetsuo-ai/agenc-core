@@ -7,6 +7,8 @@
 // No global state — each ConfigStore is instantiable. bin/agenc.ts
 // integration constructs one; SIGUSR1 → reload() wiring lives in T10-I.
 
+import { dirname, resolve } from "node:path";
+
 import type { AgenCConfig } from "./schema.js";
 import { defaultConfig } from "./schema.js";
 import type { EnvSnapshot } from "./env.js";
@@ -25,6 +27,10 @@ import { enterCanonicalSettingsAuthority } from "../utils/settings/canonicalAuth
 import { RuntimeStateRepository } from "./runtime-state-repository.js";
 import type { CanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import { mergeProviderModelLayer } from "./provider-model-authority.js";
+import {
+  resolveManagedPathContext,
+  type ManagedPathContext,
+} from "../utils/settings/managedPath.js";
 
 export interface ConfigStorePublicationMetadata {
   /**
@@ -136,6 +142,7 @@ export class ConfigStore {
   private reloadGeneration = 0;
   private resolvedProjectRoot: string;
   private readonly resolvedHomeContext: HomeContext;
+  private readonly resolvedManagedPaths: ManagedPathContext;
   readonly stateRepository: RuntimeStateRepository;
 
   constructor(opts: ConfigStoreOptions = {}) {
@@ -154,6 +161,14 @@ export class ConfigStore {
         ? { platformHome: this.environment.HOME }
         : {}),
     });
+    const managedRootPath = opts.managedConfigPath === undefined
+      ? undefined
+      : dirname(resolve(opts.managedConfigPath));
+    this.resolvedManagedPaths = resolveManagedPathContext(
+      this.environment,
+      process.platform,
+      managedRootPath,
+    );
     if (
       opts.stateRepository !== undefined &&
       opts.stateRepository.homeContext.path !== this.resolvedHomeContext.path
@@ -212,6 +227,11 @@ export class ConfigStore {
   /** Canonical home resolved from this store's own immutable environment. */
   get homeContext(): HomeContext {
     return this.resolvedHomeContext;
+  }
+
+  /** Machine-wide Markdown paths captured from this store's environment. */
+  get managedPaths(): ManagedPathContext {
+    return this.resolvedManagedPaths;
   }
 
   /** Canonical AgenC home bound to this store's immutable environment. */
@@ -435,6 +455,9 @@ export class ConfigStore {
       },
       get homeContext() {
         return thisStore.resolvedHomeContext;
+      },
+      get managedPaths() {
+        return thisStore.resolvedManagedPaths;
       },
       get stateRepository() {
         return thisStore.stateRepository;

@@ -71,6 +71,51 @@ describe("agenc-md (T10-B tiered + @include)", () => {
     expect(tiers.local?.content).toBe("LOCAL");
   });
 
+  test("managed rules follow the selected managed instruction file", async () => {
+    const home = join(tmp, "home");
+    const managedDir = join(tmp, "managed-override");
+    const repoRoot = join(tmp, "repo");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(join(managedDir, "rules"), { recursive: true });
+    mkdirSync(repoRoot, { recursive: true });
+    const managedPath = join(managedDir, "Team.md");
+    writeFileSync(managedPath, "MANAGED OVERRIDE");
+    writeFileSync(join(managedDir, "rules", "baseline.md"), "ADJACENT RULE");
+
+    const tiers = await loadTieredInstructions({
+      cwd: repoRoot,
+      homeDir: home,
+      managedPath,
+    });
+
+    expect(tiers.managed?.path).toBe(managedPath);
+    expect(tiers.managed?.content).toContain("MANAGED OVERRIDE");
+    expect(tiers.managed?.content).toContain("ADJACENT RULE");
+    expect(tiers.managed?.dependencies).toContain(
+      join(managedDir, "rules", "baseline.md"),
+    );
+  });
+
+  test("managed rules form a managed tier without an instruction file", async () => {
+    const home = join(tmp, "home");
+    const managedDir = join(tmp, "managed-rules-only");
+    const repoRoot = join(tmp, "repo");
+    mkdirSync(home, { recursive: true });
+    mkdirSync(join(managedDir, "rules"), { recursive: true });
+    mkdirSync(repoRoot, { recursive: true });
+    const managedPath = join(managedDir, "AGENC.md");
+    writeFileSync(join(managedDir, "rules", "baseline.md"), "RULE ONLY");
+
+    const tiers = await loadTieredInstructions({
+      cwd: repoRoot,
+      homeDir: home,
+      managedPath,
+    });
+
+    expect(tiers.managed?.path).toBe(join(managedDir, "rules"));
+    expect(tiers.managed?.content).toContain("RULE ONLY");
+  });
+
   test("loadTieredInstructions returns null for missing tiers", async () => {
     const home = join(tmp, "home");
     const repoRoot = join(tmp, "repo");

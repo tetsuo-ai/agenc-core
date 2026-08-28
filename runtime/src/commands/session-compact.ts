@@ -933,12 +933,14 @@ async function loadProjectInstructionsForContext(
     // tier chain with default markers/limits and produces a count
     // that diverges from the real turn payload whenever the user
     // has either field set in their config.
-    const currentConfig = session.services.configStore?.current();
-    const configHomeDir = session.services.configStore?.homeContext.path;
-    if (configHomeDir === undefined) return "";
+    const configStore = session.services.configStore;
+    if (configStore === undefined) return "";
+    const currentConfig = configStore.current();
+    const configHomeDir = configStore.homeContext.path;
     const tiered = await loadTieredInstructions({
       cwd,
       configHomeDir,
+      managedPath: configStore.managedPaths.instructions,
       ...(currentConfig?.project_root_markers !== undefined
         ? { projectRootMarkers: currentConfig.project_root_markers }
         : {}),

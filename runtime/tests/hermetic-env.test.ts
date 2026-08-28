@@ -16,7 +16,6 @@ import { describe, expect, it } from "vitest";
 import {
   HERMETIC_AGENC_STATE_ENV_VARS,
   HERMETIC_LIVE_TEST_OPT_IN_ENV_VARS,
-  HERMETIC_MANAGED_CONFIG_ENV_VAR,
   HERMETIC_MARKER_ENV_VAR,
   HERMETIC_PROVIDER_CREDENTIAL_ENV_VARS,
   HERMETIC_RUNTIME_AUTH_ENV_VARS,
@@ -125,9 +124,6 @@ describe("suite-level hermetic env (vitest.setup.ts)", () => {
     expect(process.env.USERPROFILE).toBe(agencHome);
     expect(process.env.AGENC_MANAGED_HOME).toBe(
       join(agencHome as string, "managed-home"),
-    );
-    expect(process.env[HERMETIC_MANAGED_CONFIG_ENV_VAR]).toBe(
-      join(agencHome as string, "managed-policy"),
     );
     for (const name of [
       "APPDATA",

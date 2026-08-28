@@ -20,7 +20,10 @@ import { findCanonicalGitRoot } from './git.js'
 import type { MemoryType } from './memory/types.js'
 import { normalizePathForConfigKey } from './path.js'
 import { getEssentialTrafficOnlyReason } from './privacyLevel.js'
-import { getManagedFilePath } from './settings/managedPath.js'
+import {
+  getManagedInstructionPath,
+  getManagedInstructionRulesPath,
+} from './settings/managedPath.js'
 import { getCanonicalSettingsAuthority } from './settings/canonicalAuthority.js'
 import { PRIMARY_PROJECT_INSTRUCTION_FILE } from './projectInstructions.js'
 
@@ -262,7 +265,7 @@ export function getMemoryPath(memoryType: MemoryType): string {
     case 'Project':
       return join(cwd, PRIMARY_PROJECT_INSTRUCTION_FILE)
     case 'Managed':
-      return join(getManagedFilePath(), 'AGENC.md')
+      return getManagedInstructionPath()
     case 'AutoMem':
       return getAutoMemEntrypoint()
   }
@@ -274,7 +277,7 @@ export function getMemoryPath(memoryType: MemoryType): string {
 }
 
 export function getManagedAgenCRulesDir(): string {
-  return join(getManagedFilePath(), '.agenc', 'rules')
+  return getManagedInstructionRulesPath()
 }
 
 export function getUserAgenCRulesDir(): string {

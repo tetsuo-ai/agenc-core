@@ -261,10 +261,14 @@ Load paths (`runtime/src/outputStyles/loadOutputStylesDir.ts`):
 
 | Source | Path |
 | --- | --- |
-| Managed | `<getManagedFilePath()>/.agenc/output-styles/*.md` |
+| Managed | `<platform-managed-root>/.agenc/output-styles/*.md` |
 | User | `$AGENC_HOME/output-styles/*.md` |
 | Project | `<ancestor>/.agenc/output-styles/*.md` (discovered as untrusted content; excluded from style authority) |
 | Plugin | `<plugin>/output-styles/` plus manifest `outputStyles` |
+
+The platform-managed root is `/etc/agenc` on Linux,
+`/Library/Application Support/AgenC` on macOS, and `%ProgramData%\AgenC` on
+Windows.
 
 Built-ins (`runtime/src/constants/outputStyles.ts`): `default`, `Explanatory`,
 `Learning`. Repository files cannot override user, managed, built-in, or plugin

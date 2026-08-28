@@ -7,6 +7,7 @@ import type {
 } from "../../config/repository.js";
 import type { AgenCConfig } from "../../config/schema.js";
 import type { RuntimeStateRepository } from "../../config/runtime-state-repository.js";
+import type { ManagedPathContext } from "./managedPath.js";
 
 /**
  * Narrow ConfigStore surface bound to one request/session async chain, never
@@ -21,6 +22,7 @@ export interface CanonicalSettingsAuthority {
   readonly sources: (scope: ConfigScope) => readonly ConfigLayerSnapshot[];
   readonly projectRoot: string;
   readonly homeContext: HomeContext;
+  readonly managedPaths: ManagedPathContext;
   readonly stateRepository: RuntimeStateRepository;
   readonly reload: () => Promise<unknown>;
   readonly subscribe: (

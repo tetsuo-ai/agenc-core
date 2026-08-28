@@ -19,7 +19,7 @@ import {
   sep,
 } from 'path'
 import type { SettingSource } from '../../../utils/settings/constants.js' // upstream-import: keep target is owned by another Z-PURGE item
-import { getManagedFilePath } from '../../../utils/settings/managedPath.js' // upstream-import: keep target is owned by another Z-PURGE item
+import { getManagedFilePath } from '../../../utils/settings/managedPath.js'
 import type { AgentMemoryScope } from '../../../tools/AgentTool/agentMemory.js'
 import {
   type AgentDefinition,

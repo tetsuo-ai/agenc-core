@@ -7,6 +7,7 @@ import { afterEach, describe, expect, test } from 'vitest'
 import { ConfigStore } from '../../src/config/store.js'
 import {
   loadMarkdownFilesForSubdir,
+  loadMarkdownFilesForSubdirFresh,
 } from '../../src/utils/markdownConfigLoader.js'
 import {
   resetCanonicalSettingsAuthorityForTesting,
@@ -21,7 +22,11 @@ function temporaryRoot(label: string): string {
   return root
 }
 
-async function createAuthority(home: string, workspace: string): Promise<ConfigStore> {
+async function createAuthority(
+  home: string,
+  workspace: string,
+  managedRoot?: string,
+): Promise<ConfigStore> {
   mkdirSync(home, { recursive: true })
   const store = new ConfigStore({
     home,
@@ -29,10 +34,22 @@ async function createAuthority(home: string, workspace: string): Promise<ConfigS
     projectRoot: workspace,
     projectTrusted: false,
     env: {},
+    ...(managedRoot === undefined
+      ? {}
+      : { managedConfigPath: join(managedRoot, 'config.toml') }),
     loader: async () => ({ configVersion: 2 }),
   })
   await store.reload()
   return store
+}
+
+function writeManagedAgent(root: string, prompt: string): void {
+  const agents = join(root, '.agenc', 'agents')
+  mkdirSync(agents, { recursive: true })
+  writeFileSync(
+    join(agents, 'managed-snapshot.md'),
+    `---\nname: managed-snapshot\ndescription: Managed snapshot role\n---\n${prompt}\n`,
+  )
 }
 
 function writeAgent(home: string, prompt: string): void {
@@ -44,8 +61,11 @@ function writeAgent(home: string, prompt: string): void {
   )
 }
 
-function prompt(files: Awaited<ReturnType<typeof loadMarkdownFilesForSubdir>>): string {
-  return files.find(file => file.frontmatter.name === 'snapshot')?.content.trim() ?? ''
+function prompt(
+  files: Awaited<ReturnType<typeof loadMarkdownFilesForSubdir>>,
+  name = 'snapshot',
+): string {
+  return files.find(file => file.frontmatter.name === name)?.content.trim() ?? ''
 }
 
 afterEach(() => {
@@ -114,5 +134,32 @@ describe('markdown discovery authority', () => {
 
     expect(prompt(filesAAfterClear)).toBe('Snapshot C.')
     expect(prompt(filesBAfterClear)).toBe('Snapshot B.')
+  })
+
+  test('binds managed Markdown discovery to each ConfigStore root', async () => {
+    const workspace = temporaryRoot('managed-workspace')
+    const home = temporaryRoot('managed-home')
+    const managedA = temporaryRoot('managed-a')
+    const managedB = temporaryRoot('managed-b')
+    writeManagedAgent(managedA, 'Managed A prompt.')
+    writeManagedAgent(managedB, 'Managed B prompt.')
+    const authorityA = await createAuthority(home, workspace, managedA)
+    const authorityB = await createAuthority(home, workspace, managedB)
+
+    const filesA = await runWithCanonicalSettingsAuthority(authorityA, () =>
+      loadMarkdownFilesForSubdir('agents', workspace),
+    )
+    const filesB = await runWithCanonicalSettingsAuthority(authorityB, () =>
+      loadMarkdownFilesForSubdirFresh('agents', workspace),
+    )
+
+    expect(prompt(filesA, 'managed-snapshot')).toBe('Managed A prompt.')
+    expect(prompt(filesB, 'managed-snapshot')).toBe('Managed B prompt.')
+    expect(
+      filesA.find(file => file.frontmatter.name === 'managed-snapshot')?.source,
+    ).toBe('policySettings')
+    expect(
+      filesB.find(file => file.frontmatter.name === 'managed-snapshot')?.source,
+    ).toBe('policySettings')
   })
 })

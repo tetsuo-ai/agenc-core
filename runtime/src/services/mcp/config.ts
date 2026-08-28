@@ -1033,6 +1033,7 @@ function captureMcpResolutionAuthority(
   const { config, layers } = authority.authoritySnapshot()
   const projectRoot = authority.projectRoot
   const homeContext = authority.homeContext
+  const managedPaths = authority.managedPaths
   const stateRepository = authority.stateRepository
   const readonlyFailure = (): never => {
     throw new Error('An MCP resolution snapshot cannot be reloaded or observed')
@@ -1044,6 +1045,7 @@ function captureMcpResolutionAuthority(
       layers.filter(layer => layer.scope === scope),
     projectRoot,
     homeContext,
+    managedPaths,
     stateRepository,
     reload: async () => readonlyFailure(),
     subscribe: () => readonlyFailure(),
