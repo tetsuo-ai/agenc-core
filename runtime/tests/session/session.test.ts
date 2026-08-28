@@ -101,6 +101,7 @@ import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAu
 import { SessionProviderService } from "./provider-service.js";
 import { resolveProviderRuntimeRequest } from "../llm/provider-request.js";
 import { isFreeSubscriptionManagedModel } from "../commands/subscription-managed-models.js";
+import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "../prompts/system-prompt-boundary.js";
 
 (globalThis as Record<string, unknown>).MACRO ??= {
   VERSION: "test-version",
@@ -975,6 +976,12 @@ describe("Session.consumePendingProviderSwitch", () => {
     });
     expect(state.sessionConfiguration.provider).toEqual({ slug: "grok" });
     expect(state.sessionConfiguration.collaborationMode.model).toBe("grok-4.3");
+    expect(state.sessionConfiguration.baseInstructions).toContain(
+      SYSTEM_PROMPT_DYNAMIC_BOUNDARY,
+    );
+    expect(state.sessionConfiguration.baseInstructions).not.toContain(
+      "__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__",
+    );
     expect(session.config.model).toBe("grok-4.3");
     expect(session.modelInfo.slug).toBe("grok-4.3");
     expect(isFactoryProvider(session.services.provider)).toBe(true);

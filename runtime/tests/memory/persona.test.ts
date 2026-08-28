@@ -274,7 +274,7 @@ describe("persona live-wiring contract", () => {
       "utf8",
     );
     const basePromptSource = readFileSync(
-      resolve(process.cwd(), "src/constants/prompts.ts"),
+      resolve(process.cwd(), "src/prompts/system-prompt.ts"),
       "utf8",
     );
     expect(liveSource).toContain("getPersonaMemoryFiles");

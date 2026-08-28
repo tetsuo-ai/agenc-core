@@ -12,7 +12,6 @@
 import { feature } from 'bun:bundle'
 import { randomUUID } from 'node:crypto'
 import type { ContentBlockParam } from '@anthropic-ai/sdk/resources/messages.mjs'
-import { getSystemPrompt } from '../../constants/prompts.js'
 import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
 import {
   processMailboxPermissionResponse,
@@ -1257,15 +1256,15 @@ export async function runInProcessTeammate(
   if (systemPromptMode === 'replace' && systemPrompt) {
     teammateSystemPrompt = systemPrompt
   } else {
-    const fullSystemPromptParts = await getSystemPrompt(
-      toolUseContext.options.tools,
-      toolUseContext.options.mainLoopModel,
-      undefined,
-      toolUseContext.options.mcpClients,
-    )
+    const admittedParentPrompt = toolUseContext.renderedSystemPrompt
+    if (!admittedParentPrompt) {
+      throw new Error(
+        'Cannot start in-process teammate without the admitted parent system-prompt snapshot',
+      )
+    }
 
     const systemPromptParts = [
-      ...fullSystemPromptParts,
+      ...admittedParentPrompt,
       TEAMMATE_SYSTEM_PROMPT_ADDENDUM,
     ]
 

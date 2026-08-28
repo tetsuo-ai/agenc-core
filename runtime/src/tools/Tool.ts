@@ -323,10 +323,9 @@ export type ToolUseContext = {
     replacements: ReadonlyMap<string, string>,
   ) => void;
   /**
-   * Parent's rendered system prompt bytes, frozen at turn start.
-   * Used by fork subagents to share the parent's prompt cache — re-calling
-   * getSystemPrompt() at fork-spawn time can diverge (GrowthBook cold→warm)
-   * and bust the cache. See forkSubagent.ts.
+   * Parent's admitted system-prompt bytes, frozen at turn start. Forks,
+   * resumes, and in-process teammates consume this exact snapshot instead of
+   * rebuilding prompt state from ambient configuration.
    */
   renderedSystemPrompt?: SystemPrompt;
 };
@@ -407,7 +406,7 @@ export type Tool<
     args: Readonly<Record<string, unknown>>,
   ) => ToolAdmissionEstimate;
   /**
-   * One-line capability phrase used by ToolSearch for keyword matching.
+   * One-line capability phrase used by system.searchTools for keyword matching.
    * Helps the model find this tool via keyword search when it's deferred.
    * 3–10 words, no trailing period.
    * Prefer terms not already in the tool name (e.g. 'jupyter' for NotebookEdit).
@@ -474,14 +473,14 @@ export type Tool<
   isLsp?: boolean;
   /**
    * When true, this tool is deferred (sent with defer_loading: true) and requires
-   * ToolSearch to be used before it can be called.
+   * system.searchTools to be used before it can be called.
    */
   readonly shouldDefer?: boolean;
   /**
    * When true, this tool is never deferred — its full schema appears in the
-   * initial prompt even when ToolSearch is enabled. For MCP tools, set via
+   * initial prompt even when discovery is enabled. For MCP tools, set via
    * `_meta['anthropic/alwaysLoad']`. Use for tools the model must see on
-   * turn 1 without a ToolSearch round-trip.
+   * turn 1 without a discovery round trip.
    */
   readonly alwaysLoad?: boolean;
   /**

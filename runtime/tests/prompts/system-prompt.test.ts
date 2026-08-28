@@ -36,6 +36,8 @@ import type { Session } from "../session/session.js";
 import { clearSystemPromptSections } from "./sections.js";
 import {
   assembleSystemPrompt,
+  assembleSubagentSystemPrompt,
+  assembleSystemPromptSnapshot,
   asSystemPrompt,
   buildEffectiveSystemPrompt,
   buildEnvInfoSection,
@@ -486,9 +488,39 @@ describe("env info section", () => {
     });
     expect(s).toContain("Git branch: <not a git repository>");
   });
+
+  test("env info stays available when the sandbox refuses git probing", () => {
+    const s = buildEnvInfoSection({
+      model: "grok-4-fast",
+      cwd: tmpDir,
+      sandboxExecutionBroker: {
+        prepareSpawn: () => {
+          throw new Error("sandbox policy cannot express git probe");
+        },
+      } as never,
+    });
+
+    expect(s).toContain("Git branch: <not a git repository>");
+    expect(s).toContain(tmpDir);
+  });
 });
 
 describe("assembleSystemPrompt", () => {
+  test("builds subagent prompts from explicit canonical inputs", () => {
+    const prompt = assembleSubagentSystemPrompt({
+      basePrompts: ["Review the change."],
+      model: "grok-test",
+      cwd: "/tmp/agenc-subagent",
+      additionalWorkingDirectories: ["/tmp/agenc-shared"],
+      enabledToolNames: new Set(["system.searchTools"]),
+    });
+
+    expect(prompt.join("\n")).toContain("Review the change.");
+    expect(prompt.join("\n")).toContain("system.searchTools");
+    expect(prompt.join("\n")).toContain("/tmp/agenc-shared");
+    expect(prompt.join("\n")).toContain("<cwd>/tmp/agenc-subagent</cwd>");
+  });
+
   afterEach(() => {
     clearSystemPromptSections();
   });
@@ -516,6 +548,31 @@ describe("assembleSystemPrompt", () => {
     expect(
       sections.slice(boundaryIdx + 1).some((s) => s.startsWith("# Environment")),
     ).toBe(true);
+  });
+
+  test("selects compact and coordinator prompts as explicit snapshots", async () => {
+    const compact = await assembleSystemPromptSnapshot({
+      profile: "compact",
+      session: fakeSession,
+      ctx: fakeCtx({ currentDate: "2026-08-28" }),
+    });
+    expect(compact.text).toContain("# How to work");
+    expect(compact.text).toContain("CWD: /tmp/agenc-fake-cwd");
+    expect(compact.text).toContain("Date: 2026-08-28");
+    expect(compact.text).not.toContain("# Doing tasks");
+    expect(compact.dynamicSuffix).toBe("");
+
+    const coordinator = await assembleSystemPromptSnapshot({
+      profile: "coordinator",
+      session: fakeSession,
+      ctx: fakeCtx(),
+    });
+    expect(coordinator.text).toContain(
+      "You are AgenC, an AI coordinator",
+    );
+    expect(coordinator.text).toContain("spawn_agent");
+    expect(coordinator.text).not.toContain("# Doing tasks");
+    expect(coordinator.dynamicSuffix).toBe("");
   });
 
   test("static prefix is stable across repeated calls (prompt-cache safe)", async () => {

@@ -1,4 +1,4 @@
-import { prependBullets } from '../../constants/prompts.js'
+import { prependBullets } from '../../prompts/system-prompt.js'
 import { getAttributionTexts } from '../../utils/attribution.js'
 import { hasEmbeddedSearchTools } from '../../utils/embeddedTools.js'
 import { isBareMode, isEnvTruthy } from '../../utils/envUtils.js'

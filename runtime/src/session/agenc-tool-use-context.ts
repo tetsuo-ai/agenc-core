@@ -15,6 +15,10 @@ import { asRecord, isRecord } from "../utils/record.js";
 import type { Session } from "./session.js";
 import { modelContextWindow, type TurnContext } from "./turn-context.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
+import {
+  asSystemPrompt,
+  type SystemPrompt,
+} from "../utils/systemPromptType.js";
 
 export interface AgenCModelContext {
   readonly model: string;
@@ -85,6 +89,8 @@ export interface AgenCToolUseContext {
   readonly admissionSession?: Session;
   readonly provider?: LLMProvider;
   readonly cwd?: string;
+  /** Exact prompt snapshot admitted for the active turn. */
+  readonly renderedSystemPrompt: SystemPrompt;
 }
 
 export type AgenCRuntimeTool = LLMTool & {
@@ -261,6 +267,9 @@ export function buildAgenCToolUseContext(
     admissionSession: session,
     provider: session.services.provider,
     cwd,
+    renderedSystemPrompt: asSystemPrompt(
+      systemPrompt.length === 0 ? [] : [systemPrompt],
+    ),
   };
 }
 

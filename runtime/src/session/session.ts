@@ -101,6 +101,7 @@ import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js"
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import type { ToolRegistry } from "./_deps/tool-registry.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
+import type { ToolPermissionContext } from "../permissions/types.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
 import type { QuerySource } from "./_deps/query-source.js";
 import {
@@ -109,11 +110,10 @@ import {
 } from "../permissions/denial-tracking.js";
 import type { ConfigStore } from "../config/store.js";
 import {
-  getCompactSystemPrompt,
-  getSystemPrompt,
-} from "../constants/prompts.js";
+  assembleSystemPromptSnapshot,
+  type SystemPromptProfile,
+} from "../prompts/system-prompt.js";
 import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
-import type { Tools as PromptTools } from "../tools/Tool.js";
 import type {
   ApprovalResolver,
   PermissionRequestHook,
@@ -168,6 +168,7 @@ import {
 } from "./transcript-replacement.js";
 import {
   buildPerTurnConfig,
+  buildTurnContext,
   newDefaultTurnWithSubId as buildDefaultTurnWithSubId,
   newTurnWithSubId as buildTurnWithSubId,
   type Config,
@@ -1536,18 +1537,31 @@ function capManagedOpenRouterModelInfo(modelInfo: ModelInfo): ModelInfo {
 }
 
 async function buildBaseInstructionsForModel(params: {
+  readonly session: Session;
+  readonly ctx: TurnContext;
   readonly registry: ToolRegistry;
-  readonly model: string;
-  readonly compactProfile?: boolean;
+  readonly provider: string;
+  readonly permissionContext: ToolPermissionContext | null;
+  readonly profile: SystemPromptProfile;
 }): Promise<string> {
-  if (params.compactProfile === true) {
-    return getCompactSystemPrompt().join("\n\n");
-  }
-  const sections = await getSystemPrompt(
-    params.registry.tools as unknown as PromptTools,
-    params.model,
+  const enabledToolNames = new Set(
+    params.registry.tools.map((tool) => tool.name),
   );
-  return sections.join("\n\n");
+  const snapshot = await assembleSystemPromptSnapshot({
+    profile: params.profile,
+    session: params.session,
+    ctx: params.ctx,
+    projectInstructions: "",
+    memoryPrompt: "",
+    mcpServers: [],
+    enabledToolNames,
+    agentsEnabled: enabledToolNames.has("spawn_agent"),
+    provider: params.provider,
+    permissionContext: params.permissionContext,
+    autonomousMode: params.ctx.config.autonomousMode === true,
+    outputStyle: null,
+  });
+  return snapshot.text;
 }
 
 export const DEFAULT_LEGACY_EVENT_QUEUE_DEPTH = 1024;
@@ -2654,10 +2668,41 @@ export class Session {
     const modelInfo = provider.managedDefaultOutputCap
       ? capManagedOpenRouterModelInfo(rawModelInfo)
       : rawModelInfo;
+    const permissionContext = this.permissionModeRegistry.current();
+    const promptContext = buildTurnContext({
+      conversationId: this.conversationId,
+      subId: "provider-switch-system-prompt",
+      config: { ...this.config, model: provider.binding.model },
+      modelInfo,
+      provider: provider.binding.instance,
+      providerBinding: provider.binding,
+      sessionConfiguration: {
+        ...this.sessionConfiguration,
+        collaborationMode: {
+          ...this.sessionConfiguration.collaborationMode,
+          model: provider.binding.model,
+        },
+      },
+      ...(this.authManager !== undefined
+        ? { authManager: this.authManager }
+        : {}),
+      ...(this.environment !== undefined
+        ? { environment: this.environment }
+        : {}),
+      ...(this.network !== undefined ? { network: this.network } : {}),
+      permissionMode: permissionContext.mode,
+    });
     const baseInstructions = await buildBaseInstructionsForModel({
+      session: this,
+      ctx: promptContext,
       registry: this.services.registry,
-      model: provider.binding.model,
-      compactProfile: usesLocalToolProfile(provider.binding.provider),
+      provider: provider.binding.provider,
+      permissionContext,
+      profile: this.config.coordinatorMode === true
+        ? "coordinator"
+        : usesLocalToolProfile(provider.binding.provider)
+          ? "compact"
+          : "standard",
     });
     return Object.freeze({
       pending: admittedPending,

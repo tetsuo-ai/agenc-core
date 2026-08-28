@@ -16,8 +16,7 @@ const CLI_SYSPROMPT_PREFIX_VALUES = [
 export type CLISyspromptPrefix = (typeof CLI_SYSPROMPT_PREFIX_VALUES)[number]
 
 /**
- * All possible CLI sysprompt prefix values, used by splitSysPromptPrefix
- * to identify prefix blocks by content rather than position.
+ * All possible CLI system-prompt prefix values.
  */
 export const CLI_SYSPROMPT_PREFIXES: ReadonlySet<string> = new Set(
   CLI_SYSPROMPT_PREFIX_VALUES,

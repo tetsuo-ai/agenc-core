@@ -7,10 +7,7 @@ import type {
 import { getQuerySourceForAgent } from "src/utils/promptCategory.js";
 import { z } from "zod/v4";
 import { clearInvokedSkillsForAgent } from "../../bootstrap/state.js";
-import {
-  enhanceSystemPromptWithEnvDetails,
-  getSystemPrompt,
-} from "../../constants/prompts.js";
+import { assembleSubagentSystemPrompt } from "../../prompts/system-prompt.js";
 import { isCoordinatorMode } from "../../coordinator/coordinatorMode.js";
 import { requireCurrentRuntimeSession } from "../../session/current-session.js";
 import { clearDumpState } from "../../services/api/dumpPrompts.js";
@@ -56,8 +53,10 @@ import {
 import { writeAgentMetadata } from "../../utils/sessionStorage.js";
 import { sessionQueueOwner } from "../../utils/queueOwnership.js";
 import { sleep } from "../../utils/sleep.js";
-import { buildEffectiveSystemPrompt } from "../../utils/systemPrompt.js";
-import { asSystemPrompt } from "../../utils/systemPromptType.js";
+import {
+  asSystemPrompt,
+  type SystemPrompt,
+} from "../../utils/systemPromptType.js";
 import { getTaskOutputPath } from "../../utils/task/diskOutput.js";
 import { getParentSessionId, isTeammate } from "../../utils/teammate.js";
 import { isInProcessTeammate } from "../../utils/teammateContext.js";
@@ -712,36 +711,15 @@ export const AgentTool = buildTool({
     // Normal path: build the selected agent's own system prompt with env
     // details, and use a simple user message for the prompt.
     let enhancedSystemPrompt: string[] | undefined;
-    let forkParentSystemPrompt:
-      ReturnType<typeof buildEffectiveSystemPrompt> | undefined;
+    let forkParentSystemPrompt: SystemPrompt | undefined;
     let promptMessages: MessageType[];
     if (isForkPath) {
       if (toolUseContext.renderedSystemPrompt) {
         forkParentSystemPrompt = toolUseContext.renderedSystemPrompt;
       } else {
-        // Fallback: recompute. May diverge from parent's cached bytes if
-        // GrowthBook state changed between parent turn-start and fork spawn.
-        const mainThreadAgentDefinition = appState.agent
-          ? appState.agentDefinitions.activeAgents.find(
-              (a) => a.agentType === appState.agent,
-            )
-          : undefined;
-        const additionalWorkingDirectories = Array.from(
-          appState.toolPermissionContext.additionalWorkingDirectories.keys(),
+        throw new Error(
+          "Cannot fork agent without the admitted parent system-prompt snapshot",
         );
-        const defaultSystemPrompt = await getSystemPrompt(
-          toolUseContext.options.tools,
-          toolUseContext.options.mainLoopModel,
-          additionalWorkingDirectories,
-          toolUseContext.options.mcpClients,
-        );
-        forkParentSystemPrompt = buildEffectiveSystemPrompt({
-          mainThreadAgentDefinition,
-          toolUseContext,
-          customSystemPrompt: toolUseContext.options.customSystemPrompt,
-          defaultSystemPrompt,
-          appendSystemPrompt: toolUseContext.options.appendSystemPrompt,
-        });
       }
       promptMessages = buildForkedMessages(prompt, assistantMessage);
     } else {
@@ -756,11 +734,15 @@ export const AgentTool = buildTool({
         });
 
         // Apply environment details enhancement
-        enhancedSystemPrompt = await enhanceSystemPromptWithEnvDetails(
-          [agentPrompt],
-          resolvedAgentModel,
+        enhancedSystemPrompt = assembleSubagentSystemPrompt({
+          basePrompts: [agentPrompt],
+          model: resolvedAgentModel,
+          cwd: getCwd(),
           additionalWorkingDirectories,
-        );
+          enabledToolNames: new Set(
+            toolUseContext.options.tools.map((tool) => tool.name),
+          ),
+        });
       } catch (error) {
         logForDebugging(
           `Failed to get system prompt for agent ${selectedAgent.agentType}: ${errorMessage(error)}`,

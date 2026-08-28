@@ -50,7 +50,6 @@ import {
 } from "../session/autonomous-mode.js";
 import { feature } from "bun:bundle";
 import { getTokenBudgetPromptSection } from "../conversation/token-budget.js";
-import type { Session } from "../session/session.js";
 import type { TurnContext } from "../session/turn-context.js";
 import { getPermissionsSection } from "./permissions-prompt.js";
 import {
@@ -64,27 +63,17 @@ import {
   type McpServerInstructionsInput,
 } from "./mcp-instructions-framing.js";
 import { sanitizeSystemReminderContent } from "./attachments/system-reminder-sanitizer.js";
+import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./system-prompt-boundary.js";
+import { BRIEF_TOOL_NAME } from "../tools/BriefTool/prompt.js";
 export type { McpServerInstructionsInput } from "./mcp-instructions-framing.js";
-
-/**
- * Boundary marker separating static (cross-session cacheable) content
- * from dynamic (session-specific) content.
- *
- * Everything BEFORE this marker can be hashed once and reused across
- * sessions that share the same static head. Everything AFTER contains
- * user/session-specific content and must not be cached across sessions.
- *
- * Consumers that split the system prompt for prompt-cache prefixing MUST
- * key on this exact string.
- */
-export const SYSTEM_PROMPT_DYNAMIC_BOUNDARY = "<!-- dynamic-boundary -->";
+export { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "./system-prompt-boundary.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // Shared string helpers
 // ─────────────────────────────────────────────────────────────────────
 
 /** Prefix top-level items with ` - ` and nested arrays with `   - `. */
-function prependBullets(items: Array<string | string[]>): string[] {
+export function prependBullets(items: Array<string | string[]>): string[] {
   return items.flatMap((item) =>
     Array.isArray(item)
       ? item.map((subitem) => `   - ${subitem}`)
@@ -386,19 +375,19 @@ function readGitBranch(
   sandboxExecutionBroker?: SandboxExecutionBrokerLike,
 ): string | null {
   if (sandboxExecutionBroker === undefined) return null;
-  const preparedSpawn = sandboxExecutionBroker.prepareSpawn("tool", {
-    program: "git",
-    args: hardenGitWorktreeMutationArgs([
-      "rev-parse",
-      "--abbrev-ref",
-      "HEAD",
-    ]),
-    cwd,
-    env: gitChildEnvironment(process.env),
-    argv0: "git",
-    trustedExecutable: true,
-  });
   try {
+    const preparedSpawn = sandboxExecutionBroker.prepareSpawn("tool", {
+      program: "git",
+      args: hardenGitWorktreeMutationArgs([
+        "rev-parse",
+        "--abbrev-ref",
+        "HEAD",
+      ]),
+      cwd,
+      env: gitChildEnvironment(process.env),
+      argv0: "git",
+      trustedExecutable: true,
+    });
     const result = preparedSpawn.runSync((command) =>
       spawnSync(command.program, [...command.args], {
         cwd: command.cwd,
@@ -450,6 +439,51 @@ export function buildEnvInfoSection(inputs: EnvInfoInputs): string {
     items.push(`Git branch: <not a git repository>`);
   }
   return joinSection("# Environment", items);
+}
+
+export interface AssembleSubagentSystemPromptInput {
+  readonly basePrompts: readonly string[];
+  readonly model: string;
+  readonly cwd: string;
+  readonly provider?: string;
+  readonly additionalWorkingDirectories?: readonly string[];
+  readonly enabledToolNames?: ReadonlySet<string>;
+  readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+}
+
+/** Build the complete prompt for a selected subagent from explicit inputs. */
+export function assembleSubagentSystemPrompt(
+  input: AssembleSubagentSystemPromptInput,
+): string[] {
+  const additionalWorkingDirectories =
+    input.additionalWorkingDirectories?.filter((path) => path.length > 0) ?? [];
+  const discoveryGuidance = input.enabledToolNames?.has("system.searchTools")
+    ? `Use system.searchTools to discover deferred tools before calling them.`
+    : null;
+  return [
+    ...input.basePrompts,
+    `Notes:
+- Agent threads always have their cwd reset between shell calls, so use absolute file paths.
+- In your final response, share relevant absolute file paths. Include code only when its exact text matters.
+- Do not use emojis.
+- Do not put a colon immediately before a tool call.`,
+    ...(discoveryGuidance === null ? [] : [discoveryGuidance]),
+    ...(additionalWorkingDirectories.length === 0
+      ? []
+      : [
+          `Additional working directories:\n${additionalWorkingDirectories
+            .map((path) => `- ${path}`)
+            .join("\n")}`,
+        ]),
+    buildEnvInfoSection({
+      model: input.model,
+      cwd: input.cwd,
+      ...(input.provider !== undefined ? { provider: input.provider } : {}),
+      ...(input.sandboxExecutionBroker !== undefined
+        ? { sandboxExecutionBroker: input.sandboxExecutionBroker }
+        : {}),
+    }),
+  ];
 }
 
 /** language — configured locale. AgenC-original wrapper around the
@@ -560,9 +594,16 @@ Do not narrate each step, list every file you read, or explain routine actions. 
 // Main assembly entry point
 // ─────────────────────────────────────────────────────────────────────
 
+export interface SystemPromptSessionSnapshot {
+  readonly services?: {
+    readonly runtimeOptions?: { readonly simpleMode?: boolean };
+    readonly sandboxExecutionBroker?: SandboxExecutionBrokerLike;
+  };
+}
+
 export interface AssembleSystemPromptOpts {
-  /** Live session handle (for services/features). */
-  readonly session: Session;
+  /** Captured session services that affect prompt assembly. */
+  readonly session: SystemPromptSessionSnapshot;
   /** Per-turn immutable context. */
   readonly ctx: TurnContext;
   /** AGENC.md instruction content (from T10-B). */
@@ -618,6 +659,68 @@ export interface AssembledSystemPrompt {
   readonly dynamicSuffix: string;
 }
 
+export type SystemPromptProfile = "standard" | "compact" | "coordinator";
+
+export interface AssembleSystemPromptSnapshotOpts
+  extends AssembleSystemPromptOpts {
+  readonly profile?: SystemPromptProfile;
+}
+
+function fixedSystemPromptSnapshot(text: string): AssembledSystemPrompt {
+  return {
+    text,
+    sections: [text],
+    staticPrefix: text,
+    dynamicSuffix: "",
+  };
+}
+
+function compactSystemPromptSnapshot(ctx: TurnContext): AssembledSystemPrompt {
+  return fixedSystemPromptSnapshot(
+    [
+      `You are AgenC, an open-source coding agent. You work inside the user's repository and complete their request by calling tools.`,
+      ``,
+      `# How to work`,
+      `- Use tools to act; never invent file contents or command output. One tool call at a time is fine — wait for each result before the next step.`,
+      `- Read before you edit. After a change, verify it (run the code, re-read the file).`,
+      `- exec_command runs shell commands. FileRead/Edit/MultiEdit/Write handle files. Grep/Glob search. Orient maps the project.`,
+      `- TodoWrite is ONLY for work with 3+ distinct steps. Never call it for a single-step request (answering, writing one thing, one edit) — just do the work. EnterPlanMode/ExitPlanMode only when the user explicitly asks for a plan.`,
+      `- ${BRIEF_TOOL_NAME} sends the user a one-line progress note during long work. AskUserQuestion asks the user a question when you are blocked.`,
+      `- If a tool call fails, read the error and adjust; do not repeat the same call unchanged.`,
+      ``,
+      `# Rules`,
+      `- Never run destructive commands (rm -rf, force-push, DROP) unless the user explicitly asked for exactly that.`,
+      `- Keep secrets out of output. Do not read credential files unless the task requires it and the user asked.`,
+      `- Answer in the user's language. Be direct and concise: lead with the result, skip preambles.`,
+      ``,
+      `CWD: ${ctx.cwd}`,
+      `Date: ${ctx.currentDate ?? "unknown"}`,
+    ].join("\n"),
+  );
+}
+
+/**
+ * Capture the model-facing base prompt from one authority. Standard sessions
+ * use the full assembler; constrained local models and coordinator sessions
+ * select explicit profiles without falling back to the retired constants
+ * prompt builder.
+ */
+export async function assembleSystemPromptSnapshot(
+  opts: AssembleSystemPromptSnapshotOpts,
+): Promise<AssembledSystemPrompt> {
+  switch (opts.profile ?? "standard") {
+    case "compact":
+      return compactSystemPromptSnapshot(opts.ctx);
+    case "coordinator": {
+      const { getLiveCoordinatorSystemPrompt } =
+        await import("../coordinator/coordinatorMode.js");
+      return fixedSystemPromptSnapshot(getLiveCoordinatorSystemPrompt());
+    }
+    case "standard":
+      return assembleSystemPrompt(opts);
+  }
+}
+
 /**
  * Required inputs for assembling the per-turn system prompt. This is a
  * stricter sibling of {@link AssembleSystemPromptOpts} — every field is
@@ -629,7 +732,7 @@ export interface AssembledSystemPrompt {
  * shown in /context matches what the model actually receives.
  */
 export interface AssembleSystemPromptInputs {
-  readonly session: Session;
+  readonly session: SystemPromptSessionSnapshot;
   readonly ctx: TurnContext;
   readonly projectInstructions: string;
   readonly memoryPrompt: string;

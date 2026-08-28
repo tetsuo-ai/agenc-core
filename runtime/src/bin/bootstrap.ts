@@ -87,10 +87,12 @@ import {
   type BuildToolRegistryOptions,
   type ToolRegistry,
 } from "../tool-registry.js";
-import { getCompactSystemPrompt,
-  getSystemPrompt } from "../constants/prompts.js";
 import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
-import type { Tools as PromptTools } from "../tools/Tool.js";
+import {
+  assembleSystemPromptSnapshot,
+  type SystemPromptProfile,
+  type SystemPromptSessionSnapshot,
+} from "../prompts/system-prompt.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import {
   UnifiedExecProcessManager,
@@ -208,24 +210,31 @@ async function resolveAuthSubscriptionTier(
 }
 
 async function buildBaseInstructionsForModel(params: {
+  readonly session: SystemPromptSessionSnapshot;
+  readonly ctx: TurnContext;
   readonly registry: ToolRegistry;
-  readonly model: string;
-  readonly coordinatorMode?: boolean;
-  readonly compactProfile?: boolean;
+  readonly provider: string;
+  readonly permissionContext: ToolPermissionContext | null;
+  readonly profile: SystemPromptProfile;
 }): Promise<string> {
-  if (params.coordinatorMode === true) {
-    const { getLiveCoordinatorSystemPrompt } =
-      await import("../coordinator/coordinatorMode.js");
-    return getLiveCoordinatorSystemPrompt();
-  }
-  if (params.compactProfile === true) {
-    return getCompactSystemPrompt().join("\n\n");
-  }
-  const sections = await getSystemPrompt(
-    params.registry.tools as unknown as PromptTools,
-    params.model,
+  const enabledToolNames = new Set(
+    params.registry.tools.map((tool) => tool.name),
   );
-  return sections.join("\n\n");
+  const snapshot = await assembleSystemPromptSnapshot({
+    profile: params.profile,
+    session: params.session,
+    ctx: params.ctx,
+    projectInstructions: "",
+    memoryPrompt: "",
+    mcpServers: [],
+    enabledToolNames,
+    agentsEnabled: enabledToolNames.has("spawn_agent"),
+    provider: params.provider,
+    permissionContext: params.permissionContext,
+    autonomousMode: params.ctx.config.autonomousMode === true,
+    outputStyle: null,
+  });
+  return snapshot.text;
 }
 
 async function resolveAuthModelSelection(params: {
@@ -1407,12 +1416,6 @@ async function bootstrapLocalRuntimeSessionScoped(
           maxOutputTokensCappedDefault: true,
         }
       : rawModelInfo;
-  const baseInstructions = await buildBaseInstructionsForModel({
-    registry,
-    model: providerModel,
-    coordinatorMode: coordinatorModeEnabled,
-    compactProfile: usesLocalToolProfile(resolvedProvider),
-  });
   const configuredSessionConfiguration = {
     ...sessionConfigurationFromAgenCConfig({
       config: startup.config,
@@ -1421,9 +1424,8 @@ async function bootstrapLocalRuntimeSessionScoped(
       provider: resolvedProvider,
       projectTrust,
     }),
-    baseInstructions,
   } satisfies SessionConfiguration;
-  const sessionConfiguration = applySessionExecutionAuthority(
+  const authorizedSessionConfiguration = applySessionExecutionAuthority(
     configuredSessionConfiguration,
     executionAuthorityForPermissionContext(
       configuredExecutionAuthority,
@@ -1431,6 +1433,36 @@ async function bootstrapLocalRuntimeSessionScoped(
       runtimeOptions.dangerouslyBypassApprovalsAndSandbox,
     ),
   );
+  const promptContext = buildTurnContext({
+    conversationId,
+    subId: "bootstrap-system-prompt",
+    config: { ...config, model: providerModel },
+    modelInfo: { ...modelInfo, slug: providerModel },
+    provider,
+    sessionConfiguration: authorizedSessionConfiguration,
+    permissionMode: toolPermissionContext.mode,
+  });
+  const baseInstructions = await buildBaseInstructionsForModel({
+    session: {
+      services: {
+        runtimeOptions,
+        sandboxExecutionBroker,
+      },
+    },
+    ctx: promptContext,
+    registry,
+    provider: resolvedProvider,
+    permissionContext: toolPermissionContext,
+    profile: coordinatorModeEnabled
+      ? "coordinator"
+      : usesLocalToolProfile(resolvedProvider)
+        ? "compact"
+        : "standard",
+  });
+  const sessionConfiguration = {
+    ...authorizedSessionConfiguration,
+    baseInstructions,
+  } satisfies SessionConfiguration;
   let initialState: SessionState = {
     sessionConfiguration,
     history: [],

@@ -15,9 +15,9 @@ import {
   hasCommand,
 } from '../../commands.js'
 import {
+  assembleSubagentSystemPrompt,
   DEFAULT_AGENT_PROMPT,
-  enhanceSystemPromptWithEnvDetails,
-} from '../../constants/prompts.js'
+} from '../../prompts/system-prompt.js'
 import type { QuerySource } from '../../constants/querySource.js'
 import { getSystemContext, getUserContext } from '../../context.js'
 import type { CanUseToolFn } from '../../tui/hooks/useCanUseTool.js'
@@ -1087,19 +1087,21 @@ async function getAgentSystemPrompt(
     const agentPrompt = agentDefinition.getSystemPrompt({ toolUseContext })
     const prompts = [agentPrompt]
 
-    return await enhanceSystemPromptWithEnvDetails(
-      prompts,
-      resolvedAgentModel,
+    return assembleSubagentSystemPrompt({
+      basePrompts: prompts,
+      model: resolvedAgentModel,
+      cwd: getCwd(),
       additionalWorkingDirectories,
       enabledToolNames,
-    )
+    })
   } catch (_error) {
-    return enhanceSystemPromptWithEnvDetails(
-      [DEFAULT_AGENT_PROMPT],
-      resolvedAgentModel,
+    return assembleSubagentSystemPrompt({
+      basePrompts: [DEFAULT_AGENT_PROMPT],
+      model: resolvedAgentModel,
+      cwd: getCwd(),
       additionalWorkingDirectories,
       enabledToolNames,
-    )
+    })
   }
 }
 

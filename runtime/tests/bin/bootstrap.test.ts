@@ -41,6 +41,7 @@ import {
   appendSessionTranscriptEventForTesting,
   createSessionTranscriptStateForTesting,
 } from "../tui/session-transcript.js";
+import { SYSTEM_PROMPT_DYNAMIC_BOUNDARY } from "../prompts/system-prompt-boundary.js";
 
 function jsonResponse(value: unknown): Response {
   return new Response(JSON.stringify(value), {
@@ -401,6 +402,12 @@ describe("bootstrapLocalRuntimeSession", () => {
       shutdown = boot.shutdown;
 
       expect(boot.agencHome).toBe(home);
+      expect(
+        boot.initialState.sessionConfiguration.baseInstructions,
+      ).toContain(SYSTEM_PROMPT_DYNAMIC_BOUNDARY);
+      expect(
+        boot.initialState.sessionConfiguration.baseInstructions,
+      ).not.toContain("__SYSTEM_PROMPT_DYNAMIC_BOUNDARY__");
       expect(boot.workspaceRoot).toBe(workspace);
       expect(boot.resolvedProvider).toBe("grok");
       expect(boot.model).toBe("grok-4.6");

@@ -44,6 +44,24 @@ function createSession(overrides: Record<string, unknown> = {}) {
 }
 
 describe("buildAgenCToolUseContext", () => {
+  test("carries the exact admitted prompt snapshot into tool execution", () => {
+    const session = createSession();
+    const context = buildAgenCToolUseContext(
+      session as unknown as Session,
+      {
+        ...createTurnContext(),
+        baseInstructions: "base prompt",
+        developerInstructions: "developer prompt",
+        userInstructions: "user prompt",
+      } as TurnContext,
+      { llmTools: [] },
+    );
+
+    expect(context.renderedSystemPrompt).toEqual([
+      "base prompt\n\ndeveloper prompt\n\nuser prompt",
+    ]);
+  });
+
   test("ignores array-shaped app-state snapshots", () => {
     const arrayState = Object.assign([], {
       tasks: { unsafe: true },
