@@ -48,6 +48,7 @@ import {
   LLMServerError,
   LLMTimeoutError,
 } from "../llm/errors.js";
+import { StreamIdleError } from "../llm/stream-watchdog.js";
 import {
   withCompactContextGuards,
   type CompactGuardEnv,
@@ -3499,9 +3500,8 @@ async function runSamplingRequest(
  * contain "504" in metadata would previously false-match.
  *
  * Retryable causes:
- *   - stream_idle watchdog abort (thrown from stream-model with a
- *     plain `Error` whose message begins `stream_idle:` — the only
- *     remaining message-based check, since it carries no type).
+ *   - typed `StreamIdleError` watchdog abort (plus backward compatibility for
+ *     the legacy plain-Error `stream_idle:` envelope).
  *   - `LLMServerError`   (HTTP 5xx from the provider envelope)
  *   - `LLMTimeoutError`  (request timed out / abort)
  *   - `LLMRateLimitError` (429 + retry-after)
@@ -3546,10 +3546,10 @@ export function isRetryableStreamError(error: unknown): boolean {
     }
   }
 
-  // stream_idle watchdog path throws a plain `Error` whose message is
-  // `stream_idle: no data for Nms`. That's the sole remaining
-  // message-based check and it's a controlled runtime string, not a
-  // provider payload that could contain user-supplied substrings.
+  if (cause instanceof StreamIdleError) return true;
+
+  // Backward compatibility for in-flight/serialized failures emitted by
+  // older runtimes before StreamIdleError carried the typed code.
   if (cause instanceof Error && cause.message?.startsWith("stream_idle")) {
     return true;
   }

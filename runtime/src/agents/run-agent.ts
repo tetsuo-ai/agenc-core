@@ -538,6 +538,12 @@ function wrapProviderForAgentSummary(
 ): LLMProvider {
   const wrapped: LLMProvider = {
     name: provider.name,
+    ...(provider.defaultStreamIdleTimeoutMs !== undefined
+      ? { defaultStreamIdleTimeoutMs: provider.defaultStreamIdleTimeoutMs }
+      : {}),
+    ...(provider.suggestedStreamIdleTimeoutMs !== undefined
+      ? { suggestedStreamIdleTimeoutMs: provider.suggestedStreamIdleTimeoutMs }
+      : {}),
     chat: (messages, options) => provider.chat(messages, options),
     healthCheck: () => provider.healthCheck(),
     chatStream(messages, onChunk, options) {

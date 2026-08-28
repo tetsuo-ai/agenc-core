@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
   installStreamWatchdog,
   isStreamWatchdogEnabled,
+  StreamIdleError,
   STREAM_IDLE_ABORT_REASON,
   STREAM_IDLE_WARNING_REASON,
 } from "./stream-watchdog.js";
@@ -35,6 +36,16 @@ describe("stream-watchdog", () => {
 
     process.env.AGENC_DISABLE_STREAM_WATCHDOG = "1";
     expect(isStreamWatchdogEnabled()).toBe(false);
+  });
+
+  test("materializes a typed stream_idle failure", () => {
+    const error = new StreamIdleError(480_000);
+
+    expect(error).toBeInstanceOf(Error);
+    expect(error.name).toBe("StreamIdleError");
+    expect(error.code).toBe(STREAM_IDLE_ABORT_REASON);
+    expect(error.timeoutMs).toBe(480_000);
+    expect(error.message).toBe("stream_idle: no data for 480000ms");
   });
 
   test("installs no deadline by default, even after six hours", () => {

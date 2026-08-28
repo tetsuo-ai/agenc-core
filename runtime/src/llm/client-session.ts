@@ -1085,7 +1085,10 @@ export class ProviderHttpClientSession {
             while (true) {
               const next = await readWithAbort(
                 reader,
-                currentAttempt.attemptState.abortController.signal,
+                // Observe the combined signal, not only the attempt-local
+                // controller. The latter made a 200 response with a silent
+                // body immune to caller cancellation/session watchdog aborts.
+                currentAttempt.attemptState.signal,
               );
               if (next.done) return;
               // LLM-09: empty chunks still count as body progress for idle

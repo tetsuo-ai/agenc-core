@@ -54,7 +54,7 @@ dropped. TOML aliases remapped before normalize:
 | `daemon.autostart` | `true` |
 | `permissions.default_mode` | `on-request` |
 | `max_turns` | unset (no cap; optional runaway-loop backstop) |
-| `stream_watchdog_timeout_ms` | `30000` |
+| `stream_watchdog_timeout_ms` | unset (provider policy; OpenAI: `480000`, others: unbounded) |
 | `toolBudget` | 32 calls/turn · 256k B/call · 2M B/turn |
 | `project_doc_max_bytes` | `32768` |
 

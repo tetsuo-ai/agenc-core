@@ -26,6 +26,10 @@ import type {
 import type { AdmissionLease } from "../budget/admission-types.js";
 import { WorkflowHandoffSpool } from "../agents/workflow-handoff-spool.js";
 import { OpenAIProvider } from "../llm/providers/openai/adapter.js";
+import {
+  OPENAI_STREAM_IDLE_TIMEOUT_MS_DEFAULT,
+  StreamIdleError,
+} from "../llm/stream-watchdog.js";
 
 const streamedDispatchCalls: string[] = [];
 
@@ -94,6 +98,7 @@ vi.mock("./execute-tools.js", () => ({
 }));
 
 import {
+  StreamModelError,
   streamModel,
   type StreamModelRequestContract,
 } from "./stream-model.js";
@@ -201,6 +206,16 @@ function mkState(ctx: TurnContext) {
     role: "user",
     content: "hello",
   });
+}
+
+function setSessionWatchdogTimeout(session: Session, timeoutMs: number): void {
+  (session.services as {
+    configStore?: {
+      current: () => { stream_watchdog_timeout_ms: number };
+    };
+  }).configStore = {
+    current: () => ({ stream_watchdog_timeout_ms: timeoutMs }),
+  };
 }
 
 function mkProvider(
@@ -1029,7 +1044,309 @@ describe("streamModel — live assistant text sanitization", () => {
   });
 });
 
+describe("streamModel — OpenAI stream liveness watchdog", () => {
+  test("aborts pre-header silence at the OpenAI provider default with a typed stream_idle", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+        (_input, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              "abort",
+              () => reject(init.signal?.reason ?? new Error("aborted")),
+              { once: true },
+            );
+          }),
+      );
+      const provider = new OpenAIProvider({
+        apiKey: "sk-test",
+        model: "gpt-5",
+        fetchImpl,
+      });
+      const ctx = mkCtx();
+      const { session } = mkSession(provider);
+      const pending = streamModel(
+        mkState(ctx),
+        ctx,
+        session,
+        mkRequest([{ role: "user", content: "build for a long time" }]),
+      );
+
+      await vi.advanceTimersByTimeAsync(
+        OPENAI_STREAM_IDLE_TIMEOUT_MS_DEFAULT - 1,
+      );
+      expect(fetchImpl).toHaveBeenCalledOnce();
+
+      const assertion = pending.catch((error: unknown) => error);
+      await vi.advanceTimersByTimeAsync(1);
+      const error = await assertion;
+      expect(error).toBeInstanceOf(StreamModelError);
+      expect((error as StreamModelError).cause).toBeInstanceOf(StreamIdleError);
+      expect((error as StreamModelError).cause).toMatchObject({
+        code: "stream_idle",
+        timeoutMs: OPENAI_STREAM_IDLE_TIMEOUT_MS_DEFAULT,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("aborts a 200 Responses body that never yields bytes", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start() {
+              // Headers arrive, body remains silent forever.
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          },
+        ),
+      );
+      const provider = new OpenAIProvider({
+        apiKey: "sk-test",
+        model: "gpt-5",
+        fetchImpl,
+      });
+      const ctx = mkCtx();
+      const { session } = mkSession(provider);
+      setSessionWatchdogTimeout(session, 50);
+      const pending = streamModel(
+        mkState(ctx),
+        ctx,
+        session,
+        mkRequest([{ role: "user", content: "hello" }]),
+      );
+      const assertion = pending.catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(50);
+      const error = await assertion;
+      expect(error).toBeInstanceOf(StreamModelError);
+      expect((error as StreamModelError).cause).toBeInstanceOf(StreamIdleError);
+      expect((error as StreamModelError).cause).toMatchObject({
+        code: "stream_idle",
+        timeoutMs: 50,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("raw keepalives and recognized Responses progress keep the stream alive", async () => {
+    vi.useFakeTimers();
+    try {
+      const encoder = new TextEncoder();
+      const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+        new Response(
+          new ReadableStream<Uint8Array>({
+            start(controller) {
+              setTimeout(
+                () => controller.enqueue(encoder.encode(": ping\n\n")),
+                30,
+              );
+              setTimeout(
+                () =>
+                  controller.enqueue(
+                    encoder.encode(
+                      'event: response.in_progress\ndata: {"type":"response.in_progress","response":{"id":"resp_live","status":"in_progress"}}\n\n',
+                    ),
+                  ),
+                70,
+              );
+              setTimeout(
+                () =>
+                  controller.enqueue(
+                    encoder.encode(
+                      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\n',
+                    ),
+                  ),
+                110,
+              );
+              setTimeout(() => {
+                controller.enqueue(
+                  encoder.encode(
+                    'event: response.completed\ndata: {"type":"response.completed","response":{"id":"resp_live","status":"completed","model":"gpt-5","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":1,"output_tokens":1}}}\n\n',
+                  ),
+                );
+                controller.close();
+              }, 140);
+            },
+          }),
+          {
+            status: 200,
+            headers: { "content-type": "text/event-stream" },
+          },
+        ),
+      );
+      const provider = new OpenAIProvider({
+        apiKey: "sk-test",
+        model: "gpt-5",
+        fetchImpl,
+      });
+      const ctx = mkCtx();
+      const state = mkState(ctx);
+      const { session, events } = mkSession(provider);
+      setSessionWatchdogTimeout(session, 50);
+      const pending = streamModel(
+        state,
+        ctx,
+        session,
+        mkRequest([{ role: "user", content: "hello" }]),
+      );
+
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(140);
+      await expect(pending).resolves.toBe(state);
+      expect(state.assistantMessages.at(-1)?.text).toBe("ok");
+      expect(
+        events.some(
+          (event) =>
+            event.msg.type === "stream_error" &&
+            event.msg.payload.cause === "stream_idle",
+        ),
+      ).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("does not relabel a slowly settling external cancellation as stream_idle", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchImpl = vi.fn<typeof fetch>().mockImplementation(
+        (_input, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init?.signal?.addEventListener(
+              "abort",
+              () => {
+                const reason = init.signal?.reason ?? new Error("aborted");
+                // Simulate a transport that observes cancellation but only
+                // settles after the watchdog deadline has elapsed.
+                setTimeout(() => reject(reason), 150);
+              },
+              { once: true },
+            );
+          }),
+      );
+      const provider = new OpenAIProvider({
+        apiKey: "sk-test",
+        model: "gpt-5",
+        fetchImpl,
+      });
+      const ctx = mkCtx();
+      const { session } = mkSession(provider);
+      setSessionWatchdogTimeout(session, 100);
+      const external = new AbortController();
+      const pending = streamModel(
+        mkState(ctx),
+        ctx,
+        session,
+        mkRequest([{ role: "user", content: "hello" }]),
+        external.signal,
+      );
+      const assertion = pending.catch((error: unknown) => error);
+
+      await vi.advanceTimersByTimeAsync(0);
+      external.abort(new Error("user_cancelled"));
+      await vi.advanceTimersByTimeAsync(150);
+      const error = await assertion;
+      expect(error).toBeInstanceOf(StreamModelError);
+      expect((error as StreamModelError).cause).not.toBeInstanceOf(
+        StreamIdleError,
+      );
+      expect(String((error as StreamModelError).cause)).toContain(
+        "user_cancelled",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("honors explicit config zero as an OpenAI watchdog opt-out", async () => {
+    vi.useFakeTimers();
+    try {
+      const provider = mkProvider(
+        async () =>
+          await new Promise<LLMResponse>((resolve) => {
+            setTimeout(
+              () =>
+                resolve({
+                  content: "finished after silence",
+                  toolCalls: [],
+                  usage: {
+                    promptTokens: 1,
+                    completionTokens: 3,
+                    totalTokens: 4,
+                  },
+                  model: "gpt-5",
+                  finishReason: "stop",
+                }),
+              75,
+            );
+          }),
+      );
+      Object.defineProperty(provider, "defaultStreamIdleTimeoutMs", {
+        value: 50,
+      });
+      const ctx = mkCtx();
+      const state = mkState(ctx);
+      const { session } = mkSession(provider);
+      setSessionWatchdogTimeout(session, 0);
+      const pending = streamModel(
+        state,
+        ctx,
+        session,
+        mkRequest([{ role: "user", content: "hello" }]),
+      );
+
+      await vi.advanceTimersByTimeAsync(75);
+      await expect(pending).resolves.toBe(state);
+      expect(state.assistantMessages.at(-1)?.text).toBe(
+        "finished after silence",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("streamModel — token budget boundary semantics", () => {
+  test("does not charge content-free liveness heartbeats as output tokens", async () => {
+    const ctx = mkCtx("chat");
+    const state = mkState(ctx);
+    const budgetTracker = new BudgetTracker(1_000, 1);
+    let estimatedDuringStream = -1;
+    const provider = mkProvider(async (_messages, onChunk) => {
+      for (let i = 0; i < 20; i += 1) {
+        onChunk({ content: "", done: false });
+      }
+      estimatedDuringStream = budgetTracker.emitted;
+      return {
+        content: "done",
+        toolCalls: [],
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        model: "test-model",
+        finishReason: "stop",
+      };
+    });
+    const { session } = mkSession(provider, budgetTracker);
+
+    await streamModel(
+      state,
+      ctx,
+      session,
+      mkRequest([{ role: "user", content: "hello" }]),
+      undefined,
+    );
+
+    expect(estimatedDuringStream).toBe(0);
+  });
+
   test("stores the continuation prompt when boundary truth stays below the completion threshold", async () => {
     const ctx = mkCtx("chat");
     const state = mkState(ctx);

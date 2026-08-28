@@ -439,6 +439,7 @@ interface AuthVendedProviderCapabilities {
 
 class AuthVendedProvider implements LLMProvider {
   readonly name: string;
+  readonly defaultStreamIdleTimeoutMs?: number;
   readonly config: {
     readonly model: string;
     readonly baseURL?: string;
@@ -460,6 +461,13 @@ class AuthVendedProvider implements LLMProvider {
     readonly sessionId: string;
   }) {
     this.name = params.provider;
+    const providerInfo = resolveBuiltInProviderInfo(params.provider);
+    if (
+      providerInfo !== undefined &&
+      providerInfo.streamIdleTimeoutMs > 0
+    ) {
+      this.defaultStreamIdleTimeoutMs = providerInfo.streamIdleTimeoutMs;
+    }
     this.#provider = params.provider;
     this.#opts = stripConcreteProviderAuthOptions(params.opts);
     this.#authBackend = params.authBackend;

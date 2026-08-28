@@ -156,7 +156,7 @@ Default stream/request settings from the registry:
 
 - request max retries: **4**
 - stream max retries: **5**
-- stream idle timeout: **300_000** ms
+- stream idle timeout: **480_000 ms for first-party OpenAI**; **disabled (`0`) for other providers** unless explicitly configured
 - websocket connect timeout: **15_000** ms
 - websockets supported: **`openai` only** in built-in info
 

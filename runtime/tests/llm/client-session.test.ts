@@ -827,6 +827,40 @@ describe("ProviderHttpClientSession", () => {
     await assertion;
   });
 
+  test("requestStream body reads observe an external abort after headers", async () => {
+    const fetchImpl = vi.fn<typeof fetch>().mockResolvedValue(
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start() {},
+        }),
+        {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        },
+      ),
+    );
+    const session = new ProviderHttpClientSession({
+      providerName: "openai",
+      baseURL: "https://example.test/v1",
+      wireApi: "responses",
+      fetchImpl,
+    });
+    const external = new AbortController();
+    const stream = await session.requestStream({
+      body: { stream: true },
+      signal: external.signal,
+    });
+    const consume = (async () => {
+      for await (const _chunk of stream) {
+        // no-op
+      }
+    })();
+
+    external.abort(new Error("user_cancelled"));
+
+    await expect(consume).rejects.toThrow("user_cancelled");
+  });
+
   test("requestStream applies request timeoutMs on open/headers (LLM-02)", async () => {
     // Hang forever on fetch so only the attempt timeout can complete the call.
     const fetchImpl = vi.fn<typeof fetch>().mockImplementation(

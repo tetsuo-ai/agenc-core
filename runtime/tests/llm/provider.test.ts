@@ -29,6 +29,7 @@ import {
   type ProviderName,
 } from "./provider.js";
 import { resolveBuiltInProviderInfo } from "./registry/provider-info.js";
+import { OPENAI_STREAM_IDLE_TIMEOUT_MS_DEFAULT } from "./stream-watchdog.js";
 
 function withEnv<T>(
   overrides: Record<string, string | undefined>,
@@ -300,6 +301,11 @@ describe("createProvider", () => {
 
       expect(provider.name).toBe(name);
       expect(isFactoryProvider(provider)).toBe(true);
+      expect(provider.defaultStreamIdleTimeoutMs).toBe(
+        name === "openai"
+          ? OPENAI_STREAM_IDLE_TIMEOUT_MS_DEFAULT
+          : undefined,
+      );
       await expect(provider.getExecutionProfile?.()).resolves.toMatchObject({
         provider: name,
         model,

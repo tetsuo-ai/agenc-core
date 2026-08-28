@@ -8,6 +8,7 @@
 
 import { deriveFlatCatalog } from "./model-catalog.js";
 import { OPENROUTER_FREE_MODEL_IDS } from "./openrouter-free-models.js";
+import { OPENAI_STREAM_IDLE_TIMEOUT_MS_DEFAULT } from "../stream-watchdog.js";
 
 // Single source of truth: model lists for providers that have entries in
 // REGISTERED_MODEL_CATALOG are computed from it. model-catalog.ts does not
@@ -248,7 +249,10 @@ export function resolveBuiltInProviderInfo(
       : {}),
     requestMaxRetries: DEFAULT_REQUEST_MAX_RETRIES,
     streamMaxRetries: DEFAULT_STREAM_MAX_RETRIES,
-    streamIdleTimeoutMs: DEFAULT_STREAM_IDLE_TIMEOUT_MS,
+    streamIdleTimeoutMs:
+      id === "openai"
+        ? OPENAI_STREAM_IDLE_TIMEOUT_MS_DEFAULT
+        : DEFAULT_STREAM_IDLE_TIMEOUT_MS,
     websocketConnectTimeoutMs: DEFAULT_WEBSOCKET_CONNECT_TIMEOUT_MS,
     supportsWebsockets: id === "openai",
     requiresManagedAuth: id === "agenc",

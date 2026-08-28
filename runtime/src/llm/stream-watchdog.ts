@@ -6,10 +6,11 @@
  * `client.rs:1146`
  * (`stream_idle_timeout_ms` from provider info).
  *
- * The watchdog has no implicit deadline. Operators may opt in with a
- * positive `AGENC_STREAM_IDLE_TIMEOUT_MS` value or an explicit runtime
- * configuration value; `0` disables it. This keeps long silent reasoning and
- * tool-argument generation valid for arbitrarily long turns.
+ * Providers may supply a provider-specific default deadline. Operators can
+ * override it with `AGENC_STREAM_IDLE_TIMEOUT_MS` or explicit runtime
+ * configuration; `0` disables it. Providers that do not supply a default
+ * remain unbounded, preserving long silent reasoning/tool-argument generation
+ * where the wire contract does not expose liveness.
  *
  * Timers use monotonic clock (I-82) via `monotonicMs()` — immune to
  * NTP corrections, `date` set, suspend/resume, container clock skew.
@@ -31,21 +32,30 @@
 
 import { monotonicMs } from "./_deps/monotonic.js";
 
-/**
- * There is deliberately no default idle timeout. A positive operator value is
- * required to install a deadline.
- */
+/** Generic providers remain unbounded unless configured by the operator. */
 const STREAM_IDLE_TIMEOUT_MS_DEFAULT = 0;
 
-export function resolveStreamIdleTimeoutMs(preferredMs?: number): number {
+/**
+ * OpenAI Responses streams emit explicit progress events during healthy work.
+ * Eight minutes bounds true transport silence while leaving ample room for
+ * long reasoning/tool generation between those events.
+ */
+export const OPENAI_STREAM_IDLE_TIMEOUT_MS_DEFAULT = 8 * 60_000;
+
+function readEnvStreamIdleTimeoutMs(): number | undefined {
   const raw = process.env.AGENC_STREAM_IDLE_TIMEOUT_MS;
-  if (raw !== undefined && raw.trim() !== "") {
-    const n = Number.parseInt(raw, 10);
-    if (Number.isFinite(n) && n >= 0) return Math.trunc(n);
-  }
+  if (raw === undefined || raw.trim() === "") return undefined;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed >= 0
+    ? Math.trunc(parsed)
+    : undefined;
+}
+
+export function resolveStreamIdleTimeoutMs(preferredMs?: number): number {
+  const envTimeoutMs = readEnvStreamIdleTimeoutMs();
+  if (envTimeoutMs !== undefined) return envTimeoutMs;
   // `preferredMs` carries config (`stream_watchdog_timeout_ms`) or a
-  // provider-declared tolerance (e.g. grok's silent tool-argument
-  // generation). Env wins over both for operator escape-hatch parity.
+  // provider-declared value. Env wins for operator escape-hatch parity.
   if (
     preferredMs !== undefined &&
     Number.isFinite(preferredMs) &&
@@ -57,20 +67,27 @@ export function resolveStreamIdleTimeoutMs(preferredMs?: number): number {
 }
 
 /**
- * Session-level idle-timeout resolution: env > explicit config > disabled.
- * A provider suggestion may raise an explicitly configured timeout, but it
- * never creates a deadline by itself. Provider silence is not evidence of a
- * dead turn, and healthy agent/model calls may remain silent for hours.
+ * Session-level idle-timeout resolution:
+ * env > explicit config > provider default > disabled.
+ *
+ * `0` is an authoritative opt-out at both explicit layers. A provider
+ * suggestion may raise a positive configured timeout, but it never creates a
+ * deadline by itself. A provider default creates a deadline only when neither
+ * env nor config made an explicit choice.
  */
 export function resolveSessionStreamIdleTimeoutMs(input: {
   readonly configuredMs?: number;
+  readonly providerDefaultMs?: number;
   readonly providerSuggestedMs?: number;
 }): number {
+  const envTimeoutMs = readEnvStreamIdleTimeoutMs();
+  if (envTimeoutMs !== undefined) return envTimeoutMs;
+
   const configured =
     input.configuredMs !== undefined &&
     Number.isFinite(input.configuredMs) &&
-    input.configuredMs > 0
-      ? input.configuredMs
+    input.configuredMs >= 0
+      ? Math.trunc(input.configuredMs)
       : undefined;
   const suggested =
     input.providerSuggestedMs !== undefined &&
@@ -78,14 +95,20 @@ export function resolveSessionStreamIdleTimeoutMs(input: {
     input.providerSuggestedMs > 0
       ? input.providerSuggestedMs
       : undefined;
-  if (configured === undefined) {
-    return resolveStreamIdleTimeoutMs();
-  }
-  const preferred =
-    suggested !== undefined
+  if (configured !== undefined) {
+    if (configured === 0) return 0;
+    return suggested !== undefined
       ? Math.max(configured, suggested)
       : configured;
-  return resolveStreamIdleTimeoutMs(preferred);
+  }
+
+  const providerDefault =
+    input.providerDefaultMs !== undefined &&
+    Number.isFinite(input.providerDefaultMs) &&
+    input.providerDefaultMs > 0
+      ? Math.trunc(input.providerDefaultMs)
+      : undefined;
+  return providerDefault ?? STREAM_IDLE_TIMEOUT_MS_DEFAULT;
 }
 
 /**
@@ -111,6 +134,18 @@ export function isStreamWatchdogEnabled(): boolean {
  */
 export const STREAM_IDLE_ABORT_REASON = "stream_idle";
 export const STREAM_IDLE_WARNING_REASON = "stream_idle_warning";
+
+/** Typed stream-silence failure used by the safe reconnect classifier. */
+export class StreamIdleError extends Error {
+  readonly code = STREAM_IDLE_ABORT_REASON;
+  readonly timeoutMs: number;
+
+  constructor(timeoutMs: number) {
+    super(`${STREAM_IDLE_ABORT_REASON}: no data for ${timeoutMs}ms`);
+    this.name = "StreamIdleError";
+    this.timeoutMs = timeoutMs;
+  }
+}
 
 export interface StreamWatchdogHandle {
   /** Reset the idle timer on observed activity (per-chunk kick). */
@@ -207,7 +242,17 @@ export function installStreamWatchdog(
   };
 
   const fire = () => {
-    if (stopped || firedAtValue !== null) return;
+    // External/user cancellation owns the outcome once the shared controller
+    // is already aborted. Do not let a later timer relabel that cancellation
+    // as provider stream silence while the provider promise is still settling.
+    if (
+      stopped ||
+      firedAtValue !== null ||
+      options.abortController.signal.aborted
+    ) {
+      clearTimers();
+      return;
+    }
     timeoutTimer = null;
     firedAtValue = monotonicMs();
     const elapsedMs = firedAtValue - lastKickMs;

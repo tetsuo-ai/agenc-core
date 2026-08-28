@@ -98,6 +98,7 @@ import {
   LLMContextWindowExceededError,
   LLMServerError,
 } from "../llm/errors.js";
+import { StreamIdleError } from "../llm/stream-watchdog.js";
 import { FallbackTriggeredError } from "../recovery/api-errors.js";
 import type {
   LLMContentPart,
@@ -4897,6 +4898,55 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
     );
   });
 
+  test("retries a typed stream_idle and completes on the next safe attempt", async () => {
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    let attempts = 0;
+    const provider: LLMProvider = {
+      ...mkProvider({}),
+      chatStream: async (): Promise<LLMResponse> => {
+        attempts += 1;
+        if (attempts === 1) throw new StreamIdleError(480_000);
+        return {
+          content: "recovered after idle",
+          toolCalls: [],
+          usage: { promptTokens: 3, completionTokens: 3, totalTokens: 6 },
+          model: "test-model",
+          finishReason: "stop",
+        };
+      },
+    };
+    const { session, events } = mkSession({
+      provider,
+      registry: mkRegistry(),
+    });
+
+    await drain(session.runTurn("hello", { ctx: mkCtx() }));
+
+    expect(attempts).toBe(2);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "stream_error",
+          payload: expect.objectContaining({
+            cause: "stream_disconnected",
+            provider: "stub-provider",
+          }),
+        },
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        msg: {
+          type: "turn_complete",
+          payload: expect.objectContaining({
+            lastAgentMessage: "recovered after idle",
+          }),
+        },
+      }),
+    );
+  });
+
   test("LP-07 gives every admitted reconnect a distinct durable step id", async () => {
     vi.spyOn(Math, "random").mockReturnValue(0.5);
 
@@ -6376,6 +6426,11 @@ describe("runTurn — D1 isRetryableStreamError type-based discrimination", () =
   test("stream_idle plain-Error cause is retryable", () => {
     const idle = new Error("stream_idle: no data for 30000ms");
     const wrapped = new StreamModelError(idle);
+    expect(isRetryableStreamError(wrapped)).toBe(true);
+  });
+
+  test("typed StreamIdleError cause enters the safe retry path", () => {
+    const wrapped = new StreamModelError(new StreamIdleError(480_000));
     expect(isRetryableStreamError(wrapped)).toBe(true);
   });
 

@@ -555,6 +555,12 @@ function createDelegateProvider(
   }
   const delegatedProvider: LLMProvider = {
     name: provider.name,
+    ...(provider.defaultStreamIdleTimeoutMs !== undefined
+      ? { defaultStreamIdleTimeoutMs: provider.defaultStreamIdleTimeoutMs }
+      : {}),
+    ...(provider.suggestedStreamIdleTimeoutMs !== undefined
+      ? { suggestedStreamIdleTimeoutMs: provider.suggestedStreamIdleTimeoutMs }
+      : {}),
     healthCheck: (...args: Parameters<LLMProvider["healthCheck"]>) =>
       provider.healthCheck(...args),
     chat: (messages, options) =>

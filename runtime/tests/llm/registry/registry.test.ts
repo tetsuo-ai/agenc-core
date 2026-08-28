@@ -132,6 +132,10 @@ describe("LLM registry", () => {
       name: "AgenC",
       requiresManagedAuth: true,
     });
+    expect(resolveBuiltInProviderInfo("openai")).toMatchObject({
+      id: "openai",
+      streamIdleTimeoutMs: 8 * 60_000,
+    });
     expect(resolveBuiltInProviderInfo("anthropic")).toMatchObject({
       baseURL: "https://api.anthropic.com/v1",
     });

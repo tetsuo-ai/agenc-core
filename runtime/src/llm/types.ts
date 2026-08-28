@@ -928,6 +928,12 @@ export interface LLMCodePredictionResponse {
 export interface LLMProvider {
   readonly name: string;
   /**
+   * Provider-specific hard idle default used only when neither environment nor
+   * runtime config makes an explicit choice. Providers without observable
+   * liveness should leave this unset and remain unbounded.
+   */
+  readonly defaultStreamIdleTimeoutMs?: number;
+  /**
    * Optional complete-request preflight counter. Providers expose this only
    * when the native endpoint accepts the same normalized input surface as the
    * inference request. Text-only tokenizers are not complete capabilities.

@@ -56,6 +56,7 @@ import {
   assertProviderStructuredOutputCompatibility,
 } from "../../provider-capabilities.js";
 import type { OpenAIProviderConfig } from "./types.js";
+import { OPENAI_STREAM_IDLE_TIMEOUT_MS_DEFAULT } from "../../stream-watchdog.js";
 import { OpenAIAuthSession } from "./auth.js";
 import { parseSSEFrames } from "../../_deps/sse.js";
 import {
@@ -501,6 +502,7 @@ type ProviderFallbackWaitDecision = Extract<
 
 export class OpenAIProvider implements LLMProvider {
   readonly name: string;
+  readonly defaultStreamIdleTimeoutMs?: number;
 
   private readonly config: OpenAIProviderConfig;
   private readonly client: ProviderHttpClient;
@@ -508,6 +510,13 @@ export class OpenAIProvider implements LLMProvider {
 
   constructor(config: OpenAIProviderConfig) {
     this.name = config.providerName ?? "openai";
+    // Only the first-party OpenAI Responses provider has a liveness contract
+    // strong enough for an implicit deadline. OpenAI-compatible subclasses
+    // may be silent indefinitely and keep the generic unbounded behavior.
+    this.defaultStreamIdleTimeoutMs =
+      this.name === "openai"
+        ? OPENAI_STREAM_IDLE_TIMEOUT_MS_DEFAULT
+        : undefined;
     this.config = config;
     this.auth = new OpenAIAuthSession(config);
     this.client = new ProviderHttpClient({
@@ -1051,9 +1060,65 @@ export class OpenAIProvider implements LLMProvider {
         { id: string; name: string; arguments: string }
       >();
       let completedResponse: Record<string, unknown> | null = null;
+      const streamedReasoning = new Map<number, string>();
+      const reasoningIndexByIdentity = new Map<string, number>();
 
-      for await (const event of this.readSseEvents(response)) {
+      for await (const event of this.readSseEvents(response, () => {
+        // Raw SSE comments/keepalives and partial frames prove transport
+        // liveness even before they form a JSON Responses event.
+        onChunk({ content: "", done: false });
+      })) {
         const eventType = event.event ?? String(event.data.type ?? "");
+
+        if (
+          eventType === "response.reasoning_summary_text.delta" ||
+          eventType === "response.reasoning_text.delta"
+        ) {
+          const delta =
+            typeof event.data.delta === "string" ? event.data.delta : "";
+          if (delta.length > 0) {
+            const family =
+              eventType === "response.reasoning_text.delta"
+                ? "raw"
+                : "summary";
+            const outputIdentity =
+              typeof event.data.output_index === "number"
+                ? `output:${event.data.output_index}`
+                : typeof event.data.item_id === "string" &&
+                    event.data.item_id.length > 0
+                  ? `item:${event.data.item_id}`
+                  : "output:0";
+            const innerIndex =
+              family === "summary" &&
+              typeof event.data.summary_index === "number"
+                ? event.data.summary_index
+                : family === "raw" &&
+                    typeof event.data.content_index === "number"
+                  ? event.data.content_index
+                  : 0;
+            const identity = `${family}:${outputIdentity}:${innerIndex}`;
+            let summaryIndex = reasoningIndexByIdentity.get(identity);
+            if (summaryIndex === undefined) {
+              summaryIndex = reasoningIndexByIdentity.size;
+              reasoningIndexByIdentity.set(identity, summaryIndex);
+            }
+            streamedReasoning.set(
+              summaryIndex,
+              (streamedReasoning.get(summaryIndex) ?? "") + delta,
+            );
+            onChunk({
+              content: "",
+              done: false,
+              reasoningSummaryDelta: {
+                delta,
+                summaryIndex,
+              },
+            });
+          } else {
+            onChunk({ content: "", done: false });
+          }
+          continue;
+        }
 
         if (eventType === "response.output_text.delta") {
           const delta =
@@ -1061,6 +1126,9 @@ export class OpenAIProvider implements LLMProvider {
           if (delta.length > 0) {
             streamedContent += delta;
             onChunk({ content: delta, done: false });
+          } else {
+            // Even an empty, well-formed delta is authoritative wire progress.
+            onChunk({ content: "", done: false });
           }
           continue;
         }
@@ -1130,6 +1198,8 @@ export class OpenAIProvider implements LLMProvider {
             }
             streamedToolCalls.set(toolCall.id, toolCall);
             onChunk({ content: "", done: false, toolCalls: [toolCall] });
+          } else {
+            onChunk({ content: "", done: false });
           }
           continue;
         }
@@ -1191,6 +1261,12 @@ export class OpenAIProvider implements LLMProvider {
           consecutiveFallbackFailures = 0;
           throw streamError;
         }
+
+        // Every successfully parsed Responses event is authoritative provider
+        // activity, including future event names this adapter does not yet
+        // render. Forward a content-free heartbeat so protocol evolution
+        // cannot starve the session watchdog or leak into visible output.
+        onChunk({ content: "", done: false });
       }
 
       if (!completedResponse) {
@@ -1219,6 +1295,21 @@ export class OpenAIProvider implements LLMProvider {
           toolCalls.length > 0 && parsed.finishReason === "stop"
             ? "tool_calls"
             : parsed.finishReason,
+        ...(streamedReasoning.size > 0
+          ? {
+              thinking: Object.freeze(
+                Array.from(streamedReasoning.entries())
+                  .sort(([a], [b]) => a - b)
+                  .map(([, text]) =>
+                    Object.freeze({
+                      text,
+                      redacted: false,
+                      kind: "reasoning_summary" as const,
+                    })
+                  ),
+              ),
+            }
+          : {}),
       };
       onChunk({
         content: "",
@@ -1319,7 +1410,9 @@ export class OpenAIProvider implements LLMProvider {
         { id: string; name: string; arguments: string }
       >();
 
-      for await (const event of this.readSseEvents(response)) {
+      for await (const event of this.readSseEvents(response, () => {
+        onChunk({ content: "", done: false });
+      })) {
         const chunk = event.data;
         if (chunk.error && typeof chunk.error === "object") {
           const streamError = mapOpenAIStreamError({
@@ -1352,6 +1445,8 @@ export class OpenAIProvider implements LLMProvider {
           throw streamError;
         }
 
+        let emittedActivity = false;
+
         if (typeof chunk.model === "string" && chunk.model.length > 0) {
           model = chunk.model;
         }
@@ -1370,6 +1465,7 @@ export class OpenAIProvider implements LLMProvider {
           if (typeof delta.content === "string" && delta.content.length > 0) {
             content += delta.content;
             onChunk({ content: delta.content, done: false });
+            emittedActivity = true;
           }
           if (
             typeof delta.reasoning_content === "string" &&
@@ -1385,6 +1481,7 @@ export class OpenAIProvider implements LLMProvider {
                   typeof choice.index === "number" ? choice.index : 0,
               },
             });
+            emittedActivity = true;
           }
 
           const deltaToolCalls = Array.isArray(delta.tool_calls)
@@ -1435,6 +1532,13 @@ export class OpenAIProvider implements LLMProvider {
                 break;
             }
           }
+        }
+
+        // Parsed usage/model/finish/tool-argument-only chunks are real wire
+        // progress too. Without this heartbeat, a long function-call argument
+        // stream could be active while the session watchdog saw only silence.
+        if (!emittedActivity) {
+          onChunk({ content: "", done: false });
         }
       }
 
@@ -1522,6 +1626,7 @@ export class OpenAIProvider implements LLMProvider {
 
   private async *readSseEvents(
     response: ProviderHttpStreamResponse,
+    onTransportActivity?: () => void,
   ): AsyncGenerator<OpenAISseEvent> {
     const decoder = new TextDecoder();
     let buffer = "";
@@ -1529,6 +1634,7 @@ export class OpenAIProvider implements LLMProvider {
       buffer += decoder.decode(chunk.value, { stream: true });
       const parsed = parseSSEFrames(buffer, this.name);
       buffer = parsed.remaining;
+      let yieldedEvent = false;
 
       for (const frame of parsed.frames) {
         if (!frame.data || frame.data === "[DONE]") {
@@ -1537,10 +1643,17 @@ export class OpenAIProvider implements LLMProvider {
         }
         try {
           const data = JSON.parse(frame.data) as Record<string, unknown>;
+          yieldedEvent = true;
           yield { event: frame.event, data };
         } catch {
           continue;
         }
+      }
+      // The outer semantic watchdog cannot see wire bytes directly. Surface a
+      // content-free heartbeat only when this transport chunk did not already
+      // produce a parsed event (which the caller maps separately).
+      if (!yieldedEvent && chunk.value.length > 0) {
+        onTransportActivity?.();
       }
     }
 
