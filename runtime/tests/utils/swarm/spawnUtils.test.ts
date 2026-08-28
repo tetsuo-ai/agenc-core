@@ -302,7 +302,7 @@ test('buildInheritedEnvVars clears stale pane authority in a real child environm
           MULTILINE: 'first\nsecond',
         }),
     )
-    expect(envVars).toStartWith('-i -- ')
+    expect(envVars.startsWith('-i -- ')).toBe(true)
     const output = execFileSync(
       '/bin/sh',
       ['-c', `env ${envVars} /usr/bin/env`],

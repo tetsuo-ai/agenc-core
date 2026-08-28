@@ -25,9 +25,22 @@ import { createMonitorTool } from "../../src/tools/system/monitor.js";
 
 const roots: string[] = [];
 const testRuntimeOptions = resolveAgentRuntimeOptions({});
+const testUserShell = Object.freeze({
+  path: "/bin/sh",
+  commandWrapperArgv: Object.freeze([]),
+  childEnvironment: Object.freeze({
+    PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
+    HOME: tmpdir(),
+  }),
+  deriveExecArgs: (input: string) => ["-c", input],
+});
 const legacyTestSession = {
   conversationId: "sandbox-surface-test-session",
-  services: { admissionRequired: false, runtimeOptions: testRuntimeOptions },
+  services: {
+    admissionRequired: false,
+    runtimeOptions: testRuntimeOptions,
+    userShell: testUserShell,
+  },
 } as never;
 
 function tempRoot(label: string): string {
@@ -198,6 +211,7 @@ describe("fail-closed process surfaces", () => {
           admissionRequired: false,
           runtimeOptions: testRuntimeOptions,
           sandboxExecutionBroker: broker,
+          userShell: testUserShell,
         },
       } as never,
       () => CanonicalBashTool.call(
