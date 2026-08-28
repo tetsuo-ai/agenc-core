@@ -8,10 +8,6 @@ import {
   getSelectedProviderName,
 } from 'src/utils/model/providers.js'
 import { preferThirdPartyAuthentication } from '../bootstrap/state.js'
-import {
-  getMockSubscriptionType,
-  shouldUseMockSubscription,
-} from '../services/mockRateLimits.js'
 
 
 // Donor-purge stub: ../services/oauth/types.js was deleted along with the
@@ -946,11 +942,6 @@ export function getSubscriptionType(home: HomeContext): SubscriptionType | null 
 export function getSubscriptionTypeForContext(
   context: ProviderAuthReadContext,
 ): SubscriptionType | null {
-  // Check for mock subscription type first (ANT-only testing)
-  if (shouldUseMockSubscription()) {
-    return getMockSubscriptionType()
-  }
-
   if (!isAnthropicAuthEnabledForContext(context)) {
     return null
   }

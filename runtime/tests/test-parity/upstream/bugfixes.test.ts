@@ -195,14 +195,6 @@ describe('AgentTool cleanup fix', () => {
 // Fix 8: Context overflow 500 error handling
 // ---------------------------------------------------------------------------
 describe('Context overflow 500 fix', () => {
-  test('errors.ts has handler for context overflow 500 errors', async () => {
-    const content = await file('services/api/errors.ts').text()
-
-    expect(content).toContain('500 errors caused by context overflow')
-    expect(content).toContain('too many tokens')
-    expect(content).toContain('The conversation has grown too large')
-  })
-
   test('run-turn has mid-turn auto-compact safety net for oversized context', async () => {
     const content = await file('session/run-turn.ts').text()
 

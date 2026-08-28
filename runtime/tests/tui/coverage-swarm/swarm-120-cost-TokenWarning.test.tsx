@@ -38,7 +38,7 @@ vi.mock("../../services/contextCollapse/index.js", () => ({
   isContextCollapseEnabled: () => state.collapseEnabled,
 }));
 
-vi.mock("../../utils/model/contextWindowUpgradeCheck.js", () => ({
+vi.mock("../../llm/context-window-upgrade.js", () => ({
   getUpgradeMessage: () => state.upgradeMessage,
 }));
 

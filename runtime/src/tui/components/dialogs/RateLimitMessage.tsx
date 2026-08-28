@@ -1,7 +1,6 @@
 import React, { useEffect, useState } from 'react'
 
 import { getIsNonInteractiveSession } from '../../../bootstrap/state.js'
-import { shouldProcessMockLimits } from '../../../services/mockRateLimits.js'
 import {
   getRateLimitTier,
   getSubscriptionType,
@@ -88,7 +87,7 @@ export function RateLimitMessage({
   const isTeamOrEnterprise =
     subscriptionType === 'team' || subscriptionType === 'enterprise'
   const isMax20x = rateLimitTier === 'default_claude_max_20x'
-  const shouldShowUpsell = shouldProcessMockLimits() || isAgenCAISubscriber(home)
+  const shouldShowUpsell = isAgenCAISubscriber(home)
   const canSeeRateLimitOptionsUpsell = shouldShowUpsell && !isMax20x
   const [hasOpenedInteractiveMenu, setHasOpenedInteractiveMenu] =
     useState(false)

@@ -18,12 +18,15 @@ import {
   LLMMessageValidationError,
   LLMProviderError,
 } from "../llm/errors.js";
+import {
+  parsePromptTooLongTokenCounts,
+  PROMPT_TOO_LONG_ERROR_MESSAGE,
+} from "../errors/api.js";
+export { parsePromptTooLongTokenCounts } from "../errors/api.js";
 
 // ─────────────────────────────────────────────────────────────────────
 // String constants
 // ─────────────────────────────────────────────────────────────────────
-
-const PROMPT_TOO_LONG_ERROR_MESSAGE = "Prompt is too long";
 
 // ─────────────────────────────────────────────────────────────────────
 // FallbackTriggeredError
@@ -98,20 +101,6 @@ export function isPromptTooLongMessage(msg: AssistantMessage): boolean {
  * Parse actual / limit token counts from a PTL error string. Used by
  * reactive compact to jump multiple groups in one retry.
  */
-export function parsePromptTooLongTokenCounts(raw: string): {
-  readonly actualTokens?: number;
-  readonly limitTokens?: number;
-} {
-  const match = raw.match(
-    /prompt is too long[^0-9]*(\d+)\s*tokens?\s*>\s*(\d+)/i,
-  );
-  if (!match) return {};
-  return {
-    actualTokens: Number.parseInt(match[1]!, 10),
-    limitTokens: Number.parseInt(match[2]!, 10),
-  };
-}
-
 /** Returns the gap by which PTL exceeded the limit, or undefined. */
 export function getPromptTooLongTokenGap(
   msg: AssistantMessage,

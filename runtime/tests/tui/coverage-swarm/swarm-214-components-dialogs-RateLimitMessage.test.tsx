@@ -11,7 +11,6 @@ const harness = vi.hoisted(() => ({
   isNonInteractive: false,
   overageAllowed: true,
   rateLimitTier: null as string | null,
-  shouldProcessMockLimits: false,
   subscriptionType: 'pro' as string | null,
 }))
 
@@ -24,10 +23,6 @@ vi.mock('../../../src/bootstrap/state.js', async importOriginal => {
     getIsNonInteractiveSession: () => harness.isNonInteractive,
   }
 })
-
-vi.mock('../../../src/services/mockRateLimits.js', () => ({
-  shouldProcessMockLimits: () => harness.shouldProcessMockLimits,
-}))
 
 vi.mock('../../../src/utils/auth.js', () => ({
   getRateLimitTier: () => harness.rateLimitTier,
@@ -83,7 +78,6 @@ describe('RateLimitMessage coverage swarm row 214', () => {
     harness.isNonInteractive = false
     harness.overageAllowed = true
     harness.rateLimitTier = null
-    harness.shouldProcessMockLimits = false
     harness.subscriptionType = 'pro'
   })
 
@@ -104,15 +98,15 @@ describe('RateLimitMessage coverage swarm row 214', () => {
     ).toContain('/upgrade or /extra-usage')
   })
 
-  test('uses mock limit processing as a subscriber substitute without checking subscriber state', async () => {
-    harness.shouldProcessMockLimits = true
+  test('does not show subscriber upsells for a non-subscriber', async () => {
     harness.isAgenCAISubscriber.mockReturnValue(false)
 
     const output = await renderRateLimitMessage()
 
     expect(output).toContain('Rate limit reached')
-    expect(output).toContain('/upgrade or /extra-usage')
-    expect(harness.isAgenCAISubscriber).not.toHaveBeenCalled()
+    expect(output).not.toContain('/upgrade')
+    expect(output).not.toContain('/extra-usage')
+    expect(harness.isAgenCAISubscriber).toHaveBeenCalledTimes(1)
   })
 
   test('hides extra-usage guidance when the command is disabled or the session is non-interactive', async () => {

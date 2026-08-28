@@ -4,7 +4,7 @@ import React from 'react'
 import stripAnsi from 'strip-ansi'
 import { afterEach, describe, expect, test } from 'vitest'
 
-import { API_TIMEOUT_ERROR_MESSAGE } from '../../services/api/errors.js'
+import { API_TIMEOUT_ERROR_MESSAGE } from '../../errors/api.js'
 import { createRoot } from '../ink/root.js'
 import { AssistantTextMessage } from './AssistantTextMessage.js'
 

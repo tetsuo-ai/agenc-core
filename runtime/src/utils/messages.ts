@@ -42,7 +42,7 @@ import {
   getPdfPasswordProtectedErrorMessage,
   getPdfTooLargeErrorMessage,
   getRequestTooLargeErrorMessage,
-} from '../services/api/errors.js'
+} from '../errors/api.js'
 import type { AnyObject, Progress } from '../tools/Tool.js'
 import { isConnectorTextBlock } from '../types/connectorText.js'
 import type {

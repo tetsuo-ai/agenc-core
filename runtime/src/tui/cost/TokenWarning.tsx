@@ -5,7 +5,7 @@ import { Box, Text } from '../ink.js';
 import { calculateTokenWarningStateForEnvironment, getEffectiveContextWindowSizeForEnvironment, isAutoCompactEnabledForEnvironment } from '../../services/compact/autoCompact.js';
 import type { ProviderEnvironment } from '../../llm/provider-options.js';
 import { useCompactWarningSuppression } from '../../services/compact/compactWarningHook.js';
-import { getUpgradeMessage } from '../../utils/model/contextWindowUpgradeCheck.js';
+import { getUpgradeMessage } from '../../llm/context-window-upgrade.js';
 import { isContextCollapseEnabled } from '../../services/contextCollapse/index.js';
 type Props = {
   tokenUsage: number;

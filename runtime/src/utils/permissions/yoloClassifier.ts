@@ -12,7 +12,7 @@ import {
   getSessionId,
   setLastClassifierRequests,
 } from '../../bootstrap/state.js'
-import { parsePromptTooLongTokenCounts } from '../../services/api/errors.js'
+import { parsePromptTooLongTokenCounts } from '../../errors/api.js'
 import type { Tool, ToolPermissionContext, Tools } from '../../tools/Tool.js'
 import type { Message } from '../../types/message.js'
 import type {

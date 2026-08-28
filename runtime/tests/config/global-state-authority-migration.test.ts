@@ -145,6 +145,7 @@ describe("explicit global-state authority migration", () => {
       toolBudget: { max_calls_per_turn: 1 },
       experiments: { rollout: true },
       showCacheStats: "full",
+      cachedExtraUsageDisabledReason: "out_of_credits",
     }));
 
     const plan = await migrate(home, legacyState);
@@ -157,6 +158,10 @@ describe("explicit global-state authority migration", () => {
     );
     expect(plan.notices).toEqual(expect.arrayContaining([
       expect.objectContaining({ field: "showCacheStats", action: "drop" }),
+      expect.objectContaining({
+        field: "cachedExtraUsageDisabledReason",
+        action: "drop",
+      }),
     ]));
     expect(plan.writes).toEqual([]);
   });

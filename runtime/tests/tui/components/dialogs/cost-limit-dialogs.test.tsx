@@ -14,7 +14,6 @@ const rateLimitMock = vi.hoisted(() => ({
   rateLimitTier: null as string | null,
   isSubscriber: true,
   hasBillingAccess: false,
-  shouldProcessMockLimits: false,
   extraUsageEnabled: false,
 }))
 
@@ -63,10 +62,6 @@ vi.mock('../../../commands/extra-usage/index.js', () => ({
   },
 }))
 
-vi.mock('../../../services/mockRateLimits.js', () => ({
-  shouldProcessMockLimits: () => rateLimitMock.shouldProcessMockLimits,
-}))
-
 vi.mock('../../../utils/auth.js', () => ({
   getSubscriptionType: () => rateLimitMock.subscriptionType,
   getRateLimitTier: () => rateLimitMock.rateLimitTier,
@@ -89,7 +84,6 @@ describe('cost and limit dialogs', () => {
     rateLimitMock.rateLimitTier = null
     rateLimitMock.isSubscriber = true
     rateLimitMock.hasBillingAccess = false
-    rateLimitMock.shouldProcessMockLimits = false
     rateLimitMock.extraUsageEnabled = false
   })
 

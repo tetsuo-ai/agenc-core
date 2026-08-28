@@ -182,7 +182,6 @@ describe("session home authority architecture", () => {
 
     for (const name of [
       "context.ts",
-      "services/api/errors.ts",
       "memory/session/sessionMemoryUtils.ts",
       "services/extractMemories/memory-paths.ts",
       "services/voice.ts",

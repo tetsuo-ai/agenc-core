@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test } from "vitest";
 
 import { createAttachmentMessage } from "../../src/utils/attachments.js";
-import { getImageTooLargeErrorMessage } from "../../src/services/api/errors.js";
+import { getImageTooLargeErrorMessage } from "../../src/errors/api.js";
 import {
   AUTO_REJECT_MESSAGE,
   buildMessageLookups,

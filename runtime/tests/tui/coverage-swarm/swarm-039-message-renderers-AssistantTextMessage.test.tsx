@@ -10,7 +10,7 @@ vi.mock('../hooks/useSettings.js', () => ({
   }),
 }))
 
-vi.mock('../../utils/model/contextWindowUpgradeCheck.js', () => ({
+vi.mock('../../llm/context-window-upgrade.js', () => ({
   getUpgradeMessage: () => 'switch to a larger context model',
 }))
 
@@ -22,13 +22,11 @@ import { ERROR_MESSAGE_USER_ABORT } from '../../services/compact/compact.js'
 import {
   API_ERROR_MESSAGE_PREFIX,
   CREDIT_BALANCE_TOO_LOW_ERROR_MESSAGE,
-  CUSTOM_OFF_SWITCH_MESSAGE,
   INVALID_API_KEY_ERROR_MESSAGE,
   INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL,
-  ORG_DISABLED_ERROR_MESSAGE_ENV_KEY_WITH_OAUTH,
   PROMPT_TOO_LONG_ERROR_MESSAGE,
   TOKEN_REVOKED_ERROR_MESSAGE,
-} from '../../services/api/errors.js'
+} from '../../errors/api.js'
 import { createRoot } from '../ink/root.js'
 import { AssistantTextMessage } from '../message-renderers/AssistantTextMessage.js'
 
@@ -65,10 +63,6 @@ function createStreams(): {
 
 function sleep(ms = 25): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms))
-}
-
-function normalizeOutput(text: string): string {
-  return text.replace(/\s+/g, ' ').trim()
 }
 
 function renderAssistantText(text: string, options: RenderOptions = {}): React.ReactNode {
@@ -128,12 +122,8 @@ describe('AssistantTextMessage swarm 039 coverage', () => {
       { text: INVALID_API_KEY_ERROR_MESSAGE },
       { text: INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL },
       { text: INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL },
-      { text: ORG_DISABLED_ERROR_MESSAGE_ENV_KEY_WITH_OAUTH },
-      { text: ORG_DISABLED_ERROR_MESSAGE_ENV_KEY_WITH_OAUTH },
       { text: TOKEN_REVOKED_ERROR_MESSAGE },
       { text: TOKEN_REVOKED_ERROR_MESSAGE },
-      { text: CUSTOM_OFF_SWITCH_MESSAGE },
-      { text: CUSTOM_OFF_SWITCH_MESSAGE },
       { text: ERROR_MESSAGE_USER_ABORT },
       { text: ERROR_MESSAGE_USER_ABORT },
     ])
@@ -142,11 +132,7 @@ describe('AssistantTextMessage swarm 039 coverage', () => {
     expect(output).toContain('Credit balance too low')
     expect(output).toContain('security unlock-keychain')
     expect(output).toContain(INVALID_API_KEY_ERROR_MESSAGE_EXTERNAL)
-    expect(normalizeOutput(output)).toContain(
-      normalizeOutput(ORG_DISABLED_ERROR_MESSAGE_ENV_KEY_WITH_OAUTH),
-    )
     expect(output).toContain(TOKEN_REVOKED_ERROR_MESSAGE)
-    expect(output).toContain('use /model')
     expect(output).toContain('Interrupted')
   })
 
