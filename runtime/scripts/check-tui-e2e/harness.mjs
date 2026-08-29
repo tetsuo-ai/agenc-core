@@ -181,6 +181,7 @@ const XTVERSION_REPLY = "\x1bP>|xterm 370\x1b\\";
 const DA1_REPLY = "\x1b[?65;6;9;15;18;21;22;28c";
 const XTVERSION_QUERY = "\x1b[>0q";
 const DA1_QUERY = "\x1b[c";
+const TERMINAL_FOCUS_REPORTING_ENABLED = "\x1b[?1004h";
 const TERMINAL_FOCUS_IN = "\x1b[I";
 
 // Crash patterns that make a scenario fail regardless of explicit assertions.
@@ -792,6 +793,7 @@ export class TuiSession {
     if (
       this.term === null ||
       this.exited ||
+      !this.buffer.includes(TERMINAL_FOCUS_REPORTING_ENABLED) ||
       this.latestFrame.trim().length > 0
     ) {
       return false;
