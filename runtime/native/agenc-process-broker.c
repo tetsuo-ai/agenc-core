@@ -510,7 +510,7 @@ static int count_direct_children(size_t *count_out) {
  * still covers a member that joins the group between the two calls.
  */
 static bool reached_by_group_signal(pid_t pid, int signal_number) {
-  if (signal_number == SIGKILL) {
+  if (signal_number == SIGKILL || root_pid <= AGENC_BROKER_MAXIMUM_UNSAFE_PID) {
     return false;
   }
   return getpgid(pid) == root_pid;
