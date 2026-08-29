@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { logForDebugging } from '../../utils/debug.js'
+import { traceTuiStartupPhase } from '../../utils/tuiStartupTrace.js'
 import { Stream } from 'stream'
 import type { FrameEvent } from './frame.js'
 import Ink, { type Options as InkOptions } from './ink.js'
@@ -90,12 +91,16 @@ export const renderSync = (
     ...opts,
   }
 
+  traceTuiStartupPhase('ink-instance-start')
   const instance: Ink = getInstance(
     inkOptions.stdout,
     () => new Ink(inkOptions),
   )
+  traceTuiStartupPhase('ink-instance-ready')
 
+  traceTuiStartupPhase('ink-update-start')
   instance.render(node)
+  traceTuiStartupPhase('ink-update-ready')
 
   return {
     rerender: instance.render,
