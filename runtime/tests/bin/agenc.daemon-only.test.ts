@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -73,6 +73,7 @@ async function withMain(args: readonly string[]): Promise<{
   process.env.AGENC_WORKSPACE = tmpCwd;
   process.env.HOME = tmpHome;
   process.env.AGENC_CLI_ENTRY_DISABLE = "1";
+  await mkdir(join(tmpCwd, ".git"));
   trustProjectSync({
     agencHome: tmpHome,
     projectRoot: tmpCwd,

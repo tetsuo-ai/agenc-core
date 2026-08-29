@@ -3287,6 +3287,8 @@ describe("main() smoke", () => {
       configurable: true,
       value: true,
     });
+    await mkdir(join(currentCwd, ".git"));
+    await mkdir(join(targetCwd, ".git"));
     const rolloutPath = await writeResumeRolloutForTest(
       targetCwd,
       conversationId,
