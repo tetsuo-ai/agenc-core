@@ -303,6 +303,13 @@ async function recordScenarioResult(state, scenario, result) {
   console.log(`${color("red", "FAIL")} ${color("dim", `(${result.durationMs}ms)`)}`);
   console.log(`      ${color("red", "✗")} ${result.error?.message ?? String(result.error)}`);
   console.log(`      ${color("dim", `log: ${logPath}`)}`);
+  if (process.env.TUI_E2E_DEBUG === "1" && result.capturedOutput) {
+    const debugTail = result.capturedOutput.slice(-65_536);
+    console.log(
+      `      ${color("dim", `captured PTY tail (${debugTail.length}/${result.capturedOutput.length} characters, JSON):`)}`,
+    );
+    console.log(JSON.stringify(debugTail));
+  }
   state.failed.push({ name: scenario.name, error: result.error, logPath });
 }
 
