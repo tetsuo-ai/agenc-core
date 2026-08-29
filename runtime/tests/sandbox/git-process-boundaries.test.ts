@@ -684,35 +684,32 @@ describe.sequential("git process sandbox boundaries", () => {
     expect(existsSync(marker)).toBe(false);
   });
 
-  it("blocks prompt git probing through the live session broker", async () => {
+  it("degrades prompt git probing through the live session broker", async () => {
     const root = tempRoot("agenc-prompt-git-boundary-");
     const marker = join(root, "prompt-git-escaped");
     const bin = installGitShim(root, marker);
     vi.stubEnv("PATH", `${bin}${delimiter}${process.env.PATH ?? ""}`);
 
-    await expect(
-      assembleSystemPrompt({
-        session: {
-          services: { sandboxExecutionBroker: unavailableBroker(root) },
-        } as never,
-        ctx: {
-          cwd: root,
-          config: { model: "grok-4.5" },
-          configSnapshot: { model: "grok-4.5" },
-          sandboxPolicy: { value: "workspace_write" },
-          networkSandboxPolicy: {
-            allowlist: [],
-            denylist: [],
-            allowManagedDomainsOnly: false,
-            enabled: false,
-          },
-        } as never,
-        simpleMode: false,
-      }),
-    ).rejects.toMatchObject({
-      code: "sandbox_probe_failed",
-      surface: "tool",
+    const prompt = await assembleSystemPrompt({
+      session: {
+        services: { sandboxExecutionBroker: unavailableBroker(root) },
+      } as never,
+      ctx: {
+        cwd: root,
+        config: { model: "grok-4.5" },
+        configSnapshot: { model: "grok-4.5" },
+        sandboxPolicy: { value: "workspace_write" },
+        networkSandboxPolicy: {
+          allowlist: [],
+          denylist: [],
+          allowManagedDomainsOnly: false,
+          enabled: false,
+        },
+      } as never,
+      simpleMode: false,
     });
+
+    expect(prompt.text).toContain("Git branch: <not a git repository>");
     expect(existsSync(marker)).toBe(false);
   });
 });

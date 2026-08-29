@@ -106,12 +106,8 @@ export function getToolsForDefaultPreset(): string[] {
 }
 
 /**
- * Get the complete exhaustive list of all tools that could be available
- * in the current environment (respecting process.env flags).
- * This is the source of truth for ALL tools.
- */
-/**
- * NOTE: This MUST stay in sync with the system prompt global caching config in order to cache the system prompt across users.
+ * Build the local TUI and worker tool pool for the current environment.
+ * The daemon registry owns the model-facing catalog.
  */
 export function getAllBaseTools(): Tools {
   return [

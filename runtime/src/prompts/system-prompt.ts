@@ -721,6 +721,36 @@ export async function assembleSystemPromptSnapshot(
   }
 }
 
+export async function assembleBaseInstructionsForModel(params: {
+  readonly session: SystemPromptSessionSnapshot;
+  readonly ctx: TurnContext;
+  readonly registry: {
+    readonly tools: ReadonlyArray<{ readonly name: string }>;
+  };
+  readonly provider: string;
+  readonly permissionContext: ToolPermissionContext | null;
+  readonly profile: SystemPromptProfile;
+}): Promise<string> {
+  const enabledToolNames = new Set(
+    params.registry.tools.map((tool) => tool.name),
+  );
+  const snapshot = await assembleSystemPromptSnapshot({
+    profile: params.profile,
+    session: params.session,
+    ctx: params.ctx,
+    projectInstructions: "",
+    memoryPrompt: "",
+    mcpServers: [],
+    enabledToolNames,
+    agentsEnabled: enabledToolNames.has("spawn_agent"),
+    provider: params.provider,
+    permissionContext: params.permissionContext,
+    autonomousMode: params.ctx.config.autonomousMode === true,
+    outputStyle: null,
+  });
+  return snapshot.text;
+}
+
 /**
  * Required inputs for assembling the per-turn system prompt. This is a
  * stricter sibling of {@link AssembleSystemPromptOpts} — every field is

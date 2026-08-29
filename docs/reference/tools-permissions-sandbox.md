@@ -7,13 +7,13 @@ can stop them.
 
 | Surface | Location | Who sees it |
 | --- | --- | --- |
-| **LIVE model-facing registry** | `runtime/src/tool-registry.ts` + `runtime/src/bin/model-facing-tools.ts` + `runtime/src/tools/system/*` | The model / daemon turn loop (`toLLMTools()` → provider payload; `dispatch()` → execution) |
-| **TUI tool pool** | `runtime/src/tools.ts` (`getAllBaseTools()`) | Historical / TUI-side presentation pool — **not** the LIVE catalog. Overlaps names with LIVE but omits many LIVE tools and uses donor-era shapes (`CanonicalBashTool`, etc.) |
-| **MCP bridge tools** | `runtime/src/mcp-client/tools.ts` via `mcpToolsProvider` on the registry | Namespaced `mcp.<server>.<tool>` on the LIVE surface (usually deferred until `system.searchTools`) |
+| **Model-facing authority** | `runtime/src/tool-registry.ts` + `runtime/src/bin/model-facing-tools.ts` + `runtime/src/tools/system/*` | The model / daemon turn loop (`toLLMTools()` → provider payload; `dispatch()` → execution) |
+| **Local TUI and worker pool** | `runtime/src/tools.ts` (`getAllBaseTools()`) | Permission presets, AgentTool workers, and REPL primitives. This pool is not model-facing authority. |
+| **MCP bridge tools** | `runtime/src/mcp-client/tools.ts` via `mcpToolsProvider` on the registry | Namespaced `mcp.<server>.<tool>` on the model-facing surface (usually deferred until `system.searchTools`) |
 
 **Rule of thumb:** if you are changing what the model can call in a real turn,
-edit the LIVE path (`buildToolRegistry` / `createModelFacingTools` /
-`tools/system/*`). Editing `tools.ts` alone does **not** register a LIVE tool.
+edit the model-facing path (`buildToolRegistry` / `createModelFacingTools` /
+`tools/system/*`). Editing `tools.ts` alone does not register a model-facing tool.
 
 Assembly wiring:
 
@@ -290,11 +290,11 @@ Coordinator mode further **allowlists** orchestration tools only — see
 
 ---
 
-## TUI pool (`tools.ts`) — dual catalog note
+## Local TUI and worker pool (`tools.ts`)
 
-`runtime/src/tools.ts` still exports a donor-era **TUI / presentation** pool
-via `getAllBaseTools()`. It is useful for UI filtering and historical parity,
-but it is **not** what `buildToolRegistry` advertises to the model.
+`runtime/src/tools.ts` exports the local tool pool used by permission presets,
+AgentTool workers, and REPL primitives. `buildToolRegistry` remains the sole
+authority for the model-facing catalog.
 
 Notable differences (non-exhaustive):
 
@@ -303,9 +303,9 @@ Notable differences (non-exhaustive):
 | Shell | `exec_command` (+ deferred `system.bash`) | `CanonicalBashTool` (bash-shaped) |
 | Files | `FileRead` / `Edit` / `Write` / `MultiEdit` / `apply_patch` | Canonical read/edit/write/notebook set |
 | Multi-agent | `spawn_agent` family | Not assembled here (Team\* gated) |
-| Discovery | `system.searchTools` + deferred system intel | Optional `ToolSearchTool` |
+| Discovery | `system.searchTools` + deferred system intel | Not provided by this pool |
 | Code-mode | `exec` / `wait` when enabled | Not in pool |
-| Authority | Daemon turn loop | Presentation / legacy |
+| Authority | Model-facing catalog | Local TUI and worker consumers |
 
 When docs or code comments say “registered tools”, assume LIVE unless they
 explicitly cite `tools.ts`.

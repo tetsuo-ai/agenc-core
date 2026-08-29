@@ -1,10 +1,8 @@
 /**
- * Task 15: the runtime carries two tool catalogs — the LIVE daemon
- * registry (`tool-registry.ts` + `bin/model-facing-tools.ts`) and the
- * TUI-side pool (`src/tools.ts` `getAllBaseTools()`, consumed by the
- * permission presets, AgentTool worker pool, and REPL primitives).
- * Full convergence is a TUI-architecture migration; until then this
- * test holds the line on the actual correctness risk: SILENT drift.
+ * The daemon registry owns the model-facing catalog. The local pool from
+ * `src/tools.ts` supports permission presets, AgentTool workers, and REPL
+ * primitives, so this test rejects silent schema drift where their tool
+ * names overlap.
  *
  *   1. The set of names implemented in both catalogs is pinned. A new
  *      duplicate implementation cannot appear without editing the

@@ -1,4 +1,10 @@
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -628,6 +634,7 @@ describe("SessionStart bootstrap hooks", () => {
     mockPolicyLimits();
     const home = mkdtempSync(join(tmpdir(), "agenc-sessionstart-home-"));
     const workspace = mkdtempSync(join(tmpdir(), "agenc-sessionstart-ws-"));
+    mkdirSync(join(workspace, ".git"));
     // SessionStart command hooks now require a trusted workspace (production
     // establishes trust before bootstrap dispatches them); mark it trusted.
     trustProjectSync({ cwd: workspace, agencHome: home });

@@ -1,7 +1,10 @@
 import { randomUUID } from "node:crypto";
 
 import type { LLMProvider } from "../llm/types.js";
-import { readProviderFactoryOptions } from "../llm/provider.js";
+import {
+  isFactoryProvider,
+  readProviderFactoryOptions,
+} from "../llm/provider.js";
 import type { ReviewDecision } from "../permissions/review-decision.js";
 import { createPermissionAuditFileLogger } from "../permissions/permission-audit-log.js";
 import {
@@ -810,10 +813,15 @@ export function buildBootstrapSessionServices(
   );
   let unsubscribeExecutionAdmission: (() => void) | undefined;
   const providerEnvironment = snapshotProviderEnvironment(opts.env);
+  const providerIsFactoryBound = isFactoryProvider(opts.provider);
   const providerService = new SessionProviderService({
     initialProvider: opts.provider,
-    initialProviderName: opts.providerName,
-    initialModel: opts.model,
+    ...(!providerIsFactoryBound
+      ? {
+          initialProviderName: opts.providerName,
+          initialModel: opts.model,
+        }
+      : {}),
     environment: providerEnvironment,
     ...(opts.readSavedApiKey !== undefined
       ? { readSavedApiKey: opts.readSavedApiKey }

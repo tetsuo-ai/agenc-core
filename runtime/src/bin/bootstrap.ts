@@ -88,11 +88,7 @@ import {
   type ToolRegistry,
 } from "../tool-registry.js";
 import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
-import {
-  assembleSystemPromptSnapshot,
-  type SystemPromptProfile,
-  type SystemPromptSessionSnapshot,
-} from "../prompts/system-prompt.js";
+import { assembleBaseInstructionsForModel } from "../prompts/system-prompt.js";
 import { buildBootstrapToolRegistry } from "./bootstrap-tool-registry.js";
 import {
   UnifiedExecProcessManager,
@@ -207,34 +203,6 @@ async function resolveAuthSubscriptionTier(
 ): Promise<AuthSubscriptionTier> {
   if (authBackend === undefined) return "free";
   return authBackend.getSubscriptionTier({ sessionId });
-}
-
-async function buildBaseInstructionsForModel(params: {
-  readonly session: SystemPromptSessionSnapshot;
-  readonly ctx: TurnContext;
-  readonly registry: ToolRegistry;
-  readonly provider: string;
-  readonly permissionContext: ToolPermissionContext | null;
-  readonly profile: SystemPromptProfile;
-}): Promise<string> {
-  const enabledToolNames = new Set(
-    params.registry.tools.map((tool) => tool.name),
-  );
-  const snapshot = await assembleSystemPromptSnapshot({
-    profile: params.profile,
-    session: params.session,
-    ctx: params.ctx,
-    projectInstructions: "",
-    memoryPrompt: "",
-    mcpServers: [],
-    enabledToolNames,
-    agentsEnabled: enabledToolNames.has("spawn_agent"),
-    provider: params.provider,
-    permissionContext: params.permissionContext,
-    autonomousMode: params.ctx.config.autonomousMode === true,
-    outputStyle: null,
-  });
-  return snapshot.text;
 }
 
 async function resolveAuthModelSelection(params: {
@@ -1442,7 +1410,7 @@ async function bootstrapLocalRuntimeSessionScoped(
     sessionConfiguration: authorizedSessionConfiguration,
     permissionMode: toolPermissionContext.mode,
   });
-  const baseInstructions = await buildBaseInstructionsForModel({
+  const baseInstructions = await assembleBaseInstructionsForModel({
     session: {
       services: {
         runtimeOptions,

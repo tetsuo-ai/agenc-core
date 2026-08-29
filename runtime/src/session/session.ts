@@ -102,7 +102,6 @@ import type { SandboxExecutionBrokerLike } from "../sandbox/execution-broker.js"
 import type { UserPromptSubmitHook } from "../hooks/user-prompt-submit.js";
 import type { ToolRegistry } from "./_deps/tool-registry.js";
 import type { PermissionModeRegistry } from "../permissions/permission-mode.js";
-import type { ToolPermissionContext } from "../permissions/types.js";
 import { getAttachmentTrackingState } from "./attachment-state.js";
 import type { QuerySource } from "./_deps/query-source.js";
 import {
@@ -110,10 +109,7 @@ import {
   type DenialTrackingState,
 } from "../permissions/denial-tracking.js";
 import type { ConfigStore } from "../config/store.js";
-import {
-  assembleSystemPromptSnapshot,
-  type SystemPromptProfile,
-} from "../prompts/system-prompt.js";
+import { assembleBaseInstructionsForModel } from "../prompts/system-prompt.js";
 import { usesLocalToolProfile } from "../llm/wire/capability-gating.js";
 import type {
   ApprovalResolver,
@@ -1537,34 +1533,6 @@ function capManagedOpenRouterModelInfo(modelInfo: ModelInfo): ModelInfo {
   };
 }
 
-async function buildBaseInstructionsForModel(params: {
-  readonly session: Session;
-  readonly ctx: TurnContext;
-  readonly registry: ToolRegistry;
-  readonly provider: string;
-  readonly permissionContext: ToolPermissionContext | null;
-  readonly profile: SystemPromptProfile;
-}): Promise<string> {
-  const enabledToolNames = new Set(
-    params.registry.tools.map((tool) => tool.name),
-  );
-  const snapshot = await assembleSystemPromptSnapshot({
-    profile: params.profile,
-    session: params.session,
-    ctx: params.ctx,
-    projectInstructions: "",
-    memoryPrompt: "",
-    mcpServers: [],
-    enabledToolNames,
-    agentsEnabled: enabledToolNames.has("spawn_agent"),
-    provider: params.provider,
-    permissionContext: params.permissionContext,
-    autonomousMode: params.ctx.config.autonomousMode === true,
-    outputStyle: null,
-  });
-  return snapshot.text;
-}
-
 export const DEFAULT_LEGACY_EVENT_QUEUE_DEPTH = 1024;
 
 /** Abort reason classification (per I-7). */
@@ -2698,7 +2666,7 @@ export class Session {
       ...(this.network !== undefined ? { network: this.network } : {}),
       permissionMode: permissionContext.mode,
     });
-    const baseInstructions = await buildBaseInstructionsForModel({
+    const baseInstructions = await assembleBaseInstructionsForModel({
       session: this,
       ctx: promptContext,
       registry: this.services.registry,
