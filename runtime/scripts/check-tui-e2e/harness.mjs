@@ -181,6 +181,7 @@ const XTVERSION_REPLY = "\x1bP>|xterm 370\x1b\\";
 const DA1_REPLY = "\x1b[?65;6;9;15;18;21;22;28c";
 const XTVERSION_QUERY = "\x1b[>0q";
 const DA1_QUERY = "\x1b[c";
+const TERMINAL_FOCUS_IN = "\x1b[I";
 
 // Crash patterns that make a scenario fail regardless of explicit assertions.
 // Anything that looks like a Node.js uncaught exception or unresolved
@@ -782,12 +783,12 @@ export class TuiSession {
     });
     await sleep(firstPaintMs);
     this.throwIfAborted();
-    this.wakeBlankPtyWithResize();
+    this.wakeBlankPtyWithTerminalEvent();
     await sleep(postReplyMs);
     this.throwIfAborted();
   }
 
-  wakeBlankPtyWithResize() {
+  wakeBlankPtyWithTerminalEvent() {
     if (
       this.term === null ||
       this.exited ||
@@ -795,12 +796,10 @@ export class TuiSession {
     ) {
       return false;
     }
-    // ConPTY can expose only its console bootstrap until the first size
-    // event. Force a redraw without sending bytes that AgenC could treat as
-    // user input, then restore the dimensions requested by the scenario.
-    const wakeCols = this.cols === 1 ? 2 : this.cols - 1;
-    this.term.resize(wakeCols, this.rows);
-    this.term.resize(this.cols, this.rows);
+    // ConPTY can expose only its console bootstrap until its input path is
+    // active. Report the terminal's already-enabled focus state: AgenC
+    // consumes this as terminal metadata, not as a keypress or prompt text.
+    this.term.write(TERMINAL_FOCUS_IN);
     return true;
   }
 
