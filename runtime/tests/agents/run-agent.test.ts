@@ -4554,6 +4554,7 @@ describe("runAgent", () => {
   it("suppresses parent mailbox notifications but preserves the child rollout in silent mode", async () => {
     const provider = makeProvider([{ content: "silent complete" }]);
     const cwd = mkdtempSync(join(tmpdir(), "agenc-run-agent-silent-"));
+    mkdirSync(join(cwd, ".git"));
     const session = makeStubSession({
       services: { provider },
       sessionConfiguration: mkSessionConfiguration({

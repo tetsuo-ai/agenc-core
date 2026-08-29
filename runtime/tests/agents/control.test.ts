@@ -94,6 +94,7 @@ function openRolloutStore(opts: {
     cwd: opts.cwd,
     sessionId: opts.sessionId,
     agencVersion: "0.2.0",
+    agencHome,
     sessionTempRoot: tmpdir(),
     ...(opts.resume ? { resume: true } : {}),
   });
@@ -110,7 +111,7 @@ function openRolloutStore(opts: {
 }
 
 function seedRunningAgentRun(cwd: string, runId: string): void {
-  const driver = openStateDatabases({ cwd });
+  const driver = openStateDatabases({ cwd, agencHome });
   try {
     upsertAgentRun(driver, {
       id: runId,
@@ -430,7 +431,9 @@ describe("AgentControl", () => {
       cwd,
       sessionId: "nickname-persistence-rollback",
     });
-    const raw = new Database(resolveStateDatabasePaths({ cwd }).stateDbPath);
+    const raw = new Database(
+      resolveStateDatabasePaths({ cwd, agencHome }).stateDbPath,
+    );
     try {
       const session = stubSession({
         cwd,
@@ -604,7 +607,9 @@ describe("AgentControl", () => {
       cwd,
       sessionId: "spawn-settlement-failure",
     });
-    const raw = new Database(resolveStateDatabasePaths({ cwd }).stateDbPath);
+    const raw = new Database(
+      resolveStateDatabasePaths({ cwd, agencHome }).stateDbPath,
+    );
     const holdUnknown = vi.fn(() => {
       throw new Error("forced unknown-hold journal failure");
     });
@@ -907,7 +912,9 @@ describe("AgentControl", () => {
       cwd,
       sessionId: "shutdown-durability-first",
     });
-    const raw = new Database(resolveStateDatabasePaths({ cwd }).stateDbPath);
+    const raw = new Database(
+      resolveStateDatabasePaths({ cwd, agencHome }).stateDbPath,
+    );
     try {
       const session = stubSession({
         cwd,
