@@ -86,7 +86,6 @@ const ISOLATION_ENV_KEYS = Object.freeze([
   "LC_ALL",
   "NODE_OPTIONS",
   "TERM",
-  "TUI_E2E_STARTUP_TRACE",
   "TZ",
 ]);
 const ISOLATION_ENV_KEY_NAMES = new Set(
@@ -148,10 +147,6 @@ function isolationEnvironment(home) {
     LC_ALL: "C",
     NODE_OPTIONS: "",
     TERM: "xterm-256color",
-    TUI_E2E_STARTUP_TRACE: path.join(
-      agencHome,
-      "tui-startup-trace.jsonl",
-    ),
     TZ: "UTC",
   };
 }

@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs";
-import { writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
@@ -103,7 +102,6 @@ describe("TUI E2E harness state isolation", () => {
       AGENC_AUTH_BACKEND: "local",
       AGENC_DAEMON_WEBSOCKET_PORT: "0",
       TMPDIR: join(home, "tmp"),
-      TUI_E2E_STARTUP_TRACE: join(home, ".agenc", "tui-startup-trace.jsonl"),
     });
     expect(env.AGENC_CONFIG_DIR).toBeUndefined();
     expect(env.SENTINEL).toBeUndefined();
@@ -396,28 +394,6 @@ describe("TUI E2E harness state isolation", () => {
 
     expect(kill).toHaveBeenCalledOnce();
     expect(kill).toHaveBeenCalledWith();
-  });
-
-  it("reports the private startup trace when prompt readiness times out", async () => {
-    const gateState = await createTuiGateState({
-      baseEnv: { TUI_E2E_DEBUG: "1" },
-      prefix: "agenc-tui-startup-trace-test-",
-    });
-    try {
-      await writeFile(
-        gateState.env.TUI_E2E_STARTUP_TRACE,
-        '{"phase":"context-ready","elapsedMs":12}\n',
-        "utf8",
-      );
-      const session = new TuiSession({ gateState });
-      session.runtimeEnv = gateState.env;
-
-      await expect(
-        session.waitForPrompt({ idleWindow: 1, timeout: 1 }),
-      ).rejects.toThrow(/startup trace: .*context-ready/u);
-    } finally {
-      await teardownTuiGateState(gateState);
-    }
   });
 
   it("gives every scenario a private clean git fixture", () => {

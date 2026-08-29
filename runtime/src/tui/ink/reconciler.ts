@@ -5,7 +5,6 @@ import { appendFileSync } from 'fs'
 import createReconciler from 'react-reconciler'
 import { getYogaCounters } from './native-ts/yoga-layout/index.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
-import { traceTuiStartupPhase } from '../../utils/tuiStartupTrace.js'
 import {
   appendChildNode,
   clearYogaNodeReferences,
@@ -261,30 +260,6 @@ export function resetProfileCounters(): void {
   _lastCommitMs = 0
   _commitStart = 0
 }
-
-let startupCommitCount = 0
-let startupHostInstanceCount = 0
-
-function traceStartupCommit(): void {
-  if (process.env.TUI_E2E_DEBUG !== '1') return
-  startupCommitCount += 1
-  if (startupCommitCount <= 7) {
-    traceTuiStartupPhase(`reconciler-reset-${startupCommitCount}`)
-  }
-}
-
-function traceStartupHostInstance(): void {
-  if (process.env.TUI_E2E_DEBUG !== '1') return
-  startupHostInstanceCount += 1
-  if (
-    startupHostInstanceCount === 1 ||
-    startupHostInstanceCount === 64 ||
-    startupHostInstanceCount === 256 ||
-    startupHostInstanceCount === 1024
-  ) {
-    traceTuiStartupPhase(`reconciler-host-${startupHostInstanceCount}`)
-  }
-}
 // --- END ---
 
 // `react-reconciler` ships no types in this repo. The local ambient
@@ -294,14 +269,12 @@ function traceStartupHostInstance(): void {
 const reconciler = createReconciler({
   getRootHostContext: () => ({ isInsideText: false }),
   prepareForCommit: () => {
-    traceTuiStartupPhase('reconciler-prepare-commit')
     if (COMMIT_LOG) _prepareAt = performance.now()
     return null
   },
   preparePortalMount: () => null,
   clearContainer: () => false,
   resetAfterCommit(rootNode: DOMElement) {
-    traceStartupCommit()
     _lastCommitMs = _commitStart > 0 ? performance.now() - _commitStart : 0
     _commitStart = 0
     if (COMMIT_LOG) {
@@ -332,9 +305,7 @@ const reconciler = createReconciler({
     }
     const _t0 = COMMIT_LOG ? performance.now() : 0
     if (typeof rootNode.onComputeLayout === 'function') {
-      traceTuiStartupPhase('reconciler-layout-start')
       rootNode.onComputeLayout()
-      traceTuiStartupPhase('reconciler-layout-ready')
     }
     if (COMMIT_LOG) {
       const layoutMs = performance.now() - _t0
@@ -360,9 +331,7 @@ const reconciler = createReconciler({
     }
 
     const _tr = COMMIT_LOG ? performance.now() : 0
-    traceTuiStartupPhase('reconciler-render-scheduled')
     rootNode.onRender?.()
-    traceTuiStartupPhase('reconciler-reset-ready')
     if (COMMIT_LOG) {
       const renderMs = performance.now() - _tr
       if (renderMs > 10) {
@@ -396,7 +365,6 @@ const reconciler = createReconciler({
     hostContext: HostContext,
     internalHandle?: unknown,
   ): DOMElement {
-    traceStartupHostInstance()
     if (hostContext.isInsideText && originalType === 'ink-box') {
       throw new Error(`<Box> can't be nested inside <Text> component`)
     }
@@ -478,7 +446,6 @@ const reconciler = createReconciler({
     }
   },
   commitMount(node: DOMElement): void {
-    traceTuiStartupPhase('reconciler-commit-mount')
     getFocusManager(node).handleAutoFocus(node)
   },
   isPrimaryRenderer: true,

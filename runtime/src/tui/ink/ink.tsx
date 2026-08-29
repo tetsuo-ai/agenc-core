@@ -9,7 +9,6 @@ import { onExit } from 'signal-exit';
 import { flushInteractionTime } from '../../bootstrap/state.js';
 import { getYogaCounters } from './native-ts/yoga-layout/index.js';
 import { logForDebugging } from '../../utils/debug.js';
-import { closeTuiStartupTrace, traceTuiStartupPhase } from '../../utils/tuiStartupTrace.js';
 import { logError } from '../../utils/log.js';
 import { format } from 'util';
 import { colorize } from './colorize.js';
@@ -472,7 +471,6 @@ export default class Ink {
     }
   }
   onRenderError(error: unknown) {
-    traceTuiStartupPhase('frame-error', error);
     // Drop this frame and force the NEXT one to do a full-damage repaint so a
     // partially-written diff self-heals. Throttle logging so a deterministic
     // per-frame failure can't spam the diagnostics log.
@@ -491,7 +489,6 @@ export default class Ink {
     }
   }
   renderFrame() {
-    traceTuiStartupPhase('frame-entered');
     // Entering a render cancels any pending drain tick — this render will
     // handle the drain (and re-schedule below if needed). Prevents a
     // wheel-event-triggered render AND a drain-timer render both firing.
@@ -517,7 +514,6 @@ export default class Ink {
       altScreen: this.altScreenActive,
       prevFrameContaminated: this.prevFrameContaminated
     });
-    traceTuiStartupPhase('renderer-complete');
     const rendererMs = performance.now() - renderStart;
 
     // Sticky/auto-follow scrolled the ScrollBox this frame. Translate the
@@ -807,9 +803,7 @@ export default class Ink {
     }
     const tWrite = performance.now();
     const skipSyncMarkers = this.altScreenActive ? !SYNC_OUTPUT_SUPPORTED : rewriteMainScreen || shouldSkipMainScreenSyncMarkers();
-    traceTuiStartupPhase('terminal-write-start');
     writeDiffToTerminal(this.terminal, optimized, skipSyncMarkers);
-    traceTuiStartupPhase('terminal-write-complete');
     const writeMs = performance.now() - tWrite;
 
     // Update blit safety for the NEXT frame. The frame just rendered
@@ -862,8 +856,6 @@ export default class Ink {
       },
       flickers
     });
-    traceTuiStartupPhase('frame-complete');
-    closeTuiStartupTrace();
   }
   pause(): void {
     // Flush pending React updates and render before pausing.
@@ -1540,12 +1532,8 @@ export default class Ink {
         </TerminalWriteProvider>
       </App>;
 
-    traceTuiStartupPhase('reconciler-update-start');
     reconciler.updateContainerSync(tree, this.container, null, noop);
-    traceTuiStartupPhase('reconciler-update-ready');
-    traceTuiStartupPhase('reconciler-flush-start');
     reconciler.flushSyncWork();
-    traceTuiStartupPhase('reconciler-flush-ready');
     logForDebugging('[Ink:render] updateContainer complete');
   }
   unmount(error?: Error | number | null): void {

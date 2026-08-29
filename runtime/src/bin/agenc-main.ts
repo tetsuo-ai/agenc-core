@@ -93,7 +93,6 @@ import { resolveHomeContext } from "../config/home.js";
 import { snapshotProviderEnvironment } from "../llm/provider-options.js";
 import { captureSecureStorageIngress } from "../utils/secureStorage/home.js";
 import { logForDebugging } from "../utils/debug.js";
-import { traceTuiStartupPhase } from "../utils/tuiStartupTrace.js";
 import {
   recentOomSnapshotNotice,
   startHeapWatchdog,
@@ -4507,7 +4506,6 @@ export async function bootTUIEntry(
   const startupCliFlags =
     parsedStartupCliFlags ?? readStartupCliFlags(process.argv);
   const sessionEnv = process.env;
-  traceTuiStartupPhase("cli-entry", undefined, sessionEnv);
   const runtimeOptions = resolveAgentRuntimeOptions(sessionEnv, {
     simpleMode: startupCliFlags.simpleMode === true,
     dangerouslyBypassApprovalsAndSandbox:
@@ -4530,9 +4528,7 @@ export async function bootTUIEntry(
     ) {
       return 1;
     }
-    traceTuiStartupPhase("trust-ready", undefined, sessionEnv);
     const consumeEarlyInputRaw = await startTuiEarlyInputCapture();
-    traceTuiStartupPhase("early-input-ready", undefined, sessionEnv);
     let earlyInputConsumed = false;
     const consumeEarlyInput = (): string => {
       if (earlyInputConsumed) return "";
@@ -4542,7 +4538,6 @@ export async function bootTUIEntry(
     try {
       validateAgencHome();
       const startupAgencHome = resolveAgencHome(sessionEnv);
-      traceTuiStartupPhase("home-ready", undefined, sessionEnv);
       // OOM self-diagnosis: sample heap pressure and auto-capture a snapshot
       // near the limit; point at a fresh capture from a previous crash.
       startHeapWatchdog({ agencHome: startupAgencHome });
@@ -4593,7 +4588,6 @@ export async function bootTUIEntry(
       ) {
         const deps = daemonCliDeps();
         const idlePermissionMode = startupPermissionMode(startupCliFlags);
-        traceTuiStartupPhase("context-start", undefined, sessionEnv);
         const {
           workspaceRoot,
           baseSession,
@@ -4620,9 +4614,7 @@ export async function bootTUIEntry(
             ? { permissionMode: idlePermissionMode }
             : {}),
         });
-        traceTuiStartupPhase("context-ready", undefined, sessionEnv);
         const configStore = baseSession.services.configStore;
-        traceTuiStartupPhase("deferred-start", undefined, sessionEnv);
         const deferred = await createDeferredDaemonPromptTuiSession({
           baseSession,
           deps,
@@ -4651,12 +4643,8 @@ export async function bootTUIEntry(
             ? { permissionMode: idlePermissionMode }
             : {}),
         });
-        traceTuiStartupPhase("deferred-ready", undefined, sessionEnv);
-        traceTuiStartupPhase("tui-load-start", undefined, sessionEnv);
         const boot = await loadBootTUI();
-        traceTuiStartupPhase("tui-load-ready", undefined, sessionEnv);
         try {
-          traceTuiStartupPhase("tui-boot-start", undefined, sessionEnv);
           const handle = await boot({
             session: deferred.session,
             model,
@@ -4666,11 +4654,8 @@ export async function bootTUIEntry(
               ? { initialComposerText: capturedEarlyInput }
               : {}),
           });
-          traceTuiStartupPhase("tui-boot-ready", undefined, sessionEnv);
           activeInkUnmount = handle.unmount;
-          traceTuiStartupPhase("tui-wait-start", undefined, sessionEnv);
           await handle.waitUntilExit();
-          traceTuiStartupPhase("tui-wait-complete", undefined, sessionEnv);
         } finally {
           activeInkUnmount = null;
           await deferred.close();

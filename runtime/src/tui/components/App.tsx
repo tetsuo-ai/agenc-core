@@ -1,6 +1,5 @@
 import { watch, type FSWatcher } from "node:fs";
 import { logForDebugging } from "src/utils/debug.js";
-import { traceTuiStartupPhase } from "../../utils/tuiStartupTrace.js";
 import { createHash, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { c as _c } from "react-compiler-runtime";
@@ -2419,12 +2418,8 @@ export function getTuiProviderEnvironment(
 }
 
 function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
-  traceTuiStartupPhase("tui-shell-component");
   const { exit } = useApp();
   const settings = useSettings();
-  useEffect(() => {
-    traceTuiStartupPhase("shell-passive-effect");
-  });
   const configStore = getTuiConfigStore(props.session);
   const stateRepository = configStore.stateRepository;
   const getFpsMetrics = useFpsMetrics();
@@ -7280,98 +7275,88 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // context provider, not a Box.
   const body = (
     <>
-      <StartupTraceBoundary phase="shell-body-animated-title">
-        <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
-      </StartupTraceBoundary>
-      <StartupTraceBoundary phase="shell-body-global-keys">
-        <GlobalKeybindingHandlers
-          screen={screen as any}
-          setScreen={setScreen as any}
-          showAllInTranscript={showAllInTranscript}
-          setShowAllInTranscript={setShowAllInTranscript}
-          messageCount={transcript.messages.length}
-        />
-      </StartupTraceBoundary>
-      <StartupTraceBoundary phase="shell-body-scroll-keys">
-        <ScrollKeybindingHandler
-          scrollRef={
-            modalToolJSX !== null
-              ? modalScrollRef
-              : workbenchState.activeWorkspaceView === "editor"
-                ? editorPanelScrollRef
-                : scrollRef
-          }
-          isActive={shouldEnableTranscriptScrollKeybindings({
-            fullscreen,
-            workbenchEnabled,
-            permissionRequestCount: permissionRequests.length,
-            modalVisible: modalToolJSX !== null,
-            activeSurfaceMode: workbenchState.activeSurfaceMode,
-            activeWorkspaceView: workbenchState.activeWorkspaceView,
-            focusedPane: workbenchState.focusedPane,
-            rail: workbenchState.rail,
-          })}
-          isModal={modalToolJSX !== null}
-        />
-      </StartupTraceBoundary>
-      <StartupTraceBoundary phase="shell-body-cancel-handler">
-        <CancelRequestHandler
-          // Daemon-mode no-op: permission requests are owned by the daemon
-          // and resolved via session.cancelTurn cascade.
-          setToolUseConfirmQueue={() => {}}
-          onCancel={handleTurnCancel}
-          onAgentsKilled={handleAgentsKilled}
-          isMessageSelectorVisible={isMessageSelectorVisible}
-          screen={screen as never}
-          {...(shellAbortController !== null
+      <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
+      <GlobalKeybindingHandlers
+        screen={screen as any}
+        setScreen={setScreen as any}
+        showAllInTranscript={showAllInTranscript}
+        setShowAllInTranscript={setShowAllInTranscript}
+        messageCount={transcript.messages.length}
+      />
+      <ScrollKeybindingHandler
+        scrollRef={
+          modalToolJSX !== null
+            ? modalScrollRef
+            : workbenchState.activeWorkspaceView === "editor"
+              ? editorPanelScrollRef
+              : scrollRef
+        }
+        isActive={shouldEnableTranscriptScrollKeybindings({
+          fullscreen,
+          workbenchEnabled,
+          permissionRequestCount: permissionRequests.length,
+          modalVisible: modalToolJSX !== null,
+          activeSurfaceMode: workbenchState.activeSurfaceMode,
+          activeWorkspaceView: workbenchState.activeWorkspaceView,
+          focusedPane: workbenchState.focusedPane,
+          rail: workbenchState.rail,
+        })}
+        isModal={modalToolJSX !== null}
+      />
+      <CancelRequestHandler
+        // Daemon-mode no-op: permission requests are owned by the daemon
+        // and resolved via session.cancelTurn cascade.
+        setToolUseConfirmQueue={() => {}}
+        onCancel={handleTurnCancel}
+        onAgentsKilled={handleAgentsKilled}
+        isMessageSelectorVisible={isMessageSelectorVisible}
+        screen={screen as never}
+        {...(shellAbortController !== null
+          ? {
+              abortSignal: shellAbortController.signal,
+            }
+          : turnAbortController !== null
             ? {
-                abortSignal: shellAbortController.signal,
+                abortSignal: turnAbortController.signal,
               }
-            : turnAbortController !== null
-              ? {
-                  abortSignal: turnAbortController.signal,
-                }
-              : {})}
-          isSearchingHistory={isSearchingHistory}
-          isHelpOpen={helpOpen}
-          inputMode={mode as never}
-          inputValue={input}
-          streamMode={cancelStreamMode as never}
-          canCancelActiveTurn={isLoading || shellAbortController !== null}
-          queueOwner={commandQueueOwner}
-        />
-      </StartupTraceBoundary>
+            : {})}
+        isSearchingHistory={isSearchingHistory}
+        isHelpOpen={helpOpen}
+        inputMode={mode as never}
+        inputValue={input}
+        streamMode={cancelStreamMode as never}
+        canCancelActiveTurn={isLoading || shellAbortController !== null}
+        queueOwner={commandQueueOwner}
+      />
       {workbenchEnabled ? (
-        <StartupTraceBoundary phase="workbench-component-boundary">
-          <WorkbenchLayout
-            transcript={scrollableContent}
-            composer={bottomContent}
-            overlay={overlayContent ?? undefined}
-            modal={
-              modalToolJSX !== null ? (
-                <Box flexDirection="column" width="100%">
-                  {modalToolJSX}
-                </Box>
-              ) : undefined
-            }
-            modalScrollRef={modalScrollRef}
-            pendingApproval={permissionRequests[0] ?? null}
-            scrollRef={scrollRef}
-            panelScrollRef={editorPanelScrollRef}
-            atWelcome={
-              transcript.messages.length === 0 && !transcript.streamingText
-            }
-            activityMode={showSpinner ? streamMode : null}
-            contextPctLabel={contextPctLabel}
-            modelDisplayContext={remoteAuthSessionContext}
-            sessionCostUsd={transcript.sessionCostUsd}
-            onEditorInteraction={handleEditorInteraction}
-            codePrediction={codePrediction}
-            editorMutationBlockedReason={workspaceEditorBlockers.editor}
-            editorTopologyRecovery={editorTopologyRecovery}
-            editorStaleAuthorityRecovery={editorStaleAuthorityRecovery}
-          />
-        </StartupTraceBoundary>
+        <WorkbenchLayout
+          transcript={scrollableContent}
+          composer={bottomContent}
+          overlay={overlayContent ?? undefined}
+          modal={
+            modalToolJSX !== null ? (
+              <Box flexDirection="column" width="100%">
+                {modalToolJSX}
+              </Box>
+            ) : undefined
+          }
+          modalScrollRef={modalScrollRef}
+          pendingApproval={permissionRequests[0] ?? null}
+          scrollRef={scrollRef}
+          panelScrollRef={editorPanelScrollRef}
+          atWelcome={
+            transcript.messages.length === 0 && !transcript.streamingText
+          }
+          activityMode={showSpinner ? streamMode : null}
+          contextPctLabel={contextPctLabel}
+          modelDisplayContext={remoteAuthSessionContext}
+          sessionCostUsd={transcript.sessionCostUsd}
+          onEditorInteraction={handleEditorInteraction}
+          codePrediction={codePrediction}
+          editorMutationBlockedReason={workspaceEditorBlockers.editor}
+          editorTopologyRecovery={editorTopologyRecovery}
+          editorStaleAuthorityRecovery={editorStaleAuthorityRecovery}
+        />
       ) : (
         <FullscreenLayout
           scrollRef={scrollRef}
@@ -7425,7 +7410,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   );
 }
 export function AgenCTuiApp(props: AgenCTuiProps): React.ReactElement {
-  traceTuiStartupPhase("tui-app-component");
   const roleWorkspaceCwd = useMemo(() => requireTuiRoleWorkspaceCwd(props), []);
   const configStore = getTuiConfigStore(props.session);
   const initial = useMemo(
@@ -7445,15 +7429,4 @@ export function AgenCTuiApp(props: AgenCTuiProps): React.ReactElement {
       </PromptOverlayProvider>
     </App>
   );
-}
-
-function StartupTraceBoundary({
-  children,
-  phase,
-}: {
-  readonly children: React.ReactNode;
-  readonly phase: string;
-}): React.ReactElement {
-  traceTuiStartupPhase(phase);
-  return <>{children}</>;
 }
