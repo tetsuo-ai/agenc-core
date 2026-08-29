@@ -10,6 +10,10 @@ import { RETIRED_AGENT_RUNTIME_ENV_REPLACEMENTS } from "../../src/session/runtim
 
 const RUNTIME_SOURCE = resolve(import.meta.dirname, "../../src");
 const ENV_REFERENCE = resolve(import.meta.dirname, "../../../docs/reference/env.md");
+const CONFIG_REFERENCE = resolve(
+  import.meta.dirname,
+  "../../../docs/reference/config.md",
+);
 const NON_ENV_RUNTIME_NAMES = new Set([
   // Error code attached to authority-lock release diagnostics, not an
   // environment variable read by the runtime.
@@ -111,6 +115,18 @@ function advancedDocumentedEnvironmentNames(reference: string): string[] {
 }
 
 describe("environment reference coverage", () => {
+  test("documents model-only provider selection in both configuration references", () => {
+    for (const path of [ENV_REFERENCE, CONFIG_REFERENCE]) {
+      const reference = readFileSync(path, "utf8");
+      expect(reference).toMatch(
+        /model-only layer[\s\S]{0,120}`--model`[\s\S]{0,120}`AGENC_MODEL`[\s\S]{0,120}`model`[\s\S]{0,180}(?:selects|resolves)[\s\S]{0,80}provider/iu,
+      );
+      expect(reference).not.toMatch(
+        /(?:only|exactly one)[^\n]{0,120}(?:`--provider`|`AGENC_PROVIDER`|`model_provider`)[^\n]{0,120}provider/iu,
+      );
+    }
+  });
+
   test("documents every production env name consumed by runtime authorities", () => {
     const reference = readFileSync(ENV_REFERENCE, "utf8");
     const missing = [...runtimeEnvironmentNames()]

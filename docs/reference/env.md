@@ -7,10 +7,12 @@ client, sent as a complete snapshot to the daemon, and bound to that session.
 An empty client value clears the corresponding daemon-start value. Long-lived
 sessions never rediscover provider or model selection from `process.env`.
 
-Only `AGENC_PROVIDER`, `--provider`, or `model_provider` in `config.toml`
-selects a startup provider. Credential presence never selects one. `/provider`
-changes the current session's provider service; it does not mutate process env
-or other concurrent sessions.
+An explicit startup provider comes from `--provider`, `AGENC_PROVIDER`, or
+`model_provider` in `config.toml`. A model-only layer (`--model`, `AGENC_MODEL`,
+or `model`) also selects its provider when the model catalog or a
+provider-qualified model name identifies one. Credential presence never
+selects a provider. `/provider` changes the current session's provider service;
+it does not mutate process env or other concurrent sessions.
 
 Boolean-like values that go through `applyEnvOverrides` treat
 `1`, `true`, `yes`, `on` as true and `0`, `false`, `no`, `off` as false.
@@ -72,7 +74,7 @@ consumed by this provider.
 
 `PROVIDER_CODE_OAUTH_CLIENT_ID` overrides the OpenAI browser-login client ID.
 `PROVIDER_CODE_OAUTH_CALLBACK_PORT` overrides its loopback callback port
-(default `1455`; valid range `1`–`65535`). These values are captured at login
+(default `1455`; valid range `1` to `65535`). These values are captured at login
 ingress and are also used by token refresh; later process-environment changes
 cannot redirect an in-flight login. A credential saved by `agenc openai-login`
 wins over `OPENAI_API_KEY` only for the selected `openai` provider. Its stored
@@ -224,7 +226,7 @@ Defaults are "feature on unless the disable var is set" unless noted.
 | `AGENC_DISABLE_AUTO_COMPACT` | Skip automatic compaction |
 | `AGENC_DISABLE_COMPACT` | Skip compaction |
 | `AGENC_AUTO_COMPACT_WINDOW` | Positive integer context-window override used by compaction thresholds |
-| `AGENC_AUTOCOMPACT_PCT_OVERRIDE` | Percentage `1`–`100`; can only make automatic compaction fire earlier than the safety default |
+| `AGENC_AUTOCOMPACT_PCT_OVERRIDE` | Percentage `1` to `100`; can only make automatic compaction fire earlier than the safety default |
 | `AGENC_DISABLE_LSP` | Do not start LSP |
 | `AGENC_DISABLE_CRON` | Skip local cron delivery |
 | `AGENC_DISABLE_BACKGROUND_TASKS` | Block background tasks |
@@ -257,7 +259,7 @@ your build, `agenc doctor` and the feature flag in
 
 ## Complete advanced and runtime-managed name index
 
-The sections above explain the common operator controls. The index below makes the reference name-complete for advanced, diagnostic, compatibility, and runtime-managed inputs that production code still reads. These are not additional provider authorities. Names described as runtime-managed are set by AgenC launchers, sandboxes, teammates, or test harnesses and normally should not be exported by an operator.
+The sections above explain the common operator controls. The index below makes the reference name-complete for advanced, diagnostic, compatibility, and runtime-managed inputs that production code still reads. These are not additional provider authorities. Names described as runtime-managed are set by AgenC launchers, sandboxes, teammates, or test runners and normally should not be exported by an operator.
 
 ### AGENC_A*
 
@@ -345,7 +347,7 @@ The runtime also reads the names below directly. They are not competing
 configuration stores and none selects a provider. Provider/library names keep
 the spelling required by that external API; OS, terminal, CI, and hosting
 names are environment discovery; runtime-managed names are set by an AgenC
-launcher, child process, integration, or test harness.
+launcher, child process, integration, or test runner.
 
 | Family | Direct inputs |
 | --- | --- |

@@ -240,8 +240,11 @@ removed names are rejected in a v2 document. The migration-only `_unknown`
 normalization side table exists only to report unmapped v1/JSON data;
 `_unknown` itself is not accepted in schema v2.
 
-Select exactly one provider route with `--provider`, `AGENC_PROVIDER`, or
-`model_provider`; all three converge on the same captured provider authority.
+An explicit provider route comes from `--provider`, `AGENC_PROVIDER`, or
+`model_provider`. A model-only layer (`--model`, `AGENC_MODEL`, or `model`)
+resolves its provider from the model catalog or a provider-qualified model
+name. Ambiguous model-only selections are rejected. Every route converges on
+the same captured provider/model authority.
 
 ## Built-in defaults
 
@@ -522,7 +525,7 @@ optional `headers`), `github` (`repo`, optional `ref`, `path`, `sparsePaths`),
 | `mcp.server.transport` | `stdio` or `sse`. |
 | `mcp.server.port`, `mcp.server.host` | SSE listener port and host. |
 | `mcp.server.workspace` | Absolute workspace required for daemon SSE autostart. |
-| `mcp_servers`, `mcp_servers.<server>` | Named external MCP connections. Server identifiers are 1–256 ASCII letters, numbers, colons, hyphens, or underscores; `.` is reserved as the tool-identity delimiter. |
+| `mcp_servers`, `mcp_servers.<server>` | Named external MCP connections. Server identifiers are 1 to 256 ASCII letters, numbers, colons, hyphens, or underscores; `.` is reserved as the tool-identity delimiter. |
 | `mcp_servers.<server>.transport` | `stdio`, `sse`, `http`, or `websocket`. |
 | `mcp_servers.<server>.command`, `mcp_servers.<server>.args`, `mcp_servers.<server>.cwd` | Stdio process launch fields. |
 | `mcp_servers.<server>.env`, `mcp_servers.<server>.env.<name>`, `mcp_servers.<server>.env_vars` | Literal environment map and inherited variable-name array. |
