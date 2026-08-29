@@ -11,6 +11,7 @@ import type { SecureStorageData } from '../../src/utils/secureStorage/index.js'
 const CONFIG_MODULE = '../../src/utils/config.js'
 const SECURE_STORAGE_MODULE = '../../src/utils/secureStorage/index.js'
 const ENV_UTILS_MODULE = '../../src/utils/envUtils.js'
+const PROVIDERS_MODULE = '../../src/utils/model/providers.js'
 
 const originalHome = process.env.AGENC_HOME
 const originalNodeEnv = process.env.NODE_ENV
@@ -81,6 +82,7 @@ afterEach(() => {
   vi.doUnmock(CONFIG_MODULE)
   vi.doUnmock(SECURE_STORAGE_MODULE)
   vi.doUnmock(ENV_UTILS_MODULE)
+  vi.doUnmock(PROVIDERS_MODULE)
   vi.resetModules()
   if (originalHome === undefined) delete process.env.AGENC_HOME
   else process.env.AGENC_HOME = originalHome
@@ -174,7 +176,7 @@ describe('primary API-key native storage', () => {
     'keeps an external provider off the ssh auth proxy path in %s mode',
     async nodeEnv => {
       process.env.NODE_ENV = nodeEnv
-      storedData.agenc = { accessToken: 'irrelevant-stored-token' }
+      storedData.agencAiOauth = { accessToken: 'irrelevant-stored-token' }
       const {
         isAgenCAISubscriberForContext,
         isAnthropicAuthEnabledForContext,
@@ -216,6 +218,40 @@ describe('primary API-key native storage', () => {
           provider: 'anthropic',
         }),
       ).toBe(false)
+    },
+  )
+
+  test.each(['test', 'production'] as const)(
+    'keeps proxy account lookups off native storage for an external provider in %s mode',
+    async nodeEnv => {
+      process.env.NODE_ENV = nodeEnv
+      storedData.agencAiOauth = { accessToken: 'irrelevant-stored-token' }
+      storedData.oauthAccountMetadata = {
+        accountUuid: 'irrelevant-account',
+        emailAddress: 'irrelevant@example.com',
+        organizationUuid: 'irrelevant-org',
+      }
+      vi.doMock(PROVIDERS_MODULE, async importOriginal => {
+        const actual = await importOriginal<
+          typeof import('../../src/utils/model/providers.ts')
+        >()
+        return {
+          ...actual,
+          getSelectedProviderName: () => 'grok',
+          getSelectedProviderEnvironment: () => ({
+            AGENC_OAUTH_TOKEN: 'proxy-placeholder-token',
+            ANTHROPIC_UNIX_SOCKET: '/tmp/agenc-ssh-auth.sock',
+            XAI_API_KEY: 'provider-owned-key',
+          }),
+        }
+      })
+      const { getOauthAccountInfo, isAnthropicAuthEnabled } =
+        await loadAuthModule()
+      const boundHome = resolveHomeContext({ AGENC_HOME: home })
+
+      expect(isAnthropicAuthEnabled()).toBe(false)
+      expect(getOauthAccountInfo(boundHome)).toBeUndefined()
+      expect(storageCalls).toBe(0)
     },
   )
 

@@ -115,7 +115,8 @@ export function isAnthropicAuthEnabledForContext(
   // oauth-2025 beta header to match what the proxy will inject). The remote's
   // Ambient API-key environment values MUST NOT flip this — they would cause
   // a header mismatch with the proxy and a bogus
-  // "invalid x-api-key" from the API. See src/ssh/sshAuthProxy.ts.
+  // "invalid x-api-key" from the API. See utils/proxy.ts and
+  // utils/managedEnv.ts.
   if (environment.ANTHROPIC_UNIX_SOCKET) {
     return !!environment.AGENC_OAUTH_TOKEN
   }
