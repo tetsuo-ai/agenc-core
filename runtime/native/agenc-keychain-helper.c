@@ -262,6 +262,9 @@ static bool capture_unique_persistent_ref(CFTypeRef candidate,
     return false;
   }
   if (*captured_out != NULL) {
+    if (CFEqual(*captured_out, candidate)) {
+      return true;
+    }
     (void)fail_message(
         "multiple Keychain records match the exact service/account identity");
     return false;
@@ -273,13 +276,12 @@ static bool capture_unique_persistent_ref(CFTypeRef candidate,
 }
 
 /*
- * SecItemCopyMatching can stop at the first file-based keychain even when a
- * query requests every match. Search each captured user-search-list keychain
- * directly instead. A generic password's service/account pair is unique
- * within one keychain, so one lookup per keychain enumerates the complete
- * identity. Convert each item to a persistent reference, then require exactly
- * one reference across the complete list. Mutations remain bound to that
- * reference and ambiguity fails closed.
+ * APIs that return the first generic password cannot prove uniqueness across
+ * multiple file-based keychains. Build and exhaust one iterator for every
+ * captured user-search-list keychain before returning a persistent reference.
+ * Per-keychain iterators keep one keychain's lookup failure from being hidden
+ * by another keychain's success. They return item references without password
+ * data, so ambiguity is detected before any secret is decrypted or mutated.
  */
 static enum unique_match_result
 copy_unique_persistent_ref(CFDictionaryRef identity_query,
@@ -295,8 +297,12 @@ copy_unique_persistent_ref(CFDictionaryRef identity_query,
   char account_utf8[IDENTITY_LIMIT_BYTES];
   UInt32 service_length;
   UInt32 account_length;
+  SecKeychainAttribute attributes[2];
+  SecKeychainAttributeList attribute_list;
+  SecKeychainSearchRef search = NULL;
   CFDataRef persistent_ref = NULL;
   enum unique_match_result result = UNIQUE_MATCH_ERROR;
+  OSStatus status;
   CFIndex keychain_index;
 
   *persistent_ref_out = NULL;
@@ -322,62 +328,113 @@ copy_unique_persistent_ref(CFDictionaryRef identity_query,
   search_list = (CFArrayRef)search_list_value;
   service_length = (UInt32)strlen(service_utf8);
   account_length = (UInt32)strlen(account_utf8);
+  attributes[0].tag = kSecServiceItemAttr;
+  attributes[0].length = service_length;
+  attributes[0].data = service_utf8;
+  attributes[1].tag = kSecAccountItemAttr;
+  attributes[1].length = account_length;
+  attributes[1].data = account_utf8;
+  attribute_list.count = 2U;
+  attribute_list.attr = attributes;
 
   for (keychain_index = 0; keychain_index < CFArrayGetCount(search_list);
        ++keychain_index) {
     CFTypeRef keychain = CFArrayGetValueAtIndex(search_list, keychain_index);
-    SecKeychainItemRef item = NULL;
-    CFDataRef candidate = NULL;
-    OSStatus status;
 
     if (keychain == NULL) {
       (void)fail_message("Keychain search list contains a null keychain");
       goto cleanup;
     }
 #pragma clang diagnostic push
-/* Exact file-based per-keychain lookup requires deprecated Keychain APIs. */
+/* Exact file-based enumeration requires deprecated Keychain search APIs. */
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    status = SecKeychainFindGenericPassword(
-        keychain, service_length, service_utf8, account_length, account_utf8,
-        NULL, NULL, &item);
+    status = SecKeychainSearchCreateFromAttributes(
+        keychain, kSecGenericPasswordItemClass, &attribute_list, &search);
 #pragma clang diagnostic pop
-    if (status == errSecItemNotFound) {
-      if (item != NULL) {
-        CFRelease(item);
-      }
-      continue;
-    }
     if (status != errSecSuccess) {
-      (void)fail_osstatus("Keychain enumeration", status);
-      if (item != NULL) {
-        CFRelease(item);
+      (void)fail_osstatus("Keychain search creation", status);
+      goto cleanup;
+    }
+    if (search == NULL) {
+      (void)fail_message("Keychain search creation returned no search object");
+      goto cleanup;
+    }
+
+    for (;;) {
+      SecKeychainItemRef item = NULL;
+      SecKeychainRef owner = NULL;
+      CFDataRef candidate = NULL;
+
+#pragma clang diagnostic push
+/* The search iterator yields item references without copying secret data. */
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+      status = SecKeychainSearchCopyNext(search, &item);
+#pragma clang diagnostic pop
+      if (status == errSecItemNotFound) {
+        if (item != NULL) {
+          CFRelease(item);
+        }
+        break;
       }
-      goto cleanup;
-    }
-    if (item == NULL) {
-      (void)fail_message("Keychain enumeration returned no item reference");
-      goto cleanup;
-    }
+      if (status != errSecSuccess) {
+        (void)fail_osstatus("Keychain enumeration", status);
+        if (item != NULL) {
+          CFRelease(item);
+        }
+        goto cleanup;
+      }
+      if (item == NULL) {
+        (void)fail_message("Keychain enumeration returned no item reference");
+        goto cleanup;
+      }
+#pragma clang diagnostic push
+/* File-based items expose their owning deprecated SecKeychain reference. */
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+      status = SecKeychainItemCopyKeychain(item, &owner);
+#pragma clang diagnostic pop
+      if (status != errSecSuccess) {
+        (void)fail_osstatus("Keychain item owner lookup", status);
+        if (owner != NULL) {
+          CFRelease(owner);
+        }
+        CFRelease(item);
+        goto cleanup;
+      }
+      if ((owner == NULL) || !CFEqual(owner, keychain)) {
+        (void)fail_message(
+            "Keychain enumeration returned an item from another keychain");
+        if (owner != NULL) {
+          CFRelease(owner);
+        }
+        CFRelease(item);
+        goto cleanup;
+      }
+      CFRelease(owner);
 #pragma clang diagnostic push
 /* Persistent references for file-based items require a deprecated API. */
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
-    status = SecKeychainItemCreatePersistentReference(item, &candidate);
+      status = SecKeychainItemCreatePersistentReference(item, &candidate);
 #pragma clang diagnostic pop
-    CFRelease(item);
-    if (status != errSecSuccess) {
-      (void)fail_osstatus("Keychain persistent-reference conversion", status);
-      if (candidate != NULL) {
-        CFRelease(candidate);
+      CFRelease(item);
+      if (status != errSecSuccess) {
+        (void)fail_osstatus("Keychain persistent-reference conversion",
+                            status);
+        if (candidate != NULL) {
+          CFRelease(candidate);
+        }
+        goto cleanup;
       }
-      goto cleanup;
-    }
-    if (!capture_unique_persistent_ref(candidate, &persistent_ref)) {
-      if (candidate != NULL) {
-        CFRelease(candidate);
+      if (!capture_unique_persistent_ref(candidate, &persistent_ref)) {
+        if (candidate != NULL) {
+          CFRelease(candidate);
+        }
+        goto cleanup;
       }
-      goto cleanup;
+      CFRelease(candidate);
     }
-    CFRelease(candidate);
+
+    CFRelease(search);
+    search = NULL;
   }
 
   if (persistent_ref == NULL) {
@@ -387,6 +444,9 @@ copy_unique_persistent_ref(CFDictionaryRef identity_query,
   return UNIQUE_MATCH_ONE;
 
 cleanup:
+  if (search != NULL) {
+    CFRelease(search);
+  }
   if (persistent_ref != NULL) {
     CFRelease(persistent_ref);
   }

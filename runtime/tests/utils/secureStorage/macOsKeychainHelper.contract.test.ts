@@ -20,21 +20,26 @@ describe("macOS Keychain native-helper contract", () => {
     expect(source).toContain("kSecMatchItemList");
     expect(source).toContain("copy_unique_persistent_ref");
     expect(source).toContain("copy_item_by_persistent_ref");
-    expect(source).toContain(
-      "keychain_index < CFArrayGetCount(search_list)",
-    );
-    expect(source).toContain(
-      "SecKeychainFindGenericPassword(",
-    );
+    expect(source).toContain("SecKeychainAttribute attributes[2]");
+    expect(source).toContain("attributes[0].tag = kSecServiceItemAttr");
+    expect(source).toContain("attributes[1].tag = kSecAccountItemAttr");
+    expect(source).toContain("attribute_list.count = 2U");
+    expect(source).toContain("SecKeychainSearchCreateFromAttributes(");
+    expect(source).toContain("SecKeychainSearchCopyNext(search, &item)");
+    expect(source).toContain("keychain_index < CFArrayGetCount(search_list)");
+    expect(source).toContain("SecKeychainItemCopyKeychain(item, &owner)");
+    expect(source).toContain("!CFEqual(owner, keychain)");
     expect(source).toContain(
       "SecKeychainItemCreatePersistentReference(item, &candidate)",
     );
     expect(source).toContain("CFStringGetCString((CFStringRef)service_value");
     expect(source).toContain("CFStringGetCString((CFStringRef)account_value");
     expect(source).toContain("capture_unique_persistent_ref");
+    expect(source).toContain("CFEqual(*captured_out, candidate)");
     expect(source).toContain(
       "multiple Keychain records match the exact service/account identity",
     );
+    expect(source).not.toContain("SecKeychainFindGenericPassword(");
     expect(source).toContain("SecItemUpdate(query, values)");
     expect(source).toContain("kSecPreferencesDomainUser");
     expect(source).toContain("SecKeychainCopyDomainDefault(");

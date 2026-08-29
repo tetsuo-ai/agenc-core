@@ -247,24 +247,6 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
       primaryKeychain,
     ]);
 
-    const ambiguousService = `AgenC-native-helper-duplicate-${randomUUID()}`;
-    const ambiguousAccount = `duplicate-account-${process.pid}`;
-    for (const [keychain, value] of [
-      [firstKeychain, "first-record"],
-      [secondKeychain, "second-record"],
-    ] as const) {
-      runSecuritySuccessfully([
-        "add-generic-password",
-        "-A",
-        "-a",
-        ambiguousAccount,
-        "-s",
-        ambiguousService,
-        "-w",
-        value,
-        keychain,
-      ]);
-    }
     runSecuritySuccessfully([
       "list-keychains",
       "-d",
@@ -274,38 +256,71 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
       secondKeychain,
       primaryKeychain,
     ]);
+    const duplicateSearchList = runSecuritySuccessfully([
+      "list-keychains",
+      "-d",
+      "user",
+    ]);
+    expect(parseKeychainPaths(duplicateSearchList.stdout)).toEqual([
+      canonicalFirstKeychain,
+      canonicalSecondKeychain,
+      canonicalPrimaryKeychain,
+    ]);
 
-    const ambiguousRun = (
-      operation: "read" | "write" | "delete",
-      input?: string,
-    ) =>
-      spawnSync(helper, [operation, ambiguousService, ambiguousAccount], {
-        encoding: "utf8",
-        input,
-        timeout: 10_000,
-      });
-    for (const result of [
-      ambiguousRun("read"),
-      ambiguousRun("write", JSON.stringify({ primaryApiKey: "replacement" })),
-      ambiguousRun("delete"),
-    ]) {
-      expect(result.status).toBe(1);
-      expect(result.stderr).toMatch(/multiple Keychain records/u);
-    }
-    for (const [keychain, value] of [
-      [firstKeychain, "first-record"],
-      [secondKeychain, "second-record"],
-    ] as const) {
-      const unchanged = runSecuritySuccessfully([
-        "find-generic-password",
-        "-a",
-        ambiguousAccount,
-        "-s",
-        ambiguousService,
-        "-w",
-        keychain,
-      ]);
-      expect(unchanged.stdout.trim()).toBe(value);
+    for (const operation of ["read", "write", "delete"] as const) {
+      const ambiguousService = `AgenC-native-helper-duplicate-${operation}-${randomUUID()}`;
+      const ambiguousAccount = `duplicate-${operation}-${process.pid}`;
+      for (const [keychain, value] of [
+        [firstKeychain, "first-record"],
+        [secondKeychain, "second-record"],
+      ] as const) {
+        runSecuritySuccessfully([
+          "add-generic-password",
+          "-A",
+          "-a",
+          ambiguousAccount,
+          "-s",
+          ambiguousService,
+          "-w",
+          value,
+          keychain,
+        ]);
+      }
+
+      const result = spawnSync(
+        helper,
+        [operation, ambiguousService, ambiguousAccount],
+        {
+          encoding: "utf8",
+          input:
+            operation === "write"
+              ? JSON.stringify({ primaryApiKey: "replacement" })
+              : undefined,
+          timeout: 10_000,
+        },
+      );
+      expect(result.status, `${operation} must reject ambiguity`).toBe(1);
+      expect(result.stderr, `${operation} must explain ambiguity`).toMatch(
+        /multiple Keychain records/u,
+      );
+      for (const [keychain, value] of [
+        [firstKeychain, "first-record"],
+        [secondKeychain, "second-record"],
+      ] as const) {
+        const unchanged = runSecuritySuccessfully([
+          "find-generic-password",
+          "-a",
+          ambiguousAccount,
+          "-s",
+          ambiguousService,
+          "-w",
+          keychain,
+        ]);
+        expect(
+          unchanged.stdout.trim(),
+          `${operation} must leave ${keychain} unchanged`,
+        ).toBe(value);
+      }
     }
 
     expect(run("write", first)).toMatchObject({ status: 0, stderr: "" });
@@ -324,15 +339,8 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     });
     expect(run("delete")).toMatchObject({ status: 0, stderr: "" });
 
-    runSecuritySuccessfully([
-      "default-keychain",
-      "-d",
-      "user",
-      "-s",
-    ]);
-    expectMissingUserDefault(
-      runSecurity(["default-keychain", "-d", "user"]),
-    );
+    runSecuritySuccessfully(["default-keychain", "-d", "user", "-s"]);
+    expectMissingUserDefault(runSecurity(["default-keychain", "-d", "user"]));
     runSecuritySuccessfully([
       "list-keychains",
       "-d",
@@ -348,9 +356,7 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
     expect(parseKeychainPaths(soleSearchList.stdout)).toEqual([
       canonicalPrimaryKeychain,
     ]);
-    expectMissingUserDefault(
-      runSecurity(["default-keychain", "-d", "user"]),
-    );
+    expectMissingUserDefault(runSecurity(["default-keychain", "-d", "user"]));
     expect(run("write", first)).toMatchObject({ status: 0, stderr: "" });
     runSecuritySuccessfully([
       "find-generic-password",
@@ -386,9 +392,7 @@ test("compiles and performs exact missing/create/update/read/delete Keychain CRU
       canonicalSecondKeychain,
       canonicalPrimaryKeychain,
     ]);
-    expectMissingUserDefault(
-      runSecurity(["default-keychain", "-d", "user"]),
-    );
+    expectMissingUserDefault(runSecurity(["default-keychain", "-d", "user"]));
     const ambiguousCreateTarget = run("write", first);
     expect(ambiguousCreateTarget.status).toBe(1);
     expect(ambiguousCreateTarget.stderr).toContain("Keychain add failed");
