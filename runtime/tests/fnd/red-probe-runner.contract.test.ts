@@ -1446,14 +1446,20 @@ describe("FND red-probe supervisor", () => {
       source: probeSource({
         imports: ['import "../../helpers/nonzero-exit.js";'],
       }),
+      timeoutMs: 5_000,
     });
     writeFileSync(
       join(fixtureRoot, "tests/helpers/nonzero-exit.ts"),
-      "process.exitCode = 1;\n",
+      [
+        "setInterval(() => undefined, 1_000);",
+        "process.exitCode = 23;",
+        "process.exit = (() => undefined) as typeof process.exit;",
+        "",
+      ].join("\n"),
       "utf8",
     );
     await expect(auditRedProbes({ runtimeRoot: fixtureRoot })).rejects.toThrow(
-      "did not exit expected-red",
+      "did not exit expected-red: exit=23",
     );
   });
 
