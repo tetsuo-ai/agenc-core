@@ -23,7 +23,7 @@ describe("built-in provider info", () => {
       ["openrouter", "OpenRouter", "x-ai/grok-4.5", "https://openrouter.ai/api/v1", "api-key", ["OPENROUTER_API_KEY"], ["OPENROUTER_BASE_URL"], 70, "api-key", true],
       ["groq", "Groq", "llama-3.3-70b-versatile", "https://api.groq.com/openai/v1", "api-key", ["GROQ_API_KEY"], ["GROQ_BASE_URL"], 80, "api-key", false],
       ["deepseek", "DeepSeek", "deepseek-v4-flash", "https://api.deepseek.com/v1", "api-key", ["DEEPSEEK_API_KEY"], ["DEEPSEEK_BASE_URL"], 90, "api-key", false],
-      ["gemini", "Gemini", "gemini-2.5-pro", "https://generativelanguage.googleapis.com/v1beta", "api-key", ["GEMINI_API_KEY", "GOOGLE_API_KEY"], ["GEMINI_BASE_URL"], 100, "api-key", false],
+      ["gemini", "Gemini", "gemini-3.1-pro-preview", "https://generativelanguage.googleapis.com/v1beta", "api-key", ["GEMINI_API_KEY", "GOOGLE_API_KEY"], ["GEMINI_BASE_URL"], 100, "api-key", false],
       ["mistral", "Mistral", "mistral-medium-latest", "https://api.mistral.ai/v1", "api-key", ["MISTRAL_API_KEY"], ["MISTRAL_BASE_URL"], 110, "api-key", false],
       ["nvidia-nim", "NVIDIA NIM", "nvidia/llama-3.1-nemotron-70b-instruct", "https://integrate.api.nvidia.com/v1", "api-key", ["NVIDIA_API_KEY"], ["NVIDIA_BASE_URL"], 120, "api-key", false],
       ["minimax", "MiniMax", "MiniMax-M2.5", "https://api.minimax.io/v1", "api-key", ["MINIMAX_API_KEY"], ["MINIMAX_BASE_URL"], 130, "api-key", false],
