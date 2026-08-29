@@ -88,6 +88,9 @@ const ISOLATION_ENV_KEYS = Object.freeze([
   "TERM",
   "TZ",
 ]);
+const ISOLATION_ENV_KEY_NAMES = new Set(
+  ISOLATION_ENV_KEYS.map((key) => key.toLowerCase()),
+);
 
 const ACTIVE_STATES_BY_HOME = new Map();
 
@@ -161,9 +164,14 @@ export function tuiGateEnvironment(
   baseEnv = process.env,
   injectedEnv = {},
 ) {
+  const permittedInjectedEnv = Object.fromEntries(
+    Object.entries(injectedEnv).filter(
+      ([key]) => !ISOLATION_ENV_KEY_NAMES.has(key.toLowerCase()),
+    ),
+  );
   const environment = {
     ...systemEnvironment(baseEnv),
-    ...injectedEnv,
+    ...permittedInjectedEnv,
     ...isolationEnvironment(home),
   };
   delete environment.AGENC_CONFIG_DIR;

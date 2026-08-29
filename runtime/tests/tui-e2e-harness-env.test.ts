@@ -1,5 +1,5 @@
 import { readFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -199,15 +199,21 @@ describe("TUI E2E harness state isolation", () => {
   });
 
   it("forces deterministic gate controls after scenario overrides", () => {
-    const env = tuiGateEnvironment("/private/gate", {
-      AGENC_AUTH_BACKEND: "remote",
-      AGENC_DAEMON_WEBSOCKET_HOST: "0.0.0.0",
-      AGENC_DAEMON_WEBSOCKET_PORT: "7766",
-      AGENC_ONBOARDING: "force",
-      NODE_OPTIONS: "--inspect=9229",
-      OPENAI_API_KEY: "operator-secret",
-      ProgramData: "C:\\ProgramData",
-    });
+    const env = tuiGateEnvironment(
+      "/private/gate",
+      {
+        AGENC_AUTH_BACKEND: "remote",
+        AGENC_DAEMON_WEBSOCKET_HOST: "0.0.0.0",
+        AGENC_DAEMON_WEBSOCKET_PORT: "7766",
+        AGENC_ONBOARDING: "force",
+        NODE_OPTIONS: "--inspect=9229",
+        OPENAI_API_KEY: "operator-secret",
+        ProgramData: "C:\\ProgramData",
+      },
+      {
+        PROGRAMDATA: "C:\\injected-program-data",
+      },
+    );
 
     expect(env).toMatchObject({
       AGENC_AUTH_BACKEND: "local",
@@ -218,9 +224,12 @@ describe("TUI E2E harness state isolation", () => {
       GIT_OPTIONAL_LOCKS: "0",
       GIT_TERMINAL_PROMPT: "0",
       NODE_OPTIONS: "",
-      ProgramData: "/private/gate/ProgramData",
+      ProgramData: join(resolve("/private/gate"), "ProgramData"),
     });
     expect(env.OPENAI_API_KEY).toBeUndefined();
+    expect(
+      Object.keys(env).filter((key) => key.toLowerCase() === "programdata"),
+    ).toEqual(["ProgramData"]);
   });
 
   it.each([
