@@ -128,6 +128,19 @@ const LOCAL_IMAGE_ID_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 /** Every runner constructed in this process, for signal-time cleanup. */
 const activeRunners = new Set<DockerContainerRunner>();
 
+/**
+ * Set once abortAll() starts. Run paths keep executing while the cleanup
+ * removes what exists (a killed docker exec surfaces as a per-task error and
+ * a batch moves on), so every create path refuses new work from this point.
+ */
+let aborting = false;
+
+function assertNotAborting(): void {
+  if (aborting) {
+    throw new EvalExecutorError(["eval-executor is shutting down"]);
+  }
+}
+
 export class DockerContainerRunner implements ContainerRunner {
   /** Containers this runner created and has not yet removed. */
   private readonly liveContainers = new Set<string>();
@@ -154,11 +167,24 @@ export class DockerContainerRunner implements ContainerRunner {
     }
   }
 
-  /** Force-remove every live container and network of every runner. */
+  /**
+   * Force-remove every live container and network of every runner. New
+   * creations are refused from the first call onward, and the sweep runs
+   * twice so anything registered during the first pass is caught by the
+   * second.
+   */
   static async abortAll(): Promise<void> {
-    for (const runner of activeRunners) {
-      await runner.abortLive();
+    aborting = true;
+    for (let pass = 0; pass < 2; pass += 1) {
+      for (const runner of activeRunners) {
+        await runner.abortLive();
+      }
     }
+  }
+
+  /** Test seam: forget the shutdown state between cases. */
+  static resetAbortStateForTesting(): void {
+    aborting = false;
   }
 
   async environment(): Promise<ContainerEnvironment> {
@@ -184,6 +210,7 @@ export class DockerContainerRunner implements ContainerRunner {
     imageReference: string,
     options: CreateTaskContainerOptions = {},
   ): Promise<ContainerHandle> {
+    assertNotAborting();
     const { dockerReference, imageDigest } = this.resolveImageRef(imageReference);
     const mountArguments: string[] = [];
     for (const mount of options.readOnlyMounts ?? []) {
@@ -268,6 +295,7 @@ export class DockerContainerRunner implements ContainerRunner {
   }
 
   async createAuxiliaryContainer(imageReference: string): Promise<ContainerHandle> {
+    assertNotAborting();
     const { dockerReference, imageDigest } = this.resolveImageRef(imageReference);
     const created = await spawnBounded(
       "docker",
@@ -302,6 +330,7 @@ export class DockerContainerRunner implements ContainerRunner {
    * `teardown()` in a finally.
    */
   async createEgressLane(request: EgressLaneRequest): Promise<EgressLane> {
+    assertNotAborting();
     const { dockerReference, imageDigest } = this.resolveImageRef(request.taskImage);
     const overlayHostDir = request.overlayHostDir;
     if (!overlayHostDir.startsWith("/") || overlayHostDir.includes(":") || overlayHostDir.includes(",")) {

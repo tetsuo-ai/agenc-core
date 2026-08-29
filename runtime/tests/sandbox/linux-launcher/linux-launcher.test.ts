@@ -271,6 +271,44 @@ describe("Linux sandbox launcher", () => {
     expect(() =>
       parseLinuxSandboxLauncherArgs(withProfile("[]", "--", "/bin/true")),
     ).toThrow(/permission profile must be an object/u);
+    // A cwd is never anchored to the launcher's own working directory.
+    expect(() =>
+      parseLinuxSandboxLauncherArgs(argv("--command-cwd", "relative/dir", "--", "/bin/true")),
+    ).toThrow(/--command-cwd must be an absolute path/u);
+    expect(() =>
+      parseLinuxSandboxLauncherArgs(argv("--command-cwd", "", "--", "/bin/true")),
+    ).toThrow(/--command-cwd cannot be empty/u);
+    // Path kinds are matched as own properties, never through Object.prototype.
+    for (const kind of ["constructor", "__proto__", "hasOwnProperty"]) {
+      expect(() =>
+        parseLinuxSandboxLauncherArgs(
+          withProfile(
+            JSON.stringify({
+              fileSystem: restrictedFileSystemPolicy([
+                { path: { kind, path: "/x" } as never, access: "read" },
+              ]),
+              network: "disabled",
+            }),
+            "--",
+            "/bin/true",
+          ),
+        ),
+      ).toThrow(/fileSystem entry path kind is invalid/u);
+      expect(() =>
+        parseLinuxSandboxLauncherArgs(
+          withProfile(
+            JSON.stringify({
+              fileSystem: restrictedFileSystemPolicy([
+                { path: { kind: "special", value: { kind } } as never, access: "read" },
+              ]),
+              network: "disabled",
+            }),
+            "--",
+            "/bin/true",
+          ),
+        ),
+      ).toThrow(/special path kind is invalid/u);
+    }
     // A proxy route spec only makes sense for the proxy-routed inner stage.
     expect(() =>
       parseLinuxSandboxLauncherArgs(argv("--proxy-route-spec", "{}", "--", "/bin/true")),

@@ -599,8 +599,15 @@ export function isDirectInvocation(
  * handlers are one-shot: a second signal falls back to Node's default.
  */
 function installSignalCleanup(): void {
+  let cleanupStarted = false;
   const onSignal = (signal: NodeJS.Signals): void => {
     const code = signal === "SIGINT" ? 130 : 143;
+    // A second signal of either kind ends the process at once; the first
+    // one's cleanup is best effort and must never hold an operator hostage.
+    if (cleanupStarted) {
+      process.exit(code);
+    }
+    cleanupStarted = true;
     process.stderr.write(
       `${signal}: removing eval-executor containers and networks before exit\n`,
     );
@@ -608,8 +615,8 @@ function installSignalCleanup(): void {
       process.exit(code);
     });
   };
-  process.once("SIGINT", onSignal);
-  process.once("SIGTERM", onSignal);
+  process.on("SIGINT", onSignal);
+  process.on("SIGTERM", onSignal);
 }
 
 if (isDirectInvocation(import.meta.url, process.argv[1])) {

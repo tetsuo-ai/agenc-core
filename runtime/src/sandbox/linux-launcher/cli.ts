@@ -310,7 +310,10 @@ function assertFileSystemPath(value: unknown): asserts value is FileSystemPath {
     throw new LinuxSandboxCliError("permission profile fileSystem entry path must be an object");
   }
   const kind = (value as { kind?: unknown }).kind;
-  const allowedKeys = typeof kind === "string" ? PATH_KEYS[kind] : undefined;
+  // Own-property lookup only: a kind such as "constructor" must not resolve
+  // to an Object.prototype member.
+  const allowedKeys =
+    typeof kind === "string" && Object.hasOwn(PATH_KEYS, kind) ? PATH_KEYS[kind] : undefined;
   if (allowedKeys === undefined) {
     throw new LinuxSandboxCliError("permission profile fileSystem entry path kind is invalid");
   }
@@ -331,7 +334,10 @@ function assertSpecialPath(value: unknown): void {
     throw new LinuxSandboxCliError("permission profile special path must be an object");
   }
   const kind = (value as { kind?: unknown }).kind;
-  const allowedKeys = typeof kind === "string" ? SPECIAL_PATH_KEYS[kind] : undefined;
+  const allowedKeys =
+    typeof kind === "string" && Object.hasOwn(SPECIAL_PATH_KEYS, kind)
+      ? SPECIAL_PATH_KEYS[kind]
+      : undefined;
   if (allowedKeys === undefined) {
     throw new LinuxSandboxCliError("permission profile special path kind is invalid");
   }
@@ -384,9 +390,14 @@ function assertNoNulByte(value: string, label: string): void {
 
 function normalizeCwd(value: string, flag: string): string {
   if (value.length === 0) {
-    throw new LinuxSandboxCliError("cwd argument cannot be empty");
+    throw new LinuxSandboxCliError(`${flag} cannot be empty`);
   }
   assertNoNulByte(value, `${flag} value`);
+  // A relative cwd would be anchored to the launcher's own working
+  // directory, the exact inference the required policy cwd exists to avoid.
+  if (!path.isAbsolute(value)) {
+    throw new LinuxSandboxCliError(`${flag} must be an absolute path`);
+  }
   return path.resolve(value);
 }
 
