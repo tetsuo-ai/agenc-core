@@ -782,8 +782,26 @@ export class TuiSession {
     });
     await sleep(firstPaintMs);
     this.throwIfAborted();
+    this.wakeBlankPtyWithResize();
     await sleep(postReplyMs);
     this.throwIfAborted();
+  }
+
+  wakeBlankPtyWithResize() {
+    if (
+      this.term === null ||
+      this.exited ||
+      this.latestFrame.trim().length > 0
+    ) {
+      return false;
+    }
+    // ConPTY can expose only its console bootstrap until the first size
+    // event. Force a redraw without sending bytes that AgenC could treat as
+    // user input, then restore the dimensions requested by the scenario.
+    const wakeCols = this.cols === 1 ? 2 : this.cols - 1;
+    this.term.resize(wakeCols, this.rows);
+    this.term.resize(this.cols, this.rows);
+    return true;
   }
 
   /**
