@@ -16,7 +16,6 @@ describe("macOS Keychain native-helper contract", () => {
     expect(source).toContain("kSecClassGenericPassword");
     expect(source).toContain("kSecAttrService");
     expect(source).toContain("kSecAttrAccount");
-    expect(source).toContain("kSecMatchLimitAll");
     expect(source).toContain("kSecReturnPersistentRef");
     expect(source).toContain("kSecMatchItemList");
     expect(source).toContain("copy_unique_persistent_ref");
@@ -25,11 +24,13 @@ describe("macOS Keychain native-helper contract", () => {
       "keychain_index < CFArrayGetCount(search_list)",
     );
     expect(source).toContain(
-      "CFArrayCreate(kCFAllocatorDefault, keychain_values, 1",
+      "SecKeychainFindGenericPassword(",
     );
     expect(source).toContain(
-      "CFDictionarySetValue(search, kSecMatchSearchList, one_keychain)",
+      "SecKeychainItemCreatePersistentReference(item, &candidate)",
     );
+    expect(source).toContain("CFStringGetCString((CFStringRef)service_value");
+    expect(source).toContain("CFStringGetCString((CFStringRef)account_value");
     expect(source).toContain("capture_unique_persistent_ref");
     expect(source).toContain(
       "multiple Keychain records match the exact service/account identity",

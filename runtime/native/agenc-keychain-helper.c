@@ -273,18 +273,28 @@ static bool capture_unique_persistent_ref(CFTypeRef candidate,
 }
 
 /*
- * SecItemCopyMatching with a multi-keychain kSecMatchSearchList can stop at the
- * first keychain even when kSecMatchLimitAll is requested. Enumerate each
- * captured user-search-list keychain separately, then require exactly one
- * persistent reference across the complete list. Mutations remain bound to
- * that reference and ambiguity fails closed.
+ * SecItemCopyMatching can stop at the first file-based keychain even when a
+ * query requests every match. Search each captured user-search-list keychain
+ * directly instead. A generic password's service/account pair is unique
+ * within one keychain, so one lookup per keychain enumerates the complete
+ * identity. Convert each item to a persistent reference, then require exactly
+ * one reference across the complete list. Mutations remain bound to that
+ * reference and ambiguity fails closed.
  */
 static enum unique_match_result
 copy_unique_persistent_ref(CFDictionaryRef identity_query,
                            CFDataRef *persistent_ref_out) {
   CFTypeRef search_list_value =
       CFDictionaryGetValue(identity_query, kSecMatchSearchList);
+  CFTypeRef service_value =
+      CFDictionaryGetValue(identity_query, kSecAttrService);
+  CFTypeRef account_value =
+      CFDictionaryGetValue(identity_query, kSecAttrAccount);
   CFArrayRef search_list;
+  char service_utf8[IDENTITY_LIMIT_BYTES];
+  char account_utf8[IDENTITY_LIMIT_BYTES];
+  UInt32 service_length;
+  UInt32 account_length;
   CFDataRef persistent_ref = NULL;
   enum unique_match_result result = UNIQUE_MATCH_ERROR;
   CFIndex keychain_index;
@@ -295,86 +305,79 @@ copy_unique_persistent_ref(CFDictionaryRef identity_query,
     (void)fail_message("Keychain identity query has no valid search list");
     return UNIQUE_MATCH_ERROR;
   }
+  if ((service_value == NULL) ||
+      (CFGetTypeID(service_value) != CFStringGetTypeID()) ||
+      (account_value == NULL) ||
+      (CFGetTypeID(account_value) != CFStringGetTypeID())) {
+    (void)fail_message("Keychain identity query has invalid attributes");
+    return UNIQUE_MATCH_ERROR;
+  }
+  if (!CFStringGetCString((CFStringRef)service_value, service_utf8,
+                          sizeof service_utf8, kCFStringEncodingUTF8) ||
+      !CFStringGetCString((CFStringRef)account_value, account_utf8,
+                          sizeof account_utf8, kCFStringEncodingUTF8)) {
+    (void)fail_message("cannot encode Keychain identity as UTF-8");
+    return UNIQUE_MATCH_ERROR;
+  }
   search_list = (CFArrayRef)search_list_value;
+  service_length = (UInt32)strlen(service_utf8);
+  account_length = (UInt32)strlen(account_utf8);
 
   for (keychain_index = 0; keychain_index < CFArrayGetCount(search_list);
        ++keychain_index) {
     CFTypeRef keychain = CFArrayGetValueAtIndex(search_list, keychain_index);
-    const void *keychain_values[] = {keychain};
-    CFArrayRef one_keychain = NULL;
-    CFMutableDictionaryRef search = NULL;
-    CFTypeRef matches = NULL;
+    SecKeychainItemRef item = NULL;
+    CFDataRef candidate = NULL;
     OSStatus status;
 
     if (keychain == NULL) {
       (void)fail_message("Keychain search list contains a null keychain");
       goto cleanup;
     }
-    one_keychain = CFArrayCreate(kCFAllocatorDefault, keychain_values, 1,
-                                 &kCFTypeArrayCallBacks);
-    search =
-        CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, identity_query);
-    if ((one_keychain == NULL) || (search == NULL)) {
-      (void)fail_message("cannot allocate Keychain enumeration query");
-      if (one_keychain != NULL) {
-        CFRelease(one_keychain);
-      }
-      if (search != NULL) {
-        CFRelease(search);
-      }
-      goto cleanup;
-    }
-    CFDictionarySetValue(search, kSecMatchSearchList, one_keychain);
-    CFDictionarySetValue(search, kSecReturnPersistentRef, kCFBooleanTrue);
-    CFDictionarySetValue(search, kSecMatchLimit, kSecMatchLimitAll);
-
-    status = SecItemCopyMatching(search, &matches);
-    CFRelease(search);
-    CFRelease(one_keychain);
+#pragma clang diagnostic push
+/* Exact file-based per-keychain lookup requires deprecated Keychain APIs. */
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    status = SecKeychainFindGenericPassword(
+        keychain, service_length, service_utf8, account_length, account_utf8,
+        NULL, NULL, &item);
+#pragma clang diagnostic pop
     if (status == errSecItemNotFound) {
+      if (item != NULL) {
+        CFRelease(item);
+      }
       continue;
     }
     if (status != errSecSuccess) {
       (void)fail_osstatus("Keychain enumeration", status);
-      if (matches != NULL) {
-        CFRelease(matches);
+      if (item != NULL) {
+        CFRelease(item);
       }
       goto cleanup;
     }
-
-    if ((matches != NULL) && (CFGetTypeID(matches) == CFDataGetTypeID())) {
-      if (!capture_unique_persistent_ref(matches, &persistent_ref)) {
-        CFRelease(matches);
-        goto cleanup;
-      }
-    } else if ((matches != NULL) &&
-               (CFGetTypeID(matches) == CFArrayGetTypeID())) {
-      CFArrayRef match_array = (CFArrayRef)matches;
-      const CFIndex count = CFArrayGetCount(match_array);
-      CFIndex match_index;
-
-      if (count == 0) {
-        (void)fail_message("Keychain enumeration returned an empty match list");
-        CFRelease(matches);
-        goto cleanup;
-      }
-      for (match_index = 0; match_index < count; ++match_index) {
-        if (!capture_unique_persistent_ref(
-                CFArrayGetValueAtIndex(match_array, match_index),
-                &persistent_ref)) {
-          CFRelease(matches);
-          goto cleanup;
-        }
-      }
-    } else {
-      (void)fail_message(
-          "Keychain enumeration returned an unexpected result type");
-      if (matches != NULL) {
-        CFRelease(matches);
+    if (item == NULL) {
+      (void)fail_message("Keychain enumeration returned no item reference");
+      goto cleanup;
+    }
+#pragma clang diagnostic push
+/* Persistent references for file-based items require a deprecated API. */
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+    status = SecKeychainItemCreatePersistentReference(item, &candidate);
+#pragma clang diagnostic pop
+    CFRelease(item);
+    if (status != errSecSuccess) {
+      (void)fail_osstatus("Keychain persistent-reference conversion", status);
+      if (candidate != NULL) {
+        CFRelease(candidate);
       }
       goto cleanup;
     }
-    CFRelease(matches);
+    if (!capture_unique_persistent_ref(candidate, &persistent_ref)) {
+      if (candidate != NULL) {
+        CFRelease(candidate);
+      }
+      goto cleanup;
+    }
+    CFRelease(candidate);
   }
 
   if (persistent_ref == NULL) {
