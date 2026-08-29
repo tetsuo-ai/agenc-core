@@ -20,7 +20,6 @@ import {
 
 import {
   DEFAULT_SESSION_ROOT_MARKERS,
-  findProjectRootSync,
   getAgencHomeDir,
   getProjectDir,
   hasSupportedFileIdentity,
@@ -482,9 +481,7 @@ function candidatesUnderProjectDir(
 }
 
 function legacyProjectDirFor(cwd: string, agencHome: string): string {
-  const root = findProjectRootSync(cwd, DEFAULT_SESSION_ROOT_MARKERS);
-  const slugInput = root ? root.rootDir : cwd;
-  return join(getAgencHomeDir(agencHome), "projects", sanitizePath(slugInput));
+  return join(getAgencHomeDir(agencHome), "projects", sanitizePath(cwd));
 }
 
 function localProjectDirs(cwd: string, agencHome: string): readonly string[] {
