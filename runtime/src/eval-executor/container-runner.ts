@@ -185,9 +185,9 @@ export class DockerContainerRunner implements ContainerRunner {
 
   /**
    * Force-remove every live container and network of every runner. New
-   * creations are refused from the first call onward, and the sweep runs
-   * twice so anything registered during the first pass is caught by the
-   * second.
+   * creations are refused from the first call onward; the sweep removes what
+   * is live, waits for creates that were already past the check, then sweeps
+   * once more so their results are removed too.
    */
   static async abortAll(): Promise<void> {
     aborting = true;
