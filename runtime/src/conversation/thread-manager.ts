@@ -986,14 +986,13 @@ class ForkedConversationThread implements ManagedThread {
     return run;
   }
 
-  private interruptActiveTurn(reason: string | undefined): string {
-    const abortReason = reason ?? "interrupted";
-    this.activeTurnAbort?.abort(abortReason);
+  private interruptActiveTurn(reason = "interrupted"): string {
+    this.activeTurnAbort?.abort(reason);
     this.setStatus({
       status: "interrupted",
       turnId: this.threadId,
       endedAtMs: Date.now(),
-      reason: abortReason,
+      reason,
     });
     return this.threadId;
   }
