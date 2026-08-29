@@ -88,16 +88,20 @@ describe("SessionProviderService", () => {
     );
   });
 
-  test("rejects an unknown initial provider identity", () => {
-    const unknown = Object.freeze({
-      name: "unknown-provider",
-      config: { model: "unknown-model" },
+  test("accepts an injected custom provider identity", () => {
+    const custom = Object.freeze({
+      name: "custom-provider",
+      config: { model: "custom-model" },
     });
-    expect(() =>
-      new SessionProviderService({
-        initialProvider: unknown as never,
-      })
-    ).toThrow('unknown bound provider "unknown-provider"');
+    const service = new SessionProviderService({
+      initialProvider: custom as never,
+    });
+
+    expect(service.current()).toMatchObject({
+      provider: "custom-provider",
+      model: "custom-model",
+      instance: custom,
+    });
   });
 
   test("keeps explicit provider identity separate from an unmarked transport", () => {

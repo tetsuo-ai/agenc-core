@@ -48,6 +48,7 @@ import {
 } from "../mcp-client/tui-connections.js";
 import type { MCPServerConnection } from "../services/mcp/types.js";
 import { ProviderHttpClient } from "../llm/client.js";
+import { isFactoryProvider } from "../llm/provider.js";
 import type { LLMContentPart, LLMMessage } from "../llm/types.js";
 import type { LLMProvider } from "../llm/types.js";
 import {
@@ -2552,14 +2553,19 @@ export class Session {
       .sessionConfiguration as SessionConfiguration & {
       readonly provider?: { readonly slug?: string };
     };
+    const initialProviderIsFactoryBound = isFactoryProvider(
+      opts.services.provider,
+    );
     const providerService =
       opts.services.providerService ??
       new SessionProviderService({
         initialProvider: opts.services.provider,
-        ...(initialSelection.provider?.slug !== undefined
+        ...(!initialProviderIsFactoryBound &&
+        initialSelection.provider?.slug !== undefined
           ? { initialProviderName: initialSelection.provider.slug }
           : {}),
-        ...(initialSelection.collaborationMode?.model !== undefined
+        ...(!initialProviderIsFactoryBound &&
+        initialSelection.collaborationMode?.model !== undefined
           ? { initialModel: initialSelection.collaborationMode.model }
           : {}),
         environment: opts.services.providerEnvironment ?? {},

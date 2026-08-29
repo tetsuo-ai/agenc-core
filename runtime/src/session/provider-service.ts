@@ -215,7 +215,6 @@ export class SessionProviderService {
         ? { model: params.initialModel }
         : {}),
     });
-    assertBuiltInProviderBinding(initialBinding);
     this.#binding = initialBinding;
     this.#credentialHome = initialBinding.factoryOptions.credentialHome;
     this.#readSavedApiKey = params.readSavedApiKey;
