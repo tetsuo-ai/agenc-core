@@ -8,7 +8,10 @@
  */
 
 import { createHash, randomUUID } from "node:crypto";
+import { readFileSync, readdirSync } from "node:fs";
+import { join as joinPath } from "node:path";
 
+import { roughTokenCountEstimation } from "../llm/token-estimation.js";
 import {
   bootstrapLocalRuntimeSession,
   type BootstrapLocalRuntimeSessionOptions,
@@ -3113,6 +3116,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     // when tool-use rounds split a single turn into multiple history
     // items, but it's a closer signal than the raw item count.
     const turnCount = Math.max(0, Math.floor(historyLength / 2));
+    const cache = await this.#sessionCacheStatsSnapshot(active);
+    const breakdown = this.#sessionContextBreakdown(active);
     return {
       sessionId: params.sessionId,
       turnCount,
@@ -3122,7 +3127,141 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         totalTokens: finiteNumber(usage.totalTokens),
         costUsd: finiteNumber(usage.costUsd),
       },
+      cacheStats: cache,
+      ...(breakdown !== undefined ? { contextBreakdown: breakdown } : {}),
     };
+  }
+
+  /**
+   * What occupies the context window, by source. Every figure is measured
+   * from this session's own material — the live tool registry, the MCP
+   * catalog, the memory files on disk, the conversation history — so a
+   * client can show where the window went instead of guessing.
+   *
+   * Token counts are the runtime's standard rough estimate (the same one
+   * budgeting uses); they are not a tokenizer round-trip.
+   */
+  #sessionContextBreakdown(
+    active: ActiveBackgroundAgent,
+  ): SessionSnapshotResult["contextBreakdown"] {
+    try {
+      const bootstrap = active.bootstrap;
+      const estimate = (text: string): number =>
+        text.length > 0 ? roughTokenCountEstimation(text) : 0;
+
+      const llmTools = bootstrap.registry.toLLMTools();
+      let systemToolTokens = 0;
+      let systemToolCount = 0;
+      let mcpToolTokens = 0;
+      let mcpToolCount = 0;
+      for (const tool of llmTools) {
+        const tokens = estimate(JSON.stringify(tool));
+        // MCP tools are namespaced `mcp.<server>.<tool>` by the registry.
+        if (tool.function.name.startsWith("mcp.")) {
+          mcpToolTokens += tokens;
+          mcpToolCount += 1;
+        } else {
+          systemToolTokens += tokens;
+          systemToolCount += 1;
+        }
+      }
+
+      // Deferred tools are searchable but not resident, so they cost
+      // nothing until loaded — reported apart from the resident rows.
+      const discovered = bootstrap.registry.getDiscoveredToolNames?.();
+      const residentNames = new Set(llmTools.map((tool) => tool.function.name));
+      let deferredToolTokens = 0;
+      let deferredToolCount = 0;
+      for (const tool of bootstrap.registry.tools) {
+        if (residentNames.has(tool.name)) continue;
+        if (discovered?.has(tool.name) === true) continue;
+        deferredToolCount += 1;
+        deferredToolTokens += estimate(
+          JSON.stringify({
+            name: tool.name,
+            description: tool.description,
+            parameters: tool.inputSchema,
+          }),
+        );
+      }
+
+      let memoryFileTokens = 0;
+      let memoryFileCount = 0;
+      for (const path of this.#memoryFilePaths(bootstrap)) {
+        try {
+          const text = readFileSync(path, "utf8");
+          memoryFileTokens += estimate(text);
+          memoryFileCount += 1;
+        } catch {
+          // absent or unreadable: not in the window either
+        }
+      }
+
+      const state = bootstrap.session.state?.unsafePeek?.();
+      const history = Array.isArray(
+        (state as { history?: unknown[] } | undefined)?.history,
+      )
+        ? ((state as { history: unknown[] }).history as unknown[])
+        : [];
+      let messageTokens = 0;
+      for (const item of history) {
+        try {
+          messageTokens += estimate(JSON.stringify(item));
+        } catch {
+          // unserializable history item: skip rather than guess
+        }
+      }
+
+      const instructions =
+        (
+          bootstrap.session as unknown as {
+            baseInstructions?: string;
+            instructions?: string;
+          }
+        ).baseInstructions ??
+        (bootstrap.session as unknown as { instructions?: string })
+          .instructions ??
+        "";
+
+      return {
+        windowTokens: finiteNumber(bootstrap.modelInfo.contextWindow ?? 0),
+        messageTokens: finiteNumber(messageTokens),
+        systemPromptTokens: finiteNumber(estimate(instructions)),
+        systemToolTokens: finiteNumber(systemToolTokens),
+        systemToolCount,
+        mcpToolTokens: finiteNumber(mcpToolTokens),
+        mcpToolCount,
+        deferredToolTokens: finiteNumber(deferredToolTokens),
+        deferredToolCount,
+        memoryFileTokens: finiteNumber(memoryFileTokens),
+        memoryFileCount,
+      };
+    } catch {
+      // Never fail a snapshot over the breakdown; the client treats an
+      // absent breakdown as "not measured".
+      return undefined;
+    }
+  }
+
+  /** AGENTS.md-style memory the session loads, if present. */
+  #memoryFilePaths(bootstrap: {
+    readonly memoryMdPath?: string;
+    readonly memoryDir?: string;
+  }): readonly string[] {
+    const paths: string[] = [];
+    if (bootstrap.memoryMdPath !== undefined) paths.push(bootstrap.memoryMdPath);
+    if (bootstrap.memoryDir !== undefined) {
+      try {
+        for (const entry of readdirSync(bootstrap.memoryDir)) {
+          if (entry.endsWith(".md")) {
+            paths.push(joinPath(bootstrap.memoryDir, entry));
+          }
+        }
+      } catch {
+        // no memory dir: nothing to add
+      }
+    }
+    return paths;
   }
 
   async getAgentSessionTranscript(
@@ -3230,6 +3369,54 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     } finally {
       driver.close();
     }
+  }
+
+  // Read the global session-level cache stats tracker (lives in the
+  // daemon process, fed by the upstream SDK call sites). Provider
+  // flows that bypass the tracker (lmstudio / xAI / chat-completions)
+  // legitimately return zeros — that's accurate, not a bug. The
+  // canonical-authority refactor retired the tracker module itself, so
+  // until it returns this degrades to zeros through the tolerant
+  // import below rather than breaking the snapshot surface.
+  async #sessionCacheStatsSnapshot(
+    _active: ActiveBackgroundAgent,
+  ): Promise<SessionSnapshotResult["cacheStats"]> {
+    const trackerPath = "../services/api/cacheStatsTracker.js";
+    const mod: unknown = await import(/* @vite-ignore */ trackerPath).catch(
+      () => null,
+    );
+    if (mod === null) {
+      return {
+        requestCount: 0,
+        cacheReadInputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheTotalInputTokens: 0,
+        hitRate: null,
+      };
+    }
+    const metrics = (
+      mod as {
+        getSessionCacheMetrics?: () => {
+          readonly requestCount?: number;
+          readonly cacheReadInputTokens?: number;
+          readonly cacheCreationInputTokens?: number;
+          readonly cacheTotalInputTokens?: number;
+          readonly hitRate?: number | null;
+        };
+      }
+    ).getSessionCacheMetrics?.();
+    return {
+      requestCount: finiteNumber(metrics?.requestCount ?? 0),
+      cacheReadInputTokens: finiteNumber(metrics?.cacheReadInputTokens ?? 0),
+      cacheCreationInputTokens: finiteNumber(
+        metrics?.cacheCreationInputTokens ?? 0,
+      ),
+      cacheTotalInputTokens: finiteNumber(metrics?.cacheTotalInputTokens ?? 0),
+      hitRate:
+        metrics?.hitRate === null || metrics?.hitRate === undefined
+          ? null
+          : finiteNumber(metrics.hitRate),
+    };
   }
 
   async partialCompactFromMessage(

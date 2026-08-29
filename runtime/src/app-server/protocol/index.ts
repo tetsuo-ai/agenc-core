@@ -2988,6 +2988,37 @@ export interface SessionSnapshotResult extends JsonObject {
     readonly totalTokens: number;
     readonly costUsd: number;
   };
+  /** Cumulative cache metrics across API calls this session. */
+  readonly cacheStats: {
+    readonly requestCount: number;
+    readonly cacheReadInputTokens: number;
+    readonly cacheCreationInputTokens: number;
+    readonly cacheTotalInputTokens: number;
+    readonly hitRate: number | null;
+  };
+  /**
+   * What actually occupies the context window, by source. A client can
+   * only estimate the conversation; the tool schemas, MCP catalog and
+   * memory files are the daemon's own and were invisible from outside,
+   * which is why a UI showing them had to make numbers up.
+   */
+  readonly contextBreakdown?: {
+    /** The model's real window, so shares are against the truth. */
+    readonly windowTokens: number;
+    readonly messageTokens: number;
+    readonly systemPromptTokens: number;
+    /** Always-loaded built-in tool schemas. */
+    readonly systemToolTokens: number;
+    readonly systemToolCount: number;
+    /** Tool schemas served by MCP servers. */
+    readonly mcpToolTokens: number;
+    readonly mcpToolCount: number;
+    /** Schemas the model can search for but that are not resident. */
+    readonly deferredToolTokens: number;
+    readonly deferredToolCount: number;
+    readonly memoryFileTokens: number;
+    readonly memoryFileCount: number;
+  };
 }
 
 export interface SessionTranscriptParams extends JsonObject {
