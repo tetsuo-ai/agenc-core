@@ -141,6 +141,22 @@ function assertNotAborting(): void {
   }
 }
 
+/**
+ * Creates that passed the shutdown check and have not settled. A create is
+ * registered synchronously, before its first docker call, so a sweep that
+ * starts afterwards can wait for it and then remove what it made.
+ */
+const inFlightCreates = new Set<Promise<unknown>>();
+
+function trackInFlight<T>(work: Promise<T>): Promise<T> {
+  inFlightCreates.add(work);
+  const settle = (): void => {
+    inFlightCreates.delete(work);
+  };
+  void work.then(settle, settle);
+  return work;
+}
+
 export class DockerContainerRunner implements ContainerRunner {
   /** Containers this runner created and has not yet removed. */
   private readonly liveContainers = new Set<string>();
@@ -175,10 +191,14 @@ export class DockerContainerRunner implements ContainerRunner {
    */
   static async abortAll(): Promise<void> {
     aborting = true;
-    for (let pass = 0; pass < 2; pass += 1) {
-      for (const runner of activeRunners) {
-        await runner.abortLive();
-      }
+    for (const runner of activeRunners) {
+      await runner.abortLive();
+    }
+    // A create that passed the shutdown check before the flag was set may
+    // still be issuing docker calls; wait for it, then sweep what it made.
+    await Promise.allSettled([...inFlightCreates]);
+    for (const runner of activeRunners) {
+      await runner.abortLive();
     }
   }
 
@@ -209,6 +229,13 @@ export class DockerContainerRunner implements ContainerRunner {
   async createTaskContainer(
     imageReference: string,
     options: CreateTaskContainerOptions = {},
+  ): Promise<ContainerHandle> {
+    return trackInFlight(this.createTaskContainerNow(imageReference, options));
+  }
+
+  private async createTaskContainerNow(
+    imageReference: string,
+    options: CreateTaskContainerOptions,
   ): Promise<ContainerHandle> {
     assertNotAborting();
     const { dockerReference, imageDigest } = this.resolveImageRef(imageReference);
@@ -295,6 +322,10 @@ export class DockerContainerRunner implements ContainerRunner {
   }
 
   async createAuxiliaryContainer(imageReference: string): Promise<ContainerHandle> {
+    return trackInFlight(this.createAuxiliaryContainerNow(imageReference));
+  }
+
+  private async createAuxiliaryContainerNow(imageReference: string): Promise<ContainerHandle> {
     assertNotAborting();
     const { dockerReference, imageDigest } = this.resolveImageRef(imageReference);
     const created = await spawnBounded(
@@ -330,6 +361,10 @@ export class DockerContainerRunner implements ContainerRunner {
    * `teardown()` in a finally.
    */
   async createEgressLane(request: EgressLaneRequest): Promise<EgressLane> {
+    return trackInFlight(this.createEgressLaneNow(request));
+  }
+
+  private async createEgressLaneNow(request: EgressLaneRequest): Promise<EgressLane> {
     assertNotAborting();
     const { dockerReference, imageDigest } = this.resolveImageRef(request.taskImage);
     const overlayHostDir = request.overlayHostDir;

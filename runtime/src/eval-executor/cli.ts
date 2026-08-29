@@ -595,8 +595,8 @@ export function isDirectInvocation(
 /**
  * Containers and networks are normally removed by the finally blocks in the
  * run paths. A termination signal would skip those, so remove everything this
- * process created before exiting with the conventional signal status. The
- * handlers are one-shot: a second signal falls back to Node's default.
+ * process created before exiting with the conventional signal status. A
+ * second signal of either kind exits immediately without a second sweep.
  */
 function installSignalCleanup(): void {
   let cleanupStarted = false;
