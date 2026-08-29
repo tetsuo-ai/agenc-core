@@ -106,6 +106,7 @@ Thumbs.db
 
 # Node
 node_modules/
+node_modules
 
 # Build artifacts (all packages)
 dist/
