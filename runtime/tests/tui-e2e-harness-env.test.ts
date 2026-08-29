@@ -206,6 +206,7 @@ describe("TUI E2E harness state isolation", () => {
       AGENC_ONBOARDING: "force",
       NODE_OPTIONS: "--inspect=9229",
       OPENAI_API_KEY: "operator-secret",
+      ProgramData: "C:\\ProgramData",
     });
 
     expect(env).toMatchObject({
@@ -217,6 +218,7 @@ describe("TUI E2E harness state isolation", () => {
       GIT_OPTIONAL_LOCKS: "0",
       GIT_TERMINAL_PROMPT: "0",
       NODE_OPTIONS: "",
+      ProgramData: "/private/gate/ProgramData",
     });
     expect(env.OPENAI_API_KEY).toBeUndefined();
   });

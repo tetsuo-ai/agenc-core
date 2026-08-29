@@ -122,6 +122,7 @@ test("startup PTYs replace poisoned operator roots with private gate state", () 
     OPENAI_COMPATIBLE_API_KEY: "operator-compatible-secret",
     OPENAI_COMPATIBLE_BASE_URL: "https://operator.invalid/v1",
     PATH: process.env.PATH ?? "/usr/bin:/bin",
+    ProgramData: path.join(operatorRoot, "ProgramData"),
     TMPDIR: path.join(operatorRoot, "tmp"),
     XDG_CONFIG_HOME: path.join(operatorRoot, "xdg"),
   });
@@ -129,6 +130,10 @@ test("startup PTYs replace poisoned operator roots with private gate state", () 
   assert.equal(env.HOME, path.resolve(privateHome));
   assert.equal(env.AGENC_HOME, path.join(path.resolve(privateHome), ".agenc"));
   assert.equal(env.TMPDIR, path.join(path.resolve(privateHome), "tmp"));
+  assert.equal(
+    env.ProgramData,
+    path.join(path.resolve(privateHome), "ProgramData"),
+  );
   assert.equal(env.XDG_CONFIG_HOME, path.join(path.resolve(privateHome), ".config"));
   assert.equal(env.AGENC_AUTH_BACKEND, "local");
   assert.equal(env.AGENC_DAEMON_WEBSOCKET_HOST, "127.0.0.1");
