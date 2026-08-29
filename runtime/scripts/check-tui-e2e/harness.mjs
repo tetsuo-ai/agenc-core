@@ -896,7 +896,17 @@ export class TuiSession {
       }
       await sleep(100);
     }
-    throw new Error(`${waitLabel}: timeout after ${timeout}ms`);
+    let startupTrace = "unavailable";
+    const tracePath = this.runtimeEnv?.TUI_E2E_STARTUP_TRACE;
+    if (tracePath !== undefined) {
+      try {
+        const trace = await readFile(tracePath, "utf8");
+        startupTrace = trace.slice(0, 16 * 1024).trim() || "empty";
+      } catch {}
+    }
+    throw new Error(
+      `${waitLabel}: timeout after ${timeout}ms; startup trace: ${startupTrace}`,
+    );
   }
 
   /**

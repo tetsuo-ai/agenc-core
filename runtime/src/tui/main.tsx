@@ -21,6 +21,7 @@ import { FpsTracker } from "../utils/fpsTracker.js";
 import { recordTuiBackpressure } from "./backpressure.js";
 import { setIsInteractive } from "../bootstrap/state.js";
 import { TuiTeardownBarrier } from "./teardownBarrier.js";
+import { traceTuiStartupPhase } from "../utils/tuiStartupTrace.js";
 
 export interface StdinLossSession extends AgenCBridgeSession {
   readonly abortTerminal?: (reason: string) => void;
@@ -182,10 +183,12 @@ export async function handleStdinLoss(
 }
 
 export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
+  traceTuiStartupPhase("boot-entered");
   const stdin = options.stdin ?? process.stdin;
   const stdout = options.stdout ?? process.stdout;
   const stderr = options.stderr ?? process.stderr;
   const releaseStartupRawMode = claimStartupRawMode(stdin);
+  traceTuiStartupPhase("raw-mode-claimed");
   const teardownBarrier = new TuiTeardownBarrier();
   const unsubscribeExit = onExit(() => {
     restoreTerminal(stdout);
@@ -195,6 +198,7 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
   const onStdinLoss = (): void => {
     if (firedStdinLoss) return;
     firedStdinLoss = true;
+    traceTuiStartupPhase("stdin-loss");
     void handleStdinLoss(
       options.session,
       () => {
@@ -217,6 +221,7 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
     // keeps its `isInteractive: false` default forever and the TodoV2 task
     // list silently never renders in the real TUI.
     setIsInteractive(stdin.isTTY === true);
+    traceTuiStartupPhase("ink-render-start");
     instance = await renderInk(
       <AgenCTuiApp
         session={options.session}
@@ -247,7 +252,9 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
         },
       },
     );
+    traceTuiStartupPhase("ink-render-ready");
   } catch (err) {
+    traceTuiStartupPhase("ink-render-failed", err);
     releaseStartupRawMode?.();
     stdin.removeListener("close", onStdinLoss);
     stdin.removeListener("end", onStdinLoss);
@@ -268,7 +275,9 @@ export async function bootTUI(options: BootTUIOptions): Promise<BootTUIHandle> {
       if (waitPromise === null) {
         waitPromise = (async () => {
           try {
+            traceTuiStartupPhase("ink-wait-start");
             await instance.waitUntilExit();
+            traceTuiStartupPhase("ink-wait-complete");
             await teardownBarrier.drain();
           } finally {
             stdin.removeListener("close", onStdinLoss);
