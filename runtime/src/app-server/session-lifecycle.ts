@@ -256,8 +256,8 @@ export class AgenCDaemonSessionManager {
         // first page saw only ancient sessions, so "resume yesterday's chat"
         // listed nothing from today.
         .sort((left, right) =>
-          (right.lastActiveAt ?? right.createdAt).localeCompare(
-            left.lastActiveAt ?? left.createdAt,
+          String(right.lastActiveAt ?? right.createdAt).localeCompare(
+            String(left.lastActiveAt ?? left.createdAt),
           ),
         ),
       knownSessionIds: new Set(state.sessions.keys()),

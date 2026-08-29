@@ -134,7 +134,6 @@ describe("AgenC daemon session lifecycle", () => {
           agentId: "agent_1",
           status: "idle",
           createdAt: "2026-05-01T10:02:00.000Z",
-          lastActiveAt: "2026-05-01T10:02:00.000Z",
           cwd: thirdAgentCwd,
         },
       ],
