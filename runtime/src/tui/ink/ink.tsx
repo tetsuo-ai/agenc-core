@@ -1540,8 +1540,12 @@ export default class Ink {
         </TerminalWriteProvider>
       </App>;
 
+    traceTuiStartupPhase('reconciler-update-start');
     reconciler.updateContainerSync(tree, this.container, null, noop);
+    traceTuiStartupPhase('reconciler-update-ready');
+    traceTuiStartupPhase('reconciler-flush-start');
     reconciler.flushSyncWork();
+    traceTuiStartupPhase('reconciler-flush-ready');
     logForDebugging('[Ink:render] updateContainer complete');
   }
   unmount(error?: Error | number | null): void {
