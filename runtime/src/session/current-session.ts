@@ -16,6 +16,18 @@ let currentRuntimeSession: Session | null = null;
  */
 const trackedFallbackSessions = new Set<Session>();
 
+/**
+ * Marks the async span of a bootstrap that has not created its session
+ * yet. Inside it, an ambient-session read legitimately means "this
+ * chain has no session" — construction code (tool registries, env
+ * defaults) must fall back to startup authority, never guess between
+ * OTHER sessions that happen to be live in the daemon. Outside it, an
+ * ambiguous unscoped read is still a hard error: silently picking a
+ * session there could hand one session's turn another session's
+ * provider credentials.
+ */
+const bootstrapWithoutSessionScope = new AsyncLocalStorage<true>();
+
 /** Return only the session bound to the current async execution context. */
 export function peekScopedRuntimeSession(): Session | null {
   return scopedRuntimeSession.getStore() ?? null;
@@ -30,6 +42,11 @@ export function getCurrentRuntimeSession(): Session | null {
   const scoped = scopedRuntimeSession.getStore();
   if (scoped !== undefined) return scoped;
   if (trackedFallbackSessions.size > 1) {
+    // A bootstrap that has not created its session yet has a defined
+    // answer — "none" — regardless of how many OTHER sessions are
+    // live. Falling through to null routes construction-time reads to
+    // startup authority instead of a guess.
+    if (bootstrapWithoutSessionScope.getStore() === true) return null;
     throw new Error(
       `Ambiguous runtime session: ${trackedFallbackSessions.size} sessions are ` +
         "bootstrapped in this process and no session is bound to the current " +
@@ -96,4 +113,15 @@ export function runWithCurrentRuntimeSession<T>(
  */
 export function enterCurrentRuntimeSessionScope(session: Session): void {
   scopedRuntimeSession.enterWith(session);
+}
+
+/**
+ * Run `fn` marked as a pre-session bootstrap span: ambient-session
+ * reads inside it resolve to "none" instead of throwing when other
+ * sessions are live. Once the bootstrap creates its session it binds
+ * it with {@link enterCurrentRuntimeSessionScope}, which wins over
+ * this marker for the rest of the chain.
+ */
+export function runWithBootstrapSessionScope<T>(fn: () => T): T {
+  return bootstrapWithoutSessionScope.run(true, fn);
 }

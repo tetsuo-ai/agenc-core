@@ -72,7 +72,10 @@ import {
   DEFAULT_MODEL_COSTS,
   type ModelUsage,
 } from "../session/cost.js";
-import { runWithCurrentRuntimeSession } from "../session/current-session.js";
+import {
+  runWithBootstrapSessionScope,
+  runWithCurrentRuntimeSession,
+} from "../session/current-session.js";
 import { runWithCanonicalSettingsAuthority } from "../utils/settings/canonicalAuthority.js";
 import { resolveDefaultShell } from "../utils/shell/resolveDefaultShell.js";
 import { escapeXml } from "../utils/xml.js";
@@ -1179,7 +1182,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
     const bootstrap = await runWithAgentRuntimeOptions(
       params.runtimeOptions,
       () =>
-        this.#bootstrap({
+        runWithBootstrapSessionScope(() =>
+          this.#bootstrap({
       ...(mergedEnv !== undefined ? { env: mergedEnv } : {}),
       ...(this.#authBackend !== undefined
         ? { authBackend: this.#authBackend }
@@ -1206,7 +1210,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
       ...(this.#csvAgentJobsRepositories !== undefined
         ? { csvAgentJobsRepositories: this.#csvAgentJobsRepositories }
         : {}),
-        }),
+          }),
+        ),
     );
     const uninstallApprovalBridge = this.#installDaemonApprovalBridge(
       bootstrap.session,
@@ -1621,7 +1626,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
         bootstrap = await runWithAgentRuntimeOptions(
           params.runtimeOptions,
           () =>
-            this.#bootstrap({
+            runWithBootstrapSessionScope(() =>
+              this.#bootstrap({
           ...(mergedEnv !== undefined ? { env: mergedEnv } : {}),
           ...(this.#authBackend !== undefined
             ? { authBackend: this.#authBackend }
@@ -1673,7 +1679,8 @@ export class AgenCDelegateBackgroundAgentRunner implements AgenCBackgroundAgentR
           ...(this.#csvAgentJobsRepositories !== undefined
             ? { csvAgentJobsRepositories: this.#csvAgentJobsRepositories }
             : {}),
-            }),
+              }),
+            ),
         );
         uninstallApprovalBridge = this.#installDaemonApprovalBridge(
           bootstrap.session,

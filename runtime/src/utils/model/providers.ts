@@ -2,7 +2,7 @@ import {
   REGISTERED_MODEL_CATALOG,
   resolveRegisteredModelCatalogEntry,
 } from '../../llm/registry/model-catalog.js'
-import { peekAmbientRuntimeSession } from '../../session/current-session.js'
+import { getCurrentRuntimeSession } from '../../session/current-session.js'
 import { normalizeProviderIdentity } from '../../provider-identity.js'
 import {
   snapshotProviderEnvironment,
@@ -81,12 +81,7 @@ function freezeSelection(
 }
 
 function sessionSelection(): ProviderRuntimeSelection | undefined {
-  // Best-effort by contract: callers fall back to the startup snapshot
-  // when no session answers. In a multi-session daemon an unscoped read
-  // is ambiguous, and for THIS consumer ambiguity means the same thing
-  // as absence — tool-registry construction and env defaults must use
-  // the startup selection, never a guess between live sessions.
-  const session = peekAmbientRuntimeSession()
+  const session = getCurrentRuntimeSession()
   if (session === null) return undefined
   const providerService = session.services.providerService
   const binding = providerService?.current()
