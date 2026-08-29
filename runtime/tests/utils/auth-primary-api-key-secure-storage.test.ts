@@ -90,6 +90,24 @@ afterEach(() => {
 })
 
 describe('primary API-key native storage', () => {
+  test.each(['test', 'production'] as const)(
+    'does not read Anthropic credentials for an external provider in %s mode',
+    async nodeEnv => {
+      process.env.NODE_ENV = nodeEnv
+      const { isAnthropicAuthEnabledForContext } = await loadAuthModule()
+      const boundHome = resolveHomeContext({ AGENC_HOME: home })
+
+      expect(
+        isAnthropicAuthEnabledForContext({
+          home: boundHome,
+          environment: {},
+          provider: 'openai-compatible',
+        }),
+      ).toBe(false)
+      expect(storageCalls).toBe(0)
+    },
+  )
+
   test('bare mode keeps the canonical saved credential authority', async () => {
     storedData.primaryApiKey = 'stored-bare-key'
     vi.doMock(ENV_UTILS_MODULE, async importOriginal => {

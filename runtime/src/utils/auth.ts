@@ -116,6 +116,7 @@ export function isAnthropicAuthEnabledForContext(
   }
 
   const is3P = selectedProviderUsesExternalAuth(context.provider)
+  if (is3P) return false
 
   // Check if user has configured an external API key source
   // This allows externally-provided API keys to work (without requiring proxy configuration)
@@ -138,14 +139,12 @@ export function isAnthropicAuthEnabledForContext(
     apiKeySource === 'ANTHROPIC_API_KEY'
 
   // Disable provider auth if:
-  // 1. Using 3rd party services (Bedrock/Vertex/Foundry)
-  // 2. User has an external API key (regardless of proxy configuration)
-  // 3. User has an external auth token (regardless of proxy configuration)
+  // 1. User has an external API key (regardless of proxy configuration)
+  // 2. User has an external auth token (regardless of proxy configuration)
   // this may cause issues if users have complex proxy / gateway "client-side creds" auth scenarios,
   // e.g. if they want to set X-Api-Key to a gateway key but use provider OAuth for the Authorization
   // if we get reports of that, we should probably add an env var to force OAuth enablement
   const shouldDisableAuth =
-    is3P ||
     (hasExternalAuthToken && !isManagedOAuthContext(environment)) ||
     (hasExternalApiKey && !isManagedOAuthContext(environment))
 
