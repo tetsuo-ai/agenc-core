@@ -2421,15 +2421,19 @@ export function getTuiProviderEnvironment(
 function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   traceTuiStartupPhase("tui-shell-component");
   const { exit } = useApp();
+  traceTuiStartupPhase("tui-shell-early-1");
   const settings = useSettings();
+  traceTuiStartupPhase("tui-shell-early-2");
   useEffect(() => {
     traceTuiStartupPhase("shell-passive-effect");
   });
   const configStore = getTuiConfigStore(props.session);
   const stateRepository = configStore.stateRepository;
+  traceTuiStartupPhase("tui-shell-early-3");
   const getFpsMetrics = useFpsMetrics();
   useCostSummary(getFpsMetrics);
   const renderHealthWarning = formatRenderHealthWarning(getFpsMetrics?.());
+  traceTuiStartupPhase("tui-shell-early-4");
   const backpressureSnapshot = useSyncExternalStore(
     subscribeTuiBackpressure,
     getTuiBackpressureSnapshot,
@@ -2437,20 +2441,25 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   );
   const backpressureWarning =
     formatTuiBackpressureWarning(backpressureSnapshot);
+  traceTuiStartupPhase("tui-shell-early-5");
   const { addNotification } = useNotifications();
+  traceTuiStartupPhase("tui-shell-early-6");
   const remoteAuthSessionContext = useMemo(
     () => getTuiRemoteAuthSessionReadContext(props.session),
     [props.session],
   );
+  traceTuiStartupPhase("tui-shell-early-7");
   const { status: apiKeyStatus, reverify } = useApiKeyVerification(
     remoteAuthSessionContext,
     configStore.current(),
   );
+  traceTuiStartupPhase("tui-shell-early-8");
   useEffect(() => {
     void reverify();
   }, [reverify]);
   const [completionPipelineState, setCompletionPipelineState] =
     useState<CompletionPipelineState>(() => readCompletionPipelineState());
+  traceTuiStartupPhase("tui-shell-early-9");
   const completionPipelineActive = completionPipelineOwnsPrompt(
     completionPipelineState,
   );
@@ -2499,7 +2508,7 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const completionPipelineRows = formatCompletionPipelineRows(
     completionPipelineState,
   );
-  traceTuiStartupPhase("tui-shell-stage-1");
+  traceTuiStartupPhase("tui-shell-early-10");
   const scrollRef = useRef<ScrollBoxHandle | null>(null);
   const editorPanelScrollRef = useRef<ScrollBoxHandle | null>(null);
   const modalScrollRef = useRef<ScrollBoxHandle | null>(null);
@@ -2649,7 +2658,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       : null);
   const latestWorkbenchStateRef = useRef(workbenchState);
   latestWorkbenchStateRef.current = workbenchState;
-  traceTuiStartupPhase("tui-shell-stage-2");
   useEffect(() => {
     if (!workbenchEnabled || process.env.NODE_ENV === "test") return;
     const timer = setTimeout(() => {
@@ -3077,7 +3085,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   );
   const [toolPermissionContext, setToolPermissionContext] =
     useSyncedPermissionContext(props.session);
-  traceTuiStartupPhase("tui-shell-stage-3");
   const [config, setConfig] = useState<AgenCConfig>(
     () => configStore.current(),
   );
@@ -4451,7 +4458,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     props.shouldPreserveEditorRecoveryOnTeardown,
     workbenchEnabled,
   ]);
-  traceTuiStartupPhase("tui-shell-stage-4");
   const onboardingContext = useMemo(
     () => ({
       agencHome,
@@ -4776,7 +4782,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     );
     return [...builtinTuiCommands, ...extras];
   }, [builtinTuiCommands, dynamicTuiCommands]);
-  traceTuiStartupPhase("tui-shell-stage-5");
   const agents = useAppState((state) => state.agentDefinitions.activeAgents);
   const appTasks = useAppState((s) => s.tasks);
   const hasActiveLocalAgents = getActiveLocalAgentTasks(appTasks).length > 0;
@@ -6056,7 +6061,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
       commandQueueOwner,
     ],
   );
-  traceTuiStartupPhase("tui-shell-stage-6");
   const handleEditorInteraction = useCallback(
     (intent: BufferIntegrationIntent): void => {
       const editorInteraction = sessionEditorInteractionFromIntent(
@@ -6400,7 +6404,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     mcpClients,
     mcpServers: mcpSurface.servers,
   });
-  traceTuiStartupPhase("tui-shell-stage-7");
   const title = useMemo(() => terminalTitle(props), [props]);
   const titleIsAnimating =
     transcript.isStreaming &&
@@ -6896,7 +6899,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // model is still working — the user wants feedback during those
   // gaps, not a blank screen.
   //
-  traceTuiStartupPhase("tui-shell-stage-8");
   const inProgressToolCount = transcript.inProgressToolUseIDs.size;
   const isStreamingToolInput =
     transcript.streamingToolUses.length > 0 && inProgressToolCount === 0;
@@ -7082,7 +7084,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const inlineToolJSX =
     toolJSX !== null && !toolOwnsPrompt ? toolJSX.jsx : null;
   const modalToolJSX = toolOwnsPrompt ? toolJSX.jsx : null;
-  traceTuiStartupPhase("tui-shell-stage-9");
   const scrollableContent = (
     <>
       {messagesElement}
@@ -7287,7 +7288,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   // breaks the flex chain — the inner Box collapses to its intrinsic content
   // size and the bottom slot has 0 height. KeybindingSetup must remain a
   // context provider, not a Box.
-  traceTuiStartupPhase("tui-shell-stage-10");
   const body = (
     <>
       <AnimatedTerminalTitle isAnimating={titleIsAnimating} title={title} />
