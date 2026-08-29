@@ -21,6 +21,7 @@ import { describe, expect, it } from "vitest";
 
 import { getAllBaseTools } from "../src/tools.js";
 import { buildToolRegistry } from "../src/tool-registry.js";
+import { SYSTEM_SEARCH_TOOLS_NAME } from "../src/tools/system/tool-search-name.js";
 import { runWithStartupProviderSelection } from "../src/utils/model/providers.js";
 
 // getAllBaseTools lazy-requires SendMessageTool by its emitted .js path
@@ -197,8 +198,15 @@ describe("tool catalog divergence guard", () => {
       "Snip",
       "ListPeers",
       "Workflow",
+      "ToolSearch",
     ]) {
       expect(legacyByName.has(retired)).toBe(false);
     }
+  });
+
+  it("keeps discovery exclusively in the canonical session registry", () => {
+    expect(liveByName.has(SYSTEM_SEARCH_TOOLS_NAME)).toBe(true);
+    expect(legacyByName.has(SYSTEM_SEARCH_TOOLS_NAME)).toBe(false);
+    expect(legacyByName.has("ToolSearch")).toBe(false);
   });
 });

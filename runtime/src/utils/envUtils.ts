@@ -109,15 +109,6 @@ export function parseEnvVars(
 }
 
 /**
- * Get the default Vertex AI region
- */
-export function getDefaultVertexRegion(
-  env: Readonly<Record<string, string | undefined>>,
-): string {
-  return env.CLOUD_ML_REGION || 'us-east5'
-}
-
-/**
  * Check if bash commands should maintain project working directory (reset to original after each command)
  * @returns true if AGENC_BASH_MAINTAIN_PROJECT_WORKING_DIR is set to a truthy value
  */
@@ -153,41 +144,4 @@ export function isInProtectedNamespace(): boolean {
   // removed in the lean build. Always report false here so the bundler
   // does not try to resolve a deleted module path.
   return false
-}
-
-// @[MODEL LAUNCH]: Add a Vertex region override env var for the new model.
-/**
- * Model prefix → env var for Vertex region overrides.
- * Order matters: more specific prefixes must come before less specific ones
- * (e.g., 'claude-opus-4-1' before 'claude-opus-4').
- */
-const VERTEX_REGION_OVERRIDES: ReadonlyArray<[string, string]> = [
-  ['claude-haiku-4-5', 'VERTEX_REGION_CLAUDE_HAIKU_4_5'],
-  ['claude-3-5-haiku', 'VERTEX_REGION_CLAUDE_3_5_HAIKU'],
-  ['claude-3-5-sonnet', 'VERTEX_REGION_CLAUDE_3_5_SONNET'],
-  ['claude-3-7-sonnet', 'VERTEX_REGION_CLAUDE_3_7_SONNET'],
-  ['claude-opus-4-1', 'VERTEX_REGION_CLAUDE_4_1_OPUS'],
-  ['claude-opus-4', 'VERTEX_REGION_CLAUDE_4_0_OPUS'],
-  ['claude-sonnet-4-6', 'VERTEX_REGION_CLAUDE_4_6_SONNET'],
-  ['claude-sonnet-4-5', 'VERTEX_REGION_CLAUDE_4_5_SONNET'],
-  ['claude-sonnet-4', 'VERTEX_REGION_CLAUDE_4_0_SONNET'],
-]
-
-/**
- * Get the Vertex AI region for a specific model.
- * Different models may be available in different regions.
- */
-export function getVertexRegionForModel(
-  model: string | undefined,
-  env: Readonly<Record<string, string | undefined>>,
-): string | undefined {
-  if (model) {
-    const match = VERTEX_REGION_OVERRIDES.find(([prefix]) =>
-      model.startsWith(prefix),
-    )
-    if (match) {
-      return env[match[1]] || getDefaultVertexRegion(env)
-    }
-  }
-  return getDefaultVertexRegion(env)
 }

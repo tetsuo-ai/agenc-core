@@ -737,6 +737,20 @@ describe("provider authority architecture", () => {
       "AGENC_HOME",
       "AGENC_CONFIG_DIR",
       "AGENC_WORKSPACE",
+      "AGENC_DISABLE_EXPERIMENTAL_BETAS",
+      "AGENC_SKIP_FAST_MODE_NETWORK_ERRORS",
+      "AGENC_SKIP_FOUNDRY_AUTH",
+      "AGENC_SKIP_VERTEX_AUTH",
+      "ANTHROPIC_BETAS",
+      "ANTHROPIC_FOUNDRY_API_KEY",
+      "ANTHROPIC_FOUNDRY_BASE_URL",
+      "ANTHROPIC_FOUNDRY_RESOURCE",
+      "ANTHROPIC_VERTEX_BASE_URL",
+      "ANTHROPIC_VERTEX_PROJECT_ID",
+      "CLOUD_ML_REGION",
+      "GOOGLE_CLOUD_REGION",
+      "USE_API_CONTEXT_MANAGEMENT",
+      "VERTEX_BASE_URL",
     ]) {
       expect(capturedKeys).not.toContain(forbidden);
     }
@@ -747,7 +761,6 @@ describe("provider authority architecture", () => {
     expect(capturedKeys).toContain("AGENC_ONBOARDING");
     expect(capturedKeys).toContain("AGENC_DISABLE_1M_CONTEXT");
     expect(capturedKeys).toContain("AGENC_DISABLE_FAST_MODE");
-    expect(capturedKeys).toContain("AGENC_SKIP_FAST_MODE_NETWORK_ERRORS");
 
     const fastModeSource = readFileSync(`${SRC}/utils/fastMode.ts`, "utf8");
     expect(fastModeSource).not.toContain("process.env");

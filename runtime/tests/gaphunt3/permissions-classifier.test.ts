@@ -90,7 +90,7 @@ describe("gaphunt3 #9 — WebFetch/WebSearch are not auto-mode allowlisted", () 
     // The change is surgical: other safe tools remain allowlisted.
     expect(all).toContain("Grep");
     expect(all).toContain("Glob");
-    expect(all).toContain("ToolSearch");
+    expect(all).toContain("system.searchTools");
     expect(all).toContain("FileRead");
   });
 

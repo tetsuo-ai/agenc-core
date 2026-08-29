@@ -472,18 +472,6 @@ export type Tool<
   isMcp?: boolean;
   isLsp?: boolean;
   /**
-   * When true, this tool is deferred (sent with defer_loading: true) and requires
-   * system.searchTools to be used before it can be called.
-   */
-  readonly shouldDefer?: boolean;
-  /**
-   * When true, this tool is never deferred — its full schema appears in the
-   * initial prompt even when discovery is enabled. For MCP tools, set via
-   * `_meta['anthropic/alwaysLoad']`. Use for tools the model must see on
-   * turn 1 without a discovery round trip.
-   */
-  readonly alwaysLoad?: boolean;
-  /**
    * For MCP tools: the server and tool names as received from the MCP server (unnormalized).
    * Present on all MCP tools regardless of whether `name` is prefixed (mcp__server__tool)
    * Permission checks use this canonical identity independently of display metadata.

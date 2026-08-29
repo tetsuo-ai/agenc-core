@@ -44,7 +44,6 @@ export const TaskStopTool = buildTool({
   get outputSchema(): OutputSchema {
     return outputSchema()
   },
-  shouldDefer: true,
   isConcurrencySafe() {
     return true
   },

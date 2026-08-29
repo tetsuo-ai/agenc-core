@@ -162,7 +162,7 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
           ? "\n\nMCP tools are now callable as tool functions. If the user asked for one, call the MCP tool directly next. Do not use exec_command, Skill, echo, or shell/script placeholders as notes to yourself."
           : "";
         parts.push(
-          `The following deferred tools are now available via ToolSearch:\n${addedLines.join("\n")}${mcpReminder}`,
+          `The following deferred tools are now available via system.searchTools:\n${addedLines.join("\n")}${mcpReminder}`,
         );
       }
       if (attachment.removedNames.length > 0) {
@@ -170,7 +170,7 @@ function renderAttachment(attachment: Attachment): LLMMessage | null {
           sanitizeSystemReminderContent,
         );
         parts.push(
-          `The following deferred tools are no longer available (their MCP server disconnected). Do not search for them -- ToolSearch will return no match:\n${removedNames.join("\n")}`,
+          `The following deferred tools are no longer available (their MCP server disconnected). Do not search for them -- system.searchTools will return no match:\n${removedNames.join("\n")}`,
         );
       }
       if (parts.length === 0) return null;

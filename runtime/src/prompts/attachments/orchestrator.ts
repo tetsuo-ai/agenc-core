@@ -97,7 +97,7 @@ export interface GetAttachmentsOptions {
    * visible catalog) via `system.searchTools` so far this session. Drives
    * the deferred-tools delta producer's diff. Optional — when omitted,
    * the producer treats the discovered set as empty (matches AgenC
-   * bootstraps with no ToolSearch tool registered).
+   * bootstraps with no discovery tool registered).
    *
    * Sourced at the call site from
    * `session.services.registry.getDiscoveredToolNames?.() ?? new Set()`.

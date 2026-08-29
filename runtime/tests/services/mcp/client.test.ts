@@ -290,7 +290,6 @@ test('fetchToolsForClient maps MCP tool metadata onto runtime tools', async () =
           },
           _meta: {
             'anthropic/searchHint': '  find\nissues\tquickly  ',
-            'anthropic/alwaysLoad': true,
           },
         },
       ],
@@ -305,7 +304,6 @@ test('fetchToolsForClient maps MCP tool metadata onto runtime tools', async () =
   assert.deepEqual(tool.mcpInfo, { serverName: 'jira', toolName: 'search' })
   assert.equal(tool.isMcp, true)
   assert.equal(tool.searchHint, 'find issues quickly')
-  assert.equal(tool.alwaysLoad, true)
   assert.match(
     await tool.description(),
     /^Untrusted MCP server-provided description:/,

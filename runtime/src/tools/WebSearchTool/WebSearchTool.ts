@@ -325,7 +325,6 @@ export const WebSearchTool = buildTool({
   name: WEB_SEARCH_TOOL_NAME,
   searchHint: 'search the web for current information',
   maxResultSizeChars: 100_000,
-  shouldDefer: true,
   async description(input) {
     return `AgenC wants to search the web for: ${input.query}`
   },

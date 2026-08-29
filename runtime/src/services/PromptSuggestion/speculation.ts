@@ -1,12 +1,4 @@
-/**
- * Ports source-reference `src/services/PromptSuggestion/speculation.ts` onto
- * AgenC's speculative prompt-followup runtime.
- *
- * Shape differences:
- *   - Uses AgenC temp-directory helpers and live TUI AppState types.
- *   - Keeps the source overlay/copy-on-write control flow so accepting a
- *     suggestion can inject already-completed speculative turns.
- */
+/** Speculative prompt follow-up runtime with overlay isolation. */
 
 import { randomUUID } from 'crypto'
 import { rmSync } from 'fs'
@@ -54,6 +46,7 @@ import {
 } from './promptSuggestion.js'
 import { resolveSessionTempRoot } from '../../session/runtime-options.js'
 import { recordSpeculationAccept } from '../../utils/sessionStorage.js'
+import { SYSTEM_SEARCH_TOOLS_NAME } from '../../tools/system/tool-search-name.js'
 
 const MAX_SPECULATION_TURNS = 20
 const MAX_SPECULATION_MESSAGES = 100
@@ -63,7 +56,7 @@ const SAFE_READ_ONLY_TOOLS = new Set([
   'FileRead',
   'Glob',
   'Grep',
-  'ToolSearch',
+  SYSTEM_SEARCH_TOOLS_NAME,
   'LSP',
   'TaskGet',
   'TaskList',

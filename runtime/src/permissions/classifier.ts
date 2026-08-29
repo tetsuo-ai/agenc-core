@@ -44,6 +44,7 @@ import type { ToolPermissionContext } from "./types.js";
 import { peekAmbientRuntimeSession } from "../session/current-session.js";
 import type { Session } from "../session/session.js";
 import { runAdmittedModelCall } from "../budget/admitted-model-call.js";
+import { SYSTEM_SEARCH_TOOLS_NAME } from "../tools/system/tool-search-name.js";
 import {
   LIST_MCP_RESOURCES_TOOL_NAME,
   READ_MCP_RESOURCE_TOOL_NAME,
@@ -78,7 +79,7 @@ const SAFE_YOLO_ALLOWLISTED_TOOLS: ReadonlySet<string> = Object.freeze(
     "Glob",
     "Orient",
     "LSP",
-    "ToolSearch",
+    SYSTEM_SEARCH_TOOLS_NAME,
     // gaphunt3 #9: web_fetch/WebSearch removed from the safe allowlist. They
     // ingest attacker-controllable external content (the canonical indirect
     // prompt-injection / data-exfil-via-URL vector), so auto mode must route

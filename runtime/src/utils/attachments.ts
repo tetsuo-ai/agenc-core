@@ -1,7 +1,6 @@
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
 import {
   toolMatchesName,
-  type Tools,
   type ToolUseContext,
   type ToolPermissionContext,
 } from '../tools/Tool.js'
@@ -123,7 +122,6 @@ import type { TaskType, TaskStatus } from '../tasks/Task.js'
 import {
   getOriginalCwd,
   getSessionId,
-  getSdkBetas,
   getTotalCostUSD,
   getTotalOutputTokens,
   getCurrentTurnTokenBudget,
@@ -140,20 +138,9 @@ import {
 } from '../bootstrap/state.js'
 import type { QuerySource } from '../constants/querySource.js'
 import {
-  getDeferredToolsDelta,
-  isDeferredToolsDeltaEnabled,
-  isToolSearchEnabledOptimistic,
-  isToolSearchToolAvailable,
-  modelSupportsToolReference,
-  type DeferredToolsDeltaScanContext,
-} from './toolSearch.js'
-import {
   getMcpInstructionsDelta,
   isMcpInstructionsDeltaEnabled,
-  type ClientSideInstruction,
 } from './mcpInstructionsDelta.js'
-import { AGENC_IN_CHROME_MCP_SERVER_NAME } from './agencInChrome/common.js'
-import { CHROME_TOOL_SEARCH_INSTRUCTIONS } from './agencInChrome/prompt.js'
 import type { MCPServerConnection } from '../services/mcp/types.js'
 import type {
   HookEvent,
@@ -818,21 +805,6 @@ export async function getAttachments(
     maybe('ultrathink_effort', () =>
       Promise.resolve(getUltrathinkEffortAttachment(input)),
     ),
-    maybe('deferred_tools_delta', () =>
-      Promise.resolve(
-        getDeferredToolsDeltaAttachment(
-          toolUseContext.options.tools,
-          toolUseContext.options.mainLoopModel,
-          messages,
-          {
-            callSite: isMainThread
-              ? 'attachments_main'
-              : 'attachments_subagent',
-            querySource,
-          },
-        ),
-      ),
-    ),
     maybe('agent_listing_delta', () =>
       Promise.resolve(getAgentListingDeltaAttachment(toolUseContext, messages)),
     ),
@@ -840,8 +812,6 @@ export async function getAttachments(
       Promise.resolve(
         getMcpInstructionsDeltaAttachment(
           toolUseContext.options.mcpClients,
-          toolUseContext.options.tools,
-          toolUseContext.options.mainLoopModel,
           messages,
         ),
       ),
@@ -1400,29 +1370,6 @@ function getUltrathinkEffortAttachment(input: string | null): Attachment[] {
   return [{ type: 'ultrathink_effort', level: 'high' }]
 }
 
-// Exported for compact.ts — the gate must be identical at both call sites.
-export function getDeferredToolsDeltaAttachment(
-  tools: Tools,
-  model: string,
-  messages: Message[] | undefined,
-  scanContext?: DeferredToolsDeltaScanContext,
-): Attachment[] {
-  if (!isDeferredToolsDeltaEnabled()) return []
-  // These three checks mirror the sync parts of isToolSearchEnabled —
-  // the attachment text says "available via ToolSearch", so ToolSearch
-  // has to actually be in the request. The async auto-threshold check
-  // is not replicated (would double-fire tengu_tool_search_mode_decision);
-  // in tst-auto below-threshold the attachment can fire while ToolSearch
-  // is filtered out, but that's a narrow case and the tools announced
-  // are directly callable anyway.
-  if (!isToolSearchEnabledOptimistic()) return []
-  if (!modelSupportsToolReference(model)) return []
-  if (!isToolSearchToolAvailable(tools)) return []
-  const delta = getDeferredToolsDelta(tools, messages ?? [], scanContext)
-  if (!delta) return []
-  return [{ type: 'deferred_tools_delta', ...delta }]
-}
-
 /**
  * Diff the current filtered agent pool against what's already been announced
  * in this conversation (reconstructed from prior agent_listing_delta
@@ -1507,28 +1454,10 @@ export function getAgentListingDeltaAttachment(
 // Exported for compact.ts / reactiveCompact.ts — single source of truth for the gate.
 export function getMcpInstructionsDeltaAttachment(
   mcpClients: MCPServerConnection[],
-  tools: Tools,
-  model: string,
   messages: Message[] | undefined,
 ): Attachment[] {
   if (!isMcpInstructionsDeltaEnabled()) return []
-
-  // The chrome ToolSearch hint is client-authored and ToolSearch-conditional;
-  // actual server `instructions` are unconditional. Decide the chrome part
-  // here, pass it into the pure diff as a synthesized entry.
-  const clientSide: ClientSideInstruction[] = []
-  if (
-    isToolSearchEnabledOptimistic() &&
-    modelSupportsToolReference(model) &&
-    isToolSearchToolAvailable(tools)
-  ) {
-    clientSide.push({
-      serverName: AGENC_IN_CHROME_MCP_SERVER_NAME,
-      block: CHROME_TOOL_SEARCH_INSTRUCTIONS,
-    })
-  }
-
-  const delta = getMcpInstructionsDelta(mcpClients, messages ?? [], clientSide)
+  const delta = getMcpInstructionsDelta(mcpClients, messages ?? [], [])
   if (!delta) return []
   return [{ type: 'mcp_instructions_delta', ...delta }]
 }
@@ -2473,7 +2402,6 @@ async function getSkillListingAttachments(
   // Format within budget using existing logic
   const contextWindowTokens = getContextWindowForModel(
     toolUseContext.options.mainLoopModel,
-    getSdkBetas(),
   )
   const content = formatCommandsWithinBudget(newSkills, contextWindowTokens)
 

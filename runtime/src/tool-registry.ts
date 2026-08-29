@@ -38,6 +38,7 @@ import {
   createCodingTools,
   SESSION_ADVERTISED_TOOL_NAMES_ARG,
 } from "./tools/system/coding.js";
+import { SYSTEM_SEARCH_TOOLS_NAME } from "./tools/system/tool-search-name.js";
 import { createBashTool } from "./tools/system/bash.js";
 import { createExecCommandTool } from "./tools/system/exec-command.js";
 import { createWriteStdinTool } from "./tools/system/write-stdin.js";
@@ -850,7 +851,7 @@ export function buildToolRegistry(
       id: "coding",
       admissionDefault: "local_zero",
       tools: codingTools,
-      visibleByDefault: ["system.searchTools"],
+      visibleByDefault: [SYSTEM_SEARCH_TOOLS_NAME],
     },
     {
       id: "shell",
@@ -1121,7 +1122,7 @@ export function buildToolRegistry(
         configurable: true,
       });
     }
-    if (spec.tool.name === "system.searchTools") {
+    if (spec.tool.name === SYSTEM_SEARCH_TOOLS_NAME) {
       Object.defineProperty(args, SESSION_ADVERTISED_TOOL_NAMES_ARG, {
         value: visibleSpecs().map((visible) => visible.tool.name),
         enumerable: false,

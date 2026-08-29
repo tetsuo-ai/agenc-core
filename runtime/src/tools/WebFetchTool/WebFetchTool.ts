@@ -82,7 +82,6 @@ export const WebFetchTool = buildTool({
   searchHint: 'fetch and extract content from a URL',
   // 100K chars - tool result persistence threshold
   maxResultSizeChars: 100_000,
-  shouldDefer: true,
   async description(input) {
     const { url } = input as { url: string }
     try {
@@ -209,10 +208,10 @@ export const WebFetchTool = buildTool({
     }
   },
   async prompt(_options) {
-    // Always include the auth warning regardless of whether ToolSearch is
+    // Always include the auth warning regardless of whether discovery is
     // currently in the tools list. Conditionally toggling this prefix based
-    // on ToolSearch availability caused the tool description to flicker
-    // between SDK query() calls (when ToolSearch enablement varies due to
+    // on discovery availability caused the tool description to flicker
+    // between SDK query() calls (when discovery availability varies due to
     // MCP tool count thresholds), invalidating the provider API prompt
     // cache on each toggle — two consecutive cache misses per flicker event.
     return `IMPORTANT: web_fetch WILL FAIL for authenticated or private URLs. Before using this tool, check if the URL points to an authenticated service (e.g. Google Docs, Confluence, Jira, GitHub). If so, look for a specialized MCP tool that provides authenticated access.

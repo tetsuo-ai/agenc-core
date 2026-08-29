@@ -109,6 +109,59 @@ describe('provider runtime request', () => {
     expect(external.requested.extra?.defaultHeaders).toBeUndefined()
   })
 
+  test('binds Anthropic beta controls only from explicit factory options', () => {
+    const previousAnthropicBetas = process.env.ANTHROPIC_BETAS
+    const previousContextManagement = process.env.USE_API_CONTEXT_MANAGEMENT
+    process.env.ANTHROPIC_BETAS = 'ambient-beta-must-not-leak'
+    process.env.USE_API_CONTEXT_MANAGEMENT = '1'
+
+    try {
+      const poisonedEnvironment = {
+        ANTHROPIC_BETAS: 'session-beta-must-not-leak',
+        USE_API_CONTEXT_MANAGEMENT: '1',
+        AGENC_DISABLE_EXPERIMENTAL_BETAS: '0',
+      }
+      const withoutExplicitControls = resolveProviderRuntimeRequest({
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+        config: {},
+        environment: poisonedEnvironment,
+      })
+      const explicitContextManagement = {
+        edits: [{ type: 'clear_tool_uses_20250919' }],
+      }
+      const withExplicitControls = resolveProviderRuntimeRequest({
+        provider: 'anthropic',
+        model: 'claude-sonnet-4-6',
+        config: {},
+        environment: poisonedEnvironment,
+        baseExtra: {
+          betaHeaders: ['explicit-beta'],
+          contextManagement: explicitContextManagement,
+        },
+      })
+
+      expect(withoutExplicitControls.requested.extra).toBeUndefined()
+      expect(withExplicitControls.requested.extra?.betaHeaders).toEqual([
+        'explicit-beta',
+      ])
+      expect(withExplicitControls.requested.extra?.contextManagement).toBe(
+        explicitContextManagement,
+      )
+    } finally {
+      if (previousAnthropicBetas === undefined) {
+        delete process.env.ANTHROPIC_BETAS
+      } else {
+        process.env.ANTHROPIC_BETAS = previousAnthropicBetas
+      }
+      if (previousContextManagement === undefined) {
+        delete process.env.USE_API_CONTEXT_MANAGEMENT
+      } else {
+        process.env.USE_API_CONTEXT_MANAGEMENT = previousContextManagement
+      }
+    }
+  })
+
   test('does not project stale OpenAI compatibility controls into other providers', () => {
     const result = resolveProviderRuntimeRequest({
       provider: 'mistral',

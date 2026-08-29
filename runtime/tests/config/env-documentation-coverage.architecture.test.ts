@@ -96,6 +96,20 @@ function obsoleteConfigNames(): Set<string> {
   ]);
 }
 
+function advancedDocumentedEnvironmentNames(reference: string): string[] {
+  const startMarker = "## Complete advanced and runtime-managed name index";
+  const endMarker = "## External, platform, and runtime-managed inputs";
+  const start = reference.indexOf(startMarker);
+  const end = reference.indexOf(endMarker);
+  if (start < 0 || end <= start) {
+    throw new Error("environment reference is missing the advanced-name index");
+  }
+
+  return [...reference.slice(start, end).matchAll(/`(AGENC_[A-Z0-9_]+)`/gu)]
+    .map((match) => match[1])
+    .filter((name): name is string => name !== undefined);
+}
+
 describe("environment reference coverage", () => {
   test("documents every production env name consumed by runtime authorities", () => {
     const reference = readFileSync(ENV_REFERENCE, "utf8");
@@ -105,6 +119,16 @@ describe("environment reference coverage", () => {
       .sort();
 
     expect(missing, relative(process.cwd(), ENV_REFERENCE)).toEqual([]);
+  });
+
+  test("lists only production names in the advanced environment index", () => {
+    const reference = readFileSync(ENV_REFERENCE, "utf8");
+    const productionNames = runtimeEnvironmentNames();
+    const unsupported = advancedDocumentedEnvironmentNames(reference)
+      .filter((name) => !productionNames.has(name))
+      .sort();
+
+    expect(unsupported, relative(process.cwd(), ENV_REFERENCE)).toEqual([]);
   });
 
   test("keeps removed authorities only in the explicit rejection section", () => {

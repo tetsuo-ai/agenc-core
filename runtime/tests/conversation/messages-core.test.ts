@@ -97,7 +97,6 @@ import {
 const parentUuid = "00000000-0000-4000-8000-000000000123";
 const originalDisableToolReminders = process.env.AGENC_DISABLE_TOOL_REMINDERS;
 const originalEnableTasks = process.env.AGENC_ENABLE_TASKS;
-const originalEnableToolSearch = process.env.ENABLE_TOOL_SEARCH;
 const originalUserType = process.env.USER_TYPE;
 
 afterEach(() => {
@@ -111,12 +110,6 @@ afterEach(() => {
     delete process.env.AGENC_ENABLE_TASKS;
   } else {
     process.env.AGENC_ENABLE_TASKS = originalEnableTasks;
-  }
-
-  if (originalEnableToolSearch === undefined) {
-    delete process.env.ENABLE_TOOL_SEARCH;
-  } else {
-    process.env.ENABLE_TOOL_SEARCH = originalEnableToolSearch;
   }
 
   if (originalUserType === undefined) {
@@ -620,7 +613,7 @@ describe("message utility constructors and predicates", () => {
       JSON.stringify(
         stripToolReferenceBlocksFromUserMessage(referenceOnlyResult).message.content,
       ),
-    ).toContain("tool search not enabled");
+    ).toContain("Historical tool references removed");
 
     const stringToolReferenceInput = createUserMessage({ content: "plain" });
     expect(stripToolReferenceBlocksFromUserMessage(stringToolReferenceInput))
@@ -631,7 +624,6 @@ describe("message utility constructors and predicates", () => {
     expect(stripToolReferenceBlocksFromUserMessage(noReferenceResult))
       .toBe(noReferenceResult);
 
-    process.env.ENABLE_TOOL_SEARCH = "true";
     const unavailableReferenceResult = createUserMessage({
       content: [
         {
@@ -653,7 +645,7 @@ describe("message utility constructors and predicates", () => {
           [{ name: "AvailableTool" }] as never,
         ),
       ),
-    ).toContain("tools no longer available");
+    ).toContain("Historical tool references removed");
 
   });
 

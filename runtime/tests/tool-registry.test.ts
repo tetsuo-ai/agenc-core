@@ -2086,6 +2086,74 @@ describe("tool-registry dynamic and deferred catalog", () => {
     );
   });
 
+  test("keeps discovery state and same-name schemas isolated by registry", async () => {
+    const deferredTool = (
+      description: string,
+      propertyName: string,
+    ): Tool => ({
+      name: "dynamic.session-report",
+      description,
+      inputSchema: {
+        type: "object",
+        properties: { [propertyName]: { type: "string" } },
+        required: [propertyName],
+      },
+      metadata: {
+        family: "dynamic",
+        source: "plugin",
+        keywords: ["report"],
+        deferred: true,
+      },
+      execute: async () => ({ content: description }),
+    });
+    const first = buildToolRegistry({
+      workspaceRoot: "/tmp/first",
+      dynamicTools: [deferredTool("First session report", "first")],
+    });
+    const second = buildToolRegistry({
+      workspaceRoot: "/tmp/second",
+      dynamicTools: [deferredTool("Second session report", "second")],
+    });
+
+    await first.dispatch({
+      id: "search-isolation-a",
+      name: "system.searchTools",
+      arguments: JSON.stringify({ select: "dynamic.session-report" }),
+    });
+
+    expect(first.getDiscoveredToolNames?.()).toEqual(
+      new Set(["dynamic.session-report"]),
+    );
+    expect(second.getDiscoveredToolNames?.()).toEqual(new Set());
+    expect(
+      first.toLLMTools().find(
+        (tool) => tool.function.name === "dynamic.session-report",
+      )?.function,
+    ).toMatchObject({
+      description: "First session report",
+      parameters: { required: ["first"] },
+    });
+    expect(
+      second.toLLMTools().some(
+        (tool) => tool.function.name === "dynamic.session-report",
+      ),
+    ).toBe(false);
+
+    await second.dispatch({
+      id: "search-isolation-b",
+      name: "system.searchTools",
+      arguments: JSON.stringify({ select: "dynamic.session-report" }),
+    });
+    expect(
+      second.toLLMTools().find(
+        (tool) => tool.function.name === "dynamic.session-report",
+      )?.function,
+    ).toMatchObject({
+      description: "Second session report",
+      parameters: { required: ["second"] },
+    });
+  });
+
   test("live MCP tools are cataloged as deferred shared-server tools", async () => {
     const mcpTool: Tool = {
       name: "mcp.demo.lookup",

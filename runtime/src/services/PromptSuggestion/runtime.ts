@@ -1,15 +1,10 @@
 /**
- * Local runtime helpers for the prompt-suggestion service.
- *
- * This file carries the small source-reference helper slices that S-04 needs
- * without importing mirror PromptSuggestion modules. The live service can
- * therefore compile and
- * run as AgenC-owned code while preserving the prompt-suggestion control flow.
+ * Shared runtime types and helpers for prompt suggestions and speculative
+ * follow-up work.
  */
 
 import { randomUUID } from 'crypto'
 import { resolve } from 'path'
-import { tokenizeCliOptionRegion } from '../../bin/cli-option-region.js'
 import type { LLMProvider } from '../../llm/types.js'
 import { isDangerousCommand } from '../../permissions/bash.js'
 import {
@@ -184,7 +179,7 @@ export type PromptSuggestionSettings = {
   readonly promptSuggestionEnabled?: boolean
   readonly isNonInteractiveSession?: boolean
   readonly isTeammateSession?: boolean
-  readonly agentSwarmsEnabled?: boolean
+  readonly agentSwarmsEnabled: boolean
 }
 
 export type PromptSuggestionRuntimeOptions = {
@@ -198,34 +193,6 @@ const INTERRUPT_MESSAGE_FOR_TOOL_USE_TEXT =
 export const INTERRUPT_MESSAGE = INTERRUPT_MESSAGE_TEXT
 export const INTERRUPT_MESSAGE_FOR_TOOL_USE =
   INTERRUPT_MESSAGE_FOR_TOOL_USE_TEXT
-
-export function getFeatureValue_CACHED_MAY_BE_STALE<T>(
-  feature: string,
-  defaultValue: T,
-): T {
-  const raw = process.env.AGENC_INTERNAL_FC_OVERRIDES
-  if (raw && process.env.USER_TYPE === 'ant') {
-    try {
-      const parsed = JSON.parse(raw) as Record<string, unknown>
-      if (Object.hasOwn(parsed, feature)) return parsed[feature] as T
-    } catch {
-      return defaultValue
-    }
-  }
-  return defaultValue
-}
-
-export function isAgentSwarmsEnabled(): boolean {
-  if (process.env.USER_TYPE === 'ant') return true
-  const { optionArgs } = tokenizeCliOptionRegion(process.argv.slice(2))
-  if (
-    !isEnvTruthy(process.env.AGENC_EXPERIMENTAL_AGENT_TEAMS) &&
-    !optionArgs.includes('--agent-teams')
-  ) {
-    return false
-  }
-  return getFeatureValue_CACHED_MAY_BE_STALE('tengu_amber_flint', true)
-}
 
 export function isSpeculationConfigEnabled(speculationEnabled?: boolean): boolean {
   return speculationEnabled !== false
@@ -391,10 +358,6 @@ export function extractReadFilesFromMessages(
   }
 
   return extracted
-}
-
-export function jsonStringify(value: unknown): string {
-  return JSON.stringify(value)
 }
 
 export function getCurrentCwd(fallback?: string): string {

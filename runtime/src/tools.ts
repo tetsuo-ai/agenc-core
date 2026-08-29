@@ -40,7 +40,6 @@ const getSendMessageTool = () =>
     .SendMessageTool as typeof import('./tools/SendMessageTool/SendMessageTool.js').SendMessageTool
 /* eslint-enable @typescript-eslint/no-require-imports */
 import { AskUserQuestionTool } from 'src/tools/ask-user-question/tui-tool.js'
-import { ToolSearchTool } from './tools/ToolSearchTool/ToolSearchTool.js'
 import { CtxInspectTool as ContextCollapseInspectTool } from './tools/CtxInspectTool/CtxInspectTool.js'
 import { EnterPlanModeTool } from './tools/EnterPlanModeTool/EnterPlanModeTool.js'
 import { EnterWorktreeTool } from './tools/EnterWorktreeTool/EnterWorktreeTool.js'
@@ -50,7 +49,6 @@ import { TaskGetTool } from './tools/TaskGetTool/TaskGetTool.js'
 import { TaskUpdateTool } from './tools/TaskUpdateTool/TaskUpdateTool.js'
 import { TaskListTool } from './tools/TaskListTool/TaskListTool.js'
 import uniqBy from 'lodash-es/uniqBy.js'
-import { isToolSearchEnabledOptimistic } from './utils/toolSearch.js'
 import { isTodoV2Enabled } from './utils/tasks.js'
 import { SYNTHETIC_OUTPUT_TOOL_NAME } from './tools/SyntheticOutputTool/SyntheticOutputTool.js'
 export {
@@ -156,9 +154,6 @@ export function getAllBaseTools(): Tools {
     CronCreateTool,
     CronDeleteTool,
     CronListTool,
-    // Include ToolSearchTool when tool search might be enabled (optimistic check)
-    // The actual decision to defer tools happens in the provider request builder.
-    ...(isToolSearchEnabledOptimistic() ? [ToolSearchTool] : []),
   ]
 }
 

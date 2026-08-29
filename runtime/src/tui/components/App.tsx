@@ -169,7 +169,6 @@ import {
   setPendingResumeSessionId,
 } from "../pending-resume.js";
 import { requestTuiSessionTurnCancel } from "../sessionCancel.js";
-import { getSdkBetas } from "../../bootstrap/state.js";
 import {
   calculateContextPercentages,
   getContextWindowForModelForContext,
@@ -4563,7 +4562,6 @@ function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
     const windowSize = getContextWindowForModelForContext(
       resolvedMainLoopModel,
       remoteAuthSessionContext,
-      getSdkBetas(),
     );
     const { used } = calculateContextPercentages(usage, windowSize);
     return used === null ? null : `ctx ${used}%`;

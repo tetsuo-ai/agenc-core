@@ -3,7 +3,7 @@ import { feature } from 'bun:bundle';
 import * as React from 'react';
 import { memo, useCallback, useEffect, useRef } from 'react';
 import type { ProviderAuthReadContext } from '../../utils/auth.js';
-import { getIsRemoteMode, getKairosActive, getMainThreadAgentType, getOriginalCwd, getSdkBetas, getSessionId } from '../../bootstrap/state.js';
+import { getIsRemoteMode, getKairosActive, getMainThreadAgentType, getOriginalCwd, getSessionId } from '../../bootstrap/state.js';
 import { DEFAULT_OUTPUT_STYLE_NAME } from '../../constants/outputStyles.js';
 import { useFullscreenMode } from '../context/fullscreenModeContext.js';
 import { useNotifications } from '../context/notifications.js';
@@ -38,7 +38,7 @@ function buildStatusLineCommandInput(exceeds200kTokens: boolean, settings: Reado
   const worktreeSession = getCurrentWorktreeSession();
   const outputStyleName = settings?.outputStyle || DEFAULT_OUTPUT_STYLE_NAME;
   const currentUsage = getCurrentUsage(messages);
-  const contextWindowSize = getContextWindowForModelForContext(mainLoopModel, providerContext, getSdkBetas());
+  const contextWindowSize = getContextWindowForModelForContext(mainLoopModel, providerContext);
   const contextPercentages = calculateContextPercentages(currentUsage, contextWindowSize);
   const sessionId = getSessionId();
   const sessionName = getCurrentSessionTitle(sessionId);

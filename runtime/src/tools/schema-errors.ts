@@ -148,7 +148,7 @@ export function getSchemaValidationErrorOverride(
 
 /**
  * When a deferred tool's schema was never materialized for the model
- * (its definition is withheld until `system.searchTools` / ToolSearch
+ * (its definition is withheld until `system.searchTools`
  * discovers it), the model can still produce a call with the wrong
  * parameter shape. The validator's "expected array, got string" prose
  * doesn't tell it to re-fetch the schema; this hint does.

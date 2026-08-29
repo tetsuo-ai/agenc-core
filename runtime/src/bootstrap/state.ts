@@ -1,5 +1,3 @@
-// Moved-source note: imported by moved purge roots until the owning subsystem is absorbed.
-import type { BetaMessageStreamParams } from "@anthropic-ai/sdk/resources/beta/messages/messages.mjs";
 import { realpathSync } from "fs";
 import sumBy from "lodash-es/sumBy.js";
 import { cwd } from "process";
@@ -76,12 +74,6 @@ type State = {
   // Agent color state
   agentColorMap: Map<string, AgentColorName>;
   agentColorIndex: number;
-  // Last API request for bug reports
-  lastAPIRequest: Omit<BetaMessageStreamParams, "messages"> | null;
-  // Messages from the last API request (internal-only; reference, not clone).
-  // Captures the exact post-compaction, AGENC.md-injected message set sent
-  // to the API so /share's serialized_conversation.json reflects reality.
-  lastAPIRequestMessages: BetaMessageStreamParams["messages"] | null;
   // Last auto-mode classifier request(s) for /share transcript
   lastClassifierRequests: unknown[] | null;
   // AGENC.md content cached by context.ts for the auto-mode classifier.
@@ -154,8 +146,6 @@ type State = {
     durationMs: number;
     timestamp: number;
   }>;
-  // SDK-provided betas (e.g., context-1m-2025-08-07)
-  sdkBetas: string[] | undefined;
   // Main thread agent type (from --agent flag or settings)
   mainThreadAgentType: string | undefined;
   // Remote mode (--remote flag)
@@ -243,9 +233,6 @@ function getInitialState(): State {
     // Agent color state
     agentColorMap: new Map(),
     agentColorIndex: 0,
-    // Last API request for bug reports
-    lastAPIRequest: null,
-    lastAPIRequestMessages: null,
     // Last auto-mode classifier request(s) for /share transcript
     lastClassifierRequests: null,
     // In-memory error log for recent errors
@@ -281,8 +268,6 @@ function getInitialState(): State {
     invokedSkills: new Map(),
     // Track slow operations for dev bar display
     slowOperations: [],
-    // SDK-provided betas
-    sdkBetas: undefined,
     // Main thread agent type
     mainThreadAgentType: undefined,
     // Remote mode
@@ -684,14 +669,6 @@ export function setInitialMainLoopModel(model: ModelSetting): void {
   STATE.initialMainLoopModel = model;
 }
 
-export function getSdkBetas(): string[] | undefined {
-  return STATE.sdkBetas;
-}
-
-export function setSdkBetas(betas: string[] | undefined): void {
-  STATE.sdkBetas = betas;
-}
-
 export function resetCostState(): void {
   STATE.totalCostUSD = 0;
   STATE.totalAPIDuration = 0;
@@ -841,30 +818,6 @@ export function setQuestionPreviewFormat(format: "markdown" | "html"): void {
 
 export function getAgentColorMap(): Map<string, AgentColorName> {
   return STATE.agentColorMap;
-}
-
-export function setLastAPIRequest(
-  params: Omit<BetaMessageStreamParams, "messages"> | null,
-): void {
-  STATE.lastAPIRequest = params;
-}
-
-export function getLastAPIRequest(): Omit<
-  BetaMessageStreamParams,
-  "messages"
-> | null {
-  return STATE.lastAPIRequest;
-}
-
-export function setLastAPIRequestMessages(
-  messages: BetaMessageStreamParams["messages"] | null,
-): void {
-  STATE.lastAPIRequestMessages = messages;
-}
-
-export function getLastAPIRequestMessages():
-  BetaMessageStreamParams["messages"] | null {
-  return STATE.lastAPIRequestMessages;
 }
 
 export function setLastClassifierRequests(requests: unknown[] | null): void {

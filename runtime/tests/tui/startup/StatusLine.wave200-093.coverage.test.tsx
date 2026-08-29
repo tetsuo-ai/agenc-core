@@ -47,7 +47,6 @@ vi.mock('../../bootstrap/state.js', () => ({
   getKairosActive: mocks.getKairosActive,
   getMainThreadAgentType: () => 'reviewer',
   getOriginalCwd: () => '/workspace',
-  getSdkBetas: () => ['context-window-beta'],
   getSessionId: () => 'session-wave-093',
   updateLastInteractionTime: () => {},
 }))
@@ -332,7 +331,6 @@ describe('StatusLine wave200-093 coverage', () => {
     expect(mocks.getContextWindowForModel).toHaveBeenCalledWith(
       'gpt-5',
       TEST_REMOTE_AUTH_SESSION_CONTEXT,
-      ['context-window-beta'],
     )
     expect(mocks.appState.statusLineText).toBe('updated-status')
   })

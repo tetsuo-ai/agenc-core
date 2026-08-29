@@ -18,7 +18,6 @@ import {
   getApiKeyFromFileDescriptor,
   getOAuthTokenFromFileDescriptor,
 } from './authFileDescriptor.js'
-import { clearBetasCaches } from './betas.js'
 import {
   isEnvTruthy,
   isRunningOnHomespace,
@@ -45,7 +44,6 @@ import {
 } from './secureStorage/macOsKeychainHelpers.js'
 import { getSettingsForSource } from './settings/settings.js'
 import { sleep } from './sleep.js'
-import { clearToolSchemaCache } from './toolSchemaCache.js'
 import { isSessionRemoteMode } from '../session/runtime-options.js'
 import type { ProviderEnvironment } from '../llm/provider-options.js'
 
@@ -469,8 +467,6 @@ export function saveOAuthTokensIfNeeded(
   try {
     writeAgenCAIOAuthTokens(home, tokens)
     clearAgenCAIOAuthTokenCache(home)
-    clearBetasCaches()
-    clearToolSchemaCache()
     return { success: true }
   } catch (error) {
     logError(error)

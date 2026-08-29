@@ -3,8 +3,7 @@
  *
  * Capabilities verified against provider docs 2026-07-07: 1M context,
  * 128K max output, $5/$25 pricing (fast premium $30/$150), fast mode
- * (4.8 is the durable fast tier), structured outputs, effort incl.
- * max, advisor both directions. The threshold tests pin the hardening:
+ * (4.8 is the durable fast tier) and effort including max. The threshold tests pin the hardening:
  * a hypothetical next minor release inherits family capabilities
  * instead of silently regressing (the 4.7 half-onboarding incident).
  */
@@ -16,15 +15,10 @@ import {
   modelSupports1M,
 } from '../../src/utils/context.js'
 import { getModelCosts } from '../../src/utils/modelCost.js'
-import { modelSupportsStructuredOutputs } from '../../src/utils/betas.js'
 import {
   modelSupportsEffort,
   modelSupportsMaxEffort,
 } from '../../src/utils/effort.js'
-import {
-  isValidAdvisorModel,
-  modelSupportsAdvisor,
-} from '../../src/utils/advisor.js'
 import { sanitizeModelName } from '../../src/utils/commitAttribution.js'
 import {
   AGENC_OPUS_4_8_CONFIG,
@@ -78,17 +72,14 @@ describe('Opus 4.8 onboarding', () => {
     expect(base.outputTokens).toBe(25)
   })
 
-  it('supports structured outputs, effort (incl. max), and advisor', () => {
+  it('supports effort including max', () => {
     runWithStartupProviderSelection({
       provider: 'anthropic',
       model: OPUS_48,
       environment: { ...process.env },
     }, () => {
-      expect(modelSupportsStructuredOutputs(OPUS_48)).toBe(true)
       expect(modelSupportsEffort(OPUS_48)).toBe(true)
       expect(modelSupportsMaxEffort(OPUS_48)).toBe(true)
-      expect(modelSupportsAdvisor(OPUS_48)).toBe(true)
-      expect(isValidAdvisorModel(OPUS_48)).toBe(true)
     })
   })
 

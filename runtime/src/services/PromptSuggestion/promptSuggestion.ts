@@ -1,11 +1,4 @@
-/**
- * Ports source-reference `src/services/PromptSuggestion/promptSuggestion.ts` onto
- * AgenC's live prompt-suggestion service.
- *
- * Shape differences:
- *   - Uses AgenC env naming and a local rate-limit view instead of importing
- *     source-reference API limit modules.
- */
+/** Generates prompt suggestions and writes them to the live app state. */
 
 import type { Message } from '../../types/message.js'
 import {
@@ -18,7 +11,6 @@ import {
   createCacheSafeParams,
   createUserMessage,
   getLastAssistantMessage,
-  isAgentSwarmsEnabled,
   logForDebugging,
   logError,
   runForkedAgent,
@@ -47,9 +39,7 @@ export function shouldEnablePromptSuggestion(
   }
 
   // Disable for swarm teammates (only leader should show suggestions)
-  const agentSwarmsEnabled =
-    settings?.agentSwarmsEnabled ?? isAgentSwarmsEnabled()
-  if (agentSwarmsEnabled && settings?.isTeammateSession) {
+  if (settings.agentSwarmsEnabled && settings.isTeammateSession) {
     return false
   }
 

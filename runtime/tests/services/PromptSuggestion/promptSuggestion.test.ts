@@ -42,7 +42,6 @@ describe("PromptSuggestion service", () => {
     isSpeculationEnabledMock.mockReset();
     isSpeculationEnabledMock.mockReturnValue(false);
     startSpeculationMock.mockReset();
-    delete process.env.AGENC_INTERNAL_FC_OVERRIDES;
     delete process.env.USER_TYPE;
     clearDynamicTeamContext();
     resetStateForTests();
@@ -50,12 +49,37 @@ describe("PromptSuggestion service", () => {
 
   it("uses the canonical setting as its sole enablement authority", () => {
     expect(shouldEnablePromptSuggestion()).toBe(false);
-    expect(shouldEnablePromptSuggestion({ promptSuggestionEnabled: false })).toBe(
-      false,
-    );
-    expect(shouldEnablePromptSuggestion({ promptSuggestionEnabled: true })).toBe(
-      true,
-    );
+    expect(
+      shouldEnablePromptSuggestion({
+        promptSuggestionEnabled: false,
+        agentSwarmsEnabled: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldEnablePromptSuggestion({
+        promptSuggestionEnabled: true,
+        agentSwarmsEnabled: false,
+      }),
+    ).toBe(true);
+  });
+
+  it("uses the prepared swarm setting without reading ambient feature state", () => {
+    process.env.USER_TYPE = "ant";
+
+    expect(
+      shouldEnablePromptSuggestion({
+        promptSuggestionEnabled: true,
+        agentSwarmsEnabled: false,
+        isTeammateSession: true,
+      }),
+    ).toBe(true);
+    expect(
+      shouldEnablePromptSuggestion({
+        promptSuggestionEnabled: true,
+        agentSwarmsEnabled: true,
+        isTeammateSession: true,
+      }),
+    ).toBe(false);
   });
 
   it("honors persisted prompt-suggestion settings", () => {
@@ -289,7 +313,10 @@ function assistantMessage(text: string) {
   };
 }
 
-function liveSettings(settings: { promptSuggestionEnabled?: boolean }) {
+function liveSettings(settings: {
+  promptSuggestionEnabled?: boolean;
+  agentSwarmsEnabled?: boolean;
+}) {
   return {
     agentSwarmsEnabled: true,
     ...settings,

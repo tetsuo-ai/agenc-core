@@ -1782,7 +1782,6 @@ export const fetchToolsForClient = memoizeWithLRU(
             searchHint: sanitizeMcpSearchHint(
               tool._meta?.['anthropic/searchHint'],
             ),
-            alwaysLoad: tool._meta?.['anthropic/alwaysLoad'] === true,
             async description() {
               return modelFacingDescription
             },

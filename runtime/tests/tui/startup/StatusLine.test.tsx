@@ -36,7 +36,6 @@ vi.mock('../../bootstrap/state.js', () => ({
   getKairosActive: () => false,
   getMainThreadAgentType: () => undefined,
   getOriginalCwd: () => '/workspace',
-  getSdkBetas: () => [],
   getSessionId: () => 'session-statusline-test',
   updateLastInteractionTime: () => {},
 }))

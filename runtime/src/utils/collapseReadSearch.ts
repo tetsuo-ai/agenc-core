@@ -13,7 +13,7 @@ import {
   detectGitOperation,
   type PrAction,
 } from '../tools/shared/gitOperationTracking.js'
-import { TOOL_SEARCH_TOOL_NAME } from '../tools/ToolSearchTool/prompt.js'
+import { SYSTEM_SEARCH_TOOLS_NAME } from '../tools/system/tool-search-name.js'
 import { selectAgenCTuiGlyphs } from '../tui/glyphs.js'
 import type {
   CollapsedReadSearchGroup,
@@ -53,7 +53,7 @@ export type SearchOrReadResult = {
   isMemoryWrite: boolean
   /**
    * True for meta-operations that should be absorbed into a collapse group
-   * without incrementing any count (Snip, ToolSearch). They remain visible
+   * without incrementing any count (Snip, system.searchTools). They remain visible
    * in verbose mode via the groupMessages iteration.
    */
   isAbsorbedSilently: boolean
@@ -180,12 +180,12 @@ export function getToolSearchOrReadInfo(
     }
   }
 
-  // Meta-operations absorbed silently: Snip (context cleanup) and ToolSearch
+  // Meta-operations absorbed silently: Snip (context cleanup) and system.searchTools
   // (lazy tool schema loading). Neither should break a collapse group or
   // contribute to its count, but both stay visible in verbose mode.
   if (
     (feature('HISTORY_SNIP') && toolName === SNIP_TOOL_NAME) ||
-    (fullscreen && toolName === TOOL_SEARCH_TOOL_NAME)
+    (fullscreen && toolName === SYSTEM_SEARCH_TOOLS_NAME)
   ) {
     return {
       isCollapsible: true,
@@ -647,7 +647,7 @@ function isLoneReadOrSearchGroup(group: GroupAccumulator): boolean {
  * verbatim when the group is un-collapsed.
  *
  * A "lone" group can still contain silently-absorbed meta-operations (Snip,
- * ToolSearch) and their tool results: those add no counts, so
+ * system.searchTools) and their tool results: those add no counts, so
  * `isLoneReadOrSearchGroup` treats them as invisible and stays true. If we
  * emitted every message of such a group, those absorbed tool-use rows (and
  * their result rows) would leak into the default transcript — exactly what
@@ -972,7 +972,7 @@ export function collapseReadSearchGroups(
       // This mirrors groupToolUses, which only groups runs of 2+ calls. Only a
       // lone read/search is un-collapsed; mixed/memory/mcp/bash/git groups and
       // multi-call read/search runs still collapse to keep the default view tidy.
-      // Silently-absorbed meta-ops (Snip/ToolSearch) and their results are
+      // Silently absorbed meta-ops (Snip/system.searchTools) and their results are
       // filtered out so they stay hidden instead of leaking into the default
       // transcript when the lone group is un-collapsed.
       for (const m of selectLoneGroupVisibleMessages(
@@ -1011,7 +1011,7 @@ export function collapseReadSearchGroups(
           currentGroup.memoryWriteCount += count
         }
       } else if (toolInfo.isAbsorbedSilently) {
-        // Snip/ToolSearch absorbed silently — no count, no summary text.
+        // Snip/system.searchTools absorbed silently — no count or summary text.
         // Hidden from the default view but still shown in verbose mode
         // (Ctrl+O) via the groupMessages iteration in CollapsedReadSearchContent.
       } else if (toolInfo.mcpServerName) {

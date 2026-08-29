@@ -18,7 +18,7 @@ import {
   resolveBedrockCountModelId,
   resolveFallbackTokenCountModel,
   roughTokenCountEstimationForServiceMessages,
-  stripToolSearchFieldsFromMessages,
+  stripHistoricalToolReferenceFields,
   VERTEX_COUNT_TOKENS_ALLOWED_BETAS,
 } from "./tokenEstimation.js";
 import {
@@ -355,7 +355,7 @@ describe("tokenEstimation service", () => {
     ] as never;
 
     expect(hasThinkingBlocks(messages)).toBe(false);
-    expect(stripToolSearchFieldsFromMessages(messages)).toEqual([
+    expect(stripHistoricalToolReferenceFields(messages)).toEqual([
       {
         role: "assistant",
         content: [{ type: "tool_use", id: "toolu_1", name: "read", input: {} }],

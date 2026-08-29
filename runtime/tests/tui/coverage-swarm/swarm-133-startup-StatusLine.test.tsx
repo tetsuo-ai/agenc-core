@@ -58,7 +58,6 @@ vi.mock('../../../src/bootstrap/state.js', () => ({
   getKairosActive: harness.getKairosActive,
   getMainThreadAgentType: harness.getMainThreadAgentType,
   getOriginalCwd: harness.getOriginalCwd,
-  getSdkBetas: () => ['beta-133'],
   getSessionId: harness.getSessionId,
   updateLastInteractionTime: () => {},
 }))

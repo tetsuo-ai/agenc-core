@@ -7,9 +7,8 @@
  * overridden by canonical user configuration — e.g. a Bedrock setup for
  * terminal CLI that would break a host that only supports first-party auth.
  *
- * @[MODEL LAUNCH]: New models usually don't need changes here —
- * VERTEX_REGION_AGENC_* is prefix-matched. New providers or new routing
- * config vars (endpoint, project, region, auth) do.
+ * @[MODEL LAUNCH]: Add new provider routing inputs here when host-managed
+ * startup must prevent canonical user configuration from overriding them.
  */
 const PROVIDER_MANAGED_ENV_VARS = new Set([
   // The flag itself — settings can't unset it once the host set it
@@ -18,33 +17,15 @@ const PROVIDER_MANAGED_ENV_VARS = new Set([
   'AGENC_PROVIDER',
   // Endpoint config (base URLs, project/resource identifiers)
   'ANTHROPIC_BASE_URL',
-  'ANTHROPIC_VERTEX_BASE_URL',
-  'ANTHROPIC_FOUNDRY_BASE_URL',
-  'ANTHROPIC_FOUNDRY_RESOURCE',
-  'ANTHROPIC_VERTEX_PROJECT_ID',
-  // Region routing (per-model VERTEX_REGION_AGENC_* handled by prefix below)
-  'CLOUD_ML_REGION',
   // Auth
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_AUTH_TOKEN',
   'AGENC_OAUTH_TOKEN',
-  'ANTHROPIC_FOUNDRY_API_KEY',
-  'AGENC_SKIP_VERTEX_AUTH',
-  'AGENC_SKIP_FOUNDRY_AUTH',
 ])
-
-const PROVIDER_MANAGED_ENV_PREFIXES = [
-  // Per-model Vertex region overrides — scales with model releases, so
-  // prefix-matched to avoid drift on each launch.
-  'VERTEX_REGION_AGENC_',
-]
 
 export function isProviderManagedEnvVar(key: string): boolean {
   const upper = key.toUpperCase()
-  return (
-    PROVIDER_MANAGED_ENV_VARS.has(upper) ||
-    PROVIDER_MANAGED_ENV_PREFIXES.some(p => upper.startsWith(p))
-  )
+  return PROVIDER_MANAGED_ENV_VARS.has(upper)
 }
 
 /**
@@ -65,7 +46,7 @@ export const DANGEROUS_SHELL_SETTINGS = [
  * Dangerous env vars (NOT in this list):
  *
  * === REDIRECT TO ATTACKER-CONTROLLED SERVER ===
- * - ANTHROPIC_BASE_URL, ANTHROPIC_FOUNDRY_BASE_URL, ANTHROPIC_VERTEX_BASE_URL
+ * - ANTHROPIC_BASE_URL
  * - HTTP_PROXY, HTTPS_PROXY, NO_PROXY, http_proxy, https_proxy, no_proxy
  *
  * === TRUST ATTACKER-CONTROLLED SERVER ===
@@ -73,7 +54,6 @@ export const DANGEROUS_SHELL_SETTINGS = [
  * - NODE_EXTRA_CA_CERTS
  *
  * === SWITCH TO ATTACKER-CONTROLLED PROJECT ===
- * - ANTHROPIC_FOUNDRY_RESOURCE
  * - ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN
  */
 export const SAFE_ENV_VARS = new Set([
@@ -85,33 +65,20 @@ export const SAFE_ENV_VARS = new Set([
   'BASH_MAX_OUTPUT_LENGTH',
   'BASH_MAX_TIMEOUT_MS',
   'AGENC_BASH_MAINTAIN_PROJECT_WORKING_DIR',
-  'AGENC_DISABLE_EXPERIMENTAL_BETAS',
   'AGENC_DISABLE_NONESSENTIAL_TRAFFIC',
   'AGENC_DISABLE_TERMINAL_TITLE',
   'AGENC_EXPERIMENTAL_AGENT_TEAMS',
   'AGENC_IDE_SKIP_AUTO_INSTALL',
   'AGENC_MAX_OUTPUT_TOKENS',
-  'AGENC_SKIP_FOUNDRY_AUTH',
-  'AGENC_SKIP_VERTEX_AUTH',
   'AGENC_PROVIDER',
   'DISABLE_AUTOUPDATER',
   'DISABLE_BUG_COMMAND',
   'DISABLE_COST_WARNINGS',
   'DISABLE_ERROR_REPORTING',
   'DISABLE_FEEDBACK_COMMAND',
-  'ENABLE_TOOL_SEARCH',
   'MAX_MCP_OUTPUT_TOKENS',
   'MAX_THINKING_TOKENS',
   'MCP_TIMEOUT',
   'MCP_TOOL_TIMEOUT',
   'USE_BUILTIN_RIPGREP',
-  'VERTEX_REGION_AGENC_3_5_HAIKU',
-  'VERTEX_REGION_AGENC_3_5_SONNET',
-  'VERTEX_REGION_AGENC_3_7_SONNET',
-  'VERTEX_REGION_AGENC_4_0_OPUS',
-  'VERTEX_REGION_AGENC_4_0_SONNET',
-  'VERTEX_REGION_AGENC_4_1_OPUS',
-  'VERTEX_REGION_AGENC_4_5_SONNET',
-  'VERTEX_REGION_AGENC_4_6_SONNET',
-  'VERTEX_REGION_AGENC_HAIKU_4_5',
 ])

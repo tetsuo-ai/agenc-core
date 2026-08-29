@@ -1,5 +1,4 @@
 // biome-ignore-all assist/source/organizeImports: internal-only import markers must not be reordered
-import { CONTEXT_1M_BETA_HEADER } from '../constants/betas.js'
 import { isEnvTruthy } from './envUtils.js'
 import { getCanonicalName } from './model/model.js'
 import { resolveAntModel } from './model/antModels.js'
@@ -140,21 +139,16 @@ function modelSupports1MInEnvironment(
   return false
 }
 
-export function getContextWindowForModel(
-  model: string,
-  betas?: string[],
-): number {
+export function getContextWindowForModel(model: string): number {
   return getContextWindowForModelForContext(
     model,
     getSelectedProviderSelection(),
-    betas,
   )
 }
 
 export function getContextWindowForModelForContext(
   model: string,
   context: ContextWindowProviderContext,
-  betas?: string[],
 ): number {
   const { environment, provider } = context
   // Allow override via environment variable (internal-only)
@@ -222,12 +216,6 @@ export function getContextWindowForModelForContext(
     return cap.max_input_tokens
   }
 
-  if (
-    betas?.includes(CONTEXT_1M_BETA_HEADER) &&
-    modelSupports1MInEnvironment(model, environment)
-  ) {
-    return 1_000_000
-  }
   if (environment.USER_TYPE === 'ant') {
     const antModel = resolveAntModel(model)
     if (antModel?.contextWindow) {

@@ -103,7 +103,6 @@ export const TaskUpdateTool = buildTool({
   userFacingName() {
     return 'TaskUpdate'
   },
-  shouldDefer: true,
   isEnabled() {
     return isTodoV2Enabled()
   },

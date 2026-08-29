@@ -52,7 +52,6 @@ export const EnterPlanModeTool: Tool<InputSchema, Output> = buildTool({
   userFacingName() {
     return ''
   },
-  shouldDefer: true,
   isEnabled() {
     // When --channels is active, ExitPlanMode is disabled (its approval
     // dialog needs the terminal). Disable entry too so plan mode isn't a

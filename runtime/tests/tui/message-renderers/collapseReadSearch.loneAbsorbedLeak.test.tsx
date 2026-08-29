@@ -15,7 +15,7 @@ vi.mock('../../../src/tools/REPLTool/primitiveTools.js', () => ({
 }))
 
 import { collapseReadSearchGroups } from '../../../src/utils/collapseReadSearch.js'
-import { TOOL_SEARCH_TOOL_NAME } from '../../../src/tools/ToolSearchTool/constants.js'
+import { SYSTEM_SEARCH_TOOLS_NAME } from '../../../src/tools/system/tool-search-name.js'
 import type { Tools } from '../../../src/tools/Tool.js'
 
 // Minimal Read/Grep tools that report themselves as read/search. ToolSearch is
@@ -88,7 +88,7 @@ describe('collapseReadSearchGroups — lone group does not leak absorbed ToolSea
     const read = uid()
     const out = collapseReadSearchGroups(
       [
-        use(search, TOOL_SEARCH_TOOL_NAME, { query: 'select:Foo' }),
+        use(search, SYSTEM_SEARCH_TOOLS_NAME, { query: 'select:Foo' }),
         result(search, 'loaded 1 tool'),
         use(read, 'FileRead', { file_path: '/repo/PLAN.md' }),
         result(read, 'file body'),
@@ -101,7 +101,7 @@ describe('collapseReadSearchGroups — lone group does not leak absorbed ToolSea
     expect(out.some(isCollapsedGroup)).toBe(false)
     // Only the Read call + its result survive; ToolSearch stays absorbed.
     expect(toolUseNames(out)).toEqual(['FileRead'])
-    expect(toolUseNames(out)).not.toContain(TOOL_SEARCH_TOOL_NAME)
+    expect(toolUseNames(out)).not.toContain(SYSTEM_SEARCH_TOOLS_NAME)
     expect(toolResultIds(out)).toEqual([read])
     expect(toolResultIds(out)).not.toContain(search)
   })
@@ -113,7 +113,7 @@ describe('collapseReadSearchGroups — lone group does not leak absorbed ToolSea
       [
         use(grep, 'Grep', { pattern: 'IO_NUMBER' }),
         result(grep, 'Found 2 matches'),
-        use(search, TOOL_SEARCH_TOOL_NAME, { query: 'webfetch' }),
+        use(search, SYSTEM_SEARCH_TOOLS_NAME, { query: 'webfetch' }),
         result(search, 'loaded WebFetch'),
       ],
       tools,

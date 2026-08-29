@@ -334,7 +334,7 @@ describe("attachmentsToMessages", () => {
       },
     ]);
     expect(out[0]?.content).toContain(
-      "The following deferred tools are now available via ToolSearch",
+      "The following deferred tools are now available via system.searchTools",
     );
     expect(out[0]?.content).toContain("system.gitStatus: report repo state");
     expect(out[0]?.content).toContain(

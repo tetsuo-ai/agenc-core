@@ -470,7 +470,7 @@ export const AGENC_DAEMON_METHOD_SPECS = defineMethodSpecs({
     params: "required",
     result: "object",
     description:
-      "Add an MCP server to the daemon-owned runtime session so ToolSearch and model tool calls can use it immediately.",
+      "Add an MCP server to the daemon-owned runtime session so system.searchTools and model tool calls can use it immediately.",
   },
   "message.send": {
     method: "message.send",

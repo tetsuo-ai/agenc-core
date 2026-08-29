@@ -22,7 +22,7 @@ import { TASK_UPDATE_TOOL_NAME } from '../../tools/TaskUpdateTool/constants.js'
 import { TEAM_CREATE_TOOL_NAME } from '../../tools/TeamCreateTool/constants.js'
 import { TEAM_DELETE_TOOL_NAME } from '../../tools/TeamDeleteTool/constants.js'
 import { TODO_WRITE_TOOL_NAME } from '../../tools/TodoWriteTool/constants.js'
-import { TOOL_SEARCH_TOOL_NAME } from '../../tools/ToolSearchTool/prompt.js'
+import { SYSTEM_SEARCH_TOOLS_NAME } from '../../tools/system/tool-search-name.js'
 import { VERIFY_PLAN_EXECUTION_TOOL_NAME as VERIFY_PLAN_EXECUTION_TOOL_NAME_SOURCE } from '../../tools/VerifyPlanExecutionTool/constants.js'
 import { YOLO_CLASSIFIER_TOOL_NAME } from './yoloClassifierConstants.js'
 
@@ -65,7 +65,7 @@ const SAFE_YOLO_ALLOWLISTED_TOOLS = new Set([
   GREP_TOOL_NAME,
   GLOB_TOOL_NAME,
   LSP_TOOL_NAME,
-  TOOL_SEARCH_TOOL_NAME,
+  SYSTEM_SEARCH_TOOLS_NAME,
   LIST_MCP_RESOURCES_TOOL_NAME,
   READ_MCP_RESOURCE_TOOL_NAME,
   // Task management (metadata only)

@@ -208,7 +208,6 @@ export const ExitPlanModeV2Tool: Tool<InputSchema, Output> = buildTool({
   userFacingName() {
     return ''
   },
-  shouldDefer: true,
   isEnabled() {
     // When --channels is active the user is likely on Telegram/Discord, not
     // watching the TUI. The plan-approval dialog would hang. Paired with the
