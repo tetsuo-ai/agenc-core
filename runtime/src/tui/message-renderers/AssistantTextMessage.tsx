@@ -143,7 +143,7 @@ export function AssistantTextMessage(t0) {
       {
         let t2;
         if ($[11] === Symbol.for("react.memo_cache_sentinel")) {
-          t2 = <MessageResponse height={1}><Text color="error">{API_TIMEOUT_ERROR_MESSAGE}{process.env.API_TIMEOUT_MS && <>{" "}(API_TIMEOUT_MS={process.env.API_TIMEOUT_MS}ms, try increasing it)</>}</Text></MessageResponse>;
+          t2 = <MessageResponse height={1}><Text color="error">{API_TIMEOUT_ERROR_MESSAGE}</Text></MessageResponse>;
           $[11] = t2;
         } else {
           t2 = $[11];

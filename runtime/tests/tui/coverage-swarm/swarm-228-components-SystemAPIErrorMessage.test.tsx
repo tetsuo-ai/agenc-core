@@ -138,7 +138,7 @@ describe("SystemAPIErrorMessage coverage swarm row 228", () => {
 
     expect(output).toContain("provider unavailable");
     expect(output).toContain("Retrying in 3 seconds... (attempt 4/6)");
-    expect(output).toContain("API_TIMEOUT_MS=2500ms, try increasing it");
+    expect(output).not.toContain("API_TIMEOUT_MS");
     expect(harness.intervalMs).toBe(1000);
 
     harness.intervalCallback?.();

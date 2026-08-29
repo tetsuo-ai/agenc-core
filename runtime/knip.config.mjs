@@ -62,9 +62,6 @@ const servicePublicContractExportFiles = [
   // Service API surfaces are consumed by runtime integration, diagnostics,
   // optional provider paths, or external/manual harnesses outside the
   // production-only Knip graph.
-  "src/services/agencAiLimits.ts",
-  "src/services/api/errorUtils.ts",
-  "src/services/api/errors.ts",
   "src/services/api/openAiCodeOAuthShared.ts",
   "src/services/api/sessionIngress.ts",
   "src/services/github/deviceFlow.ts",

@@ -458,7 +458,7 @@ export class AgencSession {
     });
   }
 
-  /** Live turn count, token usage, and cache stats (`session.snapshot`). */
+  /** Live turn count and token usage (`session.snapshot`). */
   snapshot(): Promise<SessionSnapshotResult> {
     return this.#client.request("session.snapshot", {
       sessionId: this.sessionId,

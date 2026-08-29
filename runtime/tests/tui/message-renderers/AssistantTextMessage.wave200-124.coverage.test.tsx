@@ -51,7 +51,7 @@ afterEach(() => {
 })
 
 describe('AssistantTextMessage wave200-124 coverage', () => {
-  test('renders the configured API timeout hint across identical TUI rerenders', async () => {
+  test('does not echo the daemon ambient timeout across TUI rerenders', async () => {
     process.env.API_TIMEOUT_MS = '4321'
     const { stdin, stdout } = createStreams()
     let output = ''
@@ -82,7 +82,7 @@ describe('AssistantTextMessage wave200-124 coverage', () => {
 
       const text = stripAnsi(output)
       expect(text).toContain(API_TIMEOUT_ERROR_MESSAGE)
-      expect(text).toContain('(API_TIMEOUT_MS=4321ms, try increasing it)')
+      expect(text).not.toContain('API_TIMEOUT_MS')
     } finally {
       root.unmount()
       stdin.end()

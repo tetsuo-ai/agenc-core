@@ -7,12 +7,6 @@ export type ConnectorTextBlock = {
   signature?: string
 }
 
-export type ConnectorTextDelta = {
-  type: 'connector_text_delta'
-  connector_text: string
-  connector?: string
-}
-
 export function isConnectorTextBlock(
   value: unknown,
 ): value is ConnectorTextBlock {
