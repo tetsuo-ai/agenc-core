@@ -5,6 +5,7 @@ import { appendFileSync } from 'fs'
 import createReconciler from 'react-reconciler'
 import { getYogaCounters } from './native-ts/yoga-layout/index.js'
 import { isEnvTruthy } from '../../utils/envUtils.js'
+import { traceTuiStartupPhase } from '../../utils/tuiStartupTrace.js'
 import {
   appendChildNode,
   clearYogaNodeReferences,
@@ -260,6 +261,16 @@ export function resetProfileCounters(): void {
   _lastCommitMs = 0
   _commitStart = 0
 }
+
+let startupCommitCount = 0
+
+function traceStartupCommit(): void {
+  if (process.env.TUI_E2E_DEBUG !== '1') return
+  startupCommitCount += 1
+  if (startupCommitCount <= 7) {
+    traceTuiStartupPhase(`reconciler-reset-${startupCommitCount}`)
+  }
+}
 // --- END ---
 
 // `react-reconciler` ships no types in this repo. The local ambient
@@ -275,6 +286,7 @@ const reconciler = createReconciler({
   preparePortalMount: () => null,
   clearContainer: () => false,
   resetAfterCommit(rootNode: DOMElement) {
+    traceStartupCommit()
     _lastCommitMs = _commitStart > 0 ? performance.now() - _commitStart : 0
     _commitStart = 0
     if (COMMIT_LOG) {
@@ -305,7 +317,9 @@ const reconciler = createReconciler({
     }
     const _t0 = COMMIT_LOG ? performance.now() : 0
     if (typeof rootNode.onComputeLayout === 'function') {
+      traceTuiStartupPhase('reconciler-layout-start')
       rootNode.onComputeLayout()
+      traceTuiStartupPhase('reconciler-layout-ready')
     }
     if (COMMIT_LOG) {
       const layoutMs = performance.now() - _t0
@@ -331,7 +345,9 @@ const reconciler = createReconciler({
     }
 
     const _tr = COMMIT_LOG ? performance.now() : 0
+    traceTuiStartupPhase('reconciler-render-scheduled')
     rootNode.onRender?.()
+    traceTuiStartupPhase('reconciler-reset-ready')
     if (COMMIT_LOG) {
       const renderMs = performance.now() - _tr
       if (renderMs > 10) {

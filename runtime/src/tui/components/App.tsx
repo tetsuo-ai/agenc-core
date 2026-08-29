@@ -1,5 +1,6 @@
 import { watch, type FSWatcher } from "node:fs";
 import { logForDebugging } from "src/utils/debug.js";
+import { traceTuiStartupPhase } from "../../utils/tuiStartupTrace.js";
 import { createHash, randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import { c as _c } from "react-compiler-runtime";
@@ -2420,6 +2421,9 @@ export function getTuiProviderEnvironment(
 function AgenCTuiShell(props: AgenCTuiShellProps): React.ReactElement {
   const { exit } = useApp();
   const settings = useSettings();
+  useEffect(() => {
+    traceTuiStartupPhase("shell-passive-effect");
+  });
   const configStore = getTuiConfigStore(props.session);
   const stateRepository = configStore.stateRepository;
   const getFpsMetrics = useFpsMetrics();
